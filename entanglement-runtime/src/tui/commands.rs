@@ -18,6 +18,7 @@ pub enum Command {
     Plan,
     Tasks,
     Inspect,
+    Cost,
     Editor,
     Export,
     Resume,
@@ -28,6 +29,7 @@ pub enum Command {
     Allow,
     Enable,
     Disable,
+    Tools,
     Pause,
     Continue,
     Stop,
@@ -48,6 +50,7 @@ impl Command {
             Command::Plan => "plan",
             Command::Tasks => "tasks",
             Command::Inspect => "inspect",
+            Command::Cost => "cost",
             Command::Editor => "editor",
             Command::Export => "export",
             Command::Compact => "compact",
@@ -57,6 +60,7 @@ impl Command {
             Command::Allow => "allow",
             Command::Enable => "enable",
             Command::Disable => "disable",
+            Command::Tools => "tools",
             Command::Pause => "pause",
             Command::Continue => "continue",
             Command::Stop => "stop",
@@ -76,12 +80,13 @@ impl Command {
             Command::Plan => "Open the bound plan file in $EDITOR",
             Command::Tasks => "Show the task list in the sidebar",
             Command::Inspect => "Inspect prompt, agents & skills",
+            Command::Cost => "Show this session's token & cost breakdown",
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
             Command::Compact => "Compact the conversation history (LLM summary, --keep N to preserve trailing messages)",
             Command::Set => {
-                "Set a generation parameter (temperature, effort, thinking_budget, max_tokens)"
+                "Session settings dialog (bare), or set one generation parameter: <temperature|effort|thinking_budget|max_tokens> <value>"
             }
             Command::Show => "Show the current effective generation parameters",
             Command::Mcp => "Manage MCP servers (list, add, remove)",
@@ -93,6 +98,9 @@ impl Command {
             }
             Command::Disable => {
                 "Disable tools for this session (mcp <server> | tool <name>; bare = reset to profile defaults)"
+            }
+            Command::Tools => {
+                "Browse this session's tool surface — host tools, MCP servers, skills, endpoints (filter as you type, Tab cycles category, Enter enables the highlighted row)"
             }
             Command::Pause => {
                 "Pause the current session (--all for every live session)"
@@ -130,12 +138,14 @@ pub fn all_commands() -> Vec<Command> {
         Command::Editor,
         Command::Export,
         Command::Compact,
+        Command::Cost,
         Command::Set,
         Command::Show,
         Command::Mcp,
         Command::Allow,
         Command::Enable,
         Command::Disable,
+        Command::Tools,
         Command::Pause,
         Command::Continue,
         Command::Stop,
@@ -149,7 +159,7 @@ pub fn all_commands() -> Vec<Command> {
 /// merge semantics. `text` is the raw input including the leading `/set` (the
 /// `/compact` raw-text re-parse pattern, since [`parse_command`] only matches the
 /// command name and drops everything after it). Recognised keys: `temperature`
-/// (f32), `effort` (`low|medium|high`), `thinking_budget`/`thinking_budget_tokens`
+/// (f32), `effort` (`low|medium|high|xhigh|max`), `thinking_budget`/`thinking_budget_tokens`
 /// (u32), `max_tokens`/`max_output_tokens` (u32). An unknown key or a value that
 /// fails to parse for its key is a friendly `Err` message, not a panic.
 ///
@@ -273,6 +283,7 @@ mod tests {
         assert_eq!(parse_command("/plan"), Some(Command::Plan));
         assert_eq!(parse_command("/tasks"), Some(Command::Tasks));
         assert_eq!(parse_command("/inspect"), Some(Command::Inspect));
+        assert_eq!(parse_command("/cost"), Some(Command::Cost));
         assert_eq!(parse_command("/editor"), Some(Command::Editor));
         assert_eq!(parse_command("/export"), Some(Command::Export));
         assert_eq!(parse_command("/compact"), Some(Command::Compact));

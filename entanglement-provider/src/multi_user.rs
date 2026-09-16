@@ -31,6 +31,7 @@ use crate::client::{HttpClient, UserBudget};
 use crate::gemini::{gemini_factory, GEMINI_BASE};
 use crate::llm::{ModelResolver, ResolvedModel, UserId};
 use crate::openai::{openai_factory, OPENAI_BASE};
+use crate::openai_responses::{openai_responses_factory, OPENAI_RESPONSES_BASE};
 use crate::web_search::WebSearchConfig;
 use crate::{anthropic_factory, ANTHROPIC_BASE};
 
@@ -249,21 +250,6 @@ fn resolve_for_user(
                 .catalog
                 .model(provider, model)
                 .and_then(|m| m.web_search_tool_version.clone());
-            // Which extended-thinking shape this model takes; the newer Anthropic
-            // models reject the fixed-budget form outright.
-            let thinking_style = ctx
-                .catalog
-                .model(provider, model)
-                .map(|m| m.resolved_thinking_style())
-                .unwrap_or_default();
-            // Anthropic requires a captured thinking block back on a tool
-            // round-trip, and replay is inert when thinking is off, so the wire
-            // default (and the unknown-model default) is on.
-            let replay_thinking = ctx
-                .catalog
-                .model(provider, model)
-                .map(|m| m.replays_thinking(true))
-                .unwrap_or(true);
             anthropic_factory(
                 base,
                 key,
@@ -274,8 +260,7 @@ fn resolve_for_user(
                 model_concurrency,
                 web_search,
                 web_search_tool_version,
-                thinking_style,
-                replay_thinking,
+                ctx.catalog.anthropic_model_spec(provider, model),
                 http_client.clone(),
             )
         }
@@ -299,6 +284,23 @@ fn resolve_for_user(
                 rpm,
                 concurrency,
                 model_concurrency,
+                http_client.clone(),
+            )
+        }
+        Wire::OpenaiResponses => {
+            let base = entry
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_RESPONSES_BASE.to_string());
+            openai_responses_factory(
+                base,
+                key.map(str::to_string),
+                auth,
+                model.to_string(),
+                rpm,
+                concurrency,
+                model_concurrency,
+                ctx.catalog.thinking_spec_resolver(provider),
                 http_client.clone(),
             )
         }
@@ -337,6 +339,8 @@ mod tests {
                 concurrency: None,
                 mcp_servers: Default::default(),
                 prompt_cache_key: false,
+                discovery: None,
+                thinking_control: None,
                 default_model: "glm-5.2".into(),
                 models: vec![ModelEntry {
                     id: "glm-5.2".into(),
@@ -350,7 +354,11 @@ mod tests {
                     thinking_style: None,
                     thinking_format: None,
                     replay_thinking: None,
+                    tool_advertising: None,
+                    discovery: None,
                     default_reasoning_effort: None,
+                    effort_tiers: None,
+                    thinking_required: false,
                     pricing: None,
                     concurrency: None,
                     web_search_tool_version: None,

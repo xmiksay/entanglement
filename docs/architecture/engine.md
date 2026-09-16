@@ -11,8 +11,10 @@ resolution — plus the small driver loop that retries in place),
 `session/round.rs` (`run_attempt`: one streamed attempt and the ADR-0118
 ambiguous-stop retry decision, split out of `turn.rs` along that retry seam,
 #436), `session/stream.rs` (one streamed round-trip), `session/turn_state.rs`
-(the parked-turn state), and `session/emit.rs` (outbound-event helpers), with
-`session/replay.rs` holding the pure state reconstruction.
+(the parked-turn state), `session/invoke_envelope.rs` (the ADR-0204 `invoke`
+unwrap), and `session/emit.rs` (outbound-event helpers), with
+`session/replay.rs` holding the pure state reconstruction (its turn fold
+state machine in `session/replay_pending.rs`).
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
@@ -34,12 +36,57 @@ streaming backend directly.
 Turn loop (`run_round`, driven by `drive_turn`): assemble `tools` — **every**
 spec `EngineConfig.tool_specs` (or the per-session `tool_spec_resolver`) yields,
 plus the active profile's `profile_tool_specs` entry, with **no filtering**: the
-profile mask, session tool overlay and skill `allowed_tools` are enforced
-exclusively at the runtime's dispatch gate, so the advertised surface stays
+profile mask, session tool overlay and (formerly) skill `allowed_tools` are enforced
+exclusively at the runtime's dispatch gate — the skill mask is now removed
+entirely ([ADR-0194](../adr/0194-skills-are-additive-only.md): skills are
+additive-only) — so the advertised surface stays
 stable within a session and the provider's prompt cache survives an overlay
-toggle, a `/enable tool bash`, or a `SetAgent` (see [agents &
+toggle, a `SetAgent`, or a skill load (see [agents &
 permissions](agents-and-permissions.md) §physical tool restriction for the
-attributed decline a masked call gets instead) — then send `LlmRequest { system,
+attributed decline a masked call gets instead).
+
+**Two advertising modes** (`ToolAdvertising`,
+[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
+superseding ADR-0193's `native`/`invoke` split): the surface above is what
+**`Full`** mode advertises — the full registered surface with dynamic MCP
+specs inline, mutating on add/remove (an accepted cache cost). **`ToolSearch`**
+mode (**the default**) advertises instead an **immutable lean kernel**: the
+high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
+`ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
+(`explore`/`describe`) plus the profile-defining specs (the ADR-0192
+carve-out — they vary across profiles, never within a session). Everything
+else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`, endpoints,
+skill tools) stays **registered but unadvertised** — dispatchable by name the
+moment the model calls it, discoverable via `explore`, schema-delivered via
+`describe`. There is no router tool: a discovered tool is called exactly like
+a kernel one, by its real name.
+
+The mode is **per-session, resolved at session start** from the session's
+initial model (`ModelEntry.tool_advertising`, precedence env
+`ENTANGLEMENT_TOOL_ADVERTISING` > `config.yml` `tool_advertising` > catalog >
+default `ToolSearch`) and held in a runtime-side session→mode map — the
+resolver and executor are engine-global and session-multiplexed, and
+per-profile model pins mean concurrent sessions can run different modes. A
+live `SetModel` **keeps** the session's mode (logged when the new model's
+catalog preference differs — switching mid-session would bust the cache the
+mode exists to protect); subagents resolve their own mode at spawn.
+
+Mechanically the mode is the resolver's input shape, not a core concept: core
+still advertises whatever the `tool_spec_resolver` yields, re-consulted fresh
+every round. Under `ToolSearch` mode's `client_side` wire encoding (OpenAI-
+compat Chat Completions incl. z.ai, Ollama, Gemini), each `describe()` call
+grows that resolver's output by appending the described tool's spec to a
+session-keyed discovered set — **append-only, never removed**, so the
+advertised array only ever grows and each discovery costs one cache
+invalidation, not a continuous one. The `anthropic_native` and
+`responses_native` encodings instead lean on each wire's own
+`defer_loading`/`tool_search` primitive (see
+[provider](provider.md) and [gates & host tools](gates-and-host-tools.md)
+§Discovery and lazy tool search for the wire-level detail). In `ToolSearch`
+mode the system prompt drops the skills/dynamic-tool rosters for a one-line
+pointer at `explore`/`describe` (`Full` mode keeps today's sections).
+
+The assembled tools go into `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`
 per `Text` chunk, gather `ToolCall`s, fold `Finish`) → if the reply carries
 tool calls, **emit the whole batch up front** — the per-call (`ToolCall`,
@@ -63,6 +110,47 @@ the runtime-owned `poll` route too (#695, the remainder ADR-0176 deferred):
 unknown-handle, refused-`kill`, and script-terminal-error polls set
 `is_error`; every state report from a poll that ran — including a job exiting
 nonzero, whose status rides `exit_code` orthogonally — stays `false`.
+
+**`invoke` calls are unwrapped for display and dispatch, never in `Context`**
+([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md),
+`session/invoke_envelope.rs`). Core has no policy here: the only trigger is
+"this round's advertised specs contain a spec named `INVOKE_TOOL`". When that
+holds, each `invoke` call in the batch is unwrapped before its
+`ToolCall`/`ToolExec` pair is emitted. The rules are ADR-0193's: `name` must be
+a non-empty string other than `invoke` or `responses_tool_search`; a missing
+`args` becomes `{}`; `args` given as a JSON string is parsed and must yield an
+object; an object is used as is. Anything else is not unwrapped. The events
+name the inner tool, `input` is the inner args serialized compactly, and
+`envelope` carries the emitted outer name and raw input. `TurnState` keeps the
+pending calls in this unwrapped form, plus an `envelopes` map by call id, so a
+re-offer (resume or timer) and the resolving `ToolOutput` carry the same
+envelope. The assistant message pushed into `Context` keeps the model's emitted
+`invoke` call byte for byte (name, raw input, id, `provider_meta`). Rewriting it
+to the inner name made GLM-5.2/5.3 re-`describe` on the next turn, and it would
+shift the cached prefix. The result still pairs by call id. Replay rebuilds the
+emitted call from `envelope` when present, so a resumed session sends the same
+bytes. `ToolCallDelta` fragments stay as streamed, since they arrive before the
+call is assembled.
+
+**Replay rebuilds the live history byte for byte** ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
+`Session::replay` folds events through `TurnFold` (`session/replay_pending.rs`),
+which mirrors each live commit point instead of batching per turn: one assistant
+message per model round (text, then its `ReasoningBlock`/`SearchResult` blocks,
+then the round's calls with their `provider_meta`, `invoke` calls rebuilt from
+`envelope`), each `ToolOutput` pushed on arrival, the ADR-0118 nudge after an
+`AmbiguousRetry`, and no message at all for an empty reply — the live commit
+skips an empty assistant message on every stop, confident or ambiguous, since
+the log carries no stop reason and the strict wires drop one anyway. A `Prompt`
+logged while a turn is live is stashed and folded at the next round's first
+event, or after `Done` (ADR-0058). A resting `Status` (`Done`, or `Paused` on a
+paused session) after a logged `InMsg::Stop` — or, without one, with a round or
+batch open — is the cancel: the uncommitted stream is dropped, an
+already-emitted batch is kept, and the turn ends even if nothing had streamed.
+The
+`ToolOutput.content` and `ToolCall.provider_meta` fields exist so nothing is
+lost. `tests/it/replay_equality.rs` proves live and resumed requests are
+identical across every round shape. The prune-only compaction divergence
+(ADR-0121) is the one remaining gap.
 **Every** tool call takes the runtime round-trip; core holds no executable tools
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the
@@ -243,11 +331,11 @@ round = one LLM round-trip that may fan out into tool calls, counted on
 `Prompt`; a folded mid-turn prompt does not reset it), so a model wedged in a
 tool loop can't run forever while a legitimate long session (many prompts) is
 never capped. Resume resets the counter too (a runaway guard, not a quota —
-ADR-0061). **Beware:** the trip path emits **only** an
-`OutEvent::Error` and returns — *not* the `Error` + `Done` + `Status` triple that
-`emit_turn_error` (`session/emit.rs`) fires on a backend error — so a one-shot
-head awaiting `Done` hangs when the turn limit trips. That missing-`Done` is a
-known robustness gap (see #177).
+ADR-0061). The trip ends the turn through `emit_turn_error`
+(`session/emit.rs`) — the same `Error` + `Done` + `Status` triple a backend
+error fires — so a one-shot head awaiting `Done` exits, and replay sees the
+turn boundary exactly where the live engine drew it (it used to emit only the
+`Error`, #177).
 
 **Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/round.rs`,
 [ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
@@ -317,38 +405,85 @@ recovery steps in order (#398,
    pinned `summarize` model when one is set — requesting a small fixed keep-tail
    (`AUTO_COMPACT_KEEP_TAIL`, clamped to a safe turn boundary by
    `Context::safe_kept` exactly as #397/ADR-0102 does), then applies the result
-   via `Context::apply_compaction` — **mutating the live session's `Context` in
-   place**, the fundamental split from the manual op's copy-on-write (ADR-0101):
-   a turn mid-flight has no head to fork into. On success it emits
-   `OutEvent::Compacted { auto: true, .. }`.
-2. **Fall back to `Context::compact`** (placeholder-prune the oldest tool
-   outputs, newest-first-preserved) when auto-summarize is disabled, its own
-   guard trips (an oversized transcript/tail, an LLM error, a truncated
-   summary), or the result still doesn't fit. Prunes in one batch down to
-   ~90% of the budget rather than stopping the instant the estimate dips
-   under it (#566): a session sitting near the edge would otherwise re-trip
-   this fallback and mutate one more early message every round or two as new
-   content trickles in — busting a provider's cached prefix right when
-   requests are largest.
+   and **forks a successor session** seeded with that summary plus the verbatim
+   kept tail (`summarize::compose_report`) — the live `Context` is never
+   mutated ([ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md)
+   amends ADR-0103's in-place design; a turn mid-flight no longer needs a head
+   to fork into, because the engine forks for itself). On success it emits
+   `OutEvent::Compacted { auto: true, mode: summary, .. }`. The request reuses the round's
+   own system prompt and tool specs — `run_round` resolves both once, *before*
+   this gate (`session/round_inputs.rs`), so a remote `system_prompt_resolver`
+   is never fetched twice — and its shape follows the backend ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4,
+   `session/compaction_request.rs`). On the session's own backend it is
+   **structured**: that system prompt, those specs, the head messages verbatim
+   plus one trailing instruction, and the session `cache_key` — byte-identical
+   to a turn's request, with no tool-choice override (Anthropic invalidates its
+   messages cache on a `tool_choice` change; z.ai accepts only `auto`). Only the
+   instruction text forbids a tool call; a reply that calls one anyway is
+   discarded and summarization re-runs once on the rendered transcript
+   (`session/summary_attempt.rs`), both attempts' usage summed into the one
+   `purpose: compaction` `Usage`. WHY: the head is a strict prefix of the live history, so tools →
+   system → history are prompt-cache hits instead of a full-price re-read at
+   the moment the context is largest, and the summarizer sees the real tool
+   calls, results and thinking blocks rather than a capped rendering. A pinned
+   aux model gets the **rendered** transcript (the summarizer's own system
+   string, no tools, no cache key): a different model is a different cache
+   namespace, and a foreign wire may reject the history's signed thinking
+   blocks or tool-call ids. Budget rule: structured when head + prefix fit the
+   real window (`Context::window()` minus `max_output_tokens` and a 2% margin —
+   not the input limit, which the context exceeds by definition here, and
+   mid-turn the kept tail collapses so the head *is* the whole context),
+   rendered otherwise (guarded by the input limit), prune-only last.
+2. **Fall back to the prune-only `Context::compact`** (placeholder-prune the
+   oldest tool outputs, newest-first-preserved) when auto-summarize is
+   disabled, its own guard trips (a rendered transcript or kept tail over the
+   input limit, an LLM error, a tool call on the rendered attempt, a truncated
+   summary), or the result still doesn't fit. It prunes a **clone** of the
+   context and forks a successor seeded with the pruned transcript, emitting
+   `OutEvent::Compacted { auto: true, mode: prune, .. }` (ADR-0205) — the
+   source's own history is left exactly as its log describes. Prunes in one
+   batch down to ~90% of the budget rather than stopping the instant the
+   estimate dips under it (#566): a session sitting near the edge would
+   otherwise re-trip this fallback every round or two as new content trickles
+   in — busting a provider's cached prefix right when requests are largest.
 3. **Refuse the turn** via `emit_turn_error` (a `"context window exceeded"`
    `Error` + `Done` + `Status`) if pruning also doesn't fit — sending an
    over-window request just burns a paid round-trip and errors at the provider.
 
-Step 2's prune mutates `Session.ctx` in place — like step 1 — but, unlike
-step 1, **emits no `OutEvent`** (#450,
-[ADR-0121](../adr/0121-prune-only-compact-stays-silent.md)): nothing records
-that the prune happened, so `Session::replay` never replays it and a resumed
-session briefly reconstructs the full, unpruned history the live session had
-already discarded — a real but accepted live/replay divergence in the exact
-request shape. It self-heals within one round-trip: `enforce_context_window`
-runs before every round, so a resumed session still over budget just re-prunes
-(or re-summarizes) on its very next turn and converges to where the live
-session already was, and it never ships an over-window request in the
-meantime. Recording it was rejected — `Context::compact` is a deterministic,
-idempotent function of the existing log and the model's token budget alone
-(no LLM call, nothing destroyed that a subsequent guard run can't re-derive),
-unlike step 1's LLM-authored rewrite that *must* be recorded for replay to
-reconstruct the same `Context`.
+**Both compacting steps fork; neither mutates** (ADR-0205). Steps 1 and 2
+each produce a successor session and retire the source unchanged at the fork
+point; step 3 refuses the turn without touching anything. No path rewrites a
+live session's history behind its own append-only log, so ADR-0202's
+byte-equality guarantee now covers compacted sessions too and
+`Session::replay`'s `Compacted` fold is a **no-op on every path** — there is
+nothing to reconstruct. ADR-0121's silent in-place prune, and the live/replay
+divergence it knowingly accepted, are retired with it: a head has to follow a
+session id change, so the prune announces itself like any other compaction.
+
+**The fork itself** (`session/fork.rs`) is one mechanism shared by both
+automatic steps and the manual op below. It emits `Compacted` — the source's
+last content event — then sends the same two frames the TUI used to send
+head-side for `/compact`: `InMsg::Spawn { parent: None, predecessor:
+Some(source), agent: <source profile>, prompt: <seed> }` and
+`InMsg::CloseSession { source }` (ADR-0110's successor-closes-predecessor
+lifecycle, now universal). A session task cannot mint a session, so it asks the
+supervisor over a dedicated session→supervisor channel whose frames the
+supervisor handles exactly like inbox ones — fan-out included, which is what
+lets the persistence tap synthesize the successor's seed prompt from its
+`Spawn` (ADR-0113) so the successor's own log replays to the history it started
+live with. Delivery runs on a detached task, so a session task never blocks
+while the supervisor may be waiting to route into that very session, and the
+frames go out only after the source has finished writing its own log tail.
+
+**A mid-turn fork carries the turn.** The window gate runs between rounds, so
+the turn's tool batch is always drained when it fires — `drive_turn` is only
+re-entered once `TurnState::pending` empties — and the successor continues the
+work from its seed prompt while the source's log ends exactly at the fork. A
+tool result still in flight when the fork happened would name the retired
+source; the supervisor redirects `ToolResult` frames along the source→successor
+chain it records from each fork's `Spawn`, so a late result resolves against
+the session that took the turn over instead of hitting the closed-id refusal
+and surfacing an error for work nobody cancelled.
 
 So both the turn-limit trip and the context-refusal *end* a turn — the former
 on an `Error` with no `Done` (the #177 gap), the latter on the full
@@ -362,29 +497,39 @@ never parks — it either completes in one round-trip or fails cleanly. Routed
 like `SetAgent`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
 while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
 invariant that lets `compact_op` drive a bare `llm.stream(...)` (via
-`session/summarize.rs`'s small `oneshot_text` helper that drains the stream for
-`Text` chunks + the `Finish` usage) instead of going through
+`session/summary_attempt.rs`'s small `drain` helper that drains the stream for
+`Text` chunks + the `Finish` usage, noting any tool call) instead of going through
 `session/stream.rs`'s inbox-racing `tokio::select!`. The backend it drives is
 **aux-resolved**, not necessarily the session's own: `compact_op` first
 resolves `summarize::AuxBackend::for_summarize(cfg)` and then
 `aux.resolve(&mut *s.llm, model, s.generation)` — a `summarize` aux-model pin
 ([ADR-0154](../adr/0154-per-purpose-auxiliary-models.md), next section) routes
 the call to a one-shot pinned client; unset, the triple resolves straight back
-to the session's own `llm`/`model`/`generation`. `"compact"` renders the
-history as a plain-text transcript (each `Tool`-role message truncated
-head+tail past ~2k chars so one oversized tool output can't blow the
-summarizer's own context window), optionally appends `args.instructions`, and
-asks the model to summarize it with a tool-less `LlmRequest` (`tools: &[]`) —
-all via the shared `session/summarize.rs::summarize`, which `session/turn.rs`'s
-auto-compact path above also calls. **Copy-on-write (ADR-0101):** the source
+to the session's own `llm`/`model`/`generation`. `"compact"` resolves the
+session's system prompt and tool specs exactly as a turn round does
+(`session/round_inputs.rs`) and summarizes via the shared
+`session/summarize.rs::summarize`, which `session/turn.rs`'s auto-compact path
+above also calls — so it takes the same two request shapes ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4). On the
+session's own backend it is **structured** (that system prompt + specs, the
+head messages verbatim, one trailing no-tools instruction, the session
+`cache_key`; a tool call falls back once to the rendered shape), reusing the
+provider's cached prefix and giving the
+summarizer full-fidelity history. On a pinned aux model — a different cache
+namespace whose wire may reject the history's signed thinking blocks or
+tool-call ids — or for a head that does not fit the real window, it is the
+**rendered** plain-text transcript (each `Tool`-role message truncated
+head+tail past ~2k chars) under the summarizer's own system string, with no
+tools and no cache key. Structured when it fits the real window, rendered
+otherwise; `args.instructions` is appended to the instruction either way. **Copy-on-write (ADR-0101), forking a successor (ADR-0110/0205):** the source
 session's `Context` is **never mutated** — on success `compact_op` composes the
 summary with the rendered kept-tail (`summarize::compose_report`, since the
-fork's seed is a single flat string) and emits `Compacted{summary, auto: false}`
-(a *report*; the head forks the summary into a new session) then
+successor's seed is a single flat prompt), emits
+`Compacted{summary, auto: false, mode: summary}` and forks through the same
+`session/fork.rs` the automatic paths use, then
 `Usage`/`Done`/`Status::Done`, the ordinary terminal sequence so a one-shot head
 still unblocks on `Done`. A truncated summary (`StopReason::MaxTokens`) is
-refused outright (`Error`, never forked), and an oversized transcript (one that
-overflows `s.ctx.limit()`) is rejected before shipping a request the provider
+refused outright (`Error`, never forked), and a rendered transcript that
+overflows `s.ctx.limit()` is rejected before shipping a request the provider
 would 4xx. On failure, the ordinary `emit_turn_error` triple runs and `Context`
 is untouched. Model resolution and pricing mirror the turn loop: `s.model` →
 `s.profile.model` → (pricing only) `cfg.default_model`.
@@ -409,6 +554,8 @@ opening its own. Both compaction paths — the manual `"compact"` op
 `aux.resolve(&mut *s.llm, model, s.generation)`: `AuxBackend` owns the built
 `Box<dyn Llm>` (one-shot, dropped when it goes out of scope), which is what
 lets both call sites hand `summarize` a `&mut dyn Llm` outliving the borrow.
+`resolve` also reports which arm it took (`BackendArm::Session` /
+`PinnedAux`), which is what picks the request shape above (ADR-0202).
 A `None` from the resolver — no resolver wired, an unset pin, or a pin the
 catalog no longer knows — falls back **field-by-field to the session's own
 `llm`/`model`/`generation`**: byte-identical to the pre-ADR-0154 behavior,

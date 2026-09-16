@@ -109,12 +109,15 @@ mod tests {
             permissions: PermissionProfile::new(Permission::Allow),
             hooks: Default::default(),
             mcp: HashMap::new(),
+            endpoints: HashMap::new(),
             web_search: Default::default(),
             max_turns: None,
             idle_ttl: None,
             auto_compact: None,
             editor: None,
             session_retention_days: 30,
+            tool_advertising: None,
+            discovery: Default::default(),
         }
     }
 

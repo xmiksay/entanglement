@@ -25,9 +25,10 @@ pub const RHAI_TOOL: &str = "rhai";
 /// (`call`/`bash`, ADR-0115 amending ADR-0046) — so `rhai` is precisely as
 /// privileged as the always-registered tools it does bind. `bash` is only
 /// ever *reachable*, not just masked, when the host `bash` tool itself is
-/// registered (`ENTANGLEMENT_ENABLE_BASH`); it stays in this mask/grade list
-/// unconditionally since `BindingPolicy` grading is argument-independent of
-/// whether the engine bound the function.
+/// registered (a head always registers it, ADR-0195; a bespoke registry
+/// may not); it stays in this mask/grade list unconditionally since
+/// `BindingPolicy` grading is argument-independent of whether the engine
+/// bound the function.
 pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
 
 /// Tool name the plan agent calls to submit its plan (`content` XOR `path`)
@@ -55,6 +56,73 @@ pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
 /// Tool name the model calls to load a skill's full instructions (#124).
 pub const LOAD_SKILL_TOOL: &str = "load_skill";
 
+/// Tool name the model calls to search the tool catalog beyond what's
+/// advertised — MCP servers, skills, and unadvertised built-ins (#560,
+/// ADR-0196 §4). Always-on and non-maskable, like [`DESCRIBE_TOOL`].
+pub const EXPLORE_TOOL: &str = "explore";
+
+/// Tool name the model calls to fetch a discovered tool's full schema, byte-
+/// identical to a native `<tools>` entry (#560, ADR-0196 §4). Under
+/// `client_side` encoding also registers the tool into the session's
+/// advertised array. Always-on and non-maskable, like [`EXPLORE_TOOL`].
+pub const DESCRIBE_TOOL: &str = "describe";
+
+/// Reserved [`entanglement_core::ToolCall::name`] the OpenAI Responses client
+/// emits for a streamed, client-executed `tool_search_call` output item (P7,
+/// ADR-0196 §3) — re-exported here (via `entanglement_core`, itself
+/// re-exporting `entanglement-provider`) so this file stays the executor's
+/// one interception-name vocabulary. Never a real registered tool, and not
+/// advertised as a [`entanglement_core::ToolSpec`] at all — the model calls
+/// it because the wire itself declares a `tool_search` primitive whenever a
+/// deferred tool exists, not because it saw a schema in the tools array.
+/// `discover::run_tool_search` answers it by running the same explore+
+/// describe lookup [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] do, replying with a
+/// `ContentPart::ToolSearchOutput` block instead of `describe`'s plain text.
+/// Always-on and non-maskable, like [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] — the
+/// model didn't choose it from an advertised name, so masking it out would
+/// strand the wire's own round-trip with no way to answer it.
+pub use entanglement_core::TOOL_SEARCH_CALL_TOOL as RESPONSES_TOOL_SEARCH_TOOL;
+
+/// The `invoke {name, args}` envelope a `native_first`/`invoke` client-side
+/// session advertises (ADR-0204). Core unwraps it, so a `ToolExec` carrying
+/// this name is one core refused to unwrap — never a registered tool, and
+/// deliberately not in [`TOOL_SEARCH_KERNEL`] or the runtime-owned roster,
+/// since only those two strategies advertise it.
+pub use entanglement_core::INVOKE_TOOL;
+
+/// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
+/// entirely (ADR-0196 §4): read-only catalog introspection, never a
+/// capability decision. Narrow and deliberate, like ADR-0190's original
+/// (now-retired, subsumed by ADR-0192's universal dispatch mask) `poll`
+/// exemption — adding an entry removes a profile-author control.
+pub const NON_MASKABLE_TOOLS: &[&str] = &[EXPLORE_TOOL, DESCRIBE_TOOL, RESPONSES_TOOL_SEARCH_TOOL];
+
+/// Whether `tool` is exempt from the dispatch-side mask entirely
+/// ([`NON_MASKABLE_TOOLS`]).
+pub fn is_non_maskable(tool: &str) -> bool {
+    NON_MASKABLE_TOOLS.contains(&tool)
+}
+
+/// The `ToolSearch`-mode advertised set (ADR-0196 §2): the fixed
+/// high-frequency host tools plus the runtime-owned roster plus the
+/// discovery pair. Excludes the profile-defining specs (`propose_plan`,
+/// `agent`/`agent_send`) — those are threaded separately by
+/// `cfg.profile_tool_specs` (core-side, per-profile, ADR-0192's carve-out)
+/// and reach every mode's advertised array regardless of this list.
+pub const TOOL_SEARCH_KERNEL: &[&str] = &[
+    "read",
+    "edit",
+    "write",
+    "apply_patch",
+    "bash",
+    POLL_TOOL,
+    ASK_USER_TOOL,
+    UPDATE_TASKS_TOOL,
+    LOAD_SKILL_TOOL,
+    EXPLORE_TOOL,
+    DESCRIBE_TOOL,
+];
+
 /// Capability-level permission keys (#418, ADR-0114) and the tools each fans
 /// out to when a profile's `permission:` map uses the capability name instead
 /// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
@@ -67,7 +135,21 @@ pub const LOAD_SKILL_TOOL: &str = "load_skill";
 /// MCP server's config-side `capabilities:` annotation maps to it (#426,
 /// `entanglement_runtime::mcp::capability_index`), a *data-driven* extension
 /// of this same table applied alongside it in
-/// `agents::expand_capabilities`.
+/// `agents::expand_capabilities`. A config-declared endpoint tool
+/// (`endpoint__<name>`, #560 P8) joins the *same* data-driven `call` index —
+/// unlike an MCP tool, with no per-tool config hint needed: every endpoint
+/// tool is unconditionally a network call, so `config::parse`/`main.rs`
+/// simply add `endpoint__<name>` to the index's `call` bucket for every
+/// declared endpoint alongside whatever the `mcp:` section contributed
+/// (`entanglement_core::PermissionProfile::resolve` matches a rule key
+/// against a tool name literally or via the single `*` wildcard — not an
+/// arbitrary glob — so this can't be a static `endpoint__*` table entry the
+/// way an agent tool *mask* pattern could be, ADR-0148; it has to be a
+/// concrete per-name index like MCP's). A skill-declared endpoint tool
+/// (`skill__<skill>__<name>`) is deliberately **not** in that index — it
+/// shares the `skill__` namespace with alias/rhai-backed skill tools that
+/// grade under a different name entirely (see `skills::alias_tool`), so a
+/// profile wanting to grade it under `call` names it explicitly.
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write", "apply_patch"]),
@@ -133,7 +215,12 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     UPDATE_TASKS_TOOL,
     LOAD_SKILL_TOOL,
     "read_raw",
+    "glob_json",
+    "grep_json",
     "mcp_enable",
+    EXPLORE_TOOL,
+    DESCRIBE_TOOL,
+    RESPONSES_TOOL_SEARCH_TOOL,
 ];
 
 /// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a
@@ -160,6 +247,12 @@ pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
         || entry.starts_with("mcp__")
+        // Definition-driven sources (#560 P8): a config-declared endpoint
+        // (`endpoint__<name>`) or a skill-declared tool (`skill__<skill>__
+        // <name>` — endpoint ref, rhai-backed, or alias) isn't knowable from
+        // a fixed compile-time list either, exactly like an MCP tool above.
+        || entry.starts_with("endpoint__")
+        || entry.starts_with("skill__")
         || is_capability_name(entry)
         || KNOWN_TOOL_NAMES.contains(&entry)
 }

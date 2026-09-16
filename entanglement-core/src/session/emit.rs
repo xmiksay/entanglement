@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast;
 
-use super::Session;
-use crate::protocol::{AgentState, OutEvent, SessionId};
-use entanglement_provider::{content_has_image, ContentPart, ImageSource, Usage};
+use super::{Session, TurnState};
+use crate::protocol::{AgentState, OutEvent, SessionId, ToolEnvelope, UsagePurpose};
+use entanglement_provider::{tool_reference_fallback_text, ContentPart, ImageSource, Usage};
 
 /// Atomically bump the session's monotonic `seq` and return the new value. The
 /// counter is shared (`Arc<AtomicU64>`, #157) so a runtime-authored event minted
@@ -28,6 +28,7 @@ pub(crate) fn emit_usage(
     events: &broadcast::Sender<OutEvent>,
     usage: &Usage,
     cost: Option<f64>,
+    purpose: UsagePurpose,
 ) {
     let input = usage.input_tokens.unwrap_or(0);
     let output = usage.output_tokens.unwrap_or(0);
@@ -48,6 +49,7 @@ pub(crate) fn emit_usage(
         cached_input_tokens: cached_input,
         cache_write_tokens: cache_write,
         cost_usd: cost,
+        purpose,
     });
 }
 
@@ -94,20 +96,23 @@ pub(crate) fn emit_turn_done(
     });
 }
 
+/// Display a tool call. `call` is the dispatch form; `envelope` is set when it
+/// was unwrapped from `invoke` (ADR-0204).
 pub(crate) fn emit_tool_call(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
-    request_id: &str,
-    tool: &str,
-    input: &str,
+    call: &entanglement_provider::ToolCall,
+    envelope: Option<&ToolEnvelope>,
     seq: &AtomicU64,
 ) {
     let _ = events.send(OutEvent::ToolCall {
         session: session.clone(),
         seq: next_seq(seq),
-        request_id: request_id.to_string(),
-        tool: tool.to_string(),
-        input: input.to_string(),
+        request_id: call.id.clone(),
+        tool: call.name.clone(),
+        input: call.input.clone(),
+        provider_meta: call.provider_meta.clone(),
+        envelope: envelope.cloned(),
     });
 }
 
@@ -121,6 +126,7 @@ pub(crate) fn emit_tool_exec(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     call: &entanglement_provider::ToolCall,
+    envelope: Option<&ToolEnvelope>,
     agent: &str,
     seq: &AtomicU64,
 ) {
@@ -131,7 +137,30 @@ pub(crate) fn emit_tool_exec(
         tool: call.name.clone(),
         input: call.input.clone(),
         agent: agent.to_string(),
+        envelope: envelope.cloned(),
     });
+}
+
+/// Re-offer every pending call of a parked batch — same `request_id`, fresh
+/// `seq` — with the envelope its first offer carried. Shared by the
+/// resume-mid-turn path and the re-offer timer (ADR-0061/0071).
+pub(crate) fn reoffer_pending(
+    events: &broadcast::Sender<OutEvent>,
+    session: &SessionId,
+    turn: &TurnState,
+    agent: &str,
+    seq: &AtomicU64,
+) {
+    for call in &turn.pending {
+        emit_tool_exec(
+            events,
+            session,
+            call,
+            turn.envelopes.get(&call.id),
+            agent,
+            seq,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,13 +173,19 @@ pub(crate) fn emit_tool_output(
     is_error: bool,
     duration_ms: Option<u64>,
     exit_code: Option<i32>,
+    envelope: Option<ToolEnvelope>,
     seq: &AtomicU64,
 ) {
     // Heads render text; an image result shows a short placeholder. The full
-    // multimodal `content` rides only when it carries an image, so replay can
-    // rebuild the model's view faithfully (#221) while the common text-only case
-    // stays a bare `output` string (no duplicated array in the event log).
-    let has_image = content_has_image(&content);
+    // multimodal `content` rides whenever `output` can't rebuild it exactly —
+    // an image (#221), a tool reference, several parts — so replay pushes the
+    // same result the live context holds (ADR-0202), while the common single
+    // text case stays a bare `output` string (no duplicated array in the log).
+    let rebuildable = match content.as_slice() {
+        [] => true,
+        [ContentPart::Text { text }] => !text.is_empty(),
+        _ => false,
+    };
     let output = tool_output_display(&content);
     let _ = events.send(OutEvent::ToolOutput {
         session: session.clone(),
@@ -158,10 +193,11 @@ pub(crate) fn emit_tool_output(
         request_id: request_id.to_string(),
         tool: tool.to_string(),
         output,
-        content: if has_image { content } else { Vec::new() },
+        content: if rebuildable { Vec::new() } else { content },
         is_error,
         duration_ms,
         exit_code,
+        envelope,
     });
 }
 
@@ -181,6 +217,17 @@ fn tool_output_display(content: &[ContentPart]) -> String {
             // tool executor does not — but the match is exhaustive, and showing
             // nothing is the right answer if one ever appeared.
             ContentPart::Reasoning { .. } => String::new(),
+            // `describe()`'s reply on an `anthropic_native` ToolSearch session
+            // (ADR-0196 §3) carries one of these per discovered tool, alongside
+            // its schema text — reuse the same portable rendering a foreign
+            // wire's request converter falls back to, so a head shows the same
+            // "discovered X" line regardless of which wire is live.
+            ContentPart::ToolReference { tool_name } => tool_reference_fallback_text(tool_name),
+            // `tool_search` (P7)'s reply on a `responses_native` ToolSearch
+            // session carries one of these instead — same "show it as text
+            // regardless of wire" rendering, using its own human-readable
+            // `summary` rather than synthesizing one from a bare name.
+            ContentPart::ToolSearchOutput { summary, .. } => summary.clone(),
         })
         .collect()
 }

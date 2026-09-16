@@ -6,6 +6,7 @@ use ratatui::{
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
+use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::tool_render;
@@ -195,66 +196,13 @@ pub(super) fn flush_reasoning(
     out
 }
 
-/// The primary argument shown on a tool op's collapsed header: the path for
-/// `read`/`edit`/`write`, the command line for `bash`/`call`, the pattern for
-/// `glob`, and the file filter (or, absent one, the search pattern — a local
-/// fallback) for `grep` — all via the runtime's
-/// [`permission_arg`][entanglement_runtime::permission::permission_arg] (#417),
-/// so the header shows the same primary arg an argument-scoped permission rule
-/// matches against. `None` when nothing informative is available.
-///
-/// Orchestration tools (`agent`, `ask_user`, `propose_plan`, …) fall through to
-/// [`orchestration_primary_arg`], which pulls a readable hint from their JSON
-/// input so the header isn't a bare tool name while a call is in flight.
+/// The primary argument shown on a tool op's collapsed header — the shared
+/// [`summary::primary_arg`] the `run` text head prints too (ADR-0204 §6): the
+/// permission-graded path/command/pattern for the file and exec tools, a
+/// readable hint for the orchestration and discovery tools, else a `pattern`
+/// or the first scalar argument. `None` when nothing informative is available.
 pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
-    if let Some(arg) = entanglement_runtime::permission::permission_arg(tool, input) {
-        return Some(arg);
-    }
-    let value: serde_json::Value = serde_json::from_str(input).ok()?;
-    if let Some(arg) = orchestration_primary_arg(tool, &value) {
-        return Some(arg);
-    }
-    // MCP tools (`mcp__<server>__<tool>`) carry no path/command and aren't in
-    // the orchestration table, so without this they'd render a bare namespaced
-    // name with no hint of what the call is doing. Surface the first scalar
-    // argument — the dominant shape for MCP `tools/call` inputs (e.g. a chess
-    // move string) — so the header reads like every other tool's primary arg.
-    if tool.starts_with("mcp__") {
-        if let Some(scalar) = first_scalar(&value) {
-            return Some(scalar);
-        }
-    }
-    value.get("pattern")?.as_str().map(String::from)
-}
-
-/// A readable collapsed-header hint for the orchestration tools, whose inputs
-/// carry no file path or shell command (so [`permission_arg`] ignores them). The
-/// shapes are confirmed in source (#89/#90/#120/#124/#140/#141/#606):
-/// `agent` → the agent target (+ a truncated prompt);
-/// `poll` → the `handle`; `ask_user` → a truncated `question`;
-/// `propose_plan` → `"plan"`; `update_tasks` → `"snapshot"`; `load_skill` → the
-/// `skill_name`. Returns `None` for every other tool or on malformed input, so
-/// the header falls back to the bare tool name.
-fn orchestration_primary_arg(tool: &str, value: &serde_json::Value) -> Option<String> {
-    match tool {
-        "agent" => {
-            let agent = value.get("agent")?.as_str()?;
-            if let Some(prompt) = value.get("prompt").and_then(|p| p.as_str()) {
-                Some(format!("{agent}  {}", truncate_to_width(prompt, 40)))
-            } else {
-                Some(agent.to_string())
-            }
-        }
-        "poll" => value.get("handle")?.as_str().map(String::from),
-        "ask_user" => value
-            .get("question")?
-            .as_str()
-            .map(|q| truncate_to_width(q, 40)),
-        "propose_plan" => Some("plan".to_string()),
-        "update_tasks" => Some("snapshot".to_string()),
-        "load_skill" => value.get("skill_name")?.as_str().map(String::from),
-        _ => None,
-    }
+    summary::primary_arg(tool, input)
 }
 
 /// The shared collapsed-header spans for one tool op: `{arrow} {tool}
@@ -270,17 +218,22 @@ pub(super) fn tool_header_spans(
     available_width: u16,
     status_suffix: Option<(&str, Color)>,
 ) -> Vec<Span<'static>> {
+    // A frame still carrying an `invoke` envelope (a streamed call before its
+    // `ToolCall` lands) is named by its inner tool, like core's unwrapped
+    // events (ADR-0204); MCP/skill/endpoint names read `owner › tool`.
+    let (tool, input) = summary::unwrap_invoke(tool, input);
+    let name = summary::display_name(&tool);
     let mut header = vec![
         Span::styled(format!("{arrow} "), Style::default().fg(fg)),
-        Span::styled(tool.to_string(), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(name.to_string(), Style::default().fg(Color::Cyan).bold()),
     ];
-    if let Some(arg) = tool_primary_arg(tool, input) {
+    if let Some(arg) = tool_primary_arg(&tool, &input) {
         // Budget the arg so the header stays on one line: strip the bar (2),
         // arrow (2), tool name, the two-space gaps, and the trailing status.
         let status_w = status_suffix
             .map(|(text, _)| UnicodeWidthStr::width(text))
             .unwrap_or(0);
-        let fixed = 2 + 2 + UnicodeWidthStr::width(tool) + 2 + status_w;
+        let fixed = 2 + 2 + UnicodeWidthStr::width(name.as_ref()) + 2 + status_w;
         let budget = (available_width as usize).saturating_sub(fixed);
         header.push(Span::raw("  "));
         header.push(Span::styled(
@@ -333,12 +286,13 @@ pub(super) fn flush_tool_call(
     if expanded {
         // The expanded body means something per tool (#341): `read` → the file
         // body, `edit` → a `+`/`-` diff, `write` → the new content, `bash`/`call`
-        // → the command output, everything else → pretty-printed input + output.
-        // The primary arg already lives in the header, so it is never re-dumped.
+        // → the command output, everything else → readable `key: value` args +
+        // output, a failed call's output marked as an error (ADR-0204 §6).
         let rendered = tool_render::render_expansion(
             Some(tool),
             input,
-            output.unwrap_or(""),
+            output,
+            is_error,
             theme,
             available_width,
             md,
@@ -372,22 +326,6 @@ fn truncate_to_width(s: &str, max: usize) -> String {
     }
     out.push('…');
     out
-}
-
-/// The first scalar value in a JSON object, rendered as a string — the
-/// readable hint for an MCP `tools/call` whose input shape we don't know.
-/// Skips nested objects/arrays so the hint stays one line.
-fn first_scalar(value: &serde_json::Value) -> Option<String> {
-    let obj = value.as_object()?;
-    for (_k, v) in obj {
-        match v {
-            serde_json::Value::String(s) => return Some(truncate_to_width(s, 60)),
-            serde_json::Value::Number(n) => return Some(n.to_string()),
-            serde_json::Value::Bool(b) => return Some(b.to_string()),
-            _ => continue,
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -479,8 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tool_with_no_arg_yields_none() {
-        assert_eq!(tool_primary_arg("mystery", r#"{"x":1}"#), None);
+    fn unknown_tool_surfaces_its_first_scalar() {
+        assert_eq!(
+            tool_primary_arg("mystery", r#"{"x":1}"#).as_deref(),
+            Some("1")
+        );
+        assert_eq!(tool_primary_arg("mystery", r#"{"x":{}}"#), None);
     }
 
     #[test]

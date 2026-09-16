@@ -165,6 +165,7 @@ fn req<'a>() -> LlmRequest<'a> {
         tools: &[],
         generation: None,
         cache_key: None,
+        retry: None,
     }
 }
 
@@ -278,7 +279,6 @@ async fn anthropic_wire_replaces_x_api_key_with_the_bearer() {
         None,
         None,
         Default::default(),
-        true,
         test_http_client(),
     )
     .with_auth(source.clone());
@@ -318,7 +318,6 @@ async fn anthropic_wire_retries_a_401_once_with_a_forced_refresh() {
         None,
         None,
         Default::default(),
-        true,
         test_http_client(),
     )
     .with_auth(source.clone());

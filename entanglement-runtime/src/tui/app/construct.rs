@@ -158,6 +158,8 @@ impl App {
             session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog::new(),
             tool_roster,
             tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),
+            advertising: None,
+            tools_view: crate::tui::tools_view::ToolsView::new(),
             model_info: ModelInfo {
                 id: "dummy".to_string(),
                 display_name: "dummy".to_string(),
@@ -189,16 +191,17 @@ impl App {
             modal_click: ModalClickAreas::default(),
             input_area: Rect::default(),
             pending_effect: None,
-            pending_compact_fork: None,
+            compaction_seeds: HashMap::new(),
             inspect: Default::default(),
+            approval_pager: Default::default(),
             root: PathBuf::from("."),
-            live_bash: crate::bash_live::BashRegistered::new(false),
             mention: MentionPopup::new(FileIndex::default()),
             slash: crate::tui::slash_popup::SlashPopup::new(),
             quit_pending: false,
             quit_pending_at: None,
             toast: None,
             pending_stop_confirm: None,
+            settings: super::settings::SettingsState::new(catalog),
         }
     }
 }

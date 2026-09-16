@@ -528,6 +528,11 @@ pub async fn collect_child_answer(
     events: &mut Receiver<OutEvent>,
     child: &SessionId,
 ) -> String {
+    // Rebound when the child compacts (ADR-0205): its context overflowed, so
+    // the engine forked it into a successor and retired it. The answer this
+    // parent is parked on now comes from the successor, and the retired id's
+    // `SessionEnded` must not be read as "the child finished".
+    let mut child = child.clone();
     let mut text = String::new();
     // This turn's error, if any — consumed (`.take()`) whenever it gates a
     // "keep waiting" decision, so a later empty-and-error-free turn isn't
@@ -540,7 +545,17 @@ pub async fn collect_child_answer(
     let mut last_error: Option<String> = None;
     loop {
         match events.recv().await {
-            Ok(ev) if ev.session() != Some(child) => {}
+            // Checked before the session filter below — the announcement is
+            // the successor's, not the retired child's.
+            Ok(OutEvent::SessionStarted {
+                session: successor,
+                predecessor: Some(source),
+                ..
+            }) if source == child => {
+                tracing::debug!(%source, %successor, "sub-agent watch follows the compaction successor");
+                child = successor;
+            }
+            Ok(ev) if ev.session() != Some(&child) => {}
             Ok(OutEvent::TextDelta { text: delta, .. }) => text.push_str(&delta),
             // An ambiguous-stop retry (ADR-0118) supersedes the truncated round:
             // drop the partial text so the final answer is the recovered round's

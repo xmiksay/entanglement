@@ -26,7 +26,9 @@
 
 use std::collections::HashSet;
 
-use entanglement_core::{Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, SessionId};
+use entanglement_core::{
+    Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, RetryConfig, SessionId,
+};
 use futures::StreamExt;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -137,15 +139,23 @@ pub fn spawn_action_narrator(
 
 /// Ask the aux `narrate` LLM for a short action phrase describing `tool`
 /// called with `input`. Returns `Ok(None)` when the model returned no usable
-/// text (empty / only whitespace after trimming); `Err` for a stream/transport
-/// failure. The input is capped at [`NARRATE_INPUT_CHAR_CAP`] and the output
-/// at [`NARRATE_OUTPUT_CHAR_CAP`].
+/// text (empty / only whitespace after trimming) **or** the purpose is
+/// currently cooled down after a recent failure (#560 follow-up — give up
+/// silently either way, without touching the endpoint in the cooldown case);
+/// `Err` for a stream/transport failure on an attempted call. The input is
+/// capped at [`NARRATE_INPUT_CHAR_CAP`] and the output at
+/// [`NARRATE_OUTPUT_CHAR_CAP`].
 #[cfg(feature = "provider")]
 async fn generate_action(
     registry: &AuxLlmRegistry,
     tool: &str,
     input: &str,
 ) -> anyhow::Result<Option<String>> {
+    let Some((mut llm, provider, model)) = registry.try_resolve(Purpose::Narrate) else {
+        // Cooled down after a recent failure: skip without calling anything
+        // (#560 follow-up) — this call simply doesn't update the action.
+        return Ok(None);
+    };
     let capped_input: String = input.chars().take(NARRATE_INPUT_CHAR_CAP).collect();
     let prompt = format!("{tool}({capped_input})");
     let messages = [Message::user(&prompt)];
@@ -157,17 +167,32 @@ async fn generate_action(
         generation: None,
         // One-shot aux request: a distinct prefix, so no session cache key.
         cache_key: None,
+        // Aux fail-fast (#560 follow-up): narrate is display-only and must
+        // never retry-storm a dead endpoint — one quick retry, then give up
+        // for this call, whether the purpose is pinned or fell back to the
+        // primary model.
+        retry: Some(RetryConfig::minimal()),
     };
-    let mut llm = registry.resolve(Purpose::Narrate);
-    let mut stream = llm.stream(req).await?;
+    let stream_result = llm.stream(req).await;
+    let mut stream = match stream_result {
+        Ok(s) => s,
+        Err(e) => {
+            registry.note_failure(Purpose::Narrate, &provider, &model);
+            return Err(e);
+        }
+    };
     let mut text = String::new();
     while let Some(ev) = stream.next().await {
         match ev {
             Ok(LlmEvent::Text(delta)) => text.push_str(&delta),
             Ok(_) => {}
-            Err(e) => return Err(e),
+            Err(e) => {
+                registry.note_failure(Purpose::Narrate, &provider, &model);
+                return Err(e);
+            }
         }
     }
+    registry.note_success(Purpose::Narrate, &provider, &model);
     let action = clean_action(&text);
     Ok((!action.is_empty()).then_some(action))
 }

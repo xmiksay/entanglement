@@ -277,3 +277,36 @@ fn integrity_gap_none_for_clean_log() {
     )];
     assert_eq!(integrity_gap(&records), None);
 }
+
+/// A prompt sent while a batch is parked lands just before the executor's
+/// `ToolResult`, both ahead of the next event: the result must not displace
+/// the prompt, and a second queued prompt pairs with the event after.
+#[test]
+fn pair_records_keeps_prompts_queued_behind_other_inbound() {
+    let sid = SessionId::new("s");
+    let inbound = |msg: InMsg| LogRecord::new(sid.clone(), LogPayload::In(msg));
+    let done = |seq: u64| {
+        LogRecord::new(
+            sid.clone(),
+            LogPayload::Out(OutEvent::Done {
+                session: sid.clone(),
+                seq,
+            }),
+        )
+    };
+    let records = vec![
+        inbound(InMsg::prompt(sid.clone(), "steer")),
+        inbound(InMsg::tool_result(sid.clone(), "c1", "out")),
+        inbound(InMsg::Stop {
+            session: sid.clone(),
+        }),
+        done(1),
+        done(2),
+        done(3),
+    ];
+    let paired = pair_records(&records);
+    assert!(matches!(&paired[0].0, Some(InMsg::Prompt { content, .. })
+        if entanglement_core::content_text(content) == "steer"));
+    assert!(matches!(paired[1].0, Some(InMsg::Stop { .. })));
+    assert!(paired[2].0.is_none());
+}

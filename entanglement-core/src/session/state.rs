@@ -6,15 +6,13 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use super::TurnState;
 use crate::context::Context;
-use crate::protocol::{AgentProfile, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{AgentProfile, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
-use entanglement_provider::{
-    ContentPart, GenerationParams, Llm, Message, ResolvedModel, ToolCall, UserId,
-};
+use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
 /// Mutable per-session loop + turn state (#61). Holds the conversation
 /// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
@@ -137,6 +135,15 @@ pub struct Session {
     /// Current **action** ("what the agent is doing now"), the mid-turn-mutable
     /// half of the display metadata. Same lifecycle as [`name`][Self::name].
     pub action: Option<String>,
+    /// The engine's own inbox, for the one thing a session task cannot do
+    /// alone: mint another session. A compaction forks a **successor**
+    /// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md))
+    /// by sending `Spawn` + `CloseSession` back through the supervisor, the
+    /// same two frames the TUI used to send head-side for `/compact` — which
+    /// is why the fork now works for *every* head, not just an interactive
+    /// one. `None` for a `Session` built outside a running engine (a direct
+    /// `new_empty`/`replay` in a test); such a session simply cannot fork.
+    pub(crate) engine: Option<mpsc::Sender<InMsg>>,
     /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
     /// ADR-0144). Deliberately **not** persisted/replayed — like `Stop`'s
     /// cancel, a pause is ephemeral engine-loop state, not committed
@@ -184,33 +191,9 @@ impl Session {
             turn: None,
             name: None,
             action: None,
+            engine: None,
             paused: false,
         }
-    }
-
-    /// Flush an accumulated partial assistant round — text, persisted search
-    /// blocks (#481), tool calls — into `self.ctx` as one message, mirroring
-    /// the live commit in `session/round.rs`. A no-op when nothing is pending.
-    /// Clears all three accumulators on flush. Lives here (not `replay.rs`,
-    /// its only caller) to keep that file under the 400-line cap.
-    pub(super) fn flush_pending_assistant(
-        &mut self,
-        pending_text: &mut String,
-        pending_tools: &mut Vec<ToolCall>,
-        pending_search: &mut Vec<ContentPart>,
-    ) {
-        if pending_text.is_empty() && pending_tools.is_empty() && pending_search.is_empty() {
-            return;
-        }
-        let mut content: Vec<ContentPart> = Vec::new();
-        if !pending_text.is_empty() {
-            content.push(ContentPart::text(pending_text.clone()));
-        }
-        content.append(pending_search);
-        self.ctx
-            .push(Message::assistant_content(content, pending_tools.clone()));
-        pending_text.clear();
-        pending_tools.clear();
     }
 
     /// Apply a re-resolved model to this session and announce it (#323, ADR-0081

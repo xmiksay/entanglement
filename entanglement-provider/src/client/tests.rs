@@ -570,6 +570,56 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
 }
 
 #[tokio::test]
+async fn minimal_retry_config_gives_up_fast_against_a_dead_endpoint() {
+    // #560 aux fail-fast follow-up: a caller passing `RetryConfig::minimal()`
+    // as `execute_with_retry`'s per-call `retry` override must fail a
+    // connect-level failure (connection refused — the "aux-models.yml pins a
+    // dead ollama endpoint" incident) in at most 2 attempts (one retry), not
+    // the 5-attempt default ladder — and well within a couple seconds, not
+    // the ~6s-plus the default backoff schedule would take.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    drop(listener); // nothing listens now — every connect attempt is refused
+
+    // The pool's own config stays the ordinary default; `minimal()` rides in
+    // as the per-call override, exactly like the aux call sites do.
+    let http = HttpClient::with_config(RetryConfig {
+        rpm: 100_000, // effectively no pacing gap between attempts
+        ..RetryConfig::default()
+    })
+    .unwrap();
+
+    let url = format!("http://{addr}/");
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        http.execute_with_retry(
+            &url,
+            None,
+            None,
+            None,
+            "test-model",
+            None,
+            Some(RetryConfig::minimal()),
+            || http.client().get(&url).send(),
+        ),
+    )
+    .await
+    .expect("must not hang against a refused connection");
+
+    match result {
+        Err(RetryError::Exhausted(attempts, _)) => assert_eq!(attempts, 2),
+        Err(other) => panic!("expected Exhausted(2, _), got {other}"),
+        Ok(_) => panic!("expected an error against a dead endpoint"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "minimal retry must fail fast, took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn header_timeout_does_not_apply_once_headers_have_arrived() {
     // The header-phase timeout must bound only the wait *for* headers. Once a
     // `Response` exists, liveness is `spawn_byte_stream`'s own per-chunk

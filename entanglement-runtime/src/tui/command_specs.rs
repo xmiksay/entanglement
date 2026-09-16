@@ -41,10 +41,10 @@ pub enum SetKey {
     MaxTokens,
 }
 
-/// `/set <key> <value>` (#376): one partial generation-override. The `value` is
-/// kept as a raw string here — the conversion to the field's typed value (f32 /
-/// u32 / `ReasoningEffort`) happens in [`super::commands::parse_set_args`], which
-/// preserves the original friendly per-key error messages.
+/// Set one generation parameter for this session (bare `/set` opens the tabbed
+/// settings dialog instead).
+// The `value` stays a raw string: `commands::parse_set_args` converts it to the
+// field's typed value, keeping the friendly per-key error messages (#376).
 #[derive(Parser, Debug)]
 #[command(name = "/set")]
 pub struct SetArgs {

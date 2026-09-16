@@ -13,10 +13,11 @@ streaming LLM queries.
 
 | Provider | Wire | Key env | Model env (default) |
 | --- | --- | --- | --- |
-| z.ai GLM (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.2`) |
+| z.ai GLM Coding Plan (`zai`, primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.3`) |
+| z.ai GLM pay-as-you-go (`zai_paas`) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_PAAS_MODEL` (`glm-5.3`) |
 | OpenAI | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) |
 | Ollama | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) |
-| Anthropic | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) |
+| Anthropic | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) |
 
 z.ai / OpenAI / Ollama share one `OpenAiLlm` client; Anthropic has its own
 client (distinct content-block format). No key configured → `EchoLlm`, a
@@ -31,8 +32,9 @@ deterministic offline backend for tests and demos.
   with an optional user override (`${config_dir}/entanglement/providers.yml`,
   env override `ENTANGLEMENT_PROVIDERS_FILE`). A `wire: openai | anthropic` tag
   lets you add any OpenAI-compatible endpoint (proxy, vLLM, new vendor) with
-  zero code change. Model entries carry capability flags (thinking,
-  temperature, max output tokens) and pricing.
+  zero code change. Model entries carry capability flags (thinking shape,
+  accepted reasoning-effort tiers, temperature, max output tokens) and
+  pricing.
 - **Per-endpoint resilience** — connection pool, retry with backoff, and
   rate-limit handling (429 / `Retry-After` / RPM), keyed by base URL +
   API-key hash.

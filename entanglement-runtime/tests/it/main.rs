@@ -15,20 +15,30 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+mod advertising_pin;
 mod agent_definitions;
 mod agent_generation;
 mod agent_models;
 mod agent_send;
+mod alias_grading;
 mod apply_patch;
+mod arg_validate;
 mod ask_user;
 mod aux_models;
 mod compact_fork;
+#[cfg(feature = "serve")]
+mod endpoint;
 mod hooks;
 mod host_tools;
+mod invoke_envelope;
 mod list_operations;
 mod load_skill;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
+mod mask_request;
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
+mod mcp_lazy_reenable;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
@@ -37,6 +47,7 @@ mod mcp_oauth_refresh;
 mod mcp_scoped;
 #[cfg(feature = "provider")]
 mod narrate;
+mod parked_prompt_persistence;
 mod permission_dispatch;
 mod plan_tasks;
 mod plan_watch;
@@ -50,7 +61,7 @@ mod replay_from;
 mod serve;
 #[cfg(feature = "provider")]
 mod session_title;
-mod skill_mask;
+mod skill_posture;
 mod spawn_prompt_persistence;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;

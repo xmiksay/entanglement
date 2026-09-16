@@ -33,11 +33,21 @@ use serde_yaml::Value;
 // User-file resolution + the pre-deserialization deep merge, split out for the
 // 400-line file cap. The merge semantics themselves stay documented above,
 // where a reader of `Catalog` needs them.
+mod discovery;
+mod effort;
 mod merge;
+mod pricing;
 mod thinking;
+mod tool_advertising;
 
+pub use discovery::Discovery;
+pub use effort::{clamp_within, EffortTiers, ResolvedEffort};
 use merge::{merge_value, providers_file_path};
-pub use thinking::{ThinkingFormat, ThinkingSpec, ThinkingStyle};
+pub use pricing::ModelPricing;
+pub use thinking::{
+    AnthropicModelSpec, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle,
+};
+pub use tool_advertising::ToolAdvertising;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -103,6 +113,17 @@ pub struct ProviderEntry {
     /// other wires have no equivalent field and ignore it.
     #[serde(default)]
     pub prompt_cache_key: bool,
+    /// How a `tool_search`/`client_side` session reaches a discovered tool
+    /// (ADR-0204, see [`Discovery`]); a model's own `discovery` wins. `None`
+    /// here and on the model resolves to `append` in the runtime.
+    #[serde(default)]
+    pub discovery: Option<Discovery>,
+    /// How this endpoint is told to think, OpenAI-compat wire only (see
+    /// [`ThinkingControl`]). `None` — the default, and every non-z.ai entry —
+    /// sends no `thinking` object at all: OpenAI proper 400s on the unknown
+    /// field.
+    #[serde(default)]
+    pub thinking_control: Option<ThinkingControl>,
 }
 
 // Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
@@ -122,6 +143,14 @@ pub enum Wire {
     /// OpenAI-compat surface — it round-trips `thoughtSignature` the compat
     /// endpoint drops.
     Gemini,
+    /// OpenAI's native Responses API `/responses` wire (ADR-0196 §3, P7):
+    /// flat typed input/output items instead of Chat Completions'
+    /// role+content messages, and the one wire with a native client-executed
+    /// `tool_search` primitive. Opt-in per catalog entry — `openai` stays on
+    /// Chat Completions; a user (or a future embedded default) picks this
+    /// wire explicitly for a model that supports it (`gpt-5.4`+).
+    #[serde(rename = "openai_responses")]
+    OpenaiResponses,
 }
 
 /// One model plus its capability + pricing metadata.
@@ -174,6 +203,18 @@ pub struct ModelEntry {
     /// changes what the next request carries.
     #[serde(default)]
     pub replay_thinking: Option<bool>,
+    /// Per-model tool-advertising preference (ADR-0196): `full` |
+    /// `tool_search`. Same Option-shaped catalog-preference pattern as
+    /// `thinking_style`/`thinking_format` — absent means "no catalog
+    /// preference", not `tool_search`; the runtime's
+    /// `tool_advertising::resolve_advertising` layers the install-wide
+    /// `config.yml`/env override on top of this, falling back to
+    /// `tool_search` only if nothing decides. See [`ToolAdvertising`].
+    #[serde(default)]
+    pub tool_advertising: Option<ToolAdvertising>,
+    /// Per-model override of the provider's [`Discovery`] strategy (ADR-0204).
+    #[serde(default)]
+    pub discovery: Option<Discovery>,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]
@@ -184,6 +225,18 @@ pub struct ModelEntry {
     /// `thinking_budget_tokens` starts unset.
     #[serde(default)]
     pub default_reasoning_effort: Option<crate::ReasoningEffort>,
+    /// The effort tiers this model accepts (see [`EffortTiers`]): unset ⇒
+    /// any tier passes through; a list ⇒ clamp to the nearest listed tier;
+    /// the empty list ⇒ never send an effort field. Applied by every wire
+    /// that names a tier (`reasoning_effort`, Responses `reasoning.effort`,
+    /// Anthropic adaptive `output_config.effort`).
+    #[serde(default)]
+    pub effort_tiers: Option<EffortTiers>,
+    /// The model cannot run with thinking off (GLM-5.3, Claude Fable): with
+    /// no effort resolved the wire still enables thinking at the lowest
+    /// listed tier instead of sending a `disabled` shape the API rejects.
+    #[serde(default)]
+    pub thinking_required: bool,
     /// Anthropic web-search server-tool type string to request for this model
     /// (#481, follow-up to #305/ADR-0075's hardcoded `web_search_20250305`) —
     /// e.g. `"web_search_20260209"` for a model that requires the newer tool
@@ -202,40 +255,6 @@ pub struct ModelEntry {
     pub concurrency: Option<usize>,
     #[serde(default)]
     pub pricing: Option<ModelPricing>,
-}
-
-/// USD per million tokens. Every field is optional; providers without a given
-/// billing dimension (e.g. no separate cache-write charge) omit it.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelPricing {
-    #[serde(default)]
-    pub input: Option<f64>,
-    #[serde(default)]
-    pub output: Option<f64>,
-    #[serde(default)]
-    pub cached_input: Option<f64>,
-    #[serde(default)]
-    pub cache_write: Option<f64>,
-}
-
-impl ModelPricing {
-    /// USD cost for a normalized [`Usage`] tally (#192). Each token dimension is
-    /// multiplied by its per-million rate; a rate the provider doesn't bill (an
-    /// unset field) contributes nothing. Because [`Usage::input_tokens`] is the
-    /// *uncached* input, the cached/cache-write dimensions never double-count.
-    ///
-    /// [`Usage`]: crate::Usage
-    /// [`Usage::input_tokens`]: crate::Usage::input_tokens
-    pub fn cost_usd(&self, usage: &crate::Usage) -> f64 {
-        let bill = |tokens: Option<u64>, rate: Option<f64>| {
-            rate.map_or(0.0, |r| tokens.unwrap_or(0) as f64 * r / 1_000_000.0)
-        };
-        bill(usage.input_tokens, self.input)
-            + bill(usage.output_tokens, self.output)
-            + bill(usage.cached_input_tokens, self.cached_input)
-            + bill(usage.cache_write_tokens, self.cache_write)
-    }
 }
 
 fn default_true() -> bool {
@@ -304,7 +323,7 @@ impl Catalog {
             .with_context(|| format!("parsing provider catalog {}", path.display()))?;
         let base_doc: Value = serde_yaml::from_str(DEFAULTS_YML)
             .expect("embedded defaults.yml is valid — guarded by test");
-        let merged = merge_value(base_doc, user_doc);
+        let merged = merge::strip_retired_keys(merge_value(base_doc, user_doc));
         serde_yaml::from_value(merged)
             .with_context(|| format!("validating merged provider catalog with {}", path.display()))
     }
@@ -413,12 +432,13 @@ mod tests {
         assert!(c.provider("anthropic").is_some());
         // z.ai is first — the auto-detect priority the head relies on.
         assert_eq!(c.providers[0].name, "zai");
-        // The full z.ai text palette is present, glm-5.2 leading (#303).
-        const ZAI_MODELS: [&str; 14] = [
+        // The full z.ai text palette is present, glm-5.3 leading (#303).
+        const ZAI_MODELS: [&str; 15] = [
+            "glm-5.3",
+            "glm-5.3-flash",
             "glm-5.2",
             "glm-5.1",
             "glm-5",
-            "glm-5-turbo",
             "glm-4.7",
             "glm-4.7-flashx",
             "glm-4.7-flash",
@@ -432,13 +452,17 @@ mod tests {
         ];
         let zai = c.provider("zai").unwrap();
         assert_eq!(zai.models.len(), ZAI_MODELS.len());
-        assert_eq!(zai.models.first().unwrap().id, "glm-5.2");
+        assert_eq!(zai.models.first().unwrap().id, "glm-5.3");
         for id in ZAI_MODELS {
             assert!(
                 c.model("zai", id).is_some(),
                 "zai model {id} missing from the embedded catalog"
             );
         }
+        // The retired ids are gone (glm-5-turbo left the pricing page;
+        // claude-3-5-sonnet-20241022 was retired 2025-10-28).
+        assert!(c.model("zai", "glm-5-turbo").is_none());
+        assert!(c.model("anthropic", "claude-3-5-sonnet-20241022").is_none());
         // Every provider has a default model that actually exists in its list.
         for p in &c.providers {
             assert!(
@@ -461,6 +485,32 @@ mod tests {
         let mut deduped = keys.clone();
         deduped.dedup();
         assert_eq!(deduped.len(), keys.len(), "no duplicate key_env: {keys:?}");
+    }
+
+    #[test]
+    fn openai_responses_wire_parses_and_is_opt_in_not_a_default_flip() {
+        // ADR-0196 §3, P7: a distinct catalog entry on the new wire — `openai`
+        // itself stays on Chat Completions, and (since auto-detect walks
+        // `providers` in order) sits *before* `openai_responses` in the list,
+        // so an OPENAI_API_KEY-only environment still auto-detects to plain
+        // `openai`, never the Responses surface.
+        let c = Catalog::builtin();
+        let openai_idx = c.providers.iter().position(|p| p.name == "openai").unwrap();
+        let responses_idx = c
+            .providers
+            .iter()
+            .position(|p| p.name == "openai_responses")
+            .unwrap();
+        assert!(openai_idx < responses_idx);
+        let entry = c.provider("openai_responses").unwrap();
+        assert_eq!(entry.wire, Wire::OpenaiResponses);
+        assert_eq!(entry.key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(entry.default_model, "gpt-5.4");
+        assert!(c.model("openai_responses", "gpt-5.4").is_some());
+        // The wire's YAML/serde spelling is the underscore form, not
+        // `#[serde(rename_all = "lowercase")]`'s default `openairesponses`.
+        let parsed: Wire = serde_yaml::from_str("openai_responses").unwrap();
+        assert_eq!(parsed, Wire::OpenaiResponses);
     }
 
     #[test]
@@ -571,7 +621,7 @@ mod tests {
         );
         // Appended model on an existing provider (defaults preserved before it).
         let zai = c.provider("zai").unwrap();
-        assert_eq!(zai.models.first().unwrap().id, "glm-5.2");
+        assert_eq!(zai.models.first().unwrap().id, "glm-5.3");
         assert!(zai.models.iter().any(|m| m.id == "glm-5-flash"));
         // New user provider appended after the defaults.
         assert_eq!(c.providers.last().unwrap().name, "myproxy");
@@ -663,7 +713,66 @@ mod tests {
              \x20   prompt_cache_key: true\n",
         );
         assert!(c.provider("zai").unwrap().prompt_cache_key);
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
+    }
+
+    #[test]
+    fn discovery_defaults_follow_adr_0204() {
+        let c = Catalog::builtin();
+        let of = |name: &str| c.provider(name).unwrap().discovery;
+        assert_eq!(of("zai"), Some(Discovery::NativeFirst));
+        assert_eq!(of("zai_paas"), Some(Discovery::NativeFirst));
+        assert_eq!(of("gemini"), Some(Discovery::Invoke));
+        assert_eq!(of("openai"), Some(Discovery::Invoke));
+        assert_eq!(of("ollama"), Some(Discovery::Append));
+        // Native encodings have their own deferral primitive and ignore it.
+        assert_eq!(of("anthropic"), None);
+        assert_eq!(of("openai_responses"), None);
+        for p in &c.providers {
+            for m in &p.models {
+                assert_eq!(m.discovery, None, "{}.{} overrides nothing", p.name, m.id);
+            }
+        }
+    }
+
+    #[test]
+    fn discovery_merges_per_provider_and_per_model() {
+        let c = merge_str(
+            "providers:\n\
+             \x20 - name: ollama\n\
+             \x20   discovery: invoke\n\
+             \x20   models:\n\
+             \x20     - id: mistral\n\
+             \x20       discovery: native_first\n",
+        );
+        assert_eq!(
+            c.provider("ollama").unwrap().discovery,
+            Some(Discovery::Invoke)
+        );
+        assert_eq!(
+            c.model("ollama", "mistral").unwrap().discovery,
+            Some(Discovery::NativeFirst)
+        );
+        // Sibling fields and models are untouched by the merge.
+        assert_eq!(c.model("ollama", "llama3.1").unwrap().discovery, None);
+        assert_eq!(c.provider("ollama").unwrap().default_model, "llama3.1");
+    }
+
+    #[test]
+    fn retired_advertise_discovered_key_is_ignored_not_rejected() {
+        // ADR-0204 removed ADR-0200's bool; a user file still carrying it
+        // must keep loading despite `deny_unknown_fields`.
+        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+        let over: Value =
+            serde_yaml::from_str("providers:\n  - name: zai\n    advertise_discovered: false\n")
+                .unwrap();
+        let merged = merge_value(base, over);
+        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
+        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
+        assert_eq!(
+            c.provider("zai").unwrap().discovery,
+            Some(Discovery::NativeFirst)
+        );
     }
 
     #[test]
@@ -736,10 +845,13 @@ mod tests {
             "providers:\n\
              \x20 - name: anthropic\n\
              \x20   models:\n\
-             \x20     - id: claude-sonnet-4-5\n\
+             \x20     - id: claude-unlisted\n\
              \x20       supports_thinking: true\n",
         );
-        let entry = c.model("anthropic", "claude-sonnet-4-5").unwrap();
+        // A user-added model: every embedded Anthropic entry now sets
+        // `replay_thinking: true` explicitly (ADR-0202), so "unset" needs one
+        // the defaults don't list.
+        let entry = c.model("anthropic", "claude-unlisted").unwrap();
         // Unset → the wire decides.
         assert!(entry.replays_thinking(true));
         assert!(!entry.replays_thinking(false));
@@ -796,7 +908,7 @@ mod tests {
         // A user file can set a per-provider rpm without touching sibling fields.
         let c = merge_str("providers:\n  - name: zai\n    rpm: 120\n");
         assert_eq!(c.provider("zai").unwrap().rpm, Some(120));
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
     }
 
     #[test]
@@ -811,7 +923,7 @@ mod tests {
         // A user file can set a per-provider concurrency without touching siblings.
         let c = merge_str("providers:\n  - name: zai\n    concurrency: 8\n");
         assert_eq!(c.provider("zai").unwrap().concurrency, Some(8));
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.2");
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
     }
 
     #[test]
@@ -877,7 +989,8 @@ mod tests {
             assert!(!s.capabilities.is_empty());
             assert!(s.capabilities.values().all(|c| c == "read"));
         }
-        // No other embedded provider bundles servers (yet).
+        // No other embedded provider bundles servers (yet) — not even the
+        // `zai_paas` twin, whose copy would shadow these by name.
         for p in &c.providers {
             if p.name != "zai" {
                 assert!(p.mcp_servers.is_empty(), "{}: unexpected bundle", p.name);
@@ -967,5 +1080,155 @@ mod tests {
             c.model("zai", "glm-4.7-flash").unwrap().concurrency,
             Some(1)
         );
+    }
+
+    #[test]
+    fn zai_paas_shares_key_and_models_with_the_coding_plan_entry() {
+        // Two endpoints, one key env: the Coding Plan entry stays first (the
+        // auto-detect winner); a pay-as-you-go key selects `zai_paas`
+        // explicitly. The model list and bundled MCP servers are YAML
+        // anchors/aliases — the alias-expanded doc must survive the
+        // pre-deserialization merge with an identical model order.
+        let c = Catalog::builtin();
+        let zai = c.provider("zai").unwrap();
+        let paas = c.provider("zai_paas").unwrap();
+        assert_eq!(
+            zai.base_url.as_deref(),
+            Some("https://api.z.ai/api/coding/paas/v4")
+        );
+        assert_eq!(
+            paas.base_url.as_deref(),
+            Some("https://api.z.ai/api/paas/v4")
+        );
+        assert_eq!(paas.key_env, zai.key_env);
+        assert_eq!(paas.default_model, "glm-5.3");
+        assert_eq!(paas.thinking_control, Some(ThinkingControl::Zai));
+        assert_eq!(zai.thinking_control, Some(ThinkingControl::Zai));
+        let ids = |p: &ProviderEntry| p.models.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(zai), ids(paas));
+        // The MCP bundle is NOT shared: the runtime keys bundles by server
+        // name across every entry, so a twin copy would overwrite `zai`'s
+        // (last entry wins); the shared key already makes them available.
+        assert_eq!(zai.mcp_servers.len(), 3);
+        assert!(paas.mcp_servers.is_empty());
+        let zai_idx = c.providers.iter().position(|p| p.name == "zai").unwrap();
+        let paas_idx = c
+            .providers
+            .iter()
+            .position(|p| p.name == "zai_paas")
+            .unwrap();
+        assert!(zai_idx < paas_idx);
+        // A user override on one entry must not leak into the alias twin.
+        let merged = merge_str(
+            "providers:\n  - name: zai_paas\n    models:\n      - id: glm-5.3\n        pricing: { input: 9.0 }\n",
+        );
+        assert_eq!(
+            merged
+                .model("zai_paas", "glm-5.3")
+                .unwrap()
+                .pricing
+                .unwrap()
+                .input,
+            Some(9.0)
+        );
+        assert_eq!(
+            merged
+                .model("zai", "glm-5.3")
+                .unwrap()
+                .pricing
+                .unwrap()
+                .input,
+            Some(1.4)
+        );
+        assert_eq!(merged.provider("zai").unwrap().models.len(), 15);
+    }
+
+    #[test]
+    fn zai_effort_tiers_and_required_thinking_ship_in_the_defaults() {
+        use crate::ReasoningEffort::*;
+        let c = Catalog::builtin();
+        let glm53 = c.model("zai", "glm-5.3").unwrap();
+        assert!(glm53.thinking_required);
+        assert_eq!(glm53.default_reasoning_effort, Some(High));
+        assert_eq!(
+            glm53.effort_tiers.map(Vec::from),
+            Some(vec![Low, High, Max])
+        );
+        // 5.2 takes every tier; the 4.x family enables thinking with no
+        // effort field at all (the empty list).
+        assert_eq!(
+            c.model("zai", "glm-5.2")
+                .unwrap()
+                .effort_tiers
+                .map(Vec::from),
+            Some(vec![Low, Medium, High, XHigh, Max])
+        );
+        let glm47 = c.model("zai", "glm-4.7").unwrap();
+        assert_eq!(glm47.effort_tiers, Some(EffortTiers::from(Vec::new())));
+        assert_eq!(glm47.default_reasoning_effort, Some(High));
+        assert!(!glm47.thinking_required);
+        // The non-reasoning legacy model carries none of it.
+        let legacy = c.model("zai", "glm-4-32b-0414-128k").unwrap();
+        assert_eq!(legacy.effort_tiers, None);
+        assert_eq!(legacy.default_reasoning_effort, None);
+    }
+
+    #[test]
+    fn anthropic_defaults_carry_the_current_generation() {
+        use crate::ReasoningEffort::*;
+        let c = Catalog::builtin();
+        let a = c.provider("anthropic").unwrap();
+        assert_eq!(a.default_model, "claude-sonnet-5");
+        assert_eq!(a.thinking_control, None);
+        let fable = c.model("anthropic", "claude-fable-5-1").unwrap();
+        assert!(fable.thinking_required);
+        assert!(!fable.supports_temperature);
+        assert_eq!(fable.replay_thinking, Some(true));
+        assert_eq!(fable.thinking_style, Some(ThinkingStyle::Adaptive));
+        assert_eq!(
+            fable.web_search_tool_version.as_deref(),
+            Some("web_search_20260209")
+        );
+        assert_eq!(
+            fable.effort_tiers.map(Vec::from),
+            Some(vec![Low, Medium, High, XHigh, Max])
+        );
+        // 4.6 has no xhigh and still takes sampling params.
+        let opus46 = c.model("anthropic", "claude-opus-4-6").unwrap();
+        assert!(opus46.supports_temperature);
+        assert_eq!(
+            opus46.effort_tiers.map(Vec::from),
+            Some(vec![Low, Medium, High, Max])
+        );
+        // Opus 5 thinks by default but can be switched off — not required.
+        assert!(
+            !c.model("anthropic", "claude-opus-5")
+                .unwrap()
+                .thinking_required
+        );
+        // The budget-style holdovers keep the older search tool.
+        for id in ["claude-sonnet-4-5", "claude-haiku-4-5"] {
+            let m = c.model("anthropic", id).unwrap();
+            assert_eq!(m.thinking_style, None, "{id}");
+            assert_eq!(m.web_search_tool_version, None, "{id}");
+            assert_eq!(m.context_window, Some(200_000), "{id}");
+        }
+        assert_eq!(
+            c.model("anthropic", "claude-sonnet-5")
+                .unwrap()
+                .pricing
+                .unwrap()
+                .input,
+            Some(2.0)
+        );
+    }
+
+    #[test]
+    fn unknown_thinking_control_is_rejected() {
+        let err = serde_yaml::from_str::<ProviderEntry>(
+            "name: p\ndefault_model: m\nthinking_control: openai\n",
+        )
+        .expect_err("unknown enum value must be loud");
+        assert!(err.to_string().contains("openai"), "got: {err}");
     }
 }

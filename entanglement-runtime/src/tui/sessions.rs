@@ -111,12 +111,12 @@ impl SessionRegistry {
         }
     }
 
-    /// Adopt an externally-minted session id: create its view if absent and
-    /// switch to it. Used by the `propose_plan` handoff (#141), which mints a
-    /// fresh root `build` session head-side rather than through [`create`].
-    pub fn adopt(&mut self, id: SessionId) {
-        self.view_or_insert(&id);
-        self.switch_to(id);
+    /// Create `id`'s view if absent, leaving the active session alone. Used by
+    /// the compaction hand-off (ADR-0205), which must seed the successor's
+    /// transcript before deciding whether to switch to it — a *background*
+    /// session compacting must not yank the user's view.
+    pub fn ensure(&mut self, id: &SessionId) {
+        self.view_or_insert(id);
     }
 
     /// Every session in **spawn-tree order** (roots in insertion order, each
@@ -285,6 +285,68 @@ impl SessionRegistry {
         self.modal_state
             .selected()
             .and_then(|i| self.ordered_ids().get(i).cloned().cloned())
+    }
+
+    /// Token/cost totals for `id` plus every descendant, recursively (#560):
+    /// a child spawned via `agent`/`agent_send` is a separate session, so a
+    /// parent's own [`SessionView`] totals never include its fan-out spend.
+    /// Head-side only — no protocol change, just folding the already-
+    /// broadcast `OutEvent::Usage` totals this process already accumulated
+    /// per session, walking the same parent links the sessions modal orders
+    /// by.
+    pub fn usage_rollup(&self, id: &SessionId) -> UsageRollup {
+        let mut total = self
+            .views
+            .get(id)
+            .map(UsageRollup::from_view)
+            .unwrap_or_default();
+        for (child_id, view) in &self.views {
+            if view.parent() == Some(id) {
+                total = total.merge(self.usage_rollup(child_id));
+            }
+        }
+        total
+    }
+}
+
+/// Rolled-up usage for a session plus every descendant — see
+/// [`SessionRegistry::usage_rollup`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UsageRollup {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    /// `Some` only when every contributing session (that has any tokens)
+    /// carried catalog pricing — a partial sum that silently dropped an
+    /// unpriced session's cost would understate the real total, so the whole
+    /// rollup falls back to token-only display instead (#560).
+    pub cost_usd: Option<f64>,
+    /// Sessions folded in (own + descendants) — `/cost` names the child count.
+    pub sessions: usize,
+}
+
+impl UsageRollup {
+    fn from_view(view: &SessionView) -> Self {
+        let priced = view.cost_known() || (view.input_tokens() == 0 && view.output_tokens() == 0);
+        Self {
+            input_tokens: view.input_tokens(),
+            output_tokens: view.output_tokens(),
+            cached_input_tokens: view.cached_input_tokens(),
+            cost_usd: priced.then(|| view.cost_usd()),
+            sessions: 1,
+        }
+    }
+
+    fn merge(mut self, other: Self) -> Self {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+        self.sessions += other.sessions;
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            _ => None,
+        };
+        self
     }
 }
 

@@ -2,11 +2,12 @@
 //! refuses.
 //!
 //! Advertisement is decoupled from enforcement: core advertises every spec the
-//! config provides, so the model can (and will) call a tool its profile mask,
-//! the session tool overlay, or an active skill's `allowed_tools` withholds.
-//! Each such call is answered with a terse, **attributed** refusal — the model
-//! must learn *who* declined it, or it retries the same call forever — carried
-//! on the ADR-0176 structured side channel with `is_error: true`.
+//! config provides, so the model can (and will) call a tool its profile mask
+//! or the session tool overlay withholds (skills no longer mask tools,
+//! ADR-0194). Each such call is answered with a terse, **attributed**
+//! refusal — the model must learn *who* declined it, or it retries the same
+//! call forever — carried on the ADR-0176 structured side channel with
+//! `is_error: true`.
 //!
 //! The wording family is one table, here, so the executor's dispatch ladder and
 //! the mask walk in [`crate::permission`] can never drift apart:
@@ -14,8 +15,13 @@
 //! - `Declined by agent profile ...`
 //! - `Declined by ancestor agent ...`
 //! - `Declined by session tool overlay ...`
-//! - `Declined by skill ...`
-//! - `` tool `bash` is disabled — enable with /enable tool bash ``
+//!
+//! Since ADR-0198, a mask miss is a **flat decline only for three hard
+//! limits** (a spawn tool, an unknown name, or an explicit bare-name `Deny`
+//! rule — see `crate::mask_request`); every other mask miss instead parks an
+//! approval, whose attribution wording ([`mask_request_attribution`]) reuses
+//! this same [`MaskSource`]/[`MaskAuthority`] pair, phrased as an offer
+//! rather than a refusal.
 
 use entanglement_core::SessionId;
 
@@ -101,19 +107,37 @@ pub fn mask_decline(
     }
 }
 
-/// The refusal for a call an active skill's `allowed_tools` withholds (#400,
-/// ADR-0106) — layered after the agent mask, so this only fires for a tool the
-/// profile itself admits.
-pub fn skill_decline(skill_id: &str, tool: &str) -> String {
-    format!("Declined by skill `{skill_id}`'s allowed_tools — tool `{tool}` is not listed")
-}
-
-/// The refusal for a lazily-registrable built-in that is advertised but not yet
-/// registered (`bash`, ADR-0163 §2). Advertisement is unconditional now, so
-/// this is the *only* signal the model gets that the tool exists but is off —
-/// it names the exact command that turns it on.
-pub fn disabled_builtin_decline(tool: &str) -> String {
-    format!("tool `{tool}` is disabled — enable with /enable tool {tool}")
+/// The mask-attributed **approval offer** for a mask-miss call that is not
+/// one of ADR-0198's hard limits — the affirmative counterpart to
+/// [`mask_decline`], appended to the parked `ToolRequest`'s `input` (no
+/// protocol change: there is no separate reason field, so the attribution
+/// rides the same text an escape-root-forced approval already appends a
+/// warning to).
+pub fn mask_request_attribution(
+    source: &MaskSource,
+    own_session: &SessionId,
+    agent_name: Option<&str>,
+    tool: &str,
+) -> String {
+    let own = source.session == *own_session;
+    let agent = agent_name.unwrap_or("unknown");
+    match (source.authority, own) {
+        (MaskAuthority::Profile, true) => {
+            format!("tool `{tool}` is outside agent profile `{agent}`'s tool mask")
+        }
+        (MaskAuthority::Profile, false) => {
+            format!("tool `{tool}` is outside ancestor agent `{agent}`'s profile tool mask")
+        }
+        (MaskAuthority::Overlay, true) => {
+            format!("tool `{tool}` is withdrawn by this session's tool overlay")
+        }
+        (MaskAuthority::Overlay, false) => {
+            format!("tool `{tool}` is withdrawn by ancestor agent `{agent}`'s session tool overlay")
+        }
+        (MaskAuthority::Unseen, _) => {
+            format!("tool `{tool}`'s agent profile is not yet known to the executor (fail-closed)")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -184,14 +208,36 @@ mod tests {
     }
 
     #[test]
-    fn skill_and_disabled_builtin_wording() {
-        assert_eq!(
-            skill_decline("restricted", "edit"),
-            "Declined by skill `restricted`'s allowed_tools — tool `edit` is not listed"
+    fn mask_request_attribution_names_the_same_authorities_as_an_offer() {
+        let own = mask_request_attribution(
+            &MaskSource::profile(s("s1")),
+            &s("s1"),
+            Some("explore"),
+            "edit",
         );
         assert_eq!(
-            disabled_builtin_decline("bash"),
-            "tool `bash` is disabled — enable with /enable tool bash"
+            own,
+            "tool `edit` is outside agent profile `explore`'s tool mask"
+        );
+        let ancestor = mask_request_attribution(
+            &MaskSource::profile(s("parent")),
+            &s("child"),
+            Some("plan"),
+            "write",
+        );
+        assert!(
+            ancestor.contains("ancestor agent `plan`'s profile"),
+            "{ancestor}"
+        );
+        let overlay = mask_request_attribution(
+            &MaskSource::overlay(s("s1")),
+            &s("s1"),
+            Some("build"),
+            "bash",
+        );
+        assert_eq!(
+            overlay,
+            "tool `bash` is withdrawn by this session's tool overlay"
         );
     }
 }

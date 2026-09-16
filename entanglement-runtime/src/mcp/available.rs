@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use tokio::sync::Mutex as AsyncMutex;
 // Catalog types come via core's re-export (ADR-0053): the runtime's direct
@@ -32,11 +33,19 @@ use super::McpServerConfig;
 
 #[path = "available_enable.rs"]
 mod enable;
-pub use enable::{disconnect, enable_for_session};
+pub use enable::{disconnect, enable_for_session, try_lazy_reenable, LazyReenableOutcome};
 
 #[path = "available_lifecycle.rs"]
 mod lifecycle;
 pub use lifecycle::{forget_session, record_parent};
+
+#[path = "available_catalog.rs"]
+mod catalog;
+pub use catalog::bundled_capability_configs;
+
+#[path = "available_tier.rs"]
+mod tier;
+pub use tier::{disabled_decline, server_name_of, McpTier};
 
 /// One available-but-not-startup-connected server: its resolved config (bundled
 /// definition field-merged with any same-name user `mcp:` override), the env
@@ -91,6 +100,11 @@ pub struct AvailableMcp {
     /// inside the tool executor's own event loop, while this map is read from
     /// the `tool_spec_resolver` closure running per-session inside core.
     parents: Mutex<HashMap<SessionId, Option<SessionId>>>,
+    /// Servers explicitly configured `disabled` (ADR-0201, `tier.rs`) — kept
+    /// so "disabled" is distinguishable from "never configured" at dispatch.
+    disabled_names: HashSet<String>,
+    /// Last failed dispatch-time lazy re-enable per server (ADR-0201, `tier.rs`).
+    recent_enable_failures: Mutex<HashMap<String, Instant>>,
 }
 
 impl AvailableMcp {
@@ -114,6 +128,7 @@ impl AvailableMcp {
         let mut startup = HashMap::new();
         let mut servers = HashMap::new();
         let mut bundled_names = HashSet::new();
+        let mut disabled_names = HashSet::new(); // ADR-0201: explicit `disabled` names
         for provider in &catalog.providers {
             for (name, bundled) in &provider.mcp_servers {
                 bundled_names.insert(name.clone());
@@ -144,7 +159,11 @@ impl AvailableMcp {
                     McpServerState::Enabled if entry.key_ok() => {
                         startup.insert(name.clone(), entry);
                     }
-                    McpServerState::Enabled | McpServerState::Disabled => {}
+                    // Keyless: silently absent (#542), never "disabled".
+                    McpServerState::Enabled => {}
+                    McpServerState::Disabled => {
+                        disabled_names.insert(name.clone());
+                    }
                     McpServerState::Allowed => {
                         servers.insert(name.clone(), entry);
                     }
@@ -176,7 +195,9 @@ impl AvailableMcp {
                         },
                     );
                 }
-                McpServerState::Disabled => {}
+                McpServerState::Disabled => {
+                    disabled_names.insert(name.clone());
+                }
             }
         }
         (
@@ -187,6 +208,8 @@ impl AvailableMcp {
                 secret_env,
                 connecting: Mutex::new(HashMap::new()),
                 parents: Mutex::new(HashMap::new()),
+                disabled_names,
+                recent_enable_failures: Mutex::new(HashMap::new()),
             },
         )
     }
@@ -216,12 +239,26 @@ impl AvailableMcp {
     /// or an ancestor of it (#630, `lifecycle::ancestor_enabled`) — everything
     /// else (host tools, startup-connected servers) passes.
     pub fn spec_visible(&self, tool_name: &str, session: &SessionId) -> bool {
-        let Some(server) = tool_name
-            .strip_prefix("mcp__")
-            .and_then(|rest| rest.split("__").next())
-        else {
+        let Some(server) = server_name_of(tool_name) else {
             return true;
         };
+        let enabled = self
+            .enabled
+            .lock()
+            .expect("available-server enablement mutex poisoned");
+        let Some(sessions) = enabled.get(server) else {
+            return true;
+        };
+        self.enabled_by_or_ancestor(sessions, session)
+    }
+
+    /// The server-level form of [`spec_visible`](Self::spec_visible) — for a
+    /// caller (`explore`, ADR-0196 §4) that has a bare server name rather than
+    /// one of its tool names. Same rule: a server absent from the lazy
+    /// `enabled` map is globally visible (never lazily connected, or
+    /// startup-connected); a lazily-connected one is visible only to the
+    /// session(s) that enabled it or an ancestor of one.
+    pub fn server_visible(&self, server: &str, session: &SessionId) -> bool {
         let enabled = self
             .enabled
             .lock()

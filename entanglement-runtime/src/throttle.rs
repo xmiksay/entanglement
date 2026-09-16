@@ -9,7 +9,7 @@
 //! can share one endpoint, and one throttled endpoint never blocks another),
 //! so this owns no per-session bookkeeping — it just diffs each endpoint's
 //! classification against what it last saw and emits on change, mirroring
-//! `mcp::spawn_mcp_responder`/`bash_live::spawn_lazy_builtin_responder`'s
+//! `mcp::spawn_mcp_responder`'s
 //! "runtime service holding the one thing core doesn't" shape, except driven
 //! by a poll
 //! rather than the inbound `InMsg` fan-out (nothing arrives on the wire to

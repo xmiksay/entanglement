@@ -155,30 +155,79 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
 
 #[tokio::test]
 async fn read_only_explore_cannot_mutate_tasks_via_mask() {
-    // #175: the read-only `explore` profile's allowlist omits `update_tasks`, so
-    // the mask refuses a (hallucinated) call before it can mutate task state — no
-    // `TaskList` snapshot, and the model is told the tool is unavailable.
+    // #175: the read-only `explore` profile's allowlist omits `update_tasks`.
+    // Since ADR-0198 that mask miss parks an approval instead of declining
+    // outright (`explore`'s permission rules never explicitly name
+    // `update_tasks`, only the ambient `default: deny` reaches it — not the
+    // ADR's hard-limit floor) — but the security property still holds: even
+    // an *approved* mask offer hits the real permission ladder's `deny` on
+    // the merits, so no `TaskList` is ever emitted.
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [ ] sneaky"}"#,
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
     );
     let sid = SessionId::new("s1");
-    let events = collect_until_done(&holly, &sid, Some("explore")).await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut input = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if let OutEvent::ToolRequest { tool, input: i, .. } = &ev {
+            if tool == "update_tasks" {
+                input = Some(i.clone());
+                break;
+            }
+        }
+    }
+    let input = input.expect("update_tasks must park a mask-attributed approval");
+    assert!(
+        input.contains("outside agent profile `explore`'s tool mask"),
+        "got {input:?}"
+    );
+
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "c1".into(),
+            scope: entanglement_core::ApprovalScope::Once,
+        })
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
+        if ev.session() != Some(&sid) {
+            continue;
+        }
+        let done = matches!(ev, OutEvent::Done { .. });
+        events.push(ev);
+        if done {
+            break;
+        }
+    }
 
     assert!(
         !events
             .iter()
             .any(|e| matches!(e, OutEvent::TaskList { .. })),
-        "a read-only agent must not emit a TaskList; got {events:?}"
+        "a read-only agent must not emit a TaskList even past an approved mask offer; got \
+         {events:?}"
     );
     assert!(
         events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { tool, output, .. }
-                if tool == "update_tasks" && output.contains("Declined by agent profile")
+                if tool == "update_tasks" && output.contains("denied by permission")
         )),
-        "masked update_tasks must be refused; got {events:?}"
+        "masked update_tasks must still be refused by the permission ladder past the mask \
+         approval; got {events:?}"
     );
 }
 

@@ -53,11 +53,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{Permission, PermissionProfile, WebSearchConfig};
+use entanglement_core::{
+    Discovery, Permission, PermissionProfile, ToolAdvertising, WebSearchConfig,
+};
 use serde::Deserialize;
 use serde_yaml::Value;
 
 use crate::agents::permission_from_value;
+use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 
@@ -71,6 +74,7 @@ pub mod env_key;
 pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
+pub mod write_key;
 
 pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
@@ -90,6 +94,8 @@ pub mod llm_connect;
 mod tests;
 #[cfg(test)]
 mod tests_retention;
+#[cfg(test)]
+mod tests_tool_advertising;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -108,6 +114,14 @@ const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
 /// as the winning source without duplicating the literal.
 pub(crate) const SESSION_RETENTION_ENV: &str = "ENTANGLEMENT_SESSION_RETENTION_DAYS";
 
+/// Env var overriding tool advertising (`full` | `tool_search`, ADR-0196):
+/// wins over the config file's `tool_advertising`, which wins over the
+/// model's catalog `tool_advertising:` preference, which wins over the
+/// default (`tool_search`). `pub(crate)` so the mode resolver
+/// (`tool_advertising::mod`) and `inspect config` share the literal. An
+/// unparseable value warns and falls through, never fatal.
+pub(crate) const TOOL_ADVERTISING_ENV: &str = "ENTANGLEMENT_TOOL_ADVERTISING";
+
 /// The embedded default for [`Config::session_retention_days`]: 30 days. A
 /// session log untouched for a month is stale enough to prune without surprising
 /// a user who never set the key.
@@ -121,6 +135,17 @@ const DEFAULT_SESSION_RETENTION_DAYS: u64 = 30;
 /// them in parallel threads.
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A parsed embedded-defaults [`Config`], for sibling crates' unit tests
+/// (e.g. `tool_advertising`'s precedence tests): constructed through the real
+/// `parse` so it can never drift from `Config`'s field list, and overridable
+/// field-by-field via struct update syntax.
+#[cfg(test)]
+pub(crate) fn bare_config() -> Config {
+    parse(&[default_layer()])
+        .expect("embedded defaults.yml is valid — guarded by test")
+        .config
+}
 
 /// The raw file shape. `deny_unknown_fields` makes a typo'd key a loud error
 /// rather than a silently-ignored setting, exactly like the agent/provider files.
@@ -149,6 +174,11 @@ struct RawConfig {
     /// registry. Absent ⇒ no servers.
     #[serde(default)]
     mcp: HashMap<String, McpServerConfig>,
+    /// Definition-driven HTTP endpoint tools (#560 P8): a map of name →
+    /// endpoint definition, each registered as `endpoint__<name>`. Absent ⇒
+    /// no endpoint tools. See [`crate::endpoint`].
+    #[serde(default)]
+    endpoints: HashMap<String, EndpointConfig>,
     /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
     /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
     /// it is consent (the server tool runs provider-side, *outside* the runtime
@@ -184,6 +214,23 @@ struct RawConfig {
     /// layer ⇒ fall through to the lower layer, exactly like every other key.
     #[serde(default)]
     session_retention_days: Option<u64>,
+    /// Tool-advertising override (ADR-0196): `full` | `tool_search`, applied
+    /// over every model's catalog `tool_advertising:` preference. Absent ⇒
+    /// no install-wide opinion; the catalog (then the `tool_search` default)
+    /// decides per model. The env var ([`TOOL_ADVERTISING_ENV`]) is layered
+    /// on top of this at resolution time, not here — see
+    /// `tool_advertising::resolve_advertising`.
+    #[serde(default)]
+    tool_advertising: Option<ToolAdvertising>,
+    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
+    /// provider name: `discovery: {zai: native_first}`. Applied over that
+    /// provider's (and its models') catalog `discovery:` value. Absent or
+    /// empty ⇒ no install-wide opinion; the catalog decides. A key naming a
+    /// provider the session isn't on — or one no catalog lists — is inert,
+    /// never an error: a user may keep entries for providers they switch
+    /// between, or for one a future `providers.yml` adds.
+    #[serde(default)]
+    discovery: HashMap<String, Discovery>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -203,6 +250,9 @@ pub struct Config {
     pub hooks: Hooks,
     /// External MCP tool servers (#198). Empty by default (a no-op).
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Definition-driven HTTP endpoint tools (#560 P8). Empty by default (a
+    /// no-op). See [`crate::endpoint`].
+    pub endpoints: HashMap<String, EndpointConfig>,
     /// Provider-side web search (#305). Disabled by default (a no-op).
     pub web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
@@ -234,6 +284,19 @@ pub struct Config {
     /// config, then the embedded default (30). Best-effort: a read-only data
     /// dir logs and continues, never fatal.
     pub session_retention_days: u64,
+    /// Install-wide tool-advertising override (ADR-0196): `full` |
+    /// `tool_search`. `None` (the default) ⇒ per-model resolution: the
+    /// catalog entry's `tool_advertising:` preference, else `tool_search`.
+    /// The env override is applied on top of this at resolution time
+    /// (`tool_advertising::resolve_advertising`), the same place the
+    /// per-model chain resolves — kept as data here so the layered file
+    /// merge and `inspect config` provenance treat it like every other key.
+    pub tool_advertising: Option<ToolAdvertising>,
+    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
+    /// provider name. Empty (the default) ⇒ the catalog's provider/model
+    /// `discovery:` decides. Read at resolution time by
+    /// `tool_advertising::resolve_discovery`, one tier above the catalog.
+    pub discovery: HashMap<String, Discovery>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -354,8 +417,14 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
     // index (#426) `agents::load_registry` uses, built from this same `mcp:`
     // section — `read: allow` in the ceiling should cover an annotated MCP
     // tool exactly like it does in agent frontmatter.
-    let mcp_capabilities =
+    let mut mcp_capabilities =
         crate::mcp::capability_index(&raw.mcp).context("in user config `mcp` capabilities")?;
+    // Every declared endpoint tool joins the same data-driven `call` index
+    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
+    mcp_capabilities
+        .entry("call".to_string())
+        .or_default()
+        .extend(crate::endpoint::call_capability_names(&raw.endpoints));
     let permissions = match &raw.permissions {
         Some(v) => {
             permission_from_value(v, &mcp_capabilities).context("in user config `permissions`")?
@@ -370,6 +439,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         permissions,
         hooks: raw.hooks,
         mcp: raw.mcp,
+        endpoints: raw.endpoints,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
@@ -379,6 +449,8 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         // last-resort fallback `parse` itself computes (not a layer), since the
         // layered `Value` merge can't see the process env.
         session_retention_days: resolve_session_retention(raw.session_retention_days),
+        tool_advertising: raw.tool_advertising,
+        discovery: raw.discovery,
     };
     Ok(Resolved {
         config,
@@ -400,12 +472,15 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "permissions",
         "hooks",
         "mcp",
+        "endpoints",
         "web_search",
         "max_turns",
         "idle_ttl_secs",
         "auto_compact",
         "editor",
         "session_retention_days",
+        "tool_advertising",
+        "discovery",
     ];
     KEYS.iter()
         .filter_map(|key| {

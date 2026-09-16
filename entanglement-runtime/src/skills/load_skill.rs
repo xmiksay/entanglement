@@ -25,10 +25,10 @@
 //! an ordinary `tool_result` — never a spoofed user message, so the authorship
 //! trail stays honest.
 //!
-//! **Provenance** (`skill_id` carried onto tool calls made while a skill is
-//! "active", to scope its `allowed_tools` mask and feed the audit trail) is a
-//! runtime tool-execution-record field; it lands with mask *enforcement* (#116).
-//! This handler surfaces `skill_id` in the result so the trail is already visible.
+//! **Provenance** (`skill_id`, tracked while a skill is "active" to feed the
+//! `OutEvent::SkillActive` posture event and the audit trail — no longer a
+//! tool mask, ADR-0194) is a runtime tool-execution-record field. This
+//! handler surfaces `skill_id` in the result so the trail is already visible.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -100,8 +100,9 @@ impl Tool for LoadSkillTool {
 /// Parse the `skill_id: <name>\n` header a successful [`render`] result begins
 /// with. `None` for anything else — in particular the "tool `load_skill`
 /// failed: …" text [`crate::tools::ToolRegistry::execute`] synthesizes for an
-/// `Err` (unknown/`user_only` skill) — so the runtime skill-mask activation
-/// (#400, ADR-0106) only fires on an actual load, never a failed attempt.
+/// `Err` (unknown/`user_only` skill) — so the runtime skill-active posture
+/// (#400, ADR-0106; posture-only since ADR-0194) only activates on an actual
+/// load, never a failed attempt.
 pub fn parse_skill_id(content: &str) -> Option<&str> {
     content.strip_prefix("skill_id: ")?.lines().next()
 }
@@ -248,6 +249,7 @@ mod tests {
             allowed_tools: None,
             root_dir,
             body: body.into(),
+            tools: Vec::new(),
         }
     }
 

@@ -1,4 +1,17 @@
 use super::*;
+use crate::catalog::EffortTiers;
+use crate::ReasoningEffort;
+
+/// A spec with the given shape/replay and otherwise unconstrained (no tier
+/// clamp, temperature allowed) — the pre-ADR-0203 client behavior.
+fn model_spec(thinking_style: ThinkingStyle, replay_thinking: bool) -> AnthropicModelSpec {
+    AnthropicModelSpec {
+        thinking_style,
+        replay_thinking,
+        effort_tiers: None,
+        supports_temperature: true,
+    }
+}
 
 fn msg(role: MessageRole, text: &str) -> Message {
     Message {
@@ -24,8 +37,7 @@ fn body_omits_tools_when_empty() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert!(body.get("tools").is_none());
     assert_eq!(body["stream"], true);
@@ -47,8 +59,7 @@ fn body_includes_input_schema_when_tools_present() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["tools"][0]["name"], "greet");
     assert!(body["tools"][0]["input_schema"].is_object());
@@ -70,8 +81,7 @@ fn generation_max_output_tokens_overrides_fallback() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["max_tokens"], 8000);
     assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -94,8 +104,7 @@ fn thinking_budget_enables_thinking_and_drops_temperature() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["thinking"]["type"], "enabled");
     assert_eq!(body["thinking"]["budget_tokens"], 10_000);
@@ -122,8 +131,7 @@ fn thinking_budget_bumps_max_tokens_when_it_would_swallow_the_cap() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let max = body["max_tokens"].as_u64().unwrap();
     let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
@@ -146,13 +154,12 @@ fn high_reasoning_effort_enables_thinking_at_the_tier_default_budget() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["thinking"]["type"], "enabled");
     assert_eq!(
         body["thinking"]["budget_tokens"],
-        HIGH_EFFORT_THINKING_BUDGET
+        thinking::HIGH_EFFORT_THINKING_BUDGET
     );
     // Thinking on ⇒ temperature omitted, same as an explicit budget.
     assert!(body.get("temperature").is_none());
@@ -174,12 +181,11 @@ fn medium_reasoning_effort_uses_a_smaller_tier_budget() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(
         body["thinking"]["budget_tokens"],
-        MEDIUM_EFFORT_THINKING_BUDGET
+        thinking::MEDIUM_EFFORT_THINKING_BUDGET
     );
 }
 
@@ -199,8 +205,7 @@ fn low_reasoning_effort_leaves_thinking_off() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert!(body.get("thinking").is_none());
     assert!((body["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
@@ -222,8 +227,7 @@ fn explicit_thinking_budget_wins_over_reasoning_effort() {
         }),
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["thinking"]["budget_tokens"], 1234);
 }
@@ -246,8 +250,7 @@ fn adaptive_style_emits_adaptive_thinking_and_effort_not_a_budget() {
         }),
         None,
         None,
-        ThinkingStyle::Adaptive,
-        false,
+        model_spec(ThinkingStyle::Adaptive, false),
     );
     assert_eq!(body["thinking"]["type"], "adaptive");
     assert!(
@@ -280,8 +283,7 @@ fn adaptive_style_maps_every_effort_tier() {
             }),
             None,
             None,
-            ThinkingStyle::Adaptive,
-            false,
+            model_spec(ThinkingStyle::Adaptive, false),
         );
         assert_eq!(body["output_config"]["effort"], expected);
     }
@@ -309,8 +311,7 @@ fn adaptive_style_without_effort_leaves_thinking_off() {
         }),
         None,
         None,
-        ThinkingStyle::Adaptive,
-        false,
+        model_spec(ThinkingStyle::Adaptive, false),
     );
     assert!(body.get("thinking").is_none());
     assert!(body.get("output_config").is_none());
@@ -336,8 +337,7 @@ fn adaptive_style_ignores_a_thinking_budget_and_never_bumps_max_tokens() {
         }),
         None,
         None,
-        ThinkingStyle::Adaptive,
-        false,
+        model_spec(ThinkingStyle::Adaptive, false),
     );
     assert!(body.get("thinking").is_none());
     assert_eq!(body["max_tokens"], 4000);
@@ -400,9 +400,10 @@ fn reasoning_block_from_another_provider_is_dropped() {
 }
 
 #[test]
-fn only_the_last_assistant_turn_replays_its_reasoning() {
-    // Anthropic strips earlier turns' thinking server-side, so resending it
-    // would just burn input tokens on blocks discarded on arrival.
+fn every_assistant_turn_replays_its_reasoning() {
+    // ADR-0202: preserved-thinking models keep prior-turn thinking, so
+    // stripping an earlier turn's block edits history — a cache bust every
+    // round, and a 400 on Fable 5.1. Older models ignore the blocks unbilled.
     let msgs = vec![
         msg(MessageRole::User, "hi"),
         assistant_with_reasoning("first", "anthropic"),
@@ -410,13 +411,11 @@ fn only_the_last_assistant_turn_replays_its_reasoning() {
         assistant_with_reasoning("second", "anthropic"),
     ];
     let out = convert_messages(&msgs, true);
-    let earlier = out[1]["content"].as_array().unwrap();
-    assert!(
-        earlier.iter().all(|b| b["type"] != "thinking"),
-        "earlier assistant turn must not carry a thinking block"
-    );
-    let last = out[3]["content"].as_array().unwrap();
-    assert_eq!(last[0]["type"], "thinking");
+    for idx in [1, 3] {
+        let blocks = out[idx]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "thinking", "assistant turn {idx}");
+        assert_eq!(blocks[0]["signature"], "sig");
+    }
 }
 
 #[test]
@@ -518,8 +517,7 @@ fn body_omits_web_search_server_tool_without_config() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert!(body.get("tools").is_none());
 }
@@ -540,8 +538,7 @@ fn body_pushes_web_search_server_tool_when_configured() {
         None,
         Some(&ws),
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -567,8 +564,7 @@ fn web_search_server_tool_omits_unset_knobs() {
         None,
         Some(&ws),
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let tool = &body["tools"][0];
     assert_eq!(tool["type"], "web_search_20250305");
@@ -594,8 +590,7 @@ fn web_search_tool_version_overrides_the_hardcoded_default() {
         None,
         Some(&ws),
         Some("web_search_20260209"),
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     assert_eq!(body["tools"][0]["type"], "web_search_20260209");
 }
@@ -632,8 +627,7 @@ fn system_block_carries_a_cache_breakpoint() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let system = body["system"].as_array().unwrap();
     assert_eq!(system.len(), 1);
@@ -653,8 +647,7 @@ fn last_tool_entry_carries_a_cache_breakpoint() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let tools = body["tools"].as_array().unwrap();
     assert!(tools[0].get("cache_control").is_none());
@@ -672,17 +665,17 @@ fn single_user_turn_carries_the_history_breakpoint() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let blocks = body["messages"][0]["content"].as_array().unwrap();
     assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
 }
 
 #[test]
-fn second_to_last_user_turn_carries_the_history_breakpoint() {
-    // The most recent user turn may still be edited/retried — anchor one turn
-    // earlier so the stable bulk of history isn't re-marked every request.
+fn last_user_turn_carries_the_near_breakpoint() {
+    // ADR-0202: anchoring the newest turn writes the whole request to the
+    // cache now; anchoring one turn earlier billed the tail uncached this
+    // round and as a cache write the next.
     let msgs = vec![
         msg(MessageRole::User, "first"),
         msg(MessageRole::Assistant, "reply"),
@@ -697,25 +690,24 @@ fn second_to_last_user_turn_carries_the_history_breakpoint() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let out = body["messages"].as_array().unwrap();
     assert_eq!(out.len(), 3);
-    let first_blocks = out[0]["content"].as_array().unwrap();
+    let last_blocks = out[2]["content"].as_array().unwrap();
     assert_eq!(
-        first_blocks.last().unwrap()["cache_control"]["type"],
+        last_blocks.last().unwrap()["cache_control"]["type"],
         "ephemeral"
     );
-    // The latest turn is left unmarked.
-    let last_blocks = out[2]["content"].as_array().unwrap();
-    assert!(last_blocks.last().unwrap().get("cache_control").is_none());
+    // Two user turns: no deep anchor yet, so the earlier turn stays clean.
+    let first_blocks = out[0]["content"].as_array().unwrap();
+    assert!(first_blocks.last().unwrap().get("cache_control").is_none());
 }
 
 #[test]
 fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
-    // #673: near anchor on the 2nd-to-last user turn, deep anchor on the
-    // 4th-to-last — so a round that appends more user-role messages than the
+    // #673/ADR-0202: near anchor on the last user turn, deep anchor on the
+    // 3rd-to-last — so a round that appends more user-role messages than the
     // provider's ~20-block lookback can scan still finds a cached prefix.
     let mut msgs = Vec::new();
     for i in 0..6 {
@@ -732,8 +724,7 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let out = body["messages"].as_array().unwrap();
     let marked: Vec<usize> = out
@@ -748,9 +739,9 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
         })
         .map(|(i, _)| i)
         .collect();
-    // 12 messages, user turns at even indexes: 4th-to-last user = index 4,
-    // 2nd-to-last user = index 8; the last user turn (index 10) stays clean.
-    assert_eq!(marked, vec![4, 8]);
+    // 12 messages, user turns at even indexes: 3rd-to-last user = index 6,
+    // last user = index 10.
+    assert_eq!(marked, vec![6, 10]);
     // The API caps `cache_control` markers at 4 per request; system (1) +
     // tools (1) + history (2) sits exactly at it — a future 5th marker would
     // 400 every request, so lock the total in.
@@ -759,9 +750,9 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
 }
 
 #[test]
-fn short_history_dedupes_the_two_anchors() {
-    // With only 1-3 user turns the near and deep anchors collapse to one
-    // marked message — the same block is never marked twice.
+fn short_history_marks_only_the_near_anchor() {
+    // With fewer than three user turns there is no deep anchor — one marked
+    // message, never the same block twice.
     let msgs = vec![
         msg(MessageRole::User, "first"),
         msg(MessageRole::Assistant, "reply"),
@@ -776,8 +767,7 @@ fn short_history_dedupes_the_two_anchors() {
         None,
         None,
         None,
-        ThinkingStyle::Budget,
-        false,
+        model_spec(ThinkingStyle::Budget, false),
     );
     let out = body["messages"].as_array().unwrap();
     let marked = out
@@ -822,4 +812,181 @@ fn provider_search_block_from_another_provider_is_dropped() {
         blocks,
         &vec![json!({ "type": "text", "text": "searching" })]
     );
+}
+
+// ── tool search / deferred loading (ADR-0196 §3) ───────────────────────
+
+#[test]
+fn defer_loading_is_omitted_when_false_and_present_when_true() {
+    // Back-compat: a non-deferred tool's wire entry is byte-identical to
+    // every pre-#560 golden (no `defer_loading` key at all), not merely
+    // `"defer_loading": false`.
+    let plain = ToolSpec::new("greet", "say hi");
+    let mut deferred = ToolSpec::new("search_files", "search the workspace");
+    deferred.defer_loading = true;
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[plain, deferred],
+        1024,
+        None,
+        None,
+        None,
+        model_spec(ThinkingStyle::Budget, false),
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert!(tools[0].get("defer_loading").is_none());
+    assert_eq!(tools[1]["defer_loading"], true);
+}
+
+#[test]
+fn cache_breakpoint_skips_a_deferred_last_tool() {
+    // Anthropic 400s a `defer_loading: true` tool carrying `cache_control`
+    // (wire reference §1.4) — the alphabetically/positionally last tool can
+    // easily be a deferred one under `anthropic_native`, so the breakpoint
+    // must land on the last *non*-deferred entry instead.
+    let kernel = ToolSpec::new("read", "kernel tool");
+    let mut deferred = ToolSpec::new("zzz_deferred", "not yet discovered");
+    deferred.defer_loading = true;
+    let body = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[kernel, deferred],
+        1024,
+        None,
+        None,
+        None,
+        model_spec(ThinkingStyle::Budget, false),
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["name"], "read");
+    assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+    assert!(
+        tools[1].get("cache_control").is_none(),
+        "a deferred entry must never carry cache_control"
+    );
+}
+
+#[test]
+fn tool_result_with_tool_reference_renders_native_blocks_alongside_text() {
+    // `describe()`'s reply on an `anthropic_native` session (ADR-0196 §3):
+    // schema text plus one `tool_reference` per discovered name, in the
+    // exact wire shape the client-executed custom-search flow documents.
+    let tool_result = Message::tool_content(
+        "call_1",
+        vec![
+            ContentPart::text("[{\"name\":\"search_files\", ...}]"),
+            ContentPart::tool_reference("search_files"),
+        ],
+    );
+    let out = convert_messages(&[tool_result], false);
+    let result = &out[0]["content"][0];
+    assert_eq!(result["type"], "tool_result");
+    assert_eq!(result["tool_use_id"], "call_1");
+    let blocks = result["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(
+        blocks[1],
+        json!({ "type": "tool_reference", "tool_name": "search_files" })
+    );
+}
+
+#[test]
+fn multiple_tool_references_each_render_their_own_block() {
+    let tool_result = Message::tool_content("call_1", vec![ContentPart::text("[{}, {}]")]);
+    let mut tool_result = tool_result;
+    tool_result
+        .content
+        .push(ContentPart::tool_reference("search_files"));
+    tool_result
+        .content
+        .push(ContentPart::tool_reference("get_weather"));
+    let out = convert_messages(&[tool_result], false);
+    let blocks = out[0]["content"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[1]["tool_name"], "search_files");
+    assert_eq!(blocks[2]["tool_name"], "get_weather");
+}
+
+/// A current-generation adaptive spec: the clamp and temperature facts on.
+fn adaptive_spec(tiers: &[ReasoningEffort], supports_temperature: bool) -> AnthropicModelSpec {
+    AnthropicModelSpec {
+        thinking_style: ThinkingStyle::Adaptive,
+        replay_thinking: true,
+        effort_tiers: Some(EffortTiers::from(tiers.to_vec())),
+        supports_temperature,
+    }
+}
+
+fn effort_body(effort: Option<ReasoningEffort>, spec: AnthropicModelSpec) -> serde_json::Value {
+    build_body(
+        "claude-opus-4-6",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        1024,
+        Some(GenerationParams {
+            temperature: Some(0.5),
+            max_output_tokens: None,
+            thinking_budget_tokens: None,
+            reasoning_effort: effort,
+        }),
+        None,
+        None,
+        spec,
+    )
+}
+
+#[test]
+fn adaptive_effort_is_clamped_to_the_models_tiers() {
+    use ReasoningEffort::*;
+    // Opus/Sonnet 4.6 take no `xhigh`: it snaps to a listed neighbour (ties
+    // round down), never the 400 an unaccepted tier would be.
+    let body = effort_body(Some(XHigh), adaptive_spec(&[Low, Medium, High, Max], true));
+    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["output_config"]["effort"], "high");
+    // A listed tier passes through untouched.
+    let body = effort_body(Some(Max), adaptive_spec(&[Low, Medium, High, Max], true));
+    assert_eq!(body["output_config"]["effort"], "max");
+}
+
+#[test]
+fn empty_effort_tiers_keep_adaptive_thinking_but_omit_output_config() {
+    let body = effort_body(Some(ReasoningEffort::High), adaptive_spec(&[], true));
+    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert!(body.get("output_config").is_none());
+}
+
+#[test]
+fn temperature_is_dropped_for_a_model_that_rejects_sampling_params() {
+    // Thinking off (no effort) would normally pass a live-set temperature
+    // through; Fable/Opus 5/Sonnet 5 400 on any sampling parameter.
+    let body = effort_body(None, adaptive_spec(&[], false));
+    assert!(body.get("temperature").is_none());
+    assert!(body.get("thinking").is_none());
+    // The same request against a model that takes it keeps the value.
+    let body = effort_body(None, adaptive_spec(&[], true));
+    assert_eq!(body["temperature"], 0.5);
+}
+
+#[test]
+fn no_catalog_model_ever_gets_a_disabled_thinking_shape() {
+    // Fable 400s on `thinking: {type: disabled}`; with no effort the wire
+    // omits `thinking` entirely instead, for every embedded Anthropic model.
+    let catalog = crate::Catalog::builtin();
+    let anthropic = catalog.provider("anthropic").unwrap();
+    for m in &anthropic.models {
+        let spec = catalog.anthropic_model_spec("anthropic", &m.id);
+        for effort in [None, Some(ReasoningEffort::Low)] {
+            let body = effort_body(effort, spec);
+            assert_ne!(body["thinking"]["type"], "disabled", "{}", m.id);
+            assert!(
+                spec.supports_temperature || body.get("temperature").is_none(),
+                "{}",
+                m.id
+            );
+        }
+    }
 }

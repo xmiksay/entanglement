@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, Question, SessionId};
+use entanglement_core::{AgentState, CompactionMode, OutEvent, Question, SessionId};
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -6,10 +6,16 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::transcript::cache::RenderCache;
 
+mod cost;
+mod generation;
 mod reducer;
 mod scroll;
 #[cfg(test)]
 mod tests;
+mod usage;
+
+pub use cost::CostLedger;
+pub use usage::RoundUsage;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
@@ -253,13 +259,11 @@ pub struct SessionView {
     /// that mints the block's stable id: a reasoning run's first `ReasoningDelta`
     /// or a tool op's `ToolCall` (#340). Absent = collapsed (the default).
     expanded_blocks: HashSet<usize>,
-    /// Token usage accumulated from `OutEvent::Usage` deltas, per session (#192).
-    /// Held on the view (not head-global) so a resumed session restores its
-    /// totals — the resume path replays persisted records through `apply_event`,
-    /// which folds Usage here.
-    input_tokens: u64,
-    output_tokens: u64,
-    cost_usd: f64,
+    /// Token/cost accounting folded from `OutEvent::Usage` (#192, #560),
+    /// per session and held on the view (not head-global) so a resumed
+    /// session restores it — the resume path replays persisted records
+    /// through `apply_event`.
+    cost: CostLedger,
     /// In-progress streamed tool calls (#194): `request_id → transcript index`
     /// of the `ToolCall` entry whose `input` is growing as `ToolCallDelta`
     /// fragments arrive. The assembled `ToolCall` finalizes and removes the
@@ -297,9 +301,7 @@ impl SessionView {
             expanded_blocks: HashSet::new(),
             streaming_tool_calls: HashMap::new(),
             render_cache: RenderCache::new(),
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
+            cost: CostLedger::default(),
         }
     }
 
@@ -381,18 +383,37 @@ impl SessionView {
         self.task_list.as_ref()
     }
 
-    /// Accumulated prompt/completion tokens for this session (#192).
+    /// Whole billed prompt volume for this session (uncached + cache-read +
+    /// cache-write, every purpose) — the "in" figure a rollup sums (#192).
     pub fn input_tokens(&self) -> u64 {
-        self.input_tokens
+        self.cost.prompt_total()
     }
 
     pub fn output_tokens(&self) -> u64 {
-        self.output_tokens
+        self.cost.output_tokens()
     }
 
     /// Accumulated session cost in USD, summed from `OutEvent::Usage`.
     pub fn cost_usd(&self) -> f64 {
-        self.cost_usd
+        self.cost.cost_usd()
+    }
+
+    /// Whether [`Self::cost_usd`] reflects real catalog pricing (`true`) or is
+    /// just the zero default because no round so far carried pricing
+    /// (`false`) — see [`CostLedger`] (#560).
+    pub fn cost_known(&self) -> bool {
+        self.cost.cost_known()
+    }
+
+    /// Cumulative cache-read input tokens (#560).
+    pub fn cached_input_tokens(&self) -> u64 {
+        self.cost.cached_tokens()
+    }
+
+    /// The full per-purpose / per-model ledger behind the accessors above —
+    /// what the status bar and `/cost` render from.
+    pub fn cost(&self) -> &CostLedger {
+        &self.cost
     }
 
     pub fn scroll_offset(&self) -> usize {

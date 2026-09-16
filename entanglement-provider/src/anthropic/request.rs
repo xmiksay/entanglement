@@ -4,27 +4,19 @@
 
 use crate::web_search::WebSearchConfig;
 use crate::{
-    ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort,
+    AnthropicModelSpec, ContentPart, GenerationParams, ImageSource, Message, MessageRole,
     ThinkingStyle, ToolSpec,
 };
 use serde_json::{json, Value};
+
+// The two extended-thinking request shapes, split out for the 400-line cap.
+mod thinking;
+use thinking::{apply_adaptive_thinking, apply_budget_thinking};
 
 /// Fallback Anthropic web-search server-tool type when no `ModelEntry`
 /// capability flag names a newer one (#481, follow-up to #305/ADR-0075's
 /// hardcoded `_20250305`).
 const DEFAULT_WEB_SEARCH_TOOL_VERSION: &str = "web_search_20250305";
-/// Thinking-budget tokens for [`ReasoningEffort::High`] when the request sets no
-/// explicit [`GenerationParams::thinking_budget_tokens`] (#374) — Anthropic has
-/// no effort concept of its own, so `reasoning_effort` maps onto a thinking
-/// tier here instead.
-const HIGH_EFFORT_THINKING_BUDGET: u32 = 32_000;
-/// Thinking-budget tokens for [`ReasoningEffort::Medium`] (#374).
-const MEDIUM_EFFORT_THINKING_BUDGET: u32 = 8_000;
-/// Bump amount for `max_tokens` when a thinking budget would otherwise swallow
-/// the whole cap (mirrors the client's own [`super::DEFAULT_MAX_TOKENS`]
-/// fallback so this module stays self-contained).
-const MAX_TOKENS_BUDGET_HEADROOM: u32 = 16_384;
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_body(
     model: &str,
@@ -35,18 +27,17 @@ pub(super) fn build_body(
     generation: Option<GenerationParams>,
     web_search: Option<&WebSearchConfig>,
     web_search_tool_version: Option<&str>,
-    thinking_style: ThinkingStyle,
-    replay_thinking: bool,
+    spec: AnthropicModelSpec,
 ) -> Value {
     let g = generation.unwrap_or_default();
     let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
-    let mut messages = convert_messages(messages, replay_thinking);
+    let mut messages = convert_messages(messages, spec.replay_thinking);
     place_history_breakpoint(&mut messages);
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
-        // Standard breakpoint placement (#566): end of tools, end of system,
-        // second-to-last user turn (plus a deeper history anchor, #673).
+        // Standard breakpoint placement (#566, ADR-0202): end of tools, end of
+        // system, last user turn (plus a deeper history anchor, #673).
         // Anthropic's fixed render order is
         // tools → system → messages, and without a `cache_control` anywhere the
         // whole request re-bills at the full input rate every round — the system
@@ -70,8 +61,16 @@ pub(super) fn build_body(
     if let Some(ws) = web_search {
         tool_entries.push(web_search_tool_entry(ws, web_search_tool_version));
     }
-    if let Some(last) = tool_entries.last_mut() {
-        last["cache_control"] = json!({ "type": "ephemeral" });
+    // Must land on a non-deferred entry — Anthropic 400s a `defer_loading`
+    // tool carrying `cache_control` (ADR-0196 §3) — so scan back from the end
+    // rather than assume the last entry qualifies (the alphabetically-last
+    // tool can easily be deferred under `anthropic_native`).
+    if let Some(last_cacheable) = tool_entries
+        .iter_mut()
+        .rev()
+        .find(|t| t.get("defer_loading").and_then(Value::as_bool) != Some(true))
+    {
+        last_cacheable["cache_control"] = json!({ "type": "ephemeral" });
     }
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
@@ -80,12 +79,14 @@ pub(super) fn build_body(
     // shapes and the catalog says which one this model takes — the newer models
     // reject `budget_tokens` with a 400, so the choice cannot be a client
     // constant. With thinking on (either shape), `temperature` may only be its
-    // default, so it is omitted; with thinking off it passes through unchanged.
-    let thinking_on = match thinking_style {
+    // default, so it is omitted; with thinking off it passes through — unless
+    // the model rejects sampling parameters outright (ADR-0203), where a
+    // temperature set live by `SetGeneration` would 400 every request.
+    let thinking_on = match spec.thinking_style {
         ThinkingStyle::Budget => apply_budget_thinking(&mut body, &g, &mut max_tokens),
-        ThinkingStyle::Adaptive => apply_adaptive_thinking(&mut body, &g),
+        ThinkingStyle::Adaptive => apply_adaptive_thinking(&mut body, &g, spec.effort_tiers),
     };
-    if !thinking_on {
+    if !thinking_on && spec.supports_temperature {
         if let Some(temp) = g.temperature {
             body["temperature"] = json!(temp);
         }
@@ -93,64 +94,18 @@ pub(super) fn build_body(
     body
 }
 
-/// The fixed-budget shape: `thinking: {type: "enabled", budget_tokens: N}`.
-/// An explicit [`GenerationParams::thinking_budget_tokens`] always wins; absent
-/// one, `reasoning_effort` (#374 — Anthropic has no effort concept of its own on
-/// this shape) derives a tier default, with `Low`/unset leaving thinking off.
-/// Anthropic requires `budget_tokens < max_tokens`, so the cap is bumped when the
-/// budget would swallow it. Returns whether thinking was enabled.
-fn apply_budget_thinking(body: &mut Value, g: &GenerationParams, max_tokens: &mut u32) -> bool {
-    let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
-        Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
-        Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
-        Some(ReasoningEffort::Low) | None => None,
-    });
-    let Some(budget) = budget else {
-        return false;
-    };
-    if budget >= *max_tokens {
-        *max_tokens = budget.saturating_add(MAX_TOKENS_BUDGET_HEADROOM);
-        body["max_tokens"] = json!(*max_tokens);
-    }
-    body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
-    true
-}
-
-/// The adaptive shape: `thinking: {type: "adaptive"}` plus `output_config.effort`,
-/// where the model decides how much to think. `budget_tokens` is rejected on this
-/// shape, so an explicit [`GenerationParams::thinking_budget_tokens`] is *not* an
-/// enable signal here — only `reasoning_effort` is, which is the knob that
-/// actually survives onto the wire. There is no `max_tokens` headroom bump: with
-/// no budget to swallow the cap, the existing value stands. Returns whether
-/// thinking was enabled.
-fn apply_adaptive_thinking(body: &mut Value, g: &GenerationParams) -> bool {
-    let Some(effort) = g.reasoning_effort else {
-        return false;
-    };
-    let effort = match effort {
-        ReasoningEffort::High => "high",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::Low => "low",
-    };
-    body["thinking"] = json!({ "type": "adaptive" });
-    body["output_config"] = json!({ "effort": effort });
-    true
-}
-
 /// Map entanglement's `Message` history to Anthropic's content-block format. Runs of
 /// consecutive tool-result messages are merged into a single `user` turn
 /// (Anthropic requires all `tool_result` blocks for a turn in one message).
 ///
-/// `replay_reasoning` enables replaying captured thinking blocks, and applies to
-/// the **last** assistant message only. That is exactly where Anthropic requires
-/// one — the turn whose tool results are coming back — and it is where the
-/// provider looks: earlier turns' thinking is stripped server-side, so resending
-/// it would spend input tokens on blocks that are discarded on arrival. History
-/// still keeps every block, so replay fidelity is unaffected.
+/// `replay_reasoning` enables replaying captured thinking blocks on **every**
+/// assistant message (ADR-0202). Preserved-thinking models (Opus 4.5+, Sonnet
+/// 4.6+, Fable) keep prior-turn thinking server-side, so stripping it edits
+/// history at each earlier assistant position — a prompt-cache bust every
+/// round once the near breakpoint covers the last assistant turn, and a 400 on
+/// Fable 5.1 for new accounts. Older models ignore prior-turn blocks unbilled,
+/// so replaying everywhere is safe there too.
 fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> {
-    let last_assistant = messages
-        .iter()
-        .rposition(|m| m.role == MessageRole::Assistant);
     let mut out = Vec::new();
     let mut i = 0;
     while i < messages.len() {
@@ -163,8 +118,8 @@ fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> 
                 i += 1;
             }
             MessageRole::Assistant => {
-                let replay = replay_reasoning && last_assistant == Some(i);
-                let mut blocks: Vec<Value> = anthropic_blocks(&messages[i].content, replay);
+                let mut blocks: Vec<Value> =
+                    anthropic_blocks(&messages[i].content, replay_reasoning);
                 for tc in &messages[i].tool_calls {
                     let input: Value =
                         serde_json::from_str(&tc.input).unwrap_or_else(|_| json!({}));
@@ -212,12 +167,16 @@ fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> 
     coalesce_same_role(out, "content")
 }
 
-/// Mark the history breakpoints (#566, #673): the last content block of the
-/// second-to-last `user`-role message, plus a second, deeper anchor on the
-/// fourth-to-last. The final user turn is the one most likely to still change
-/// (a steered/edited retry), so anchoring one turn earlier gives every prior
-/// round — the bulk of a growing conversation — a stable, cacheable prefix
-/// without re-marking it on every request.
+/// Mark the history breakpoints (#566, #673, ADR-0202): the last content block
+/// of the **last** `user`-role message (near), plus a deeper anchor on the
+/// third-to-last.
+///
+/// The near anchor sits on the newest turn, so everything this request sends
+/// is written to the cache now and read back next round. Anchoring one turn
+/// earlier (the pre-ADR-0202 placement, meant to spare a steered/edited retry
+/// a wasted write) billed that tail uncached this round *and* as a cache write
+/// next round — ~2.25× versus 1.25× — while the retry it protected costs at
+/// most one wasted write.
 ///
 /// The deeper anchor (#673) exists because Anthropic's cache lookup only
 /// scans ~20 content blocks upstream of each explicit breakpoint: the near
@@ -225,16 +184,13 @@ fn convert_messages(messages: &[Message], replay_reasoning: bool) -> Vec<Value> 
 /// messages (the prompt plus one merged tool-result turn per batch), so a
 /// large parallel tool batch alone can push the previous round's cached
 /// entry out of the lookback window — re-writing the whole history span from
-/// the tools/system prefix at the cache-write rate. A second marker two user
-/// turns further back guarantees a match point that survives the near
-/// anchor's neighborhood changing. `nth(3)` rather than `nth(2)` because
-/// adjacent user indexes are often the same round (tool-result turns), which
-/// would put both anchors inside one round's churn.
+/// the tools/system prefix at the cache-write rate. A second marker further
+/// back guarantees a match point that survives the near anchor's
+/// neighborhood changing.
 ///
-/// Falls back to the single user message present when there's only one, and
-/// never marks the same block twice — with system (1) + tools (1) + history
-/// (≤2) the request carries at most 4 markers, exactly the API cap (a 5th is
-/// a 400, locked in by test).
+/// The two anchors are distinct by construction, so with system (1) + tools
+/// (1) + history (≤2) the request carries at most 4 markers, exactly the API
+/// cap (a 5th is a 400, locked in by test).
 fn place_history_breakpoint(messages: &mut [Value]) {
     let user_idxs: Vec<usize> = messages
         .iter()
@@ -242,20 +198,15 @@ fn place_history_breakpoint(messages: &mut [Value]) {
         .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|(i, _)| i)
         .collect();
-    let near = user_idxs.iter().rev().nth(1).or_else(|| user_idxs.last());
-    let deep = user_idxs.iter().rev().nth(3);
-    let mut marked: Vec<usize> = Vec::with_capacity(2);
+    let near = user_idxs.last();
+    let deep = user_idxs.iter().rev().nth(2);
     for &idx in near.into_iter().chain(deep) {
-        if marked.contains(&idx) {
-            continue;
-        }
         if let Some(last_block) = messages[idx]
             .get_mut("content")
             .and_then(Value::as_array_mut)
             .and_then(|blocks| blocks.last_mut())
         {
             last_block["cache_control"] = json!({ "type": "ephemeral" });
-            marked.push(idx);
         }
     }
 }
@@ -300,7 +251,8 @@ pub(crate) fn coalesce_same_role(messages: Vec<Value>, content_key: &str) -> Vec
 /// additionally gated on `replay_reasoning`, and is emitted **first**: Anthropic
 /// requires the thinking block to lead the assistant message. The turn loop
 /// appends content blocks after the round's text, so the ordering is restored
-/// here rather than constraining core.
+/// here rather than constraining core. [`ContentPart::ToolReference`]
+/// (ADR-0196 §3) is handled inline below.
 fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Value> {
     let mut reasoning = Vec::new();
     let mut rest = Vec::new();
@@ -326,6 +278,22 @@ fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Valu
             // provider: an opaque signature is meaningless to anyone but its
             // author, so drop it rather than degrade it to text.
             ContentPart::Reasoning { .. } => {}
+            // ADR-0196 §3: the only wire with a native `tool_reference` — no
+            // "foreign provider" case to gate on, unlike the two above.
+            ContentPart::ToolReference { tool_name } => rest.push(json!({
+                "type": "tool_reference",
+                "tool_name": tool_name,
+            })),
+            // ADR-0196 §3: a `tool_search_output` block persisted from a
+            // `responses_native` session (e.g. history replaying after a
+            // live `/model` switch to this wire) has no native mechanism
+            // here — the Anthropic wire has its own `tool_reference`
+            // primitive instead — so degrade to `summary` text rather than
+            // silently dropping the "discovered X" outcome, mirroring
+            // `ProviderSearch`'s foreign-provider fallback.
+            ContentPart::ToolSearchOutput { summary, .. } => {
+                rest.push(json!({ "type": "text", "text": summary }))
+            }
         }
     }
     reasoning.extend(rest);
@@ -336,11 +304,18 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {
-            json!({
+            let mut entry = json!({
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.schema,
-            })
+            });
+            // ADR-0196 §3: sent on every request regardless (the API needs
+            // the full definition to run search + expand references) —
+            // `defer_loading` only controls prompt/cache-key rendering.
+            if t.defer_loading {
+                entry["defer_loading"] = json!(true);
+            }
+            entry
         })
         .collect()
 }

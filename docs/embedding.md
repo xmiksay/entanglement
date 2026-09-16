@@ -407,7 +407,7 @@ seam implementations over it. Per seam:
   }), http_client.clone(), secret_env);
   // advertisement: engine_config.tool_spec_resolver = Some(Arc::new({
   //     let (scopes, tools) = (scopes.clone(), tools.clone());
-  //     move |s| scopes.overlay_specs(s, tools.read().unwrap().specs())
+  //     move |s, _model| scopes.overlay_specs(s, tools.read().unwrap().specs())
   // }));
   ```
 

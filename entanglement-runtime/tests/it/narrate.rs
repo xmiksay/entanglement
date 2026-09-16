@@ -97,6 +97,7 @@ fn registry_with_primary(label: &str, factory: LlmFactory) -> AuxLlmRegistry {
         factory,
         entanglement_provider::Catalog { providers: vec![] },
         None,
+        ("primary".to_string(), "primary-model".to_string()),
     )
 }
 

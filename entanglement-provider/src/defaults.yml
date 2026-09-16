@@ -30,10 +30,23 @@
 # `{NAME}_{MODEL}_CONCURRENCY` env spelling yet.
 #
 # Capability flags gate the generation-parameter channel (#191): the head sends a
-# model's `default_temperature` only when `supports_temperature`, and extended
-# thinking only when `supports_thinking` AND a `thinking_budget_tokens` is set.
-# Budgets are left unset here so thinking stays off until you opt in — add
-# `thinking_budget_tokens: <n>` to a thinking-capable model in your user file.
+# model's `default_temperature` only when `supports_temperature` (and the
+# Anthropic wire drops a live-set temperature too when it is `false`), and a
+# thinking budget only when `supports_thinking` AND `thinking_budget_tokens` is
+# set. Budgets are left unset everywhere here. Reasoning depth is the
+# `reasoning_effort` knob instead (ADR-0203): `default_reasoning_effort` seeds
+# it per model, and `effort_tiers` lists the tiers a model accepts — unset
+# passes any tier through, a list clamps to the nearest (ties round down), and
+# the empty list `[]` means the model takes no effort field at all.
+# `thinking_required: true` marks a model that cannot run with thinking off: an
+# effort-less request still enables thinking at its lowest listed tier.
+#
+# Thinking is therefore NOT uniformly off by default: the z.ai entries carry
+# `thinking_control: zai`, so every request sends an explicit
+# `thinking: {type: enabled|disabled}` object, and their thinking-capable
+# models default to `high` (z.ai's own server default, with no object sent,
+# is `max`). Anthropic thinking stays opt-in via `reasoning_effort`, except
+# Claude Fable, whose thinking is always on server-side.
 #
 # `thinking_format` (ADR-0191, OpenAI-compat only) says how a model emits its
 # thinking: `fields` (the default — structured `reasoning`/`reasoning_content`
@@ -46,10 +59,32 @@
 # Provider order is also the key auto-detect priority (z.ai first).
 
 providers:
+  # z.ai is two catalog entries sharing one `ZAI_API_KEY` (ADR-0203): the
+  # key *type* decides which endpoint accepts it. `zai` is the GLM Coding Plan
+  # endpoint — a Coding Plan subscription key — and stays FIRST, so key
+  # auto-detect keeps selecting it. `zai_paas` is the pay-as-you-go endpoint —
+  # a general API-balance key, which the Coding Plan URL rejects — selected
+  # explicitly (`ENTANGLEMENT_PROVIDER=zai_paas`; its env overrides follow the
+  # entry name: `ZAI_PAAS_MODEL`, `ZAI_PAAS_API_BASE`, …). The model list is
+  # shared via a YAML anchor (`&zai_models` / `*zai_models`); a user override
+  # on either entry merges into that entry alone. The bundled MCP servers stay
+  # on `zai` ONLY: the runtime gathers bundles from every catalog entry keyed
+  # by server name, so a second copy would overwrite this one (last entry
+  # wins), and since both entries share `ZAI_API_KEY` the servers are already
+  # available whichever entry is selected. Different base URLs ⇒ two
+  # independent endpoint pools (ADR-0050).
   - name: zai
     base_url: https://api.z.ai/api/coding/paas/v4
     key_env: ZAI_API_KEY
-    default_model: glm-5.2
+    default_model: glm-5.3
+    # ADR-0204: a discovery never mutates `tools` (one appended tool is a
+    # full cache miss on z.ai); GLM-5.x reaches discovered tools through the
+    # `invoke` fallback, the flash models call them natively.
+    discovery: native_first
+    # Send z.ai's explicit `thinking: {type: enabled|disabled}` object (plus
+    # the clamped `reasoning_effort`) on every request — without it z.ai
+    # silently thinks at `max` on every GLM-5.x turn.
+    thinking_control: zai
     # z.ai's own documented endpoint-wide ceiling (#550) — without this the
     # endpoint fell back to the client's generic default of 3, *below*
     # glm-5.2's own model-level cap of 5 below, so `model_slot` warned "model
@@ -85,20 +120,51 @@ providers:
           search_doc: read
           read_file: read
           get_repo_structure: read
-    # Full z.ai text palette (docs.z.ai/guides/overview/pricing, fetched
-    # 2026-07-15). glm-5.2 stays first — the auto-detect default and the
+    # Full z.ai text palette (docs.z.ai/guides/overview/pricing and the
+    # chat-completion API reference, fetched 2026-09-15). glm-5.3 leads — the
     # `default_model` above; `builtin_parses` asserts the ordering. Pricing is
     # USD per million tokens (input / output / cached_input). Free tiers carry
     # explicit zeros. `supports_thinking` is true everywhere except the
-    # non-reasoning glm-4-32b-0414-128k. (4.7-flash/flashx limits assumed = the
-    # 4.7 family; not individually documented.)
-    models:
+    # non-reasoning glm-4-32b-0414-128k. Effort: GLM-5.3/5.3-Flash accept only
+    # `low|high|max` and cannot disable thinking; the rest of the 5.x family
+    # takes every tier; the 4.x family enables thinking but takes no
+    # `reasoning_effort` field (`effort_tiers: []`). (4.7-flash/flashx limits
+    # assumed = the 4.7 family; not individually documented.)
+    models: &zai_models
+      - id: glm-5.3
+        display_name: GLM-5.3
+        context_window: 1000000
+        max_output_tokens: 128000
+        supports_thinking: true
+        default_temperature: 0.7
+        thinking_required: true
+        effort_tiers: [low, high, max]
+        default_reasoning_effort: high
+        pricing:
+          input: 1.4
+          output: 4.4
+          cached_input: 0.26
+      - id: glm-5.3-flash
+        display_name: GLM-5.3-Flash
+        context_window: 1000000
+        max_output_tokens: 128000
+        supports_thinking: true
+        default_temperature: 0.7
+        thinking_required: true
+        effort_tiers: [low, high, max]
+        default_reasoning_effort: high
+        pricing:
+          input: 0.15
+          output: 0.5
+          cached_input: 0.03
       - id: glm-5.2
         display_name: GLM-5.2
         context_window: 1000000
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: [low, medium, high, xhigh, max]
+        default_reasoning_effort: high
         # z.ai-documented per-model in-flight cap (#521): 5 concurrent streams.
         concurrency: 5
         pricing:
@@ -111,6 +177,8 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: [low, medium, high, xhigh, max]
+        default_reasoning_effort: high
         pricing:
           input: 1.4
           output: 4.4
@@ -121,26 +189,20 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: [low, medium, high, xhigh, max]
+        default_reasoning_effort: high
         pricing:
           input: 1.0
           output: 3.2
           cached_input: 0.20
-      - id: glm-5-turbo
-        display_name: GLM-5-Turbo
-        context_window: 204800
-        max_output_tokens: 131072
-        supports_thinking: true
-        default_temperature: 0.7
-        pricing:
-          input: 1.2
-          output: 4.0
-          cached_input: 0.24
       - id: glm-4.7
         display_name: GLM-4.7
         context_window: 204800
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.6
           output: 2.2
@@ -151,6 +213,8 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.07
           output: 0.4
@@ -161,6 +225,8 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         # z.ai-documented per-model in-flight cap (#521): only 1 concurrent
         # stream — far tighter than the endpoint-level default.
         concurrency: 1
@@ -174,6 +240,8 @@ providers:
         max_output_tokens: 131072
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.6
           output: 2.2
@@ -184,6 +252,8 @@ providers:
         max_output_tokens: 98304
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.6
           output: 2.2
@@ -194,6 +264,8 @@ providers:
         max_output_tokens: 98304
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 2.2
           output: 8.9
@@ -204,6 +276,8 @@ providers:
         max_output_tokens: 98304
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.2
           output: 1.1
@@ -214,6 +288,8 @@ providers:
         max_output_tokens: 98304
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 1.1
           output: 4.5
@@ -224,6 +300,8 @@ providers:
         max_output_tokens: 98304
         supports_thinking: true
         default_temperature: 0.7
+        effort_tiers: []
+        default_reasoning_effort: high
         pricing:
           input: 0.0
           output: 0.0
@@ -237,12 +315,24 @@ providers:
           input: 0.1
           output: 0.1
 
+  - name: zai_paas
+    base_url: https://api.z.ai/api/paas/v4
+    key_env: ZAI_API_KEY
+    default_model: glm-5.3
+    discovery: native_first
+    thinking_control: zai
+    concurrency: 5
+    models: *zai_models
+
   - name: openai
     base_url: https://api.openai.com/v1
     key_env: OPENAI_API_KEY
     # OpenAI proper documents the `prompt_cache_key` routing hint (#673);
     # kept off for z.ai/Ollama until verified they tolerate the extra field.
     prompt_cache_key: true
+    # ADR-0204: Chat Completions doesn't document accepting a call to an
+    # undeclared function, so discovered tools go through `invoke`.
+    discovery: invoke
     default_model: gpt-4o
     models:
       - id: gpt-4o
@@ -265,9 +355,26 @@ providers:
           input: 0.5
           output: 1.5
 
+  - name: openai_responses
+    # Opt-in (ADR-0196 §3, P7): the native Responses API surface, distinct
+    # from `openai` above (Chat Completions). Selecting `openai` never picks
+    # this up automatically — set ENTANGLEMENT_PROVIDER=openai_responses (or
+    # a `providers.yml`/`config.yml` pin) to use it. `tool_search` (this
+    # wire's client-executed discovery primitive) needs gpt-5.4 or later.
+    wire: openai_responses
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    default_model: gpt-5.4
+    models:
+      - id: gpt-5.4
+        display_name: GPT-5.4 (Responses)
+
   - name: ollama
     base_url: http://localhost:11434/v1
     default_model: llama3.1
+    # Unprobed (ADR-0204): keeps ADR-0196's append-on-discovery until the
+    # opt-in live tests show how local servers treat undeclared calls.
+    discovery: append
     # `max_output_tokens` set explicitly (#483, deferred-work ledger row 5): with
     # it unset, entanglement sends no `max_tokens`, so Ollama falls back to its
     # own built-in `num_predict` default (128 tokens) — a generation cut so
@@ -293,6 +400,9 @@ providers:
   - name: gemini
     wire: gemini
     key_env: GEMINI_API_KEY
+    # ADR-0204: Gemini ends a round with UNEXPECTED_TOOL_CALL on an
+    # undeclared function, so discovered tools go through `invoke`.
+    discovery: invoke
     default_model: gemini-2.5-flash
     # Native Google Gemini wire (#309): `:streamGenerateContent`, not the
     # OpenAI-compat surface — the compat endpoint drops `thoughtSignature`, which a
@@ -324,20 +434,69 @@ providers:
   - name: anthropic
     wire: anthropic
     key_env: ANTHROPIC_API_KEY
-    default_model: claude-sonnet-4-5
-    # `thinking_style: adaptive` on the current generation: those models reject
-    # `thinking.budget_tokens` with a 400, so the fixed-budget default that suits
-    # claude-sonnet-4-5 would break them. `thinking_budget_tokens` stays unset
-    # everywhere so thinking remains opt-in; on an adaptive model the knob that
-    # enables it is `reasoning_effort`. `max_output_tokens` is generous because
-    # the cap covers thinking *and* the answer on these models.
+    default_model: claude-sonnet-5
+    # Current generation (claude-api model reference, 2026-09-15). Facts the
+    # wire depends on, all catalog data rather than client constants:
+    # - `thinking_style: adaptive` on every 4.6+ model: those reject
+    #   `thinking.budget_tokens` with a 400 (removed on Fable 5/5.1, Opus
+    #   5/4.8/4.7 and Sonnet 5; deprecated on the 4.6 pair), so the
+    #   fixed-budget default that suits claude-sonnet-4-5 / claude-haiku-4-5
+    #   would break them. Depth is `reasoning_effort` (`output_config.effort`),
+    #   clamped to `effort_tiers` — `xhigh` arrived with Opus 4.7.
+    # - `supports_temperature: false` on Fable, Opus 5/4.8/4.7 and Sonnet 5:
+    #   any sampling parameter is a 400 there, even one set live.
+    # - `thinking_required: true` on Fable: thinking is always on server-side
+    #   (an explicit disable is a 400); the client never sends a disable shape
+    #   to any model, so this only documents the fact.
+    # - `replay_thinking: true`: preserved-thinking models keep prior-turn
+    #   thinking, so every captured block replays (ADR-0202).
+    # - `web_search_tool_version: web_search_20260209` on the 4.6+ models; the
+    #   budget-style holdovers keep the client's `_20250305` fallback.
+    # `thinking_budget_tokens` stays unset everywhere; `max_output_tokens` is
+    # generous because the cap covers thinking *and* the answer.
     models:
+      - id: claude-fable-5-1
+        display_name: Claude Fable 5.1
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
+        thinking_style: adaptive
+        supports_temperature: false
+        thinking_required: true
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
+        pricing:
+          input: 10.0
+          output: 50.0
+          cached_input: 0.25
+          cache_write: 12.5
+      - id: claude-fable-5
+        display_name: Claude Fable 5
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
+        thinking_style: adaptive
+        supports_temperature: false
+        thinking_required: true
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
+        pricing:
+          input: 10.0
+          output: 50.0
+          cached_input: 1.0
+          cache_write: 12.5
       - id: claude-opus-5
         display_name: Claude Opus 5
         context_window: 1000000
         max_output_tokens: 64000
         supports_thinking: true
+        replay_thinking: true
         thinking_style: adaptive
+        supports_temperature: false
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -348,7 +507,40 @@ providers:
         context_window: 1000000
         max_output_tokens: 64000
         supports_thinking: true
+        replay_thinking: true
         thinking_style: adaptive
+        supports_temperature: false
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
+        pricing:
+          input: 5.0
+          output: 25.0
+          cached_input: 0.5
+          cache_write: 6.25
+      - id: claude-opus-4-7
+        display_name: Claude Opus 4.7
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
+        thinking_style: adaptive
+        supports_temperature: false
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
+        pricing:
+          input: 5.0
+          output: 25.0
+          cached_input: 0.5
+          cache_write: 6.25
+      - id: claude-opus-4-6
+        display_name: Claude Opus 4.6
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
+        thinking_style: adaptive
+        effort_tiers: [low, medium, high, max]
+        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -359,7 +551,25 @@ providers:
         context_window: 1000000
         max_output_tokens: 64000
         supports_thinking: true
+        replay_thinking: true
         thinking_style: adaptive
+        supports_temperature: false
+        effort_tiers: [low, medium, high, xhigh, max]
+        web_search_tool_version: web_search_20260209
+        pricing:
+          input: 2.0
+          output: 10.0
+          cached_input: 0.2
+          cache_write: 2.5
+      - id: claude-sonnet-4-6
+        display_name: Claude Sonnet 4.6
+        context_window: 1000000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
+        thinking_style: adaptive
+        effort_tiers: [low, medium, high, max]
+        web_search_tool_version: web_search_20260209
         pricing:
           input: 3.0
           output: 15.0
@@ -369,16 +579,20 @@ providers:
         display_name: Claude Sonnet 4.5
         context_window: 200000
         supports_thinking: true
+        replay_thinking: true
         pricing:
           input: 3.0
           output: 15.0
           cached_input: 0.3
           cache_write: 3.75
-      - id: claude-3-5-sonnet-20241022
-        display_name: Claude 3.5 Sonnet
+      - id: claude-haiku-4-5
+        display_name: Claude Haiku 4.5
         context_window: 200000
+        max_output_tokens: 64000
+        supports_thinking: true
+        replay_thinking: true
         pricing:
-          input: 3.0
-          output: 15.0
-          cached_input: 0.3
-          cache_write: 3.75
+          input: 1.0
+          output: 5.0
+          cached_input: 0.1
+          cache_write: 1.25

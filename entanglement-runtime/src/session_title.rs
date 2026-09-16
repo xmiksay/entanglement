@@ -39,7 +39,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use entanglement_core::{
-    content_text, Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, SessionId,
+    content_text, Holly, InMsg, LlmEvent, LlmRequest, Message, OutEvent, RetryConfig, SessionId,
 };
 use futures::StreamExt;
 use tokio::sync::broadcast;
@@ -237,13 +237,21 @@ async fn wait_for_turn_settled(outbound: &mut broadcast::Receiver<OutEvent>, ses
 
 /// Ask the aux `session_title` LLM for a title for `first_prompt`. Returns
 /// `Ok(None)` when the model returned no usable text (empty / only whitespace
-/// after trimming); `Err` for a stream/transport failure. The prompt is capped
-/// at [`TITLE_PROMPT_CHAR_CAP`] and the output at [`TITLE_OUTPUT_CHAR_CAP`].
+/// after trimming) **or** the purpose is currently cooled down after a recent
+/// failure (#560 follow-up — give up silently either way, without touching
+/// the endpoint in the cooldown case); `Err` for a stream/transport failure
+/// on an attempted call. The prompt is capped at [`TITLE_PROMPT_CHAR_CAP`]
+/// and the output at [`TITLE_OUTPUT_CHAR_CAP`].
 #[cfg(feature = "provider")]
 async fn generate_title(
     registry: &AuxLlmRegistry,
     first_prompt: &str,
 ) -> anyhow::Result<Option<String>> {
+    let Some((mut llm, provider, model)) = registry.try_resolve(Purpose::SessionTitle) else {
+        // Cooled down after a recent failure: skip without calling anything
+        // (#560 follow-up) — the session simply keeps its default name.
+        return Ok(None);
+    };
     let capped_prompt: String = first_prompt.chars().take(TITLE_PROMPT_CHAR_CAP).collect();
     let messages = [Message::user(&capped_prompt)];
     let req = LlmRequest {
@@ -254,17 +262,32 @@ async fn generate_title(
         generation: None,
         // One-shot aux request: a distinct prefix, so no session cache key.
         cache_key: None,
+        // Aux fail-fast (#560 follow-up): session-title is display-only and
+        // must never retry-storm a dead endpoint — one quick retry, then
+        // give up for this call, whether the purpose is pinned or fell back
+        // to the primary model.
+        retry: Some(RetryConfig::minimal()),
     };
-    let mut llm = registry.resolve(Purpose::SessionTitle);
-    let mut stream = llm.stream(req).await?;
+    let stream_result = llm.stream(req).await;
+    let mut stream = match stream_result {
+        Ok(s) => s,
+        Err(e) => {
+            registry.note_failure(Purpose::SessionTitle, &provider, &model);
+            return Err(e);
+        }
+    };
     let mut text = String::new();
     while let Some(ev) = stream.next().await {
         match ev {
             Ok(LlmEvent::Text(delta)) => text.push_str(&delta),
             Ok(_) => {}
-            Err(e) => return Err(e),
+            Err(e) => {
+                registry.note_failure(Purpose::SessionTitle, &provider, &model);
+                return Err(e);
+            }
         }
     }
+    registry.note_success(Purpose::SessionTitle, &provider, &model);
     let title = clean_title(&text);
     Ok((!title.is_empty()).then_some(title))
 }

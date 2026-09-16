@@ -1,12 +1,12 @@
 //! Integration tests for auto-summarize on context overflow (#398, ADR-0103).
 //!
-//! Unlike manual `/compact` (copy-on-write, ADR-0101), `session/turn.rs`'s
-//! automatic path mutates the live session's `Context` **in place** before
-//! continuing the turn — a turn mid-flight has no head to fork into. These
-//! tests drive a real `Holly` through an overflowing turn and assert: the
-//! `Compacted { auto: true, .. }` event fires, the turn proceeds under the
-//! summarized context instead of refusing, and `EngineConfig::auto_compact =
-//! false` restores the old prune-only (or refuse) behavior.
+//! Since ADR-0205 the automatic path forks like every other compaction: the
+//! overflowing session is summarized into a **successor** and retired, and the
+//! turn goes on there. These tests drive a real `Holly` through an overflowing
+//! turn and assert: the `Compacted { auto: true, .. }` event fires, a successor
+//! picks the turn up under the summarized context instead of the turn being
+//! refused, and `EngineConfig::auto_compact = false` still falls through to the
+//! prune/refuse path.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,8 +20,10 @@ use entanglement_core::{
 use futures::stream;
 use futures::StreamExt;
 
-/// Replies "ok" to any ordinary turn request; a request whose system prompt
-/// marks it as the summarizer instead replies with a scripted summary. Records
+/// Replies "ok" to any ordinary turn request; a compaction request instead
+/// replies with a scripted summary. Both shapes end on a "Summarize the
+/// conversation …" instruction — the session-backend one after the replayed
+/// history, the rendered one around a transcript (ADR-0202). Records
 /// every request's messages so a test can assert what shipped post-compaction.
 struct ScriptedLlm {
     summary: String,
@@ -34,7 +36,10 @@ struct ScriptedLlm {
 impl Llm for ScriptedLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         self.seen.lock().unwrap().push(req.messages.to_vec());
-        let is_summary = req.system.contains("summarization assistant");
+        let is_summary = req
+            .messages
+            .last()
+            .is_some_and(|m| m.text().contains("Summarize the conversation"));
         let text = if is_summary {
             self.summary_calls.fetch_add(1, Ordering::SeqCst);
             self.summary.clone()
@@ -71,6 +76,12 @@ async fn collect_until_done(
         };
         match recv {
             Ok(ev) if ev.session() == Some(sid) => {
+                // A compacted session is retired without a `Done` (ADR-0205),
+                // so `SessionEnded` is terminal too.
+                if matches!(ev, OutEvent::SessionEnded { .. }) {
+                    out.push(ev);
+                    break;
+                }
                 let is_done = matches!(ev, OutEvent::Done { .. });
                 out.push(ev);
                 if is_done {
@@ -112,8 +123,46 @@ async fn run_three_turns_then_overflow(holly: &Holly, sid: &SessionId) -> Vec<Ou
     collect_until_done(&mut sub, sid).await
 }
 
+/// Drain until `source` announces its compaction successor, then keep draining
+/// until that successor's turn finishes. Returns the source's events, the
+/// successor's id, and the successor's events.
+async fn until_successor_done(
+    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    source: &SessionId,
+) -> (Vec<OutEvent>, SessionId, Vec<OutEvent>) {
+    let mut source_events = Vec::new();
+    let mut successor: Option<SessionId> = None;
+    let mut successor_events = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if let OutEvent::SessionStarted {
+            session: succ,
+            predecessor: Some(p),
+            ..
+        } = &ev
+        {
+            if p == source {
+                successor = Some(succ.clone());
+            }
+        }
+        match &successor {
+            Some(succ) if ev.session() == Some(succ) => {
+                let done = matches!(ev, OutEvent::Done { .. });
+                successor_events.push(ev);
+                if done {
+                    break;
+                }
+            }
+            _ if ev.session() == Some(source) => source_events.push(ev),
+            _ => {}
+        }
+    }
+    let successor = successor.expect("the compaction announced a successor");
+    (source_events, successor, successor_events)
+}
+
 #[tokio::test]
-async fn overflow_triggers_auto_compact_and_the_turn_proceeds() {
+async fn overflow_forks_a_successor_and_the_turn_proceeds_there() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let turn_calls = Arc::new(AtomicUsize::new(0));
     let summary_calls = Arc::new(AtomicUsize::new(0));
@@ -135,7 +184,22 @@ async fn overflow_triggers_auto_compact_and_the_turn_proceeds() {
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
 
-    let events = run_three_turns_then_overflow(&holly, &sid).await;
+    let mut sub = holly.subscribe();
+    for i in 0..3 {
+        holly
+            .send(InMsg::prompt(
+                sid.clone(),
+                format!("turn-{i}-marker: {}", "y".repeat(490)),
+            ))
+            .await
+            .unwrap();
+        let _ = collect_until_done(&mut sub, &sid).await;
+    }
+    holly
+        .send(InMsg::prompt(sid.clone(), "x".repeat(11_000)))
+        .await
+        .unwrap();
+    let (events, successor, successor_events) = until_successor_done(&mut sub, &sid).await;
 
     let compacted = events
         .iter()
@@ -156,16 +220,26 @@ async fn overflow_triggers_auto_compact_and_the_turn_proceeds() {
         "safe_kept clamps kept=4 forward to the next User boundary (turn 3 onward)"
     );
 
-    // The overflowing turn still completes — Done, not a refusal Error.
+    // The source is retired at the fork; the turn completes in the successor.
+    assert_ne!(successor, sid);
     assert!(
-        events.iter().any(|e| matches!(e, OutEvent::Done { .. })),
-        "the turn proceeds after auto-compact instead of refusing: {events:?}"
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::SessionEnded { .. })),
+        "the compacted source is retired: {events:?}"
+    );
+    assert!(
+        successor_events
+            .iter()
+            .any(|e| matches!(e, OutEvent::Done { .. })),
+        "the turn proceeds in the successor instead of refusing: {successor_events:?}"
     );
     assert!(
         !events
             .iter()
+            .chain(successor_events.iter())
             .any(|e| matches!(e, OutEvent::Error { message, .. } if message.contains("context window exceeded"))),
-        "no refusal error: {events:?}"
+        "no refusal error: {events:?} {successor_events:?}"
     );
 
     assert_eq!(
@@ -176,15 +250,14 @@ async fn overflow_triggers_auto_compact_and_the_turn_proceeds() {
     assert_eq!(
         turn_calls.load(Ordering::SeqCst),
         4,
-        "3 prior turns + the overflowing turn's own (post-compaction) request"
+        "3 prior turns + the successor's own first request"
     );
 
-    // The request the overflowing turn actually sent carries the summarized
-    // head (turns 0 and 1 gone, folded into the summary) plus turn 2's
-    // exchange verbatim (the safe kept-tail boundary) and the overflowing
-    // prompt itself — not the raw, un-compacted 4-turn history.
+    // The request the successor actually sent carries the summarized head
+    // (turns 0 and 1 gone, folded into the summary) plus turn 2's exchange
+    // verbatim (the safe kept-tail boundary) — not the raw 4-turn history.
     let seen = seen.lock().unwrap();
-    let last_request = seen.last().expect("the overflowing turn's request");
+    let last_request = seen.last().expect("the successor's request");
     let joined: String = last_request
         .iter()
         .map(|m| m.text())
@@ -205,6 +278,10 @@ async fn overflow_triggers_auto_compact_and_the_turn_proceeds() {
     assert!(
         joined.contains("auto-summary"),
         "the summarized head is present as the new leading message: {joined}"
+    );
+    assert!(
+        joined.contains("continues from a compaction"),
+        "the successor's seed says what it continues from: {joined}"
     );
 }
 

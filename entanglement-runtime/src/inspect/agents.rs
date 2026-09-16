@@ -228,6 +228,20 @@ mod tests {
         }
     }
 
+    /// The dispatch-state column width `render_dispatch_states` computes
+    /// (widest tool name in `tool_state::static_roster()`) — built here
+    /// rather than hardcoded so a future roster addition (a longer tool
+    /// name) doesn't silently desync these padding-sensitive assertions
+    /// from the real render, the way `responses_tool_search` (P7) did.
+    fn dispatch_row(tool: &str, label: &str) -> String {
+        let width = tool_state::static_roster()
+            .iter()
+            .map(|t| t.len())
+            .max()
+            .unwrap_or(0);
+        format!("{tool:<width$}  {label}")
+    }
+
     fn profile(permission: PermissionProfile, tools: Option<Vec<&str>>) -> AgentProfile {
         AgentProfile {
             name: "t".into(),
@@ -257,8 +271,14 @@ mod tests {
             detail.contains("tool mask (#116): allow:[read]"),
             "{detail}"
         );
-        assert!(detail.contains("read          allowed"), "{detail}");
-        assert!(detail.contains("edit          declines"), "{detail}");
+        assert!(
+            detail.contains(&dispatch_row("read", "allowed")),
+            "{detail}"
+        );
+        assert!(
+            detail.contains(&dispatch_row("edit", "declines")),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -268,7 +288,7 @@ mod tests {
             .with("write(.entanglement/plans/*.md)", Permission::Allow);
         let detail = render_agent_detail(&resolution(profile(permission, None)));
         assert!(
-            detail.contains("write         declines (allowed by argument)"),
+            detail.contains(&dispatch_row("write", "declines (allowed by argument)")),
             "{detail}"
         );
         // The mask stays visible as the source data the user actually edits.

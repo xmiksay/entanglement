@@ -8,7 +8,9 @@
 //! duplicate) and is recreated whenever the system prompt or tool set
 //! actually changes. Best-effort throughout: a too-small prefix or any
 //! creation failure just falls back to inlining `system`/`tools` as before —
-//! this never fails the turn itself.
+//! this never fails the turn itself. A replaced resource is deleted in the
+//! background: every tool-set change on the client-side encoding mints a new
+//! one, and the old one would otherwise stay billed for storage until its TTL.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -54,8 +56,9 @@ impl CacheHandle {
     /// Resolve the `cachedContent` resource name to send with this request,
     /// if any. Reuses the existing resource when `model`/`system`/`tools`
     /// hash the same as what it was created from; creates a new one on first
-    /// use or on change; returns `None` (inline as before) when the prefix is
-    /// too small or the create call fails.
+    /// use or on change (best-effort deleting the resource it replaces);
+    /// returns `None` (inline as before) when the prefix is too small or the
+    /// create call fails.
     pub(super) async fn resolve(
         &self,
         http: &HttpClient,
@@ -71,16 +74,24 @@ impl CacheHandle {
             return None;
         }
         let key = cache_key(model, system, tools);
-        {
+        let replaced = {
             let guard = self.0.lock().await;
-            if let Some(state) = guard.as_ref() {
-                if state.key == key {
+            match guard.as_ref() {
+                Some(state) if state.key == key => {
                     return match &state.entry {
                         CacheEntry::Ready(name) => Some(name.clone()),
                         CacheEntry::Skip => None,
                     };
                 }
+                Some(CacheState {
+                    entry: CacheEntry::Ready(name),
+                    ..
+                }) => Some(name.clone()),
+                _ => None,
             }
+        };
+        if let Some(name) = replaced {
+            spawn_delete(http, base_url, auth, name);
         }
         if cache_prefix_size(system, tools) < MIN_CACHEABLE_CHARS {
             *self.0.lock().await = Some(CacheState {
@@ -130,11 +141,7 @@ async fn create(
     system: &str,
     tools: &[ToolSpec],
 ) -> Option<String> {
-    // `base_url` is the `models` collection root (e.g.
-    // `.../v1beta/models`); `cachedContents` is a sibling collection under
-    // the same `v1beta` root.
-    let base = base_url.trim_end_matches('/').trim_end_matches("/models");
-    let url = format!("{base}/cachedContents");
+    let url = format!("{}/cachedContents", api_root(base_url));
     let body = build_cache_body(model, system, tools, CACHE_TTL);
 
     let response = match http
@@ -165,6 +172,31 @@ async fn create(
             None
         }
     }
+}
+
+/// `base_url` is the `models` collection root (e.g. `.../v1beta/models`);
+/// `cachedContents` is a sibling collection under the same `v1beta` root,
+/// and a resource `name` (`cachedContents/…`) is relative to it too.
+fn api_root(base_url: &str) -> &str {
+    base_url.trim_end_matches('/').trim_end_matches("/models")
+}
+
+/// Fire-and-forget `DELETE {root}/{name}` for a replaced resource. Detached so
+/// a slow or dead endpoint never delays the turn; any failure is only logged —
+/// the resource still expires at its TTL.
+fn spawn_delete(http: &HttpClient, base_url: &str, auth: &(&'static str, String), name: String) {
+    let client = http.client().clone();
+    let url = format!("{}/{name}", api_root(base_url));
+    let (header, value) = (auth.0, auth.1.clone());
+    tokio::spawn(async move {
+        match client.delete(&url).header(header, value).send().await {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                tracing::debug!(status = %r.status(), %name, "gemini cachedContents delete rejected")
+            }
+            Err(e) => tracing::debug!(error = %e, %name, "gemini cachedContents delete failed"),
+        }
+    });
 }
 
 #[cfg(test)]
@@ -235,5 +267,89 @@ mod tests {
             )
             .await;
         assert!(second.is_none());
+    }
+
+    /// A loopback stand-in for the Gemini API: answers a `POST` create with
+    /// `cachedContents/<n>` and anything else with `{}`, one request per
+    /// connection, reporting `"<METHOD> <path> <x-goog-api-key>"` per request.
+    fn mock_gemini() -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            let mut created = 0;
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { return };
+                let mut reader = BufReader::new(sock.try_clone().expect("clone socket"));
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let (mut len, mut key) = (0usize, String::new());
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    let lower = h.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("x-goog-api-key:") {
+                        key = h["x-goog-api-key:".len()..].trim().to_string();
+                    }
+                }
+                let _ = reader.read_exact(&mut vec![0u8; len]);
+                let mut parts = line.split_whitespace();
+                let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                let body = if method == "POST" {
+                    created += 1;
+                    format!(r#"{{"name":"cachedContents/{created}"}}"#)
+                } else {
+                    "{}".to_string()
+                };
+                let _ = tx.send(format!("{method} {path} {key}"));
+                let _ = write!(
+                    sock,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (format!("http://{addr}/v1beta/models"), rx)
+    }
+
+    #[tokio::test]
+    async fn a_key_change_deletes_the_replaced_resource_and_a_reuse_does_not() {
+        let (base, mut seen) = mock_gemini();
+        let http = HttpClient::new().expect("client");
+        let handle = CacheHandle::new();
+        let auth = ("x-goog-api-key", "k1".to_string());
+        let sys_a = "a".repeat(MIN_CACHEABLE_CHARS);
+        let sys_b = "b".repeat(MIN_CACHEABLE_CHARS);
+
+        for (system, want) in [
+            (&sys_a, "cachedContents/1"),
+            (&sys_a, "cachedContents/1"),
+            (&sys_b, "cachedContents/2"),
+        ] {
+            let name = handle.resolve(&http, &base, &auth, "m", system, &[]).await;
+            assert_eq!(name.as_deref(), Some(want));
+        }
+
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(5), seen.recv()).await;
+            requests.push(next.expect("a request within 5s").expect("server alive"));
+        }
+        assert_eq!(
+            requests,
+            [
+                "POST /v1beta/cachedContents k1",
+                "POST /v1beta/cachedContents k1",
+                "DELETE /v1beta/cachedContents/1 k1",
+            ]
+        );
+        let extra = tokio::time::timeout(std::time::Duration::from_millis(300), seen.recv()).await;
+        assert!(extra.is_err(), "the reuse must not delete: {extra:?}");
     }
 }

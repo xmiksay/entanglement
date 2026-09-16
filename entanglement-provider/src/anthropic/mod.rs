@@ -33,7 +33,7 @@ mod sse;
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
 use crate::{
-    Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, ThinkingStyle,
+    AnthropicModelSpec, Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason,
     Usage,
 };
 use async_stream::try_stream;
@@ -97,18 +97,14 @@ pub struct AnthropicLlm {
     /// the bound model. `None` falls back to the client's own `_20250305`
     /// default (see `request::web_search_tool_entry`).
     web_search_tool_version: Option<String>,
-    /// Which extended-thinking request shape the bound model accepts — the
-    /// resolved `ModelEntry::thinking_style`. Anthropic's fixed-budget and
-    /// adaptive forms are mutually exclusive and the newer models reject
-    /// `budget_tokens` with a 400, so the shape is a per-model catalog fact
-    /// rather than a client constant.
-    thinking_style: ThinkingStyle,
-    /// Whether captured thinking blocks are replayed to the provider — the
-    /// resolved `ModelEntry::replay_thinking`. Anthropic requires the block
-    /// back on a tool round-trip, so this defaults on for a thinking model;
-    /// a user can force it off in the catalog. Gates replay only: blocks are
-    /// captured and persisted either way.
-    replay_thinking: bool,
+    /// The bound model's wire facts — thinking shape, replay, effort tiers,
+    /// whether it takes `temperature` — resolved once at construction
+    /// (`Catalog::anthropic_model_spec`). Anthropic's fixed-budget and adaptive
+    /// forms are mutually exclusive and the newer models 400 on `budget_tokens`
+    /// and on any sampling parameter, so these are per-model catalog facts
+    /// rather than client constants. See [`AnthropicModelSpec`] for the
+    /// `model:`-only-pin caveat of binding them at construction.
+    model_spec: AnthropicModelSpec,
     http: HttpClient,
 }
 
@@ -143,7 +139,7 @@ async fn ensure_success(response: reqwest::Response) -> anyhow::Result<reqwest::
 impl Llm for AnthropicLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
-        let body = request::build_body(
+        let mut body = request::build_body(
             &model,
             req.system,
             req.messages,
@@ -152,8 +148,7 @@ impl Llm for AnthropicLlm {
             req.generation,
             self.web_search.as_ref(),
             self.web_search_tool_version.as_deref(),
-            self.thinking_style,
-            self.replay_thinking,
+            self.model_spec,
         );
         // The original conversation's wire `messages` — the base a `pause_turn`
         // continuation replays from, plus its own accumulated trailing turn.
@@ -176,6 +171,10 @@ impl Llm for AnthropicLlm {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let rpm = self.rpm;
         let concurrency = self.concurrency;
+        // Aux fail-fast override (#560 follow-up): `Copy`, so extracted here
+        // like `rpm`/`concurrency` — `req`'s borrow can't cross into the
+        // `'static` `try_stream!` generator below.
+        let retry = req.retry;
         // Resolved against *this* request's model, not baked in at
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`. The
@@ -186,7 +185,6 @@ impl Llm for AnthropicLlm {
         // read after the block builds (the "stream started" trace), and
         // `try_stream!` captures by move.
         let request_model = model.clone();
-        let mut body = body;
 
         let stream = try_stream! {
             let mut cumulative_usage = Usage::default();
@@ -217,7 +215,7 @@ impl Llm for AnthropicLlm {
                             concurrency,
                             &request_model,
                             model_concurrency,
-                            None,
+                            retry,
                             || {
                                 let request = http
                                     .client()

@@ -22,25 +22,26 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, bash_live, config, env_date, extra_roots, history, host, inspect, logging,
+    agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
     mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
     propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
-    throttle, tool_names, tool_runner, tool_state, watch, SharedRegistry, ToolRegistry,
+    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
+    SharedRegistry, ToolRegistry,
 };
-use tool_runner::EscapeRoot;
+use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
-    ProviderEntry, ResolvedModel, ThinkingStyle, WebSearchConfig, Wire,
+    ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
 use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{BashTool, CallTool, ReadRawTool};
+use host::{BashTool, CallTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -65,15 +66,14 @@ use tui::tui;
 /// has its own client.
 ///
 /// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`), `call`
-/// (argv exec, no shell), and `load_skill` are always registered, rooted at the
-/// current working directory, so the `build`/`plan`/`explore` permission
-/// profiles gate something real out of the box. `bash` (shell) stays opt-in:
-/// set `ENTANGLEMENT_ENABLE_BASH=1` to register `BashTool` — its background
-/// jobs are joined with the always-available runtime-owned `poll` tool (#605),
-/// not a paired registry tool. Both run unsandboxed with the engine's full
-/// privileges by default (ADR-0009 / ADR-0010 / ADR-0045). `call` runs with the
-/// same full-privilege, unsandboxed-by-default execution but no shell means no
-/// injection surface, so its *registration* no longer rides `bash`'s opt-in gate
+/// (argv exec, no shell), `load_skill`, and `bash` are always registered, rooted
+/// at the current working directory, so the `build`/`plan`/`explore` permission
+/// profiles gate something real out of the box (ADR-0195 retired the old
+/// `ENTANGLEMENT_ENABLE_BASH` opt-in — registration is not where `bash`'s
+/// security story lives; the permission profiles and the config ceiling are).
+/// Both run unsandboxed with the engine's full privileges by default
+/// (ADR-0009 / ADR-0045). `call` runs with the same full-privilege,
+/// unsandboxed-by-default execution but no shell means no injection surface
 /// (ADR-0094); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
 /// dispatch gate, same as any other tool. Both may instead run confined under
 /// bubblewrap — set `ENTANGLEMENT_SANDBOX=bwrap` (`ENTANGLEMENT_SANDBOX_NETWORK=1`
@@ -101,8 +101,6 @@ async fn build_config(
     mcp::ActiveServers,
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
-    Arc<bash_live::BashRegistered>,
-    bash_live::BashToolConfig,
     policy::SandboxConfig,
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
@@ -143,10 +141,9 @@ async fn build_config(
         .and_then(|p| p.canonicalize())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
-    let bash_enabled = std::env::var("ENTANGLEMENT_ENABLE_BASH").as_deref() == Ok("1");
     // Optional bubblewrap confinement for bash/call (#399, ADR-0104; #479 adds
     // the per-profile `sandbox:` frontmatter override on top of this
-    // process-global default). Off by default — `bash_enabled` alone still
+    // process-global default). Off by default — an unset `ENTANGLEMENT_SANDBOX`
     // means unsandboxed, full-privilege execution, matching every release
     // before this.
     let sandbox_config = policy::SandboxConfig::from_env();
@@ -167,22 +164,11 @@ async fn build_config(
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
     let extra_root_store = Arc::new(extra_root_store);
-    // Live bash registration (#498, ADR-0133; folded into the session tool
-    // overlay, #611/ADR-0163): `live_bash` starts seeded from the startup
-    // `bash_enabled` (so the TUI `!bash` gate reflects it) and flips to `true`
-    // the moment a later `/enable tool bash` lazily registers it (ADR-0163
-    // §2). Created *before* `register_default_tools` (rather than after, as
-    // pre-#554) so `call`'s shape-check error (#554) can read the same live
-    // handle and stay accurate across a later enable, not just the startup
-    // state. Unlike the pre-ADR-0163 `LiveBashState`, it carries no grade —
-    // that's a per-session overlay concern now, resolved by
-    // `permission::overlay_entry_grade`, not this process-global flag.
-    let live_bash = bash_live::BashRegistered::new(bash_enabled);
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
-    // `bash` (however/whenever it gets registered — at startup or via a later
-    // live `/bash on`) and `poll`'s job-handle path, so a background job is
-    // always pollable through whichever `BashTool` actually spawned it. This
-    // also closes #616's job-orphaning — there is only ever one registry.
+    // `bash` (registered at startup alongside every other built-in, ADR-0195)
+    // and `poll`'s job-handle path, so a background job is always pollable
+    // through whichever `BashTool` actually spawned it. This also closes #616's
+    // job-orphaning — there is only ever one registry.
     let jobs = host::JobRegistry::new();
     // The one `RetainedOutputRegistry` for this process's whole lifetime
     // (#608): shared by `call` (which writes a truncated result's full text
@@ -197,34 +183,16 @@ async fn build_config(
         root.clone(),
         Some(extra_root_store.clone()),
         secret_env.clone(),
-        bash_enabled,
         sandbox_config.resolver(),
-        live_bash.clone(),
         jobs.clone(),
         retained.clone(),
     );
-    // `bash_tool_config` is what a later live `/bash on` needs to build a fresh
-    // `BashTool` on demand, mirroring this function's own bash arm in
-    // `register_default_tools`.
-    let bash_tool_config = bash_live::BashToolConfig {
-        root: root.clone(),
-        extra_roots: Some(extra_root_store.clone()),
-        secret_env: secret_env.clone(),
-        sandbox_resolver: sandbox_config.resolver(),
-        jobs: jobs.clone(),
-    };
     let escape_root = EscapeRoot {
         root: root.clone(),
         store: extra_root_store,
     };
-    if bash_enabled && !sandbox_config.base.is_sandboxed() {
-        eprintln!(
-            "skutter: bash enabled (ENTANGLEMENT_ENABLE_BASH=1) — \
-             run unsandboxed with full privileges"
-        );
-    }
-    // `call` is always registered (ADR-0093), so the sandbox notice fires
-    // independent of `bash_enabled`.
+    // `call` and `bash` are both always registered (ADR-0093/ADR-0195), so the
+    // sandbox notice fires whenever confinement is on.
     if sandbox_config.base.is_sandboxed() {
         eprintln!(
             "skutter: bash/call sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
@@ -236,10 +204,24 @@ async fn build_config(
             }
         );
     }
+    // Skill-declared tools (#560 P8): a native/strict-layer `SKILL.md`'s
+    // `tools:` frontmatter — endpoint refs, rhai-backed tools, and aliases —
+    // registered once at skill-discovery time (this same startup pass, not
+    // gated behind `load_skill`), namespaced `skill__<skill>__<name>`. See
+    // `skills::tools`'s module doc for why discovery-time beats load-time.
+    // Snapshotted from the live wrapper *before* it's moved into
+    // `LoadSkillTool::new` below (cheap — an `Arc` clone under a brief read
+    // lock).
+    let skill_registry_snapshot = skills.read().unwrap().clone();
+    skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot, http_client);
     // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
     // reads the filesystem), so it is registered here and goes through the *same*
     // per-call permission gate as `read` — no runtime-executor interception.
     tools.register(LoadSkillTool::new(skills));
+    // Definition-driven HTTP endpoint tools (#560 P8): `config.yml`'s
+    // `endpoints:` map, each registered as `endpoint__<name>` — startup-only,
+    // see `endpoint`'s module doc for why live-reload isn't wired.
+    endpoint::register_endpoints(&mut tools, &user_config.endpoints, http_client);
     // External MCP tool servers (#198): spawn each configured server, discover its
     // `tools/list`, and register every tool into the same registry as a
     // runtime-side provider. They then ride `tool_specs` (schemas) and the
@@ -269,24 +251,24 @@ async fn build_config(
         http_client.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();
-    // `bash` is advertised even while unregistered (the startup env var is off
-    // and no session has run `/enable tool bash` yet): its schema is what keeps
-    // the tools array stable across a later enable, and a call before then is
-    // declined at dispatch with the enabling command. Mirrored in the live
-    // `tool_spec_resolver` below, which is what a real head actually consults;
-    // this static snapshot serves the lean/embedder path and the `/agent`
-    // tools checklist.
-    if !bash_enabled {
-        cfg.tool_specs.push(bash_live::bash_spec());
-    }
-    // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
-    // registers *after* the specs snapshot above: present in `tools` for
-    // execution (the rhai bridge routes through the same `ToolRegistry`), but
-    // never advertised as a standalone model-callable tool.
+    // `read_raw` and the script-facing search variants (rhai-only — see
+    // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
+    // bindings, ADR-0206) register *after* the specs snapshot above: present
+    // in `tools` for execution (the rhai bridge routes through the same
+    // `ToolRegistry`), but never advertised as standalone model-callable
+    // tools.
     tools
         .write()
         .unwrap()
         .register(ReadRawTool::new(root.clone()));
+    tools
+        .write()
+        .unwrap()
+        .register(GlobJsonTool::new(root.clone()));
+    tools
+        .write()
+        .unwrap()
+        .register(GrepJsonTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
     // the model. Per-profile spawn control (#119, ADR-0040) makes the family
@@ -348,8 +330,6 @@ async fn build_config(
         mcp_active,
         mcp_available,
         escape_root,
-        live_bash,
-        bash_tool_config,
         sandbox_config,
         jobs,
         retained,
@@ -357,27 +337,26 @@ async fn build_config(
     )
 }
 
-/// Assemble the tool registry: the root-contained quintet plus `call`
-/// (registered unconditionally — argv exec, no shell, ADR-0094) and, only when
-/// `bash_enabled`, the opt-in `bash` tool. `jobs` (#605; #606) is the one
+/// Assemble the tool registry: the root-contained sextet plus the exec pair —
+/// `call` (registered unconditionally since ADR-0094) and `bash` (registered
+/// unconditionally since ADR-0195, which retired the `ENTANGLEMENT_ENABLE_BASH`
+/// opt-in: registration is not where either tool's security story lives, the
+/// permission profiles + config ceiling are). `jobs` (#605; #606) is the one
 /// process-lifetime `JobRegistry` `poll` was wired up with — shared with both
-/// exec tools (not minted fresh) so a `call background=true`/startup-registered
-/// `bash`'s background jobs are the same ones `poll` can see. `retained`
-/// (#608) is likewise the one process-lifetime `RetainedOutputRegistry` `poll`
-/// was wired up with, shared with `call` so a truncated blocking result's
-/// handle is pollable. `secret_env` (the catalog's provider API-key env vars,
-/// #164) is scrubbed from both exec tools' children. `sandbox_resolver`
+/// exec tools (not minted fresh) so a `call background=true`/`bash`
+/// background job is the same one `poll` can see. `retained` (#608) is
+/// likewise the one process-lifetime `RetainedOutputRegistry` `poll` was
+/// wired up with, shared with `call` so a truncated blocking result's handle
+/// is pollable. `secret_env` (the catalog's provider API-key env vars, #164)
+/// is scrubbed from both exec tools' children. `sandbox_resolver`
 /// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
 /// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
-#[allow(clippy::too_many_arguments)]
 fn register_default_tools(
     root: std::path::PathBuf,
     extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
     secret_env: Vec<String>,
-    bash_enabled: bool,
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
-    live_bash: Arc<bash_live::BashRegistered>,
     jobs: host::JobRegistry,
     retained: retained_output::RetainedOutputRegistry,
 ) -> ToolRegistry {
@@ -385,23 +364,20 @@ fn register_default_tools(
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
-        .with_bash_status(live_bash)
         .with_jobs(jobs.clone())
         .with_retained_output(retained);
     if let Some(e) = &extra_roots {
         call = call.with_extra_roots(e.clone());
     }
     tools.register(call);
-    if bash_enabled {
-        let mut bash = BashTool::new(root.clone())
-            .with_secret_env(secret_env.clone())
-            .with_jobs(jobs)
-            .with_sandbox_resolver(sandbox_resolver);
-        if let Some(e) = &extra_roots {
-            bash = bash.with_extra_roots(e.clone());
-        }
-        tools.register(bash);
+    let mut bash = BashTool::new(root.clone())
+        .with_secret_env(secret_env.clone())
+        .with_jobs(jobs)
+        .with_sandbox_resolver(sandbox_resolver);
+    if let Some(e) = &extra_roots {
+        bash = bash.with_extra_roots(e.clone());
     }
+    tools.register(bash);
     tools
 }
 
@@ -503,6 +479,9 @@ fn wire_config(
         Wire::Openai => openai_wire_config(entry, http_client, catalog, user_config),
         Wire::Anthropic => anthropic_wire_config(entry, http_client, catalog, user_config),
         Wire::Gemini => gemini_wire_config(entry, http_client, catalog, user_config),
+        Wire::OpenaiResponses => {
+            openai_responses_wire_config(entry, http_client, catalog, user_config)
+        }
     }
 }
 
@@ -630,32 +609,6 @@ fn web_search_tool_version(
         .and_then(|m| m.web_search_tool_version.clone())
 }
 
-/// Anthropic extended-thinking request shape for `model`: the catalog's
-/// `ModelEntry::thinking_style`, defaulting to the fixed-budget form so an
-/// existing user catalog keeps emitting exactly what it emitted before. Resolved
-/// inside [`anthropic_factory_for`] rather than passed in like
-/// `web_search_tool_version` — it applies to every request, not just the
-/// web-search ones, so threading it would make each call site repeat the lookup.
-fn thinking_style(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ThinkingStyle {
-    catalog
-        .model(&entry.name, model)
-        .map(|m| m.resolved_thinking_style())
-        .unwrap_or_default()
-}
-
-/// Whether captured thinking blocks replay to `model`. The Anthropic wire
-/// default is **on**: the API requires the block back on a tool round-trip, and
-/// when thinking is off the setting is inert anyway (no blocks are captured, so
-/// there is nothing to send). That also makes `true` the right answer for a
-/// model absent from the catalog — a user pointing at an unlisted model still
-/// gets a valid request rather than a 400 they cannot diagnose.
-fn replay_thinking(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> bool {
-    catalog
-        .model(&entry.name, model)
-        .map(|m| m.replays_thinking(true))
-        .unwrap_or(true)
-}
-
 /// Anthropic-wire provider. Always keyed; base from env/catalog else the
 /// client's own default (#551, see [`anthropic_factory_for`]).
 fn anthropic_wire_config(
@@ -699,6 +652,33 @@ fn gemini_wire_config(
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
     let llm_factory = gemini_factory_for(entry, &model, http_client, catalog, None).ok()?;
+    eprintln!("skutter: provider={} model={model}", entry.name);
+    Some((
+        EngineConfig {
+            llm_factory,
+            default_model: Some(model.clone()),
+            generation: generation_for(entry, &model, catalog),
+            pricing: pricing_map(catalog),
+            ..EngineConfig::default()
+        },
+        model_info_for(entry, &model, catalog),
+    ))
+}
+
+/// OpenAI Responses API wire (P7, ADR-0196 §3). Key/base resolution mirrors
+/// [`openai_wire_config`] (same `key_env`/`{NAME}_API_BASE` precedence); no
+/// provider-side web search or `prompt_cache_key` hint — see
+/// `entanglement_provider::openai_responses`'s module doc for why this
+/// client doesn't (yet) carry those OpenAI-compat-only knobs.
+fn openai_responses_wire_config(
+    entry: &ProviderEntry,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+    user_config: &config::Config,
+) -> Option<(EngineConfig, ModelInfo)> {
+    let model = resolve_model(entry, user_config);
+    let llm_factory =
+        openai_responses_factory_for(entry, &model, http_client, catalog, None).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -834,6 +814,48 @@ fn openai_factory_for(
     ))
 }
 
+/// Build an OpenAI Responses-wire [`LlmFactory`] for an explicit `(entry,
+/// model)` (P7). Shared by startup ([`openai_responses_wire_config`]) and
+/// the live-switch resolver ([`build_model_resolver`]). Key/base resolution
+/// mirrors [`openai_factory_for`] exactly; `explicit_key` mirrors its
+/// multi-user seam too.
+fn openai_responses_factory_for(
+    entry: &ProviderEntry,
+    model: &str,
+    http_client: &HttpClient,
+    catalog: &Catalog,
+    explicit_key: Option<&str>,
+) -> Result<LlmFactory, String> {
+    let auth = llm_oauth_source(entry)?;
+    let key = match (&auth, explicit_key) {
+        (Some(_), _) => None,
+        (None, Some(k)) => Some(k.to_string()),
+        (None, None) => match &entry.key_env {
+            Some(k) => Some(
+                env_nonempty(k)
+                    .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+            ),
+            None => None,
+        },
+    };
+    let name = entry.name.to_uppercase();
+    let base = env_nonempty(&format!("{name}_API_BASE"))
+        .or_else(|| env_nonempty(&format!("{name}_BASE")))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| entanglement_provider::OPENAI_RESPONSES_BASE.to_string());
+    Ok(entanglement_provider::openai_responses_factory(
+        base,
+        key,
+        auth,
+        model.to_string(),
+        resolve_rpm(entry),
+        resolve_concurrency(entry),
+        catalog.model_concurrency_resolver(&entry.name),
+        catalog.thinking_spec_resolver(&entry.name),
+        http_client.clone(),
+    ))
+}
+
 /// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
@@ -884,8 +906,12 @@ fn anthropic_factory_for(
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         web_search_tool_version,
-        thinking_style(entry, model, catalog),
-        replay_thinking(entry, model, catalog),
+        // Thinking shape, replay, effort tiers, temperature support — resolved
+        // inside the factory builder (not threaded like
+        // `web_search_tool_version`) because they apply to every request. An
+        // unlisted model gets `AnthropicModelSpec::default()`: budget shape,
+        // replay on (the API requires the block back on a tool round-trip).
+        catalog.anthropic_model_spec(&entry.name, model),
         http_client.clone(),
     ))
 }
@@ -949,6 +975,9 @@ fn resolve_catalog_entry(
             explicit_key,
         )?,
         Wire::Gemini => gemini_factory_for(entry, model, http_client, catalog, explicit_key)?,
+        Wire::OpenaiResponses => {
+            openai_responses_factory_for(entry, model, http_client, catalog, explicit_key)?
+        }
     };
     Ok(ResolvedModel {
         provider: entry.name.clone(),
@@ -1309,11 +1338,19 @@ async fn main() -> Result<()> {
     let mut prompt_ctx = system_prompt::PromptContext::load(&cwd);
     prompt_ctx.skills = skill_registry.disclosures();
     // The MCP capability index (#426): config-side `capabilities:` hints on
-    // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission
-    // key alongside the fixed built-in set — computed once here (like the
-    // ceiling permission below) rather than re-derived on every reload.
-    let mcp_capabilities =
-        mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
+    // `user_config.mcp` *and* every catalog-bundled server (e.g. z.ai's
+    // `web_search_prime`, which never joins `user_config.mcp` — #542),
+    // folded into any bare `read`/`write`/`call` permission key alongside the
+    // fixed built-in set — computed once here (like the ceiling permission
+    // below) rather than re-derived on every reload.
+    let mut mcp_capabilities = mcp::capability_index_with_catalog(&catalog, &user_config.mcp)
+        .context("resolving MCP capability hints")?;
+    // Every declared endpoint tool joins the same data-driven `call` index
+    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
+    mcp_capabilities
+        .entry("call".to_string())
+        .or_default()
+        .extend(endpoint::call_capability_names(&user_config.endpoints));
     // The skill registry also resolves per-agent `skills:` preload bodies (#117),
     // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
     let mut profiles = agents::load_registry(&cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
@@ -1362,8 +1399,6 @@ async fn main() -> Result<()> {
         mcp_active,
         mcp_available,
         escape_root,
-        live_bash,
-        bash_tool_config,
         sandbox_config,
         jobs,
         retained,
@@ -1382,11 +1417,26 @@ async fn main() -> Result<()> {
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
-    // Keep the baked `<env>` date accurate across a long-lived process (#566):
-    // consulted once per turn, a no-op (falls back to the byte-stable baked
-    // prompt) except on the one turn where the calendar date has actually
-    // rolled over.
-    engine_config.system_prompt_resolver = Some(env_date::date_resolver());
+    // `explore`/`describe`'s shared state (#560, ADR-0196 §2-4): the pinned
+    // session→mode map plus the `client_side`-encoding discovered-tool set.
+    // Constructed once, here, so the *same* `Arc` is visible to the system-
+    // prompt resolver just below, the tool-spec resolver further down, and
+    // the tool executor at the bottom of this function — Phase P1's
+    // loop-local-only map is gone.
+    let advertising_state = std::sync::Arc::new(tool_advertising::AdvertisingState::new());
+    // The `Cmd::Tui`/bare-invocation arms below need their own handle too
+    // (`/tools`' status column, ADR-0199 part 3) — cloned here since the
+    // executor construction below moves `advertising_state` itself into its
+    // `DiscoverySurface`.
+    let advertising_state_for_tui = advertising_state.clone();
+    // Per-session system prompt (#566, #560): folds the `<env>` date-freshness
+    // patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming into the
+    // one `SystemPromptResolver` slot — consulted once per turn, a no-op for
+    // a `Full`-mode session except on the date's actual rollover, always-Some
+    // for a `ToolSearch`-mode one (the slimmed prompt, byte-stable per
+    // session since the mode never changes mid-session).
+    engine_config.system_prompt_resolver =
+        Some(system_prompt_mode::resolver(advertising_state.clone()));
     // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
     // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
     // transformation (session-title generation today; compaction summary once
@@ -1413,71 +1463,33 @@ async fn main() -> Result<()> {
         engine_config.llm_factory.clone(),
         catalog.clone(),
         primary_concurrency,
+        (provider_name.clone(), model_info.id.clone()),
     );
     // Route session compaction (both `/compact` and the auto-summarize overflow
     // path) through the `summarize` pin when one is set — core calls this with
     // the purpose string and falls back to the session's own backend on `None`.
     engine_config.aux_llm_resolver = Some(aux_registry.clone().resolver());
-    // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
-    // registration change (MCP add/remove, #375) is visible without a restart.
-    // `engine_config.tool_specs` stays the static snapshot baked above (still
-    // useful as the tools-checklist roster below); `tool_spec_resolver` is the
-    // seam core actually consults every turn (ADR-0076) — reproducing that same
-    // snapshot (registry tools + the full runtime-owned roster:
-    // `update_tasks`/`ask_user`/`poll` + `bash` + `rhai` behind its feature)
-    // keeps this change behavior-neutral today, while making every *future*
-    // registry mutation land on the next turn for free. This resolver is the
-    // **only** thing that shapes the surface now — core advertises its output
-    // verbatim, with masks enforced at dispatch — so a spec missing here is a
-    // spec no model ever sees (the ADR-0190 Bug-1 shape: `poll` was omitted
-    // and vanished from every real head while tests, which run off the static
-    // `tool_specs` fallback, stayed green).
-    {
-        let tools = tools.clone();
-        let avail = mcp_available.clone();
-        #[allow(unused_mut)] // only mutated when the `rhai` feature is on
-        let mut runtime_owned_specs = vec![
-            plan_tasks::update_tasks_spec(),
-            ask_user::ask_user_spec(),
-            poll::poll_spec(),
-            // Advertised whether or not `bash` is registered: a dispatch before
-            // `/enable tool bash` is declined with the enabling command, and
-            // the tools array stays byte-identical across the enable (deduped
-            // against the registry's own copy below once it lands there).
-            bash_live::bash_spec(),
-        ];
-        #[cfg(feature = "rhai")]
-        runtime_owned_specs.push(script::rhai_spec());
-        engine_config.tool_spec_resolver = Some(Arc::new(move |session: &SessionId| {
-            // `read_raw` lives in the same shared registry as every other tool
-            // (rhai's bridge needs to `execute()` it) but must never reach the
-            // model directly — it's read-only for `parse_json`/`parse_yaml`
-            // (ADR-0098) and is graded/masked as an alias of `read`, which only
-            // holds if a profile author never sees it to configure separately.
-            // A lazily-connected `allowed` MCP server's tools (#542) stay
-            // scoped to the sessions that enabled them — MCP is the one
-            // acknowledged dynamic seam in an otherwise session-stable surface,
-            // since a server's tools are unknowable until it connects.
-            let mut specs: Vec<_> = tools
-                .read()
-                .unwrap()
-                .specs()
-                .into_iter()
-                .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
-                .collect();
-            specs.extend(runtime_owned_specs.iter().cloned());
-            // Sorted by name (#566): `specs()` is already sorted, but appending
-            // the runtime-owned pseudo-tools after it reintroduces an unsorted
-            // tail — re-sort so the whole array handed to the model (and thus
-            // the provider's cached `tools` prefix) has one stable order,
-            // independent of registration order and stable across restarts.
-            specs.sort_by(|a, b| a.name.cmp(&b.name));
-            // A registered `bash` appears twice (registry + the roster above);
-            // keep one. Sorting first makes the duplicates adjacent.
-            specs.dedup_by(|a, b| a.name == b.name);
-            specs
-        }));
-    }
+    // Dynamic `ToolRegistry` (#372, ADR-0096) behind the per-session resolver
+    // core consults every round (ADR-0076) — shaped per the session's pinned
+    // advertising mode/encoding/discovery (ADR-0196, ADR-0204). Lives in the
+    // library (`tool_advertising::surface`) so tests run the same resolver.
+    // The resolver pins each session at its first resolution from the model
+    // core hands it — the startup backend when none is bound (ADR-0204).
+    let advertising_inputs = Arc::new(
+        tool_advertising::AdvertisingInputs::new(
+            Arc::new(user_config.clone()),
+            Some(Arc::new(catalog.clone())),
+        )
+        .with_default_model(provider_name.clone(), model_info.id.clone()),
+    );
+    engine_config.tool_spec_resolver = Some(tool_advertising::surface::tool_spec_resolver(
+        tool_advertising::surface::SurfaceSources {
+            tools: tools.clone(),
+            avail: mcp_available.clone(),
+            advertising: advertising_state.clone(),
+            inputs: advertising_inputs.clone(),
+        },
+    ));
     // Live MCP server management (#375): `ActiveServers` was seeded by
     // `build_config` from the servers it actually connected; `ServerConfigs`
     // starts from the *whole* user-configured set (including a disabled/failed
@@ -1550,6 +1562,21 @@ async fn main() -> Result<()> {
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // The same advertising inputs the resolver pins from; the executor
+        // only logs a `SetModel` onto a model preferring another mode.
+        Some(advertising_inputs),
+        // `explore`/`describe`'s shared state (#560, ADR-0196 §4): the same
+        // `advertising_state` the tool-spec/system-prompt resolvers above
+        // read, plus the MCP three-state roster `explore` lists.
+        Some(DiscoverySurface {
+            advertising: advertising_state,
+            mcp_avail: mcp_available.clone(),
+            mcp_active: mcp_active.clone(),
+            validation: std::sync::Arc::new(entanglement_runtime::arg_validate::LoopBreaker::new()),
+            // ADR-0201: the same shared endpoint-pool client a dispatch-time
+            // lazy MCP re-enable rides.
+            http: Some(http_client.clone()),
+        }),
     );
 
     // Live MCP server management (#375): a runtime service answering
@@ -1564,18 +1591,6 @@ async fn main() -> Result<()> {
         mcp_available.clone(),
         catalog.key_envs(),
         http_client.clone(),
-    );
-
-    // Lazily-registrable built-ins (#611, ADR-0163 §2): a runtime service
-    // watching the outbound broadcast for `OutEvent::ToolOverlayChanged` and
-    // registering `bash` into `tools` the moment a session's overlay enables
-    // it — the fold-in of the pre-ADR-0163 `BashEnable`/`BashDisable`
-    // responder, mirroring the MCP responder above.
-    let bash_responder_handle = bash_live::spawn_lazy_builtin_responder(
-        &holly,
-        tools.clone(),
-        bash_tool_config,
-        live_bash.clone(),
     );
 
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
@@ -1737,7 +1752,6 @@ async fn main() -> Result<()> {
                 live_aux_models.clone(),
                 reload_rx,
                 cwd.clone(),
-                live_bash,
                 tool_names,
                 http_client.clone(),
                 user_config.editor.clone(),
@@ -1747,6 +1761,7 @@ async fn main() -> Result<()> {
                     registry: tools.clone(),
                     active: mcp_active.clone(),
                 },
+                advertising_state_for_tui,
             )
             .await
         }
@@ -1784,7 +1799,6 @@ async fn main() -> Result<()> {
                     live_aux_models.clone(),
                     reload_rx,
                     cwd.clone(),
-                    live_bash,
                     tool_names,
                     http_client.clone(),
                     user_config.editor.clone(),
@@ -1794,6 +1808,7 @@ async fn main() -> Result<()> {
                         registry: tools.clone(),
                         active: mcp_active.clone(),
                     },
+                    advertising_state_for_tui,
                 )
                 .await
             } else {
@@ -1834,7 +1849,6 @@ async fn main() -> Result<()> {
     // this whole shutdown would never observe the channels close.
     tool_executor.abort();
     mcp_responder_handle.abort();
-    bash_responder_handle.abort();
     throttle_handle.abort();
     session_title_handle.abort();
     narrate_handle.abort();
@@ -1919,7 +1933,7 @@ fn format_relative(ts_ms: u64) -> String {
 mod tests {
     use super::{launches_tui_head, register_default_tools, Cmd};
     use crate::host::SandboxPolicy;
-    use entanglement_runtime::{bash_live, retained_output};
+    use entanglement_runtime::retained_output;
 
     #[test]
     fn tui_head_covers_bare_skutter_and_explicit_subcommand() {
@@ -1953,6 +1967,8 @@ mod tests {
             models: Vec::new(),
             mcp_servers: Default::default(),
             prompt_cache_key: false,
+            thinking_control: None,
+            discovery: None,
         }
     }
 
@@ -1974,15 +1990,16 @@ mod tests {
         std::env::remove_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()));
     }
 
-    fn tool_names(bash_enabled: bool) -> Vec<String> {
+    /// The advertised roster `register_default_tools` produces with no env var
+    /// or opt-in of any kind — the ADR-0195 posture: both exec tools are
+    /// registered unconditionally at startup, exactly like the sextet.
+    fn tool_names() -> Vec<String> {
         let root = std::env::temp_dir();
         register_default_tools(
             root,
             None,
             Vec::new(),
-            bash_enabled,
             std::sync::Arc::new(SandboxPolicy::none()),
-            bash_live::BashRegistered::new(bash_enabled),
             crate::host::JobRegistry::new(),
             retained_output::RetainedOutputRegistry::new(),
         )
@@ -1993,21 +2010,17 @@ mod tests {
     }
 
     #[test]
-    fn call_is_registered_unconditionally() {
-        let names = tool_names(false);
-        assert!(names.contains(&"call".to_string()), "{names:?}");
-    }
-
-    #[test]
-    fn bash_stays_opt_in() {
-        let names = tool_names(false);
-        assert!(!names.contains(&"bash".to_string()), "{names:?}");
-    }
-
-    #[test]
-    fn bash_enabled_registers_bash_and_call() {
-        let names = tool_names(true);
+    fn call_and_bash_are_registered_unconditionally_at_startup() {
+        // ADR-0195: `bash` joins `call` (ADR-0093) as an always-registered
+        // built-in — no env var, no `/enable` needed. What a run may do with
+        // it is the permission profiles' + the config ceiling's job, not the
+        // registry's.
+        let names = tool_names();
         assert!(names.contains(&"call".to_string()), "{names:?}");
         assert!(names.contains(&"bash".to_string()), "{names:?}");
+        // The sextet is still there alongside them.
+        for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
+            assert!(names.contains(&expected.to_string()), "{names:?}");
+        }
     }
 }

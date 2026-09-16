@@ -118,6 +118,92 @@ pub async fn enable_for_session(
     Ok(tools)
 }
 
+/// Cooldown window for [`try_lazy_reenable`]'s stampede guard (ADR-0201): a
+/// dispatch-time re-enable failure within this window short-circuits a later
+/// unknown `mcp__<server>__*` call against the same server to the same error
+/// instead of each retrying the full [`CONNECT_TIMEOUT`] connect.
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// How a dispatch-time "unknown tool" resolution for an `mcp__<server>__*`
+/// name settled (ADR-0201) — see [`try_lazy_reenable`].
+pub enum LazyReenableOutcome {
+    /// [`super::McpTier::Unknown`]: no registered tool, no configured/
+    /// bundled server under this name in any tier — the caller falls
+    /// through to the ordinary unknown-tool message, unchanged.
+    Unknown,
+    /// [`super::McpTier::Disabled`]: the server is known but explicitly
+    /// configured off — a truthful, attributed decline
+    /// ([`super::disabled_decline`]), never the unknown-tool message.
+    Disabled,
+    /// Re-enabled successfully via the `allowed`/lazy tier — the same
+    /// zero-approval path `mcp_enable`/`/enable mcp` use (ADR-0152: the tier
+    /// itself is the consent boundary, not a fresh approval prompt). The
+    /// caller must re-fetch its registry snapshot (this registered the
+    /// tools into the *live* registry, invisible to an already-cloned one)
+    /// and continue the dispatch ladder exactly as if the tool had been
+    /// registered all along.
+    Enabled,
+    /// The connect failed — fresh, or short-circuited by the
+    /// [`FAILURE_COOLDOWN`] guard with the same message.
+    Failed(String),
+}
+
+/// Self-heal a dispatch-time "unknown tool" for an `mcp__<server>__*` name
+/// whose server isn't currently registered (ADR-0201) — the resume-
+/// coherence gap: a resumed session's replay restores its tool-overlay/
+/// permission state (so the call is never masked) but never re-registers a
+/// bundled server's tools — `ToolRegistry` is process-lifetime, never
+/// persisted, and nothing re-enables on resume. Classifies `server` per
+/// [`AvailableMcp::tier_of`] first — exactly the check `mcp_enable`/
+/// `/enable mcp` make — so a `disabled` tier or a truly unknown name is
+/// answered truthfully rather than lazily connected or misreported as
+/// unknown. `http: None` (no HTTP client wired into the caller) is treated
+/// as a connect failure, never a panic — every in-tree head wires one; only
+/// a hand-rolled embedder omitting `DiscoverySurface::http` while still
+/// populating `mcp_avail` would ever see it.
+pub async fn try_lazy_reenable(
+    avail: &AvailableMcp,
+    server: &str,
+    session: &SessionId,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    http: Option<&entanglement_core::HttpClient>,
+) -> LazyReenableOutcome {
+    match avail.tier_of(server) {
+        super::McpTier::Unknown => return LazyReenableOutcome::Unknown,
+        super::McpTier::Disabled => return LazyReenableOutcome::Disabled,
+        super::McpTier::Eligible => {}
+    }
+    if avail.recently_failed_enable(server, FAILURE_COOLDOWN) {
+        return LazyReenableOutcome::Failed(format!(
+            "mcp server `{server}` could not be re-enabled: recent connect failure, retry shortly"
+        ));
+    }
+    let Some(http) = http else {
+        return LazyReenableOutcome::Failed(format!(
+            "mcp server `{server}` could not be re-enabled: no HTTP client configured for lazy \
+             MCP re-enablement"
+        ));
+    };
+    match enable_for_session(avail, server, session, registry, active, http).await {
+        Ok(_tools) => {
+            avail.clear_enable_failure(server);
+            tracing::info!(
+                %session,
+                server,
+                "MCP server: dispatch-time lazy re-enable (resume self-heal, ADR-0201)"
+            );
+            LazyReenableOutcome::Enabled
+        }
+        Err(e) => {
+            avail.record_enable_failure(server);
+            LazyReenableOutcome::Failed(format!(
+                "mcp server `{server}` could not be re-enabled: {e:#}"
+            ))
+        }
+    }
+}
+
 /// Disconnect a lazily-connected available server entirely (the `/mcp remove`
 /// arm for a bundled name): unregister its tools, drop the connection, clear
 /// every session's enablement mark. Nothing is persisted — the server stays
@@ -135,4 +221,75 @@ pub fn disconnect(
     active.lock().unwrap().remove(name);
     avail.enabled.lock().unwrap().remove(name);
     tracing::info!("MCP server `{name}`: disconnected (still available)");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, RwLock};
+
+    use super::*;
+
+    fn registry() -> SharedRegistry {
+        Arc::new(RwLock::new(crate::tools::ToolRegistry::new()))
+    }
+    fn active() -> ActiveServers {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// [`super::McpTier::Unknown`] short-circuits before any connect
+    /// attempt — no `http` client is even consulted.
+    #[tokio::test]
+    async fn unknown_server_short_circuits_without_a_connect_attempt() {
+        let avail = AvailableMcp::default();
+        let out = try_lazy_reenable(
+            &avail,
+            "nope",
+            &SessionId::new("s"),
+            &registry(),
+            &active(),
+            None,
+        )
+        .await;
+        assert!(matches!(out, LazyReenableOutcome::Unknown));
+    }
+
+    /// [`super::McpTier::Disabled`] likewise short-circuits — a known name,
+    /// truthfully declined, never treated as eligible for a connect.
+    #[tokio::test]
+    async fn disabled_server_short_circuits_without_a_connect_attempt() {
+        let mut avail = AvailableMcp::default();
+        avail.disabled_names.insert("off".to_string());
+        let out = try_lazy_reenable(
+            &avail,
+            "off",
+            &SessionId::new("s"),
+            &registry(),
+            &active(),
+            None,
+        )
+        .await;
+        assert!(matches!(out, LazyReenableOutcome::Disabled));
+    }
+
+    /// A tier-eligible server with no `http` client wired (`DiscoverySurface
+    /// { http: None, .. }`) fails cleanly — never panics — and says why.
+    #[tokio::test]
+    async fn eligible_with_no_http_client_fails_cleanly_not_a_panic() {
+        let avail = AvailableMcp::default();
+        avail.mark_enabled("lazy", &SessionId::new("s0"));
+        let out = try_lazy_reenable(
+            &avail,
+            "lazy",
+            &SessionId::new("s"),
+            &registry(),
+            &active(),
+            None,
+        )
+        .await;
+        match out {
+            LazyReenableOutcome::Failed(msg) => assert!(msg.contains("no HTTP client"), "{msg}"),
+            _ => panic!("expected a Failed outcome"),
+        }
+    }
 }

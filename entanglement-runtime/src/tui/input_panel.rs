@@ -12,19 +12,7 @@ use crate::tui::modals;
 use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
 
-/// Compact token-count display with SI-style multipliers (k/M/G) so large
-/// per-session totals stay readable in the bottom bar.
-fn format_tokens(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else if n < 1_000_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else {
-        format!("{:.1}G", n as f64 / 1_000_000_000.0)
-    }
-}
+mod status_usage;
 
 pub fn draw_top_padding(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
@@ -153,30 +141,40 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         None
     };
 
-    // Build the rendered line: empty input → placeholder; a `/…` input with a
-    // matching whisper → the typed text + a dimmed hint; anything else → the
-    // raw input text.
-    let display_line: Line = if input_text.is_empty() {
-        Line::from(Span::styled(
+    // Build one `Line` per buffer row (A1/A4): `app.input_text()` above joins
+    // the rows with a literal `\n` for the empty/prefix checks, but ratatui
+    // never splits a `Span`/`Line` on an embedded `\n` — feeding that joined
+    // string to a single-`Line` `Paragraph` drew every row garbled onto row 0
+    // while the cursor math below (already row/col-aware) pointed at wherever
+    // the *real* cursor row was. Empty input still renders as one placeholder
+    // line; the slash whisper still trails the (always single-row, since `/`
+    // commands are one line) typed text.
+    let display_lines: Vec<Line> = if input_text.is_empty() {
+        vec![Line::from(Span::styled(
             placeholder_text,
             Style::default().fg(Color::DarkGray).bg(theme.input_bg),
-        ))
-    } else if let Some(hint) = slash_whisper {
-        Line::from(vec![
-            Span::styled(
-                input_text.clone(),
-                Style::default().fg(Color::White).bg(theme.input_bg),
-            ),
-            Span::styled(
-                format!("  {hint}"),
-                Style::default().fg(Color::DarkGray).bg(theme.input_bg),
-            ),
-        ])
+        ))]
     } else {
-        Line::from(Span::styled(
-            input_text.clone(),
-            Style::default().fg(Color::White).bg(theme.input_bg),
-        ))
+        let rows = app.input().lines().to_vec();
+        let last = rows.len().saturating_sub(1);
+        rows.into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let mut spans = vec![Span::styled(
+                    row,
+                    Style::default().fg(Color::White).bg(theme.input_bg),
+                )];
+                if i == last {
+                    if let Some(hint) = &slash_whisper {
+                        spans.push(Span::styled(
+                            format!("  {hint}"),
+                            Style::default().fg(Color::DarkGray).bg(theme.input_bg),
+                        ));
+                    }
+                }
+                Line::from(spans)
+            })
+            .collect()
     };
 
     // The cursor (row, col) and a vertical/horizontal scroll that keep it in
@@ -190,10 +188,13 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     // it would fall past the last visible row (`height - 1`).
     let vscroll = cursor_row.saturating_sub(area.height.saturating_sub(1) as usize) as u16;
     // Horizontal (cursor-following): advance the left column so the cursor stays
-    // no further right than the last visible column (`width - 1`).
+    // no further right than the last visible column (`width - 1`). No `.wrap()`
+    // is applied (A4): each row is its own `Line`, already clipped to `area` by
+    // the widget, so a long line scrolls horizontally with the cursor instead of
+    // wrapping into (and overflowing past) the box.
     let hscroll = cursor_col.saturating_sub(area.width.saturating_sub(1) as usize) as u16;
 
-    let paragraph = Paragraph::new(display_line)
+    let paragraph = Paragraph::new(display_lines)
         .style(Style::default().fg(Color::White).bg(theme.input_bg))
         .scroll((vscroll, hscroll));
     f.render_widget(paragraph, area);
@@ -227,21 +228,6 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // Provider name comes from the resolved catalog entry / `ModelChanged`;
     // show it beside the model when known.
     let provider_display = app.active_provider().to_string();
-    let tokens_display = if app.cost_usd() > 0.0 {
-        format!(
-            "{} in / {} out (${:.4})",
-            format_tokens(app.input_tokens()),
-            format_tokens(app.output_tokens()),
-            app.cost_usd()
-        )
-    } else {
-        format!(
-            "{} in / {} out",
-            format_tokens(app.input_tokens()),
-            format_tokens(app.output_tokens())
-        )
-    };
-
     // `provider · model` pair, skipping the provider segment + separator when
     // it's unknown so we never leave a dangling `·`.
     let mut pm_spans: Vec<Span> = Vec::new();
@@ -263,10 +249,10 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // notice), else a rate-limit throttle indicator that shows *only* while an
     // endpoint is backing off (quiet otherwise).
     let mut spans: Vec<Span> = pm_spans;
-    spans.push(Span::raw(" | "));
-    spans.push(Span::styled(
-        tokens_display,
-        Style::default().fg(Color::Yellow),
+    // Context, spend, and the last round's cache share (ADR-0202 §7).
+    spans.extend(status_usage::usage_spans(
+        app.cost(),
+        app.model_info().context_window,
     ));
     if app.quit_pending() {
         spans.push(Span::raw(" | "));
@@ -469,15 +455,16 @@ mod tests {
         assert_eq!(throttle_label(&queued), "⚠ api.z.ai busy · 1/3 · 2q");
     }
 
-    #[test]
-    fn format_tokens_uses_si_multipliers() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1_000), "1.0k");
-        assert_eq!(format_tokens(2_500), "2.5k");
-        assert_eq!(format_tokens(1_000_000), "1.0M");
-        assert_eq!(format_tokens(1_500_000), "1.5M");
-        assert_eq!(format_tokens(1_000_000_000), "1.0G");
+    /// Reads back one rendered row of a `TestBackend` buffer as a plain
+    /// string, `width` columns wide — used to prove buffer *content*, not
+    /// just cursor position (A1: ratatui never splits a `Span`/`Line` on an
+    /// embedded `\n`, so a single-`Line` render of a joined multi-row buffer
+    /// drew every row garbled onto row 0 even though the cursor math already
+    /// pointed at the right row/col).
+    fn row_text(buf: &ratatui::buffer::Buffer, y: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect()
     }
 
     /// D2 + cursor-Y fix: with a 3-line input the terminal cursor must land on
@@ -514,6 +501,18 @@ mod tests {
             "line3".len(),
             "cursor X should be at the end of line3"
         );
+        // Buffer content: the visible row must render "line3" cleanly, not
+        // "line1line2line3" (or any garbled join) crammed onto row 0.
+        let buf = terminal.backend().buffer();
+        let row = row_text(buf, 0, 40);
+        assert!(
+            row.starts_with("line3"),
+            "visible row should render only line3, got {row:?}"
+        );
+        assert!(
+            !row.contains("line1") && !row.contains("line2"),
+            "scrolled-off rows must not bleed into the visible row: {row:?}"
+        );
     }
 
     /// Cursor on the middle row of a tall-enough box renders on that row, not
@@ -539,6 +538,100 @@ mod tests {
         let pos = terminal.backend().cursor_position();
         assert_eq!(pos.y, 1, "cursor on row 1 must render on the second row");
         assert_eq!(pos.x, 2, "cursor X tracks its column");
+        // Buffer content: each buffer row must render on its *own* visual
+        // row — proof the fix builds one `Line` per row instead of joining
+        // both rows with `\n` into a single `Line` drawn entirely on row 0.
+        let buf = terminal.backend().buffer();
+        assert!(
+            row_text(buf, 0, 40).starts_with("aaa"),
+            "row 0 should render \"aaa\""
+        );
+        assert!(
+            row_text(buf, 1, 40).starts_with("bbb"),
+            "row 1 should render \"bbb\", not be blank or share row 0"
+        );
+    }
+
+    /// A3: with a buffer taller than the input box, the vertical scroll keeps
+    /// following the cursor's row and lands it inside the visible window
+    /// (falls out of A1's per-row rendering + the existing cursor-follow
+    /// vscroll math — no new scroll state needed).
+    #[test]
+    fn tall_buffer_scrolls_to_keep_cursor_row_visible() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        // 12 rows ("row0".."row11"), cursor ends on the last (row 11).
+        for i in 0..12 {
+            if i > 0 {
+                app.input().insert_newline();
+            }
+            app.input().insert_str(&format!("row{i}"));
+        }
+        assert_eq!(app.input().cursor().0, 11);
+
+        // An 8-row box: rows 4..=11 should be visible (vscroll = 11 - 7 = 4),
+        // with the cursor landing on the box's last visual row.
+        let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 10, 8);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        let pos = terminal.backend().cursor_position();
+        assert_eq!(pos.y, 7, "cursor should land on the box's last visual row");
+        let buf = terminal.backend().buffer();
+        assert!(
+            row_text(buf, 0, 10).starts_with("row4"),
+            "top visible row should be row4 (vscroll=4)"
+        );
+        assert!(
+            row_text(buf, 7, 10).starts_with("row11"),
+            "bottom visible row should be the cursor's row11"
+        );
+    }
+
+    /// A4: a line longer than the box's width stays clipped inside it — it
+    /// scrolls horizontally following the cursor instead of wrapping onto
+    /// (and overflowing past) the next visual row.
+    #[test]
+    fn long_line_stays_clipped_and_does_not_wrap_to_next_row() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let long = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // 36 chars, cursor at end.
+        app.input().insert_str(long);
+        assert_eq!(app.input().cursor(), (0, long.len()));
+
+        // A 10-wide, 2-tall box: if `draw_input` wrapped instead of
+        // horizontally scrolling (the A4 bug), the line would spill onto row 1.
+        let mut terminal = Terminal::new(TestBackend::new(10, 2)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 10, 2);
+                draw_input(f, area, &mut app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let row0 = row_text(buf, 0, 10);
+        let row1 = row_text(buf, 1, 10);
+
+        assert!(
+            row1.trim().is_empty(),
+            "a long single row must not wrap onto the next visual row: {row1:?}"
+        );
+        let visible = row0.trim_end();
+        assert!(
+            !visible.is_empty() && visible.len() <= 10,
+            "visible slice must be non-empty and bounded by the box width: {row0:?}"
+        );
+        assert!(
+            long.contains(visible),
+            "visible text must be a contiguous, unclipped-content slice of the line: {row0:?}"
+        );
+        assert!(
+            visible.ends_with('Z'),
+            "cursor-following scroll should show the line's tail (cursor is at the end): {row0:?}"
+        );
     }
 
     /// Issue 2 whisper: typing `/co` renders a dimmed usage hint for the

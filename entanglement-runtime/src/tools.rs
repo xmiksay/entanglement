@@ -90,6 +90,23 @@ pub trait Tool: Send + Sync {
             exit_code: None,
         })
     }
+
+    /// Definition-driven skill tools (#560 P8): a skill-declared **alias**
+    /// (a renamed/preset-args wrapper over an existing registered tool, or
+    /// over a runtime-owned pseudo-tool like `rhai`) must not launder
+    /// permission through its own namespaced name — it grades and executes
+    /// exactly as if the model had called the tool it wraps directly.
+    /// `crate::tool_runner::dispatch` consults this *before* permission
+    /// resolution: `Some((target, merged_input))` rewrites the in-flight
+    /// `(tool, input)` pair to the wrapped tool's real name and its
+    /// preset-args-merged input, so every downstream decision — grading,
+    /// grant lookup/record, the escape-root gate, the `ToolExec`/
+    /// `ToolRequest` the user approves — operates on the real tool, not the
+    /// alias. Default `None`: a tool that never rewrites (everything but
+    /// `skills::alias_tool::AliasTool`) is untouched.
+    fn alias_rewrite(&self, _input: &str) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// A tool's successful result plus its structured metadata (#681, ADR-0186):
@@ -206,6 +223,14 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
+    /// Look one registered tool up by name, cloning the shared `Arc` (cheap —
+    /// a refcount bump). Used by the alias-rewrite check
+    /// (`crate::tool_runner::dispatch`) to consult a tool's own
+    /// [`Tool::alias_rewrite`] before grading.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
+    }
+
     /// Every registered tool name, for a listing surface (e.g. `/mcp list`).
     /// Unsorted — callers that need a stable order sort it themselves.
     pub fn names(&self) -> Vec<String> {
@@ -214,6 +239,16 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// One registered tool's advertised spec, byte-identical to what
+    /// [`specs`][Self::specs] would produce for it — the lookup `describe`
+    /// (ADR-0196 §4) needs to answer "the exact schema for this one name"
+    /// without rebuilding the whole sorted array.
+    pub fn spec_for(&self, name: &str) -> Option<ToolSpec> {
+        self.tools
+            .get(name)
+            .map(|t| ToolSpec::with_schema(t.name(), t.description(), t.schema()))
     }
 
     /// Wrap into the shared, mutably-lockable form the tool executor dispatches
@@ -308,7 +343,10 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// The closest registered name to `name` by edit distance, capped so a wildly
 /// different name (or an empty/tiny registry) doesn't surface a useless hint.
-fn closest_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
+/// `pub(crate)`: also reused by `discover::describe` (ADR-0196 §4) for the
+/// same "did you mean" hint over a wider candidate list (registry names plus
+/// the runtime-owned pseudo-tools describe also answers for).
+pub(crate) fn closest_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
     let max_distance = (name.chars().count() / 2).max(2);
     candidates
         .iter()

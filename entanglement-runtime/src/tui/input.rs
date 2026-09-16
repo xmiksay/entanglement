@@ -73,9 +73,25 @@ impl SimpleInput {
         self.cursor_col += c.len_utf8();
     }
 
+    /// Inserts `s`, splitting on line endings into separate buffer rows
+    /// (`\r\n`/`\r` normalized to `\n` first) instead of embedding a literal
+    /// `\n` inside one row's `String` — every other `SimpleInput` method
+    /// assumes one row per `String`, so a bracketed paste of multi-line text
+    /// (or an `$EDITOR` round-trip through `App::set_input_text`) must honor
+    /// that invariant too, not just single-char typing (#paste-multi-submit).
     pub fn insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            self.insert_char(c);
+        let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
+        let mut segments = normalized.split('\n');
+        if let Some(first) = segments.next() {
+            for c in first.chars() {
+                self.insert_char(c);
+            }
+        }
+        for segment in segments {
+            self.insert_newline();
+            for c in segment.chars() {
+                self.insert_char(c);
+            }
         }
     }
 

@@ -2,14 +2,13 @@
 //! log of `(Option<InMsg>, OutEvent)` records. Separable from the live turn
 //! loop — this is pure state reconstruction, no LLM or tool round-trip.
 
-use std::collections::HashSet;
-
 use anyhow::Result;
 
-use super::{Session, TurnState};
-use crate::protocol::{InMsg, OutEvent, SessionId};
+use super::replay_pending::TurnFold;
+use super::Session;
+use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, UsagePurpose};
 use crate::EngineConfig;
-use entanglement_provider::{ContentPart, Message, ToolCall};
+use entanglement_provider::{ContentPart, ToolCall};
 
 impl Session {
     /// Resume a session from replayed log records.
@@ -79,18 +78,21 @@ impl Session {
 
         let mut session = Self::new_empty(cfg, default_profile);
         session.children = children;
-        let mut pending_text: String = String::new();
-        let mut pending_tools: Vec<ToolCall> = Vec::new();
-        // Persisted search-result blocks (#481) accumulated for the assistant
-        // message currently being reconstructed — the replay-time mirror of
-        // `session/round.rs`'s live `content_blocks`.
-        let mut pending_search: Vec<ContentPart> = Vec::new();
-        // Reconstructed tool results keyed by request id — multimodal so an image
-        // read (#221) rebuilds as its image block, not the display placeholder.
-        let mut pending_tool_outputs: Vec<(String, Vec<ContentPart>)> = Vec::new();
+        let mut fold = TurnFold::default();
         let mut max_seq: u64 = 0;
 
         for (in_msg, out_event) in records {
+            // A prompt is scoped by its own session, not the event it was
+            // paired with: interleaved child events must neither drop a root
+            // prompt nor claim a child's.
+            match in_msg {
+                Some(InMsg::Prompt {
+                    session: to,
+                    content,
+                }) if is_target(to) => fold.prompt(&mut session.ctx, content.clone()),
+                Some(InMsg::Stop { session: to }) if is_target(to) => fold.stop(),
+                _ => {}
+            }
             // Skip any record belonging to a sibling/child session (#275): the
             // whole fold below stays scoped to `target`. A session-less query
             // reply (SessionList/History, #160) never appears in a log.
@@ -98,22 +100,7 @@ impl Session {
                 continue;
             }
             max_seq = max_seq.max(out_event.seq().unwrap_or(0));
-
-            if let Some(InMsg::Prompt { content, .. }) = in_msg {
-                session.flush_pending_assistant(
-                    &mut pending_text,
-                    &mut pending_tools,
-                    &mut pending_search,
-                );
-                for (request_id, output) in &pending_tool_outputs {
-                    session
-                        .ctx
-                        .push_tool_content(request_id.clone(), output.clone());
-                }
-                pending_tool_outputs.clear();
-
-                session.ctx.push_user_content(content.clone());
-            }
+            let ctx = &mut session.ctx;
 
             match out_event {
                 OutEvent::SessionStarted {
@@ -140,44 +127,35 @@ impl Session {
                         session.profile = p.clone();
                     }
                 }
-                OutEvent::TextDelta { text, .. } => {
-                    pending_text.push_str(text);
+                OutEvent::TextDelta { text, .. } => fold.push_text(ctx, text),
+                // Display-only rails, never folded into context — but they
+                // prove the round began streaming. The replayable reasoning
+                // arrives as `ReasoningBlock`; the assembled call as `ToolCall`.
+                OutEvent::ReasoningDelta { .. } | OutEvent::ToolCallDelta { .. } => {
+                    fold.round_event(ctx)
                 }
-                OutEvent::ReasoningDelta { .. } => {
-                    // The live *display* channel: not stored in context. The
-                    // replayable form of the same reasoning arrives as a
-                    // `ReasoningBlock` below, which is what the provider needs
-                    // back — folding the deltas too would double it.
+                // Persisted reasoning (ADR-0160) and provider-search (#481)
+                // blocks join the round's assistant message after its text.
+                OutEvent::ReasoningBlock { part, .. } | OutEvent::SearchResult { part, .. } => {
+                    fold.push_block(ctx, part.clone())
                 }
-                OutEvent::ReasoningBlock { part, .. } => {
-                    // Captured thinking block: accumulated with the other
-                    // persisted content blocks and flushed into the same
-                    // assistant message, so a resumed parked turn can present it
-                    // to the provider exactly as the live turn would have.
-                    pending_search.push(part.clone());
-                }
-                OutEvent::ToolCallDelta { .. } => {
-                    // Streaming arg fragments (#194) are display-only; the
-                    // assembled `ToolCall` below reconstructs the call for context.
-                }
-                OutEvent::SearchResult { part, .. } => {
-                    // Persisted provider-search block (#481): accumulated
-                    // alongside `pending_text`/`pending_tools`, flushed into
-                    // the same assistant message at the next commit point.
-                    pending_search.push(part.clone());
-                }
+                // Context gets the call as emitted: the fold rebuilds an
+                // unwrapped `invoke` call from its envelope (ADR-0204).
                 OutEvent::ToolCall {
                     request_id,
                     tool,
                     input,
+                    provider_meta,
+                    envelope,
                     ..
                 } => {
-                    pending_tools.push(ToolCall {
+                    let call = ToolCall {
                         id: request_id.clone(),
                         name: tool.clone(),
                         input: input.clone(),
-                        provider_meta: None,
-                    });
+                        provider_meta: provider_meta.clone(),
+                    };
+                    fold.push_call(ctx, call, envelope.as_ref());
                 }
                 OutEvent::ToolOutput {
                     request_id,
@@ -185,9 +163,8 @@ impl Session {
                     content,
                     ..
                 } => {
-                    // Prefer the multimodal `content` (an image read, #221); fall
-                    // back to the text `output` for the common case (and for logs
-                    // written before the field existed). An empty text yields no
+                    // `content` rides whenever `output` can't rebuild the
+                    // result exactly (an image, #221); an empty text yields no
                     // parts, matching the live fold.
                     let parts = if !content.is_empty() {
                         content.clone()
@@ -196,8 +173,17 @@ impl Session {
                     } else {
                         vec![ContentPart::text(output.clone())]
                     };
-                    pending_tool_outputs.push((request_id.clone(), parts));
+                    fold.tool_output(ctx, request_id, parts);
                 }
+                OutEvent::Usage {
+                    purpose: UsagePurpose::Turn,
+                    ..
+                } => fold.round_event(ctx),
+                OutEvent::Status {
+                    state: state @ (AgentState::Done | AgentState::Paused),
+                    ..
+                } => fold.cancelled(ctx, *state == AgentState::Paused),
+                OutEvent::SessionHibernated { .. } => fold.hibernated(ctx),
                 OutEvent::AgentChanged { agent, .. } => {
                     if let Some(profile) = cfg.profiles.get(agent) {
                         session.profile = profile.clone();
@@ -268,125 +254,37 @@ impl Session {
                 // ADR-0049): they carry nothing the engine's `Context` needs, so
                 // replay ignores them. A resuming head folds them from the log
                 // itself to restore its plan/task panels.
-                OutEvent::Done { .. } => {
-                    session.flush_pending_assistant(
-                        &mut pending_text,
-                        &mut pending_tools,
-                        &mut pending_search,
-                    );
-                    for (request_id, output) in &pending_tool_outputs {
-                        session
-                            .ctx
-                            .push_tool_content(request_id.clone(), output.clone());
-                    }
-                    pending_tool_outputs.clear();
-                }
-                // Session compaction (#324, ADR-0082 → ADR-0101/0103): two
-                // mutation semantics share this event, told apart by `auto`.
-                // `auto: false` — manual `/compact`, **copy-on-write** — the
-                // source `Context` is never mutated, so there is nothing to
-                // fold here; the summary rides only in the event (a head forks
-                // it into a new session). A record written under the old
-                // in-place design (pre-ADR-0101) also lands here (its `auto`
-                // defaults to `false` on the wire) and is likewise ignored:
-                // replaying it would clobber the full pre-compaction history
-                // the log still holds, which is exactly the history the
-                // source session should recover with.
+                OutEvent::Done { .. } => fold.done(ctx),
+                // Session compaction (#324, ADR-0082 → ADR-0101/0103/0205):
+                // **always a no-op**, on every path. Since ADR-0205 no
+                // compaction mutates the session it is emitted on — each one
+                // forks a successor seeded through that successor's own
+                // `Spawn` prompt, and retires the source unchanged. So this
+                // session's history is exactly what the rest of the log
+                // reconstructs, with or without this record.
                 //
-                // `auto: true` — automatic in-place compaction on context
-                // overflow (#398): the live engine mutated `Context` via
-                // `apply_compaction` before continuing the turn, so replay
-                // must reconstruct that same mutation. Flush whatever
-                // pending assistant/tool state has accumulated so far (same
-                // flush the `Done` arm above does) so `apply_compaction`
-                // operates on the messages actually pushed, not a stale tail.
-                OutEvent::Compacted {
-                    auto: true,
-                    summary,
-                    kept,
-                    ..
-                } => {
-                    session.flush_pending_assistant(
-                        &mut pending_text,
-                        &mut pending_tools,
-                        &mut pending_search,
-                    );
-                    for (request_id, output) in &pending_tool_outputs {
-                        session
-                            .ctx
-                            .push_tool_content(request_id.clone(), output.clone());
-                    }
-                    pending_tool_outputs.clear();
-
-                    session.ctx.apply_compaction(summary, *kept as usize);
-                }
+                // That covers the legacy shapes too. A pre-ADR-0101 in-place
+                // record and a pre-ADR-0205 `auto: true` one both land here
+                // and are likewise ignored: replaying their mutation would
+                // clobber the full pre-compaction history the log still holds
+                // — and for a source that was retired at the fork, that
+                // history is precisely what a reader of this log wants back.
+                OutEvent::Compacted { .. } => {}
                 // An ambiguous-stop retry (#ADR-0118): the live engine committed
                 // the round's partial text as an assistant message, then injected
                 // `nudge` as a user-role steering message and re-queried in place.
-                // Reconstruct that exact boundary — flush the pending
-                // assistant/tool state (the partial round, same flush as `Done`),
-                // then push the nudge — so a resumed session's history matches
-                // what the live model saw, instead of merging both rounds' text.
-                OutEvent::AmbiguousRetry { nudge, .. } => {
-                    session.flush_pending_assistant(
-                        &mut pending_text,
-                        &mut pending_tools,
-                        &mut pending_search,
-                    );
-                    for (request_id, output) in &pending_tool_outputs {
-                        session
-                            .ctx
-                            .push_tool_content(request_id.clone(), output.clone());
-                    }
-                    pending_tool_outputs.clear();
-
-                    session.ctx.push_user(nudge.clone());
-                }
-                OutEvent::Compacted { auto: false, .. } => {}
+                // Reconstruct that exact boundary so a resumed session's history
+                // matches what the live model saw, instead of merging both
+                // rounds' text.
+                OutEvent::AmbiguousRetry { nudge, .. } => fold.ambiguous_retry(ctx, nudge),
                 _ => {}
             }
         }
 
-        // A log ending mid-turn (#271, ADR-0061): `ToolCall` events are only
-        // emitted after a completed stream, so a non-empty pending set means
-        // the last round finished streaming and parked — reconstruct it as
-        // `TurnState` so resume can re-offer the unanswered calls. A text-only
-        // tail (deltas with no `ToolCall`) is a genuine mid-stream crash and
-        // stays dropped, matching the live engine, which never committed it
-        // either. `iterations` restarts at 0: `MAX_TURNS` is a runaway guard,
-        // not a quota. The fold above already dropped every child record, so
-        // this tail is the resumed root's own.
-        if !pending_tools.is_empty() {
-            let mut content: Vec<ContentPart> = Vec::new();
-            if !pending_text.is_empty() {
-                content.push(ContentPart::text(pending_text.clone()));
-            }
-            content.extend(pending_search.iter().cloned());
-            session
-                .ctx
-                .push(Message::assistant_content(content, pending_tools.clone()));
-            let resolved: HashSet<&str> = pending_tool_outputs
-                .iter()
-                .map(|(id, _)| id.as_str())
-                .collect();
-            for (request_id, output) in &pending_tool_outputs {
-                session
-                    .ctx
-                    .push_tool_content(request_id.clone(), output.clone());
-            }
-            // Pending = calls without a logged output. Kept `Some` even when
-            // fully resolved (the crash hit before the next round streamed):
-            // resume then continues the turn instead of re-offering.
-            let pending: Vec<ToolCall> = pending_tools
-                .into_iter()
-                .filter(|c| !resolved.contains(c.id.as_str()))
-                .collect();
-            session.turn = Some(TurnState {
-                pending,
-                iterations: 0,
-                ambiguous_retries: 0,
-            });
-        }
+        // A log ending mid-turn parks as `TurnState` so resume can re-offer
+        // the unanswered calls (#271, ADR-0061). The fold above already
+        // dropped every child record, so this tail is the resumed root's own.
+        session.turn = fold.into_parked_turn(&mut session.ctx);
 
         // Seed the shared counter past the reconstructed tail so a resumed
         // session — and any runtime event minted for it — continues the sequence

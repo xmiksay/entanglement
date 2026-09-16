@@ -63,6 +63,8 @@ fn tool_call_deltas_grow_one_entry_then_the_assembled_call_finalizes_it() {
         request_id: "c1".into(),
         tool: "edit".into(),
         input: r#"{"path":"a.rs"}"#.into(),
+        provider_meta: None,
+        envelope: None,
     }));
     assert_eq!(v.transcript().len(), 1);
     match &v.transcript()[0] {
@@ -78,6 +80,8 @@ fn tool_call(seq: u64, request_id: &str, tool: &str, input: &str) -> OutEvent {
         request_id: request_id.into(),
         tool: tool.into(),
         input: input.into(),
+        provider_meta: None,
+        envelope: None,
     }
 }
 
@@ -92,6 +96,7 @@ fn tool_output(seq: u64, request_id: &str, tool: &str, output: &str) -> OutEvent
         is_error: false,
         duration_ms: None,
         exit_code: None,
+        envelope: None,
     }
 }
 
@@ -154,6 +159,8 @@ fn tool_call_without_deltas_still_pushes_an_entry() {
         request_id: "c1".into(),
         tool: "read".into(),
         input: "{}".into(),
+        provider_meta: None,
+        envelope: None,
     }));
     assert_eq!(v.transcript().len(), 1);
 }
@@ -671,6 +678,8 @@ fn tool_call_first_clears_pending_prompt() {
         request_id: "t1".into(),
         tool: "read".into(),
         input: "{}".into(),
+        provider_meta: None,
+        envelope: None,
     });
     assert!(!user_pending(&v));
 }
@@ -707,7 +716,7 @@ fn supervisor_error_with_seq_zero_renders_even_after_seq_advances() {
 }
 
 #[test]
-fn compacted_renders_a_fork_notice() {
+fn compacted_renders_a_successor_notice() {
     let mut v = SessionView::new();
     assert!(v.apply_event(OutEvent::Compacted {
         session: sid(),
@@ -715,6 +724,7 @@ fn compacted_renders_a_fork_notice() {
         summary: "user asked for X, agent did Y".into(),
         kept: 0,
         auto: false,
+        mode: CompactionMode::Summary,
     }));
     let notice = v
         .transcript()
@@ -727,7 +737,7 @@ fn compacted_renders_a_fork_notice() {
             _ => None,
         })
         .expect("Compacted renders a tool-output-style notice");
-    assert!(notice.contains("forked"));
+    assert!(notice.contains("continuing in a new session"), "{notice}");
     assert!(notice.contains("user asked for X, agent did Y"));
     // Replayed (seq not advancing) is deduped like any other content event.
     assert!(!v.apply_event(OutEvent::Compacted {
@@ -736,11 +746,12 @@ fn compacted_renders_a_fork_notice() {
         summary: "replay".into(),
         kept: 0,
         auto: false,
+        mode: CompactionMode::Summary,
     }));
 }
 
 #[test]
-fn auto_compacted_renders_an_in_place_notice() {
+fn auto_compacted_renders_a_successor_notice_too() {
     let mut v = SessionView::new();
     assert!(v.apply_event(OutEvent::Compacted {
         session: sid(),
@@ -748,6 +759,7 @@ fn auto_compacted_renders_an_in_place_notice() {
         summary: "context overflowed, summarized in place".into(),
         kept: 0,
         auto: true,
+        mode: CompactionMode::Summary,
     }));
     let notice = v
         .transcript()
@@ -760,7 +772,10 @@ fn auto_compacted_renders_an_in_place_notice() {
             _ => None,
         })
         .expect("Compacted renders a tool-output-style notice");
-    assert!(!notice.contains("forked"), "auto-compaction never forks");
+    // ADR-0205: the automatic paths fork like every other compaction, so the
+    // notice says the same thing — only *why* it happened differs.
+    assert!(notice.contains("overflowed the model's window"), "{notice}");
+    assert!(notice.contains("continuing in a new session"), "{notice}");
     assert!(notice.contains("context overflowed, summarized in place"));
 }
 

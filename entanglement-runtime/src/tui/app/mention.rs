@@ -1,21 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use crate::bash_live::BashRegistered;
 use crate::tui::mention::{FileIndex, MentionPopup};
 
 use super::App;
 
 impl App {
-    /// Wire the working directory into the head features that need it and
-    /// record the shared bash-enablement handle `!bash` passthrough gates on
-    /// (ADR-0030, #498). Called once by the event loop at startup. The `@file`
-    /// completion index is *not* built here — the walk over a huge working
-    /// directory used to freeze the first draw (#678); it arrives later via
-    /// [`App::set_file_index`].
-    pub fn init_head_context(&mut self, root: PathBuf, live_bash: Arc<BashRegistered>) {
+    /// Wire the working directory into the head features that need it (the
+    /// `@file` completion index, `!bash` passthrough — ADR-0030). Called once
+    /// by the event loop at startup. The `@file` completion index is *not*
+    /// built here — the walk over a huge working directory used to freeze the
+    /// first draw (#678); it arrives later via [`App::set_file_index`].
+    pub fn init_head_context(&mut self, root: PathBuf) {
         self.root = root;
-        self.live_bash = live_bash;
     }
 
     /// Deliver the background-built `@file` index (#678), then re-derive the
@@ -28,14 +24,6 @@ impl App {
 
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    /// Whether `!bash` passthrough may run — the startup env var or a live
-    /// `/enable tool bash` (#611/ADR-0163), either way (#498): reads the
-    /// shared handle live, so a mid-session enable takes effect with no
-    /// restart.
-    pub fn bash_enabled(&self) -> bool {
-        self.live_bash.get()
     }
 
     pub fn mention(&self) -> &MentionPopup {

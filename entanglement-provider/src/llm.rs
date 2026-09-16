@@ -57,6 +57,17 @@ pub struct ToolSpec {
     /// JSON Schema for the tool's input object (surfaces as Anthropic's
     /// `input_schema`). Defaults to a permissive empty-object schema.
     pub schema: serde_json::Value,
+    /// Anthropic-wire-only (ADR-0196 §3, the `anthropic_native` `ToolSearch`
+    /// encoding): when true, the Anthropic client marks this tool's request
+    /// entry `"defer_loading": true` — the full definition is still sent on
+    /// every request (the API needs it server-side to run search and expand
+    /// `tool_reference` blocks), but it is stripped from the rendered/cached
+    /// prompt until a `describe()` call discovers it. Every other wire
+    /// (OpenAI-compat, Gemini) ignores this field entirely — their `ToolSpec`
+    /// → wire-JSON converters never read it. Defaults `false` so every
+    /// existing [`new`][Self::new]/[`with_schema`][Self::with_schema] call
+    /// site, and thus every existing wire serialization, is unaffected.
+    pub defer_loading: bool,
 }
 
 impl ToolSpec {
@@ -65,6 +76,7 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({ "type": "object", "properties": {} }),
+            defer_loading: false,
         }
     }
 
@@ -77,6 +89,7 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             schema,
+            defer_loading: false,
         }
     }
 }
@@ -271,17 +284,53 @@ impl GenerationParams {
     }
 }
 
-/// Coarse reasoning-effort knob (#374): OpenAI's native `reasoning_effort` wire
-/// value (`low|medium|high`, hence `rename_all = "lowercase"` rather than
-/// Rust's usual `PascalCase`). Anthropic and Gemini have no such field — each
-/// client maps it onto a thinking-budget tier instead (documented at their
-/// `build_body`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Coarse reasoning-effort knob (#374): the wire value OpenAI-compat and
+/// Anthropic's adaptive `output_config.effort` both take verbatim
+/// (`low|medium|high|xhigh|max`, hence `rename_all = "lowercase"` rather than
+/// Rust's usual `PascalCase`). Ordered low → max so a model's supported-tier
+/// clamp can pick the nearest neighbour. Wires with no effort concept
+/// (Anthropic's fixed-budget shape, Gemini) map each tier onto a thinking
+/// budget instead (documented at their `build_body`); the two top tiers share
+/// `High`'s budget there — older models have no deeper setting to reach.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    /// Every tier, ascending.
+    pub const ALL: [ReasoningEffort; 5] = [
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+        ReasoningEffort::Max,
+    ];
+
+    /// The wire spelling (`serde`'s lowercase rename), for error text and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::XHigh => "xhigh",
+            ReasoningEffort::Max => "max",
+        }
+    }
+
+    /// Parse the wire spelling, case-insensitively.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|e| e.as_str().eq_ignore_ascii_case(s))
+    }
 }
 
 #[cfg(test)]
@@ -352,7 +401,23 @@ pub struct LlmRequest<'a> {
     /// requests (summarize / session-title), whose prefix shares nothing with
     /// the session's own.
     pub cache_key: Option<&'a str>,
+    /// Per-request override of the endpoint's retry/backoff/timeout knobs
+    /// (aux fail-fast, #560 follow-up), forwarded verbatim to
+    /// [`crate::client::HttpClient::execute_with_retry`]'s own `retry`
+    /// parameter. `None` (every primary-turn request) leaves the endpoint's
+    /// pooled `RetryConfig` in force; the aux narrate/session-title/summarize
+    /// paths set `Some(RetryConfig::minimal())` when they resolved a purpose
+    /// pin, so a dead pinned endpoint fails one caller's probe fast instead of
+    /// retry-storming through the LLM-tuned ladder on every call.
+    pub retry: Option<crate::client::RetryConfig>,
 }
+
+/// Name of the client-side discovery envelope tool (ADR-0204): `invoke
+/// {name, args}` routes a call to a discovered tool the session never adds to
+/// its `tools` array, so the array — and the provider's cached prefix — stays
+/// stable. Reserved: never a registered tool name. Shared here, in the leaf
+/// crate, because core unwraps the envelope and the runtime advertises it.
+pub const INVOKE_TOOL: &str = "invoke";
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
 /// loop can hold it across `.await` points without borrowing the backend.
@@ -662,7 +727,18 @@ mod tests {
             tools,
             generation: None,
             cache_key: None,
+            retry: None,
         }
+    }
+
+    #[test]
+    fn tool_spec_constructors_default_defer_loading_to_false() {
+        // ADR-0196 §3: every existing call site (`new`/`with_schema`) must
+        // keep producing a non-deferred spec with no code change — the wire
+        // converters then omit `defer_loading` entirely for these, exactly
+        // matching every pre-#560 golden.
+        assert!(!ToolSpec::new("greet", "say hi").defer_loading);
+        assert!(!ToolSpec::with_schema("greet", "say hi", serde_json::json!({})).defer_loading);
     }
 
     #[test]

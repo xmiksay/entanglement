@@ -120,25 +120,30 @@ impl SessionToolsDialog {
         }
     }
 
-    /// The overlay this checklist state materializes: the diff against each
-    /// row's profile default. Patterns a hand-typed `/enable` added are thus
-    /// expanded to the concrete currently-registered names — the same
-    /// resolve-to-final-set behavior as the `/agent` tools dialog (#330).
+    /// The overlay this checklist state materializes — see [`overlay_diff`].
     pub fn to_entries(&self) -> Vec<ToolOverlayEntry> {
-        self.rows
-            .iter()
-            .filter_map(|row| match (row.checked, row.profile_default) {
-                (true, false) => Some(ToolOverlayEntry {
-                    pattern: row.name.clone(),
-                    allow: row.allow,
-                    deny: false,
-                    arg_pattern: None,
-                }),
-                (false, true) => Some(ToolOverlayEntry::deny(row.name.clone())),
-                _ => None,
-            })
-            .collect()
+        overlay_diff(&self.rows)
     }
+}
+
+/// The overlay a row set materializes: the diff against each row's profile
+/// default. Patterns a hand-typed `/enable` added are thus expanded to the
+/// concrete currently-registered names — the same resolve-to-final-set
+/// behavior as the `/agent` tools dialog (#330). Shared with the `/set`
+/// dialog's Tools tab.
+pub fn overlay_diff(rows: &[SessionToolRow]) -> Vec<ToolOverlayEntry> {
+    rows.iter()
+        .filter_map(|row| match (row.checked, row.profile_default) {
+            (true, false) => Some(ToolOverlayEntry {
+                pattern: row.name.clone(),
+                allow: row.allow,
+                deny: false,
+                arg_pattern: None,
+            }),
+            (false, true) => Some(ToolOverlayEntry::deny(row.name.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 impl Default for SessionToolsDialog {

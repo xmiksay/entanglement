@@ -19,7 +19,8 @@ use entanglement_core::{
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{
-    host_tools, host_tools_with_extra_roots, BashTool, CallTool, ReadRawTool,
+    host_tools, host_tools_with_extra_roots, BashTool, CallTool, GlobJsonTool, GrepJsonTool,
+    ReadRawTool,
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
@@ -108,11 +109,14 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    // `read_raw` mirrors main.rs's `build_config`: registered into the same
-    // registry the executor/rhai bridge use, but never advertised as a
-    // standalone tool (it isn't in any `tool_specs`/`cfg.tool_specs` here).
+    // `read_raw` + the script-facing search variants mirror main.rs's
+    // `build_config`: registered into the same registry the executor/rhai
+    // bridge use, but never advertised as standalone tools (they aren't in
+    // any `tool_specs`/`cfg.tool_specs` here).
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
+    tools.register(GlobJsonTool::new(root.to_path_buf()));
+    tools.register(GrepJsonTool::new(root.to_path_buf()));
     let _executor = spawn_tool_executor(
         &holly,
         tools,
@@ -123,20 +127,22 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
 }
 
 /// [`spawn_with_rhai`] plus the exec pair registered into the same registry —
-/// `call` always, `bash` only when `bash_enabled` (mirrors `main.rs`'s
-/// `ENTANGLEMENT_ENABLE_BASH` gate) — so the script-facing `exec(...)`/
-/// `bash(...)` bindings have a real host tool to delegate to (#419).
+/// both unconditionally, mirroring the head's ADR-0093/ADR-0195 posture — so
+/// the script-facing `exec(...)`/`bash(...)` bindings have a real host tool
+/// to delegate to (#419). A test that wants the *absent*-tool shape passes
+/// `bash_registered: false` (a bespoke registry omitting it, as an embedder
+/// might assemble).
 fn spawn_with_rhai_exec(
     script: &str,
     root: &std::path::Path,
     profiles: ProfileRegistry,
-    bash_enabled: bool,
+    bash_registered: bool,
 ) -> Holly {
     spawn_with_rhai_exec_and_base(
         script,
         root,
         profiles,
-        bash_enabled,
+        bash_registered,
         PermissionProfile::new(Permission::Allow),
     )
 }
@@ -149,7 +155,7 @@ fn spawn_with_rhai_exec_and_base(
     script: &str,
     root: &std::path::Path,
     profiles: ProfileRegistry,
-    bash_enabled: bool,
+    bash_registered: bool,
     base: PermissionProfile,
 ) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
@@ -179,7 +185,7 @@ fn spawn_with_rhai_exec_and_base(
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(CallTool::new(root.to_path_buf()));
-    if bash_enabled {
+    if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
     let _executor = spawn_tool_executor(&holly, tools, profiles, base);
@@ -254,12 +260,41 @@ fn spawn_with_rhai_escape(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
+        None,
     );
     (holly, store)
 }
 
 /// A single primary profile with a caller-shaped permission, advertising every
 /// tool (no mask) so binding behavior is decided by permission alone.
+/// [`one_profile`] with an explicit tool mask — the ADR-0206 alias test
+/// needs a profile that masks `glob` (and with it `glob_json`).
+fn one_profile_with_tools(
+    name: &str,
+    permission: PermissionProfile,
+    tools: Option<Vec<String>>,
+) -> ProfileRegistry {
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    profiles.insert(AgentProfile {
+        name: name.into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission,
+        tools,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+        sandbox: None,
+    });
+    profiles
+}
+
 fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
@@ -714,6 +749,107 @@ async fn parse_json_composes_with_the_read_raw_binding() {
     );
 }
 
+/// ADR-0206: the structured search bindings hand scripts arrays and maps, not
+/// newline-joined text — `glob_json(...).files` iterates whole path strings
+/// (iterating `glob(...)`'s text would yield single characters).
+#[tokio::test]
+async fn glob_json_returns_an_iterable_files_array() {
+    let dir = TempDir::new("glob-json");
+    std::fs::write(dir.path.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.path.as_path().join("b.rs"), "fn b() {}\n").unwrap();
+    std::fs::write(dir.path.join("c.md"), "doc\n").unwrap();
+    let holly = spawn_with_rhai(
+        r#"let r = glob_json("*.rs"); r.files.len() + ":isize-cast:" + r.files[1]"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("b.rs") && out.contains("2"),
+        "glob_json files array: {out}"
+    );
+}
+
+/// ADR-0206: `grep_json` match records are addressable maps.
+#[tokio::test]
+async fn grep_json_returns_addressable_match_records() {
+    let dir = TempDir::new("grep-json");
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::write(
+        dir.path.join("src").join("m.rs"),
+        "fn one() {}\nfn two() {}\n",
+    )
+    .unwrap();
+    let holly = spawn_with_rhai(
+        r#"let m = grep_json("fn two").matches[0]; m["lineno"] + m["path"] + m["line"]"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("2") && out.contains("src/m.rs") && out.contains("fn two()"),
+        "grep_json match record: {out}"
+    );
+}
+
+/// ADR-0206: a structured-output escape hatch is not a permission escape
+/// hatch — a profile that masks `glob` masks `glob_json` too (the
+/// `graded_name` alias), and a denied profile denies it.
+#[tokio::test]
+async fn glob_json_is_masked_when_glob_is_masked() {
+    let dir = TempDir::new("glob-json-mask");
+    std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
+    let profiles = one_profile_with_tools(
+        "build",
+        PermissionProfile::new(Permission::Allow),
+        Some(vec!["read".into(), "rhai".into()]),
+    );
+    let holly = spawn_with_rhai(r#"glob_json("*.rs").files.len()"#, &dir.path, profiles);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("restricted by profile"),
+        "masked glob_json must surface the mask error: {out}"
+    );
+}
+
+/// ADR-0206: the zero-match shape is an empty array plus a notice — the
+/// script still learns *why* nothing matched without parsing prose.
+#[tokio::test]
+async fn glob_json_zero_match_carries_a_notice() {
+    let dir = TempDir::new("glob-json-zero");
+    std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
+    let holly = spawn_with_rhai(
+        r#"let r = glob_json("*.zzz"); r.files.len() + " notices: " + r.notices.len()"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("0") && out.contains("notices: 1"),
+        "zero-match shape: {out}"
+    );
+}
+
 #[tokio::test]
 async fn read_raw_is_graded_and_masked_as_an_alias_of_read() {
     let dir = TempDir::new("read-raw-alias");
@@ -863,8 +999,11 @@ async fn call_binding_masked_when_omitted_from_profile_tools() {
     );
 }
 
+/// A registry that simply never registered `bash` (an embedder's bespoke
+/// assembly — the shipped heads always register it, ADR-0195): the binding
+/// must be an unknown-function error, not a graded-then-failing call.
 #[tokio::test]
-async fn bash_binding_absent_without_bash_enabled() {
+async fn bash_binding_absent_when_the_registry_omits_bash() {
     let dir = TempDir::new("bash-absent");
     let holly = spawn_with_rhai_exec(
         r#"bash("echo hi")"#,
@@ -880,13 +1019,13 @@ async fn bash_binding_absent_without_bash_enabled() {
     let out = rhai_output(&events).expect("expected rhai output");
     assert!(
         out.to_lowercase().contains("function"),
-        "bash() must be an unknown-function (unregistered) error when bash is \
-         disabled, not a graded-then-failing binding: {out}"
+        "bash() must be an unknown-function (unregistered) error when the host \
+         tool is not registered, not a graded-then-failing binding: {out}"
     );
 }
 
 #[tokio::test]
-async fn bash_binding_runs_when_enabled_and_allowed() {
+async fn bash_binding_runs_when_registered_and_allowed() {
     let dir = TempDir::new("bash-allow");
     let holly = spawn_with_rhai_exec(
         r#"bash("echo hi")"#,
@@ -1029,12 +1168,12 @@ async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ #477: the active skill's `allowed_tools` mask reaches rhai bindings
+// ┃ ADR-0194: a loaded skill's `allowed_tools` no longer reaches rhai bindings
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Collect events for `sid` up to and including the *n*th `Done`, then linger
 /// briefly to also catch anything the tool executor emits asynchronously right
-/// after `Done` — mirrors `skill_mask.rs`'s helper of the same shape.
+/// after `Done` — mirrors `skill_posture.rs`'s helper of the same shape.
 async fn collect_through_dones(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
@@ -1062,13 +1201,15 @@ async fn collect_through_dones(
     out
 }
 
-/// #477: a skill loaded via `load_skill` scopes `rhai` bindings exactly like it
-/// scopes generic tool dispatch (#400/ADR-0106) — a script running while a
-/// restrictive skill is active cannot use its `edit` binding to reach a tool
-/// the skill's `allowed_tools` excludes, and the same script succeeds once the
-/// skill's scope clears at the turn's `Done`.
+/// #477, retired by ADR-0194: a skill loaded via `load_skill` used to scope
+/// `rhai` bindings exactly like it scoped generic tool dispatch (#400/
+/// ADR-0106) — a script's `edit` binding was refused while a restrictive
+/// skill was active. Skills are additive-only now: the same binding, under
+/// the identical loaded skill, must succeed — the skill's `allowed_tools`
+/// (still parsed, still populates the vestigial `SkillActive` wire field) no
+/// longer restrains it.
 #[tokio::test]
-async fn skill_mask_refuses_a_binding_then_clears_after_done() {
+async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-rhai-skillmask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -1110,7 +1251,7 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
     };
 
     let scripted = Arc::new(vec![
-        // Turn 1, round 1: activate the skill.
+        // Round 1: activate the skill.
         LlmResponse {
             text: "".into(),
             tool_calls: vec![ToolCall {
@@ -1120,24 +1261,15 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
                 provider_meta: None,
             }],
         },
-        // Turn 1, round 2: the script's `edit` binding must be refused — the
-        // skill's `allowed_tools` excludes it.
+        // Round 2: the script's `edit` binding — outside the loaded skill's
+        // `allowed_tools` — must now succeed (ADR-0194).
         LlmResponse {
             text: "".into(),
             tool_calls: vec![rhai_call("r1")],
         },
-        // Turn 1, round 3: finish — triggers `Done`, clearing the skill mask.
+        // Round 3: finish — triggers `Done`, clearing the skill-active posture.
         LlmResponse {
             text: "turn1 done".into(),
-            tool_calls: vec![],
-        },
-        // Turn 2, round 1: the identical script, unmasked — must succeed.
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![rhai_call("r2")],
-        },
-        LlmResponse {
-            text: "turn2 done".into(),
             tool_calls: vec![],
         },
     ]);
@@ -1178,6 +1310,9 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
+        None,
     );
 
     let sid = SessionId::new("s1");
@@ -1188,33 +1323,32 @@ async fn skill_mask_refuses_a_binding_then_clears_after_done() {
         .unwrap();
     let turn1 = collect_through_dones(&mut sub, &sid, 1).await;
 
-    let out1 = rhai_output(&turn1).expect("expected turn 1 rhai output");
+    let out1 = rhai_output(&turn1).expect("expected rhai output");
     assert!(
-        out1.contains("caught")
-            && out1.contains("not available while skill `restricted` is active"),
-        "the edit binding must be refused by the active skill's allowed_tools; got {out1}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("f.txt")).unwrap(),
-        "before",
-        "the masked edit binding must not touch the filesystem"
-    );
-
-    holly
-        .send(InMsg::prompt(sid.clone(), "run it again"))
-        .await
-        .unwrap();
-    let turn2 = collect_through_dones(&mut sub, &sid, 1).await;
-
-    let out2 = rhai_output(&turn2).expect("expected turn 2 rhai output");
-    assert!(
-        out2.contains("ran") && !out2.contains("not available while skill"),
-        "the binding must be unmasked once the skill's scope clears at Done; got {out2}"
+        out1.contains("ran") && !out1.contains("not available while skill"),
+        "the edit binding must run — a skill's allowed_tools no longer restricts it \
+         (ADR-0194); got {out1}"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("f.txt")).unwrap(),
         "after",
-        "the unmasked edit binding must run in turn 2"
+        "the edit binding must have actually run"
+    );
+    // The wire posture event is unchanged: still activates with the
+    // frontmatter's (now-vestigial) allowed_tools, still clears at Done.
+    assert!(
+        turn1.iter().any(|e| matches!(
+            e,
+            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: Some(tools), .. }
+                if id == "restricted" && tools == &vec!["read".to_string(), "rhai".to_string()]
+        )),
+        "expected a SkillActive activation event; got {turn1:?}"
+    );
+    assert!(
+        turn1
+            .iter()
+            .any(|e| matches!(e, OutEvent::SkillActive { skill_id: None, .. })),
+        "expected a SkillActive clear event at Done; got {turn1:?}"
     );
 }
 
@@ -1275,6 +1409,9 @@ fn spawn_with_rhai_background(
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
+        None,
         None,
     );
     (holly, scripts)

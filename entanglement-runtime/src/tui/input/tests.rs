@@ -259,6 +259,59 @@ fn doc_end_clamps_to_last_line_boundary() {
     assert_eq!(input.cursor_col(), "ab".len());
 }
 
+// --- New: `insert_str` splits embedded newlines into rows (#paste) ---
+
+#[test]
+fn insert_str_with_embedded_newline_creates_a_new_row() {
+    let mut input = SimpleInput::default();
+    input.insert_str("line1\nline2");
+    assert_eq!(
+        input.lines(),
+        &["line1".to_string(), "line2".to_string()],
+        "an embedded \\n must start a new row, not sit inside line1's String"
+    );
+    assert_eq!(input.cursor(), (1, "line2".len()));
+}
+
+#[test]
+fn insert_str_normalizes_crlf_and_bare_cr() {
+    let mut input = SimpleInput::default();
+    input.insert_str("a\r\nb\rc");
+    assert_eq!(
+        input.lines(),
+        &["a".to_string(), "b".to_string(), "c".to_string()]
+    );
+    assert_eq!(input.cursor(), (2, 1));
+}
+
+#[test]
+fn insert_str_three_line_paste_produces_three_rows_and_correct_cursor() {
+    let mut input = SimpleInput::default();
+    input.insert_str("foo\nbar\nbaz");
+    assert_eq!(
+        input.lines(),
+        &["foo".to_string(), "bar".to_string(), "baz".to_string()]
+    );
+    assert_eq!(input.cursor(), (2, "baz".len()));
+}
+
+#[test]
+fn insert_str_mid_line_paste_splits_the_current_row() {
+    // Pasting "X\nY" between "ab" and "cd" (cursor after "ab") must split the
+    // existing row rather than appending everything after the last row.
+    let mut input = SimpleInput::default();
+    input.insert_str("abcd");
+    input.move_cursor_left();
+    input.move_cursor_left();
+    input.insert_str("X\nY");
+    assert_eq!(
+        input.lines(),
+        &["abX".to_string(), "Ycd".to_string()],
+        "mid-line paste should split the row at the cursor"
+    );
+    assert_eq!(input.cursor(), (1, 1));
+}
+
 #[test]
 fn empty_buffer_word_and_doc_moves_do_not_panic() {
     let mut input = SimpleInput::default();

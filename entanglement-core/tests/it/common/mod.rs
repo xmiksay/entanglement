@@ -5,8 +5,11 @@ use std::time::Duration;
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
-/// Collect every event for `sid` until `Done` (or a 3s timeout), so a test
-/// can inspect the full sequence of events a turn produced.
+/// Collect every event for `sid` until `Done` or `SessionEnded` (or a 3s
+/// timeout), so a test can inspect the full sequence of events a turn
+/// produced. `SessionEnded` is a terminal stop too: a session compacted into a
+/// successor (ADR-0205) is retired without a `Done`, and waiting out the
+/// timeout for one that will never come just makes such a test slow.
 #[allow(dead_code)]
 pub async fn collect_until_done(
     mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
@@ -19,9 +22,9 @@ pub async fn collect_until_done(
         };
         match recv {
             Ok(ev) if ev.session() == Some(sid) => {
-                let done = matches!(ev, OutEvent::Done { .. });
+                let terminal = matches!(ev, OutEvent::Done { .. } | OutEvent::SessionEnded { .. });
                 out.push(ev);
-                if done {
+                if terminal {
                     break;
                 }
             }

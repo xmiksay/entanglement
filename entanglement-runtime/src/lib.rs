@@ -30,20 +30,25 @@
 pub mod agent_registry;
 pub mod agent_send;
 pub mod agents;
+// Pre-dispatch argument validation against a tool's advertised `ToolSpec`
+// schema (#560, ADR-0196 §6): the three-way error taxonomy (schema
+// violation / parameter error / command failure) plus the delivered-schema
+// and loop-breaker guards.
+pub mod arg_validate;
 pub mod ask_user;
 pub mod aux_llm;
-// Lazily-registrable built-ins (#498, ADR-0133; folded into the session tool
-// overlay, #611/ADR-0163): register `bash` in a running process on demand —
-// mirrors the MCP `SharedRegistry` live-management seam (#372/#375).
-// Lean-library-safe: only entanglement-core + std + the already-unconditional
-// `host` module.
-pub mod bash_live;
 pub mod cancel;
 pub mod config;
 mod date;
 // Attributed autodecline wording for a call the dispatch gate refuses — the
 // one table both the executor ladder and the mask walk render from.
 pub mod decline;
+// `explore`/`describe` — the ADR-0196 §4 discovery pair (#560): always-on,
+// non-maskable internal tools that let a `ToolSearch`-mode session reach the
+// rest of the registry. Ungated — pure state/logic over core + the lean
+// `mcp` module, needed by the lean build's executor too.
+pub mod discover;
+pub mod endpoint;
 pub mod env_date;
 pub mod extra_roots;
 pub mod file_change;
@@ -54,6 +59,10 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
+// Out-of-mask tool calls as an approval round-trip (ADR-0198): the dispatch
+// loop's replacement for an unconditional mask decline, sharing `decline`'s
+// wording table and `tool_runner`'s own `dispatch` ladder.
+pub mod mask_request;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any
@@ -71,6 +80,12 @@ pub mod narrate;
 pub mod operations;
 pub mod pending;
 pub mod permission;
+// Per-segment `bash` command grading (ADR-0197): the runtime-only wrapper
+// every `resolve_scoped` call site for a `bash` argument routes through, so
+// a compound command (`&&`/`|`/`;`/...) is graded segment-by-segment instead
+// of as one full-string glob match. Ungated — pure logic over core types and
+// `shell_split`, needed by the lean build's dispatch path too.
+pub mod permission_bash;
 pub mod permission_path;
 pub mod persistence;
 pub mod plan_files;
@@ -101,14 +116,28 @@ pub mod serve;
 pub mod session_store;
 #[cfg(feature = "provider")]
 pub mod session_title;
+// Conservative, quote-aware compound-command splitter (ADR-0197) — the
+// splitting side `permission_bash` grades against. Ungated — pure `char`
+// scanning, no deps.
+pub mod shell_split;
 pub mod skills;
 pub mod subagent;
 pub mod system_prompt;
+// Composes the ADR-0196 §5 `ToolSearch`-mode prompt slimming with the
+// existing env-date freshness patch into the one `SystemPromptResolver`
+// slot `EngineConfig` exposes. Ungated — pure string transforms over core
+// types, needed by the lean build's `Config`-driven mode too.
+pub mod system_prompt_mode;
 // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141). Behind
 // `provider` since it polls `entanglement_provider::HttpClient` directly.
 #[cfg(feature = "provider")]
 pub mod throttle;
 pub mod tool_names;
+// Tool-advertising resolution + the per-session mode map (ADR-0196): the
+// `full`/`tool_search` knob, its env > config > catalog > default precedence
+// chain, and the session→mode pinning the executor folds. Ungated — pure
+// state over core types, needed by the lean build's `Config` too.
+pub mod tool_advertising;
 pub mod tool_runner;
 // The three-state (`allowed`/`asks`/`declines`) per-tool posture the profile
 // UIs render, now that advertisement no longer varies with the mask.

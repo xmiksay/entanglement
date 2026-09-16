@@ -1,8 +1,9 @@
 //! Integration tests for `InMsg::Oneshot` and the `"compact"` op (#324,
 //! ADR-0082 → ADR-0101): a single out-of-band LLM call outside the turn loop.
-//! **Copy-on-write (ADR-0101):** `compact` never mutates the source session —
-//! it emits `OutEvent::Compacted` carrying the summary, which a head forks into
-//! a new session. The source `Context` is always left intact.
+//! **Copy-on-write (ADR-0101/0110/0205):** `compact` never mutates the source
+//! session — it emits `OutEvent::Compacted` carrying the summary, forks a
+//! **successor** seeded with it, and retires the source. The source `Context`
+//! is always left intact; its log simply ends at the fork.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -96,6 +97,35 @@ fn truncating() -> (EngineConfig, Arc<Mutex<Vec<Vec<Message>>>>) {
     (cfg, seen)
 }
 
+/// A `Llm` whose ordinary turn call(s) succeed but whose *second-and-later*
+/// `stream()` call — the compaction summarize call — returns a transport
+/// `Err` (#560: aux fail-fast follow-up regression guard). Proves the
+/// existing `SummarizeError::Llm` → `OutEvent::Error` path is byte-identical
+/// after `retry`/cooldown were threaded through the summarize path — a
+/// failed summarize call must still surface the same way it always has.
+struct FailingSummaryLlm {
+    calls: Arc<Mutex<usize>>,
+}
+
+#[async_trait]
+impl Llm for FailingSummaryLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            let events = vec![
+                Ok(LlmEvent::Text("hi there".to_string())),
+                Ok(LlmEvent::Finish {
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage: Usage::default(),
+                }),
+            ];
+            return Ok(stream::iter(events).boxed());
+        }
+        anyhow::bail!("transport error: connection refused (dead endpoint)")
+    }
+}
+
 /// Collect events for `sid` through `Done` *and* the `Status` that trails it
 /// (`turn.rs`/`ops.rs` both emit `Done` then a lifecycle `Status` — waiting one
 /// extra beat after `Done` keeps that trailing `Status` from leaking into the
@@ -118,6 +148,12 @@ async fn collect_until_done(
         };
         match recv {
             Ok(ev) if ev.session() == Some(sid) => {
+                // A compacted session is retired without any further `Done`
+                // (ADR-0205), so `SessionEnded` ends the collection too.
+                if matches!(ev, OutEvent::SessionEnded { .. }) {
+                    out.push(ev);
+                    break;
+                }
                 let is_done = matches!(ev, OutEvent::Done { .. });
                 out.push(ev);
                 if is_done {
@@ -148,7 +184,7 @@ fn kinds(events: &[OutEvent]) -> Vec<&'static str> {
 }
 
 #[tokio::test]
-async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
+async fn compact_happy_path_emits_compacted_and_forks_a_successor() {
     let (cfg, seen) = scripted(vec![
         ("hi there", Usage::default()),
         (
@@ -174,6 +210,10 @@ async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
         .iter()
         .any(|e| matches!(e, OutEvent::Done { .. })));
 
+    // A second receiver, taken before the compaction: `collect_until_done`
+    // filters to `sid` and drops everything else, including the successor's
+    // own `SessionStarted`.
+    let mut fork_sub = holly.subscribe();
     holly
         .send(InMsg::Oneshot {
             session: sid.clone(),
@@ -184,10 +224,11 @@ async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
         .unwrap();
     let compact_events = collect_until_done(&mut sub, &sid).await;
 
-    // Status::Thinking, Compacted, Usage, Done, Status::Done — in that order.
+    // Status::Thinking, Compacted, Usage, Done, Status::Done — in that order,
+    // then the source is retired at the fork (ADR-0205).
     assert_eq!(
-        kinds(&compact_events),
-        vec!["status", "compacted", "usage", "done", "status"],
+        kinds(&compact_events)[..5],
+        ["status", "compacted", "usage", "done", "status"],
         "unexpected event order: {compact_events:?}"
     );
     let summary = match &compact_events[1] {
@@ -198,26 +239,37 @@ async fn compact_happy_path_emits_compacted_and_leaves_source_intact() {
         other => panic!("expected Compacted, got {other:?}"),
     };
     assert!(summary.contains("summary: user said hello"));
-
-    // Copy-on-write (ADR-0101): the source `Context` is untouched — a further
-    // turn sees the full pre-compaction history plus the new prompt, not the
-    // summary.
-    holly
-        .send(InMsg::prompt(sid.clone(), "what's next?"))
-        .await
-        .unwrap();
-    let _ = collect_until_done(&mut sub, &sid).await;
+    // The successor runs under the source's profile, seeded with the summary —
+    // and the source's own `Context` was never mutated on the way there.
+    let successor = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(OutEvent::SessionStarted {
+                session,
+                predecessor: Some(p),
+                profile,
+                ..
+            }) = fork_sub.recv().await
+            {
+                if p == sid {
+                    assert_eq!(profile, "build", "the successor inherits the profile");
+                    return session;
+                }
+            }
+        }
+    })
+    .await
+    .expect("the compaction announced a successor");
+    assert_ne!(successor, sid);
 
     let seen = seen.lock().unwrap();
-    let last_request = seen.last().expect("a third request was recorded");
+    let seeded = seen
+        .last()
+        .expect("the successor's first request was recorded");
+    assert_eq!(seeded[0].role, entanglement_core::MessageRole::User);
     assert!(
-        last_request.len() >= 2,
-        "source keeps its full history + the new prompt: {last_request:?}"
+        seeded[0].text().contains("summary: user said hello"),
+        "the successor starts from the summary: {seeded:?}"
     );
-    assert_eq!(last_request[0].role, entanglement_core::MessageRole::User);
-    assert_eq!(last_request[0].text(), "hello");
-    let tail = last_request.last().expect("a final user message");
-    assert_eq!(tail.text(), "what's next?");
 }
 
 #[tokio::test]
@@ -418,6 +470,55 @@ async fn compact_with_truncated_summary_is_rejected_and_source_is_unchanged() {
     assert_eq!(first.text(), "hello");
 }
 
+/// #560 regression guard: a compact call that fails at the transport level
+/// (a dead pinned/session backend) must surface through the exact same
+/// `SummarizeError::Llm` → `OutEvent::Error` path as before the aux
+/// fail-fast retry override was threaded in — no new error variant, no
+/// wording change, and the source session stays untouched.
+#[tokio::test]
+async fn compact_with_a_failing_llm_surfaces_the_unchanged_error_path() {
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls2 = calls.clone();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(FailingSummaryLlm {
+                calls: calls2.clone(),
+            }) as Box<dyn Llm>
+        }),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .unwrap();
+    let _ = collect_until_done(&mut sub, &sid).await;
+
+    holly
+        .send(InMsg::Oneshot {
+            session: sid.clone(),
+            op: "compact".to_string(),
+            args: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid).await;
+
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::Error { message, .. } if message.contains("connection refused"))
+        ),
+        "the transport error must surface verbatim via OutEvent::Error: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, OutEvent::Compacted { .. })));
+}
+
 #[tokio::test]
 async fn compact_with_oversized_transcript_is_rejected_before_the_llm_is_called() {
     let (cfg, seen) = scripted(vec![
@@ -428,7 +529,10 @@ async fn compact_with_oversized_transcript_is_rejected_before_the_llm_is_called(
     // turn with this message refuses for the same reason — that's fine; the
     // point is the compaction op's own guard catches the oversize *before*
     // shipping a summarization request the provider would 4xx.)
-    let huge = "x".repeat(180_000 * 4 + 1_000); // ~4x chars/token → well over 180k tokens
+    // ~285k tokens: over both the 180k input budget and the ~211k window the
+    // structured (ADR-0202) shape is judged against, so the rendered
+    // fallback's own guard is what refuses.
+    let huge = "x".repeat(1_000_000);
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -461,7 +565,7 @@ async fn compact_with_oversized_transcript_is_rejected_before_the_llm_is_called(
     assert!(
         seen.iter().all(|req| req
             .iter()
-            .all(|m| !m.text().contains("Summarize the conversation transcript"))),
+            .all(|m| !m.text().contains("Summarize the conversation"))),
         "no summarization request reached the LLM: {seen:?}"
     );
 }
@@ -511,7 +615,7 @@ async fn compact_with_an_oversized_kept_tail_is_rejected_before_the_llm_is_calle
     assert!(
         seen.iter().all(|req| req
             .iter()
-            .all(|m| !m.text().contains("Summarize the conversation transcript"))),
+            .all(|m| !m.text().contains("Summarize the conversation"))),
         "no summarization request reached the LLM: {seen:?}"
     );
 }

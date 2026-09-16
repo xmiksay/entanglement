@@ -1,18 +1,20 @@
-//! Compaction fork — copy-on-write (ADR-0101).
+//! Following a compaction into its successor session (ADR-0205).
 //!
-//! On `OutEvent::Compacted`, the TUI forks the summary into a fresh session:
-//! the source session's `Context` was never mutated (the engine's `compact_op`
-//! emits the summary as a report, not a mutation), so the fork is the *only*
-//! place the summary lands as a prompt. The fork is a **successor** (ADR-0110):
-//! spawned as a fresh *root* with `predecessor` = the source id (lineage only,
-//! not a spawn edge), and the source's interactive session is **closed** right
-//! after — the user moves forward into the compacted successor, the original is
-//! retired (its log persists). Root, not child, so closing the source doesn't
-//! cascade onto the successor.
+//! The head no longer forks anything. Every compaction — manual `/compact`,
+//! auto-summarize on overflow, the prune-only fallback — is the *engine*
+//! minting a successor session and retiring the source, so all the TUI does is
+//! follow along: remember the summary when `Compacted` arrives, then, when the
+//! successor announces itself with `predecessor` pointing at that source, open
+//! its view and seed the transcript with what it is continuing from.
+//!
+//! Following lineage rather than a fork this head issued is what makes it work
+//! for a compaction the user never asked for and may not even be watching — a
+//! background session that overflowed mid-turn gets its view either way, and
+//! only a compaction of the *active* session moves the user.
 
-use entanglement_core::{InMsg, SessionId};
+use entanglement_core::SessionId;
 
-use super::{App, CompactFork};
+use super::App;
 
 impl App {
     /// Records a `/compact` parse error (bad `--keep` value) as a transcript
@@ -25,252 +27,174 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Fork a `Compacted` summary into a new session (ADR-0101): mint a fresh
-    /// id, record the summary as its first user message, switch the active view
-    /// to the new session, and record a pending `Spawn` for the async main loop
-    /// to send. The engine `Spawn` inherits the source's profile so the fork
-    /// runs under the same model pin, and seeds the summary as the first prompt.
-    ///
-    /// The fork notice on the source view is rendered by the reducer's
-    /// `Compacted` arm (this runs before the event reaches the reducer; the
-    /// reducer renders on the same `Compacted` once `sessions.handle_out_event`
-    /// routes it).
-    pub(crate) fn handle_compacted(&mut self, source: SessionId, summary: String) {
-        // The source session's current agent profile name — `Spawn` inherits it
-        // so the fork runs under the same profile/model pin as the source.
-        let agent = self
-            .sessions
-            .view_for(&source)
-            .map(|v| v.agent().to_string())
-            .unwrap_or_else(|| "build".to_string());
-
-        let new_session = SessionId::new_uuid();
-
-        // Adopt the new session head-side: create its view and switch to it.
-        self.sessions.adopt(new_session.clone());
-        // Record the summary as the new session's first user message so it
-        // shows in the scrollback (the engine's `Spawn` seeds it as the first
-        // prompt; the engine never echoes `InMsg` back as an `OutEvent`, so the
-        // head mirrors it locally — same pattern as `propose_plan` handoff and
-        // an ordinary user prompt).
-        let summary_msg = wrap_compaction_summary(&summary);
-        if let Some(new_view) = self.sessions.view_for_mut(&new_session) {
-            new_view.record_user_message(summary_msg.clone());
-        }
-
-        self.pending_compact_fork = Some(CompactFork {
-            new_session: new_session.clone(),
-            source,
-            agent,
-            summary: summary_msg,
-        });
+    /// Remember a compaction's seed text against the session that compacted,
+    /// for [`follow_successor`][Self::follow_successor] to hand to the
+    /// successor once it appears. The notice on the source's own view is
+    /// rendered separately by the reducer's `Compacted` arm.
+    pub(crate) fn note_compaction_seed(&mut self, source: SessionId, seed: String) {
+        self.compaction_seeds.insert(source, seed);
         self.mark_dirty();
     }
 
-    /// Take the pending compaction fork, if any — the async main loop drains
-    /// this and sends the `InMsg::Spawn` that actually creates the forked
-    /// session in the engine. Returns `None` once drained.
-    pub fn take_pending_compact_fork(&mut self) -> Option<CompactFork> {
-        self.pending_compact_fork.take()
+    /// Open the successor of a compaction and, if the user was watching the
+    /// session that compacted, move them into it.
+    ///
+    /// The successor's first user message is seeded head-side because the
+    /// engine never echoes an `InMsg` back as an `OutEvent`: the seed rides
+    /// the successor's `Spawn` prompt, so without this the transcript would
+    /// open on the model's reply to a prompt the user never saw. Same pattern
+    /// as the `propose_plan` handoff and an ordinary user prompt.
+    pub(crate) fn follow_successor(&mut self, source: SessionId, successor: SessionId) {
+        self.sessions.ensure(&successor);
+        if let Some(seed) = self.compaction_seeds.remove(&source) {
+            if let Some(view) = self.sessions.view_for_mut(&successor) {
+                view.record_user_message(seed);
+            }
+        }
+        // A background session compacting must not yank the view out from
+        // under whatever the user is reading.
+        if self.sessions.active_id() == &source {
+            self.sessions.switch_to(successor);
+        }
+        self.mark_dirty();
     }
 
-    /// Build the `InMsg::Spawn` for a recorded compaction fork (ADR-0110): the
-    /// summary seeds the successor's first user message, the successor is a fresh
-    /// **root** (`parent = None`) with `predecessor` = the source id (lineage,
-    /// not a spawn edge), and the source's agent profile is inherited. The caller
-    /// pairs this with a [`InMsg::CloseSession`] on the source (see
-    /// [`App::close_predecessor`]).
-    pub fn spawn_for_fork(fork: &CompactFork) -> InMsg {
-        InMsg::Spawn {
-            session: fork.new_session.clone(),
+    /// Seeds recorded but not yet claimed by a successor. Test-only window
+    /// onto the hand-off's one piece of state.
+    #[cfg(test)]
+    pub(crate) fn compaction_seeds(&self) -> &std::collections::HashMap<SessionId, String> {
+        &self.compaction_seeds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::app::App;
+    use crate::tui::session_view::TranscriptEntry;
+    use entanglement_core::{AgentState, CompactionMode, OutEvent, SessionId};
+
+    fn compacted(session: &str, seq: u64, summary: &str, auto: bool) -> OutEvent {
+        OutEvent::Compacted {
+            session: SessionId::new(session),
+            seq,
+            summary: summary.into(),
+            kept: 0,
+            auto,
+            mode: CompactionMode::Summary,
+        }
+    }
+
+    fn started(session: &str, predecessor: Option<&str>) -> OutEvent {
+        OutEvent::SessionStarted {
+            session: SessionId::new(session),
             parent: None,
-            predecessor: Some(fork.source.clone()),
-            agent: fork.agent.clone(),
-            prompt: fork.summary.clone(),
+            predecessor: predecessor.map(SessionId::new),
+            profile: "build".into(),
+            model: None,
+            root: true,
+            ts: 0,
             user: None,
             sponsored: false,
         }
     }
 
-    /// Build the `InMsg::CloseSession` that retires the compaction source once
-    /// its successor is spawned (ADR-0110): the user continues in the successor,
-    /// the original's interactive session ends (its log is preserved).
-    pub fn close_predecessor(fork: &CompactFork) -> InMsg {
-        InMsg::CloseSession {
-            session: fork.source.clone(),
-        }
+    fn first_user_text(app: &App, session: &str) -> Option<String> {
+        app.sessions
+            .view_for(&SessionId::new(session))?
+            .transcript()
+            .iter()
+            .find_map(|e| match e {
+                TranscriptEntry::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
     }
-}
 
-/// Wrap a raw compaction summary into the forked session's first user message.
-/// Mirrors the framing the old in-place `apply_compaction` used, so the forked
-/// session starts from a self-describing prompt.
-pub(crate) fn wrap_compaction_summary(summary: &str) -> String {
-    format!(
-        "[Conversation summary — this session continues from a compaction of an \
-         earlier session]\n\n{summary}"
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tui::session_view::TranscriptEntry;
-    use entanglement_core::{AgentState, OutEvent, SessionId};
-
+    /// The whole hand-off: the source renders its notice, the successor gets a
+    /// view seeded with the summary, and the user moves into it.
     #[test]
-    fn compacted_event_forks_into_a_new_session_and_preserves_the_source() {
+    fn the_successor_of_the_active_session_is_seeded_and_becomes_active() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-
         app.handle_out_event(OutEvent::Status {
             session: SessionId::new("s1"),
             state: AgentState::Done,
         });
 
-        app.handle_out_event(OutEvent::Compacted {
-            session: SessionId::new("s1"),
-            seq: 1,
-            summary: "user asked for X, agent did Y".into(),
-            kept: 0,
-            auto: false,
-        });
+        app.handle_out_event(compacted("s1", 1, "user asked for X, agent did Y", false));
+        // Nothing moves until the engine's successor actually appears.
+        assert_eq!(app.active_session_id(), &SessionId::new("s1"));
 
-        // The view switched to the fresh fork session.
-        let active = app.active_session_id().clone();
-        assert_ne!(
-            active,
-            SessionId::new("s1"),
-            "the fork became the active session"
+        app.handle_out_event(started("s2", Some("s1")));
+
+        assert_eq!(
+            app.active_session_id(),
+            &SessionId::new("s2"),
+            "the user follows the compaction forward"
+        );
+        let seeded = first_user_text(&app, "s2").expect("the successor is seeded");
+        assert!(seeded.contains("user asked for X, agent did Y"), "{seeded}");
+        assert!(
+            app.compaction_seeds().is_empty(),
+            "the seed is consumed by the successor"
         );
 
-        // The source session's view still exists and carries the fork notice
-        // (rendered by the reducer's `Compacted` arm).
-        let src_view = app
+        // The source's view survives, carrying the compaction notice.
+        let source = app
             .sessions
             .view_for(&SessionId::new("s1"))
-            .expect("source session view survives");
-        let notice = src_view.transcript().iter().find_map(|e| match e {
-            TranscriptEntry::ToolOutput {
-                tool: Some(t),
-                output,
-            } if t == "compact" => Some(output.clone()),
-            _ => None,
-        });
-        assert!(
-            notice
-                .as_ref()
-                .map(|n| n.contains("forked"))
-                .unwrap_or(false),
-            "source view renders a fork notice: {notice:?}"
-        );
-
-        // The forked session's view carries the summary as its first user message.
-        let new_view = app
-            .sessions
-            .view_for(&active)
-            .expect("forked session view exists");
-        let first = new_view
-            .transcript()
-            .first()
-            .expect("the forked session has the summary seeded");
-        match first {
-            TranscriptEntry::User { text, .. } => {
-                assert!(text.contains("user asked for X, agent did Y"));
-            }
-            other => panic!("first entry should be the seeded summary: {other:?}"),
-        }
-
-        // A pending fork was recorded for the main loop to send.
-        let fork = app
-            .take_pending_compact_fork()
-            .expect("a pending fork was recorded");
-        assert_eq!(fork.source, SessionId::new("s1"));
-        assert_eq!(fork.new_session, active);
-        assert_eq!(fork.agent, "build");
-        assert!(fork.summary.contains("user asked for X, agent did Y"));
-        // The spawn is addressed to the successor under the source's profile, as
-        // a fresh root (no parent) that records the source as its predecessor
-        // (ADR-0110).
-        let spawn = App::spawn_for_fork(&fork);
-        match spawn {
-            InMsg::Spawn {
-                session,
-                parent,
-                predecessor,
-                agent,
-                prompt,
-                user: _,
-                sponsored: _,
-            } => {
-                assert_eq!(session, active);
-                assert_eq!(parent, None, "successor is a root, not a child");
-                assert_eq!(predecessor, Some(SessionId::new("s1")));
-                assert_eq!(agent, "build");
-                assert!(prompt.contains("user asked for X, agent did Y"));
-            }
-            other => panic!("expected Spawn, got {other:?}"),
-        }
-        // And the source is retired once the successor spawns.
-        match App::close_predecessor(&fork) {
-            InMsg::CloseSession { session } => assert_eq!(session, SessionId::new("s1")),
-            other => panic!("expected CloseSession, got {other:?}"),
-        }
-        assert!(
-            app.take_pending_compact_fork().is_none(),
-            "the fork is drained"
-        );
+            .expect("source view survives");
+        assert!(source.transcript().iter().any(|e| matches!(
+            e,
+            TranscriptEntry::ToolOutput { tool: Some(t), .. } if t == "compact"
+        )));
     }
 
+    /// The automatic paths take the same route — there is no `auto: true`
+    /// special case any more, because the engine forks on every path.
     #[test]
-    fn compacted_event_is_deduped_on_replay() {
+    fn an_auto_compaction_follows_its_successor_too() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-        app.handle_out_event(OutEvent::Compacted {
-            session: SessionId::new("s1"),
-            seq: 1,
-            summary: "first".into(),
-            kept: 0,
-            auto: false,
-        });
-        let first_fork = app.active_session_id().clone();
-        // The same event replayed (seq not advancing) must not fork again.
-        app.handle_out_event(OutEvent::Compacted {
-            session: SessionId::new("s1"),
-            seq: 1,
-            summary: "replay".into(),
-            kept: 0,
-            auto: false,
-        });
-        assert_eq!(
-            app.active_session_id(),
-            &first_fork,
-            "a replayed Compacted does not fork a second time"
-        );
+        app.handle_out_event(compacted("s1", 1, "overflowed, summarized", true));
+        app.handle_out_event(started("s2", Some("s1")));
+
+        assert_eq!(app.active_session_id(), &SessionId::new("s2"));
+        let seeded = first_user_text(&app, "s2").expect("the successor is seeded");
+        assert!(seeded.contains("overflowed, summarized"));
     }
 
+    /// A background session compacting gets its successor view, but must not
+    /// steal the user's place.
     #[test]
-    fn auto_compacted_event_does_not_fork() {
+    fn a_background_compaction_does_not_switch_the_active_view() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-        let before = app.active_session_id().clone();
+        app.handle_out_event(compacted("bg", 1, "background summary", true));
+        app.handle_out_event(started("bg2", Some("bg")));
 
-        app.handle_out_event(OutEvent::Compacted {
-            session: SessionId::new("s1"),
-            seq: 1,
-            summary: "context overflowed, summarized in place".into(),
-            kept: 0,
-            auto: true,
-        });
-
-        // No fork: the active session is unchanged, and no fork was recorded
-        // for the main loop to send (#398, ADR-0103 — the live engine already
-        // mutated this session's context in place before the event arrived).
         assert_eq!(
             app.active_session_id(),
-            &before,
-            "auto-compaction must not switch the active view"
+            &SessionId::new("s1"),
+            "the active view stays put"
         );
-        assert!(
-            app.take_pending_compact_fork().is_none(),
-            "auto-compaction must not record a pending fork"
-        );
+        let seeded = first_user_text(&app, "bg2").expect("the successor still gets its view");
+        assert!(seeded.contains("background summary"));
+    }
+
+    /// A replayed/lagged duplicate must not overwrite a newer seed.
+    #[test]
+    fn a_replayed_compacted_does_not_clobber_the_recorded_seed() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_out_event(compacted("s1", 5, "the real summary", false));
+        app.handle_out_event(compacted("s1", 1, "a stale replay", false));
+        app.handle_out_event(started("s2", Some("s1")));
+
+        let seeded = first_user_text(&app, "s2").expect("the successor is seeded");
+        assert!(seeded.contains("the real summary"), "{seeded}");
+    }
+
+    /// An ordinary session start (no lineage) is not a compaction hand-off.
+    #[test]
+    fn a_plain_session_start_changes_nothing() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_out_event(started("other", None));
+        assert_eq!(app.active_session_id(), &SessionId::new("s1"));
     }
 }

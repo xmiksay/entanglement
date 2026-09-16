@@ -1,4 +1,5 @@
 use crate::tui::commands::Command;
+use crate::tui::cost_command::cost_report;
 use crate::tui::keybindings::Action;
 
 use super::{App, UiEffect};
@@ -41,6 +42,10 @@ impl App {
                 self.toggle_inspect();
                 false
             }
+            Command::Cost => {
+                self.show_cost_report();
+                false
+            }
             Command::Editor => {
                 self.request_effect(UiEffect::OpenEditor);
                 false
@@ -58,9 +63,9 @@ impl App {
             // (`event_loop`'s Enter handler and the command palette) intercept
             // `Compact` before it reaches here (#324).
             Command::Compact => false,
-            // Same shape as `Compact` (#376): `Set` needs the trailing `key
-            // value` text and `Show` needs `holly` to query the live session,
-            // neither available here — both call sites intercept them before
+            // Same shape as `Compact` (#376): `Set` needs the trailing text (or
+            // opens the settings dialog) and `Show` needs `holly` to query the
+            // live session, neither available here — both call sites intercept them before
             // reaching this dispatch.
             Command::Set | Command::Show => false,
             // Same shape again (#373): every `/mcp` subcommand needs `holly`
@@ -75,6 +80,14 @@ impl App {
             // the trailing text — both call sites intercept them before
             // reaching this dispatch.
             Command::Enable | Command::Disable => false,
+            // `/tools` (#560 P9, ADR-0199 part 3) needs nothing `holly`/text
+            // could add — the view builds its own row set from state already
+            // on `App` — so it's fully handled here, unlike `Enable`/`Disable`
+            // above.
+            Command::Tools => {
+                self.open_tools_view();
+                false
+            }
             // Lifecycle commands (#6): `/stop`, `/pause`, `/continue` need `holly`
             // (plus the optional `--all` text) — both call sites (the Enter
             // handler and the command palette) intercept them before reaching
@@ -88,6 +101,15 @@ impl App {
             // reaching this dispatch.
             Command::AuxModel => false,
         }
+    }
+
+    /// `/cost` (ADR-0202 §7): the active session's breakdown plus its spawned
+    /// subtree, recorded as a durable transcript notice.
+    fn show_cost_report(&mut self) {
+        let active = self.active_session_id().clone();
+        let rollup = self.usage_rollup(&active);
+        let report = cost_report(self.sessions.active_view().cost(), &rollup);
+        self.record_notice("cost", report);
     }
 
     pub fn dispatch_action(&mut self, action: Action) -> bool {
@@ -177,5 +199,16 @@ mod tests {
         let quit = app.execute_command(Command::Plan);
         assert!(!quit, "/plan does not quit");
         assert_eq!(app.take_pending_effect(), Some(UiEffect::OpenPlanFile));
+    }
+
+    #[test]
+    fn cost_command_records_the_report_as_a_notice() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        assert!(!app.execute_command(Command::Cost), "/cost does not quit");
+        assert!(matches!(
+            app.transcript().last(),
+            Some(crate::tui::session_view::TranscriptEntry::ToolOutput { tool: Some(t), output })
+                if t == "cost" && output == "cost: no usage recorded yet"
+        ));
     }
 }

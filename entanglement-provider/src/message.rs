@@ -71,6 +71,50 @@ pub enum ContentPart {
         text: String,
         data: serde_json::Value,
     },
+    /// A `tool_reference` block (ADR-0196 §3, the Anthropic `anthropic_native`
+    /// `ToolSearch` encoding): appears in a tool-result message's content
+    /// answering a client-executed `describe()` call, naming one tool the API
+    /// should auto-expand into context from its (already-sent, `defer_loading:
+    /// true`) full definition. Request-side only — the API expands a
+    /// referenced tool before Claude sees it, so this variant is never parsed
+    /// back out of a response.
+    ///
+    /// Unlike [`ProviderSearch`][ContentPart::ProviderSearch] and
+    /// [`Reasoning`][ContentPart::Reasoning], this carries no opaque
+    /// provider-private payload and no `provider` tag: the wire shape is
+    /// exactly one field (`tool_name`), nothing to stash verbatim, and the
+    /// Anthropic converter renders it the same way regardless of which
+    /// provider the request targets (it's the only wire with a native
+    /// `tool_reference` mechanism). Every other converter degrades it to
+    /// [`tool_reference_fallback_text`] — the same "keep it visible as text"
+    /// contract `ProviderSearch::summary` gives a foreign wire, but
+    /// synthesized here since there's no separate human-readable field to
+    /// fall back to.
+    ToolReference { tool_name: String },
+    /// A `tool_search_output` input item (ADR-0196 §3, the OpenAI Responses
+    /// `responses_native` `ToolSearch` encoding): the runtime's reply to a
+    /// client-executed `tool_search_call`, persisted so the next request can
+    /// replay the same input item verbatim (`call_id` correlation rides the
+    /// enclosing tool-result message's own `tool_call_id`, exactly like
+    /// [`ToolReference`][ContentPart::ToolReference] needs none of its own).
+    ///
+    /// `data` is opaque JSON — the `tools` array (full tool definitions, one
+    /// per discovered name) the Responses client echoes back verbatim inside
+    /// the `tool_search_output` item — and round-trips only to the
+    /// `provider` that minted it, the same opaque-payload contract as
+    /// [`ProviderSearch`][ContentPart::ProviderSearch] /
+    /// [`Reasoning`][ContentPart::Reasoning]. `summary` is the portable,
+    /// human-readable degrade-to-text rendering every foreign converter falls
+    /// back to (mirrors `ProviderSearch::summary`) — unlike `ToolReference`,
+    /// which has no separate human field and synthesizes its fallback from
+    /// `tool_name` alone, this variant already carries one because the
+    /// underlying wire event has no single name to fall back to (a search can
+    /// discover zero, one, or many tools at once).
+    ToolSearchOutput {
+        provider: String,
+        summary: String,
+        data: serde_json::Value,
+    },
 }
 
 impl ContentPart {
@@ -117,6 +161,27 @@ impl ContentPart {
         }
     }
 
+    /// A `tool_reference` block. See [`ToolReference`][ContentPart::ToolReference].
+    pub fn tool_reference(tool_name: impl Into<String>) -> Self {
+        ContentPart::ToolReference {
+            tool_name: tool_name.into(),
+        }
+    }
+
+    /// A `tool_search_output` block. See
+    /// [`ToolSearchOutput`][ContentPart::ToolSearchOutput].
+    pub fn tool_search_output(
+        provider: impl Into<String>,
+        summary: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        ContentPart::ToolSearchOutput {
+            provider: provider.into(),
+            summary: summary.into(),
+            data,
+        }
+    }
+
     /// The text of a [`Text`][ContentPart::Text] part, else `None`.
     ///
     /// A [`Reasoning`][ContentPart::Reasoning] part is deliberately **not**
@@ -128,9 +193,21 @@ impl ContentPart {
             ContentPart::Text { text } => Some(text),
             ContentPart::Image { .. }
             | ContentPart::ProviderSearch { .. }
-            | ContentPart::Reasoning { .. } => None,
+            | ContentPart::Reasoning { .. }
+            | ContentPart::ToolReference { .. }
+            | ContentPart::ToolSearchOutput { .. } => None,
         }
     }
+}
+
+/// Portable one-line fallback for a [`ToolReference`][ContentPart::ToolReference]
+/// part on a wire with no native `tool_reference` mechanism (OpenAI-compat,
+/// Gemini) — both converters' tool-result branch append this to the result
+/// text so a discovered-tool outcome never silently vanishes from what the
+/// model sees, mirroring [`ProviderSearch::summary`][ContentPart::ProviderSearch]'s
+/// degrade-to-text contract.
+pub fn tool_reference_fallback_text(tool_name: &str) -> String {
+    format!("[discovered tool: {tool_name}]")
 }
 
 /// Source of an [image content block][ContentPart::Image]. Base64-inline today
@@ -325,5 +402,46 @@ mod tests {
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.content, msg.content);
         assert_eq!(back.content[1], part);
+    }
+
+    #[test]
+    fn tool_reference_block_serializes_and_roundtrips() {
+        let part = ContentPart::tool_reference("search_files");
+        let msg = Message::tool_content("call_1", vec![ContentPart::text("schema"), part.clone()]);
+        assert_eq!(
+            msg.text(),
+            "schema",
+            "as_text skips the tool_reference block"
+        );
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"role":"tool","content":[{"type":"text","text":"schema"},{"type":"tool_reference","tool_name":"search_files"}],"tool_call_id":"call_1"}"#
+        );
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, msg.content);
+    }
+
+    #[test]
+    fn tool_search_output_block_serializes_and_roundtrips() {
+        let part = ContentPart::tool_search_output(
+            "openai_responses",
+            "discovered: get_weather",
+            serde_json::json!([{ "type": "function", "name": "get_weather" }]),
+        );
+        let msg = Message::tool_content("call_1", vec![part.clone()]);
+        assert_eq!(msg.text(), "", "as_text skips the tool_search_output block");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, msg.content);
+        assert_eq!(back.content[0], part);
+    }
+
+    #[test]
+    fn tool_reference_fallback_text_names_the_tool() {
+        assert_eq!(
+            tool_reference_fallback_text("search_files"),
+            "[discovered tool: search_files]"
+        );
     }
 }

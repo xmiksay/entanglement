@@ -875,6 +875,9 @@ fn spawn_two_read_calls_rooted(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
     holly
 }
@@ -1120,6 +1123,9 @@ fn spawn_scripted_calls_rooted(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
     holly
 }
@@ -1254,5 +1260,622 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
     assert!(
         other_session_asked,
         "a SessionDir grant must never be inherited by a different session"
+    );
+}
+
+// --- ADR-0195 §3: curated read-only Allow rules in the embedded profiles ------
+
+/// A trivial `call` host tool, mirroring `EchoBash` — the curated set reaches
+/// both exec tools, so the dispatch path must be exercised for each.
+struct EchoCall;
+#[async_trait]
+impl Tool for EchoCall {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("call")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("ran: {input}"))
+    }
+}
+
+/// `spawn_with_bash_call_using` plus the `call` tool registered, so a scripted
+/// LLM can exercise either exec tool under a caller-chosen profile registry.
+fn spawn_with_exec_tools_using(input: &str, profiles: ProfileRegistry) -> Holly {
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: input.into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    reg.register(EchoCall);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+    holly
+}
+
+/// ADR-0195: the least-privileged read-only tiers pre-approve the curated
+/// read-only command set (`bash find .`, `call rg …`), so inspection no longer
+/// costs an approval round-trip — while a non-curated command under the same
+/// profile still escalates.
+#[tokio::test]
+async fn curated_read_only_bash_find_runs_without_approval_under_explore() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "find ." }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "`bash find .` is curated read-only — no approval expected; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("find ."))),
+        "the curated command should run; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn curated_read_only_call_rg_runs_without_approval_under_research() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "call".into(),
+                input: serde_json::json!({ "command": "rg", "args": ["pattern", "src"] })
+                    .to_string(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    reg.register(EchoCall);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "research".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "`call rg …` is curated read-only — no approval expected; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("rg"))),
+        "the curated call should run; got {events:?}"
+    );
+}
+
+/// A non-curated command under the same profile still escalates — the curated
+/// set is exact-prefix, so `git status` (a read-only *operation* but not on
+/// the list) keeps its `Ask`.
+#[tokio::test]
+async fn a_non_curated_command_still_escalates_under_explore() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "git status" }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "`git status` is not in the curated set — explore must still ask"
+    );
+}
+
+/// The config ceiling still clamps the curated rules down (#172): a `bash:
+/// deny` ceiling turns a curated `bash find .` Allow into a refusal, exactly
+/// as it clamps any profile grade.
+#[tokio::test]
+async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({ "command": "find ." }).to_string(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    reg.register(EchoCall);
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    // The ceiling from a `permissions: bash: deny` config layer.
+    let ceiling = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
+    let resolver: Arc<dyn PermissionResolver> =
+        Arc::new(ProfileResolver::new(active.clone(), ceiling.clone(), None));
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        reg.shared(),
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        ceiling,
+        active,
+        resolver,
+        Arc::new(DefaultGrantStore::load()),
+        Default::default(),
+        None,
+        SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a Deny ceiling never prompts; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "the ceiling must clamp the curated Allow down to a refusal; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "the clamped command must not run"
+    );
+}
+
+// --- ADR-0197: compound bash commands grade per segment ---------------------
+
+/// A compound pipeline built entirely from curated read-only verbs runs with
+/// no approval round-trip — the curated Allow rules now grade each top-level
+/// segment instead of only the whole raw string.
+#[tokio::test]
+async fn compound_pipeline_of_curated_verbs_runs_without_approval() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "find . | grep x | wc -l" }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "every segment of `find . | grep x | wc -l` is curated read-only — no approval expected; got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("find ."))),
+        "the pipeline should run; got {events:?}"
+    );
+}
+
+/// The over-match regression this ADR closes: a trailing `*` on
+/// `bash(find *)` must never authorize an `&&`-appended command it doesn't
+/// cover.
+#[tokio::test]
+async fn compound_over_match_regression_still_escalates() {
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let holly = spawn_with_exec_tools_using(
+        &serde_json::json!({ "command": "find . && rm -rf /tmp/x" }).to_string(),
+        profiles,
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut got_request = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            got_request = true;
+            break;
+        }
+    }
+    assert!(
+        got_request,
+        "`find . && rm -rf /tmp/x` must not ride `bash(find *): allow` past the `&&`"
+    );
+}
+
+/// A deny rule matching only the trailing segment of a compound still denies
+/// the whole command — deny is never weakened by splitting.
+#[tokio::test]
+async fn compound_command_deny_on_trailing_segment_denies_via_dispatch() {
+    let holly = spawn_with_bash_call_using(
+        &serde_json::json!({ "command": "git status && rm x" }).to_string(),
+        scoped_bash_registry(),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "scopedbash".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
+        "the trailing `rm x` segment matches `bash(rm *): deny` — the whole \
+         command must be denied; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "a denied compound must not run"
+    );
+}
+
+/// Grants stay exact whole-string match (`GrantKey`, unchanged): approving
+/// `ls` as a standalone command does not widen to a compound that merely
+/// contains `ls` as one of its segments — that compound still asks (rule-
+/// based per-segment Allow, not grant widening, is ADR-0197's fix for the
+/// common case).
+#[tokio::test]
+async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segment() {
+    let call = |id: &str, command: &str| LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": command }).to_string(),
+            provider_meta: None,
+        }],
+    };
+    let ok = || LlmResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![call("t1", "ls"), ok(), call("t2", "ls && pwd"), ok()]);
+    let profiles = ask_bash_registry();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        PermissionProfile::new(Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "askbash".into(),
+        })
+        .await
+        .unwrap();
+
+    // Turn 1: approve the exact standalone command `ls` for the session.
+    let sub1 = holly.subscribe();
+    let mut watch1 = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
+    let mut asked = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch1.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            asked = true;
+            break;
+        }
+    }
+    assert!(asked, "turn 1 should prompt for approval");
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "t1".into(),
+            scope: entanglement_core::ApprovalScope::Session,
+        })
+        .await
+        .unwrap();
+    let _turn1 = collect(sub1, &sid).await;
+
+    // Turn 2: `ls && pwd` contains the granted segment but is a different
+    // whole string, and no rule covers either segment — must still ask.
+    let mut watch2 = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run again"))
+        .await
+        .unwrap();
+    let mut asked_again = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch2.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "bash") {
+            asked_again = true;
+            break;
+        }
+    }
+    assert!(
+        asked_again,
+        "a compound merely containing a granted segment must still ask"
+    );
+}
+
+/// A trivial host tool named `mcp_enable`, echoing its input — stands in for
+/// the real `McpEnableTool` (`entanglement_runtime::mcp::McpEnableTool`,
+/// covered end-to-end by `mcp::available_tests`) so this test exercises only
+/// the mask/permission ladder, not a real server connection.
+struct EchoMcpEnable;
+#[async_trait]
+impl Tool for EchoMcpEnable {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("mcp_enable")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("enabled: {input}"))
+    }
+}
+
+/// A trivial host tool named like a namespaced MCP tool, standing in for a
+/// server's real tool once connected — this test's `McpCapabilityIndex`
+/// hints it `read` exactly as a bundled server's config-side `capabilities:`
+/// would (#426).
+struct EchoMcpSearch;
+#[async_trait]
+impl Tool for EchoMcpSearch {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("mcp__testserver__search")
+    }
+    async fn run(&self, input: &str) -> anyhow::Result<String> {
+        Ok(format!("searched: {input}"))
+    }
+}
+
+/// The explore/research provider-bundled-MCP fix, exercised through the real
+/// permission ladder (unit coverage for the mask/capability-index plumbing
+/// itself lives in `entanglement_runtime::agents::mod::tests` and
+/// `entanglement_runtime::mcp::mod::tests`): under `explore`, `mcp_enable`
+/// runs with no approval prompt — ADR-0152's `allowed`/`enabled`/`disabled`
+/// tier is the real consent boundary, not this profile's grade — and a
+/// namespaced MCP tool the capability index hints `read` also runs with no
+/// approval, riding the same `read: allow` fan-out that already covers
+/// `read`/`glob`/`grep`.
+#[tokio::test]
+async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() {
+    let empty_dir = tempfile::tempdir().unwrap();
+    let mut mcp = entanglement_runtime::mcp::McpCapabilityIndex::new();
+    mcp.insert(
+        "read".to_string(),
+        vec!["mcp__testserver__search".to_string()],
+    );
+    let profiles = entanglement_runtime::agents::load_registry(
+        empty_dir.path(),
+        &entanglement_runtime::system_prompt::PromptContext::default(),
+        &SkillRegistry::default(),
+        &mcp,
+    )
+    .expect("load_registry");
+
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "mcp_enable".into(),
+                input: r#"{"server":"testserver"}"#.into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t2".into(),
+                name: "mcp__testserver__search".into(),
+                input: "{}".into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoMcpEnable);
+    reg.register(EchoMcpSearch);
+    let _executor = spawn_tool_executor(
+        &holly,
+        reg,
+        profiles,
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetAgent {
+            session: sid.clone(),
+            agent: "explore".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "search the web"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "neither call should need approval under explore; got {events:?}"
+    );
+    let outs: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        outs.iter().any(|o| o.starts_with("enabled:")),
+        "mcp_enable must run, not be mask-declined; got {outs:?}"
+    );
+    assert!(
+        outs.iter().any(|o| o.starts_with("searched:")),
+        "the read-hinted MCP tool must run under `read: allow`; got {outs:?}"
     );
 }

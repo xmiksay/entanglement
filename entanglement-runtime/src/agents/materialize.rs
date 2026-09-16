@@ -208,6 +208,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: "git body".to_string(),
+            tools: Vec::new(),
         });
         crate::agents::parse_definition(
             &rewritten,

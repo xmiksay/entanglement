@@ -20,7 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, ToolSpec,
+    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, SessionModel, ToolSpec,
 };
 
 /// Per-session log of the advertised tool-name lists, one inner `Vec` per
@@ -114,10 +114,12 @@ async fn two_sessions_see_disjoint_tool_sets() {
     };
     // Engine-global specs are deliberately empty — the resolver supplies the
     // whole base set, keyed per session.
-    cfg.tool_spec_resolver = Some(Arc::new(|sid: &SessionId| match sid.0.as_str() {
-        "alpha" => vec![ToolSpec::new("alpha_tool", "only alpha's tool")],
-        "beta" => vec![ToolSpec::new("beta_tool", "only beta's tool")],
-        _ => vec![],
+    cfg.tool_spec_resolver = Some(Arc::new(|sid: &SessionId, _: SessionModel<'_>| {
+        match sid.0.as_str() {
+            "alpha" => vec![ToolSpec::new("alpha_tool", "only alpha's tool")],
+            "beta" => vec![ToolSpec::new("beta_tool", "only beta's tool")],
+            _ => vec![],
+        }
     }));
 
     let holly = Holly::spawn(cfg);
@@ -163,7 +165,7 @@ async fn changing_backing_data_changes_specs_next_turn() {
         }),
         ..EngineConfig::default()
     };
-    cfg.tool_spec_resolver = Some(Arc::new(move |_sid: &SessionId| {
+    cfg.tool_spec_resolver = Some(Arc::new(move |_sid: &SessionId, _: SessionModel<'_>| {
         cache_resolver.read().unwrap().clone()
     }));
 
@@ -206,7 +208,7 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
         }),
         ..EngineConfig::default()
     };
-    cfg.tool_spec_resolver = Some(Arc::new(|_sid: &SessionId| {
+    cfg.tool_spec_resolver = Some(Arc::new(|_sid: &SessionId, _: SessionModel<'_>| {
         vec![
             ToolSpec::new("read", "read a file"),
             ToolSpec::new("edit", "edit a file"),
@@ -259,7 +261,7 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
         }),
         ..EngineConfig::default()
     };
-    cfg.tool_spec_resolver = Some(Arc::new(|_sid: &SessionId| {
+    cfg.tool_spec_resolver = Some(Arc::new(|_sid: &SessionId, _: SessionModel<'_>| {
         // Mirrors the runtime's resolver roster: a registry tool + the
         // runtime-owned pseudo-tools, including `poll`.
         vec![
@@ -305,4 +307,74 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             "`{tool}` must be advertised even under a profile masking it: {names:?}"
         );
     }
+}
+
+/// The resolver is handed the session's bound model, and within a round the
+/// tool specs resolve before the system prompt. The runtime pins its
+/// tool-advertising facts at first resolution from that model and its prompt
+/// resolver reads the pin (ADR-0204), so both halves are load-bearing: a
+/// broadcast-driven pin raced round 1 and changed the tools array between
+/// rounds, a full prompt-cache miss.
+#[tokio::test]
+async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
+    let seen: SeenBySession = Arc::new(Mutex::new(HashMap::new()));
+    let order: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_factory = seen.clone();
+    let factory: entanglement_core::LlmFactory = Arc::new(move || {
+        Box::new(RecordingLlm {
+            session: "s".into(),
+            seen: seen_factory.clone(),
+        }) as Box<dyn Llm>
+    });
+    let mut cfg = EngineConfig {
+        llm_factory: factory.clone(),
+        ..EngineConfig::default()
+    };
+    cfg.model_resolver = Some(Arc::new(move |_user, provider: &str, model: &str| {
+        Ok(entanglement_core::ResolvedModel {
+            provider: provider.into(),
+            model: model.into(),
+            llm_factory: factory.clone(),
+            generation: None,
+            context_window: None,
+        })
+    }));
+    let mut pinned = cfg
+        .profiles
+        .get("build")
+        .cloned()
+        .expect("default registry has build");
+    pinned.provider = Some("p".into());
+    pinned.model = Some("m".into());
+    cfg.profiles.insert(pinned);
+    let specs_order = order.clone();
+    cfg.tool_spec_resolver = Some(Arc::new(move |_sid: &SessionId, m: SessionModel<'_>| {
+        specs_order
+            .lock()
+            .unwrap()
+            .push(format!("specs {:?}/{:?}", m.provider, m.model));
+        vec![]
+    }));
+    let prompt_order = order.clone();
+    cfg.system_prompt_resolver = Some(Arc::new(move |_sid: &SessionId, _p: &AgentProfile| {
+        prompt_order.lock().unwrap().push("prompt".into());
+        None
+    }));
+
+    let holly = Holly::spawn(cfg);
+    holly
+        .send(InMsg::prompt(SessionId::new("s"), "go"))
+        .await
+        .unwrap();
+    recorded_at_least(&seen, "s", 1).await;
+
+    let order = order.lock().unwrap().clone();
+    assert_eq!(
+        order[..2],
+        [
+            r#"specs Some("p")/Some("m")"#.to_string(),
+            "prompt".to_string()
+        ],
+        "{order:?}"
+    );
 }

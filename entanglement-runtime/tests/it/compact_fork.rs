@@ -1,11 +1,12 @@
-//! Integration test for compaction's copy-on-write fork (ADR-0101).
+//! Compaction's successor fork, end to end through the runtime's persistence
+//! (#324, ADR-0101/0110, generalized by ADR-0205).
 //!
-//! `/compact` (`InMsg::Oneshot`) never mutates the source session — it emits
-//! `OutEvent::Compacted` carrying the summary, and the head forks the summary
-//! into a new session via `InMsg::Spawn`. This test drives a real `Holly`
-//! through the full path: prompt → compact → capture the `Compacted` event →
-//! fork via `Spawn` → assert the new session has the summary as its first
-//! message and the source is untouched.
+//! The head no longer forks anything: `/compact` (`InMsg::Oneshot`) makes the
+//! *engine* mint a successor session, seed it with the summary and retire the
+//! source. What this test pins down is the part core cannot: that the pair
+//! lands on disk as two resumable root sessions, with the successor's seed
+//! recorded as its first prompt (ADR-0113's `Spawn`-prompt synthesis) so the
+//! `sessions` listing shows a readable lineage rather than an empty successor.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +16,8 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmResponse,
     LlmStream, OutEvent, SessionId, StopReason, Usage,
 };
+use entanglement_runtime::persistence::spawn_persistence_subscriber;
+use entanglement_runtime::session_store;
 use futures::stream;
 use futures::StreamExt;
 
@@ -72,98 +75,72 @@ fn scripted(
     (cfg, seen)
 }
 
-/// Collect events for `sid` through `Done` plus the trailing lifecycle `Status`.
-async fn collect_until_done(
+/// Collect `sid`'s events until it finishes a turn or is retired.
+async fn collect_until_settled(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
 ) -> Vec<OutEvent> {
     let mut out = Vec::new();
-    let mut seen_done = false;
-    loop {
-        let per_event_deadline = tokio::time::Instant::now()
-            + if seen_done {
-                Duration::from_millis(200)
-            } else {
-                Duration::from_secs(3)
-            };
-        let Ok(recv) = tokio::time::timeout_at(per_event_deadline, sub.recv()).await else {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if ev.session() != Some(sid) {
+            continue;
+        }
+        let terminal = matches!(ev, OutEvent::Done { .. } | OutEvent::SessionEnded { .. });
+        out.push(ev);
+        if terminal {
             break;
-        };
-        match recv {
-            Ok(ev) if ev.session() == Some(sid) => {
-                let is_done = matches!(ev, OutEvent::Done { .. });
-                out.push(ev);
-                if is_done {
-                    seen_done = true;
-                } else if seen_done {
-                    break;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
         }
     }
     out
 }
 
-/// Collect events for `sid`, accepting only those after `after_seq` in `seq`,
-/// until a `Done` for that session.
-async fn collect_fork_events(
+/// Wait for the successor `source` compacted into.
+async fn await_successor(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
-    sid: &SessionId,
-    after_seq: u64,
-) -> Vec<OutEvent> {
-    let mut out = Vec::new();
-    let mut seen_done = false;
-    loop {
-        let per_event_deadline = tokio::time::Instant::now()
-            + if seen_done {
-                Duration::from_millis(200)
-            } else {
-                Duration::from_secs(3)
-            };
-        let Ok(recv) = tokio::time::timeout_at(per_event_deadline, sub.recv()).await else {
-            break;
-        };
-        match recv {
-            Ok(ev) if ev.session() == Some(sid) => {
-                let seq_ok = ev.seq().map(|s| s > after_seq).unwrap_or(true);
-                if seq_ok {
-                    let is_done = matches!(ev, OutEvent::Done { .. });
-                    out.push(ev);
-                    if is_done {
-                        seen_done = true;
-                    } else if seen_done {
-                        break;
-                    }
+    source: &SessionId,
+) -> SessionId {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(OutEvent::SessionStarted {
+                session,
+                predecessor: Some(p),
+                ..
+            }) = sub.recv().await
+            {
+                if p == *source {
+                    return session;
                 }
             }
-            Ok(_) => {}
-            Err(_) => break,
         }
-    }
-    out
+    })
+    .await
+    .expect("the compaction announced a successor")
 }
 
 #[tokio::test]
-async fn compact_forks_into_a_new_session_and_preserves_the_source() {
+async fn compact_forks_a_successor_and_both_sessions_are_listed() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let cwd = tmp.path().to_path_buf();
     let (cfg, seen) = scripted(vec![
         "turn reply",
         "summary of the conversation so far",
         "fork continuation",
     ]);
     let holly = Holly::spawn(cfg);
+    let _tap = spawn_persistence_subscriber(&holly, cwd.clone());
     let source = SessionId::new("source");
     let mut sub = holly.subscribe();
 
-    // 1. Run a turn in the source session so it has history to compact.
+    // 1. A turn, so the session has history worth compacting.
     holly
         .send(InMsg::prompt(source.clone(), "hello"))
         .await
         .unwrap();
-    let _ = collect_until_done(&mut sub, &source).await;
+    let _ = collect_until_settled(&mut sub, &source).await;
 
-    // 2. Compact: the source is summarized, never mutated.
+    // 2. Compact. The engine summarizes, forks, and retires the source — the
+    //    head sends no `Spawn` and no `CloseSession` of its own.
     holly
         .send(InMsg::Oneshot {
             session: source.clone(),
@@ -172,8 +149,7 @@ async fn compact_forks_into_a_new_session_and_preserves_the_source() {
         })
         .await
         .unwrap();
-    let compact_events = collect_until_done(&mut sub, &source).await;
-
+    let compact_events = collect_until_settled(&mut sub, &source).await;
     let summary = compact_events
         .iter()
         .find_map(|e| match e {
@@ -183,65 +159,49 @@ async fn compact_forks_into_a_new_session_and_preserves_the_source() {
         .expect("a Compacted event was emitted");
     assert!(summary.contains("summary of the conversation"));
 
-    // 3. Fork: the head mints a new session and spawns it with the summary, as a
-    // fresh root that records the source as its predecessor (ADR-0110). The head
-    // would also close the source; this engine-level test leaves it live to prove
-    // the copy-on-write property in step 5.
-    let fork = SessionId::new_uuid();
-    holly
-        .send(InMsg::Spawn {
-            session: fork.clone(),
-            parent: None,
-            predecessor: Some(source.clone()),
-            agent: "build".to_string(),
-            prompt: format!("[Conversation summary]\n\n{summary}"),
-            user: None,
-            sponsored: false,
-        })
-        .await
-        .unwrap();
-
-    // 4. The successor runs its first turn under the summary prompt, as a root
-    // that records its predecessor.
-    let fork_events = collect_fork_events(&mut sub, &fork, 0).await;
+    // 3. The successor is a root recording its predecessor, and it runs.
+    let successor = await_successor(&mut sub, &source).await;
+    assert_ne!(successor, source);
+    let successor_events = collect_until_settled(&mut sub, &successor).await;
     assert!(
-        fork_events.iter().any(
-            |e| matches!(e, OutEvent::SessionStarted { parent, predecessor, root, .. }
-                if parent.is_none() && *predecessor == Some(source.clone()) && *root)
-        ),
-        "the successor is a root with the source as predecessor: {fork_events:?}"
-    );
-    assert!(
-        fork_events
+        successor_events
             .iter()
             .any(|e| matches!(e, OutEvent::Done { .. })),
-        "the forked session completes a turn: {fork_events:?}"
+        "the successor completes its first turn: {successor_events:?}"
     );
 
-    // 5. Copy-on-write: the source session's next turn sees the full
-    // pre-compaction history, not the summary.
-    holly
-        .send(InMsg::prompt(source.clone(), "again"))
-        .await
-        .unwrap();
-    let _ = collect_until_done(&mut sub, &source).await;
+    // 4. It started from the summary, not an empty history.
+    {
+        let seen = seen.lock().unwrap();
+        let seeded = seen.last().expect("the successor's request");
+        assert!(
+            seeded[0].text().contains("summary of the conversation"),
+            "the successor is seeded with the summary: {seeded:?}"
+        );
+    }
 
-    let seen = seen.lock().unwrap();
-    // The last request for the source must still carry the original "hello"
-    // prompt — proving the source history survived the compaction.
-    let source_last = seen
-        .iter()
-        .rev()
-        .find(|req| {
-            req.iter()
-                .any(|m| m.text() == "hello" || m.text() == "again")
-        })
-        .expect("a follow-up source request was recorded");
+    // 5. Both land on disk as separate resumable roots, and the successor's
+    //    seed is recorded as its first prompt — so a `sessions` listing reads
+    //    as a lineage instead of showing a blank successor.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sessions = session_store::list_sessions(&cwd).expect("listing the session store");
+    let ids: Vec<&SessionId> = sessions.iter().map(|m| &m.id).collect();
     assert!(
-        source_last
-            .iter()
-            .any(|m| m.text() == "hello" && m.role == entanglement_core::MessageRole::User),
-        "source retains its pre-compaction history: {source_last:?}"
+        ids.contains(&&source) && ids.contains(&&successor),
+        "predecessor and successor are both listed: {ids:?}"
+    );
+    let successor_meta = sessions
+        .iter()
+        .find(|m| m.id == successor)
+        .expect("the successor is listed");
+    assert!(successor_meta.root, "the successor is a root, not a child");
+    assert!(
+        successor_meta
+            .first_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Conversation summary"),
+        "the successor's seed is its recorded first prompt: {successor_meta:?}"
     );
 }
 
@@ -265,7 +225,7 @@ async fn compact_with_truncated_summary_is_rejected_no_fork() {
         .send(InMsg::prompt(sid.clone(), "hello"))
         .await
         .unwrap();
-    let _ = collect_until_done(&mut sub, &sid).await;
+    let _ = collect_until_settled(&mut sub, &sid).await;
 
     holly
         .send(InMsg::Oneshot {
@@ -275,7 +235,7 @@ async fn compact_with_truncated_summary_is_rejected_no_fork() {
         })
         .await
         .unwrap();
-    let events = collect_until_done(&mut sub, &sid).await;
+    let events = collect_until_settled(&mut sub, &sid).await;
 
     assert!(events
         .iter()
@@ -284,13 +244,12 @@ async fn compact_with_truncated_summary_is_rejected_no_fork() {
         .iter()
         .any(|e| matches!(e, OutEvent::Compacted { .. })));
 
-    // No fork is possible (no summary was emitted), and the source is intact —
-    // its next turn still sees "hello".
+    // No fork happened, so the source is still live and still holds "hello".
     holly
         .send(InMsg::prompt(sid.clone(), "next"))
         .await
         .unwrap();
-    let _ = collect_until_done(&mut sub, &sid).await;
+    let _ = collect_until_settled(&mut sub, &sid).await;
     let seen = seen.lock().unwrap();
     let last = seen.last().expect("a follow-up request was recorded");
     assert!(last
@@ -307,8 +266,12 @@ struct TruncatingLlm {
 impl Llm for TruncatingLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         // First call (the live turn) gets a clean reply; the second (the
-        // compaction summary) is truncated.
-        let is_summary = req.system.contains("summarization assistant");
+        // compaction summary) is truncated. Both summary shapes (ADR-0202)
+        // end on a "Summarize the conversation …" instruction.
+        let is_summary = req
+            .messages
+            .last()
+            .is_some_and(|m| m.text().contains("Summarize the conversation"));
         self.seen.lock().unwrap().push(req.messages.to_vec());
         if is_summary {
             let events = vec![

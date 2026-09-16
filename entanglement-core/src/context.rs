@@ -46,12 +46,14 @@ const COMPACT_TARGET_FRACTION: f32 = 0.9;
 ///
 /// Compaction (`compact`) prunes the oldest tool outputs — the bulkiest, least
 /// load-bearing history — to reclaim room; LLM summarization is a later phase.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Context {
     messages: Vec<Message>,
     /// Token budget the history is kept under (`within_limit`). Derived from the
     /// active model's context window, or [`CONTEXT_LIMIT_TOKENS`] when unknown.
     limit: usize,
+    /// The active model's real context window, when the catalog knows it.
+    window: Option<usize>,
 }
 
 impl Default for Context {
@@ -59,6 +61,7 @@ impl Default for Context {
         Self {
             messages: Vec::new(),
             limit: CONTEXT_LIMIT_TOKENS,
+            window: None,
         }
     }
 }
@@ -75,6 +78,7 @@ impl Context {
         Self {
             messages: Vec::new(),
             limit: Self::budget_for(context_window),
+            window: context_window,
         }
     }
 
@@ -93,6 +97,15 @@ impl Context {
         self.limit
     }
 
+    /// The model's whole context window (ADR-0202) — what a request must fit
+    /// in total, as opposed to the input-history [`limit`][Self::limit].
+    /// Unknown, it is back-derived from the budget so the two keep the same
+    /// ratio as for a known model.
+    pub fn window(&self) -> usize {
+        self.window
+            .unwrap_or_else(|| (self.limit as f32 / INPUT_BUDGET_FRACTION) as usize)
+    }
+
     /// Re-budget the history against a new model's context window after a live
     /// model switch (#218): the compaction/refuse threshold must follow the model
     /// the session now runs under. `None` (unknown model) resets to the flat
@@ -100,6 +113,7 @@ impl Context {
     /// compacts against the new limit if it now overflows.
     pub fn set_window(&mut self, context_window: Option<usize>) {
         self.limit = Self::budget_for(context_window);
+        self.window = context_window;
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -150,18 +164,7 @@ impl Context {
 
     /// Rough token estimate for the whole history.
     pub fn estimated_tokens(&self) -> usize {
-        let chars: usize = self
-            .messages
-            .iter()
-            .map(|m| {
-                m.text().chars().count()
-                    + m.tool_calls
-                        .iter()
-                        .map(|c| c.input.chars().count())
-                        .sum::<usize>()
-            })
-            .sum();
-        (chars as f32 / CHARS_PER_TOKEN).ceil() as usize
+        estimate_message_tokens(&self.messages)
     }
 
     /// True when we are within budget.
@@ -178,14 +181,13 @@ impl Context {
     /// single oversized message), this returns `false` and the caller refuses the
     /// turn rather than shipping an over-window request.
     ///
-    /// Unlike [`Self::apply_compaction`], this mutation is **never recorded on
-    /// the wire** — no caller emits an `OutEvent` for it (#450, ADR-0121).
-    /// `Session::replay` therefore never replays a prune, so a resumed session
-    /// can briefly see more history than the live session did after this ran;
-    /// deliberate, since this function is a deterministic, idempotent
-    /// re-derivation of "this transcript, this budget" that the resumed
-    /// session's own next overflow check reproduces on its own — nothing an
-    /// event would let replay reconstruct that the guard doesn't already.
+    /// The engine never calls this on a **live** session's history
+    /// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)):
+    /// the overflow guard prunes a *clone* and seeds a successor session with
+    /// the result, so no session's history is ever rewritten behind its own
+    /// append-only log. ADR-0121's silent in-place prune — and the live/replay
+    /// divergence it accepted — is retired; the prune announces itself as
+    /// `OutEvent::Compacted { kind: Prune, .. }` like any other compaction.
     pub fn compact(&mut self) -> bool {
         // Prune oldest-first so recent tool results (the ones the model is
         // actively reasoning over) survive as long as possible. Target
@@ -205,25 +207,6 @@ impl Context {
             }
         }
         self.within_limit()
-    }
-
-    /// Apply an LLM-generated compaction (#324, ADR-0082): replace the whole
-    /// history with a single summary message, preserving the last `kept`
-    /// messages verbatim after it. User role deliberately — `system` has no
-    /// in-history wire mapping, and an assistant-authored summary is trusted
-    /// less reliably by some providers than a user-authored one. `kept` is
-    /// clamped to a safe turn boundary first (see [`Self::safe_kept`]), so a
-    /// caller can never split a `Tool`/tool-call pair across the
-    /// summary/tail boundary.
-    pub fn apply_compaction(&mut self, summary: &str, kept: usize) {
-        let kept = self.safe_kept(kept);
-        let tail_start = self.messages.len().saturating_sub(kept);
-        let tail = self.messages.split_off(tail_start);
-        self.clear();
-        self.push_user(format!(
-            "[Conversation summary — earlier history was compacted]\n\n{summary}"
-        ));
-        self.messages.extend(tail);
     }
 
     /// Clamp a requested keep-tail count to the nearest safe turn boundary
@@ -255,6 +238,28 @@ impl Context {
     }
 }
 
+/// The [`CHARS_PER_TOKEN`] estimate over `messages` — text (tool results
+/// included) plus tool-call arguments. Crate-visible so compaction can size a
+/// history slice exactly the way the window gate sizes the whole (ADR-0202).
+pub(crate) fn estimate_message_tokens(messages: &[Message]) -> usize {
+    let chars: usize = messages
+        .iter()
+        .map(|m| {
+            m.text().chars().count()
+                + m.tool_calls
+                    .iter()
+                    .map(|c| c.input.chars().count())
+                    .sum::<usize>()
+        })
+        .sum();
+    (chars as f32 / CHARS_PER_TOKEN).ceil() as usize
+}
+
+/// The same estimate over a bare string.
+pub(crate) fn estimate_text_tokens(text: &str) -> usize {
+    (text.chars().count() as f32 / CHARS_PER_TOKEN).ceil() as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +287,33 @@ mod tests {
         assert_eq!(ctx.limit(), (128_000f32 * INPUT_BUDGET_FRACTION) as usize);
         assert_eq!(Context::with_window(None).limit(), CONTEXT_LIMIT_TOKENS);
         assert_eq!(Context::new().limit(), CONTEXT_LIMIT_TOKENS);
+    }
+
+    #[test]
+    fn window_is_the_real_window_or_derived_from_the_budget() {
+        assert_eq!(Context::with_window(Some(128_000)).window(), 128_000);
+        let derived = (CONTEXT_LIMIT_TOKENS as f32 / INPUT_BUDGET_FRACTION) as usize;
+        assert_eq!(Context::new().window(), derived);
+        let mut ctx = Context::with_window(Some(128_000));
+        ctx.set_window(None);
+        assert_eq!(
+            ctx.window(),
+            derived,
+            "a switch to an unknown model forgets it"
+        );
+        ctx.set_window(Some(32_000));
+        assert_eq!(ctx.window(), 32_000);
+    }
+
+    #[test]
+    fn message_estimate_counts_tool_results_and_call_arguments() {
+        let call = ToolCall::new("c1", "read", "x".repeat(7));
+        let messages = [
+            Message::assistant("", vec![call]),
+            Message::tool("c1", "y".repeat(7)),
+        ];
+        assert_eq!(estimate_message_tokens(&messages), 4);
+        assert_eq!(estimate_text_tokens("abcdefg"), 2);
     }
 
     #[test]
@@ -350,51 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_compaction_replaces_history_with_a_user_role_summary() {
-        let mut ctx = Context::new();
-        ctx.push_user("do the thing");
-        ctx.push_assistant("working on it", Vec::new());
-        ctx.push_tool("t1", "tool output");
-
-        ctx.apply_compaction("did the thing, files X and Y touched", 0);
-
-        assert_eq!(ctx.messages().len(), 1);
-        assert_eq!(ctx.messages()[0].role, MessageRole::User);
-        assert!(ctx.messages()[0].text().contains("did the thing"));
-        assert!(ctx.messages()[0]
-            .text()
-            .starts_with("[Conversation summary"));
-    }
-
-    #[test]
-    fn apply_compaction_preserves_the_trailing_kept_messages() {
-        let mut ctx = Context::new();
-        ctx.push_user("first");
-        ctx.push_assistant("second", Vec::new());
-        ctx.push_user("third");
-
-        ctx.apply_compaction("summary of the earlier turns", 1);
-
-        assert_eq!(ctx.messages().len(), 2, "summary + the 1 kept tail message");
-        assert_eq!(ctx.messages()[0].role, MessageRole::User);
-        assert!(ctx.messages()[0]
-            .text()
-            .contains("summary of the earlier turns"));
-        assert_eq!(ctx.messages()[1].text(), "third");
-    }
-
-    #[test]
-    fn apply_compaction_kept_larger_than_history_keeps_everything_after_the_summary() {
-        let mut ctx = Context::new();
-        ctx.push_user("only message");
-
-        ctx.apply_compaction("summary", 10);
-
-        assert_eq!(ctx.messages().len(), 2);
-        assert_eq!(ctx.messages()[1].text(), "only message");
-    }
-
-    #[test]
     fn safe_kept_clamps_a_mid_tool_round_split_to_the_next_user_message() {
         let mut ctx = Context::new();
         ctx.push_user("u1"); // 0
@@ -406,10 +393,6 @@ mod tests {
         // Naive split for kept=3 would start at index 2 (the `Tool` message) —
         // unsafe. Clamp forward to the next `User` message, index 4 (kept=1).
         assert_eq!(ctx.safe_kept(3), 1);
-
-        ctx.apply_compaction("summary of the earlier turns", 3);
-        assert_eq!(ctx.messages().len(), 2, "summary + the 1 safe tail message");
-        assert_eq!(ctx.messages()[1].text(), "u2");
     }
 
     #[test]

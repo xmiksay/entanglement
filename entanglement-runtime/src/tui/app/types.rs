@@ -1,4 +1,4 @@
-use entanglement_core::{AgentMode, PermissionProfile, SessionId};
+use entanglement_core::{AgentMode, PermissionProfile};
 use ratatui::layout::Rect;
 
 /// A deferred, terminal-owning side effect a command/action requests but cannot
@@ -18,21 +18,6 @@ pub enum UiEffect {
     /// Copy the given text to the system clipboard (OSC 52). Deferred to the
     /// event loop because it writes to the terminal the loop owns.
     CopyToClipboard(String),
-}
-
-/// A deferred compaction fork (ADR-0101): on `OutEvent::Compacted`, the TUI
-/// mints a fresh session id, switches the active view to it, and records the
-/// summary as its first user message — all synchronously. The engine side
-/// (`InMsg::Spawn`) needs `Holly`, which the synchronous `handle_out_event`
-/// doesn't hold, so it's recorded here for the async main loop to send.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactFork {
-    pub new_session: SessionId,
-    pub source: SessionId,
-    /// The source session's agent profile name — `Spawn` inherits it so the
-    /// fork runs under the same profile/model pin.
-    pub agent: String,
-    pub summary: String,
 }
 
 #[derive(Clone)]

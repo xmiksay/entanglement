@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     let prompt_cache_read = prompt_cache.clone();
     let holly = Holly::spawn(EngineConfig {
         tool_specs,
-        tool_spec_resolver: Some(Arc::new(move |session: &SessionId| {
+        tool_spec_resolver: Some(Arc::new(move |session: &SessionId, _model| {
             tool_cache_read
                 .read()
                 .unwrap()

@@ -160,17 +160,13 @@ pub(crate) fn parse_set_via_clap(
             );
         }
         SetKey::Effort => {
-            overrides.reasoning_effort = Some(match args.value.to_lowercase().as_str() {
-                "low" => ReasoningEffort::Low,
-                "medium" => ReasoningEffort::Medium,
-                "high" => ReasoningEffort::High,
-                _ => {
-                    return Err(format!(
-                        "invalid effort value: {} (expected low|medium|high)",
+            overrides.reasoning_effort =
+                Some(ReasoningEffort::parse(&args.value).ok_or_else(|| {
+                    format!(
+                        "invalid effort value: {} (expected low|medium|high|xhigh|max)",
                         args.value
-                    ))
-                }
-            });
+                    )
+                })?);
         }
         SetKey::ThinkingBudget => {
             overrides.thinking_budget_tokens = Some(

@@ -902,6 +902,7 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: body.into(),
+            tools: Vec::new(),
         });
         reg
     }
@@ -927,6 +928,36 @@ mod tests {
         assert_eq!(p.for_tool("glob"), Permission::Allow);
         // Not a member of `read` — untouched.
         assert_eq!(p.for_tool("edit"), Permission::Deny);
+    }
+
+    #[test]
+    fn bare_call_capability_also_covers_every_endpoint_tool() {
+        // #560 P8: unlike an MCP tool (needs a config-side capability hint
+        // to join a bare capability's fan-out, #426), a config-declared
+        // endpoint tool is *always* a network call — `endpoint::
+        // call_capability_names` unconditionally feeds every declared
+        // endpoint into the same data-driven `call` index MCP capabilities
+        // use, so a bare `call: allow` covers it with no per-tool
+        // annotation.
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert(
+            "call".to_string(),
+            vec![
+                "endpoint__weather".to_string(),
+                "endpoint__other".to_string(),
+            ],
+        );
+        let p = perm_with_mcp("default: deny\ncall: allow", &mcp);
+        assert_eq!(p.for_tool("bash"), Permission::Allow);
+        assert_eq!(p.for_tool("endpoint__weather"), Permission::Allow);
+        assert_eq!(p.for_tool("endpoint__other"), Permission::Allow);
+        // An undeclared endpoint tool (absent from the index) is untouched —
+        // this is a concrete per-name list, not a glob.
+        assert_eq!(p.for_tool("endpoint__not_declared"), Permission::Deny);
+        // A skill-declared endpoint tool is namespaced `skill__…`, sharing
+        // that prefix with alias/rhai-backed skill tools that grade under a
+        // different name entirely — deliberately not in this index either.
+        assert_eq!(p.for_tool("skill__research__gh_search"), Permission::Deny);
     }
 
     #[test]
@@ -1395,6 +1426,165 @@ mod tests {
         assert!(research.spawn_target_allowed("explore"));
         assert!(!research.spawn_target_allowed("build"));
         assert!(!research.spawn_target_allowed("research"));
+    }
+
+    /// ADR-0195 §3: the curated read-only Allow rules shipped in the embedded
+    /// (lowest, shadowable) agent layer — exact-prefix command globs for
+    /// commands that cannot mutate anything. Least-privilege tiers (`explore`,
+    /// `research`) pre-approve them; every other command still escalates; and
+    /// the config ceiling still clamps them down like any profile grade.
+    #[test]
+    fn curated_read_only_rules_allow_inspection_but_not_mutation() {
+        let mut reg = ProfileRegistry::default();
+        for (file, contents) in BUILT_INS {
+            let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
+            reg.insert(p);
+        }
+
+        // Both least-privileged tiers pre-approve the curated set …
+        for name in ["explore", "research"] {
+            let profile = reg.get(name).expect("built-in");
+            assert_eq!(
+                profile.permission.resolve("bash", Some("find .")),
+                Permission::Allow,
+                "{name}: `bash find .` is curated read-only"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("rg pattern src")),
+                Permission::Allow,
+                "{name}: `call rg …` is curated read-only"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("cat README.md")),
+                Permission::Allow,
+                "{name}: `call cat …` is curated read-only"
+            );
+            // … while everything outside it still escalates.
+            assert_eq!(
+                profile.permission.resolve("bash", Some("git status")),
+                Permission::Ask,
+                "{name}: a non-curated command still asks"
+            );
+            assert_eq!(
+                profile.permission.resolve("call", Some("git status")),
+                Permission::Ask,
+                "{name}: a non-curated `call` still asks"
+            );
+            // And nothing outside the curated set runs silently on `explore` —
+            // the prefix never widens past its own commands (`bash: ask` is an
+            // explicit rule there, so an unlisted command escalates rather
+            // than hitting the `default: deny` floor).
+            if name == "explore" {
+                assert_eq!(
+                    profile.permission.resolve("bash", Some("rm -rf /")),
+                    Permission::Ask,
+                    "explore: an unlisted command escalates, never auto-runs"
+                );
+            }
+        }
+
+        // The ceiling clamps the curated Allow down exactly as it clamps any
+        // profile grade (#172): a `bash: deny` ceiling wins over every rule.
+        let explore = reg.get("explore").expect("built-in");
+        let deny_bash = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("bash", Some("find .")),
+                &deny_bash,
+                "bash",
+                Some("find ."),
+                None,
+            ),
+            Permission::Deny,
+            "a ceiling denying `bash` must clamp the curated Allow"
+        );
+        // A narrower arg-scoped ceiling (`bash(find *): ask`) re-tightens just
+        // the curated slice it names, leaving an unrelated rule untouched.
+        let ask_find =
+            PermissionProfile::new(Permission::Allow).with("bash(find *)", Permission::Ask);
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("bash", Some("find .")),
+                &ask_find,
+                "bash",
+                Some("find ."),
+                None,
+            ),
+            Permission::Ask,
+            "an arg-scoped ceiling re-tightens the curated slice"
+        );
+        assert_eq!(
+            crate::permission::clamp_to_base(
+                explore.permission.resolve("call", Some("rg pattern")),
+                &ask_find,
+                "call",
+                Some("rg pattern"),
+                None,
+            ),
+            Permission::Allow,
+            "a `bash`-scoped ceiling leaves the curated `call` rules alone"
+        );
+    }
+
+    /// The explore/research/plan provider-bundled-MCP gap: all three profiles
+    /// mask in `mcp_enable` + `"mcp__*"` and grade `mcp_enable: allow`
+    /// outright (ADR-0152's tier is the consent boundary, not the profile),
+    /// while a bundled server's own tools ride the ordinary `read`
+    /// capability fan-out — so a read-hinted tool (e.g. z.ai's
+    /// `web_search_prime`) grades Allow but an unhinted one still falls
+    /// through to each profile's own default.
+    #[test]
+    fn explore_research_and_plan_can_enable_and_use_a_read_hinted_bundled_mcp_tool() {
+        let mut mcp = McpCapabilityIndex::new();
+        mcp.insert(
+            "read".to_string(),
+            vec!["mcp__web_search_prime__webSearchPrime".to_string()],
+        );
+        for (file, contents) in BUILT_INS {
+            if *file != "explore.md" && *file != "research.md" && *file != "plan.md" {
+                continue;
+            }
+            let p = parse_definition(
+                contents,
+                &PromptContext::default(),
+                &SkillRegistry::default(),
+                &mcp,
+            )
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert!(
+                p.advertises_tool("mcp_enable"),
+                "{file}: must mask in mcp_enable"
+            );
+            assert!(
+                p.advertises_tool("mcp__web_search_prime__webSearchPrime"),
+                "{file}: \"mcp__*\" mask entry must admit a namespaced MCP tool"
+            );
+            assert_eq!(
+                p.permission.for_tool("mcp_enable"),
+                Permission::Allow,
+                "{file}: mcp_enable is graded outright — the tier gates consent, not this profile"
+            );
+            assert_eq!(
+                p.permission
+                    .for_tool("mcp__web_search_prime__webSearchPrime"),
+                Permission::Allow,
+                "{file}: a read-hinted bundled MCP tool must ride the `read: allow` fan-out"
+            );
+            // An MCP tool the catalog never hinted `read` is not admitted by
+            // the fan-out and falls through to the profile's own default
+            // (posture pinned: explore denies, research/plan ask) — the same
+            // capability index, a second tool absent from it.
+            let expected_default = if *file == "explore.md" {
+                Permission::Deny
+            } else {
+                Permission::Ask
+            };
+            assert_eq!(
+                p.permission.for_tool("mcp__some_write_server__delete"),
+                expected_default,
+                "{file}: an unhinted MCP tool must not silently grade Allow"
+            );
+        }
     }
 
     #[test]

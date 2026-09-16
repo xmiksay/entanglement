@@ -24,17 +24,21 @@ the resolved state and which layer won each override).
 
 ## Host tools
 
-The root-contained quintet `read` / `write` / `edit` / `glob` / `grep`
-(canonicalizing, symlink-safe containment; `read` emits images as content
-blocks), `call` (always registered) and the opt-in `bash`
-(`ENTANGLEMENT_ENABLE_BASH=1`; own process group, timeout returns partial
-output) — a background `call`/`bash` job (`background=true`) is joined with
+The root-contained sextet `read` / `write` / `edit` / `glob` / `grep` /
+`apply_patch` (canonicalizing, symlink-safe containment; `read` emits images
+as content blocks), plus the exec pair — `call` (argv, no shell) and `bash`
+(both always registered; own process group, timeout returns partial output) —
+a background `call`/`bash` job (`background=true`) is joined with
 the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
 External **MCP servers**
 declared in the user config attach their tools as `mcp__<server>__<tool>`.
 Permission profiles (`Allow | Ask | Deny`, argument-scoped rules, persisted
 "always allow" grants, a user-config ceiling) govern every tool; lifecycle
 hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch.
+A session advertises this surface in one of two modes (`full` or the default
+`tool_search`, a lean kernel plus `explore`/`describe` discovery — ADR-0196);
+every tool is still called by its real name either way, never through an
+envelope.
 
 ## Providers
 

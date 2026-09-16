@@ -23,7 +23,8 @@ mod config;
 mod routing;
 
 pub use config::{
-    ConfigError, EngineConfig, ProfileRegistry, SystemPromptResolver, ToolSpecResolver,
+    ConfigError, EngineConfig, ProfileRegistry, SessionModel, SystemPromptResolver,
+    ToolSpecResolver,
 };
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
 
@@ -88,6 +89,10 @@ const INBOX_CAPACITY: usize = 256;
 const OUTBOX_CAPACITY: usize = 1024;
 /// Bound on a per-session command channel (also the supervisor's routing cap).
 const SESSION_CMD_CAPACITY: usize = 64;
+/// Bound on the session→supervisor fork channel (ADR-0205). A session forks at
+/// most once (it is retired immediately after), so this only ever holds frames
+/// from distinct sessions compacting at the same moment.
+const FORK_CAPACITY: usize = 64;
 /// How many non-blocking `try_send` attempts the supervisor makes before it
 /// sheds a command destined for a saturated session (ADR-0028). Yielding
 /// between attempts lets a merely-behind session drain; a genuinely stalled one
@@ -437,6 +442,20 @@ async fn supervisor(
     cfg: EngineConfig,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
+    // Session→supervisor channel for the two frames a compaction fork needs
+    // (ADR-0205): a session task cannot mint a session, so it asks here. These
+    // are ordinary `InMsg`s handled by the loop below exactly like inbox ones,
+    // fan-out included — which is what lets the persistence tap synthesize the
+    // successor's seed prompt from its `Spawn` (ADR-0113) and so replay it.
+    //
+    // Deliberately *not* the inbox: the supervisor holding an inbox sender
+    // would keep the actor alive after every `Holly` handle dropped. This
+    // channel dies with the supervisor instead.
+    let (fork_tx, mut fork_rx) = mpsc::channel::<InMsg>(FORK_CAPACITY);
+    // source → successor (ADR-0205), so a tool result still addressed to a
+    // session that compacted away resolves against the session that took over
+    // its turn instead of hitting the closed-id refusal.
+    let mut successors: HashMap<SessionId, SessionId> = HashMap::new();
     // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
     // can answer without folding the outbound broadcast (ADR-0028). A session
     // task only exits when its channel is dropped (CloseSession / shutdown), so
@@ -467,13 +486,18 @@ async fn supervisor(
                 tokio::select! {
                     biased;
                     m = rx.recv() => m,
+                    m = fork_rx.recv() => m,
                     _ = timer.tick() => {
                         sweep_idle_sessions(*ttl, &mut sessions, &mut session_meta, &mut parent_links, &activity).await;
                         continue;
                     }
                 }
             }
-            None => rx.recv().await,
+            None => tokio::select! {
+                biased;
+                m = rx.recv() => m,
+                m = fork_rx.recv() => m,
+            },
         };
         let Some(msg) = msg else { break };
         // Fan the message out to inbound subscribers (runtime services) before
@@ -520,6 +544,18 @@ async fn supervisor(
         let Some(session_id) = msg.session().cloned() else {
             continue;
         };
+        // A tool result for a session that compacted away belongs to the
+        // successor that inherited its turn (ADR-0205). Without this the frame
+        // would hit the closed-id refusal below and surface a spurious error
+        // for work the user never cancelled. Only `ToolResult` is redirected:
+        // every other frame naming a retired id is a genuine mistake worth
+        // reporting, and only a still-unknown id can be a fork hand-off.
+        let session_id =
+            if matches!(msg, InMsg::ToolResult { .. }) && !sessions.contains_key(&session_id) {
+                successor_of(&successors, &session_id).unwrap_or(session_id)
+            } else {
+                session_id
+            };
         if let InMsg::CloseSession { session } = &msg {
             // Cascade (#180): closing a session retires its whole sub-tree, not
             // just the target. `parent_links` is child→parent, so a spawned
@@ -593,6 +629,7 @@ async fn supervisor(
                 &seqs,
                 &activity,
                 &cfg,
+                &fork_tx,
             ) else {
                 // A failure already emitted an `Error`; leave the id unclaimed
                 // rather than half-registering it (issue #105).
@@ -625,6 +662,7 @@ async fn supervisor(
                     &seqs,
                     &activity,
                     &cfg,
+                    &fork_tx,
                 ) {
                     queue.extend(grandchildren);
                 }
@@ -700,6 +738,12 @@ async fn supervisor(
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
             parent_links.insert(child.clone(), parent.clone());
+            // A compaction successor (ADR-0205): remember which session it took
+            // over from, so a late tool result addressed to that now-retired
+            // source is redirected here rather than refused.
+            if let Some(source) = predecessor.as_ref() {
+                successors.insert(source.clone(), child.clone());
+            }
             session_meta.insert(
                 child.clone(),
                 SessionInfo {
@@ -721,6 +765,7 @@ async fn supervisor(
             let sponsored = *sponsored;
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
+            let forks = fork_tx.clone();
             tokio::spawn(async move {
                 session_loop(
                     sid,
@@ -735,6 +780,7 @@ async fn supervisor(
                     sponsored,
                     seqs2,
                     activity2,
+                    forks,
                 )
                 .await
             });
@@ -824,9 +870,11 @@ async fn supervisor(
             let sid = session_id.clone();
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
+            let forks = fork_tx.clone();
             tokio::spawn(async move {
                 session_loop(
                     sid, srx, ev, cfg2, profile, None, None, None, None, false, seqs2, activity2,
+                    forks,
                 )
                 .await
             });
@@ -866,6 +914,7 @@ fn spawn_resumed(
     seqs: &SeqRegistry,
     activity: &ActivityRegistry,
     cfg: &EngineConfig,
+    forks: &mpsc::Sender<InMsg>,
 ) -> Option<Vec<SessionId>> {
     // Replay *before* registering the session. A failed replay used to still
     // insert the sender while its task returned early, leaving a dead id that
@@ -903,6 +952,7 @@ fn spawn_resumed(
     let profile = initial_session.profile.clone();
     let seqs2 = seqs.clone();
     let activity2 = activity.clone();
+    let forks = forks.clone();
     tokio::spawn(async move {
         session_loop(
             sid,
@@ -920,11 +970,31 @@ fn spawn_resumed(
             false,
             seqs2,
             activity2,
+            forks,
         )
         .await;
     });
     sessions.insert(target.clone(), stx);
     Some(children)
+}
+
+/// Follow the compaction-successor chain from `session` to the live session
+/// that inherited its turn (ADR-0205). A long-running session can compact
+/// repeatedly, so a result dispatched before an early fork must walk the whole
+/// chain, not one link. Bounded by the map size so a cycle (which the
+/// single-use id rule already prevents) can't spin.
+fn successor_of(
+    successors: &HashMap<SessionId, SessionId>,
+    session: &SessionId,
+) -> Option<SessionId> {
+    let mut current = successors.get(session)?.clone();
+    for _ in 0..successors.len() {
+        match successors.get(&current) {
+            Some(next) => current = next.clone(),
+            None => break,
+        }
+    }
+    Some(current)
 }
 
 /// Collect `root` plus every transitive descendant from the child→parent

@@ -27,13 +27,18 @@ impl App {
     }
 
     /// Resolve the prompted approval and surface the next queued one (#273).
+    /// Also closes the full-body pager (#B2): it renders the *front* request
+    /// only, and would otherwise show stale content once that request is
+    /// resolved and a different one (or none) takes its place.
     pub fn advance_approval(&mut self) {
         self.sessions.active_view_mut().advance_approval();
+        self.close_approval_pager();
         self.mark_dirty();
     }
 
     pub fn clear_approval(&mut self) {
         self.sessions.active_view_mut().clear_approval();
+        self.close_approval_pager();
         self.mark_dirty();
     }
 
@@ -274,17 +279,10 @@ impl App {
         }
     }
 
-    pub fn input_tokens(&self) -> u64 {
-        self.sessions.active_view().input_tokens()
-    }
-
-    pub fn output_tokens(&self) -> u64 {
-        self.sessions.active_view().output_tokens()
-    }
-
-    /// Accumulated session cost in USD (#192), summed from `OutEvent::Usage`.
-    pub fn cost_usd(&self) -> f64 {
-        self.sessions.active_view().cost_usd()
+    /// The active session's token/cost ledger (#192, #560) — the status bar
+    /// and `/cost` both render from it.
+    pub fn cost(&self) -> &crate::tui::session_view::CostLedger {
+        self.sessions.active_view().cost()
     }
 
     #[allow(dead_code)]

@@ -46,13 +46,16 @@ use entanglement_core::{
 use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::arg_validate;
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
+use crate::discover;
 use crate::hooks::Hooks;
+use crate::mask_request;
+use crate::mcp::{ActiveServers, AvailableMcp};
 #[cfg(feature = "rhai")]
 use crate::permission::effective_permission;
 use crate::permission::{
-    ancestor_chain, clamp_to_base, min_permission, skill_masked, spawn_refusal, tool_mask_source,
-    ActiveSkill,
+    ancestor_chain, clamp_to_base, min_permission, spawn_refusal, tool_mask_source,
 };
 use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
@@ -60,10 +63,12 @@ use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileRe
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
+use crate::tool_advertising::{self, SharedAdvertisingState};
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
-    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
+    is_non_maskable, AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL,
+    LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -145,6 +150,17 @@ enum Intercept {
     /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
     /// force-parked on the `Ask` path since user approval *is* its semantics.
     ProposePlan,
+    /// `explore`/`describe` (#560, ADR-0196 §4) plus the reserved
+    /// `responses_tool_search` call name (P7, ADR-0196 §3 — a streamed
+    /// client-executed `tool_search_call` from the OpenAI Responses wire,
+    /// never a name the model chose from an advertised schema): the
+    /// always-on, non-maskable discovery trio — read-only catalog
+    /// introspection, starting nothing and touching no host resource. Exempt
+    /// from the #116 mask entirely (see the `is_non_maskable` short-circuit
+    /// ahead of classification, not this route), and from the
+    /// `Allow`/`Ask`/`Deny` ladder like every other runtime-owned
+    /// orchestration tool.
+    Discover,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
     /// Behind the `rhai` feature (#502, ADR-0135) — a lean build without it
@@ -165,6 +181,7 @@ impl Intercept {
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
+            EXPLORE_TOOL | DESCRIBE_TOOL | RESPONSES_TOOL_SEARCH_TOOL => Self::Discover,
             #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
@@ -172,13 +189,19 @@ impl Intercept {
     }
 
     /// Whether this route skips the per-tool `Allow | Ask | Deny` decision. The
-    /// spawn/poll/prompt/plan routes touch no host resource, so permission does
-    /// not apply; `Rhai` resolves permission itself inside the script task; the
-    /// generic `Permission` route *is* the permission decision.
+    /// spawn/poll/prompt/plan/discover routes touch no host resource, so
+    /// permission does not apply; `Rhai` resolves permission itself inside the
+    /// script task; the generic `Permission` route *is* the permission
+    /// decision.
     fn bypasses_permission(self) -> bool {
         matches!(
             self,
-            Self::Spawn | Self::AgentSend | Self::Poll | Self::AskUser | Self::ProposePlan
+            Self::Spawn
+                | Self::AgentSend
+                | Self::Poll
+                | Self::AskUser
+                | Self::ProposePlan
+                | Self::Discover
         )
     }
 }
@@ -275,6 +298,16 @@ pub fn spawn_tool_executor_with_hooks(
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user, like skutter itself.
         None,
+        // No advertising-resolution inputs (ADR-0196 Phase P1): these
+        // wrappers' (~30, test-only) callers hand no catalog/config pair, so
+        // every session resolves `tool_search` — the map still folds,
+        // nothing dispatches on it yet.
+        None,
+        // No discovery surface (ADR-0196 §4): these wrappers' (~30, test-only)
+        // callers build no `tool_spec_resolver` of their own either, so a
+        // private, unshared `AdvertisingState` and an empty MCP roster (
+        // `explore` simply has nothing MCP to report) are exactly right.
+        None,
     )
 }
 
@@ -306,9 +339,9 @@ pub fn spawn_tool_executor_with_hooks(
 ///
 /// `skills` (#400, ADR-0106) is the same live-reloadable handle
 /// `LoadSkillTool` resolves against: after a `load_skill` call succeeds, this
-/// executor parses the `skill_id` its result carries, looks up that skill's
-/// `allowed_tools` here, and activates the session's skill mask —
-/// [`skill_masked`], layered after the #116 agent mask.
+/// executor parses the `skill_id` its result carries and emits
+/// `OutEvent::SkillActive` (posture-only since ADR-0194 — skills no longer
+/// narrow the session's tool set, so there is no mask to activate here).
 ///
 /// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
 /// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
@@ -349,6 +382,30 @@ impl EscapeRoot {
     }
 }
 
+/// `explore`/`describe`'s shared inputs (#560, ADR-0196 §4), bundled into one
+/// struct — see [`spawn_tool_executor_with_policy`]'s `discovery` param.
+/// `Default` gives every field's own empty/private state: an advertising
+/// state no external resolver shares, an empty MCP roster, and a private
+/// loop-breaker tracker.
+#[derive(Default)]
+pub struct DiscoverySurface {
+    pub advertising: SharedAdvertisingState,
+    pub mcp_avail: Arc<AvailableMcp>,
+    pub mcp_active: ActiveServers,
+    /// The pre-dispatch argument-validation loop-breaker guard (#560,
+    /// ADR-0196 §6) — bundled here rather than as a fourth top-level param
+    /// since it's session-keyed state alongside `advertising`, read/written
+    /// by the same `dispatch`/`run_and_reply` call sites.
+    pub validation: Arc<arg_validate::LoopBreaker>,
+    /// The shared endpoint-pool `HttpClient` a dispatch-time lazy MCP
+    /// re-enable rides (ADR-0201, `mcp::available::try_lazy_reenable`) —
+    /// `None` (the convenience wrappers, every test-only caller) degrades a
+    /// would-be re-enable to a clean tool error rather than a panic; those
+    /// callers' `mcp_avail` is also the empty default, so the path is never
+    /// actually exercised.
+    pub http: Option<entanglement_core::HttpClient>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
@@ -382,7 +439,31 @@ pub fn spawn_tool_executor_with_policy(
     // `None` — skutter and every in-tree caller — is byte-identical to
     // pre-#684 behavior; only a multi-user embedder constructs an `McpScopes`.
     mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
+    // Tool-advertising resolution inputs (ADR-0196, Phase P1): the user
+    // config (its `tool_advertising` tier) and the catalog (the per-model
+    // `tool_advertising:` tier). `None` — the convenience wrappers and test
+    // callers — keeps the session→mode map recording but always resolving
+    // `tool_search` (no catalog entry sets `tool_advertising:` yet and the
+    // config key defaults to `null`).
+    advertising_inputs: Option<Arc<tool_advertising::AdvertisingInputs>>,
+    // `explore`/`describe`'s shared state (#560, ADR-0196 §4), bundled into
+    // one struct so this already-large signature doesn't grow by three:
+    // the session-mode map + discovered-tool set (also read by the
+    // `tool_spec_resolver`/`system_prompt_resolver` closures in `main.rs` —
+    // this executor is one of three readers/writers, no longer the map's
+    // sole owner as it was in Phase P1) plus the MCP three-state roster
+    // `explore` lists. `None` (the convenience wrappers, every test-only
+    // caller) falls back to empty/private defaults — `explore` then has
+    // nothing MCP to report, and the discovered set is unshared.
+    discovery: Option<DiscoverySurface>,
 ) -> tokio::task::JoinHandle<()> {
+    let DiscoverySurface {
+        advertising,
+        mcp_avail,
+        mcp_active,
+        validation,
+        http: mcp_http,
+    } = discovery.unwrap_or_default();
     let hooks = Arc::new(hooks);
     let mut sub = holly.subscribe();
     // Subscribe to the inbound fan-out *synchronously*, before this function
@@ -434,15 +515,16 @@ pub fn spawn_tool_executor_with_policy(
         // `SessionEnded`/`SessionHibernated`.
         let mut overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>> =
             HashMap::new();
-        // The session's active-skill tool mask (#400, ADR-0106): set when a
-        // `load_skill` call resolves with an `allowed_tools` list, layered after
-        // the #116 agent mask below (`skill_masked`). Cleared on the turn's
-        // `Done` — a skill's scope is one conversational turn — or when the
-        // session ends. Shared with `dispatch`/`await_decision`/`run_and_reply`
-        // (the detached per-call tasks), which set it after a successful
-        // `load_skill`; this loop is the sole writer of the clear path.
-        let active_skill: Arc<Mutex<HashMap<SessionId, ActiveSkill>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        // Which sessions currently have a loaded skill "active" (#400,
+        // ADR-0106; posture-only since ADR-0194 — skills no longer mask
+        // tools, this purely tracks whether to emit `OutEvent::SkillActive`'s
+        // clearing notice). Set when a `load_skill` call resolves, cleared on
+        // the turn's `Done` — a skill's scope is one conversational turn —
+        // or when the session ends. Shared with
+        // `dispatch`/`await_decision`/`run_and_reply` (the detached per-call
+        // tasks), which set it after a successful `load_skill`; this loop is
+        // the sole writer of the clear path.
+        let active_skill: Arc<Mutex<HashSet<SessionId>>> = Arc::new(Mutex::new(HashSet::new()));
         // The project root `propose_plan` materializes/resolves plan files
         // against (#513): the same canonical root `escape_root` carries when
         // wired (every full head). A wrapper with no escape-root policy (test
@@ -491,6 +573,16 @@ pub fn spawn_tool_executor_with_policy(
         // and per-root spawn budgets. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
+        // Per-session tool advertising (ADR-0196 §2-3): pinned at session
+        // start from the session's initial model, kept across `SetModel`
+        // (logged when the new model's catalog preference differs), released
+        // on end/hibernate. `advertising` (the mode map plus the discovered-
+        // tool set `describe` writes into) is caller-constructed and shared
+        // — Phase P1's loop-local-only map is gone; the `tool_spec_resolver`/
+        // `system_prompt_resolver` closures in `main.rs` read the same `Arc`.
+        // `advertising_inputs == None` (the convenience wrappers, tests)
+        // keeps the fold running so the shape is identical, resolving
+        // `tool_search` throughout.
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `poll` tasks (#605).
         let registry = crate::agent_registry::AgentRegistry::default();
@@ -606,6 +698,10 @@ pub fn spawn_tool_executor_with_policy(
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
+                    // Tool advertising is NOT pinned here: this broadcast
+                    // races core's first round, so the tool-spec resolver
+                    // pins at first resolution (`AdvertisingState::
+                    // ensure_pinned`, ADR-0204).
                     // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                     // for a previously-hibernated child (#609, ADR-0162 §4) — a
                     // no-op for any other session, since a fresh registration is
@@ -653,6 +749,25 @@ pub fn spawn_tool_executor_with_policy(
                             .insert(session, p);
                     }
                 }
+                // The session's model changed (`SetModel` / a profile pin
+                // re-bind, #218/#323). Tool advertising is *not* re-resolved
+                // (ADR-0196 §2): a pinned session keeps its mode — switching
+                // mid-session would bust the prompt cache the mode protects —
+                // and this only logs when the new model prefers another one.
+                Ok(OutEvent::ModelChanged {
+                    session,
+                    provider,
+                    model,
+                    ..
+                }) => {
+                    if let Some(inputs) = advertising_inputs.as_ref() {
+                        let modes = advertising
+                            .modes
+                            .lock()
+                            .expect("tool-advertising mode mutex poisoned");
+                        inputs.note_model_changed(&modes, &session, &provider, &model);
+                    }
+                }
                 // A hibernated session (#318) tore down just like an ended one, so
                 // its executor-side bookkeeping is equally moot — release it. Its
                 // persisted "always" grants survive; a resume rebuilds the rest.
@@ -660,6 +775,9 @@ pub fn spawn_tool_executor_with_policy(
                 // mirror core's full-replacement semantics — an empty list
                 // clears the entry entirely.
                 Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
+                    // An enable never touches the advertised array (ADR-0204):
+                    // the tool becomes explore-visible and dispatchable, and
+                    // is appended only when its schema is delivered.
                     if entries.is_empty() {
                         overlays.remove(&session);
                     } else {
@@ -694,8 +812,9 @@ pub fn spawn_tool_executor_with_policy(
                     // Drop the re-offer dedupe set (#274): its request ids can
                     // never recur once the session is gone.
                     in_flight.remove(&session);
-                    // The active-skill mask is moot once the session is gone too
-                    // (#400) — no `Done` will follow to clear it otherwise.
+                    // The active-skill posture tracking is moot once the
+                    // session is gone too (#400) — no `Done` will follow to
+                    // clear it otherwise.
                     active_skill
                         .lock()
                         .expect("active-skill mutex poisoned")
@@ -713,11 +832,20 @@ pub fn spawn_tool_executor_with_policy(
                         .remove(&session);
                     // The plan-file staleness binding (#513) is moot too.
                     plan_files.forget_session(&session);
+                    // And its pinned tool advertising, discovered set, `Full`
+                    // snapshot and `<env>` date (ADR-0196 §2-3, ADR-0202 §5) —
+                    // a resume re-pins at its first round.
+                    advertising.forget(&session);
+                    // The loop-breaker's last-call tracker (#560, ADR-0196
+                    // §6) is equally session-scoped — nothing to break a
+                    // loop against once the session is gone.
+                    validation.forget(&session);
                 }
-                // A skill's tool mask scopes one model turn (#400, ADR-0106):
-                // clear it here so a later turn can `load_skill` a different one
-                // (or none) unmasked, and tell any listening head the combined
-                // posture reverted to just the #116 agent mask.
+                // A skill's "active" posture scopes one model turn (#400,
+                // ADR-0106; posture-only since ADR-0194): clear it here so a
+                // later turn can `load_skill` a different one (or none)
+                // cleanly, and tell any listening head via
+                // `OutEvent::SkillActive { skill_id: None, .. }`.
                 Ok(OutEvent::Done { session, .. }) => {
                     clear_active_skill(&holly, &active_skill, &session);
                 }
@@ -829,7 +957,18 @@ pub fn spawn_tool_executor_with_policy(
                     // on whose authority (its profile vs its overlay), since a
                     // child's own definition can list the tool while an
                     // ancestor's narrower mask erases it down the chain.
-                    let masked_by = {
+                    //
+                    // `explore`/`describe` are the one deliberate exemption
+                    // from this whole walk (#560, ADR-0196 §4): read-only
+                    // catalog introspection, never a capability decision — no
+                    // profile mask, overlay entry, or ancestor clamp can
+                    // withdraw them, mirroring the always-on internal-tool
+                    // posture ADR-0190 established for `poll` (subsumed for
+                    // `poll` itself by ADR-0192's universal dispatch mask,
+                    // but reinstated here narrowly for these two).
+                    let masked_by = if is_non_maskable(&tool) {
+                        None
+                    } else {
                         let active = active.lock().expect("active-profile mutex poisoned");
                         tool_mask_source(&active, &spawn_guard, &overlays, &session, &tool).map(
                             |source| {
@@ -838,57 +977,152 @@ pub fn spawn_tool_executor_with_policy(
                             },
                         )
                     };
+                    // ADR-0198: a mask miss is no longer a flat decline in
+                    // general — it now parks an approval, unless it hits one
+                    // of three hard limits that still refuse outright with
+                    // no prompt (`crate::mask_request`): a spawn tool
+                    // (profile-defining, ADR-0192's carve-out — unaffected
+                    // here), a name absent from the registry (its own
+                    // unknown-tool hint), or an explicit bare-name `Deny`
+                    // rule in the profile chain or the config ceiling (the
+                    // author's deliberate floor, distinct from the ambient
+                    // default every unlisted tool falls through to).
                     if let Some((source, agent_name)) = masked_by {
+                        if mask_request::is_spawn_tool(&tool) {
+                            let holly = holly.clone();
+                            let own_session = session.clone();
+                            tokio::spawn(async move {
+                                let output = crate::decline::mask_decline(
+                                    &source,
+                                    &own_session,
+                                    agent_name.as_deref(),
+                                    &tool,
+                                );
+                                seam::reply(&holly, session, request_id, output, true).await;
+                            });
+                            continue;
+                        }
+                        let tools_snapshot =
+                            tools.read().expect("tool registry lock poisoned").clone();
+                        if !tools_snapshot.contains(&tool)
+                            && !crate::plan_tasks::is_state_tool(&tool)
+                        {
+                            // ADR-0201: a tier-eligible `mcp__<server>__*`
+                            // name isn't "unknown" merely because this
+                            // session's registry snapshot has never seen it
+                            // registered — it's tier-known, and the real
+                            // lazy connect (plus a registry re-check) happens
+                            // once (if) this out-of-mask call is approved,
+                            // inside `dispatch` itself below. Only a
+                            // `disabled` tier or a truly unknown name
+                            // hard-refuses here, before any approval offer.
+                            let tier = crate::mcp::available::server_name_of(&tool)
+                                .map(|server| (server.to_string(), mcp_avail.tier_of(server)));
+                            match tier {
+                                Some((_, crate::mcp::available::McpTier::Eligible)) => {
+                                    // Falls through: "exists", mask-park
+                                    // proceeds below.
+                                }
+                                Some((server, crate::mcp::available::McpTier::Disabled)) => {
+                                    let holly = holly.clone();
+                                    tokio::spawn(async move {
+                                        let output =
+                                            crate::mcp::available::disabled_decline(&server);
+                                        seam::reply(&holly, session, request_id, output, true)
+                                            .await;
+                                    });
+                                    continue;
+                                }
+                                _ => {
+                                    let holly = holly.clone();
+                                    let output = tool_advertising::unknown_tool_reply(
+                                        &advertising,
+                                        &session,
+                                        &tools_snapshot,
+                                        &tool,
+                                    );
+                                    tokio::spawn(async move {
+                                        seam::reply(&holly, session, request_id, output, true)
+                                            .await;
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                        let mask_chain = ancestor_chain(&spawn_guard, &session);
+                        let deny_floor = {
+                            let active = active.lock().expect("active-profile mutex poisoned");
+                            mask_request::explicit_deny_floor(&active, &mask_chain, &base, &tool)
+                        };
+                        if deny_floor {
+                            let holly = holly.clone();
+                            tokio::spawn(async move {
+                                let output = format!("tool `{tool}` denied by permission profile");
+                                seam::reply(&holly, session, request_id, output, true).await;
+                            });
+                            continue;
+                        }
+                        // Not a hard limit: park a single mask-attributed
+                        // approval. `overlay_entry` is resolved now (exactly
+                        // as the ordinary `Intercept::Permission` route
+                        // resolves it below) so a `Once` approval replays
+                        // `dispatch` with the identical grade-override input
+                        // it would have had if the tool were in-mask all
+                        // along.
+                        let overlay_entry =
+                            crate::permission::overlay_grade_entry(&overlays, &mask_chain, &tool);
+                        let own_overlay = overlays.get(&session).cloned().unwrap_or_default();
+                        let resolver = resolver.clone();
+                        let grants = grants.clone();
+                        let hooks = hooks.clone();
+                        let pending = pending.clone();
+                        let escape_root = escape_root.clone();
+                        let ceiling = base.clone();
+                        let skills = skills.clone();
+                        let active_skill = active_skill.clone();
+                        let advertising = advertising.clone();
+                        let validation = validation.clone();
+                        // ADR-0201: forwarded through to `mask_request::handle`'s
+                        // own `dispatch` call, so an approved out-of-mask
+                        // `mcp__<server>__*` call self-heals exactly like the
+                        // ordinary in-mask route does.
+                        let registry = tools.clone();
+                        let mcp_avail = mcp_avail.clone();
+                        let mcp_active = mcp_active.clone();
+                        let mcp_http = mcp_http.clone();
                         let holly = holly.clone();
-                        let own_session = session.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::mask_decline(
-                                &source,
-                                &own_session,
-                                agent_name.as_deref(),
-                                &tool,
-                            );
-                            seam::reply(&holly, session, request_id, output, true).await;
+                        let reg_session = session.clone();
+                        let handle = tokio::spawn(async move {
+                            mask_request::handle(
+                                &holly,
+                                &tools_snapshot,
+                                &skills,
+                                &active_skill,
+                                &*resolver,
+                                &mask_chain,
+                                &*grants,
+                                &hooks,
+                                &pending,
+                                escape_root.as_ref(),
+                                overlay_entry,
+                                own_overlay,
+                                &ceiling,
+                                &advertising,
+                                &validation,
+                                &registry,
+                                &mcp_avail,
+                                &mcp_active,
+                                mcp_http.as_ref(),
+                                source,
+                                agent_name,
+                                session,
+                                request_id,
+                                tool,
+                                input,
+                            )
+                            .await;
                         });
-                        continue;
-                    }
-                    // Skill-scoped tool restriction (#400, ADR-0106), layered
-                    // *after* the #116 agent mask above — a tool must survive
-                    // both. A loaded skill's `allowed_tools` narrows the session's
-                    // already-unmasked set for the rest of this turn.
-                    let skill_masked_by = {
-                        let active_skill =
-                            active_skill.lock().expect("active-skill mutex poisoned");
-                        skill_masked(&active_skill, &session, &tool)
-                    };
-                    if let Some(skill_id) = skill_masked_by {
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::skill_decline(&skill_id, &tool);
-                            seam::reply(&holly, session, request_id, output, true).await;
-                        });
-                        continue;
-                    }
-                    // A lazily-registrable built-in (`bash`, ADR-0163 §2) is
-                    // advertised whether or not it is registered, so a call can
-                    // arrive before `/enable tool bash` ever ran. Answer with
-                    // the enabling command rather than letting it fall through
-                    // to the registry's generic "unknown tool" — which would
-                    // read as a hallucinated name and teach the model nothing.
-                    // Checked *after* the mask gates so a profile/overlay that
-                    // withholds `bash` outright keeps its own attribution.
-                    let unregistered_builtin = crate::bash_live::LAZY_BUILTINS
-                        .contains(&tool.as_str())
-                        && !tools
-                            .read()
-                            .expect("tool registry lock poisoned")
-                            .contains(&tool);
-                    if unregistered_builtin {
-                        let holly = holly.clone();
-                        tokio::spawn(async move {
-                            let output = crate::decline::disabled_builtin_decline(&tool);
-                            seam::reply(&holly, session, request_id, output, true).await;
-                        });
+                        cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
                         continue;
                     }
                     // Route the unmasked tool through its interception. The mask
@@ -1104,6 +1338,66 @@ pub fn spawn_tool_executor_with_policy(
                                 );
                             }
                         }
+                        Intercept::Discover => {
+                            // Read-only, non-maskable, always-`Allow` (#560,
+                            // ADR-0196 §4) — no permission check, no approval
+                            // round-trip, just a snapshot read and a reply.
+                            let registry_snapshot =
+                                tools.read().expect("tool registry lock poisoned").clone();
+                            let skills_snapshot =
+                                skills.read().expect("skill registry lock poisoned").clone();
+                            let mcp_avail = mcp_avail.clone();
+                            let mcp_active = mcp_active.clone();
+                            let mcp_scopes = mcp_scopes.clone();
+                            let advertising = advertising.clone();
+                            let holly = holly.clone();
+                            if tool == EXPLORE_TOOL {
+                                tokio::spawn(async move {
+                                    discover::run_explore(
+                                        &holly,
+                                        &registry_snapshot,
+                                        &mcp_avail,
+                                        &mcp_active,
+                                        skills_snapshot.as_ref(),
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            } else if tool == DESCRIBE_TOOL {
+                                tokio::spawn(async move {
+                                    discover::run_describe(
+                                        &holly,
+                                        registry_snapshot,
+                                        skills_snapshot.as_ref(),
+                                        mcp_scopes.as_deref(),
+                                        &advertising,
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            } else {
+                                debug_assert_eq!(tool, RESPONSES_TOOL_SEARCH_TOOL);
+                                tokio::spawn(async move {
+                                    discover::run_tool_search(
+                                        &holly,
+                                        registry_snapshot,
+                                        &mcp_avail,
+                                        &mcp_active,
+                                        skills_snapshot.as_ref(),
+                                        mcp_scopes.as_deref(),
+                                        &advertising,
+                                        session,
+                                        request_id,
+                                        input,
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
                         #[cfg(feature = "rhai")]
                         Intercept::Rhai => {
                             // The bindings resolve permission live against this
@@ -1145,13 +1439,6 @@ pub fn spawn_tool_executor_with_policy(
                                     arg.as_deref(),
                                     workdir.as_deref(),
                                 );
-                                // The session's active-skill mask (#400, #477): a
-                                // snapshot alongside the agent mask above, not a
-                                // live read — sound because `load_skill` is not
-                                // itself a binding, so nothing inside a running
-                                // script can change it mid-run.
-                                let active_skill =
-                                    active_skill.lock().expect("active-skill mutex poisoned");
                                 let policy = crate::script::BindingPolicy::capture(
                                     &active,
                                     &spawn_guard,
@@ -1159,7 +1446,6 @@ pub fn spawn_tool_executor_with_policy(
                                     &session,
                                     &base,
                                     escape_root.as_ref().map(|er| er.root.as_path()),
-                                    &active_skill,
                                 );
                                 (base_self, policy)
                             };
@@ -1244,6 +1530,15 @@ pub fn spawn_tool_executor_with_policy(
                             let overlay_entry =
                                 crate::permission::overlay_grade_entry(&overlays, &chain, &tool);
                             let ceiling = base.clone();
+                            // The live registry, cloned (cheap `Arc`) *before*
+                            // the snapshot shadow below — ADR-0201's dispatch-
+                            // time lazy MCP re-enable needs the live handle to
+                            // register into and re-snapshot from, not the
+                            // pre-spawn owned clone `tools` becomes next.
+                            let registry = tools.clone();
+                            let mcp_avail = mcp_avail.clone();
+                            let mcp_active = mcp_active.clone();
+                            let mcp_http = mcp_http.clone();
                             // Snapshot before spawning (#372) — see the Rhai arm above.
                             let tools = tools.read().expect("tool registry lock poisoned").clone();
                             let holly = holly.clone();
@@ -1254,6 +1549,8 @@ pub fn spawn_tool_executor_with_policy(
                             let pending = pending.clone();
                             let escape_root = escape_root.clone();
                             let mcp_scopes = mcp_scopes.clone();
+                            let advertising = advertising.clone();
+                            let validation = validation.clone();
                             // Register so a `Stop` aborts this task mid-execution:
                             // aborting the future drops the exec tool's child,
                             // firing its process-group SIGKILL guard (#167/#168).
@@ -1294,6 +1591,12 @@ pub fn spawn_tool_executor_with_policy(
                                     escape_root.as_ref(),
                                     overlay_entry,
                                     &ceiling,
+                                    &advertising,
+                                    &validation,
+                                    &registry,
+                                    &mcp_avail,
+                                    &mcp_active,
+                                    mcp_http.as_ref(),
                                     session,
                                     request_id,
                                     tool,
@@ -1328,12 +1631,15 @@ pub fn spawn_tool_executor_with_policy(
 /// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
 /// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
 /// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
+// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) — an
+// approved out-of-mask call proceeds through this exact ladder unchanged,
+// the "rest of the ladder" the ADR's single-prompt design relies on.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch(
+pub(crate) async fn dispatch(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     grants: &dyn GrantStore,
@@ -1350,6 +1656,20 @@ async fn dispatch(
     // still wins.
     overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
     ceiling: &PermissionProfile,
+    // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
+    // delivered-schema dedup (shares `advertising.discovered` with `describe`,
+    // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
+    // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
+    // register into, and to re-snapshot from on success — `tools` above is
+    // an already-cloned snapshot that a fresh registration is invisible to),
+    // the availability roster + connected-server map `enable_for_session`
+    // needs, and the endpoint-pool client its connect rides.
+    registry: &SharedRegistry,
+    mcp_avail: &AvailableMcp,
+    mcp_active: &ActiveServers,
+    http: Option<&entanglement_core::HttpClient>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1365,11 +1685,84 @@ async fn dispatch(
     // runtime state tool with no registry entry (#231, ADR-0049) —
     // `run_and_reply` handles it separately — so it's exempt from this
     // registry check.
+    //
+    // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
+    // hallucination — a resumed session's replay restores its tool-overlay/
+    // permission state (so the call reaches here, never masked) but MCP
+    // registration is process-lifetime, never persisted, so nothing
+    // re-registers on resume. Self-heal by consulting the same three-state
+    // tier `mcp_enable`/`/enable mcp` do before ever reporting "unknown":
+    // reserve that message strictly for a name matching no registered tool
+    // AND no configured/bundled server in any tier.
+    let mut refreshed_tools: Option<ToolRegistry> = None;
     if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
-        let output = tools.unknown_tool_message(&tool);
-        seam::reply(holly, session, request_id, output, true).await;
-        return;
+        match crate::mcp::available::server_name_of(&tool) {
+            Some(server) => {
+                match crate::mcp::available::try_lazy_reenable(
+                    mcp_avail, server, &session, registry, mcp_active, http,
+                )
+                .await
+                {
+                    crate::mcp::available::LazyReenableOutcome::Enabled => {
+                        // The enable registered into the *live* `registry`,
+                        // invisible to the already-cloned `tools` snapshot —
+                        // re-fetch it and let the rest of this function run
+                        // against the fresh view (alias rewrite, grading,
+                        // escape-root, hooks, the approval round-trip all
+                        // still apply below, exactly as if the tool had
+                        // been registered all along).
+                        let snap = registry
+                            .read()
+                            .expect("tool registry lock poisoned")
+                            .clone();
+                        if !snap.contains(&tool) {
+                            // Shouldn't happen (enable_for_session just
+                            // registered it) — fail safe, not panic.
+                            let output = snap.unknown_tool_message(&tool);
+                            seam::reply(holly, session, request_id, output, true).await;
+                            return;
+                        }
+                        refreshed_tools = Some(snap);
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Disabled => {
+                        let output = crate::mcp::available::disabled_decline(server);
+                        seam::reply(holly, session, request_id, output, true).await;
+                        return;
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Failed(msg) => {
+                        seam::reply(holly, session, request_id, msg, true).await;
+                        return;
+                    }
+                    crate::mcp::available::LazyReenableOutcome::Unknown => {
+                        let output = tools.unknown_tool_message(&tool);
+                        seam::reply(holly, session, request_id, output, true).await;
+                        return;
+                    }
+                }
+            }
+            None => {
+                let output =
+                    tool_advertising::unknown_tool_reply(advertising, &session, tools, &tool);
+                seam::reply(holly, session, request_id, output, true).await;
+                return;
+            }
+        }
     }
+    let tools = refreshed_tools.as_ref().unwrap_or(tools);
+    // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
+    // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
+    // tool is sugar for — must not launder permission through its own
+    // namespaced name (`Tool::alias_rewrite`'s doc). Rewriting *here*, before
+    // grading/escape-root/hooks/the approval round-trip all run, means every
+    // one of them operates on the wrapped tool's real name and merged input —
+    // exactly as if the model had called it directly — with zero special-
+    // casing anywhere else in this pipeline. A tool that never aliases
+    // (everything but `skills::alias_tool::AliasTool`) leaves `(tool, input)`
+    // untouched.
+    let (tool, input) = match tools.get(&tool).and_then(|t| t.alias_rewrite(&input)) {
+        Some(rewritten) => rewritten,
+        None => (tool, input),
+    };
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
     // computed before the hook ran), so a grant upgrade and the veto compose the
     // same way. The tool-specific argument (command/path, #173) lets an
@@ -1383,7 +1776,9 @@ async fn dispatch(
     let workdir = crate::permission::permission_workdir(&tool, &input);
     let base_perm = match overlay_entry {
         Some(entry) => {
-            let grade = crate::permission::overlay_entry_grade(&tool, &entry).resolve_scoped(
+            let overlay_profile = crate::permission::overlay_entry_grade(&tool, &entry);
+            let grade = crate::permission_bash::resolve_scoped_bash_aware(
+                &overlay_profile,
                 &tool,
                 arg.as_deref(),
                 workdir.as_deref(),
@@ -1416,6 +1811,8 @@ async fn dispatch(
                 skills,
                 active_skill,
                 hooks,
+                advertising,
+                validation,
                 session,
                 request_id,
                 tool,
@@ -1460,6 +1857,8 @@ async fn dispatch(
                 active_skill,
                 grants,
                 hooks,
+                advertising,
+                validation,
                 rx,
                 escape_grant,
                 session,
@@ -1486,9 +1885,11 @@ async fn await_decision(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     grants: &dyn GrantStore,
     hooks: &Hooks,
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
     session: SessionId,
@@ -1522,6 +1923,8 @@ async fn await_decision(
                 skills,
                 active_skill,
                 hooks,
+                advertising,
+                validation,
                 session,
                 request_id,
                 tool,
@@ -1552,8 +1955,10 @@ async fn run_and_reply(
     holly: &Holly,
     tools: &ToolRegistry,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     hooks: &Hooks,
+    advertising: &tool_advertising::AdvertisingState,
+    validation: &arg_validate::LoopBreaker,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -1575,6 +1980,47 @@ async fn run_and_reply(
             .await;
         seam::reply(holly, session, request_id, ack, false).await;
         return;
+    }
+    // Pre-dispatch argument validation (#560, ADR-0196 §6): a call whose
+    // input violates the tool's advertised schema (missing/unexpected
+    // properties, a type mismatch) never reaches `Tool::run` at all — it gets
+    // a specific complaint instead of `run()`'s opaque parse-failure text.
+    // A tool absent from the registry (a runtime-owned pseudo-tool like
+    // `update_tasks`/`ask_user`/`poll`, already handled above or dispatched
+    // elsewhere) has no advertised schema here, so it's exempt by
+    // construction — nothing to validate against.
+    if let Some(spec) = tools.spec_for(&tool) {
+        if let Some(violation) = arg_validate::validate(&spec.schema, &input) {
+            tracing::warn!(
+                tool = %tool,
+                violation = ?violation.lines(),
+                "tool call failed pre-dispatch schema validation"
+            );
+            let already_delivered = advertising
+                .discovered
+                .lock()
+                .expect("discovered-tool mutex poisoned")
+                .contains(&session, &tool);
+            if !already_delivered {
+                advertising
+                    .discovered
+                    .lock()
+                    .expect("discovered-tool mutex poisoned")
+                    .mark(&session, &tool);
+            }
+            let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
+            let mut output =
+                arg_validate::decline_text_for(&spec, &violation, already_delivered, via_invoke);
+            if validation.note(&session, &tool, &input, true) {
+                output.push_str("\n\n");
+                output.push_str(arg_validate::LOOP_BREAKER_NOTE);
+            }
+            hooks
+                .run_post_tool_use(&session, &tool, &input, &output, true, None)
+                .await;
+            seam::reply(holly, session, request_id, output, true).await;
+            return;
+        }
     }
     // Every other tool executes against the host registry, returning multimodal
     // content (a text result, or an image block for `read` on an image, #221)
@@ -1603,15 +2049,32 @@ async fn run_and_reply(
     .await;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let ToolExecution {
-        content,
+        mut content,
         is_error,
         exit_code,
     } = execution;
-    let output_text = entanglement_core::content_text(&content);
-    // #400, ADR-0106: a successful `load_skill` activates the session's
-    // skill-scoped tool mask for the rest of this turn — parsed from the
-    // result's `skill_id:` header (absent on a failed load: unknown/`user_only`
-    // skill, which leaves any prior active skill untouched).
+    let mut output_text = entanglement_core::content_text(&content);
+    // Loop-breaker guard (#560, ADR-0196 §6): two identical failing calls in a
+    // row — same tool, same input, both `is_error` — mean the schema was
+    // never the problem. Deliberately generic across every failure kind
+    // (unknown-tool and schema-violation return earlier, above/in `dispatch`;
+    // this covers a runtime tool error and an MCP required-param rejection
+    // alike). A non-error result never triggers the note, matching decision
+    // 3: a command failure (non-zero exit) is untouched.
+    if validation.note(&session, &tool, &input, is_error) && is_error {
+        output_text.push_str("\n\n");
+        output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
+        content.push(entanglement_core::ContentPart::text(format!(
+            "\n\n{}",
+            arg_validate::LOOP_BREAKER_NOTE
+        )));
+    }
+    // #400, ADR-0106 (posture-only since ADR-0194): a successful `load_skill`
+    // records the session's skill-active posture and tells any listening head
+    // via `OutEvent::SkillActive` — parsed from the result's `skill_id:`
+    // header (absent on a failed load: unknown/`user_only` skill, which
+    // leaves any prior posture untouched). It no longer narrows the
+    // session's tool set.
     if tool == LOAD_SKILL_TOOL {
         activate_skill(holly, skills, active_skill, &session, &output_text);
     }
@@ -1634,15 +2097,17 @@ async fn run_and_reply(
     .await;
 }
 
-/// Activate `session`'s skill mask (#400, ADR-0106) from a `load_skill` result:
-/// parse its `skill_id:` header, look the skill up in the live registry for its
-/// `allowed_tools`, record it, and tell any listening head via
-/// [`OutEvent::SkillActive`]. A `result` with no `skill_id:` header (a failed
-/// load) is a no-op — the session keeps whatever skill was active before.
+/// Record `session`'s skill-active posture (#400, ADR-0106; posture-only
+/// since ADR-0194 — skills no longer mask tools) from a `load_skill` result:
+/// parse its `skill_id:` header, look the skill up in the live registry for
+/// its (now-vestigial, wire-compat-only) `allowed_tools`, and tell any
+/// listening head via [`OutEvent::SkillActive`]. A `result` with no
+/// `skill_id:` header (a failed load) is a no-op — the session keeps
+/// whatever posture was active before.
 fn activate_skill(
     holly: &Holly,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
     result: &str,
 ) {
@@ -1657,13 +2122,7 @@ fn activate_skill(
     active_skill
         .lock()
         .expect("active-skill mutex poisoned")
-        .insert(
-            session.clone(),
-            ActiveSkill {
-                skill_id: skill_id.to_string(),
-                allowed_tools: allowed_tools.clone(),
-            },
-        );
+        .insert(session.clone());
     holly.emit_for_session(session, |seq| OutEvent::SkillActive {
         session: session.clone(),
         seq,
@@ -1672,20 +2131,19 @@ fn activate_skill(
     });
 }
 
-/// Clear `session`'s active skill mask (#400, ADR-0106) — the turn's `Done`, the
-/// natural end of a skill's scope. A no-op (no wire event) when no skill was
-/// active, matching [`activate_skill`]'s "only tell a head about a real change"
-/// shape.
+/// Clear `session`'s skill-active posture (#400, ADR-0106) — the turn's
+/// `Done`, the natural end of a skill's scope. A no-op (no wire event) when
+/// no skill was active, matching [`activate_skill`]'s "only tell a head about
+/// a real change" shape.
 fn clear_active_skill(
     holly: &Holly,
-    active_skill: &Arc<Mutex<HashMap<SessionId, ActiveSkill>>>,
+    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
 ) {
     if active_skill
         .lock()
         .expect("active-skill mutex poisoned")
         .remove(session)
-        .is_some()
     {
         holly.emit_for_session(session, |seq| OutEvent::SkillActive {
             session: session.clone(),
@@ -1696,7 +2154,10 @@ fn clear_active_skill(
     }
 }
 
-fn set_thinking(holly: &Holly, session: &SessionId) {
+// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) on an
+// out-of-mask approval, mirroring the same status blip `await_decision`
+// emits for an ordinary in-mask `Ask`.
+pub(crate) fn set_thinking(holly: &Holly, session: &SessionId) {
     holly.emit_status(session, AgentState::Thinking);
 }
 
@@ -1713,6 +2174,12 @@ mod tests {
         assert_eq!(
             Intercept::classify(PROPOSE_PLAN_TOOL),
             Intercept::ProposePlan
+        );
+        assert_eq!(Intercept::classify(EXPLORE_TOOL), Intercept::Discover);
+        assert_eq!(Intercept::classify(DESCRIBE_TOOL), Intercept::Discover);
+        assert_eq!(
+            Intercept::classify(RESPONSES_TOOL_SEARCH_TOOL),
+            Intercept::Discover
         );
         #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
@@ -1747,9 +2214,25 @@ mod tests {
         assert!(Intercept::Poll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());
+        assert!(Intercept::Discover.bypasses_permission());
         #[cfg(feature = "rhai")]
         assert!(!Intercept::Rhai.bypasses_permission());
         assert!(!Intercept::Permission.bypasses_permission());
+    }
+
+    #[test]
+    fn explore_and_describe_are_non_maskable() {
+        assert!(is_non_maskable(EXPLORE_TOOL));
+        assert!(is_non_maskable(DESCRIBE_TOOL));
+        // P7: the wire declares `tool_search` itself whenever a tool is
+        // deferred — the model never chose it from an advertised name — so
+        // masking it out would strand the round-trip with no way to answer.
+        assert!(is_non_maskable(RESPONSES_TOOL_SEARCH_TOOL));
+        assert!(
+            !is_non_maskable(POLL_TOOL),
+            "poll's mask exemption was retired by ADR-0192"
+        );
+        assert!(!is_non_maskable("bash"));
     }
 
     /// A resolver that answers a fixed grade per session id (default `Allow`),

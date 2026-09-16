@@ -104,7 +104,8 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
 
     // The handoff mints a fresh root build session and switches to it.
     let build_session = SessionId::new("build-fresh");
-    reg.adopt(build_session.clone());
+    reg.ensure(&build_session);
+    reg.switch_to(build_session.clone());
     assert_eq!(reg.active_id(), &build_session);
     // The plan session stays alive after accept (a later re-propose mints
     // another fresh build session).
@@ -399,6 +400,7 @@ fn restore_from_records_rebuilds_token_totals() {
             cached_input_tokens: 0,
             cache_write_tokens: 0,
             cost_usd: Some(0.0123),
+            purpose: entanglement_core::UsagePurpose::Turn,
         }),
     );
 
@@ -451,4 +453,94 @@ fn modal_selected_id_tracks_the_highlight_and_navigation() {
     reg.switch_to(b.clone());
     reg.toggle_modal();
     assert_eq!(reg.modal_selected_id().as_ref(), Some(&b));
+}
+
+fn started(id: &SessionId, parent: Option<&SessionId>) -> OutEvent {
+    OutEvent::SessionStarted {
+        session: id.clone(),
+        parent: parent.cloned(),
+        predecessor: None,
+        profile: "build".to_string(),
+        model: None,
+        root: parent.is_none(),
+        ts: 1,
+        user: None,
+        sponsored: false,
+    }
+}
+
+fn usage(id: &SessionId, seq: u64, input: u64, output: u64, cost_usd: Option<f64>) -> OutEvent {
+    OutEvent::Usage {
+        session: id.clone(),
+        seq,
+        input_tokens: input,
+        output_tokens: output,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd,
+        purpose: entanglement_core::UsagePurpose::Turn,
+    }
+}
+
+#[test]
+fn usage_rollup_sums_two_levels_of_descendants() {
+    // parent -> child -> grandchild, each spawned via agent/agent_send (#560):
+    // the parent's own view never sees the descendants' usage, so the rollup
+    // has to walk the spawn tree to add it back.
+    let parent = SessionId::new("parent");
+    let child = SessionId::new("child");
+    let grandchild = SessionId::new("grandchild");
+    let mut reg = SessionRegistry::new(parent.clone());
+
+    reg.handle_out_event(usage(&parent, 1, 1_000, 100, Some(0.01)));
+    reg.handle_out_event(started(&child, Some(&parent)));
+    reg.handle_out_event(usage(&child, 1, 2_000, 200, Some(0.02)));
+    reg.handle_out_event(started(&grandchild, Some(&child)));
+    reg.handle_out_event(usage(&grandchild, 1, 3_000, 300, Some(0.03)));
+
+    let rollup = reg.usage_rollup(&parent);
+    assert_eq!(rollup.input_tokens, 6_000);
+    assert_eq!(rollup.output_tokens, 600);
+    assert!((rollup.cost_usd.unwrap() - 0.06).abs() < 1e-9);
+
+    // The child's own rollup only picks up its own + the grandchild's usage.
+    let child_rollup = reg.usage_rollup(&child);
+    assert_eq!(child_rollup.input_tokens, 5_000);
+    assert_eq!(child_rollup.output_tokens, 500);
+
+    // A leaf with no descendants rolls up to exactly its own usage.
+    let leaf_rollup = reg.usage_rollup(&grandchild);
+    assert_eq!(leaf_rollup.input_tokens, 3_000);
+}
+
+#[test]
+fn usage_rollup_falls_back_to_tokens_when_any_descendant_lacks_pricing() {
+    // A partial dollar sum that silently drops an unpriced child's cost would
+    // understate the real total, so the whole rollup must go token-only
+    // instead of guessing (#560).
+    let parent = SessionId::new("parent");
+    let child = SessionId::new("child");
+    let mut reg = SessionRegistry::new(parent.clone());
+
+    reg.handle_out_event(usage(&parent, 1, 1_000, 100, Some(0.01)));
+    reg.handle_out_event(started(&child, Some(&parent)));
+    // Child's model has no catalog pricing — `cost_usd: None` on the wire.
+    reg.handle_out_event(usage(&child, 1, 2_000, 200, None));
+
+    let rollup = reg.usage_rollup(&parent);
+    assert_eq!(rollup.input_tokens, 3_000);
+    assert_eq!(rollup.output_tokens, 300);
+    assert_eq!(rollup.cost_usd, None);
+}
+
+#[test]
+fn usage_rollup_of_a_childless_session_matches_its_own_totals() {
+    let solo = SessionId::new("solo");
+    let mut reg = SessionRegistry::new(solo.clone());
+    reg.handle_out_event(usage(&solo, 1, 500, 50, Some(0.001)));
+
+    let rollup = reg.usage_rollup(&solo);
+    assert_eq!(rollup.input_tokens, 500);
+    assert_eq!(rollup.output_tokens, 50);
+    assert!((rollup.cost_usd.unwrap() - 0.001).abs() < 1e-9);
 }

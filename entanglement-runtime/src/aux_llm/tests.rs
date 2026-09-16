@@ -37,6 +37,7 @@ async fn drain(llm: &mut dyn Llm) -> String {
         tools: &[],
         generation: None,
         cache_key: None,
+        retry: None,
     };
     let mut s = llm.stream(req).await.unwrap();
     let mut out = String::new();
@@ -50,6 +51,12 @@ async fn drain(llm: &mut dyn Llm) -> String {
 
 fn primary_factory() -> LlmFactory {
     Arc::new(move || Box::new(TagLlm("primary")) as Box<dyn Llm>)
+}
+
+/// The `(provider, model)` label `try_resolve`'s cooldown keys on when a
+/// purpose has no pin — arbitrary but stable across a test.
+fn primary_identity() -> (String, String) {
+    ("primary-provider".to_string(), "primary-model".to_string())
 }
 
 /// A provider-less catalog — every test below exercises `resolve`/`resolve_pin`
@@ -117,6 +124,7 @@ async fn resolve_pin_is_none_when_unset_or_unresolvable() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     );
     assert!(reg.resolve_pin(Purpose::Summarize).is_none());
     // A pin that exists but no longer resolves is also `None`, not primary.
@@ -143,6 +151,7 @@ async fn resolve_pin_returns_the_catalog_resolution() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     );
     let resolved = reg.resolve_pin(Purpose::Summarize).expect("pin resolves");
     assert_eq!(resolved.provider, "stub");
@@ -167,6 +176,7 @@ async fn resolver_maps_known_keys_and_ignores_unknown_ones() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     )
     .resolver();
     assert!(seam("summarize").is_some());
@@ -183,6 +193,7 @@ async fn resolve_falls_back_to_primary_when_no_pin() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     );
     let mut llm = reg.resolve(Purpose::SessionTitle);
     assert_eq!(drain(&mut *llm).await, "primary");
@@ -205,6 +216,7 @@ async fn resolve_falls_back_when_pin_does_not_resolve() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     );
     let mut llm = reg.resolve(Purpose::Summarize);
     assert_eq!(drain(&mut *llm).await, "primary");
@@ -225,6 +237,7 @@ async fn resolve_uses_the_aux_factory_when_pin_resolves() {
         primary_factory(),
         empty_catalog(),
         None,
+        primary_identity(),
     );
     let mut llm = reg.resolve(Purpose::SessionTitle);
     assert_eq!(drain(&mut *llm).await, "aux");
@@ -261,7 +274,14 @@ async fn concurrency_cap_reports_the_pins_cap_when_it_resolves() {
     });
     // A primary cap of 5 would be misreported as the answer if
     // `concurrency_cap` didn't prefer a resolving pin.
-    let reg = AuxLlmRegistry::new(store, resolver, primary_factory(), catalog, Some(5));
+    let reg = AuxLlmRegistry::new(
+        store,
+        resolver,
+        primary_factory(),
+        catalog,
+        Some(5),
+        primary_identity(),
+    );
     assert_eq!(reg.concurrency_cap(Purpose::SessionTitle), Some(1));
     cleanup_env();
 }
@@ -278,7 +298,114 @@ async fn concurrency_cap_falls_back_to_primary_when_no_pin() {
         primary_factory(),
         empty_catalog(),
         Some(1),
+        primary_identity(),
     );
     assert_eq!(reg.concurrency_cap(Purpose::SessionTitle), Some(1));
+    cleanup_env();
+}
+
+/// #560 follow-up: `AuxCooldown` is the fail-fast storm guard —
+/// `in_cooldown` takes the window as a parameter (mirroring
+/// `mcp::available_tier::AvailableMcp::recently_failed_enable`) so a test can
+/// shrink it to `Duration::ZERO` and assert expiry without sleeping.
+#[test]
+fn aux_cooldown_in_cooldown_expires_with_a_shrunk_window() {
+    let cd = AuxCooldown::default();
+    assert!(!cd.in_cooldown(Purpose::Narrate, "p", "m", Duration::from_secs(30)));
+    cd.record_failure(Purpose::Narrate, "p", "m", Duration::from_secs(30));
+    assert!(cd.in_cooldown(Purpose::Narrate, "p", "m", Duration::from_secs(30)));
+    // Checking with a zero-length window makes the just-recorded failure
+    // "expired" immediately — the same trick the MCP test uses.
+    assert!(!cd.in_cooldown(Purpose::Narrate, "p", "m", Duration::ZERO));
+}
+
+/// #560 follow-up: the caller warns once per cooldown window, not once per
+/// short-circuited call — `record_failure`'s return value is that signal.
+#[test]
+fn aux_cooldown_record_failure_reports_a_new_window_only_once() {
+    let cd = AuxCooldown::default();
+    assert!(
+        cd.record_failure(Purpose::SessionTitle, "p", "m", Duration::from_secs(30)),
+        "the first failure always starts a new window"
+    );
+    assert!(
+        !cd.record_failure(Purpose::SessionTitle, "p", "m", Duration::from_secs(30)),
+        "a second failure inside the same window must not re-warn"
+    );
+}
+
+/// #560 follow-up: distinct `(purpose, provider, model)` keys have
+/// independent cooldowns — a failure on one purpose/endpoint must not
+/// silence another.
+#[test]
+fn aux_cooldown_keys_are_independent_per_purpose_and_identity() {
+    let cd = AuxCooldown::default();
+    cd.record_failure(Purpose::Narrate, "p", "m", Duration::from_secs(30));
+    assert!(cd.in_cooldown(Purpose::Narrate, "p", "m", Duration::from_secs(30)));
+    assert!(!cd.in_cooldown(Purpose::SessionTitle, "p", "m", Duration::from_secs(30)));
+    assert!(!cd.in_cooldown(Purpose::Narrate, "other", "m", Duration::from_secs(30)));
+}
+
+/// #560 follow-up: `try_resolve` builds and hands back a client on the first
+/// call, then short-circuits to `None` — without building another client —
+/// once the caller reports a failure for that same `(purpose, provider,
+/// model)`.
+#[tokio::test]
+async fn try_resolve_short_circuits_after_a_reported_failure() {
+    let store = store_with_tmp_path("try-resolve-cooldown");
+    store
+        .lock()
+        .unwrap()
+        .set(Purpose::Narrate, "stub", "stub")
+        .unwrap();
+    let reg = AuxLlmRegistry::new(
+        store,
+        succeeding_resolver(),
+        primary_factory(),
+        empty_catalog(),
+        None,
+        primary_identity(),
+    );
+    let (mut llm, provider, model) = reg
+        .try_resolve(Purpose::Narrate)
+        .expect("not cooled down yet");
+    assert_eq!((provider.as_str(), model.as_str()), ("stub", "stub"));
+    assert_eq!(drain(&mut *llm).await, "aux");
+
+    reg.note_failure(Purpose::Narrate, &provider, &model);
+    assert!(
+        reg.try_resolve(Purpose::Narrate).is_none(),
+        "a recently-failed purpose/endpoint must short-circuit locally"
+    );
+    cleanup_env();
+}
+
+/// #560 follow-up: a successful call clears a stale cooldown record, so a
+/// transient blip that later recovers doesn't wedge the purpose for the rest
+/// of the (real) window.
+#[tokio::test]
+async fn note_success_clears_a_recorded_failure() {
+    let store = store_with_tmp_path("try-resolve-clears");
+    store
+        .lock()
+        .unwrap()
+        .set(Purpose::SessionTitle, "stub", "stub")
+        .unwrap();
+    let reg = AuxLlmRegistry::new(
+        store,
+        succeeding_resolver(),
+        primary_factory(),
+        empty_catalog(),
+        None,
+        primary_identity(),
+    );
+    reg.note_failure(Purpose::SessionTitle, "stub", "stub");
+    assert!(reg.try_resolve(Purpose::SessionTitle).is_none());
+
+    reg.note_success(Purpose::SessionTitle, "stub", "stub");
+    assert!(
+        reg.try_resolve(Purpose::SessionTitle).is_some(),
+        "a cleared cooldown must let the next call through"
+    );
     cleanup_env();
 }

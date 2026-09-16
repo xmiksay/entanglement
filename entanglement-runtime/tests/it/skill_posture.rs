@@ -1,12 +1,14 @@
-//! Integration test for skill-scoped `allowed_tools` enforcement (#400,
-//! ADR-0106): a `load_skill` call activates the session's skill mask —
-//! layered *after* the #116 agent mask — for the rest of that turn, and it
-//! clears at `Done` so a later turn is unrestricted again.
+//! Integration test for skills' additive-only posture (#400, ADR-0106,
+//! retired by ADR-0194): a `load_skill` call whose skill carries
+//! `allowed_tools` no longer narrows the session's tool set for the rest of
+//! the turn — a tool outside the list still dispatches normally. The wire
+//! posture event (`OutEvent::SkillActive`) is unchanged: it still fires on
+//! activation (with the frontmatter's `allowed_tools`, vestigial) and clears
+//! at the turn's `Done`.
 //!
-//! Drives the real engine + tool executor with a scripted LLM across two
-//! turns: turn 1 loads a skill whose `allowed_tools: [read]` lets `read`
-//! through but refuses `edit`; turn 2 (after the first turn's `Done` clears
-//! the mask) proves `edit` is unmasked again.
+//! Drives the real engine + tool executor with a scripted LLM: turn 1 loads a
+//! skill whose `allowed_tools: [read]` used to refuse `edit` — it must now
+//! succeed instead.
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -49,8 +51,8 @@ impl Llm for ScriptedLlm {
 /// Collect events for `sid` up to and including the *n*th `Done`, then linger
 /// briefly to also catch anything the tool executor emits asynchronously right
 /// after `Done` — its own broadcast subscription processes `Done` concurrently
-/// with this collector, so the skill-mask clear `SkillActive` (#400) can arrive
-/// a beat after `Done` itself rather than strictly before it.
+/// with this collector, so the skill-posture clear `SkillActive` (#400) can
+/// arrive a beat after `Done` itself rather than strictly before it.
 async fn collect_through_dones(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
@@ -95,13 +97,16 @@ impl Drop for Cleanup {
 }
 
 #[tokio::test]
-async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
+async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-skillmask-e2e-{id}"));
     std::fs::create_dir_all(&root).unwrap();
     let _cleanup = Cleanup(root.clone());
 
-    // A project skill masking everything but `read` for the turn it loads in.
+    // A project skill that *used to* mask everything but `read` for the turn
+    // it loads in (ADR-0106) — now purely additive (ADR-0194): the frontmatter
+    // still parses (and still feeds the vestigial wire field), but it no
+    // longer refuses anything.
     let skill_dir = root.join(".entanglement/skills/restricted");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -126,7 +131,7 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
     tools.register(LoadSkillTool::new(skills.clone()));
 
     let scripted = Arc::new(vec![
-        // Turn 1, round 1: activate the skill.
+        // Round 1: activate the skill.
         LlmResponse {
             text: "".into(),
             tool_calls: vec![tool_call(
@@ -135,9 +140,9 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
                 serde_json::json!({"skill_name": "restricted"}),
             )],
         },
-        // Turn 1, round 2: `edit` is outside `allowed_tools` — must be refused
-        // without touching the file (no `oldString`/`newString` needed since
-        // the mask fires before dispatch).
+        // Round 2: `edit` is outside `allowed_tools` — under ADR-0106 this was
+        // refused before dispatch; ADR-0194 makes it succeed like any other
+        // agent-mask-permitted tool.
         LlmResponse {
             text: "".into(),
             tool_calls: vec![tool_call(
@@ -146,31 +151,9 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
                 serde_json::json!({"path": target.to_string_lossy(), "oldString": "hello", "newString": "bye"}),
             )],
         },
-        // Turn 1, round 3: `read` is inside `allowed_tools` — must succeed.
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![tool_call(
-                "r1",
-                "read",
-                serde_json::json!({"path": target.to_string_lossy()}),
-            )],
-        },
-        // Turn 1, round 4: finish — triggers `Done`, clearing the skill mask.
+        // Round 3: finish — triggers `Done`, clearing the skill-active posture.
         LlmResponse {
             text: "turn1 done".into(),
-            tool_calls: vec![],
-        },
-        // Turn 2, round 1: `edit` again — must succeed now, unmasked.
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![tool_call(
-                "e2",
-                "edit",
-                serde_json::json!({"path": target.to_string_lossy(), "oldString": "hello", "newString": "bye"}),
-            )],
-        },
-        LlmResponse {
-            text: "turn2 done".into(),
             tool_calls: vec![],
         },
     ]);
@@ -213,6 +196,9 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
     );
 
     let sid = SessionId::new("s1");
@@ -239,19 +225,22 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
             .any(|o| o.contains("skill_id: restricted")),
         "expected the load_skill result; got {turn1_outputs:?}"
     );
+    // The additive posture: `edit`, outside the loaded skill's
+    // `allowed_tools`, dispatches like any other agent-mask-permitted tool —
+    // no skill-mask decline.
     assert!(
-        turn1_outputs
+        !turn1_outputs
             .iter()
-            .any(|o| o.contains("Declined by skill `restricted`'s allowed_tools")),
-        "edit must be refused by the skill mask; got {turn1_outputs:?}"
+            .any(|o| o.contains("Declined by skill")),
+        "a skill's allowed_tools must no longer refuse a tool (ADR-0194); got {turn1_outputs:?}"
     );
-    assert!(
-        turn1_outputs.iter().any(|o| o.contains("hello")),
-        "read (in allowed_tools) must succeed; got {turn1_outputs:?}"
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "bye",
+        "the edit outside allowed_tools must have actually run"
     );
-    // The file must be untouched — the masked `edit` never dispatched.
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
-    // The activation is surfaced on the wire (#400 item 3).
+    // The activation is still surfaced on the wire, allowed_tools populated
+    // from the frontmatter exactly as before (vestigial, #400 item 3).
     assert!(
         turn1.iter().any(|e| matches!(
             e,
@@ -260,25 +249,11 @@ async fn skill_mask_restricts_tools_for_one_turn_then_clears() {
         )),
         "expected a SkillActive activation event; got {turn1:?}"
     );
-    // `Done` clears it.
+    // `Done` still clears the posture.
     assert!(
         turn1
             .iter()
             .any(|e| matches!(e, OutEvent::SkillActive { skill_id: None, .. })),
         "expected a SkillActive clear event at Done; got {turn1:?}"
     );
-
-    holly
-        .send(InMsg::prompt(sid.clone(), "try edit again"))
-        .await
-        .unwrap();
-    let turn2 = collect_through_dones(&mut sub, &sid, 1).await;
-    let turn2_outputs = outputs(&turn2);
-    assert!(
-        !turn2_outputs
-            .iter()
-            .any(|o| o.contains("Declined by skill")),
-        "edit must be unmasked in a later turn; got {turn2_outputs:?}"
-    );
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), "bye");
 }

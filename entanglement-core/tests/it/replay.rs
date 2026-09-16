@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    stream_from_response, AgentMode, AgentProfile, CompactionMode, EngineConfig, Holly, InMsg, Llm,
+    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
 };
 
 /// An LLM that replays a scripted list of responses, in order.
@@ -160,6 +160,8 @@ async fn single_tool_turn_replay_fidelity() {
                 request_id: "call_1".to_string(),
                 tool: "read".to_string(),
                 input: r#"{"path": "test.txt"}"#.to_string(),
+                provider_meta: None,
+                envelope: None,
             },
         ),
         (
@@ -174,6 +176,7 @@ async fn single_tool_turn_replay_fidelity() {
                 is_error: false,
                 duration_ms: None,
                 exit_code: None,
+                envelope: None,
             },
         ),
         (
@@ -236,6 +239,8 @@ async fn multi_tool_turn_replay_fidelity() {
                 request_id: "call_1".to_string(),
                 tool: "read".to_string(),
                 input: r#"{"path": "a.txt"}"#.to_string(),
+                provider_meta: None,
+                envelope: None,
             },
         ),
         (
@@ -246,6 +251,8 @@ async fn multi_tool_turn_replay_fidelity() {
                 request_id: "call_2".to_string(),
                 tool: "read".to_string(),
                 input: r#"{"path": "b.txt"}"#.to_string(),
+                provider_meta: None,
+                envelope: None,
             },
         ),
         (
@@ -260,6 +267,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 is_error: false,
                 duration_ms: None,
                 exit_code: None,
+                envelope: None,
             },
         ),
         (
@@ -274,6 +282,7 @@ async fn multi_tool_turn_replay_fidelity() {
                 is_error: false,
                 duration_ms: None,
                 exit_code: None,
+                envelope: None,
             },
         ),
         (
@@ -521,6 +530,8 @@ fn tool_call_record(
             request_id: id.to_string(),
             tool: "read".to_string(),
             input: "{}".to_string(),
+            provider_meta: None,
+            envelope: None,
         },
     )
 }
@@ -539,6 +550,7 @@ fn tool_exec_record(
             tool: "read".to_string(),
             input: "{}".to_string(),
             agent: String::new(),
+            envelope: None,
         },
     )
 }
@@ -561,6 +573,7 @@ fn tool_output_record(
             is_error: false,
             duration_ms: None,
             exit_code: None,
+            envelope: None,
         },
     )
 }
@@ -719,6 +732,7 @@ async fn compacted_record_leaves_source_history_intact() {
                 summary: "user said hello, agent replied".to_string(),
                 kept: 0,
                 auto: false,
+                mode: CompactionMode::Summary,
             },
         ),
         (
@@ -793,6 +807,7 @@ async fn compacted_record_does_not_mutate_source_even_with_kept() {
                 summary: "earlier summary".to_string(),
                 kept: 1,
                 auto: false,
+                mode: CompactionMode::Summary,
             },
         ),
     ];
@@ -809,15 +824,18 @@ async fn compacted_record_does_not_mutate_source_even_with_kept() {
     assert_eq!(messages[1].text(), "reply one");
 }
 
-// --- Automatic in-place compaction (#398, ADR-0103) -----------------------
+// --- Automatic compaction (#398, ADR-0103 → ADR-0205) ---------------------
 //
-// Unlike the manual, copy-on-write `Compacted { auto: false, .. }` above, an
-// `auto: true` record was an in-place mutation on the live engine
-// (`Context::apply_compaction`) — replay must reconstruct that same
-// mutation, not ignore it.
+// `auto: true` used to mean "the live engine mutated this session's context in
+// place", and replay reproduced that mutation. Since ADR-0205 the automatic
+// paths fork a successor like every other compaction and leave the source
+// untouched, so the fold is a **no-op here too** — and a legacy `auto: true`
+// record (written by an engine that really did mutate in place) is deliberately
+// ignored rather than replayed: the log still holds the history the retired
+// source actually had, and that is what a reader of this log wants back.
 
 #[tokio::test]
-async fn auto_compacted_record_mutates_source_history_in_place() {
+async fn auto_compacted_record_leaves_source_history_intact() {
     let sid = SessionId::new("test-auto-compacted");
     let records = vec![
         prompt_record(&sid, "first"),
@@ -844,6 +862,7 @@ async fn auto_compacted_record_mutates_source_history_in_place() {
                 summary: "auto-summarized: user said first, agent replied".to_string(),
                 kept: 0,
                 auto: true,
+                mode: CompactionMode::Summary,
             },
         ),
     ];
@@ -852,21 +871,19 @@ async fn auto_compacted_record_mutates_source_history_in_place() {
     let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
-    // In-place mutation: the whole pre-compaction history is gone, replaced by
-    // the single summary message `Context::apply_compaction` would produce.
+    // No-op fold (ADR-0205): the source was never mutated, so its full
+    // pre-compaction history survives the `Compacted` record.
     assert_eq!(
         messages.len(),
-        1,
-        "auto-compaction replaces history with the summary: {messages:?}"
+        2,
+        "the compacted source keeps its history: {messages:?}"
     );
-    assert!(messages[0].text().starts_with("[Conversation summary"));
-    assert!(messages[0]
-        .text()
-        .contains("auto-summarized: user said first, agent replied"));
+    assert_eq!(messages[0].text(), "first");
+    assert_eq!(messages[1].text(), "reply one");
 }
 
 #[tokio::test]
-async fn auto_compacted_record_with_kept_preserves_the_tail() {
+async fn auto_compacted_record_with_kept_still_leaves_the_source_intact() {
     let sid = SessionId::new("test-auto-compacted-kept");
     let records = vec![
         prompt_record(&sid, "first"),
@@ -909,6 +926,7 @@ async fn auto_compacted_record_with_kept_preserves_the_tail() {
                 summary: "summary of the first turn".to_string(),
                 kept: 2,
                 auto: true,
+                mode: CompactionMode::Summary,
             },
         ),
     ];
@@ -917,24 +935,25 @@ async fn auto_compacted_record_with_kept_preserves_the_tail() {
     let session = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = session.ctx.messages();
 
-    // The second turn's user+assistant pair rides verbatim after the summary
-    // (a safe boundary: `kept=2` starts on the "second" User message).
+    // `kept` describes what rode into the *successor*; this session is the
+    // source, and it keeps everything.
     assert_eq!(
         messages.len(),
-        3,
-        "summary + the 2 kept messages: {messages:?}"
+        4,
+        "the compacted source keeps both turns: {messages:?}"
     );
-    assert!(messages[0].text().contains("summary of the first turn"));
-    assert_eq!(messages[1].text(), "second");
-    assert_eq!(messages[2].text(), "reply two");
+    assert_eq!(messages[0].text(), "first");
+    assert_eq!(messages[3].text(), "reply two");
 }
 
-/// Live-vs-replayed fidelity: run a real session through `Holly` (prompt,
-/// `compact`, another prompt), capture the resulting `(Option<InMsg>,
-/// OutEvent)` log the way the persistence tap would (each `Out` paired with
-/// the `In` that most recently preceded it), and assert `Session::replay`
-/// reconstructs the source context the copy-on-write design leaves intact
-/// (ADR-0101): the live compaction never mutated it, so replay must not either.
+/// Live-vs-replayed fidelity for a **compacted source**: run a real session
+/// through `Holly` (prompt, then `compact`), capture the resulting
+/// `(Option<InMsg>, OutEvent)` log the way the persistence tap would (each
+/// `Out` paired with the `In` that most recently preceded it), and assert
+/// `Session::replay` reconstructs exactly the history the source held when it
+/// was retired. The compaction forks a successor and closes this session
+/// (ADR-0101/0110/0205), so its log ends at the fork — and everything before
+/// that point must come back untouched.
 #[tokio::test]
 async fn live_compaction_replays_to_the_same_context() {
     let sid = SessionId::new("test-live-compact");
@@ -982,28 +1001,20 @@ async fn live_compaction_replays_to_the_same_context() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    holly
-        .send(InMsg::prompt(sid.clone(), "what's next?"))
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let records = records.lock().unwrap().clone();
     let replayed = entanglement_core::session::Session::replay(&records, &cfg, &sid).unwrap();
     let messages = replayed.ctx.messages();
 
-    // Copy-on-write (ADR-0101): the source was never mutated, so replay
-    // reconstructs the full history — both turns — untouched by the
-    // `Compacted` record in the log.
+    // Copy-on-write (ADR-0101/0205): the source was never mutated, so replay
+    // reconstructs the turn it held, untouched by the `Compacted` record.
     assert_eq!(
         messages.len(),
-        4,
-        "both turns intact, the summary forked elsewhere: {messages:?}"
+        2,
+        "the turn is intact, the summary seeded the successor instead: {messages:?}"
     );
     assert_eq!(messages[0].text(), "hello");
     assert_eq!(messages[1].text(), "ok");
-    assert_eq!(messages[2].text(), "what's next?");
-    assert_eq!(messages[3].text(), "ok");
 }
 
 #[tokio::test]

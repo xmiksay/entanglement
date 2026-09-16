@@ -7,6 +7,7 @@ mod command_args;
 mod command_palette;
 mod command_specs;
 mod commands;
+mod cost_command;
 mod diff;
 mod editor;
 mod enable_command;
@@ -31,11 +32,15 @@ mod session_tools_dialog;
 mod session_tree;
 mod session_view;
 mod sessions;
+mod set_command;
+mod settings_dialog;
+mod settings_events;
 mod slash_popup;
 mod stop_command;
 mod theme;
 mod tool_render;
 mod tools_dialog;
+mod tools_view;
 mod transcript;
 mod ui;
 mod wrap;
@@ -46,8 +51,9 @@ use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
         event::{
-            DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-            KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+            DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+            EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
         },
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -80,12 +86,16 @@ pub async fn tui(
     aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     root: std::path::PathBuf,
-    live_bash: std::sync::Arc<crate::bash_live::BashRegistered>,
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
     grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
     mcp_handles: crate::mcp::McpHandles,
+    // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
+    // P9, ADR-0199 part 3) — the same `Arc` the tool executor and the
+    // resolver closures in `main.rs` read/write. `/tools`' status column
+    // reads it; nothing else in the TUI does.
+    advertising_state: std::sync::Arc<crate::tool_advertising::AdvertisingState>,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -110,6 +120,11 @@ pub async fn tui(
     // (issue #14). Best-effort: many terminals never report it, and we default to
     // signalling in that case.
     let _ = execute!(stdout, EnableFocusChange);
+    // Bracketed paste (#A2): without it, a terminal paste is indistinguishable
+    // from very fast typing, so each embedded newline fires the Enter-to-send
+    // binding — one paste submits N times. With it, crossterm delivers the
+    // whole paste as one `Event::Paste` instead of a flood of key events.
+    let _ = execute!(stdout, EnableBracketedPaste);
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -139,7 +154,8 @@ pub async fn tui(
     app.set_configured_editor(configured_editor);
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
-    app.init_head_context(root.clone(), live_bash);
+    app.set_advertising_state(advertising_state);
+    app.init_head_context(root.clone());
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     let mut attention = Attention::from_env();
@@ -204,21 +220,6 @@ pub async fn tui(
             break;
         }
         drain_engine_events(&mut holly_sub, &mut app, &mut attention);
-
-        // A compaction fork (ADR-0101/0110) was recorded while draining engine
-        // events: the engine `Spawn` that actually creates the successor session
-        // needs this `Holly` handle, so it's sent here. `handle_compacted`
-        // already did the head-side view switch + summary seeding. The successor
-        // is a fresh root with a `predecessor` link; once it's spawned, close the
-        // source so its interactive session is retired (ADR-0110).
-        if let Some(fork) = app.take_pending_compact_fork() {
-            let spawn = App::spawn_for_fork(&fork);
-            if let Err(e) = holly.send(spawn).await {
-                tracing::error!("compaction fork Spawn failed: {e:#}");
-            } else if let Err(e) = holly.send(App::close_predecessor(&fork)).await {
-                tracing::error!("compaction source close failed: {e:#}");
-            }
-        }
 
         // A command/action may have requested a terminal-owning effect (open
         // `$EDITOR`, export). Run it here — the loop owns the `Terminal` — and
@@ -297,11 +298,13 @@ fn reset_sigint_to_default() {
 fn setup_panic_handler() {
     std::panic::set_hook(Box::new(|_| {
         let _ = disable_raw_mode();
-        // Disable mouse capture unconditionally — harmless if it was never
-        // enabled — so a crash never leaves the terminal eating mouse input.
+        // Disable mouse capture / bracketed paste unconditionally — harmless
+        // if never enabled — so a crash never leaves the terminal eating
+        // mouse input or wrapping every paste in the bracket markers.
         let _ = execute!(
             std::io::stdout(),
             DisableMouseCapture,
+            DisableBracketedPaste,
             DisableFocusChange,
             LeaveAlternateScreen,
             PopKeyboardEnhancementFlags
@@ -314,6 +317,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
     let _ = execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
+        DisableBracketedPaste,
         DisableFocusChange,
         LeaveAlternateScreen,
         PopKeyboardEnhancementFlags

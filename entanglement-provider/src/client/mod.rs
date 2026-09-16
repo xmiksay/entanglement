@@ -225,6 +225,28 @@ impl RetryConfig {
             ..Self::default()
         }
     }
+
+    /// A config for a caller that must fail fast rather than eat the
+    /// LLM-tuned retry ladder (aux fail-fast: narrate/session-title/
+    /// summarize riding a pinned model, #560 follow-up). A dead endpoint —
+    /// connection refused, or one that never answers — must cost this caller
+    /// a bounded probe, not the ~1-minute-plus worst case of the 5-attempt
+    /// default ladder. At most one retry on a genuine transport/5xx failure
+    /// with a short backoff, a short response-header wait, and a tightly
+    /// bounded 429 park. The RPM/concurrency/shared-lease admission gates are
+    /// unaffected (`execute_with_retry`'s `retry` override only ever changes
+    /// the failure-path knobs) — this still queues behind the same endpoint
+    /// budget as ordinary traffic, it just gives up quickly once admitted.
+    pub fn minimal() -> Self {
+        Self {
+            max_attempts: 2,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(1),
+            rate_limit_max_elapsed: Duration::from_secs(5),
+            response_header_timeout: Duration::from_secs(10),
+            ..Self::default()
+        }
+    }
 }
 
 /// Shared HTTP client + per-endpoint resilience pool. Cheap to clone: the

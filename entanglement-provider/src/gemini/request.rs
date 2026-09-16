@@ -98,7 +98,10 @@ fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
         cfg.insert("maxOutputTokens".into(), json!(max));
     }
     let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
-        Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
+        // Gemini has no effort ladder: the two top tiers share `High`'s budget.
+        Some(ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max) => {
+            Some(HIGH_EFFORT_THINKING_BUDGET)
+        }
         Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
         Some(ReasoningEffort::Low) | None => None,
     });
@@ -143,10 +146,35 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             MessageRole::Tool => {
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 let name = tool_name_from_id(&id).to_string();
+                // ADR-0196 §3: a `ToolReference` block persisted from an
+                // `anthropic_native` session (e.g. history replaying after a
+                // live `/model` switch to this wire) has no native mechanism
+                // here — fold its portable text line into the function
+                // response result rather than silently dropping it.
+                let mut result_text = m.text();
+                for p in &m.content {
+                    match p {
+                        ContentPart::ToolReference { tool_name } => {
+                            if !result_text.is_empty() {
+                                result_text.push('\n');
+                            }
+                            result_text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                        }
+                        // Same fold-into-text fallback for a `responses_native`
+                        // `tool_search_output` block (ADR-0196 §3).
+                        ContentPart::ToolSearchOutput { summary, .. } => {
+                            if !result_text.is_empty() {
+                                result_text.push('\n');
+                            }
+                            result_text.push_str(summary);
+                        }
+                        _ => {}
+                    }
+                }
                 let mut parts = vec![json!({
                     "functionResponse": {
                         "name": name,
-                        "response": { "result": m.text() },
+                        "response": { "result": result_text },
                     }
                 })];
                 for p in &m.content {
@@ -205,6 +233,19 @@ fn content_parts(content: &[ContentPart]) -> Vec<Value> {
             // part is not answer content — rendering it as `text` would inject
             // the model's reasoning into history as if it had said it.
             ContentPart::Reasoning { .. } => None,
+            // Not expected here in practice — a `ToolReference` only ever
+            // rides tool-result content, handled separately in
+            // `convert_messages`' `MessageRole::Tool` arm — but the match is
+            // exhaustive, so degrade the same way that arm does rather than
+            // silently drop it if one ever did reach this path.
+            ContentPart::ToolReference { tool_name } => {
+                Some(json!({ "text": crate::tool_reference_fallback_text(tool_name) }))
+            }
+            // Not expected here in practice either (rides tool-result content
+            // from a `responses_native` session, handled separately in
+            // `convert_messages`) — degrades to `summary` text, same
+            // portable-fallback contract as `ProviderSearch`.
+            ContentPart::ToolSearchOutput { summary, .. } => Some(json!({ "text": summary })),
         })
         .collect()
 }
@@ -509,6 +550,30 @@ mod request_tests {
         );
         assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
         assert_eq!(parts[1]["inlineData"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn tool_result_tool_reference_degrades_to_portable_text() {
+        // ADR-0196 §3: a `ToolReference` block persisted from an
+        // `anthropic_native` session (e.g. history replaying after a live
+        // `/model` switch to this wire) has no native mechanism here —
+        // folds into the function response's `result` text instead of
+        // silently vanishing.
+        let msg = Message::tool_content(
+            "search#1",
+            vec![
+                ContentPart::text("schema text"),
+                ContentPart::tool_reference("search_files"),
+            ],
+        );
+        let contents = convert_messages(&[msg]);
+        let fr = &contents[0]["parts"][0]["functionResponse"];
+        assert_eq!(
+            fr["response"]["result"],
+            "schema text\n[discovered tool: search_files]"
+        );
+        let dumped = serde_json::to_string(&contents).unwrap();
+        assert!(!dumped.contains("tool_reference"), "{dumped}");
     }
 
     #[test]

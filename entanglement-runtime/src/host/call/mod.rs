@@ -2,11 +2,9 @@
 //! output. Complements `bash` (ADR-0009): what the model sends as `command` +
 //! `args` execs verbatim — no `sh -c`, so no pipes, globbing, `$VAR` expansion,
 //! or metacharacter injection. A fixed argv is auditable, which is why a profile
-//! may reasonably `Allow` `call` while keeping `bash` at `Ask`/`Deny`. Runs
-//! unsandboxed with the engine's full privileges, but — unlike `bash` — is
-//! registered unconditionally, independent of `ENTANGLEMENT_ENABLE_BASH`
-//! (ADR-0093, supersedes ADR-0010 §3/ADR-0045 §3 for `call`); per-profile
-//! permission (`Allow`/`Ask`/`Deny`) is the actual dispatch gate.
+//! may reasonably `Allow` `call` while keeping `bash` at `Ask`/`Deny`. Both are
+//! registered unconditionally (ADR-0093 for `call`, ADR-0195 for `bash`);
+//! per-profile permission (`Allow`/`Ask`/`Deny`) is the actual dispatch gate.
 //!
 //! `input_file`/`output_file` (ADR-0092, #381) give a call a durable trace:
 //! `input_file` is read before spawn and piped to the child's stdin (no
@@ -67,13 +65,6 @@ pub struct CallTool {
     sandbox_resolver: Arc<dyn SandboxResolver>,
     /// Approval-gated out-of-root `workdir` (ADR-0109).
     extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
-    /// Live bash-registration handle (#554) — lets the shape-check error in
-    /// [`validate::check_no_shell`] tell a model whether the `bash` tool is
-    /// actually reachable right now (startup `ENTANGLEMENT_ENABLE_BASH=1` or a
-    /// live `/enable tool bash`, #611/ADR-0163) instead of unconditionally
-    /// pointing at a tool that, out of the box, doesn't exist. `None` (the
-    /// standalone/test constructor path) is treated as "unavailable".
-    bash_status: Option<Arc<crate::bash_live::BashRegistered>>,
     /// Background-job registry shared with `bash` and `poll` (#606). A private
     /// per-tool default keeps standalone/TUI construction working; the head
     /// wires the shared instance via [`CallTool::with_jobs`] so polls reach the
@@ -94,7 +85,6 @@ impl CallTool {
             secret_env: Vec::new(),
             sandbox_resolver: Arc::new(SandboxPolicy::none()),
             extra_roots: None,
-            bash_status: None,
             jobs: JobRegistry::new(),
             retained: RetainedOutputRegistry::new(),
         }
@@ -140,13 +130,6 @@ impl CallTool {
     /// amendment) instead of a single fixed [`SandboxPolicy`].
     pub fn with_sandbox_resolver(mut self, resolver: Arc<dyn SandboxResolver>) -> Self {
         self.sandbox_resolver = resolver;
-        self
-    }
-
-    /// Read bash registration live from `status` (#554) so the shape-check
-    /// error can point at `bash` only when it is actually reachable.
-    pub fn with_bash_status(mut self, status: Arc<crate::bash_live::BashRegistered>) -> Self {
-        self.bash_status = Some(status);
         self
     }
 }
@@ -305,8 +288,8 @@ impl CallTool {
         // Fail fast (with a fix) when `command` is a whole shell line rather than
         // a bare executable — otherwise `spawn()` fails with an opaque ENOENT and
         // the model loops the same malformed call (the PR-#446-review failure).
-        let bash_available = self.bash_status.as_ref().is_some_and(|s| s.get());
-        validate::check_no_shell(&parsed.command, &parsed.args, bash_available)?;
+        // `bash` is always registered (ADR-0195), so its hint is always honest.
+        validate::check_no_shell(&parsed.command, &parsed.args)?;
         let secs = parsed.timeout.unwrap_or(120);
         let dur = std::time::Duration::from_secs(secs.min(MAX_CALL_TIMEOUT_SECONDS));
 

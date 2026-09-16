@@ -37,6 +37,27 @@ pub(super) fn providers_file_path() -> Option<CatalogFile> {
     })
 }
 
+/// Drop provider keys a released-or-branch catalog once accepted but no
+/// longer carries, so `deny_unknown_fields` doesn't turn an old user file
+/// into a startup error. `advertise_discovered` (ADR-0200) was replaced by
+/// `discovery` (ADR-0204).
+pub(super) fn strip_retired_keys(mut doc: Value) -> Value {
+    const RETIRED: &[&str] = &["advertise_discovered"];
+    let providers = doc
+        .get_mut("providers")
+        .and_then(Value::as_sequence_mut)
+        .into_iter()
+        .flatten();
+    for provider in providers.filter_map(Value::as_mapping_mut) {
+        for key in RETIRED {
+            if provider.remove(*key).is_some() {
+                tracing::warn!("ignoring retired provider catalog key `{key}` (see ADR-0204)");
+            }
+        }
+    }
+    doc
+}
+
 /// Deep-merge `over` onto `base`. Mappings merge key-wise; the two keyed
 /// sequences (`providers` by `name`, `models` by `id`) merge by identity;
 /// everything else is replaced by `over`.

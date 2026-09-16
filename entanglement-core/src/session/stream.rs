@@ -77,6 +77,10 @@ pub(super) async fn stream_round(
             // every turn keeps a multi-instance provider routing this
             // session's requests to the same cache shard.
             cache_key: Some(session.0.as_str()),
+            // The main turn always rides the endpoint's own LLM-tuned retry
+            // ladder — only aux traffic (narrate/session-title/summarize)
+            // requests the fail-fast override (#560 follow-up).
+            retry: None,
         };
         tracing::debug!(
             messages_count = req.messages.len(),

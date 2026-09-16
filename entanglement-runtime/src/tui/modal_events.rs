@@ -115,6 +115,9 @@ pub(super) async fn handle_mouse(app: &mut App, holly: &Holly, ev: MouseEvent) {
 /// (Help, Inspect, which-key) are intentionally absent — they have no row
 /// action to fire, and a click inside them is a no-op rather than a close.
 async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
+    if app.showing_settings_dialog() {
+        return super::settings_events::click_settings(app, column, row);
+    }
     // Highest priority first: the tools dialog overlays the profile picker
     // (`e` opens it over the picker without closing it, #330), so it wins.
     if app.showing_tools_dialog() {
@@ -294,7 +297,7 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
                 })
                 .await;
         } else if cmd == crate::tui::commands::Command::Set {
-            app.set_input_text("/set ".to_string());
+            app.open_settings_dialog();
         } else if cmd == crate::tui::commands::Command::Show {
             let _ = holly
                 .send(InMsg::SetGeneration {
@@ -335,7 +338,8 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
 }
 
 fn any_modal_open(app: &App) -> bool {
-    app.showing_sessions_modal()
+    app.showing_settings_dialog()
+        || app.showing_sessions_modal()
         || app.showing_profile_picker()
         || app.showing_model_picker()
         || app.showing_key_dialog()
@@ -350,7 +354,9 @@ fn any_modal_open(app: &App) -> bool {
 /// Moves the open modal's selection forward for a wheel-down; returns whether a
 /// modal consumed the event (so the chat isn't scrolled underneath it).
 fn wheel_modal_next(app: &mut App) -> bool {
-    if app.showing_sessions_modal() {
+    if app.showing_settings_dialog() {
+        super::settings_events::wheel_settings(app, true);
+    } else if app.showing_sessions_modal() {
         app.sessions_modal_next();
     } else if app.showing_profile_picker() {
         app.profile_picker_next();
@@ -381,7 +387,9 @@ fn wheel_modal_next(app: &mut App) -> bool {
 }
 
 fn wheel_modal_prev(app: &mut App) -> bool {
-    if app.showing_sessions_modal() {
+    if app.showing_settings_dialog() {
+        super::settings_events::wheel_settings(app, false);
+    } else if app.showing_sessions_modal() {
         app.sessions_modal_prev();
     } else if app.showing_profile_picker() {
         app.profile_picker_prev();
@@ -600,6 +608,39 @@ pub(super) async fn handle_session_tools_dialog_event(
     Ok(false)
 }
 
+/// `/tools`' read-heavy browser (#560 P9, ADR-0199 part 3): a free-text
+/// typeahead filter (like `mention`/`slash_popup`'s own typed-filter
+/// popups), so plain letter keys — *including* `j`/`k` — extend the filter
+/// rather than doubling as vim-style navigation (`session_tools_dialog`'s
+/// own `Space`-toggle checklist has no filter box to conflict with, which is
+/// why it can reserve them; this view does, so it can't). `Up`/`Down` move
+/// the highlight, `Tab` cycles the category filter, `Backspace` shortens the
+/// filter, `Enter` enables the highlighted row exactly like a typed
+/// `/enable` (ADR-0199 part 4) and closes the view, `Esc` closes without
+/// acting.
+pub(super) async fn handle_tools_view_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => app.close_tools_view(),
+        KeyCode::Enter => app.enable_selected_tools_view_row(holly).await,
+        KeyCode::Tab => app.tools_view_cycle_category(),
+        KeyCode::Down => app.tools_view_select_next(),
+        KeyCode::Up => app.tools_view_select_prev(),
+        KeyCode::Backspace => app.tools_view_backspace_filter(),
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            app.tools_view_push_filter_char(c);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 pub(super) async fn handle_sessions_modal_event(
     app: &mut App,
     holly: &Holly,
@@ -691,14 +732,8 @@ pub(super) async fn handle_command_palette_event(
                         })
                         .await;
                 } else if cmd == crate::tui::commands::Command::Set {
-                    // The palette carries no trailing `key value` text (#376), and
-                    // unlike `/compact` or `/mcp` a bare `/set` has no sensible
-                    // default — it needs an argument. A usage-hint status line was
-                    // a dead-end (the user could not proceed from there); instead
-                    // prefill the input with `/set ` and drop back to normal
-                    // editing. The user then types the key/value and presses Enter,
-                    // which routes through the typed path (`event_loop::send_set`).
-                    app.set_input_text("/set ".to_string());
+                    // No trailing `key value` text — bare `/set` is the dialog.
+                    app.open_settings_dialog();
                 } else if cmd == crate::tui::commands::Command::Show {
                     let _ = holly
                         .send(InMsg::SetGeneration {
@@ -712,11 +747,8 @@ pub(super) async fn handle_command_palette_event(
                     // default a bare typed `/mcp` falls back to.
                     super::mcp_command::send_mcp_list(app, holly).await;
                 } else if cmd == crate::tui::commands::Command::Allow {
-                    // Same "no sensible default" reasoning as `/set` (#486): a
-                    // bare `/allow` has no path to grant, so prefill the input
-                    // instead of running it — the user types the path and
-                    // presses Enter, which routes through the typed path
-                    // (`event_loop`'s Enter handler → `allow_command::send_allow`).
+                    // A bare `/allow` has no path to grant (#486): prefill the
+                    // input so Enter routes through `allow_command::send_allow`.
                     app.set_input_text("/allow ".to_string());
                 } else if cmd == crate::tui::commands::Command::Enable {
                     // The palette carries no trailing args (#539), so a picked

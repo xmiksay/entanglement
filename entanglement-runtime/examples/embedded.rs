@@ -149,6 +149,12 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(PlanFileRegistry::new()),
         // The per-user MCP scope seam (#684) wired above.
         Some(scopes),
+        // No tool-advertising inputs (ADR-0196) — this example resolves tool_search.
+        None,
+        // No discovery surface (ADR-0196 §4) — this example runs no
+        // `tool_spec_resolver` of its own, so a private `explore`/`describe`
+        // state (no external reader) is fine.
+        None,
     );
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));

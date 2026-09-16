@@ -430,24 +430,55 @@ async fn write_tool_denied_under_explore_profile() {
         .await
         .unwrap();
     let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "try to write"))
         .await
         .unwrap();
 
+    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038). Since
+    // ADR-0198 that mask miss parks an approval instead of an outright
+    // decline — `explore`'s permission rules never explicitly name `write`,
+    // only the ambient `default: deny` reaches it, which is not the ADR's
+    // hard-limit floor. Advertisement is decoupled, so the model does see
+    // the schema and the offer's attribution names the declining profile.
+    let mut input = None;
+    while let Ok(Ok(ev)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), watch.recv()).await
+    {
+        if let OutEvent::ToolRequest { tool, input: i, .. } = &ev {
+            if tool == "write" {
+                input = Some(i.clone());
+                break;
+            }
+        }
+    }
+    let input = input.expect("write must park a mask-attributed approval, not decline outright");
+    assert!(
+        input.contains("outside agent profile `explore`'s tool mask"),
+        "got {input:?}"
+    );
+
+    // Approving the mask offer still runs the *rest* of the ladder unchanged
+    // (ADR-0198 §4): `explore`'s ambient `default: deny` denies `write` on
+    // the merits, so the file still never lands even past the approval.
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "w1".into(),
+            scope: entanglement_core::ApprovalScope::Once,
+        })
+        .await
+        .unwrap();
     let events = collect(sub, &sid).await;
-    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038): the
-    // executor declines it before permission even resolves — a strictly
-    // stronger block than the earlier permission `Deny`. Advertisement is
-    // decoupled now, so the model does see the schema and the attributed
-    // decline is what stops it.
     assert!(
         events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { output, .. }
-                if output.contains("Declined by agent profile `explore`")
+                if output == "tool `write` denied by permission profile"
         )),
-        "explore should decline write with an attributed refusal; got {events:?}"
+        "the underlying permission grade must still refuse write past the mask approval; got \
+         {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
 }
@@ -634,8 +665,8 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![bash_call, finish]);
-    // bash is opt-in (ADR-0010); mirror what `skutter` does when
-    // ENTANGLEMENT_ENABLE_BASH=1 by registering BashTool explicitly.
+    // `bash` is registered at startup (ADR-0195); mirror the head's own
+    // registry assembly by registering it alongside the sextet.
     let mut tools = host_tools(root.clone());
     tools.register(BashTool::new(root.clone()));
     let cfg = EngineConfig {
@@ -683,6 +714,80 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     assert!(output.contains("shell-ok"), "got: {output}");
 }
 
+/// #560/ADR-0196 §6 audit: a `bash` foreground call that exits non-zero is a
+/// legitimate result, not a structural failure — the model must read it, not
+/// be steered to "fix the call". `exit_code` (ADR-0186) carries the fact on
+/// its own orthogonal channel; `is_error` must stay `false`.
+#[tokio::test]
+async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-bash-exit-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let bash_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: r#"{"command":"exit 3"}"#.into(),
+            provider_meta: None,
+        }],
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+    };
+    let scripted = Arc::new(vec![bash_call, finish]);
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = spawn_tool_executor(
+        &holly,
+        tools,
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    let (output, is_error, exit_code) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput {
+                output,
+                is_error,
+                exit_code,
+                ..
+            } => Some((output.clone(), *is_error, *exit_code)),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("[exit 3]"), "got: {output}");
+    assert!(!is_error, "a non-zero exit must not set is_error; got true");
+    assert_eq!(exit_code, Some(3));
+}
+
 #[tokio::test]
 async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
     let id = std::process::id();
@@ -713,8 +818,8 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call_call, finish]);
-    // `call` is opt-in (ADR-0010/ADR-0045); mirror the head registering the exec
-    // pair under ENTANGLEMENT_ENABLE_BASH=1.
+    // Mirror the head's registry: the sextet plus the exec pair
+    // (`call`/`bash`, both unconditionally registered — ADR-0093/ADR-0195).
     let mut tools = host_tools(root.clone());
     tools.register(BashTool::new(root.clone()));
     tools.register(CallTool::new(root.clone()));

@@ -62,6 +62,8 @@ fn mid_turn_records(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 request_id: "call_1".into(),
                 tool: "read".into(),
                 input: "{}".into(),
+                provider_meta: None,
+                envelope: None,
             },
         ),
         (
@@ -73,6 +75,7 @@ fn mid_turn_records(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 tool: "read".into(),
                 input: "{}".into(),
                 agent: "build".into(),
+                envelope: None,
             },
         ),
     ]
@@ -163,6 +166,7 @@ async fn resume_of_drained_tail_continues_the_turn_without_reoffer() {
             is_error: false,
             duration_ms: None,
             exit_code: None,
+            envelope: None,
         },
     ));
 

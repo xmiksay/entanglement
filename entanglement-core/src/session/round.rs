@@ -13,12 +13,13 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{
     emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
-    emit_usage, next_seq,
+    emit_turn_error, emit_usage, next_seq,
 };
+use super::invoke_envelope::unwrap_batch;
 use super::stream::{stream_round, StreamedRound};
 use super::turn_state::TurnState;
 use super::{Session, SessionCmd};
-use crate::protocol::{OutEvent, SessionId};
+use crate::protocol::{OutEvent, SessionId, UsagePurpose};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, Message, StopReason, ToolSpec};
 
@@ -94,11 +95,14 @@ pub(super) async fn run_attempt(
     let turn = s.turn.get_or_insert_with(TurnState::default);
     turn.iterations += 1;
     if turn.iterations > max_turns {
-        let _ = events.send(OutEvent::Error {
-            session: session.clone(),
-            seq: next_seq(&s.seq),
-            message: format!("exceeded maximum turn limit ({max_turns}) - possible infinite loop"),
-        });
+        // The turn ends here, so it ends like every other failed turn: the
+        // `Done` lets a one-shot head exit and marks the boundary replay folds.
+        emit_turn_error(
+            session,
+            &s.seq,
+            events,
+            format!("exceeded maximum turn limit ({max_turns}) - possible infinite loop"),
+        );
         return RoundAttempt::TurnEnded;
     }
 
@@ -153,7 +157,7 @@ pub(super) async fn run_attempt(
         let cost = model
             .and_then(|m| cfg.pricing.get(m))
             .map(|p| p.cost_usd(&usage));
-        emit_usage(session, s, events, &usage, cost);
+        emit_usage(session, s, events, &usage, cost, UsagePurpose::Turn);
         if sr == Some(StopReason::MaxTokens) {
             let _ = events.send(OutEvent::Error {
                 session: session.clone(),
@@ -171,24 +175,20 @@ pub(super) async fn run_attempt(
     // an exhaustive match in entanglement-provider so a new variant forces an
     // explicit classification decision, #433).
     let confident = stop_reason.is_some_and(StopReason::is_confident_stop);
-    let ambiguous = tool_calls.is_empty() && !confident;
 
-    // Don't commit an *empty* assistant message on an ambiguous round: a
-    // stream that died before emitting any text or search content (the
-    // motivating Ollama case) would otherwise push `content: []`, which the
-    // strict clients drop entirely (`anthropic`/`gemini` skip a block-less
-    // assistant) — leaving the retry request with two adjacent user turns the
-    // provider rejects with a 400 (ADR-0118). Replay mirrors this: an empty
-    // round logs no `TextDelta`/`SearchResult`, so its `AmbiguousRetry` fold
-    // flushes nothing. (The strict clients also coalesce the resulting
-    // adjacent user turns — the original prompt + the nudge — for the same
-    // reason.)
+    // Never commit an *empty* assistant message, whatever the stop: the strict
+    // clients (`anthropic`/`gemini`/`openai_responses`) drop a block-less
+    // assistant anyway, and on an ambiguous round it would leave the retry
+    // request with two adjacent user turns the provider rejects with a 400
+    // (ADR-0118; the strict clients coalesce those). One rule for every stop
+    // also keeps replay exact: the log records no stop reason, so an empty
+    // confident reply and an empty exhausted ambiguous one look identical.
     let mut content: Vec<ContentPart> = Vec::new();
     if !text_buf.is_empty() {
         content.push(ContentPart::text(text_buf.clone()));
     }
     content.extend(content_blocks.iter().cloned());
-    if !(ambiguous && content.is_empty()) {
+    if !(content.is_empty() && tool_calls.is_empty()) {
         // Persisted before the message itself is pushed (#481): each block gets
         // its own seq-bearing content event so `Session::replay` can reconstruct
         // this exact content, mirroring `AmbiguousRetry`. Reasoning blocks ride
@@ -224,12 +224,17 @@ pub(super) async fn run_attempt(
         // results resolve in any order against the pending set (ADR-0061;
         // deliberate change from the serial in-call-order dispatch this
         // replaced).
-        for call in &tool_calls {
-            emit_tool_call(events, session, &call.id, &call.name, &call.input, &s.seq);
-            emit_tool_exec(events, session, call, &s.profile.name, &s.seq);
+        //
+        // ADR-0204: every event names an unwrapped `invoke` call's inner tool,
+        // while `Context` (pushed above) keeps the call as the model emitted it.
+        let (dispatch, envelopes) = unwrap_batch(&tool_calls, specs);
+        for call in &dispatch {
+            let envelope = envelopes.get(&call.id);
+            emit_tool_call(events, session, call, envelope, &s.seq);
+            emit_tool_exec(events, session, call, envelope, &s.profile.name, &s.seq);
         }
         if let Some(turn) = s.turn.as_mut() {
-            turn.begin_batch(tool_calls);
+            turn.begin_batch(dispatch, envelopes);
         }
         return RoundAttempt::Parked;
     }

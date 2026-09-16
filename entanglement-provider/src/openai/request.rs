@@ -2,6 +2,7 @@
 //! OpenAI Chat Completions wire shape. Split out of `openai/mod.rs` (#481) to
 //! keep the streaming client itself under the file-size cap.
 
+use crate::catalog::ThinkingControl;
 use crate::web_search::WebSearchConfig;
 use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolSpec};
 use serde_json::{json, Value};
@@ -32,11 +33,17 @@ pub(super) fn build_body(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
+    // The z.ai request dialect (`ProviderEntry::thinking_control: zai`) gates
+    // both z.ai-only body shapes below: the `thinking` object and the
+    // server-executed `web_search` tool entry. OpenAI proper 400s on either
+    // (unknown field; a non-`function` tool type), and the runtime hands every
+    // OpenAI-wire provider the same enabled `web_search` config.
+    let zai = thinking.control == Some(ThinkingControl::Zai);
     // Function tools (core-advertised) plus the opt-in provider-side `web_search`
     // entry (#305). The z.ai server tool rides the same `tools` array, so it is
     // requestable even when no function tools are present.
     let mut tool_entries = convert_tools(tools);
-    if let Some(ws) = web_search {
+    if let Some(ws) = web_search.filter(|_| zai) {
         tool_entries.push(web_search_tool_entry(ws));
     }
     if !tool_entries.is_empty() {
@@ -45,8 +52,8 @@ pub(super) fn build_body(
     // Generation knobs the head resolved for this model (#191). The OpenAI-compat
     // wire carries temperature + `max_tokens`; it has no standard thinking-budget
     // field, so `thinking_budget_tokens` is dropped here (the Anthropic wire owns
-    // that channel). `reasoning_effort` (#374) is OpenAI's own native field —
-    // passed through verbatim, the one wire that needs no mapping.
+    // that channel).
+    let requested_effort = generation.as_ref().and_then(|g| g.reasoning_effort);
     if let Some(g) = generation {
         if let Some(temp) = g.temperature {
             body["temperature"] = json!(temp);
@@ -54,9 +61,23 @@ pub(super) fn build_body(
         if let Some(max) = g.max_output_tokens {
             body["max_tokens"] = json!(max);
         }
-        if let Some(effort) = g.reasoning_effort {
-            body["reasoning_effort"] = json!(effort);
-        }
+    }
+    // `reasoning_effort` (#374) is OpenAI's own native field, sent only as the
+    // tier the model accepts (ADR-0203: clamped to `effort_tiers`, or the
+    // lowest tier for a `thinking_required` model with nothing asked). No
+    // effort resolved and no control ⇒ the pre-ADR-0203 body, byte for byte.
+    let resolved = thinking.resolve_effort(requested_effort);
+    if let Some(effort) = resolved.effort {
+        body["reasoning_effort"] = json!(effort);
+    }
+    // Always explicit on z.ai: with no object sent, z.ai thinks at `max`.
+    if zai {
+        let kind = if resolved.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        body["thinking"] = json!({ "type": kind });
     }
     // Implicit-cache routing hint (#673): a stable per-session key so a
     // multi-instance endpoint routes this conversation's requests to the same
@@ -166,7 +187,31 @@ pub(super) fn convert_messages(messages: &[Message], thinking: crate::ThinkingSp
                     .filter(|p| matches!(p, ContentPart::Image { .. }))
                     .cloned()
                     .collect();
-                let text = m.text();
+                // ADR-0196 §3: a `ToolReference` block persisted from an
+                // `anthropic_native` session (e.g. history replaying after a
+                // live `/model` switch to this wire) has no native mechanism
+                // here — degrade to its portable text line rather than
+                // silently dropping the "discovered X" outcome.
+                let mut text = m.text();
+                for p in &m.content {
+                    match p {
+                        ContentPart::ToolReference { tool_name } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                        }
+                        // Same fold-into-text fallback for a `responses_native`
+                        // `tool_search_output` block (ADR-0196 §3).
+                        ContentPart::ToolSearchOutput { summary, .. } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(summary);
+                        }
+                        _ => {}
+                    }
+                }
                 let content = if text.is_empty() && !images.is_empty() {
                     "[image returned; see the following message]".to_string()
                 } else {
@@ -219,6 +264,22 @@ fn openai_content(content: &[ContentPart]) -> Value {
             // rendering it as text would put the model's thinking into
             // history as if it had been said aloud.
             ContentPart::Reasoning { .. } => json!(null),
+            // Not expected here in practice — a `ToolReference` only ever
+            // rides tool-result content, handled separately in
+            // `convert_messages`' `MessageRole::Tool` arm — but the match is
+            // exhaustive, so degrade the same way that arm does rather than
+            // silently drop it if one ever did reach this path.
+            ContentPart::ToolReference { tool_name } => {
+                json!({ "type": "text", "text": crate::tool_reference_fallback_text(tool_name) })
+            }
+            // Not expected here in practice either (rides tool-result content
+            // from a `responses_native` session, handled separately in
+            // `convert_messages`'s `MessageRole::Tool` arm above) — degrades
+            // to `summary` text, same portable-fallback contract as
+            // `ProviderSearch`.
+            ContentPart::ToolSearchOutput { summary, .. } => {
+                json!({ "type": "text", "text": summary })
+            }
         })
         .filter(|b| !b.is_null())
         .collect();

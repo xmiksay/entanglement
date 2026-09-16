@@ -178,6 +178,8 @@ fn feed_tool_call(app: &mut App, sid: &SessionId, seq: u64, tool: &str, input: &
         request_id: format!("c{seq}"),
         tool: tool.to_string(),
         input: input.to_string(),
+        provider_meta: None,
+        envelope: None,
     });
 }
 
@@ -215,6 +217,7 @@ fn tool_op_expands_to_show_body_and_check_when_done() {
         is_error: false,
         duration_ms: None,
         exit_code: None,
+        envelope: None,
     });
 
     // Folded but collapsed: a ✓ header, no body.
@@ -258,6 +261,7 @@ fn failed_tool_call_shows_red_cross_not_green_check() {
         is_error: true,
         duration_ms: None,
         exit_code: None,
+        envelope: None,
     });
 
     let body = render_body_lines(&mut app, 80);
@@ -433,10 +437,7 @@ fn approval_tail_write_diffs_against_disk_content() {
     let mut app = App::new_for_test(sid.clone());
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("a.txt"), "old content\n").expect("seed file");
-    app.init_head_context(
-        dir.path().to_path_buf(),
-        crate::bash_live::BashRegistered::new(false),
-    );
+    app.init_head_context(dir.path().to_path_buf());
     feed_tool_request(
         &mut app,
         &sid,
@@ -474,10 +475,7 @@ fn approval_tail_write_new_file_shows_full_content_no_diff() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     let dir = tempfile::tempdir().expect("temp dir");
-    app.init_head_context(
-        dir.path().to_path_buf(),
-        crate::bash_live::BashRegistered::new(false),
-    );
+    app.init_head_context(dir.path().to_path_buf());
     feed_tool_request(
         &mut app,
         &sid,
@@ -720,6 +718,8 @@ fn narrow_widths_do_not_panic() {
         request_id: "c1".to_string(),
         tool: "read".to_string(),
         input: "{\"path\":\"x\"}".to_string(),
+        provider_meta: None,
+        envelope: None,
     });
     app.handle_out_event(OutEvent::ToolOutput {
         session: sid.clone(),
@@ -731,6 +731,7 @@ fn narrow_widths_do_not_panic() {
         is_error: false,
         duration_ms: None,
         exit_code: None,
+        envelope: None,
     });
     app.handle_out_event(OutEvent::Error {
         session: sid.clone(),
@@ -1070,4 +1071,161 @@ fn render_question_wraps_long_text_and_sized_rule() {
             "question line exceeds panel width: {w} cols: {s:?}"
         );
     }
+}
+
+fn render_expanded_text(app: &mut App, block: usize) -> Vec<String> {
+    app.toggle_block(block);
+    render_body_lines(app, 100)
+        .lines
+        .iter()
+        .map(line_text)
+        .collect()
+}
+
+#[test]
+fn invoke_call_renders_exactly_like_a_direct_edit() {
+    // ADR-0204 §3/§6: core names the inner tool and keeps the emitted call in
+    // `envelope`; the transcript must show the edit, not the envelope.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let args = r#"{"path":"a.rs","oldString":"foo","newString":"bar"}"#;
+    app.handle_out_event(OutEvent::ToolCall {
+        session: sid.clone(),
+        seq: 1,
+        request_id: "c1".to_string(),
+        tool: "edit".to_string(),
+        input: args.to_string(),
+        envelope: Some(entanglement_core::ToolEnvelope {
+            tool: "invoke".to_string(),
+            input: format!(r#"{{"name":"edit","args":{args}}}"#),
+        }),
+        provider_meta: None,
+    });
+    let enveloped = render_expanded_text(&mut app, 0);
+
+    let mut direct_app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut direct_app, &sid, 1, "edit", args);
+    let direct = render_expanded_text(&mut direct_app, 0);
+
+    assert_eq!(
+        enveloped, direct,
+        "an invoke call must render like a direct call"
+    );
+    let joined = enveloped.join("\n");
+    assert!(
+        joined.contains("▾ edit") && joined.contains("a.rs"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("- ") && joined.contains("+ "),
+        "edit diff expected: {joined}"
+    );
+    assert!(
+        !joined.contains("invoke") && !joined.contains("oldString"),
+        "{joined}"
+    );
+}
+
+#[test]
+fn streamed_invoke_envelope_is_named_by_its_inner_tool() {
+    // Before the finalizing `ToolCall` lands, the streamed entry still holds
+    // the envelope core has not unwrapped yet.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::ToolCallDelta {
+        session: sid.clone(),
+        seq: 1,
+        request_id: "c1".to_string(),
+        tool: "invoke".to_string(),
+        delta: r#"{"name":"read","args":{"path":"src/lib.rs"}}"#.to_string(),
+    });
+    let body = render_body_lines(&mut app, 80);
+    let header = line_text(&body.lines[line_index_of(&body, "▸ read")]);
+    assert!(
+        header.contains("src/lib.rs") && !header.contains("invoke"),
+        "{header:?}"
+    );
+}
+
+#[test]
+fn discovery_calls_are_visible_with_readable_bodies() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "explore", r#"{"filter":"grep"}"#);
+    feed_tool_call(&mut app, &sid, 2, "describe", r#"{"names":["grep"]}"#);
+    for (seq, id, tool, output) in [
+        (3, "c1", "explore", "TOOLS\n  grep — Search file contents\n"),
+        (
+            4,
+            "c2",
+            "describe",
+            "Loaded: grep. Call each directly by its name.\n\n[{\"name\":\"grep\",\"description\":\"Search\",\"schema\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}}]",
+        ),
+    ] {
+        app.handle_out_event(OutEvent::ToolOutput {
+            session: sid.clone(),
+            seq,
+            request_id: id.to_string(),
+            tool: tool.to_string(),
+            output: output.to_string(),
+            content: vec![],
+            is_error: false,
+            duration_ms: None,
+            exit_code: None,
+            envelope: None,
+        });
+    }
+
+    let collapsed: Vec<String> = render_body_lines(&mut app, 100)
+        .lines
+        .iter()
+        .map(line_text)
+        .collect();
+    assert!(
+        collapsed
+            .iter()
+            .any(|l| l.contains("▸ explore") && l.contains("\"grep\"")),
+        "{collapsed:#?}"
+    );
+    assert!(
+        collapsed
+            .iter()
+            .any(|l| l.contains("▸ describe") && l.contains("grep")),
+        "{collapsed:#?}"
+    );
+
+    app.toggle_block(0);
+    let expanded = render_expanded_text(&mut app, 1).join("\n");
+    for expected in [
+        "filter: grep",
+        "built-in tools",
+        "grep — Search file contents",
+        "Loaded: grep",
+        "pattern: string, required",
+    ] {
+        assert!(
+            expanded.contains(expected),
+            "missing {expected:?} in {expanded}"
+        );
+    }
+    assert!(!expanded.contains("\"schema\""), "{expanded}");
+}
+
+#[test]
+fn mcp_call_header_reads_server_then_tool() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(
+        &mut app,
+        &sid,
+        1,
+        "mcp__github__create_issue",
+        r#"{"title":"Bug"}"#,
+    );
+    let body = render_body_lines(&mut app, 80);
+    let header = line_text(&body.lines[line_index_of(&body, "github › create_issue")]);
+    assert!(
+        header.contains("Bug") && !header.contains("mcp__"),
+        "{header:?}"
+    );
 }

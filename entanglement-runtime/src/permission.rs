@@ -30,15 +30,12 @@
 //!   [`tool_mask_source`] (#597) is the same walk, naming which link did the
 //!   masking and whether it was that link's profile or its session tool
 //!   overlay, so [`crate::decline::mask_decline`] can attribute the refusal.
-//! - **Skill mask** — [`skill_masked`] (#400, ADR-0106): layered *after* the
-//!   #116 agent mask above — a tool must survive both. Set when a `load_skill`
-//!   call activates a skill carrying an `allowed_tools` list, cleared when the
-//!   skill's scope ends (the turn's `Done`, or the session ending). Unlike the
-//!   agent mask it does not clamp an ancestor chain: a skill's scope is one
-//!   conversational turn in the session that loaded it, not an inheritable
-//!   profile trait.
 //!
-//! All four live in the runtime tool executor's single-threaded loop, folded
+//! Skills no longer mask tools (ADR-0194 retired ADR-0106's `ActiveSkill`/
+//! `skill_masked`): a skill is purely additive, never a restriction on the
+//! session's tool set.
+//!
+//! Both live in the runtime tool executor's single-threaded loop, folded
 //! from the same lifecycle events as permission dispatch — zero core surface.
 
 use std::collections::{HashMap, HashSet};
@@ -288,48 +285,6 @@ pub fn tool_mask_source(
     None
 }
 
-/// A skill's tool mask while "active" in a session (#400, ADR-0106): the
-/// runtime's tool-execution-record field ADR-0037 deferred pending this
-/// enforcement. Set on a resolved `load_skill` call,
-/// cleared when the skill's scope ends. `allowed_tools: None` means the loaded
-/// skill declared no mask — it inherits whatever the #116 agent mask already
-/// allows, same as an absent [`AgentProfile::tools`] allowlist.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveSkill {
-    pub skill_id: String,
-    pub allowed_tools: Option<Vec<String>>,
-}
-
-impl ActiveSkill {
-    fn allows(&self, tool: &str) -> bool {
-        match &self.allowed_tools {
-            Some(list) => list.iter().any(|t| t == tool),
-            None => true,
-        }
-    }
-}
-
-/// Whether `tool` is masked out by `session`'s active skill (#400, ADR-0106),
-/// layered *after* the #116 agent mask ([`tool_masked`]) — a tool must survive
-/// both to run. `None` ⇒ not masked (no active skill, or its `allowed_tools` is
-/// unrestricted or includes `tool`); `Some(skill_id)` names the skill that
-/// denied it, for the refusal message. Scoped to the exact session `load_skill`
-/// ran in — unlike [`tool_masked`], it does not clamp down an ancestor chain: a
-/// skill's scope is a conversational turn in one session, not an inheritable
-/// profile trait a spawned child should pick up.
-pub fn skill_masked(
-    active_skill: &HashMap<SessionId, ActiveSkill>,
-    session: &SessionId,
-    tool: &str,
-) -> Option<String> {
-    let skill = active_skill.get(session)?;
-    if skill.allows(tool) {
-        None
-    } else {
-        Some(skill.skill_id.clone())
-    }
-}
-
 /// The ordered permission profiles the effective grade folds over (#173): the
 /// session's own profile followed by each ancestor, walking `guard`'s parent
 /// links. The rhai binding policy captures this once per run and resolves each
@@ -398,7 +353,10 @@ pub fn clamp_to_base(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    min_permission(perm, base.resolve_scoped(tool, arg, workdir))
+    min_permission(
+        perm,
+        crate::permission_bash::resolve_scoped_bash_aware(base, tool, arg, workdir),
+    )
 }
 
 /// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
@@ -467,7 +425,9 @@ pub(crate) fn permission_for(
 ) -> Permission {
     active
         .get(session)
-        .map(|p| p.permission.resolve_scoped(tool, arg, workdir))
+        .map(|p| {
+            crate::permission_bash::resolve_scoped_bash_aware(&p.permission, tool, arg, workdir)
+        })
         .unwrap_or(Permission::Deny)
 }
 
@@ -1516,6 +1476,137 @@ mod tests {
         );
     }
 
+    /// ADR-0197: a compound command built entirely of allowed verbs grades
+    /// `Allow` through the ancestor-chain fold, without needing the whole raw
+    /// string to match a single rule.
+    #[test]
+    fn compound_command_allowed_when_every_segment_matches() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask)
+                .with("bash(find *)", Permission::Allow)
+                .with("bash(grep *)", Permission::Allow)
+                .with("bash(wc *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . | grep x | wc -l"),
+                None
+            ),
+            Permission::Allow
+        );
+    }
+
+    /// ADR-0197 regression: the over-match hole a trailing `*` used to open —
+    /// `bash(find *): allow` must never authorize an appended `rm -rf /` via
+    /// `&&`.
+    #[test]
+    fn compound_command_over_match_regression_asks() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . && rm -rf /tmp/x"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    /// ADR-0197: a compound whose leading verb has no rule at all (not just an
+    /// unmatched allow) still resolves through the segment fold to `Ask`.
+    #[test]
+    fn compound_command_with_unmatched_leading_verb_asks() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("git status && find ."),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    /// ADR-0197: a deny rule matching only a *later* segment still denies the
+    /// whole compound — the deny doesn't need to be the leading verb.
+    #[test]
+    fn compound_command_deny_on_trailing_segment_denies_the_whole_command() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask)
+                .with("bash(find *)", Permission::Allow)
+                .with("bash(rm *)", Permission::Deny),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(&active, &guard, &root, "bash", Some("find . && rm x"), None),
+            Permission::Deny
+        );
+    }
+
+    /// ADR-0197: output redirection is opaque to the splitter, so an
+    /// arg-scoped Allow must not fire — `find . > out.txt` still asks despite
+    /// `bash(find *): allow`.
+    #[test]
+    fn compound_command_redirect_still_asks_despite_curated_allow() {
+        let build = profile(
+            "build",
+            AgentMode::Primary,
+            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
+        );
+        let root = SessionId::new("root");
+        let mut active = HashMap::new();
+        active.insert(root.clone(), build);
+        let guard = SpawnGuard::new();
+        assert_eq!(
+            effective_permission(
+                &active,
+                &guard,
+                &root,
+                "bash",
+                Some("find . > out.txt"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
     #[test]
     fn argument_scoped_rule_resolves_for_search_tools() {
         // #417: grep/glob now yield a path-shaped arg, so a `read`-style
@@ -1593,6 +1684,37 @@ mod tests {
         );
     }
 
+    /// ADR-0197: the ceiling's own per-segment fold still applies *after* the
+    /// already-folded ancestor grade — a `bash(rm *): deny` ceiling denies a
+    /// compound even when the incoming `perm` (from the agent chain) is
+    /// `Allow`.
+    #[test]
+    fn clamp_to_base_folds_compound_command_per_segment() {
+        let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                Some("find . && rm x"),
+                None
+            ),
+            Permission::Deny
+        );
+        // All segments clear the ceiling — the incoming `Allow` stands.
+        let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                Some("find . && git status"),
+                None
+            ),
+            Permission::Allow
+        );
+    }
+
     #[test]
     fn permission_chain_folds_own_then_ancestors() {
         let plan = profile(
@@ -1621,41 +1743,5 @@ mod tests {
             min_permission(acc, p.resolve("bash", None))
         });
         assert_eq!(perm, Permission::Ask);
-    }
-
-    #[test]
-    fn skill_masked_refuses_a_tool_outside_the_active_skill() {
-        let s = SessionId::new("s");
-        let mut active_skill = HashMap::new();
-        active_skill.insert(
-            s.clone(),
-            ActiveSkill {
-                skill_id: "commit".into(),
-                allowed_tools: Some(vec!["bash".into(), "read".into()]),
-            },
-        );
-        assert_eq!(skill_masked(&active_skill, &s, "bash"), None);
-        assert_eq!(
-            skill_masked(&active_skill, &s, "edit"),
-            Some("commit".to_string())
-        );
-        // No active skill for a session ⇒ never masked.
-        let other = SessionId::new("other");
-        assert_eq!(skill_masked(&active_skill, &other, "edit"), None);
-    }
-
-    #[test]
-    fn skill_masked_is_unrestricted_when_allowed_tools_is_none() {
-        let s = SessionId::new("s");
-        let mut active_skill = HashMap::new();
-        active_skill.insert(
-            s.clone(),
-            ActiveSkill {
-                skill_id: "no-mask".into(),
-                allowed_tools: None,
-            },
-        );
-        assert_eq!(skill_masked(&active_skill, &s, "edit"), None);
-        assert_eq!(skill_masked(&active_skill, &s, "bash"), None);
     }
 }
