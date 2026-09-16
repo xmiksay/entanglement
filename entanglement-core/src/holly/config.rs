@@ -27,7 +27,28 @@ use super::DEFAULT_PROFILE;
 /// respawning the engine. The `Fn` is intentionally sync: an embedder keeps a
 /// snapshot cache (`Arc<RwLock<HashMap<SessionId, Vec<ToolSpec>>>>`) hydrated
 /// from its store rather than doing I/O on the turn path.
-pub type ToolSpecResolver = Arc<dyn Fn(&SessionId) -> Vec<ToolSpec> + Send + Sync>;
+///
+/// The second argument is the model the session is bound to at this round
+/// ([`SessionModel`]). WHY: a resolver that pins per-session facts from the
+/// session's model (the runtime's tool-advertising mode, ADR-0196/0204) must
+/// pin them at the first resolution itself — learning the model from a
+/// broadcast event races the first round and changes the tools array between
+/// rounds 1 and 2, a full prompt-cache miss. Within one round core resolves
+/// the tool specs **before** the system prompt, so a `SystemPromptResolver`
+/// may read whatever this resolver pinned.
+pub type ToolSpecResolver =
+    Arc<dyn Fn(&SessionId, SessionModel<'_>) -> Vec<ToolSpec> + Send + Sync>;
+
+/// The model a session is bound to when a round resolves its tool specs.
+/// Both halves are `None` until something rebinds the session (a profile's
+/// model pin at start, `SetModel`, a resumed session's replayed binding) —
+/// i.e. `None` means "the engine's startup default backend", which only the
+/// embedder knows by name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionModel<'a> {
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+}
 
 /// Resolves the system prompt for a specific session's turn (#310). Its output
 /// **overrides** the active profile's
@@ -198,10 +219,12 @@ pub struct EngineConfig {
     /// Try an LLM-generated summary before falling back to placeholder pruning
     /// when a turn's context overflows the model's budget (#398, ADR-0103).
     /// `true` (default): `session/turn.rs` asks the model to summarize the
-    /// oldest history in place (mutating the live `Context` via
-    /// `Context::apply_compaction` — unlike the manual, copy-on-write
-    /// `/compact`, ADR-0101) and only falls through to the prune-only
-    /// `Context::compact` when the attempt's own guard trips (an oversized
+    /// oldest history and **forks a successor session** seeded with that
+    /// summary plus the kept tail, retiring the source unchanged — the same
+    /// copy-on-write shape the manual `/compact` has always had (ADR-0101),
+    /// made universal by [ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md).
+    /// It falls through to the prune-only fork (a successor seeded from the
+    /// pruned transcript) when the attempt's own guard trips (an oversized
     /// transcript/tail, an LLM error, or a truncated summary) or the result
     /// still doesn't fit. `false` restores the pre-#398 prune-only behavior
     /// unconditionally — no extra paid round-trip on overflow.

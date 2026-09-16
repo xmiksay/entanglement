@@ -1686,6 +1686,49 @@ impl InMsg {
 /// [`Error`][OutEvent::Error], [`Done`][OutEvent::Done]) carry a monotonic
 /// per-session `seq`.
 ///
+/// Which request an [`OutEvent::Usage`] round was. A head totals every
+/// round's spend, but only a `Turn` round's prompt size is the session's
+/// context size — a `Compaction` round prices the summarizer's own request
+/// (the head being summarized plus the instruction), not the live context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsagePurpose {
+    #[default]
+    Turn,
+    Compaction,
+}
+
+/// How a [`Compacted`][OutEvent::Compacted] compaction reclaimed room
+/// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)).
+/// Orthogonal to that event's `auto` flag, which says *who asked*: `auto`
+/// alone cannot tell the overflow guard's two fallbacks apart, and a head
+/// renders them differently — one carries a real summary, the other does not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionMode {
+    /// An LLM-authored summary of the history's head. The default, so every
+    /// pre-ADR-0205 record on the wire keeps its meaning.
+    #[default]
+    Summary,
+    /// The prune-only fallback: no LLM was available (disabled, guard tripped,
+    /// or its result still didn't fit), so the oldest tool outputs were
+    /// replaced with a short placeholder and the pruned history itself seeds
+    /// the successor. `summary` then holds that pruned transcript.
+    Prune,
+}
+
+/// An `invoke {name, args}` call as the model emitted it (ADR-0204): the outer
+/// tool name and the raw argument string, verbatim. Carried on
+/// [`ToolCall`][OutEvent::ToolCall]/[`ToolExec`][OutEvent::ToolExec]/
+/// [`ToolOutput`][OutEvent::ToolOutput] when core unwrapped the call, so heads,
+/// gates and hooks see the inner tool while replay can rebuild the emitted
+/// call byte for byte — the model-facing history is never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEnvelope {
+    pub tool: String,
+    pub input: String,
+}
+
 /// Not `Eq`: [`Usage::cost_usd`][OutEvent::Usage] is a floating-point dollar
 /// amount, so the enum is `PartialEq` only (#192).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1944,6 +1987,15 @@ pub enum OutEvent {
         request_id: String,
         tool: String,
         input: String,
+        /// The call's opaque provider metadata (e.g. a Gemini thought
+        /// signature), so replay rebuilds the call the provider signed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_meta: Option<serde_json::Value>,
+        /// The call exactly as the model emitted it, when core unwrapped an
+        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// call. Absent for every ordinary call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        envelope: Option<ToolEnvelope>,
     },
     /// Engine wants to run a host tool (permission `Ask`) and is pausing for approval.
     ToolRequest {
@@ -1975,6 +2027,11 @@ pub enum OutEvent {
         input: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         agent: String,
+        /// The call exactly as the model emitted it, when core unwrapped an
+        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// call. Absent for every ordinary call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        envelope: Option<ToolEnvelope>,
     },
     /// The model asked the user one or more decision questions in a single
     /// `ask_user` call (#488, supersedes parts of ADR-0027: one event now
@@ -2024,6 +2081,11 @@ pub enum OutEvent {
         duration_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        /// The call exactly as the model emitted it, when core unwrapped an
+        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// call. Absent for every ordinary call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        envelope: Option<ToolEnvelope>,
     },
     /// Full snapshot of the session's task outline (sent on every change).
     /// Markdown, typically a `- [ ]`/`- [x]` checklist — displayed to the user
@@ -2038,7 +2100,12 @@ pub enum OutEvent {
     /// Token usage + cost for one model round-trip, folded from the provider's
     /// `LlmEvent::Finish` (#192, ADR-0054). Counts are the normalized per-round-trip
     /// deltas (not cumulative); a head accumulates them for a session total.
+    /// `input_tokens` is the *uncached* prompt portion — the whole prompt as
+    /// billed is `input_tokens + cached_input_tokens + cache_write_tokens`.
     /// `cost_usd` is `None` when no catalog pricing covers the active model.
+    /// `purpose` says which request the round was (a turn round, or a
+    /// compaction summary) so a head can total spend while reading context
+    /// size only off turn rounds; absent on the wire ⇒ `turn`.
     Usage {
         session: SessionId,
         seq: u64,
@@ -2047,6 +2114,8 @@ pub enum OutEvent {
         cached_input_tokens: u64,
         cache_write_tokens: u64,
         cost_usd: Option<f64>,
+        #[serde(default)]
+        purpose: UsagePurpose,
     },
     /// Recoverable error surfaced to the UI; the engine stays alive.
     Error {
@@ -2056,33 +2125,44 @@ pub enum OutEvent {
     },
     /// Turn finished cleanly. Heads waiting on a one-shot turn exit on this.
     Done { session: SessionId, seq: u64 },
-    /// Session compaction ran (#324, ADR-0082 → ADR-0101/0103): the engine
-    /// produced an LLM-generated `summary` of the conversation. Two distinct
-    /// mutation semantics share this one variant, told apart by `auto`:
+    /// Session compaction ran (#324, ADR-0082 → ADR-0101/0103/0205): this
+    /// session was compacted into a **successor session**, and this event is
+    /// the announcement. Since [ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)
+    /// **every** compaction forks — the source session's `Context` is never
+    /// mutated, on any path — so this is always a *report*, never a
+    /// confirmation of mutation, and `Session::replay`'s fold is always a
+    /// **no-op**: there is nothing to reconstruct, because nothing was
+    /// rewritten behind the log.
     ///
-    /// - `auto: false` (the default) — **manual `/compact`, copy-on-write
-    ///   (ADR-0101)**: the source session's `Context` is **not** mutated, this
-    ///   is a *report* ("summary ready, source untouched"). The head that
-    ///   issued the compaction forks the summary into a new session via
-    ///   `InMsg::Spawn`; the original stays idle, intact, independently
-    ///   resumable. `Session::replay`'s fold is a no-op for this case — there
-    ///   is nothing to reconstruct, the source was never mutated.
-    /// - `auto: true` — **automatic in-place compaction on context overflow**
-    ///   (#398, ADR-0103): `session/turn.rs` mutated the *live* session's
-    ///   `Context` via `Context::apply_compaction` before continuing the turn,
-    ///   because a turn mid-flight has no head to fork into. `Session::replay`
-    ///   folds this case by replaying the same `apply_compaction` call, so a
-    ///   resumed session's history matches the live one.
+    /// The successor itself is announced separately by its own
+    /// [`SessionStarted`][OutEvent::SessionStarted] carrying
+    /// `predecessor: Some(this session)` — that pre-existing lineage field,
+    /// not a field here, is how a head learns the successor's id and follows
+    /// it. The source is retired (`CloseSession`) right after, so its log
+    /// ends exactly at this event.
     ///
-    /// A persisted, seq-bearing content event either way (persistence is
+    /// `auto` and `mode` together name which of the three compaction paths ran:
+    ///
+    /// - `auto: false`, `mode: Summary` (both defaults) — **manual
+    ///   `/compact`** (`InMsg::Oneshot`, ADR-0101/0110). Every pre-#398 record
+    ///   on the wire is this case.
+    /// - `auto: true`, `mode: Summary` — **auto-summarize on context
+    ///   overflow** (#398, ADR-0103, amended by ADR-0205: it forks now rather
+    ///   than mutating the live context).
+    /// - `auto: true`, `mode: Prune` — the **prune-only fallback**, which
+    ///   placeholder-prunes the oldest tool outputs when no LLM summary is
+    ///   available. `summary` is then the pruned transcript that seeds the
+    ///   successor, not an LLM-authored summary. ADR-0121's silence for this
+    ///   path is retired by ADR-0205: a head must follow the fork, so it has
+    ///   to be told.
+    ///
+    /// A persisted, seq-bearing content event in every case (persistence is
     /// variant-agnostic; seq-bearing ⇒ folded into `ReplayFrom` history).
     /// `kept` is how many trailing messages — clamped to the nearest safe
     /// turn boundary (#397, ADR-0102) — ride verbatim inside `summary`,
     /// appended after the LLM-generated summary of everything before them;
     /// `0` (the default) means the whole history was summarized with no
-    /// verbatim tail, matching every pre-#397 record. `auto` defaults to
-    /// `false` on the wire, matching every pre-#398 record (all of which were
-    /// the manual, copy-on-write path).
+    /// verbatim tail, matching every pre-#397 record.
     Compacted {
         session: SessionId,
         seq: u64,
@@ -2091,6 +2171,8 @@ pub enum OutEvent {
         kept: u64,
         #[serde(default)]
         auto: bool,
+        #[serde(default)]
+        mode: CompactionMode,
     },
     /// File change record (audit log entry). Emitted by the runtime's tool
     /// executor after each successful `edit`/`write`/`apply_patch` (#202, #455).
@@ -2652,12 +2734,27 @@ mod tests {
                 cached_input_tokens: 30,
                 cache_write_tokens: 0,
                 cost_usd: cost,
+                purpose: UsagePurpose::Compaction,
             };
             let json = serde_json::to_string(&ev).unwrap();
             let back: OutEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(ev, back);
             assert_eq!(back.seq(), Some(5));
         }
+    }
+
+    #[test]
+    fn usage_without_purpose_on_the_wire_reads_as_a_turn_round() {
+        // Logs written before `purpose` existed carry no field at all.
+        let json = r#"{"kind":"usage","session":"s1","seq":5,"input_tokens":1,"output_tokens":2,"cached_input_tokens":0,"cache_write_tokens":0,"cost_usd":null}"#;
+        let back: OutEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            back,
+            OutEvent::Usage {
+                purpose: UsagePurpose::Turn,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3091,6 +3188,7 @@ mod tests {
             summary: "user asked for X, agent did Y".into(),
             kept: 0,
             auto: false,
+            mode: CompactionMode::Summary,
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
@@ -3109,6 +3207,7 @@ mod tests {
                 summary: "x".into(),
                 kept: 0,
                 auto: false,
+                mode: CompactionMode::Summary,
             }
         );
     }
@@ -3121,6 +3220,7 @@ mod tests {
             summary: "auto-summarized on overflow".into(),
             kept: 2,
             auto: true,
+            mode: CompactionMode::Summary,
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OutEvent = serde_json::from_str(&json).unwrap();
@@ -3636,5 +3736,88 @@ mod tests {
         let denylist = masked_profile(None, vec!["poll"]);
         assert!(denylist.advertises_tool("read"));
         assert!(!denylist.advertises_tool("poll"));
+    }
+
+    #[test]
+    fn tool_events_carry_an_optional_envelope() {
+        let envelope = Some(ToolEnvelope {
+            tool: "invoke".into(),
+            input: r#"{"name":"read","args":{"path":"x"}}"#.into(),
+        });
+        let exec = OutEvent::ToolExec {
+            session: SessionId::new("s1"),
+            seq: 2,
+            request_id: "r1".into(),
+            tool: "read".into(),
+            input: r#"{"path":"x"}"#.into(),
+            agent: "build".into(),
+            envelope: envelope.clone(),
+        };
+        let json = serde_json::to_string(&exec).unwrap();
+        assert!(
+            json.contains(r#""envelope":{"tool":"invoke","input":"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), exec);
+
+        let output = OutEvent::ToolOutput {
+            session: SessionId::new("s1"),
+            seq: 3,
+            request_id: "r1".into(),
+            tool: "read".into(),
+            output: "contents".into(),
+            content: Vec::new(),
+            is_error: false,
+            duration_ms: None,
+            exit_code: None,
+            envelope,
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), output);
+    }
+
+    #[test]
+    fn tool_events_without_envelope_serialize_unchanged() {
+        // A pre-ADR-0204 log line: no `envelope` key, and re-serializing an
+        // ordinary call must produce the identical bytes.
+        let legacy = r#"{"kind":"tool_call","session":"s1","seq":1,"request_id":"r1","tool":"read","input":"{}"}"#;
+        let back: OutEvent = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(
+            &back,
+            OutEvent::ToolCall {
+                envelope: None,
+                provider_meta: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_string(&back).unwrap(), legacy);
+
+        let legacy = r#"{"kind":"tool_output","session":"s1","seq":2,"request_id":"r1","tool":"read","output":"ok"}"#;
+        let back: OutEvent = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(&back, OutEvent::ToolOutput { envelope: None, .. }));
+        assert_eq!(serde_json::to_string(&back).unwrap(), legacy);
+
+        let legacy = r#"{"kind":"tool_exec","session":"s1","seq":1,"request_id":"r1","tool":"read","input":"{}","agent":"build"}"#;
+        let back: OutEvent = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(&back, OutEvent::ToolExec { envelope: None, .. }));
+        assert_eq!(serde_json::to_string(&back).unwrap(), legacy);
+    }
+    #[test]
+    fn tool_call_carries_optional_provider_meta() {
+        let call = OutEvent::ToolCall {
+            session: SessionId::new("s1"),
+            seq: 1,
+            request_id: "r1".into(),
+            tool: "read".into(),
+            input: "{}".into(),
+            provider_meta: Some(serde_json::json!({ "thought_signature": "SIG" })),
+            envelope: None,
+        };
+        let json = serde_json::to_string(&call).unwrap();
+        assert!(
+            json.contains(r#""provider_meta":{"thought_signature":"SIG"}"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), call);
     }
 }

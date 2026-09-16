@@ -18,20 +18,32 @@
 //! [`turn_state`] is the parked-turn state; [`emit`] is the outbound-event
 //! helpers; [`ops`] is single-shot ops (#324, ADR-0082); [`summarize`] is the
 //! LLM-summarization core `ops` (copy-on-write) and `turn` (in-place
-//! auto-compact, #398/ADR-0103) both call.
+//! auto-compact, #398/ADR-0103) both call; [`compaction_request`] picks its
+//! request shape (ADR-0202) and [`transcript`] renders the fallback text;
+//! [`round_inputs`] resolves the system prompt + tool specs a round and a
+//! compaction share.
 
+mod compaction_request;
 mod emit;
+mod fork;
+mod invoke_envelope;
 mod ops;
 mod replay;
+mod replay_pending;
 mod round;
+mod round_inputs;
 mod state;
 mod stream;
 mod summarize;
+mod summary_attempt;
+mod transcript;
 mod turn;
 mod turn_state;
 
 pub use state::{Session, SessionUsage};
 pub use turn_state::TurnState;
+
+use fork::Forked;
 
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
@@ -40,12 +52,12 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentProfile, AgentState, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, UserId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use emit::{emit_tool_exec, emit_tool_output, next_seq};
+use emit::{emit_tool_output, next_seq, reoffer_pending};
 use ops::run_oneshot;
 use turn::drive_turn;
 
@@ -183,6 +195,7 @@ pub(crate) async fn session_loop(
     sponsored: bool,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
+    forks: mpsc::Sender<InMsg>,
 ) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -194,6 +207,9 @@ pub(crate) async fn session_loop(
     let profile_model = profile.model.clone();
 
     let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
+    // Lets this session fork itself into a compaction successor (ADR-0205);
+    // see `Session::engine`.
+    s.engine = Some(forks);
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
     // one already reconstructed it from its `SessionStarted` log (replay) — that
     // takes precedence over the raw `predecessor` param, which `Holly`'s `Resume`
@@ -333,22 +349,21 @@ pub(crate) async fn session_loop(
     // events are not re-emitted — heads rebuild those from the log. A drained
     // tail (every result logged, next round never streamed) has nothing to
     // re-offer; continue the turn directly.
+    let mut forked = false;
     if let Some(turn) = s.turn.as_ref() {
         if turn.pending.is_empty() {
-            drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+            forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await
+                == Forked::Yes;
         } else {
             let _ = events.send(OutEvent::Status {
                 session: session.clone(),
                 state: AgentState::Thinking,
             });
-            let pending = turn.pending.clone();
-            for c in &pending {
-                emit_tool_exec(&events, &session, c, &s.profile.name, &s.seq);
-            }
+            reoffer_pending(&events, &session, turn, &s.profile.name, &s.seq);
         }
     }
 
-    loop {
+    while !forked {
         // Publish settledness for the idle-TTL sweep (#363): `Some(now)` the
         // instant this session is genuinely at rest (about to pop a stash entry
         // or block on `rx.recv()`), `None` while parked on unresolved tool calls
@@ -394,9 +409,7 @@ pub(crate) async fn session_loop(
                     Ok(cmd) => cmd,
                     Err(_elapsed) => {
                         if let Some(turn) = s.turn.as_ref() {
-                            for c in &turn.pending {
-                                emit_tool_exec(&events, &session, c, &s.profile.name, &s.seq);
-                            }
+                            reoffer_pending(&events, &session, turn, &s.profile.name, &s.seq);
                         }
                         continue;
                     }
@@ -430,7 +443,8 @@ pub(crate) async fn session_loop(
                         .lock()
                         .expect("activity registry mutex poisoned")
                         .insert(session.clone(), None);
-                    drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+                    forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await
+                        == Forked::Yes;
                 }
             }
             Some(SessionCmd::SetAgent(name)) => {
@@ -647,7 +661,8 @@ pub(crate) async fn session_loop(
                     );
                     continue;
                 }
-                run_oneshot(&session, &mut s, &events, &cfg, op, args).await;
+                forked =
+                    run_oneshot(&session, &mut s, &events, &cfg, op, args).await == Forked::Yes;
             }
             // A result for the parked batch (#270): fold it into context on
             // arrival — arrival order, matching replay's `ToolOutput`-order
@@ -662,7 +677,7 @@ pub(crate) async fn session_loop(
             // `Unpause` continues it without a fresh prompt.
             Some(SessionCmd::ToolResult(id, content, is_error, duration_ms, exit_code)) => {
                 match s.turn.as_mut().and_then(|t| t.resolve(&id)) {
-                    Some(call) => {
+                    Some((call, envelope)) => {
                         emit_tool_output(
                             &events,
                             &session,
@@ -672,11 +687,15 @@ pub(crate) async fn session_loop(
                             is_error,
                             duration_ms,
                             exit_code,
+                            envelope,
                             &s.seq,
                         );
                         s.ctx.push_tool_content(&call.id, content);
                         if !s.paused && s.turn.as_ref().is_some_and(TurnState::is_drained) {
-                            drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+                            forked =
+                                drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg)
+                                    .await
+                                    == Forked::Yes;
                         }
                     }
                     None => {
@@ -742,7 +761,9 @@ pub(crate) async fn session_loop(
                 if s.paused {
                     s.paused = false;
                     if s.turn.as_ref().is_some_and(TurnState::is_drained) {
-                        drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await;
+                        forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg)
+                            .await
+                            == Forked::Yes;
                     } else {
                         let state = if s.turn.is_some() {
                             AgentState::Working
@@ -782,27 +803,30 @@ pub(crate) async fn session_loop(
                 });
                 return;
             }
-            None => {
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                // Retire the shared seq counter: no more content will be minted
-                // for this id (a late runtime emit for a gone session falls back
-                // to seq 0, harmless — there is no live content stream to collide).
-                seqs.lock()
-                    .expect("seq registry mutex poisoned")
-                    .remove(&session);
-                activity
-                    .lock()
-                    .expect("activity registry mutex poisoned")
-                    .remove(&session);
-                let _ = events.send(OutEvent::SessionEnded {
-                    session: session.clone(),
-                    ts,
-                });
-                return;
-            }
+            None => break,
         }
     }
+
+    // End of the line, by either route: the inbox closed (`None` above), or a
+    // compaction forked this session away and it is now retired (ADR-0205 —
+    // the supervisor's `CloseSession` tombstones the id right behind us). Both
+    // end the session identically, so the teardown lives here once.
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // Retire the shared seq counter: no more content will be minted for this
+    // id (a late runtime emit for a gone session falls back to seq 0,
+    // harmless — there is no live content stream to collide).
+    seqs.lock()
+        .expect("seq registry mutex poisoned")
+        .remove(&session);
+    activity
+        .lock()
+        .expect("activity registry mutex poisoned")
+        .remove(&session);
+    let _ = events.send(OutEvent::SessionEnded {
+        session: session.clone(),
+        ts,
+    });
 }

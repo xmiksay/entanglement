@@ -1,23 +1,19 @@
 //! LLM-summarization core shared by the manual `"compact"` oneshot op
 //! (`session/ops.rs`, copy-on-write, ADR-0101) and automatic in-place
 //! auto-summarize on context overflow (`session/turn.rs`, #398, ADR-0103).
-//! Both callers render the same head/tail transcript, guard it against the
-//! session's own context budget, and ask the model for a dense summary of the
-//! head with the tail (clamped to a safe turn boundary, #397/ADR-0102) riding
-//! verbatim after it — they differ only in what happens to the result
-//! (a report event vs. an in-place `Context` mutation).
+//! Both callers split the history into a summarized head and a verbatim tail
+//! (clamped to a safe turn boundary, #397/ADR-0102), guard both against the
+//! session's budget, and ask the model for a dense summary of the head — they
+//! differ only in what happens to the result (a report event vs. an in-place
+//! `Context` mutation). Which shape carries the head — the session's own
+//! cached prefix, or a rendered transcript — is decided here and built by
+//! `session/compaction_request.rs` (ADR-0202).
 
-use crate::context::Context;
-use entanglement_provider::{
-    GenerationParams, Llm, LlmEvent, LlmRequest, Message, MessageRole, RetryConfig, StopReason,
-    Usage,
-};
-use futures::StreamExt;
-
-/// Per-tool-message transcript cap (head+tail chars) fed into the compaction
-/// prompt, so one oversized tool output doesn't blow the summarizer's own
-/// context window.
-const TRANSCRIPT_TOOL_MESSAGE_CAP: usize = 2_000;
+use super::compaction_request::{CompactionRequest, SessionPrefix};
+use super::summary_attempt::{self, Head, Knobs};
+use super::transcript::render_transcript;
+use crate::context::{estimate_text_tokens, Context};
+use entanglement_provider::{GenerationParams, Llm, RetryConfig, StopReason, Usage};
 
 /// The [`EngineConfig::aux_llm_resolver`][crate::EngineConfig::aux_llm_resolver]
 /// purpose key for compaction (Issue 5). Core knows only this string; the
@@ -44,6 +40,24 @@ pub(crate) struct AuxBackend {
     /// LLM-tuned retry ladder: weakening it here would regress a legitimate
     /// transient-failure retry on every compaction, pinned or not.
     retry: Option<RetryConfig>,
+}
+
+/// Which arm [`AuxBackend::resolve`] took. It decides the request shape
+/// (ADR-0202): only the session's own backend shares the session's prompt
+/// cache and accepts its history's thinking blocks and tool-call ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendArm {
+    Session,
+    PinnedAux,
+}
+
+/// A resolved compaction backend, borrowed for one [`summarize`] call.
+pub(crate) struct SummarizeBackend<'a> {
+    pub llm: &'a mut dyn Llm,
+    pub model: Option<&'a str>,
+    pub generation: Option<GenerationParams>,
+    pub retry: Option<RetryConfig>,
+    pub arm: BackendArm,
 }
 
 impl AuxBackend {
@@ -79,29 +93,31 @@ impl AuxBackend {
         }
     }
 
-    /// The `(llm, model, generation, retry)` quadruple to summarize with,
-    /// falling back to `session_*` field-by-field. The session fallback
-    /// deliberately reads the *session's current* binding, so a live
-    /// `/model` switch keeps applying to compaction when no aux pin is set.
+    /// The backend to summarize with, falling back to `session_*`
+    /// field-by-field. The session fallback deliberately reads the *session's
+    /// current* binding, so a live `/model` switch keeps applying to
+    /// compaction when no aux pin is set.
     pub(crate) fn resolve<'a>(
         &'a mut self,
         session_llm: &'a mut dyn Llm,
         session_model: Option<&'a str>,
         session_generation: Option<GenerationParams>,
-    ) -> (
-        &'a mut dyn Llm,
-        Option<&'a str>,
-        Option<GenerationParams>,
-        Option<RetryConfig>,
-    ) {
+    ) -> SummarizeBackend<'a> {
         match &mut self.llm {
-            Some(llm) => (
-                &mut **llm,
-                self.model.as_deref(),
-                self.generation,
-                self.retry,
-            ),
-            None => (session_llm, session_model, session_generation, None),
+            Some(llm) => SummarizeBackend {
+                llm: &mut **llm,
+                model: self.model.as_deref(),
+                generation: self.generation,
+                retry: self.retry,
+                arm: BackendArm::PinnedAux,
+            },
+            None => SummarizeBackend {
+                llm: session_llm,
+                model: session_model,
+                generation: session_generation,
+                retry: None,
+                arm: BackendArm::Session,
+            },
         }
     }
 }
@@ -168,12 +184,11 @@ impl std::fmt::Display for SummarizeError {
 /// A completed summarization: `summary` already has the verbatim `kept` tail
 /// (#397/ADR-0102) rendered separately in `tail_rendered` — deliberately
 /// *not* baked into `summary`, since the two callers preserve the tail two
-/// different ways: `ops.rs` (copy-on-write) has only a single flat string to
-/// hand a forked session, so it composes `summary` + `tail_rendered` into one
-/// report; `turn.rs` (in-place, #398) hands `summary` alone to
-/// `Context::apply_compaction`, which re-derives the same tail *structurally*
-/// from `kept` — baking the rendered tail text into `summary` there would
-/// duplicate it (once as text, once as the real messages).
+/// different ways: every caller now forks a successor (ADR-0205) whose seed is
+/// a single flat prompt, so each composes `summary` + `tail_rendered` itself
+/// (`compose_report`). They stay separate here because the prune path seeds
+/// from a rendered transcript with no summary at all, and baking the tail into
+/// `summary` would leave that caller no way to tell the two apart.
 pub(crate) struct SummarizeOutcome {
     pub summary: String,
     pub kept: usize,
@@ -193,15 +208,17 @@ pub(crate) fn compose_report(summary: &str, kept: usize, tail_rendered: Option<&
     }
 }
 
-/// Summarize `ctx`'s head with `llm`, preserving the tail (clamped to
-/// `ctx.safe_kept(requested_kept)`) verbatim. Shared by both callers — see the
-/// module doc for what differs after this returns.
+/// Summarize `ctx`'s head on `backend`, preserving the tail (clamped to
+/// `ctx.safe_kept(requested_kept)`) verbatim. `prefix` is what the session
+/// sends ahead of its history this round (ADR-0202): the session's own backend
+/// replays it with the head verbatim when that fits the real window, otherwise
+/// — or on a pinned aux backend — the head goes out as a rendered transcript
+/// guarded by the input budget. See the module doc for what differs after
+/// this returns.
 pub(crate) async fn summarize(
     ctx: &Context,
-    llm: &mut dyn Llm,
-    model: Option<&str>,
-    generation: Option<GenerationParams>,
-    retry: Option<RetryConfig>,
+    backend: SummarizeBackend<'_>,
+    prefix: SessionPrefix<'_>,
     requested_kept: usize,
     instructions: Option<&str>,
 ) -> Result<SummarizeOutcome, SummarizeError> {
@@ -217,24 +234,26 @@ pub(crate) async fn summarize(
         return Err(SummarizeError::EntireHistoryKept { kept });
     }
 
-    let transcript = render_transcript(head);
+    let structured = match backend.arm {
+        BackendArm::Session => CompactionRequest::structured(
+            prefix,
+            head,
+            instructions,
+            ctx.window(),
+            backend.generation,
+        ),
+        BackendArm::PinnedAux => None,
+    };
+    let request = match structured {
+        Some(request) => request,
+        None => CompactionRequest::rendered(head, instructions, ctx.limit())?,
+    };
+
+    // The kept tail rides verbatim (unsummarized) into the compacted context,
+    // so it must fit the input budget on its own too.
     let tail_transcript = (!tail.is_empty()).then(|| render_transcript(tail));
-
-    // Guard an oversized transcript (#178, ADR-0101): if the rendered input
-    // alone already blows the context budget, shipping it would just burn a
-    // paid round-trip and 4xx at the provider.
-    let transcript_tokens = estimate_tokens(&transcript);
-    if transcript_tokens > ctx.limit() {
-        return Err(SummarizeError::TranscriptTooLarge {
-            tokens: transcript_tokens,
-            limit: ctx.limit(),
-        });
-    }
-
-    // The kept tail rides verbatim (unsummarized), so it must fit the budget
-    // on its own too.
     if let Some(tail_transcript) = &tail_transcript {
-        let tail_tokens = estimate_tokens(tail_transcript);
+        let tail_tokens = estimate_text_tokens(tail_transcript);
         if tail_tokens > ctx.limit() {
             return Err(SummarizeError::TailTooLarge {
                 kept,
@@ -244,26 +263,31 @@ pub(crate) async fn summarize(
         }
     }
 
-    let mut prompt = format!(
-        "Summarize the conversation transcript below so it can fully replace \
-         the conversation history while a coding agent continues the work. \
-         Preserve: the user's goals, decisions made, files/paths touched, \
-         commands run, and outstanding next steps. Be concise but complete.\n\n\
-         {}",
-        transcript
+    tracing::debug!(
+        structured = request.is_structured(),
+        arm = ?backend.arm,
+        head = head.len(),
+        kept,
+        "compaction: summarizing"
     );
-    if let Some(extra) = instructions {
-        prompt.push_str(&format!("\n\nAdditional instructions: {extra}"));
-    }
-
-    const SYSTEM: &str = "You are a summarization assistant compacting a coding \
-                          agent's conversation history into a dense, information-\
-                          preserving summary.";
-    let messages = [Message::user(prompt)];
-
-    let (summary, finish) = oneshot_text(llm, SYSTEM, &messages, model, generation, retry)
-        .await
-        .map_err(SummarizeError::Llm)?;
+    let SummarizeBackend {
+        llm,
+        model,
+        generation,
+        retry,
+        ..
+    } = backend;
+    let knobs = Knobs {
+        model,
+        generation,
+        retry,
+    };
+    let head = Head {
+        messages: head,
+        instructions,
+        limit: ctx.limit(),
+    };
+    let (summary, finish) = summary_attempt::run(llm, request, knobs, head).await?;
 
     // Refuse a truncated summary: a `max_tokens`-cut-off fragment must not
     // replace (or report as replacing) real history.
@@ -279,107 +303,16 @@ pub(crate) async fn summarize(
     })
 }
 
-/// Run one tool-less, non-streamed-to-the-UI completion: build the request,
-/// drain the stream concatenating `Text` chunks, and return the assembled text
-/// plus the `Finish` payload (for usage/cost).
-async fn oneshot_text(
-    llm: &mut dyn Llm,
-    system: &str,
-    messages: &[Message],
-    model: Option<&str>,
-    generation: Option<GenerationParams>,
-    retry: Option<RetryConfig>,
-) -> anyhow::Result<(String, Option<(Option<StopReason>, Usage)>)> {
-    let req = LlmRequest {
-        system,
-        model,
-        messages,
-        tools: &[],
-        generation,
-        // One-shot aux request: a distinct prefix, so no session cache key.
-        cache_key: None,
-        retry,
-    };
-    let mut stream = llm.stream(req).await?;
-    let mut text = String::new();
-    let mut finish = None;
-    while let Some(ev) = stream.next().await {
-        match ev? {
-            LlmEvent::Text(delta) => text.push_str(&delta),
-            LlmEvent::Finish { stop_reason, usage } => finish = Some((stop_reason, usage)),
-            _ => {}
-        }
-    }
-    Ok((text, finish))
-}
-
-/// Rough token estimate for an arbitrary string, mirroring
-/// `Context::estimated_tokens`'s `CHARS_PER_TOKEN` heuristic (3.5 chars/token).
-fn estimate_tokens(text: &str) -> usize {
-    let chars = text.chars().count();
-    ((chars as f32) / 3.5).ceil() as usize
-}
-
-/// Render the history as a plain-text transcript for the summarization prompt.
-/// Each `Tool`-role message beyond [`TRANSCRIPT_TOOL_MESSAGE_CAP`] chars is
-/// truncated head+tail so one oversized tool output can't blow the
-/// summarizer's own context window.
-fn render_transcript(messages: &[Message]) -> String {
-    let mut out = String::new();
-    for msg in messages {
-        let role = match msg.role {
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-            MessageRole::Tool => "tool",
-        };
-        let text = msg.text();
-        let body = if msg.role == MessageRole::Tool {
-            truncate_head_tail(&text, TRANSCRIPT_TOOL_MESSAGE_CAP)
-        } else {
-            text
-        };
-        out.push_str(&format!("[{role}]\n{body}\n\n"));
-    }
-    out
-}
-
-/// Truncate `text` to at most `cap` chars, keeping the first and last `cap/2`
-/// chars with a marker in between. A no-op under the cap.
-fn truncate_head_tail(text: &str, cap: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= cap {
-        return text.to_string();
-    }
-    let half = cap / 2;
-    let head: String = chars[..half].iter().collect();
-    let tail: String = chars[chars.len() - half..].iter().collect();
-    let dropped = chars.len() - cap;
-    format!("{head}\n... [{dropped} chars truncated] ...\n{tail}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn truncate_head_tail_is_a_noop_under_the_cap() {
-        assert_eq!(truncate_head_tail("short", 100), "short");
-    }
-
-    #[test]
-    fn truncate_head_tail_keeps_head_and_tail() {
-        let text = "a".repeat(50) + &"b".repeat(50);
-        let truncated = truncate_head_tail(&text, 40);
-        assert!(truncated.starts_with(&"a".repeat(20)));
-        assert!(truncated.ends_with(&"b".repeat(20)));
-        assert!(truncated.contains("truncated"));
-    }
 
     /// #560 aux fail-fast follow-up: a resolved `summarize` pin must carry
     /// `RetryConfig::minimal()` so a dead pinned endpoint fails its probe
     /// fast rather than retry-storming — `max_attempts` is the cheapest
     /// field to assert the right shape landed (`RetryConfig` has no
-    /// `PartialEq`).
+    /// `PartialEq`). The pinned arm is also what routes the rendered shape
+    /// (ADR-0202).
     #[test]
     fn aux_backend_carries_minimal_retry_only_when_a_pin_resolves() {
         let cfg = crate::EngineConfig {
@@ -399,8 +332,12 @@ mod tests {
         };
         let mut aux = AuxBackend::for_summarize(&cfg);
         let mut session_llm = entanglement_provider::DummyLlm::default();
-        let (_llm, _model, _generation, retry) = aux.resolve(&mut session_llm, None, None);
-        let retry = retry.expect("a resolved pin must carry the fail-fast retry override");
+        let backend = aux.resolve(&mut session_llm, None, None);
+        assert_eq!(backend.arm, BackendArm::PinnedAux);
+        assert_eq!(backend.model, Some("aux-model"));
+        let retry = backend
+            .retry
+            .expect("a resolved pin must carry the fail-fast retry override");
         assert_eq!(retry.max_attempts, 2);
     }
 
@@ -416,23 +353,13 @@ mod tests {
         };
         let mut aux = AuxBackend::for_summarize(&cfg);
         let mut session_llm = entanglement_provider::DummyLlm::default();
-        let (_llm, _model, _generation, retry) = aux.resolve(&mut session_llm, None, None);
+        let backend = aux.resolve(&mut session_llm, Some("session-model"), None);
+        assert_eq!(backend.arm, BackendArm::Session);
+        assert_eq!(backend.model, Some("session-model"));
         assert!(
-            retry.is_none(),
+            backend.retry.is_none(),
             "the session-fallback path must not override the endpoint's own retry policy"
         );
-    }
-
-    #[test]
-    fn render_transcript_truncates_only_oversized_tool_messages() {
-        let messages = vec![
-            Message::user("short user text"),
-            Message::tool("t1", "x".repeat(5_000)),
-        ];
-        let out = render_transcript(&messages);
-        assert!(out.contains("[user]\nshort user text"));
-        assert!(out.contains("truncated"));
-        assert!(!out.starts_with("[tool]"));
     }
 
     #[test]

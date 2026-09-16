@@ -16,8 +16,8 @@ pub mod session;
 
 pub use context::Context;
 pub use holly::{
-    ConfigError, EngineConfig, Holly, ProfileRegistry, SystemPromptResolver, ToolSpecResolver,
-    WireError, DEFAULT_PROFILE,
+    ConfigError, EngineConfig, Holly, ProfileRegistry, SessionModel, SystemPromptResolver,
+    ToolSpecResolver, WireError, DEFAULT_PROFILE,
 };
 pub use id_gen::{DefaultIdGen, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
@@ -29,12 +29,12 @@ pub use id_gen::{DefaultIdGen, IdGen, IdKind};
 // runtime naming a provider path of its own.
 pub use entanglement_provider::{
     call_endpoint, content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart,
-    DummyLlm, EchoLlm, EndpointMethod, EndpointResponse, GenerationParams, GenerationResolver,
-    HttpClient, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream,
-    McpServerState, Message, MessageRole, ModelEntry, ModelPricing, ModelResolver,
-    ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig, StopReason, ToolAdvertising,
-    ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire, ENDPOINT_RESPONSE_CAP,
-    TOOL_SEARCH_CALL_TOOL,
+    Discovery, DummyLlm, EchoLlm, EndpointMethod, EndpointResponse, GenerationParams,
+    GenerationResolver, HttpClient, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest,
+    LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelEntry, ModelPricing,
+    ModelResolver, ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig, StopReason,
+    ToolAdvertising, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire,
+    ENDPOINT_RESPONSE_CAP, INVOKE_TOOL, TOOL_SEARCH_CALL_TOOL,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so
@@ -54,8 +54,9 @@ pub use entanglement_provider::oauth::{
 pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
-    AgentMode, AgentProfile, AgentState, ApprovalScope, FileChangeKind, InMsg, McpAction,
-    McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo, OperationKind,
-    OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile, ProfileDetail,
-    Question, QuestionOption, Questions, SessionId, SessionInfo, ToolOverlayEntry,
+    AgentMode, AgentProfile, AgentState, ApprovalScope, CompactionMode, FileChangeKind, InMsg,
+    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo,
+    OperationKind, OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile,
+    ProfileDetail, Question, QuestionOption, Questions, SessionId, SessionInfo, ToolEnvelope,
+    ToolOverlayEntry, UsagePurpose,
 };
