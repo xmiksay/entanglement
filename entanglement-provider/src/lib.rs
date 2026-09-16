@@ -47,8 +47,9 @@ pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
-    Catalog, McpServerState, ModelEntry, ModelPricing, ProviderEntry, ProviderMcpServer,
-    ThinkingFormat, ThinkingSpec, ThinkingStyle, ToolAdvertising, Wire,
+    AnthropicModelSpec, Catalog, Discovery, EffortTiers, McpServerState, ModelEntry, ModelPricing,
+    ProviderEntry, ProviderMcpServer, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle,
+    ToolAdvertising, Wire,
 };
 pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus, UserBudget};
 pub use endpoint::{
@@ -60,6 +61,7 @@ pub use llm::{
     EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent, LlmFactory, LlmRequest,
     LlmResponse, LlmStream, ModelConcurrencyResolver, ModelResolver, ReasoningEffort,
     ResolvedModel, StopReason, ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId,
+    INVOKE_TOOL,
 };
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather

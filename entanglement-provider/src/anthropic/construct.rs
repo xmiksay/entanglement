@@ -2,7 +2,7 @@
 //! opt-in, and [`anthropic_factory`] — split out of `mod.rs` along the
 //! 400-line file cap (#684 grew the parent with the bearer request loop).
 
-use crate::catalog::ThinkingStyle;
+use crate::catalog::AnthropicModelSpec;
 use crate::client::HttpClient;
 use crate::{Llm, ModelConcurrencyResolver, WebSearchConfig};
 
@@ -19,8 +19,7 @@ impl AnthropicLlm {
         model_concurrency: ModelConcurrencyResolver,
         web_search: Option<WebSearchConfig>,
         web_search_tool_version: Option<String>,
-        thinking_style: ThinkingStyle,
-        replay_thinking: bool,
+        model_spec: AnthropicModelSpec,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -34,8 +33,7 @@ impl AnthropicLlm {
             model_concurrency,
             web_search,
             web_search_tool_version,
-            thinking_style,
-            replay_thinking,
+            model_spec,
             http,
         }
     }
@@ -57,8 +55,9 @@ impl AnthropicLlm {
 /// per request (`|_| None` disables it, #521, resolved per request rather than
 /// once at construction, #550); `web_search = Some(..)` requests provider-side
 /// web search (#305); `web_search_tool_version` selects the server-tool type
-/// when set (#481); `thinking_style` picks the extended-thinking request shape
-/// the bound model accepts.
+/// when set (#481); `model_spec` carries the bound model's thinking shape,
+/// replay flag, effort tiers and temperature support
+/// (`Catalog::anthropic_model_spec`, resolved once for `default_model`).
 /// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
 /// replacing `x-api-key` on the wire (pass an empty `api_key` then).
 #[allow(clippy::too_many_arguments)]
@@ -72,8 +71,7 @@ pub fn anthropic_factory(
     model_concurrency: ModelConcurrencyResolver,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
-    thinking_style: ThinkingStyle,
-    replay_thinking: bool,
+    model_spec: AnthropicModelSpec,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let mut llm = AnthropicLlm::new(
@@ -85,8 +83,7 @@ pub fn anthropic_factory(
         model_concurrency,
         web_search,
         web_search_tool_version,
-        thinking_style,
-        replay_thinking,
+        model_spec,
         http,
     );
     if let Some(auth) = auth {

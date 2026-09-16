@@ -1045,6 +1045,7 @@ fn inline_thinking_spec() -> ThinkingSpec {
     ThinkingSpec {
         format: ThinkingFormat::InlineTags,
         replay: false,
+        ..ThinkingSpec::default()
     }
 }
 
@@ -1228,6 +1229,7 @@ fn fields_thinking_spec(replay: bool) -> ThinkingSpec {
     ThinkingSpec {
         format: ThinkingFormat::Fields,
         replay,
+        ..ThinkingSpec::default()
     }
 }
 

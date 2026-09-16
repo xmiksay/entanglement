@@ -71,6 +71,9 @@ pub struct OpenAiResponsesLlm {
     rpm: Option<u32>,
     concurrency: Option<usize>,
     model_concurrency: ModelConcurrencyResolver,
+    /// Resolves the request model's thinking facts per request (#550 shape,
+    /// mirroring [`crate::OpenAiLlm`]) — here only the effort clamp is used.
+    thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 }
 
@@ -83,6 +86,7 @@ impl OpenAiResponsesLlm {
         rpm: Option<u32>,
         concurrency: Option<usize>,
         model_concurrency: ModelConcurrencyResolver,
+        thinking_spec: crate::ThinkingSpecResolver,
         http: HttpClient,
     ) -> Self {
         Self {
@@ -93,6 +97,7 @@ impl OpenAiResponsesLlm {
             rpm,
             concurrency,
             model_concurrency,
+            thinking_spec,
             http,
         }
     }
@@ -110,7 +115,8 @@ impl OpenAiResponsesLlm {
 /// knobs this wire doesn't (yet) carry: provider-side web search and the
 /// `prompt_cache_key` hint (neither is part of the P7 scope — see the module
 /// doc; both can be added later without touching the reserved-name contract
-/// above).
+/// above). `thinking_spec` resolves the request model's effort tiers
+/// (`Catalog::thinking_spec_resolver`), clamping `reasoning.effort` per request.
 #[allow(clippy::too_many_arguments)]
 pub fn openai_responses_factory(
     base_url: impl Into<String>,
@@ -120,6 +126,7 @@ pub fn openai_responses_factory(
     rpm: Option<u32>,
     concurrency: Option<usize>,
     model_concurrency: ModelConcurrencyResolver,
+    thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
     let mut llm = OpenAiResponsesLlm::new(
@@ -129,6 +136,7 @@ pub fn openai_responses_factory(
         rpm,
         concurrency,
         model_concurrency,
+        thinking_spec,
         http,
     );
     if let Some(auth) = auth {
@@ -142,7 +150,15 @@ impl Llm for OpenAiResponsesLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
         let model_concurrency = (self.model_concurrency)(&model);
-        let body = request::build_body(&model, req.system, req.messages, req.tools, req.generation);
+        let thinking = (self.thinking_spec)(&model);
+        let body = request::build_body(
+            &model,
+            req.system,
+            req.messages,
+            req.tools,
+            req.generation,
+            thinking,
+        );
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
 
         tracing::debug!(

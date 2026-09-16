@@ -6,7 +6,8 @@ use serde_json::json;
 use super::request::{build_body, convert_messages};
 use super::TOOL_SEARCH_CALL_TOOL;
 use crate::{
-    ContentPart, GenerationParams, Message, MessageRole, ReasoningEffort, ToolCall, ToolSpec,
+    ContentPart, GenerationParams, Message, MessageRole, ReasoningEffort, ThinkingSpec, ToolCall,
+    ToolSpec,
 };
 
 fn msg(role: MessageRole, text: &str) -> Message {
@@ -30,6 +31,7 @@ fn body_carries_instructions_input_and_omits_tools_when_empty() {
         &[msg(MessageRole::User, "hi")],
         &[],
         None,
+        ThinkingSpec::default(),
     );
     assert_eq!(body["model"], "gpt-5.4");
     assert_eq!(body["instructions"], "be helpful");
@@ -40,7 +42,14 @@ fn body_carries_instructions_input_and_omits_tools_when_empty() {
 
 #[test]
 fn empty_system_omits_instructions() {
-    let body = build_body("gpt-5.4", "", &[msg(MessageRole::User, "hi")], &[], None);
+    let body = build_body(
+        "gpt-5.4",
+        "",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        None,
+        ThinkingSpec::default(),
+    );
     assert!(body.get("instructions").is_none());
 }
 
@@ -57,6 +66,7 @@ fn generation_params_map_to_responses_field_names() {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::High),
         }),
+        ThinkingSpec::default(),
     );
     assert_eq!(body["temperature"].as_f64().unwrap(), 0.4_f32 as f64);
     // Responses' field is `max_output_tokens`, never Chat Completions' `max_tokens`.
@@ -70,7 +80,14 @@ fn tools_are_flat_function_entries_with_defer_loading_passthrough() {
     let mut deferred = ToolSpec::new("search_files", "search the workspace");
     deferred.defer_loading = true;
     let kernel = ToolSpec::new("read", "read a file");
-    let body = build_body("gpt-5.4", "", &[], &[kernel, deferred], None);
+    let body = build_body(
+        "gpt-5.4",
+        "",
+        &[],
+        &[kernel, deferred],
+        None,
+        ThinkingSpec::default(),
+    );
     let tools = body["tools"].as_array().unwrap();
     // Flat shape: type/name/description/parameters directly on the entry,
     // never nested under a `function` key (unlike Chat Completions).
@@ -85,13 +102,20 @@ fn tools_are_flat_function_entries_with_defer_loading_passthrough() {
 #[test]
 fn tool_search_entry_is_declared_only_when_a_tool_is_deferred() {
     let plain = ToolSpec::new("read", "read a file");
-    let body = build_body("gpt-5.4", "", &[], &[plain], None);
+    let body = build_body("gpt-5.4", "", &[], &[plain], None, ThinkingSpec::default());
     let tools = body["tools"].as_array().unwrap();
     assert!(!tools.iter().any(|t| t["type"] == "tool_search"));
 
     let mut deferred = ToolSpec::new("search_files", "search the workspace");
     deferred.defer_loading = true;
-    let body = build_body("gpt-5.4", "", &[], &[deferred], None);
+    let body = build_body(
+        "gpt-5.4",
+        "",
+        &[],
+        &[deferred],
+        None,
+        ThinkingSpec::default(),
+    );
     let tools = body["tools"].as_array().unwrap();
     let search = tools
         .iter()
@@ -260,4 +284,29 @@ fn a_provider_search_block_appends_to_assistant_text() {
     let content = items[0]["content"].as_str().unwrap();
     assert!(content.starts_with("here's what I found"));
     assert!(content.contains("[web] rust async"));
+}
+
+#[test]
+fn reasoning_effort_is_clamped_to_the_request_models_tiers() {
+    // ADR-0203 on this wire too: an unaccepted tier snaps to the nearest
+    // listed one (ties down); the empty set sends no `reasoning` object.
+    let spec = |tiers: Vec<ReasoningEffort>| ThinkingSpec {
+        effort_tiers: Some(crate::EffortTiers::from(tiers)),
+        ..ThinkingSpec::default()
+    };
+    let generation = Some(GenerationParams {
+        reasoning_effort: Some(ReasoningEffort::Medium),
+        ..GenerationParams::default()
+    });
+    let body = build_body(
+        "gpt-5.4",
+        "",
+        &[],
+        &[],
+        generation,
+        spec(vec![ReasoningEffort::Low, ReasoningEffort::High]),
+    );
+    assert_eq!(body["reasoning"], json!({ "effort": "low" }));
+    let body = build_body("gpt-5.4", "", &[], &[], generation, spec(vec![]));
+    assert!(body.get("reasoning").is_none());
 }

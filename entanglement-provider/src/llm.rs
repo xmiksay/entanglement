@@ -284,17 +284,53 @@ impl GenerationParams {
     }
 }
 
-/// Coarse reasoning-effort knob (#374): OpenAI's native `reasoning_effort` wire
-/// value (`low|medium|high`, hence `rename_all = "lowercase"` rather than
-/// Rust's usual `PascalCase`). Anthropic and Gemini have no such field — each
-/// client maps it onto a thinking-budget tier instead (documented at their
-/// `build_body`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Coarse reasoning-effort knob (#374): the wire value OpenAI-compat and
+/// Anthropic's adaptive `output_config.effort` both take verbatim
+/// (`low|medium|high|xhigh|max`, hence `rename_all = "lowercase"` rather than
+/// Rust's usual `PascalCase`). Ordered low → max so a model's supported-tier
+/// clamp can pick the nearest neighbour. Wires with no effort concept
+/// (Anthropic's fixed-budget shape, Gemini) map each tier onto a thinking
+/// budget instead (documented at their `build_body`); the two top tiers share
+/// `High`'s budget there — older models have no deeper setting to reach.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    /// Every tier, ascending.
+    pub const ALL: [ReasoningEffort; 5] = [
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+        ReasoningEffort::Max,
+    ];
+
+    /// The wire spelling (`serde`'s lowercase rename), for error text and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::XHigh => "xhigh",
+            ReasoningEffort::Max => "max",
+        }
+    }
+
+    /// Parse the wire spelling, case-insensitively.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|e| e.as_str().eq_ignore_ascii_case(s))
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +411,13 @@ pub struct LlmRequest<'a> {
     /// retry-storming through the LLM-tuned ladder on every call.
     pub retry: Option<crate::client::RetryConfig>,
 }
+
+/// Name of the client-side discovery envelope tool (ADR-0204): `invoke
+/// {name, args}` routes a call to a discovered tool the session never adds to
+/// its `tools` array, so the array — and the provider's cached prefix — stays
+/// stable. Reserved: never a registered tool name. Shared here, in the leaf
+/// crate, because core unwraps the envelope and the runtime advertises it.
+pub const INVOKE_TOOL: &str = "invoke";
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
 /// loop can hold it across `.await` points without borrowing the backend.

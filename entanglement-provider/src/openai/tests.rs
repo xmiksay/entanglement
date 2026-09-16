@@ -497,7 +497,7 @@ fn body_pushes_web_search_tool_when_configured() {
         None,
         Some(&ws),
         None,
-        ThinkingSpec::default(),
+        zai_spec("zai", "glm-5.2"),
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -526,7 +526,7 @@ fn web_search_tool_rides_alongside_function_tools() {
         None,
         Some(&ws),
         None,
-        ThinkingSpec::default(),
+        zai_spec("zai", "glm-5.2"),
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);
@@ -729,6 +729,7 @@ fn inline_spec() -> ThinkingSpec {
     ThinkingSpec {
         format: crate::ThinkingFormat::InlineTags,
         replay: false,
+        ..ThinkingSpec::default()
     }
 }
 
@@ -815,6 +816,7 @@ fn captured_reasoning_block_replays_as_reasoning_content_when_on() {
     let on = ThinkingSpec {
         format: crate::ThinkingFormat::InlineTags,
         replay: true,
+        ..ThinkingSpec::default()
     };
     let a = assistant.clone();
     let out = convert_messages(&[a], on);
@@ -841,6 +843,7 @@ fn foreign_reasoning_block_never_replays_on_the_openai_wire() {
     let on = ThinkingSpec {
         format: crate::ThinkingFormat::InlineTags,
         replay: true,
+        ..ThinkingSpec::default()
     };
     let out = convert_messages(&[assistant], on);
     assert!(out[0].get("reasoning_content").is_none());
@@ -860,8 +863,129 @@ fn multiple_captured_blocks_join_into_one_reasoning_field() {
     let on = ThinkingSpec {
         format: crate::ThinkingFormat::InlineTags,
         replay: true,
+        ..ThinkingSpec::default()
     };
     let out = convert_messages(&[assistant], on);
     assert_eq!(out[0]["reasoning_content"], "a\nb");
     assert_eq!(out[0]["content"], "mid");
+}
+
+// ── z.ai thinking control + effort clamp (ADR-0203) ───────────────────────
+
+/// The per-request spec the catalog resolves for `(provider, model)`.
+fn zai_spec(provider: &str, model: &str) -> ThinkingSpec {
+    crate::Catalog::builtin().thinking_spec_resolver(provider)(model)
+}
+
+fn effort_body(
+    effort: Option<crate::ReasoningEffort>,
+    thinking: ThinkingSpec,
+) -> serde_json::Value {
+    build_body(
+        "m",
+        "sys",
+        &[msg(MessageRole::User, "hi")],
+        &[],
+        Some(GenerationParams {
+            reasoning_effort: effort,
+            ..GenerationParams::default()
+        }),
+        None,
+        None,
+        thinking,
+    )
+}
+
+#[test]
+fn glm_5_3_without_effort_still_enables_thinking_at_its_lowest_tier() {
+    // thinking_required: a `disabled` object would be rejected.
+    let body = effort_body(None, zai_spec("zai", "glm-5.3"));
+    assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    assert_eq!(body["reasoning_effort"], "low");
+}
+
+#[test]
+fn glm_5_3_medium_clamps_down_to_low() {
+    // [low, high, max]: medium is equidistant from low and high — ties round
+    // down, so the model never silently costs more than asked.
+    let body = effort_body(
+        Some(crate::ReasoningEffort::Medium),
+        zai_spec("zai", "glm-5.3"),
+    );
+    assert_eq!(body["reasoning_effort"], "low");
+    assert_eq!(body["thinking"]["type"], "enabled");
+}
+
+#[test]
+fn glm_4_7_enables_thinking_without_an_effort_field() {
+    // effort_tiers: [] — the 4.x family rejects `reasoning_effort`.
+    let body = effort_body(
+        Some(crate::ReasoningEffort::High),
+        zai_spec("zai", "glm-4.7"),
+    );
+    assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn glm_5_2_without_effort_disables_thinking_explicitly() {
+    // Not required, nothing asked: explicit `disabled`, never z.ai's silent
+    // server default of `max`.
+    let body = effort_body(None, zai_spec("zai", "glm-5.2"));
+    assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn zai_paas_emits_the_same_thinking_body_as_the_coding_plan_entry() {
+    for model in ["glm-5.3", "glm-5.2", "glm-4.7"] {
+        for effort in [None, Some(crate::ReasoningEffort::XHigh)] {
+            assert_eq!(
+                effort_body(effort, zai_spec("zai_paas", model)),
+                effort_body(effort, zai_spec("zai", model)),
+                "{model} {effort:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn openai_without_control_never_sends_a_thinking_object() {
+    let spec = zai_spec("openai", "gpt-4o");
+    let body = effort_body(None, spec);
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("reasoning_effort").is_none());
+    let body = effort_body(Some(crate::ReasoningEffort::XHigh), spec);
+    assert!(body.get("thinking").is_none());
+    // No tiers in the catalog ⇒ pass-through.
+    assert_eq!(body["reasoning_effort"], "xhigh");
+}
+
+#[test]
+fn web_search_entry_rides_only_the_zai_dialect() {
+    // OpenAI proper 400s on a non-`function` tool type, and the runtime binds
+    // the same enabled config onto every OpenAI-wire provider.
+    let ws = WebSearchConfig {
+        enabled: true,
+        max_uses: None,
+        allowed_domains: vec![],
+    };
+    let with = |thinking: ThinkingSpec| {
+        build_body(
+            "m",
+            "sys",
+            &[msg(MessageRole::User, "hi")],
+            &[],
+            None,
+            Some(&ws),
+            None,
+            thinking,
+        )
+    };
+    assert!(with(zai_spec("openai", "gpt-4o")).get("tools").is_none());
+    assert!(with(ThinkingSpec::default()).get("tools").is_none());
+    assert_eq!(
+        with(zai_spec("zai_paas", "glm-5.3"))["tools"][0]["type"],
+        "web_search"
+    );
 }

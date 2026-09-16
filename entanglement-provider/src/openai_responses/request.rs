@@ -10,7 +10,9 @@
 //! keyed off [`super::TOOL_SEARCH_CALL_TOOL`] on the assistant side and
 //! [`ContentPart::ToolSearchOutput`] on the reply side.
 
-use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolSpec};
+use crate::{
+    ContentPart, GenerationParams, ImageSource, Message, MessageRole, ThinkingSpec, ToolSpec,
+};
 use serde_json::{json, Value};
 
 use super::TOOL_SEARCH_CALL_TOOL;
@@ -27,6 +29,7 @@ pub(super) fn build_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
+    thinking: ThinkingSpec,
 ) -> Value {
     let mut body = json!({
         "model": model,
@@ -44,6 +47,7 @@ pub(super) fn build_body(
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
     }
+    let requested_effort = generation.as_ref().and_then(|g| g.reasoning_effort);
     if let Some(g) = generation {
         if let Some(temp) = g.temperature {
             body["temperature"] = json!(temp);
@@ -53,11 +57,12 @@ pub(super) fn build_body(
         if let Some(max) = g.max_output_tokens {
             body["max_output_tokens"] = json!(max);
         }
-        // Responses' field is a `reasoning` object, not a flat
-        // `reasoning_effort` string — same knob, different wire shape.
-        if let Some(effort) = g.reasoning_effort {
-            body["reasoning"] = json!({ "effort": effort });
-        }
+    }
+    // Responses' field is a `reasoning` object, not a flat `reasoning_effort`
+    // string — same knob, different wire shape — carrying only a tier the
+    // request's model accepts (ADR-0203's per-model clamp).
+    if let Some(effort) = thinking.resolve_effort(requested_effort).effort {
+        body["reasoning"] = json!({ "effort": effort });
     }
     body
 }

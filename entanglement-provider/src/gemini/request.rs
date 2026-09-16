@@ -98,7 +98,10 @@ fn generation_config(generation: Option<GenerationParams>) -> Option<Value> {
         cfg.insert("maxOutputTokens".into(), json!(max));
     }
     let budget = g.thinking_budget_tokens.or(match g.reasoning_effort {
-        Some(ReasoningEffort::High) => Some(HIGH_EFFORT_THINKING_BUDGET),
+        // Gemini has no effort ladder: the two top tiers share `High`'s budget.
+        Some(ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max) => {
+            Some(HIGH_EFFORT_THINKING_BUDGET)
+        }
         Some(ReasoningEffort::Medium) => Some(MEDIUM_EFFORT_THINKING_BUDGET),
         Some(ReasoningEffort::Low) | None => None,
     });
