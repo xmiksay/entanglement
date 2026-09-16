@@ -43,7 +43,7 @@ use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use host::{BashTool, CallTool, ReadRawTool};
+use host::{BashTool, CallTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
 use pipe::pipe;
 use run::run_one;
 use session_store::{integrity_gap, list_sessions, pair_records, read};
@@ -253,14 +253,24 @@ async fn build_config(
         http_client.clone(),
     ));
     cfg.tool_specs = tools.read().unwrap().specs();
-    // `read_raw` (rhai-only, see `script.rs`'s `parse_json`/`parse_yaml`)
-    // registers *after* the specs snapshot above: present in `tools` for
-    // execution (the rhai bridge routes through the same `ToolRegistry`), but
-    // never advertised as a standalone model-callable tool.
+    // `read_raw` and the script-facing search variants (rhai-only — see
+    // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
+    // bindings, ADR-0206) register *after* the specs snapshot above: present
+    // in `tools` for execution (the rhai bridge routes through the same
+    // `ToolRegistry`), but never advertised as standalone model-callable
+    // tools.
     tools
         .write()
         .unwrap()
         .register(ReadRawTool::new(root.clone()));
+    tools
+        .write()
+        .unwrap()
+        .register(GlobJsonTool::new(root.clone()));
+    tools
+        .write()
+        .unwrap()
+        .register(GrepJsonTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
     // the model. Per-profile spawn control (#119, ADR-0040) makes the family

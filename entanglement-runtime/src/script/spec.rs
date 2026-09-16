@@ -34,11 +34,14 @@ Host I/O bindings — each passes the same permission check as the equivalent to
   read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`)
   glob(pattern) -> matching paths
   grep(pattern) / grep(pattern, path) -> matching lines
+  glob_json(pattern) / glob_json(pattern, exclude) -> #{files: path-string array, notices: string array}; same walk as glob, structured (empty files + a notice is the zero-match shape)
+  grep_json(pattern) / grep_json(pattern, path) -> #{matches: {path, lineno, line} record array, notices: string array}; same scan as grep, structured
   edit(path, old, new) / edit(path, old, new, replace_all)
   write(path, content)
   exec(command) / exec(command, args) / exec(command, args, workdir) -> argv exec, no shell; graded as the `call` tool (spelled `exec` because `call` is a reserved Rhai keyword)
   bash(command) / bash(command, workdir) -> sh -c; bound only when the host `bash` tool is enabled, else an unknown-function error
   workdir is what a workdir-scoped permission rule matches; an exec/bash timeout is clamped to the script's own remaining budget.
+  glob_json/grep_json grade and mask as glob/grep — a structured-output escape hatch is not a permission escape hatch; prefer them over hand-splitting glob/grep's newline text.
 
 Pure converters — no IO, no permission check:
   parse_json(text) / to_json(value) / parse_yaml(text) / to_yaml(value); parse_* throws on invalid input; JSON/YAML null becomes ().
@@ -132,6 +135,7 @@ mod tests {
             .map(|tool| if tool == "call" { "exec" } else { tool })
             .collect();
         names.push("read_raw");
+        names.extend(["glob_json", "grep_json"]);
         names.extend(DATA_FUNCTIONS);
         names
     }
@@ -145,6 +149,8 @@ mod tests {
             "read_raw" => r#"read_raw("f")"#,
             "glob" => r#"glob("*")"#,
             "grep" => r#"grep("x")"#,
+            "glob_json" => r#"glob_json("*")"#,
+            "grep_json" => r#"grep_json("x")"#,
             "edit" => r#"edit("f", "a", "b")"#,
             "write" => r#"write("f", "c")"#,
             "exec" => r#"exec("echo")"#,

@@ -223,9 +223,11 @@ impl BindingPolicy {
     /// [`crate::host::ReadRawTool`]), so without this alias a profile that
     /// restricts `read` would be silently bypassed by a script reaching for
     /// the unlabeled raw path instead. The same alias applies to the overlay
-    /// lookup, for the same reason.
+    /// lookup, for the same reason. `glob_json`/`grep_json` alias `glob`/
+    /// `grep` identically (ADR-0206) — a structured-output escape hatch must
+    /// not be a permission escape hatch.
     fn decide(&self, tool: &'static str, input: &str) -> Decision {
-        let tool = if tool == "read_raw" { "read" } else { tool };
+        let tool = graded_name(tool);
         if self.masked.contains(tool) {
             return Decision::Masked;
         }
@@ -253,6 +255,23 @@ impl BindingPolicy {
             }),
         };
         Decision::Perm(perm)
+    }
+}
+
+/// The mask/grade identity of a binding call: script-facing variant names
+/// resolve to the model-facing tool they ride on — `read_raw` → `read`
+/// (ADR-0098) and `glob_json`/`grep_json` → `glob`/`grep` (ADR-0206). A
+/// variant is never advertised as its own tool, so a profile can only mean
+/// the alias target when it masks or grades its family; the mapping lives
+/// here (not in `BINDING_TOOLS`) because the *bridge* still dispatches the
+/// literal variant name — [`crate::host::GlobJsonTool`] etc. — this is
+/// purely the policy identity.
+fn graded_name(tool: &'static str) -> &'static str {
+    match tool {
+        "read_raw" => "read",
+        "glob_json" => "glob",
+        "grep_json" => "grep",
+        other => other,
     }
 }
 
@@ -857,6 +876,40 @@ fn register_bindings(
             serde_json::json!({ "pattern": pattern, "path": path }),
         )
     });
+    // Structured search bindings (ADR-0206): same permission grading and
+    // same underlying walk/scan as `glob`/`grep` (dispatched to the
+    // script-facing variant tools), but the result arrives as a parsed Rhai
+    // value — `#{files: […]}` / `#{matches: […], notices: […]}` — not a
+    // newline-joined string. The prose tools' text is model-facing; a script
+    // consuming it had to hand-parse, and Rhai's string indexing (chars, not
+    // lines) turned every mistake into a wrong-but-not-error result.
+    let t = tx.clone();
+    engine.register_fn("glob_json", move |pattern: &str| {
+        call_binding_dynamic(&t, "glob_json", serde_json::json!({ "pattern": pattern }))
+    });
+    let t = tx.clone();
+    engine.register_fn("glob_json", move |pattern: &str, exclude: rhai::Array| {
+        call_binding_dynamic(
+            &t,
+            "glob_json",
+            serde_json::json!({
+                "pattern": pattern,
+                "exclude": exclude.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+            }),
+        )
+    });
+    let t = tx.clone();
+    engine.register_fn("grep_json", move |pattern: &str| {
+        call_binding_dynamic(&t, "grep_json", serde_json::json!({ "pattern": pattern }))
+    });
+    let t = tx.clone();
+    engine.register_fn("grep_json", move |pattern: &str, path: &str| {
+        call_binding_dynamic(
+            &t,
+            "grep_json",
+            serde_json::json!({ "pattern": pattern, "path": path }),
+        )
+    });
     let t = tx.clone();
     engine.register_fn("edit", move |path: &str, old: &str, new: &str| {
         call_binding(
@@ -1000,6 +1053,31 @@ fn call_binding(
 
 fn runtime_err(msg: &str) -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorRuntime(msg.into(), Position::NONE))
+}
+
+/// [`call_binding`] for the structured search variants (ADR-0206): the tool
+/// returns a JSON document, so the reply is parsed into a Rhai value here —
+/// `glob_json` yields `#{files: […], notices: […]}`, `grep_json` a
+/// `#{matches: […], notices: […]}` map — instead of passing the raw string
+/// through. Shares the bridge and permission path exactly (`graded_name`
+/// handles the policy identity); only the return shape differs. A reply that
+/// fails to parse is a binding failure (catchable with `try`/`catch`), not a
+/// string the script would have to defensively parse itself.
+fn call_binding_dynamic(
+    tx: &UnboundedSender<BindingCall>,
+    tool: &'static str,
+    input: serde_json::Value,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    let text = call_binding(tx, tool, input)?;
+    rhai::serde::to_dynamic(
+        &serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|e| runtime_err(&format!("binding `{tool}` returned malformed JSON: {e}")))?,
+    )
+    .map_err(|e| {
+        runtime_err(&format!(
+            "binding `{tool}` result not Rhai-representable: {e}"
+        ))
+    })
 }
 
 /// Compose the tool output: captured `print` lines, then the serialized return

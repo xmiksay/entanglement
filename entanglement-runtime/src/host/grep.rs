@@ -10,7 +10,7 @@ use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -22,16 +22,99 @@ use std::sync::Arc;
 /// though it has nothing to do with how big the matched-lines output is
 /// (ADR-0091, superseding the grep clause of ADR-0008 point 4). A file over
 /// this cap is reported in a skip notice rather than silently dropped.
-const MAX_SCAN_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// Cap on how many skipped-file entries the skip notice lists per reason
 /// before collapsing the rest into an "and N more" tail.
 const MAX_SKIP_PREVIEW: usize = 20;
 
 /// Why a file was excluded from the scan.
-enum SkipReason {
+pub(crate) enum SkipReason {
     TooLarge(u64),
     Binary,
+}
+
+/// One content match, root-relative — the record shape both `grep` (rendered
+/// as `path:lineno:line` prose) and the script-facing `grep_json` (rendered
+/// as a JSON object, ADR-0206) build on.
+pub(crate) struct MatchRecord {
+    pub path: String,
+    pub lineno: usize,
+    pub line: String,
+}
+
+/// What [`scan_matches`] found.
+pub(crate) struct ScanResult {
+    pub matches: Vec<MatchRecord>,
+    pub skipped: Vec<(PathBuf, SkipReason)>,
+    /// True iff scanning stopped at [`super::MAX_RESULTS`] matches.
+    pub hit_match_cap: bool,
+}
+
+/// Compile a `grep` pattern — shared by `grep` and `grep_json` (ADR-0206) so
+/// flags and error text can never drift between the two.
+pub(crate) fn compile_regex(pattern: &str, case_insensitive: bool) -> Result<Regex> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .with_context(|| format!("invalid regex: {pattern}"))
+}
+
+/// The per-file scan loop — shared by `grep` and `grep_json` (ADR-0206) so
+/// behavioral parity (scan cap, binary sniff, match cap, walk order) is by
+/// construction rather than by mirrored code. Drains `list.files`.
+pub(crate) async fn scan_matches(
+    root: &Path,
+    list: &mut FileList,
+    re: &Regex,
+) -> Result<ScanResult> {
+    let mut matches: Vec<MatchRecord> = Vec::new();
+    let mut skipped: Vec<(PathBuf, SkipReason)> = Vec::new();
+    let mut hit_match_cap = false;
+    for p in list.files.drain(..) {
+        // Bound per-file work independent of the output cap (ADR-0091):
+        // skip files over MAX_SCAN_BYTES rather than the far smaller
+        // result-string cap.
+        let len = match std::fs::metadata(&p) {
+            Ok(m) => m.len(),
+            Err(_) => continue,
+        };
+        if len > MAX_SCAN_BYTES {
+            skipped.push((p, SkipReason::TooLarge(len)));
+            continue;
+        }
+        let bytes = tokio::fs::read(&p)
+            .await
+            .with_context(|| format!("reading {p:?}"))?;
+        if bytes.contains(&0) {
+            skipped.push((p, SkipReason::Binary));
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        for (lineno, line) in text.lines().enumerate() {
+            if re.is_match(line) {
+                let rel = p.strip_prefix(root).unwrap_or(&p);
+                matches.push(MatchRecord {
+                    path: rel.to_string_lossy().into_owned(),
+                    lineno: lineno + 1,
+                    line: line.to_string(),
+                });
+                if matches.len() >= super::MAX_RESULTS {
+                    hit_match_cap = true;
+                    return Ok(ScanResult {
+                        matches,
+                        skipped,
+                        hit_match_cap,
+                    });
+                }
+            }
+        }
+    }
+    Ok(ScanResult {
+        matches,
+        skipped,
+        hit_match_cap,
+    })
 }
 
 pub struct GrepTool {
@@ -174,10 +257,7 @@ impl Tool for GrepTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: GrepInput = serde_json::from_str(input)
             .context("invalid input to grep: expected {\"pattern\": string, ...}")?;
-        let re = RegexBuilder::new(&parsed.pattern)
-            .case_insensitive(parsed.case_insensitive)
-            .build()
-            .with_context(|| format!("invalid regex: {}", parsed.pattern))?;
+        let re = compile_regex(&parsed.pattern, parsed.case_insensitive)?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
         let mut list = list_files_with_extra_roots(
             &self.root,
@@ -186,49 +266,10 @@ impl Tool for GrepTool {
             self.extra_roots.as_deref(),
         )?;
         let scanned = list.files.len();
+        let scan = scan_matches(&self.root, &mut list, &re).await?;
         let mut out = String::new();
-        let mut matches = 0usize;
-        let mut skipped: Vec<(PathBuf, SkipReason)> = Vec::new();
-        for p in list.files.drain(..) {
-            // Bound per-file work independent of the output cap (ADR-0091):
-            // skip files over MAX_SCAN_BYTES rather than the far smaller
-            // result-string cap.
-            let len = match std::fs::metadata(&p) {
-                Ok(m) => m.len(),
-                Err(_) => continue,
-            };
-            if len > MAX_SCAN_BYTES {
-                skipped.push((p, SkipReason::TooLarge(len)));
-                continue;
-            }
-            let bytes = tokio::fs::read(&p)
-                .await
-                .with_context(|| format!("reading {:?}", p))?;
-            if bytes.contains(&0) {
-                skipped.push((p, SkipReason::Binary));
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            for (lineno, line) in text.lines().enumerate() {
-                if re.is_match(line) {
-                    let rel = p.strip_prefix(&self.root).unwrap_or(&p);
-                    out.push_str(&format!(
-                        "{}:{}:{}\n",
-                        rel.to_string_lossy(),
-                        lineno + 1,
-                        line
-                    ));
-                    matches += 1;
-                    if matches >= super::MAX_RESULTS {
-                        // Truncate before appending so the cap notice
-                        // survives the head-only byte cut.
-                        let mut result =
-                            truncate_output(append_skip_notice(out, &skipped, &self.root));
-                        result.push_str("\n[match cap: first 1000 matches shown]");
-                        return Ok(result);
-                    }
-                }
-            }
+        for m in &scan.matches {
+            out.push_str(&format!("{}:{}:{}\n", m.path, m.lineno, m.line));
         }
         if out.is_empty() {
             // A zero-result call always explains itself (ADR-0150): name the
@@ -238,12 +279,15 @@ impl Tool for GrepTool {
             if list.scan_capped {
                 msg.push_str("\n[file walk stopped after scanning 100000 entries — narrow `path`]");
             }
-            if !skipped.is_empty() {
-                msg = append_skip_notice(msg, &skipped, &self.root);
+            if !scan.skipped.is_empty() {
+                msg = append_skip_notice(msg, &scan.skipped, &self.root);
             }
             return Ok(msg);
         }
-        let mut result = truncate_output(append_skip_notice(out, &skipped, &self.root));
+        let mut result = truncate_output(append_skip_notice(out, &scan.skipped, &self.root));
+        if scan.hit_match_cap {
+            result.push_str("\n[match cap: first 1000 matches shown]");
+        }
         if list.capped {
             result.push_str("\n[file walk capped at 1000 files — narrow `path`]");
         }

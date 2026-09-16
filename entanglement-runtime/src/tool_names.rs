@@ -208,6 +208,8 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     UPDATE_TASKS_TOOL,
     LOAD_SKILL_TOOL,
     "read_raw",
+    "glob_json",
+    "grep_json",
     "mcp_enable",
     EXPLORE_TOOL,
     DESCRIBE_TOOL,

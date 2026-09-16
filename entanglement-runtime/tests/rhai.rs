@@ -19,7 +19,8 @@ use entanglement_core::{
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{
-    host_tools, host_tools_with_extra_roots, BashTool, CallTool, ReadRawTool,
+    host_tools, host_tools_with_extra_roots, BashTool, CallTool, GlobJsonTool, GrepJsonTool,
+    ReadRawTool,
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
@@ -108,11 +109,14 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    // `read_raw` mirrors main.rs's `build_config`: registered into the same
-    // registry the executor/rhai bridge use, but never advertised as a
-    // standalone tool (it isn't in any `tool_specs`/`cfg.tool_specs` here).
+    // `read_raw` + the script-facing search variants mirror main.rs's
+    // `build_config`: registered into the same registry the executor/rhai
+    // bridge use, but never advertised as standalone tools (they aren't in
+    // any `tool_specs`/`cfg.tool_specs` here).
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
+    tools.register(GlobJsonTool::new(root.to_path_buf()));
+    tools.register(GrepJsonTool::new(root.to_path_buf()));
     let _executor = spawn_tool_executor(
         &holly,
         tools,
@@ -265,6 +269,32 @@ fn spawn_with_rhai_escape(
 
 /// A single primary profile with a caller-shaped permission, advertising every
 /// tool (no mask) so binding behavior is decided by permission alone.
+/// [`one_profile`] with an explicit tool mask — the ADR-0206 alias test
+/// needs a profile that masks `glob` (and with it `glob_json`).
+fn one_profile_with_tools(
+    name: &str,
+    permission: PermissionProfile,
+    tools: Option<Vec<String>>,
+) -> ProfileRegistry {
+    let mut profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    profiles.insert(AgentProfile {
+        name: name.into(),
+        description: String::new(),
+        mode: AgentMode::Primary,
+        system_prompt: String::new(),
+        model: None,
+        provider: None,
+        permission,
+        tools,
+        disallowed_tools: Vec::new(),
+        can_spawn: None,
+        spawnable_agents: None,
+        sandbox: None,
+    });
+    profiles
+}
+
 fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
@@ -716,6 +746,107 @@ async fn parse_json_composes_with_the_read_raw_binding() {
     assert_eq!(
         out, "=> 42",
         "read_raw() -> parse_json() -> field access -> arithmetic"
+    );
+}
+
+/// ADR-0206: the structured search bindings hand scripts arrays and maps, not
+/// newline-joined text — `glob_json(...).files` iterates whole path strings
+/// (iterating `glob(...)`'s text would yield single characters).
+#[tokio::test]
+async fn glob_json_returns_an_iterable_files_array() {
+    let dir = TempDir::new("glob-json");
+    std::fs::write(dir.path.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.path.as_path().join("b.rs"), "fn b() {}\n").unwrap();
+    std::fs::write(dir.path.join("c.md"), "doc\n").unwrap();
+    let holly = spawn_with_rhai(
+        r#"let r = glob_json("*.rs"); r.files.len() + ":isize-cast:" + r.files[1]"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("b.rs") && out.contains("2"),
+        "glob_json files array: {out}"
+    );
+}
+
+/// ADR-0206: `grep_json` match records are addressable maps.
+#[tokio::test]
+async fn grep_json_returns_addressable_match_records() {
+    let dir = TempDir::new("grep-json");
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::write(
+        dir.path.join("src").join("m.rs"),
+        "fn one() {}\nfn two() {}\n",
+    )
+    .unwrap();
+    let holly = spawn_with_rhai(
+        r#"let m = grep_json("fn two").matches[0]; m["lineno"] + m["path"] + m["line"]"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("2") && out.contains("src/m.rs") && out.contains("fn two()"),
+        "grep_json match record: {out}"
+    );
+}
+
+/// ADR-0206: a structured-output escape hatch is not a permission escape
+/// hatch — a profile that masks `glob` masks `glob_json` too (the
+/// `graded_name` alias), and a denied profile denies it.
+#[tokio::test]
+async fn glob_json_is_masked_when_glob_is_masked() {
+    let dir = TempDir::new("glob-json-mask");
+    std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
+    let profiles = one_profile_with_tools(
+        "build",
+        PermissionProfile::new(Permission::Allow),
+        Some(vec!["read".into(), "rhai".into()]),
+    );
+    let holly = spawn_with_rhai(r#"glob_json("*.rs").files.len()"#, &dir.path, profiles);
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("restricted by profile"),
+        "masked glob_json must surface the mask error: {out}"
+    );
+}
+
+/// ADR-0206: the zero-match shape is an empty array plus a notice — the
+/// script still learns *why* nothing matched without parsing prose.
+#[tokio::test]
+async fn glob_json_zero_match_carries_a_notice() {
+    let dir = TempDir::new("glob-json-zero");
+    std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
+    let holly = spawn_with_rhai(
+        r#"let r = glob_json("*.zzz"); r.files.len() + " notices: " + r.notices.len()"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
+    );
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    prompt(&holly, &sid, "build").await;
+    let events = collect(sub, &sid).await;
+
+    let out = rhai_output(&events).expect("expected rhai output");
+    assert!(
+        out.contains("0") && out.contains("notices: 1"),
+        "zero-match shape: {out}"
     );
 }
 

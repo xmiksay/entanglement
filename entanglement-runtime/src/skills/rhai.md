@@ -32,6 +32,14 @@ instead of aborting.
   not a distinct permission surface.
 - `glob(pattern)`
 - `grep(pattern)`, `grep(pattern, path)`
+- `glob_json(pattern)`, `glob_json(pattern, exclude)` — the same walk as
+  `glob`, but structured: returns `#{files: […], notices: […]}` (an array of
+  path strings + diagnostics) instead of newline-joined text (ADR-0206).
+  Prefer it over `glob` whenever the script consumes the result rather than
+  echoing it.
+- `grep_json(pattern)`, `grep_json(pattern, path)` — the same scan as
+  `grep`, structured: returns `#{matches: […], notices: […]}` where each
+  match is `#{path: …, lineno: …, line: …}` (ADR-0206).
 - `edit(path, old, new)`, `edit(path, old, new, replace_all)`
 - `write(path, content)`
 - `exec(command)`, `exec(command, args)`, `exec(command, args, workdir)` —
