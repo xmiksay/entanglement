@@ -131,13 +131,17 @@ not a user-visible knob:
   fresh every round) plus a session-keyed discovered-set threaded through it,
   reusing the shape ADR-0193's WIP already built for this purpose.
 - **`anthropic_native`**: non-kernel tools are declared with
-  `defer_loading: true` — the full tool definition is still sent in `tools`
-  on every request (Anthropic's API needs it server-side to run search and
-  expand references), but it is stripped from the rendered prompt and the
-  cache-key computation until discovered, so it never enters the cached
-  prefix. `describe()`'s result is a standard `tool_result` carrying
-  `tool_reference` content blocks, which the API auto-expands into the full
-  definition — this is *client-executed* custom search (§1.8 of the wire
+  `defer_loading: true` and **stay deferred for the whole session**, discovered
+  or not — the full tool definition is still sent in `tools` on every request
+  (Anthropic's API needs it server-side to run search and expand references),
+  but it is stripped from the rendered prompt and the cache-key computation,
+  so it never enters the cached prefix. Delivery is the transcript's
+  `tool_reference` block: `describe()`'s result is a standard `tool_result`
+  carrying one reference per loaded tool plus a one-line list of the names
+  loaded (no schema text), and the API keeps each reference expanded into the
+  full definition for as long as it stays in history. Un-deferring a
+  discovered tool would rewrite the cached `tools` prefix once per discovery
+  (amended by [ADR-0202](0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §1). This is *client-executed* custom search (§1.8 of the wire
   reference), not Anthropic's server-side `tool_search_tool_regex`/`_bm25`
   tools, because the catalog `describe` searches is session/project-state
   dependent in ways a server-side regex/BM25 tool over a static list is not.
@@ -147,7 +151,10 @@ not a user-visible knob:
   "tool_search", "execution": "client"}` plus `defer_loading` on function
   tools). The model emits a `tool_search_call`; the runtime performs the
   lookup and answers with a `tool_search_output` mapped onto the same
-  `explore`/`describe` semantics.
+  `explore`/`describe` semantics. As on `anthropic_native`, a discovered tool
+  stays `defer_loading` for the session: the `tool_search_output` item in
+  history is the delivery, and un-deferring would rewrite the cached tools
+  prefix once per discovery (ADR-0202 §1).
 
 ### 4. Discovery pair — `explore` / `describe`
 

@@ -46,6 +46,7 @@ make inspect       # resolved prompt/agents/skills/config, no engine (ARGS='prom
 make install       # install the `skutter` binary into $CARGO_HOME/bin
 make test          # unit + integration
 make test-unit | make test-integration
+make test-live     # opt-in live z.ai probes (ZAI_API_KEY): tool discovery + prompt cache facts
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
@@ -70,10 +71,11 @@ first). No key → `EchoLlm`. Full detail (clients, catalog, resilience):
 
 | `ENTANGLEMENT_PROVIDER` | wire | key env | model env (default) | base env |
 | --- | --- | --- | --- | --- |
-| `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.2`) | `ZAI_API_BASE` (Coding Plan) |
+| `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.3`) | `ZAI_API_BASE` (Coding Plan endpoint) |
+| `zai_paas` | OpenAI-compat | `ZAI_API_KEY` | `ZAI_PAAS_MODEL` (`glm-5.3`) | `ZAI_PAAS_API_BASE` (pay-as-you-go endpoint) |
 | `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` (or legacy `OLLAMA_BASE`) |
-| `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-4-5`) | — |
+| `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) | — |
 | `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
 | `openai_responses` (opt-in) | OpenAI Responses API — client-executed `tool_search`, ADR-0196 §3 | `OPENAI_API_KEY` | `gpt-5.4` | — |
 
@@ -95,7 +97,20 @@ shape — the adaptive form is mandatory on current models, the fixed-budget for
 back; [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)), plus
 `thinking_format` (how a model emits thinking on the OpenAI-compat wire —
 `inline_tags` for the parser-less `<think>…</think>` servers,
-[ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)).
+[ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)), and
+`discovery` (`append`/`native_first`/`invoke`, client-side discovery,
+ADR-0204; precedence `config.yml` `discovery[<provider>]` > catalog model >
+catalog provider > `append`, no env var by design), plus the precision knobs: `effort_tiers` (the `low|medium|high|xhigh|max` tiers a model
+accepts — a request's effort is clamped to the nearest, ties downward; `[]`
+sends no effort field), `thinking_required` (never sent a thinking-off shape),
+`supports_temperature` enforced at the wire, and provider-level
+`thinking_control: zai` (z.ai's explicit `thinking` object; GLM-5.x defaults
+on at `high`). The Anthropic client binds its model facts
+(`AnthropicModelSpec`) at construction, so a `model:`-only pin under a
+different id uses the default model's facts. Two z.ai entries share one key:
+`zai` (Coding Plan, auto-detect winner, carries the bundled MCP servers) and
+`zai_paas` (pay-as-you-go)
+([ADR-0203](../docs/adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)).
 Precedence: **env > user YAML > embedded defaults**.
 
 Resilience is **per-endpoint** (keyed by a normalized base URL + a stable
@@ -114,8 +129,8 @@ feature that reads it):
 
 | Env var | Purpose |
 | --- | --- |
-| `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
-| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base (the catalog `key_env`); the base also accepts the legacy `<NAME>_BASE` spelling (`_API_BASE` wins) |
+| `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`zai_paas`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
+| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base; `<NAME>` is the uppercased catalog entry name (`ZAI_PAAS_MODEL`), the key var is the entry's `key_env`; the base also accepts the legacy `<NAME>_BASE` spelling (`_API_BASE` wins) |
 | `<NAME>_RPM` / `<NAME>_CONCURRENCY` | per-provider endpoint RPM / in-flight cap (#414), overriding the catalog |
 | `ENTANGLEMENT_MAX_CONCURRENCY` | last-resort process-wide concurrency override (default 3) |
 | `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` | opt out of cross-process RPM/concurrency/cool-down sharing (#523) |
@@ -161,7 +176,9 @@ never here**; each bullet is the claim + where to read it:
   carry `is_error`/`duration_ms` as a **structured side channel** alongside the
   still-unchanged text `content`/`output` (#636, ADR-0176) — denied/masked/
   refused/unknown-tool/errored calls set `is_error`; `duration_ms` is measured
-  once, generically, around the whole host-tool dispatch — and `exit_code`
+  once, generically, around the whole host-tool dispatch — an optional
+  `envelope` carrying the call exactly as the model emitted it when core
+  unwrapped an `invoke` (ADR-0204; replay rebuilds from it) — and `exit_code`
   (#681, ADR-0186): a `bash`/`call` foreground exit (or a `poll` observing a
   job exit) as a real field via the defaulted `Tool::run_with_meta`, `None`
   for everything else incl. killed processes, orthogonal to `is_error`.
@@ -171,14 +188,27 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md).
 - **The advertised tool surface is stable within a session**: core advertises
   exactly what the resolver yields for the session's `ToolAdvertising` mode
-  (`full`/`tool_search`, default `tool_search`, per-session, pinned at
-  session start, kept across `SetModel` — `ENTANGLEMENT_TOOL_ADVERTISING` >
+  (`full`/`tool_search`, default `tool_search`, per-session, pinned by the
+  tool-spec resolver at its first resolution — never off a broadcast —
+  kept across `SetModel`, re-pinnable live only via the TUI `/set` dialog — `ENTANGLEMENT_TOOL_ADVERTISING` >
   `config.yml` `tool_advertising` > catalog > default). Under `full`, every
-  spec the config/resolver provides; under `tool_search`, a lean kernel plus
-  the always-on, non-maskable `explore`/`describe` discovery pair, growing
-  only **append-only** as `describe()` calls land (`client_side` encoding)
+  spec the config/resolver provides **at session start** (tools enabled
+  later stay discoverable until described, then append once; a removed tool
+  stays advertised and declines at dispatch); under `tool_search`, a lean kernel plus
+  the always-on, non-maskable `explore`/`describe` discovery pair; on
+  `client_side`, per the catalog `discovery` strategy pinned with the
+  mode at first resolution, `append` grows **append-only** as `describe()` calls land while
+  `native_first`/`invoke` add one `invoke {name, args}` kernel spec and never
+  change the array (core unwraps the envelope for events and dispatch but
+  keeps the model's own call in `Context`; the runtime declines a malformed
+  one, [ADR-0204](../docs/adr/0204-invoke-fallback-for-client-side-discovery.md)),
   or via each wire's own `defer_loading`/`tool_search` primitive
-  (`anthropic_native`/`responses_native`) — never removed, never reordered.
+  (`anthropic_native`/`responses_native`, where a discovered tool *stays*
+  deferred for the session and arrives through the transcript's reference
+  block — never an un-defer, [ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md))
+  — never removed, never reordered. Enabling a tool (overlay or live MCP
+  enable) never changes the array by itself; only a delivered schema can
+  (ADR-0204).
   Either way the profile mask, session tool overlay and skill `allowed_tools`
   no longer filter advertisement, they are enforced *only* at the runtime's
   dispatch gate — a mask miss now **parks an approval** (attributed to the
@@ -239,11 +269,19 @@ never here**; each bullet is the claim + where to read it:
   [engine](../docs/architecture/engine.md),
   [heads & persistence](../docs/architecture/heads-and-persistence.md),
   [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)/[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md).
-- **Compaction**: manual `/compact` is a `Oneshot` op that forks a successor
-  session (copy-on-write, keep-tail) and retires the source; auto-compaction on
-  overflow (`auto_compact`, default on) mutates the live context in place; the
-  prune-only fallback stays silent by design. [engine](../docs/architecture/engine.md),
-  [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)/[ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)/[ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)/[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)/[ADR-0110](../docs/adr/0110-compaction-successor-closes-predecessor.md)/[ADR-0121](../docs/adr/0121-prune-only-compact-stays-silent.md).
+- **Compaction always forks** ([ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)):
+  manual `/compact`, auto-compaction on overflow (`auto_compact`, default on)
+  and the prune-only fallback each fork a successor session (copy-on-write,
+  keep-tail) and retire the source unchanged; a mid-turn fork carries the
+  parked batch into the successor. No path rewrites a live context, so every
+  log replays exactly. On the session's own backend the
+  summary request replays the session's system + tools + head verbatim and the
+  session cache key — byte-identical to a turn, so it reads the cached prefix;
+  only its instruction forbids tools, and a tool call falls back once to the
+  rendered transcript (also used for a pinned aux model or a head that
+  exceeds the real window; ADR-0202). `OutEvent::Usage.purpose` tags it
+  `compaction`. [engine](../docs/architecture/engine.md),
+  [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)/[ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)/[ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)/[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)/[ADR-0110](../docs/adr/0110-compaction-successor-closes-predecessor.md)/[ADR-0121](../docs/adr/0121-prune-only-compact-stays-silent.md)/[ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md).
 - **Session lifecycle**: hibernation is eviction-not-termination (resume
   replays the log, cascading over the spawn sub-tree); an optional idle TTL
   auto-hibernates settled roots; `PauseSession`/`ResumeSession` hold a session
@@ -348,8 +386,9 @@ never here**; each bullet is the claim + where to read it:
   `Context`), `ContentPart::Reasoning` + `ReasoningBlock` replays. Anthropic
   requires the signed thinking block back on a parked turn's final assistant
   message; capture is unconditional, replay is per-model
-  (`ModelEntry::replay_thinking`), and a foreign provider's block is dropped, not
-  degraded to text. [provider](../docs/architecture/provider.md),
+  (`ModelEntry::replay_thinking`) and covers **every** assistant turn (stripping
+  earlier blocks edits history on preserved-thinking models, ADR-0202), and a
+  foreign provider's block is dropped, not degraded to text. [provider](../docs/architecture/provider.md),
   [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
 - **Multi-user mode is an embedder library API** (`UserId` on the wire,
   per-user catalogs/keys/budgets via `entanglement-provider::multi_user`,

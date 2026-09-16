@@ -553,18 +553,25 @@ friendlier rendering), including MCP (live registry lookup through the
 session-scoped view, `overlay_registry_for_call`,
 [ADR-0188](../adr/0188-session-keyed-per-user-mcp-scopes.md), so per-user MCP
 scopes resolve correctly for the asking session). Under `client_side`
-encoding (below), `describe` additionally appends the described tool's spec
-into the session's advertised array. **Repeat-`describe` dedup** (#560
+encoding (below) with the `append` discovery strategy, `describe`
+additionally appends the described tool's spec into the session's advertised
+array; under `native_first`/`invoke` the array is untouched and the JSON
+reply is preceded by one `Loaded: <names>. …` line saying how to call them
+(§Client-side discovery strategy below). Under `anthropic_native` the reply
+carries **no schema text** for a resolved name: it is one `Loaded: a, b` line,
+the JSON entries only for names that did not resolve or were already
+delivered, and one `tool_reference` block per resolved name — the reference
+expands to the still-deferred definition, so repeating the schema would
+deliver it twice ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §1). **Repeat-`describe` dedup** (#560
 follow-up: a looping model was observed calling `describe(["glob"])` up to
 131 times, each reply re-paying the full schema): a name already present in
 the session's `DiscoveredSet` — via an earlier `describe()` or an
 `arg_validate` schema-violation decline sharing the same set (§Error taxonomy
 below) — gets a short pointer line instead (`discover::describe::
-already_delivered_entry`), worded truthfully per
-[ADR-0200](../adr/0200-fields-reasoning-capture-and-advertise-discovered.md)'s
-`advertise_discovered`: an append-mode session is told the tool is now
-directly callable, a frozen-array session is told the schema still stands
-without the false claim that the array grew. A mixed request resolves each
+already_delivered_entry`), worded per the session's discovery strategy
+([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)): an `append` session is told the tool is ready to call, a
+`native_first`/`invoke` session gets the same call instruction as the
+`Loaded:` line, never a claim that the array grew. A mixed request resolves each
 name independently, so new names in the same call still get their full
 schema.
 
@@ -576,7 +583,9 @@ family — always-on (advertised in **both** advertising modes), **non-maskable*
 nothing) — extending ADR-0190's `poll` pattern from one tool to two.
 Discovery is **pull-only**: no announcements, no rosters pushed to the model.
 The `ToolSearch`-mode system prompt carries a one-line pointer at the pair
-instead of the roster sections (`Full` mode keeps them).
+instead of the roster sections (`Full` mode keeps them); under
+`native_first`/`invoke` the pointer also says how a loaded tool is called,
+pinned with the strategy so the prompt stays byte-stable.
 
 **Per-wire encoding.** Which mechanism carries a discovered schema to the
 model is a capability derived from the session's wire, not a separate
@@ -584,9 +593,107 @@ user-visible knob:
 
 | encoding | wires | mechanism |
 | --- | --- | --- |
-| `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. A **new enable entry on the session's live tool overlay** (ADR-0149 — the TUI dialog, a typed `/enable`, or an ADR-0198 approval) joins this same discovered set too (#560 P9, [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md)): the pattern is expanded against the registry's current names and every match is marked, so a session-scoped grant is advertised the very next round instead of waiting on a redundant `describe()`. `Full`-mode sessions and deny entries are no-ops; expansion is a one-shot snapshot — a tool registered *after* the enabling pattern is not retroactively advertised. **`ProviderEntry::advertise_discovered: false`** ([ADR-0200](../adr/0200-fields-reasoning-capture-and-advertise-discovered.md)) turns off both append paths for a session on that provider — `describe()` still resolves schemas and still marks the discovered set (the ADR-0196 §6 dedup guard still needs it) and the overlay-enable write above still no-ops, but `tool_advertising::append_discovered_tail` skips the array mutation, so the advertised array stays frozen at the kernel + profile specs for the whole session. Sound only because [ADR-0192](../adr/0192-universal-advertisement-enforcement-at-dispatch.md) already made enforcement dispatch-side: an unadvertised registered call still runs, and the schema itself already reached the model as `describe()`'s transcript reply — meant for a snapshot-cached local server under our control, `None`/unset behaves as `true` (today's behavior) everywhere else. |
-| `anthropic_native` | Anthropic Messages API | non-kernel tools carry `defer_loading: true` (full defs still sent every request — the API needs them server-side — but stripped from the rendered prompt and the cache key until discovered); `describe()`'s `tool_result` carries `tool_reference` content blocks the API auto-expands. **Client-executed search only** — the catalog is session/project-state dependent, so Anthropic's server-side `tool_search_tool_regex`/`_bm25` tools aren't used. At least one tool (the kernel) stays non-deferred, satisfying the API's requirement trivially. |
-| `responses_native` | OpenAI Responses API (`entanglement-provider::openai_responses`) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call` under the reserved name `TOOL_SEARCH_CALL_TOOL`, which `entanglement-runtime::discover::tool_search` intercepts exactly like `explore`/`describe` (non-maskable, always-`Allow`) — it reuses the *same* live index `explore` serves and the *same* per-name resolution `describe` uses, deliberately not a third independent search implementation, and answers with a `ContentPart::ToolSearchOutput` block (capped at 8 results) instead of `describe`'s plain schema text, so the client can echo a native `tool_search_output` input item on the next request. |
+| `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | under `append`, `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. **Enabling never grows the array** ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md), superseding ADR-0199 part 2's overlay-enable append): a new enable entry on the session's tool overlay (ADR-0149 — the TUI dialog, a typed `/enable`, an ADR-0198 approval) or a live MCP server enable (`mcp_enable`, `/enable mcp`) only makes the tool explore-visible and dispatchable; the tail grows only when the model loads it — `describe()` delivers its schema, or an `arg_validate` decline does because the model is already calling it. All of this growth is the `append` discovery strategy's; `native_first`/`invoke` never change the array (§Client-side discovery strategy below). |
+| `anthropic_native` | Anthropic Messages API | non-kernel tools carry `defer_loading: true` **for the whole session**, discovered or not (full defs still sent every request — the API needs them server-side — but stripped from the rendered prompt and the cache key); delivery is `describe()`'s `tool_result` carrying `tool_reference` content blocks, which the API keeps expanded while they stay in history. Un-deferring a discovered tool would rewrite the cached `tools` prefix once per discovery ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §1); the reply is the references plus a one-line name list. **Client-executed search only** — the catalog is session/project-state dependent, so Anthropic's server-side `tool_search_tool_regex`/`_bm25` tools aren't used. At least one tool (the kernel) stays non-deferred, satisfying the API's requirement trivially. |
+| `responses_native` | OpenAI Responses API (`entanglement-provider::openai_responses`) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call` under the reserved name `TOOL_SEARCH_CALL_TOOL`, which `entanglement-runtime::discover::tool_search` intercepts exactly like `explore`/`describe` (non-maskable, always-`Allow`) — it reuses the *same* live index `explore` serves and the *same* per-name resolution `describe` uses, deliberately not a third independent search implementation, and answers with a `ContentPart::ToolSearchOutput` block (capped at 8 results) instead of `describe`'s plain schema text, so the client can echo a native `tool_search_output` input item on the next request. Like `anthropic_native`, a discovered function tool stays `defer_loading` for the session — the `tool_search_output` item in history is the delivery, and un-deferring would rewrite the cached tools prefix (ADR-0202 §1). |
+
+### Client-side discovery strategy — [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)
+
+`client_side` wires have no deferral primitive, and appending one tool to
+`tools` is a full prompt-cache miss on z.ai, while GLM-5.x refuses to call a
+tool its `tools` array doesn't declare. A **`discovery`** knob (catalog
+`ProviderEntry` with a per-`ModelEntry` override, over-ridden in turn by the
+user config — precedence below; pinned with the mode and encoding and kept
+across `SetModel`; read everywhere through `AdvertisingState::discovery`,
+which answers `append` outside `ToolSearch` + `client_side`) picks one of
+three:
+
+| strategy | advertised array | `describe` reply and prompt note | embedded defaults |
+| --- | --- | --- | --- |
+| `append` | kernel + discovered tail (ADR-0196, above) | schema JSON; the tool is advertised next round | `ollama` (unprobed) |
+| `native_first` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each directly by its name as a normal tool call; only if you cannot, call invoke {"name": "<tool>", "args": {...}}.` | `zai`, `zai_paas` |
+| `invoke` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each through invoke {"name": "<tool>", "args": {...}}; they cannot be called directly.` | `gemini`, `openai` |
+
+**Precedence** — `config.yml` `discovery:` > the model's catalog `discovery:`
+> its provider's > `append` (`tool_advertising::resolve_discovery`). The
+config tier is a map keyed by **provider name**
+(`discovery: {zai: native_first, gemini: invoke}`), stored in the same layered
+user config as `tool_advertising` (embedded < user < project). It is looked up
+by name rather than through the catalog, so an entry for a provider only the
+user's `providers.yml` adds still wins, while an entry for a provider this
+session isn't on is inert. **There is no environment variable**, deliberately:
+unlike `ENTANGLEMENT_TOOL_ADVERTISING` the knob is per provider, so one
+process-wide scalar could only ever be right for one of them.
+
+Under the two fixed-array strategies nothing mutates `tools`:
+`tool_advertising::client_side_surface` ignores the discovered set, an
+overlay enable marks nothing, and `describe`/an `arg_validate` decline still
+record the set only for the dedup guard. `explore`/`describe`'s own
+descriptions drop the "directly callable" claim. The extra kernel spec is
+`invoke {name: string, args: object}` (`discover::invoke_spec`) — not in
+`runtime_owned_specs()`, so `Full` mode and `describe` never see it. Core
+unwraps an `invoke` call before emitting any event and keeps the emitted call
+in `Context` byte for byte ([engine](engine.md)), so every gate, hook,
+approval and `arg_validate` sees the inner tool unchanged; under `invoke`
+an `arg_validate` decline for a non-kernel tool wraps its example call as
+`{"name": "<tool>", "args": <example>}`. A `ToolExec` still named `invoke`
+(a malformed envelope, or an inner name of `invoke`/`responses_tool_search`)
+is declined where an unknown tool is — both the mask-miss path and
+`dispatch` — by `tool_advertising::unknown_tool_reply`, on the ADR-0176
+`is_error` channel with the envelope's shape and schema; in a session that
+doesn't advertise `invoke` it is an ordinary unknown tool. ADR-0200's
+`advertise_discovered` bool is gone; a user `providers.yml` still carrying
+it is stripped with a warning before validation.
+
+**Pinned at first resolution.** Mode, encoding and strategy are pinned by the
+tool-spec resolver itself (`tool_advertising::surface`, via
+`AdvertisingState::ensure_pinned`) the first time it runs for a session, from
+the model core hands it (`SessionModel` on the `ToolSpecResolver` seam; the
+startup backend when none is bound) — not from `SessionStarted`, a broadcast
+core's first round does not wait for, which let round 1 advertise the unpinned
+default and round 2 the pin. Core resolves specs before the system prompt in
+every round, so the prompt resolver's `ToolSearch` note reads the same pin.
+End/hibernate forgets it (`AdvertisingState::forget`); a resumed session
+re-pins at its first round.
+
+**`Full` fixes its surface at first resolution** (ADR-0204 §5): the sorted
+full surface is snapshotted per session. A tool that becomes available later
+(live MCP enable, `McpAdd`, an overlay enable) is explore-visible and
+dispatchable but not inserted; a `describe()` or `arg_validate` decline
+appends its spec once, at the end. A tool that disappears (MCP server removed
+or disabled) stays advertised, so the array never shrinks or reorders; a call
+to it declines at dispatch through the unknown/unregistered paths
+(`is_error`). The native encodings keep recomputing their deferred surface.
+
+**Live re-pin (TUI only).** `AdvertisingState::repin(session, mode,
+discovery)` replaces a running session's pinned mode and/or strategy (the
+encoding stays wire-derived); `session_mode`/`session_discovery` read the
+pins. Only the TUI `/set` dialog calls it, after an explicit confirmation,
+because the next round's tools array and prompt note change and the provider
+cache is rebuilt once. When the array's shape changes, a `Full` target takes a
+fresh snapshot, and the discovered set restarts unless the target is
+`native_first`/`invoke` (whose set only dedups schemas already in context): a
+name delivered under the old shape is not in the new array, so it must be
+appended by its next delivery rather than retroactively — switching to
+`append` adds nothing until the model loads a tool again, and switching to
+`native_first`/`invoke` adds the `invoke` spec and drops the tail. A re-pin
+sent before the first resolution is held and applied by the pin; hibernate
+and resume drop it.
+
+The dialog's **"save mode/discovery as default"** checkbox is the other half:
+it writes `tool_advertising` and `discovery[<the session's provider>]` into the
+user `config.yml` through `config::write_key`, so the choice is the default for
+**new** sessions while the re-pin handles the running one (a `full`-mode or
+native-wire session saves no strategy — there is none that applies). The writer
+is comment-preserving by construction: it splices only that one key's lines —
+replacing a live block, uncommenting the first-run scaffold's `#key:`
+placeholder, or appending — under the shared advisory lock and `atomic_write`
+([ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)),
+leaving every other byte, comment and blank line of a hand-edited file
+untouched, unlike the `Value`-round-tripping `mcp:` writer. `watch.rs` already
+watches the config dir, so a long-running head sees the edit within a debounce
+window, under ADR-0084's standing rule that a *running* session keeps what it
+resolved at start.
 
 **MCP management is runtime infrastructure, mode-uniform but still graded.**
 `mcp_enable`/`mcp_add`/`mcp_remove` sit conceptually beside the runtime-owned
@@ -595,7 +702,9 @@ plumbing, not agent tools — and are advertised/callable in both advertising
 modes (reachable via `explore`/`describe` when unadvertised under
 `ToolSearch`). But unlike the discovery pair they **stay maskable and
 permission-graded**: `mcp_add` spawns processes; `mcp_enable`'s grade is
-`Ask` so each enablement is user-approved. `mcp_enable`'s schema is **static
+`Ask` so each enablement is user-approved. An enable changes no advertised
+array in `Full` or client-side `ToolSearch` (above); the native encodings
+still add the server's tools as deferred definitions. `mcp_enable`'s schema is **static
 (`server: string`) in both modes** — the live roster lives in
 `explore`/`describe`, not in a schema enum — removing the last cache seam
 ADR-0192 didn't list; under `ToolSearch` its result says *"enabled, N tools —

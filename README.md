@@ -137,6 +137,12 @@ skutter config set-key openai --key sk-…   # or pass it directly
 echo "sk-…" | skutter config set-key zai   # or pipe it (scripting/CI)
 ```
 
+z.ai has two catalog entries sharing `ZAI_API_KEY`, one per key type: `zai`
+(the GLM Coding Plan endpoint, auto-detected) and `zai_paas` (the
+pay-as-you-go endpoint). A pay-as-you-go key is rejected by the Coding Plan
+URL — select it with `ENTANGLEMENT_PROVIDER=zai_paas` (or `provider: zai_paas`
+in `config.yml`).
+
 Inside the TUI, `/key` opens the same dialog (provider list → masked input); a key
 set there is picked up on the next `/model` switch with no restart. No key set →
 `skutter` falls back to the `EchoLlm` debug stub.
@@ -153,6 +159,7 @@ make run-tui      # launch the terminal UI
 make pipe         # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test         # unit + integration
+make test-live    # opt-in live z.ai probes (needs ZAI_API_KEY)
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + file-cap + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)

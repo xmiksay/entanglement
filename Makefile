@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -68,6 +68,12 @@ test-unit: ## unit tests only
 
 test-integration: ## integration tests only (tests/ dirs)
 	$(CARGO) test --workspace --test '*'
+
+# Opt-in live z.ai probes pinning ADR-0204's provider facts (network + a real
+# ZAI_API_KEY; each test skips when it is unset). Kept out of `test`/`verify`.
+test-live: ## live z.ai + Anthropic tool-discovery/cache probes (each skips without ZAI_API_KEY / ANTHROPIC_API_KEY)
+	$(CARGO) test -p entanglement-provider --test live_tool_discovery -- --ignored --nocapture --test-threads=1
+	$(CARGO) test -p entanglement-provider --test live_anthropic_cache -- --ignored --nocapture --test-threads=1
 
 lint: ## cargo clippy, warnings = errors
 	$(CARGO) clippy --all-targets -- -D warnings

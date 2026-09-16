@@ -63,7 +63,7 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
 
 | client (`entanglement-provider`) | wire format | serves | auth |
 | --- | --- | --- | --- |
-| `OpenAiLlm` (`openai/`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
+| `OpenAiLlm` (`openai/`) | `/chat/completions` SSE | **z.ai** (GLM, entanglement's primary — `zai` Coding Plan + `zai_paas` pay-as-you-go), **OpenAI**, **Ollama** `/v1` | `Bearer` or none (Ollama) |
 | `AnthropicLlm` (`anthropic/`) | `/v1/messages` SSE | Anthropic | `x-api-key` |
 | `GeminiLlm` (`gemini.rs`) | `:streamGenerateContent?alt=sse` | Google Gemini | `x-goog-api-key` |
 
@@ -83,14 +83,15 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   `openai_factory(base, key, model, rpm, concurrency, model_concurrency,
   web_search, prompt_cache_key, thinking_spec)` builds an `LlmFactory`, the
   `thinking_spec` resolver carrying the model's inline-think handling
-  (ADR-0191). Split into `openai/{mod,request,sse,think}.rs`
+  (ADR-0191) plus its effort tiers, `thinking_required` and the provider's
+  `thinking_control` (ADR-0203). Split into `openai/{mod,request,sse,think}.rs`
   (#481) to stay under the 400-line file cap — `mod.rs` owns the client +
   streaming loop, `request.rs` request-body construction, `sse.rs` chunk
   parsing, `think.rs` the `<think>` splitter.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
   fragments). `anthropic_factory(base_url, key, model, rpm, concurrency,
-  model_concurrency, web_search, web_search_tool_version)` — `base_url`
+  model_concurrency, web_search, web_search_tool_version, model_spec)` — `base_url`
   defaults to `ANTHROPIC_BASE` (mirroring `OPENAI_BASE`/`GEMINI_BASE`); a
   catalog `wire: anthropic` entry's `base_url` (a proxy/gateway speaking the
   Anthropic wire) overrides it end to end — the request URL *and* the pool
@@ -104,15 +105,19 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   history at the uncached rate. `anthropic::request::build_body` places four:
   the last `system` block (also covers the `tools` array before
   it in the fixed tools → system → messages render order), the last `tools`
-  entry, and the last content block of the second-to-last **and**
-  fourth-to-last `user`-role messages
-  (`place_history_breakpoint`; deduped on short histories) — the final turn is
-  left unmarked since it's the one most likely to still change on a
-  steered/edited retry, and the deeper anchor (#673) guarantees a cache match
-  even when one round appends more user-role messages (merged tool-result
-  turns from a big parallel batch) than the ~20-block lookback Anthropic
-  scans upstream of a marker. Four is exactly the API's marker cap, locked in
-  by test.
+  entry, and the last content block of the **last** and third-to-last
+  `user`-role messages (`place_history_breakpoint`,
+  [ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
+  The near anchor sits on the newest turn, so everything a request sends is
+  written now and read back next round — the earlier second-to-last placement
+  billed that tail uncached this round *and* as a cache write the next (~2.25×
+  vs 1.25×) to spare a steered/edited retry at most one wasted write. The
+  deeper anchor (#673) guarantees a cache match even when one round appends
+  more user-role messages (merged tool-result turns from a big parallel batch)
+  than the ~20-block lookback Anthropic scans upstream of a marker. Anchoring
+  the last turn is only cache-stable because thinking now replays on every
+  assistant turn (see *Extended thinking* below). Four is exactly the API's
+  marker cap, locked in by test.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
   [ADR-0085](../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
@@ -149,6 +154,9 @@ trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEv
   char-count proxy for Gemini's undocumented per-model minimum token count)
   or any create-call failure resolves to `None`, falling back to inlining
   `system`/`tools` exactly as before — cache creation never fails the turn.
+  A resource replaced by a key change (every tool-set change on the
+  `client_side` encoding mints a new one) is `DELETE`d in a detached task,
+  failures only debug-logged, so it stops accruing storage before its 1h TTL.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
   + replay; core never inspects it. Gemini stashes `thoughtSignature` there; the
@@ -237,12 +245,17 @@ runtime hands it `Some` only when a `web_search:` `config.yml` section is
 enabled; the live `/model` resolver captures it too, so a switch re-binds
 identically). When present, `build_body` pushes the provider's **server-executed**
 search tool onto the same `tools` array (so it rides even with no function
-tools): z.ai a `{"type":"web_search","web_search":{…}}` entry, Anthropic a
+tools): z.ai a `{"type":"web_search","web_search":{…}}` entry — only on a
+provider carrying the z.ai dialect (`thinking_control: zai`, i.e. `zai` /
+`zai_paas`), since the runtime binds one config onto every OpenAI-wire provider
+and OpenAI proper 400s on a non-`function` tool type — Anthropic a
 `{"type":"<version>","name":"web_search"}` server tool (+ optional
 `max_uses`/`allowed_domains`) — `<version>` is `ModelEntry.web_search_tool_version`
 (#481, catalog data) when the active model sets one, else the client's
 `web_search_20250305` fallback, so a model requiring the newer `_20260209` tool
-works via catalog config with no code change. The provider runs the search
+works via catalog config with no code change (the embedded defaults set it on
+every 4.6+ Anthropic model; like the thinking facts it is bound for the client's
+construction model — see `AnthropicModelSpec` below). The provider runs the search
 *mid-turn*, no client round-trip; results still stream live on the **reasoning
 channel** (`LlmEvent::Reasoning`, unchanged since #305) but are now **also**
 persisted (#481): the Anthropic parser tracks a `server_tool_use` block with
@@ -653,7 +666,16 @@ interpretation — the provider crate only carries the data. `ModelEntry`
 carries capability flags (`supports_thinking`,
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
 `thinking_budget_tokens`, `thinking_style`, `thinking_format`,
-`replay_thinking`) and **pricing**
+`replay_thinking`, `effort_tiers`, `thinking_required`; provider-level
+`thinking_control`), the client-side discovery strategy `discovery`
+(`append`/`native_first`/`invoke`, provider-level with a per-model override;
+embedded defaults `zai`/`zai_paas` `native_first`, `openai`/`gemini`
+`invoke`, `ollama` `append`, none on the native Anthropic/Responses entries;
+interpreted only by the runtime, [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)
+— and outranked by the user config's per-provider `discovery:` map, which the
+TUI `/set` dialog writes: the full chain is `config.yml` > this model entry >
+this provider entry > `append`, with no env tier, see
+[gates & host tools](gates-and-host-tools.md)) and **pricing**
 (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
 `Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
@@ -667,20 +689,22 @@ gated on the flags: temperature only when `supports_temperature`, a thinking
 budget only when `supports_thinking` (and a budget is configured — the
 embedded defaults leave it unset, so extended thinking is *reachable*, not
 forced on), `reasoning_effort` from the optional
-`default_reasoning_effort` catalog field (also unset by default). The runtime
+`default_reasoning_effort` catalog field (unset by default except on the z.ai
+entries' thinking-capable models, which default to `high`). The runtime
 resolves it for the chosen model onto `EngineConfig::generation`; core threads
 it onto every `LlmRequest { …, generation }`. Each client maps the present
 knobs to its wire and omits the rest: `OpenAiLlm` sends `temperature` +
-`max_tokens` + `reasoning_effort` (its native wire field — no thinking-budget
-channel); `AnthropicLlm` uses `max_output_tokens` in place of its
+`max_tokens` + `reasoning_effort` (its native wire field, clamped to the
+model's tiers — no thinking-budget channel — plus z.ai's `thinking` object
+under `thinking_control: zai`); `AnthropicLlm` uses `max_output_tokens` in place of its
 `DEFAULT_MAX_TOKENS` fallback and emits one of **two mutually exclusive
 thinking shapes** (below), else passes `temperature` through; `GeminiLlm` maps
 onto `generationConfig.thinkingConfig.thinkingBudget`. Neither Anthropic nor
 Gemini has a native effort field on the budget shape (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)):
 an explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
-derives a budget from a fixed tier (`High`/`Medium`; `Low`/unset leaves
-thinking off) — conservative per-client constants, not catalog-driven, since
+derives a budget from a fixed tier (`High` — shared by `XHigh`/`Max` — or
+`Medium`; `Low`/unset leaves thinking off) — conservative per-client constants, not catalog-driven, since
 the real per-model ceiling varies.
 
 **Anthropic thinking shapes (`ModelEntry::thinking_style`).** Anthropic replaced
@@ -691,11 +715,58 @@ not a client constant:
 | `thinking_style` | Emitted | Enabled by |
 | --- | --- | --- |
 | `budget` (default) | `thinking { type: enabled, budget_tokens }`, bumping `max_tokens` above the budget and dropping `temperature` | `thinking_budget_tokens`, else a `reasoning_effort` tier |
-| `adaptive` | `thinking { type: adaptive }` + `output_config.effort` | `reasoning_effort` only — a stale `thinking_budget_tokens` is ignored rather than 400ing, and there is no `max_tokens` bump |
+| `adaptive` | `thinking { type: adaptive }` + `output_config.effort` clamped to `effort_tiers` (empty set ⇒ no `output_config`); never a disable shape | `reasoning_effort` only — a stale `thinking_budget_tokens` is ignored rather than 400ing, and there is no `max_tokens` bump |
 
 `budget` is the default so every pre-existing user `providers.yml` is unchanged;
-the embedded defaults ship `thinking_style: adaptive` on the current models
-(`claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`).
+the embedded defaults ship `thinking_style: adaptive` on every 4.6+ model (Fable
+5.1/5, Opus 5/4.8/4.7/4.6, Sonnet 5/4.6), while `claude-sonnet-4-5` and
+`claude-haiku-4-5` keep the budget shape. The default Anthropic model is
+`claude-sonnet-5`.
+
+**Anthropic model facts are bound at construction (`AnthropicModelSpec`).**
+`Catalog::anthropic_model_spec(provider, model)` resolves the thinking shape,
+`replay_thinking`, `effort_tiers` and `supports_temperature` once for the
+client's model and threads them through `anthropic_factory` (an unlisted model
+gets the default: budget shape, replay on, no clamp, temperature allowed). The
+adaptive shape clamps `output_config.effort` to the tiers, and
+`supports_temperature: false` drops `temperature` from the body even when a
+live `SetGeneration` set one — Fable, Opus 5/4.8/4.7 and Sonnet 5 400 on any
+sampling parameter. A `thinking` disable shape is never emitted (Fable 400s on
+it; its `thinking_required` only documents that its thinking is always on).
+**Caveat:** unlike the per-request OpenAI-wire resolvers (#550), a
+`model:`-only profile pin that sends a request under a different model id still
+uses the construction model's facts — `web_search_tool_version` included — so a
+profile crossing Anthropic generations should pin `provider:` alongside
+`model:` (which rebinds the client).
+
+**Effort tiers, required thinking, z.ai thinking control** ([ADR-0203](../adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)).
+`ReasoningEffort` has five ordered tiers (`low|medium|high|xhigh|max`).
+`ModelEntry::effort_tiers` lists the ones a model accepts: unset passes any
+tier through, a list clamps to the nearest listed tier (ties round down, so a
+model never silently costs more than asked), and the empty list sends no effort
+field at all. Every wire that names a tier applies the clamp — OpenAI-compat
+`reasoning_effort` and Responses `reasoning.effort` per request through the
+`ThinkingSpecResolver`, Anthropic adaptive `output_config.effort` through
+`AnthropicModelSpec`; the wires with no effort ladder (Anthropic's budget
+shape, Gemini) give `xhigh`/`max` `high`'s budget. `thinking_required: true`
+marks a model that cannot run with thinking off: with no effort resolved, the
+lowest listed tier is sent. `ProviderEntry::thinking_control: zai` is the z.ai
+request dialect: every request carries `thinking: {type: enabled}` (plus the
+clamped effort) when an effort resolves or the model requires thinking, else
+`{type: disabled}` — z.ai's own default with no object is thinking at `max`.
+A provider without it never sees a `thinking` object (OpenAI proper 400s on
+unknown fields), and the same flag gates z.ai's `web_search` tool entry. The
+embedded z.ai entries default every thinking-capable model to `high` (GLM-5.3 /
+5.3-Flash take only `low|high|max` and require thinking; the 4.x family takes
+`effort_tiers: []`), with `glm-5.3` as the default model. z.ai ships as **two
+entries sharing `ZAI_API_KEY`**: `zai` (Coding Plan endpoint, first in catalog
+order so auto-detect keeps selecting it) and `zai_paas` (pay-as-you-go
+endpoint, selected explicitly; env overrides follow the entry name —
+`ZAI_PAAS_MODEL`, `ZAI_PAAS_API_BASE`), sharing one model list via a YAML
+anchor — two endpoint pools, since the base URL differs. The bundled MCP
+servers stay on `zai` alone: the runtime gathers bundles from every entry keyed
+by server name, so a twin copy would shadow the first, and the shared key
+already makes them available whichever entry is selected.
 
 ### Extended thinking: capture and replay
 
@@ -720,7 +791,7 @@ session log.
 
 | Wire | Capture | Replay when enabled |
 | --- | --- | --- |
-| Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, **last** assistant message only |
+| Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, on **every** assistant message ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md): preserved-thinking models keep prior-turn thinking, so stripping it edits history — a cache bust per round, a 400 on Fable 5.1; older models ignore the blocks unbilled) |
 | Gemini | thought-text parts | none — the load-bearing `thoughtSignature` round-trips via `ToolCall::provider_meta` (ADR-0085) |
 | OpenAI-compat | structured `reasoning`/`reasoning_content` deltas (`thinking_format: fields`, the default) are accumulated per round and captured into one block at stream finish (ADR-0200), same as a `thinking_format: inline_tags` model's `<think>…</think>` spans split out of `content` (ADR-0191) | as the assistant message's `reasoning_content` field, gated by `replay_thinking` (default **off** on this wire); legacy spans already in history text are stripped regardless |
 
@@ -799,8 +870,8 @@ test (which prompt/tool set actually reached the backend). Set
 `ENTANGLEMENT_ECHO_FULL=1` to append the full system text.
 Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
 `<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`. Default models come from each
-provider's `default_model` (`glm-5.2` / `gpt-4o` / `llama3.1` /
-`claude-sonnet-4-5`). The TUI model picker + context bar read the same catalog.
+provider's `default_model` (`glm-5.3` / `gpt-4o` / `llama3.1` /
+`claude-sonnet-5`). The TUI model picker + context bar read the same catalog.
 
 **Multi-user provider context (#522, [ADR-0147](../adr/0147-multi-user-mode-embedder-api.md)):**
 everything above is the **single-user** story — one process-global `Catalog`,

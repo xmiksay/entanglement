@@ -204,13 +204,46 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   paired output folded in (#340; the `ToolOutput` matches its `ToolCall` by
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).
-  The bottom **info line** (`draw_input_info`) shows `provider · model | tokens`
-  — the cumulative token/cost figure carries a session cache-hit rate
-  (`cached/total input`, #560) and is followed by the most recent round's
-  `in X (cached Y) · out Z` line, rendered in the throttle indicator's red/bold
-  style when that round is a full cache miss right after one that hit
-  (`tui/format.rs`, `SessionView::record_usage`) — plus one transient status
-  slot — a pending two-stage quit hint, else the
+  Every call renders by its **real name** with a readable summary
+  ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md) §6;
+  `tui::tool_render`, one renderer per tool family, sharing the ratatui-free
+  `run::summary` helpers with the `run` text head's `→`/`=` lines): the header
+  is `{tool}  {primary_arg}` (`mcp__server__tool` reads `server › tool`), and the
+  expanded body shows arguments as indented `key: value` lines and JSON outputs
+  the same way — never escaped JSON — with a failed call's output marked
+  `✗ error`. A call made through `invoke` looks exactly like a direct call of the
+  inner tool (core unwraps it; a still-streaming envelope is unwrapped for
+  display too), and the discovery calls are ordinary visible blocks: `explore`
+  shows its filter and `name — description` rows per source section, `describe`
+  its requested names, the `Loaded: …` line and a parameter summary (name,
+  type, required) per schema.
+  The bottom **info line** (`draw_input_info`) reads
+  `zai · GLM-5.2 | ctx 87.3k/200k 44% | $1.2345 | last: 51.2k in (94% cached) · out 1.1k`
+  ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §7,
+  `tui/input_panel/status_usage.rs`): `ctx` is the last **turn** round's billed
+  prompt (uncached + cache-read + cache-write — `OutEvent::Usage.input_tokens`
+  is the uncached portion only) against the model's context window, omitted
+  until a turn round lands and never moved by a `purpose: compaction` round;
+  `$` is the session spend (token counts instead when no round carried
+  pricing); `last:` is the most recent round of either purpose with its cache
+  share `cached / billed prompt`, rendered in the throttle indicator's red/bold
+  style when that round is a full cache miss right after one that hit. A
+  `GenerationChanged` that moves `reasoning_effort` or
+  `thinking_budget_tokens` against the session's previous one (the first only
+  sets the baseline; temperature/max-tokens never count) is allowed but
+  re-keys the provider cache, so the view records one `cache` transcript
+  notice and the ledger excuses the next round's full miss (replay re-folds
+  the same notice, as there is no live/replay split in the fold). All
+  three read one per-session `CostLedger` (`tui/session_view/cost.rs`) folded
+  from `Usage` + `ModelChanged`, so resume restores it by replay. Cumulative
+  in/out totals are not on the line — **`/cost`** (`tui/cost_command.rs`)
+  records them as a transcript notice: spend over N rounds with the session
+  cache share, the prompt split (billed · uncached · cached · cache-write ·
+  output), a `compaction:` line (only with compaction calls), per-model rows
+  keyed by the `ModelChanged` in effect when each round landed, and a
+  `subtree:` line (own + N child sessions, the `Σ` rollup below; only with
+  children), or `cost: no usage recorded yet`. The line then carries one
+  transient status slot — a pending two-stage quit hint, else the
   **toast** (`tui/app/toast.rs`, ~3s TTL, expired eagerly by the render loop
   like `quit_pending`): the copy notice and app/config state-change
   confirmations (definitions reload #329, `/key` save, `/model`/generation
@@ -382,7 +415,40 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   implementation, `McpTokenStore::load_llm()`), keyed by provider name and a
   deliberately *separate* file so neither surface's writes contend with the
   other's credentials. `disconnect` revokes best-effort (RFC 7009) then
-  deletes locally.
+  deletes locally. **Session settings dialog** (`tui::settings_dialog`,
+  `tui::app::settings`, `tui::modals::settings`): bare `/set` (or `/set` from
+  the palette) opens a tabbed modal; `/set <key> <value>` stays the ADR-0095
+  one-shot. `Tab`/`Shift+Tab` or a click on a title switch tabs, `↑↓` move,
+  `←→`/`Space` change the focused row, `Enter` confirms, `Esc` cancels
+  everything; a footer lists the pending changes. Tabs: **Session** — agent
+  and provider/model over the `/agent`/`/model` data (the agent switch is
+  session-only); **Generation** — only the knobs the *selected* model
+  accepts, re-derived live when the Session tab's model changes: temperature
+  unless `supports_temperature: false`, reasoning effort over the catalog
+  `effort_tiers` (all five when unset, hidden when empty), a thinking budget
+  only for fixed-budget (`thinking_style: budget`) models on a budget-reading
+  wire, max output tokens; every field offers "model default", sent as the
+  catalog's concrete default because `SetGeneration` merges and cannot clear
+  (a field with no catalog default is reported, not sent), with an inline
+  note that effort/thinking changes rebuild the prompt cache; **Tools** —
+  (a) the per-session overlay rows and (b) whole-server MCP rows bare
+  `/enable` uses, (c) advertising mode and client-side discovery strategy
+  (discovery shown disabled with its reason off `client_side` or under
+  `full`); **Aux** — the per-purpose pins. Each tab has its own "save as
+  default": Session → the agent-models pin (ADR-0081), Generation → the
+  agent-generation store once `GenerationChanged` confirms (ADR-0095), Tools →
+  the overlay materialized as the agent's user-layer allowlist (ADR-0083,
+  next restart); mode/discovery have no managed writer, so that checkbox is
+  disabled, and Aux pins are process-wide and always persisted (checkbox
+  always on). Confirming runs one plan in a fixed order — agent → model →
+  generation (validated against the final model, incl. an agent pin the
+  switch rebinds to) → overlay/MCP (lazy connect of `allowed` servers) →
+  re-pin → aux — each step through its single-purpose path, stopping at the
+  first failure; one `settings` transcript line names what applied, what
+  failed and what didn't run (the effort cache warning stays the reducer's
+  own). A pending mode/discovery change first opens a **second confirmation**
+  stating it rebuilds the prompt cache and changes the session's tool
+  surface; only then does `AdvertisingState::repin` run, live.
 
 ## 6c. Managed provider-key env file — [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
 
@@ -491,7 +557,10 @@ The TUI surface is `/aux-model <purpose> <provider>/<model>`
 (`parse_aux_model_args` — the raw-text re-parse pattern; `title` is accepted
 as an alias for `session_title`; bare `/aux-model` or `/aux-model list`
 renders the current pins), writing the pin through the shared store handle so
-the live registry sees it with no restart.
+the live registry sees it with no restart. Bare `/set`'s dialog has an Aux tab
+over the same store; it can move a pin but not clear one (the store has no
+remove), so "(primary model)" is offered only for a purpose that started
+unpinned.
 
 **Per-user aux pins** (#635/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md),
 conforming to [ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md)):
@@ -527,7 +596,9 @@ the logged `InMsg::Prompt` records, so without them a resumed context holds only
 assistant/tool messages and the model appears to forget the conversation.
 
 - **Inbound is biased ahead of outbound** so a prompt lands on disk before the
-  events it produces (`pair_records` pairs each `Out` with the preceding `In`).
+  events it produces (`pair_records`, `session_store/pairing.rs`, queues the
+  `Prompt`/`Stop` records replay reads first-in first-out and pairs each with a
+  following `Out`, so a prompt logged just before a `ToolResult` is not lost).
   `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat).
   `InMsg::Spawn` is still never persisted verbatim (`roots` can't resolve the
   child to its parent's root file until the child's own `SessionStarted`
@@ -544,6 +615,13 @@ assistant/tool messages and the model appears to forget the conversation.
 - **Spawned children fold into the root file** via a `roots` map built from
   `SessionStarted { root, parent }`, so each root file is a self-contained,
   replayable record of the whole session tree.
+- **The `<env>` date is pinned per session** ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §5,
+  `env_date::EnvDatePins` on the shared `AdvertisingState`): the system-prompt
+  resolver stamps the date a session first resolves and patches every later
+  turn's `Date:` line back to it — even after midnight or a definitions reload
+  re-bakes a newer one — so the cached system block stays byte-identical. The
+  executor forgets the pin on `SessionEnded`/`SessionHibernated`; a resumed
+  session re-pins to its resume day.
 - **Resume** reads the file, `pair_records` builds the `(Option<InMsg>, OutEvent)`
   stream, and `Holly::resume` seeds a session from `Session::replay`. The CLI
   exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
@@ -588,49 +666,61 @@ assistant/tool messages and the model appears to forget the conversation.
   `mcp__<server>__*` call self-heals at dispatch time instead
   ([ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md),
   §"MCP client" in [gates & host tools](gates-and-host-tools.md)).
-- **Compaction is copy-on-write — it forks, never mutates** (#324,
-  [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md) →
-  [ADR-0101](../adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)).
-  `InMsg::Oneshot`'s `"compact"` op emits `OutEvent::Compacted{summary,kept}` —
-  an ordinary seq-bearing content event, so it needed **zero** persistence-tap
+- **Every compaction forks a successor — nothing is ever mutated in place**
+  (#324, [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)
+  → [ADR-0101](../adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)
+  → [ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md)).
+  All three paths — the `"compact"` op, auto-summarize on overflow, and the
+  prune-only fallback — emit `OutEvent::Compacted{summary,kept,auto,mode}`, an
+  ordinary seq-bearing content event, so they needed **zero** persistence-tap
   code: the tap already appends every `OutEvent` with `session().is_some()`
   regardless of variant, and the `ReplayFrom` history responder (§6, below)
-  already includes every event with `seq().is_some()`. **But the source session
-  is never mutated** (ADR-0101): the summary rides only in the event, and the
-  head forks it into a new session via `InMsg::Spawn`. `Session::replay`'s
-  `Compacted` fold is a **no-op** — a resumed source recovers its full
-  pre-compaction history (the implicit undo), and a truncated summary is refused
-  outright (`StopReason::MaxTokens` → `Error`) so it never forks either.
+  already includes every event with `seq().is_some()`. The source session is
+  never mutated: the summary rides in the event, the engine forks it into a
+  **successor** session and retires the source, and `Session::replay`'s
+  `Compacted` fold is a **no-op on every path** — a source's log still
+  reconstructs the full pre-compaction history it actually held. A truncated
+  summary is refused outright (`StopReason::MaxTokens` → `Error`) so it never
+  forks either.
   **Keep-tail** (#397,
   [ADR-0102](../adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):
   `args.kept: u64` (optional, default `0`) requests that the last `kept`
-  messages ride into the fork **verbatim** instead of being paraphrased into
-  the summary. `Context::safe_kept` clamps the request to the nearest safe
+  messages ride into the successor **verbatim** instead of being paraphrased
+  into the summary. `Context::safe_kept` clamps the request to the nearest safe
   turn boundary — the tail must start at a `User` message, or a `Tool` reply
   could replay without its paired `Assistant` tool-call half, breaking
   providers' `tool_use`/`tool_result` pairing (ADR-0082's deferred-to-v1
   blocker). `compact_op` summarizes only the *head*, then appends the tail's
   rendered transcript after the summary — the composed text ships inside the
-  same `summary` field, so **no wire change** was needed and the TUI's
-  existing fork path (`wrap_compaction_summary`/`InMsg::Spawn { prompt, .. }`)
-  carries it unmodified. The TUI's `/compact [--keep N] [instructions]`
+  same `summary` field and seeds the successor, so **no wire change** was
+  needed. The TUI's `/compact [--keep N] [instructions]`
   (`tui::commands::parse_compact_args`) is the head-side entry point; the
   command-palette pick still defaults to `kept: 0`.
-- **Auto-compaction is the in-place exception to copy-on-write** (#398,
-  [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md)). A turn
-  overflowing its context window mid-flight has no head to fork into, so
-  `session/turn.rs` mutates `Context` directly via `apply_compaction` and
-  marks the same wire event `OutEvent::Compacted { auto: true, .. }` (`false`
-  is the default, matching every pre-#398 — i.e. manual, copy-on-write —
-  record). `Session::replay`'s `Compacted` fold branches on it: `auto: false`
-  stays the no-op described above; `auto: true` flushes whatever pending
-  assistant/tool state has accumulated (mirroring the `Done` fold) and then
-  calls the same `apply_compaction(summary, kept)` the live engine ran, so a
-  resumed session's history matches the live one instead of recovering a
-  pre-compaction tail that was never actually live. The summary here carries
-  *no* rendered tail text (unlike the copy-on-write report above) — `kept`
-  alone is enough for both the live mutation and its replay to re-derive the
-  same tail structurally from `Context::messages()`.
+- **What a head must do about a compaction** (ADR-0205). The engine mints the
+  successor, so a head neither forks nor closes anything — it **follows
+  lineage**. The successor announces itself with
+  `OutEvent::SessionStarted { predecessor: Some(source), .. }`, and a head that
+  tracks one particular session (the one-shot `run` loop, the `agent` tool's
+  child-answer collector, the TUI's active view) rebinds to the successor on
+  that event, because the turn — and its `Done` — now land there. `Compacted`
+  carries the seed text for a head that wants to show what the new session
+  continues from, and `mode` (`summary` | `prune`) says whether there is a real
+  summary behind it. The TUI records the seed on `Compacted`, opens the
+  successor's view on `SessionStarted`, seeds its transcript, and switches to
+  it **only if the session that compacted was the active one** — a background
+  session overflowing must not yank the user's view. `pipe` and `serve` are
+  pure relays and need no change: they forward both events and their client
+  follows the same lineage.
+- **The automatic paths are not an exception any more** (#398,
+  [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md), amended by
+  [ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md)). A
+  turn overflowing its context window used to mutate `Context` directly,
+  because it had no head to fork into; the engine now forks for itself, so the
+  overflow paths mark the same wire event `OutEvent::Compacted { auto: true,
+  .. }` and take the identical successor lifecycle. `mode` separates the two:
+  `summary` for the LLM-summarized fork, and `prune` for the placeholder-prune
+  fallback, whose `summary` field carries the pruned transcript that seeds the
+  successor rather than an LLM-authored summary (ADR-0121's silence retired).
 - **Pluggable append target — `RecordSink`** (#313,
   [ADR-0086](../adr/0086-recordsink-pluggable-persistence-append-target.md)).
   The tap's *what to persist*

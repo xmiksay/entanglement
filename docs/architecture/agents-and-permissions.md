@@ -668,7 +668,8 @@ below realize one model:
   effective mask, and a profile-only permission grade; a typeahead filter
   plus a `Tab`-cycled category narrow the list, and `Enter` on a row enables
   it through the same `/enable` path (closing the view). And under
-  `client_side` encoding, a **new** overlay enable entry from *any* writer
+  `client_side` encoding under the `append` discovery strategy
+  ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)), a **new** overlay enable entry from *any* writer
   (this dialog, a typed `/enable`, or an ADR-0198 `Session`-scope approval)
   also joins the session's `client_side` discovered-tool set (§ below;
   ADR-0196 §3), so the resolver advertises the matching tool(s) the very
@@ -696,7 +697,7 @@ below realize one model:
   which vary across profiles but never within a session; and **MCP tools**
   (`mcp__*`), the one acknowledged dynamic seam, since a server's tools are
   unknowable until it connects. **Per-session base specs (✅ #308, [ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)):**
-  an optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId) ->
+  an optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId, SessionModel<'_>) ->
   Vec<ToolSpec> + Send + Sync>>` (alias `ToolSpecResolver`) lets one `Holly`
   advertise a **different base tool surface per session** — the seam multi-tenant
   embedding needs so user A's discovered MCP-server tools never reach user B's
@@ -1011,12 +1012,12 @@ below realize one model:
   keep working) and a resolver can compose off `profile.system_prompt` rather than
   only replace it. Sibling of the `tool_spec_resolver` seam (ADR-0076) — sync `Fn`,
   same embedder-owned snapshot-cache pattern; no protocol/wire change. The
-  runtime wires this seam itself (#566) to keep the env block's baked `Date:`
-  line accurate: `entanglement_runtime::env_date::date_resolver()` patches just
-  that line to today's date and returns `None` — falling back to the unmodified
-  baked prompt — whenever the date hasn't actually changed, so the prompt stays
-  byte-identical, and therefore provider-cache-safe, for as long as it's
-  accurate.
+  runtime wires this seam itself (#566) through `system_prompt_mode::resolver`,
+  which pins the env block's baked `Date:` line **per session** at its first
+  resolution (`env_date::EnvDatePins`, forgotten on session end): a session
+  keeps its start date for its whole life, even across midnight, so its system
+  prompt stays byte-identical and provider-cache-safe; a new session gets
+  today's date ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
 - **Skill discovery + registry (✅ #114, [ADR-0036](../adr/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files

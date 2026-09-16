@@ -62,16 +62,16 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
-         | ToolCall{session,seq,request_id,tool,input}      // display-only, every call (before exec)
+         | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted invoke call when core unwrapped one (ADR-0204)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
-         | ToolExec{session,seq,request_id,tool,input,agent}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156)
+         | ToolExec{session,seq,request_id,tool,input,agent,envelope?}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156); envelope as on ToolCall (ADR-0204)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
-         | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?,exit_code?}   // output = display text; content carries an image result for faithful replay (#221); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text; exit_code (#681, ADR-0186) mirrors the same field — a wire consumer can branch on a bash/call/polled-job exit status without parsing [exit N]
+         | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?,exit_code?,envelope?}   // output = display text; content carries any result output can't rebuild exactly — an image (#221), a tool reference, several parts — for byte-identical replay (ADR-0202); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text; exit_code (#681, ADR-0186) mirrors the same field — a wire consumer can branch on a bash/call/polled-job exit status without parsing [exit N]
          | TaskList{session,seq,content}      // full outline snapshot (markdown)
-         | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?}  // per-round-trip usage + cost (#192)
+         | Usage{session,seq,input_tokens,output_tokens,cached_input_tokens,cache_write_tokens,cost_usd?,purpose}  // per-round-trip usage + cost (#192); purpose = turn | compaction (default turn)
          | Error{session,seq,message}
          | Done{session,seq}
-         | Compacted{session,seq,summary,kept,auto}   // compaction summary ready; auto:false (default) → source untouched, head forks into a new session (#324, ADR-0082 → ADR-0101); auto:true → in-place mutation the live engine already applied (#398, ADR-0103)
+         | Compacted{session,seq,summary,kept,auto,mode}   // this session was compacted into a successor and is now retired; summary doubles as the successor's seed. auto:false (default) = manual /compact, auto:true = the overflow guard; mode: summary (default) | prune — prune means no LLM summary was available and `summary` carries the pruned transcript. Never a mutation of this session: every path forks (#324, ADR-0082 → ADR-0101/0103 → ADR-0205). The successor's id arrives on its own SessionStarted{predecessor}, not here
          | FileChange{session,seq,path,change_kind,hash}   // file-change audit: runtime executor emits on edit/write/apply_patch; hash = sha256(after) (#202, ADR-0060, #455)
          | PlanChanged{session,seq,path,hash}   // a propose_plan-bound file changed on disk out of band (not through this session's own edit/write/apply_patch); live counterpart to propose_plan's staleness guard, off a dedicated debounced plans-folder watch (#627, ADR-0173). No core replay-fold semantics, like SkillActive
          | SkillActive{session,seq,skill_id?,allowed_tools?}   // wire-facing posture only: the active skill. Core neither interprets nor enforces it. Mirrors FileChange: a fresh per-session seq (#157), no core replay-fold semantics (a head just tracks the latest value). (#400, ADR-0106; the mask is gone — ADR-0194 removed skill-scoped allowed_tools enforcement, so allowed_tools is vestigial: still serialized when present for replay compat, never read or enforced)
@@ -79,6 +79,19 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | SearchResult{session,seq,part}   // persisted provider-side web-search block (ContentPart::ProviderSearch); replay folds it into the assistant Message's content like TextDelta (#481, ADR-0131)
          | ReasoningBlock{session,seq,part}   // persisted extended-thinking block (ContentPart::Reasoning); same replay fold as SearchResult. The *persistence* rail for reasoning — ReasoningDelta above is the *display* rail and is never folded into Context; both fire for the same thinking. Capture is unconditional; whether the block is sent back is ModelEntry::replay_thinking (ADR-0160)
 ```
+
+**`envelope` — an unwrapped `invoke` call** ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)).
+`ToolEnvelope{tool,input}` is the call exactly as the model emitted it: the
+outer name (`invoke`) and the raw argument string. It is present on
+`ToolCall`/`ToolExec`/`ToolOutput` only when the round advertised the
+`invoke {name, args}` spec and core unwrapped the call. `tool`/`input` then
+name the inner call, so heads, gates, hooks and approvals handle an ordinary
+tool call and never parse the envelope. It exists so the model-facing history
+stays unchanged: `Context` keeps the emitted call, and replay rebuilds it from
+`envelope`. A call that is not unwrapped (malformed, a reserved inner name, or
+`invoke` not advertised) keeps its emitted name and has no `envelope`.
+`skip_serializing_if` omits the field when `None`, so pre-ADR-0204 logs and
+ordinary calls serialize byte for byte as before.
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
@@ -319,36 +332,42 @@ deferred while a turn is live via the same stash gate as `SetAgent`/`SetModel`
 — a oneshot never runs concurrently with a turn, which is what lets it reuse
 the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
-`OutEvent::Compacted{session,seq,summary,kept,auto}` — persistence and
+`OutEvent::Compacted{session,seq,summary,kept,auto,mode}` — persistence and
 `ReplayFrom` history cover it for free (both are variant-agnostic over any
-`seq()`-bearing event). **Copy-on-write (ADR-0101), forking a *successor*
-(ADR-0110):** the source session's `Context` is **never mutated** — the summary
-rides only in the event, and the head forks it into a **new root** session via
-`InMsg::Spawn` (`parent = None`, `predecessor = Some(source)`, agent = source
-profile, prompt = summary), then **closes the source** with `InMsg::CloseSession`
-so its interactive session is retired (the user moves forward into the compacted
-successor; the source's log is preserved). A truncated summary
-(`StopReason::MaxTokens`) is refused outright (`Error`, never forked). The
-successor is a *root*, not a child of the source, precisely so closing the source
-doesn't cascade onto it. `Session::replay`'s `Compacted` fold is a **no-op** for
-`auto: false` — a resumed *source* would recover its full pre-compaction history,
-but the head now closes the source (closed ids are single-use), so that undo is
-no longer reachable interactively (ADR-0110 amends ADR-0101's implicit undo); the
-history survives only as the persisted log. `kept` (#397, ADR-0102) is how many
-trailing messages ride verbatim inside `summary` rather than being paraphrased
-— clamped to the nearest safe turn boundary by `Context::safe_kept`; `0` (the
-default) means the whole history was summarized with no verbatim tail,
-matching every pre-#397 record.
+`seq()`-bearing event). **Every compaction forks a successor and retires this
+session** ([ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md),
+generalizing ADR-0101/0110): the source's `Context` is **never** mutated on any
+path, so this event is always a *report*, and `Session::replay`'s `Compacted`
+fold is a **no-op** in every case — including legacy `auto: true` records, whose
+in-place mutation is deliberately not replayed, because the log still holds the
+history the retired source actually had.
 
-`auto` (#398, [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md))
-tells the two mutation semantics sharing this variant apart: `false` (the
-default, every pre-#398 record) is the copy-on-write report above; `true` is
-`session/turn.rs`'s automatic in-place compaction on context overflow — a turn
-mid-flight has no head to fork into, so it mutates the live `Context` via
-`Context::apply_compaction` directly instead. `Session::replay` folds `auto:
-true` by replaying that same `apply_compaction` call so a resumed session's
-history matches the live one, rather than treating it as a no-op like the
-manual path.
+The engine mints the successor itself (`session/fork.rs`): it sends
+`InMsg::Spawn { parent: None, predecessor: Some(source), agent: <source
+profile>, prompt: <summary> }` followed by `InMsg::CloseSession { source }`.
+**A head learns the successor's id from that successor's own
+`SessionStarted { predecessor: Some(source), .. }`**, not from a field here —
+the lineage edge already existed (ADR-0110) and is the one authoritative
+statement of the relationship. A head tracking a single session rebinds to the
+successor on that event, since the turn and its `Done` land there; a head that
+just relays (`pipe`, `serve`) needs no change at all. A `ToolResult` still
+addressed to the retired source is redirected to its successor by the
+supervisor rather than refused as a closed id.
+
+`kept` (#397, ADR-0102) is how many trailing messages ride verbatim inside
+`summary` rather than being paraphrased — clamped to the nearest safe turn
+boundary by `Context::safe_kept`; `0` (the default) means the whole history was
+summarized with no verbatim tail, matching every pre-#397 record.
+
+`auto` and `mode` (`#[serde(default)]`, so every older record deserializes
+unchanged) name which path ran: `auto: false` + `mode: summary` is the manual
+`/compact` op; `auto: true` + `mode: summary` is auto-summarize on context
+overflow (#398, [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md));
+`auto: true` + `mode: prune` is the prune-only fallback, which has no LLM
+summary — `summary` then carries the placeholder-pruned transcript that seeds
+the successor. That last case is new wire surface: ADR-0121 had the prune stay
+silent, which ADR-0205 retires, because a head cannot follow a session id
+change it is never told about.
 
 **Live generation-parameter changes — `InMsg::SetGeneration`** (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
