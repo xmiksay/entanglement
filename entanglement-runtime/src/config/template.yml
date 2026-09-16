@@ -16,13 +16,15 @@
 #agent: build
 
 # Provider selection, mirroring ENTANGLEMENT_PROVIDER
-# (zai | openai | ollama | anthropic | echo | any catalog name).
+# (zai | zai_paas | openai | ollama | anthropic | echo | any catalog name).
+# `zai` is the GLM Coding Plan endpoint; a pay-as-you-go z.ai key needs
+# `zai_paas` (same ZAI_API_KEY).
 # Leave commented to auto-detect by which API key is present.
 #provider: zai
 
 # Model id override. Leave commented for the selected provider's catalog default
 # (or its {NAME}_MODEL env var, which still wins).
-#model: glm-5.2
+#model: glm-5.3
 
 # Log at `debug` by default, as `--verbose` does (RUST_LOG always wins).
 #verbose: false
@@ -136,7 +138,7 @@
 #      Authorization: "Bearer ${WEATHER_API_KEY}"
 
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
-# web search MID-TURN, server-side (z.ai and Anthropic only), and cites the
+# web search MID-TURN, server-side (z.ai `zai`/`zai_paas` and Anthropic only), and cites the
 # results; there is no client tool round-trip. ENABLING THIS IS YOUR CONSENT: the
 # search runs provider-side, OUTSIDE the runtime permission ladder — no per-call
 # approval prompt gates it. Results surface as reasoning lines, not persisted into
@@ -193,3 +195,18 @@
 # tool_search); ENTANGLEMENT_TOOL_ADVERTISING wins over this. Resolved once
 # per session and fixed for its lifetime.
 #tool_advertising: tool_search
+
+# Client-side discovery strategy, per provider (ADR-0204). Applies only to a
+# tool_search-mode session on an OpenAI-compatible wire ("client_side"): how it
+# reaches a tool discovered through explore/describe.
+#   append       — the tool's schema joins the advertised array (one prompt-cache
+#                  miss per discovery); the default when nothing decides
+#   native_first — the array never changes; call the tool by its real name, and
+#                  fall back to the `invoke` envelope only if that fails
+#   invoke       — the array never changes; discovered tools go through `invoke`
+# Keyed by provider name; an entry here wins over that provider's (and its
+# models') catalog `discovery:` value in providers.yml. A key naming a provider
+# you never use is inert. There is no environment variable for this setting.
+#discovery:
+#  zai: native_first
+#  gemini: invoke

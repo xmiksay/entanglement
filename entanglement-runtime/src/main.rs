@@ -32,12 +32,10 @@ use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{
-    EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId, ToolAdvertising,
-};
+use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
-    ProviderEntry, ResolvedModel, ThinkingStyle, ToolSpec, WebSearchConfig, Wire,
+    ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
 use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
 use std::collections::HashMap;
@@ -611,32 +609,6 @@ fn web_search_tool_version(
         .and_then(|m| m.web_search_tool_version.clone())
 }
 
-/// Anthropic extended-thinking request shape for `model`: the catalog's
-/// `ModelEntry::thinking_style`, defaulting to the fixed-budget form so an
-/// existing user catalog keeps emitting exactly what it emitted before. Resolved
-/// inside [`anthropic_factory_for`] rather than passed in like
-/// `web_search_tool_version` — it applies to every request, not just the
-/// web-search ones, so threading it would make each call site repeat the lookup.
-fn thinking_style(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> ThinkingStyle {
-    catalog
-        .model(&entry.name, model)
-        .map(|m| m.resolved_thinking_style())
-        .unwrap_or_default()
-}
-
-/// Whether captured thinking blocks replay to `model`. The Anthropic wire
-/// default is **on**: the API requires the block back on a tool round-trip, and
-/// when thinking is off the setting is inert anyway (no blocks are captured, so
-/// there is nothing to send). That also makes `true` the right answer for a
-/// model absent from the catalog — a user pointing at an unlisted model still
-/// gets a valid request rather than a 400 they cannot diagnose.
-fn replay_thinking(entry: &ProviderEntry, model: &str, catalog: &Catalog) -> bool {
-    catalog
-        .model(&entry.name, model)
-        .map(|m| m.replays_thinking(true))
-        .unwrap_or(true)
-}
-
 /// Anthropic-wire provider. Always keyed; base from env/catalog else the
 /// client's own default (#551, see [`anthropic_factory_for`]).
 fn anthropic_wire_config(
@@ -879,6 +851,7 @@ fn openai_responses_factory_for(
         resolve_rpm(entry),
         resolve_concurrency(entry),
         catalog.model_concurrency_resolver(&entry.name),
+        catalog.thinking_spec_resolver(&entry.name),
         http_client.clone(),
     ))
 }
@@ -933,8 +906,12 @@ fn anthropic_factory_for(
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         web_search_tool_version,
-        thinking_style(entry, model, catalog),
-        replay_thinking(entry, model, catalog),
+        // Thinking shape, replay, effort tiers, temperature support — resolved
+        // inside the factory builder (not threaded like
+        // `web_search_tool_version`) because they apply to every request. An
+        // unlisted model gets `AnthropicModelSpec::default()`: budget shape,
+        // replay on (the API requires the block back on a tool round-trip).
+        catalog.anthropic_model_spec(&entry.name, model),
         http_client.clone(),
     ))
 }
@@ -1204,37 +1181,6 @@ fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
         Some(Cmd::Tui { .. }) => true,
         None => prompt.is_empty(),
         _ => false,
-    }
-}
-
-/// The full deduped, name-sorted tool surface (#566): every visible registry
-/// spec plus the runtime-owned pseudo-tools, in one stable order independent
-/// of registration order. Shared by `Full` mode and the `anthropic_native`
-/// `ToolSearch` encoding (ADR-0196 §3) — the latter advertises this same
-/// surface, then additionally flags its non-kernel entries `defer_loading`.
-fn full_surface(visible_specs: Vec<ToolSpec>, runtime_specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
-    let mut specs = visible_specs;
-    specs.extend(runtime_specs);
-    // A runtime-owned pseudo-tool also present in the registry would appear
-    // twice; keep one. Sorting first makes duplicates adjacent.
-    specs.sort_by(|a, b| a.name.cmp(&b.name));
-    specs.dedup_by(|a, b| a.name == b.name);
-    specs
-}
-
-/// ADR-0196 §3, shared by the `anthropic_native` and `responses_native`
-/// encodings: flag every spec `defer_loading` except the lean kernel
-/// (`tool_names::TOOL_SEARCH_KERNEL`) and anything already in `discovered` —
-/// split out of the resolver closure so this pure flagging logic is
-/// unit-testable on its own. The kernel is always present in `specs`
-/// (`full_surface`'s input always includes it), so at least one entry always
-/// comes out non-deferred — Anthropic's hard requirement, harmless overhead
-/// on the Responses wire (which has no such requirement of its own).
-fn mark_defer_loading(specs: &mut [ToolSpec], discovered: &[String]) {
-    for spec in specs.iter_mut() {
-        let kernel = tool_names::TOOL_SEARCH_KERNEL.contains(&spec.name.as_str());
-        let already_discovered = discovered.iter().any(|n| n == &spec.name);
-        spec.defer_loading = !(kernel || already_discovered);
     }
 }
 
@@ -1523,130 +1469,27 @@ async fn main() -> Result<()> {
     // path) through the `summarize` pin when one is set — core calls this with
     // the purpose string and falls back to the session's own backend on `None`.
     engine_config.aux_llm_resolver = Some(aux_registry.clone().resolver());
-    // Dynamic `ToolRegistry` (#372, ADR-0096): shared mutably so a live
-    // registration change (MCP add/remove, #375) is visible without a restart.
-    // `engine_config.tool_specs` stays the static snapshot baked above (still
-    // useful as the tools-checklist roster below); `tool_spec_resolver` is the
-    // seam core actually consults every turn (ADR-0076) — reproducing that same
-    // snapshot (registry tools + the full runtime-owned roster:
-    // `update_tasks`/`ask_user`/`poll` + `bash` + `rhai` behind its feature)
-    // keeps this change behavior-neutral today, while making every *future*
-    // registry mutation land on the next turn for free. This resolver is the
-    // **only** thing that shapes the surface now — core advertises its output
-    // verbatim, with masks enforced at dispatch — so a spec missing here is a
-    // spec no model ever sees (the ADR-0190 Bug-1 shape: `poll` was omitted
-    // and vanished from every real head while tests, which run off the static
-    // `tool_specs` fallback, stayed green).
-    // Mode branch (#560, ADR-0196 §2-3): `Full` reproduces the pre-P3 full
-    // snapshot unchanged; `ToolSearch` projects the lean kernel (sorted,
-    // cache-stable prefix) and appends this session's discovered-tool tail
-    // in discovery order — **never re-sorted globally**, since sorting the
-    // whole array would let a later-discovered, alphabetically-earlier name
-    // insert into the middle of an already-cached prefix instead of at the
-    // end. That's a deliberate deviation from the kernel-internal sort
-    // below: the kernel is sorted because it never changes shape within a
-    // session (cache-stable by construction either way), the tail is
-    // append-only because it does.
-    {
-        let tools = tools.clone();
-        let avail = mcp_available.clone();
-        let advertising = advertising_state.clone();
-        engine_config.tool_spec_resolver = Some(Arc::new(move |session: &SessionId| {
-            // `read_raw` lives in the same shared registry as every other tool
-            // (rhai's bridge needs to `execute()` it) but must never reach the
-            // model directly — it's read-only for `parse_json`/`parse_yaml`
-            // (ADR-0098) and is graded/masked as an alias of `read`, which only
-            // holds if a profile author never sees it to configure separately.
-            // A lazily-connected `allowed` MCP server's tools (#542) stay
-            // scoped to the sessions that enabled them — MCP is the one
-            // acknowledged dynamic seam in an otherwise session-stable surface,
-            // since a server's tools are unknowable until it connects. This
-            // filter still applies to `Full` mode's surface and to the
-            // `ToolSearch` kernel's own matching pool (moot there — no kernel
-            // name is ever an `mcp__*` tool) — a `describe`d MCP tool's tail
-            // entry below resolves through the unfiltered registry instead
-            // (§3's append-only guarantee outranks the per-session MCP
-            // visibility gate once the model has already discovered it).
-            let registry = tools.read().unwrap();
-            let visible_specs: Vec<_> = registry
-                .specs()
-                .into_iter()
-                .filter(|s| s.name != "read_raw" && avail.spec_visible(&s.name, session))
-                .collect();
-            let mut runtime_specs = discover::runtime_owned_specs();
-            runtime_specs.push(discover::explore_spec());
-            runtime_specs.push(discover::describe_spec());
-
-            match advertising.mode(session) {
-                ToolAdvertising::Full => full_surface(visible_specs, runtime_specs),
-                ToolAdvertising::ToolSearch => {
-                    let discovered = advertising
-                        .discovered
-                        .lock()
-                        .expect("discovered-tool mutex poisoned")
-                        .names(session);
-                    match advertising.encoding(session) {
-                        tool_advertising::Encoding::ClientSide => {
-                            let mut kernel_pool = visible_specs;
-                            kernel_pool.extend(runtime_specs.iter().cloned());
-                            let mut specs: Vec<_> = kernel_pool
-                                .into_iter()
-                                .filter(|s| {
-                                    tool_names::TOOL_SEARCH_KERNEL.contains(&s.name.as_str())
-                                })
-                                .collect();
-                            specs.sort_by(|a, b| a.name.cmp(&b.name));
-                            specs.dedup_by(|a, b| a.name == b.name);
-
-                            // ADR-0200: `advertise_discovered: false` freezes
-                            // `specs` at the kernel prefix for the whole
-                            // session — a snapshot-cached local server
-                            // executes an unadvertised registered call fine
-                            // (ADR-0192 dispatch-side enforcement), so the
-                            // schema reaching the model via `describe()`'s
-                            // transcript reply is enough; the array need
-                            // never grow.
-                            tool_advertising::append_discovered_tail(
-                                &mut specs,
-                                &discovered,
-                                advertising.advertise_discovered(session),
-                                |name| {
-                                    registry.spec_for(name).or_else(|| {
-                                        runtime_specs.iter().find(|s| s.name == name).cloned()
-                                    })
-                                },
-                            );
-                            specs
-                        }
-                        // ADR-0196 §3: the full surface (same shape `Full`
-                        // mode advertises), but every non-kernel,
-                        // non-discovered tool is marked `defer_loading` so
-                        // the client omits it from the rendered/cached
-                        // prompt until discovered — `describe()` on the
-                        // Anthropic wire, the native `tool_search` primitive
-                        // (P7's `discover::run_tool_search`) on the
-                        // Responses wire. Both wires share the identical
-                        // flagging logic (`mark_defer_loading`) — only the
-                        // discovery mechanism differs. The profile-defining
-                        // specs (`propose_plan`, `agent`/`agent_send`)
-                        // aren't in this resolver's output at all — core
-                        // appends them afterward (`cfg.profile_tool_specs`)
-                        // with `defer_loading` at its constructor default
-                        // (`false`), so they stay non-deferred for free. The
-                        // kernel alone guarantees at least one non-deferred
-                        // entry either way — Anthropic's hard requirement,
-                        // harmless overhead on the Responses wire.
-                        tool_advertising::Encoding::AnthropicNative
-                        | tool_advertising::Encoding::ResponsesNative => {
-                            let mut specs = full_surface(visible_specs, runtime_specs);
-                            mark_defer_loading(&mut specs, &discovered);
-                            specs
-                        }
-                    }
-                }
-            }
-        }));
-    }
+    // Dynamic `ToolRegistry` (#372, ADR-0096) behind the per-session resolver
+    // core consults every round (ADR-0076) — shaped per the session's pinned
+    // advertising mode/encoding/discovery (ADR-0196, ADR-0204). Lives in the
+    // library (`tool_advertising::surface`) so tests run the same resolver.
+    // The resolver pins each session at its first resolution from the model
+    // core hands it — the startup backend when none is bound (ADR-0204).
+    let advertising_inputs = Arc::new(
+        tool_advertising::AdvertisingInputs::new(
+            Arc::new(user_config.clone()),
+            Some(Arc::new(catalog.clone())),
+        )
+        .with_default_model(provider_name.clone(), model_info.id.clone()),
+    );
+    engine_config.tool_spec_resolver = Some(tool_advertising::surface::tool_spec_resolver(
+        tool_advertising::surface::SurfaceSources {
+            tools: tools.clone(),
+            avail: mcp_available.clone(),
+            advertising: advertising_state.clone(),
+            inputs: advertising_inputs.clone(),
+        },
+    ));
     // Live MCP server management (#375): `ActiveServers` was seeded by
     // `build_config` from the servers it actually connected; `ServerConfigs`
     // starts from the *whole* user-configured set (including a disabled/failed
@@ -1719,17 +1562,9 @@ async fn main() -> Result<()> {
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,
-        // Tool-advertising inputs (ADR-0196): the user config
-        // (`tool_advertising` tier) + the catalog (per-model
-        // `tool_advertising:` tier), for the executor's session→mode map.
-        // With neither set anywhere — the shipped state — every session
-        // resolves the default, `tool_search`.
-        Some(std::sync::Arc::new(
-            entanglement_runtime::tool_advertising::AdvertisingInputs::new(
-                std::sync::Arc::new(user_config.clone()),
-                Some(std::sync::Arc::new(catalog.clone())),
-            ),
-        )),
+        // The same advertising inputs the resolver pins from; the executor
+        // only logs a `SetModel` onto a model preferring another mode.
+        Some(advertising_inputs),
         // `explore`/`describe`'s shared state (#560, ADR-0196 §4): the same
         // `advertising_state` the tool-spec/system-prompt resolvers above
         // read, plus the MCP three-state roster `explore` lists.
@@ -2132,7 +1967,8 @@ mod tests {
             models: Vec::new(),
             mcp_servers: Default::default(),
             prompt_cache_key: false,
-            advertise_discovered: None,
+            thinking_control: None,
+            discovery: None,
         }
     }
 
@@ -2186,57 +2022,5 @@ mod tests {
         for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
             assert!(names.contains(&expected.to_string()), "{names:?}");
         }
-    }
-
-    // ── ADR-0196 §3, `anthropic_native`/`responses_native` ToolSearch
-    // encodings — both share the identical `mark_defer_loading` flagging. ──
-
-    fn tool_spec(name: &str) -> entanglement_provider::ToolSpec {
-        entanglement_provider::ToolSpec::new(name, "d")
-    }
-
-    #[test]
-    fn full_surface_sorts_and_dedups_by_name() {
-        let visible = vec![tool_spec("write"), tool_spec("read")];
-        let runtime = vec![tool_spec("poll"), tool_spec("read")]; // duplicated
-        let specs = super::full_surface(visible, runtime);
-        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["poll", "read", "write"]);
-    }
-
-    #[test]
-    fn mark_defer_loading_defers_everything_outside_kernel_and_discovered() {
-        let mut specs = vec![
-            tool_spec("read"),         // kernel
-            tool_spec("bash"),         // kernel
-            tool_spec("glob"),         // not kernel, not discovered
-            tool_spec("mcp__x__tool"), // not kernel, discovered
-        ];
-        let discovered = vec!["mcp__x__tool".to_string()];
-        super::mark_defer_loading(&mut specs, &discovered);
-        let deferred: Vec<(&str, bool)> = specs
-            .iter()
-            .map(|s| (s.name.as_str(), s.defer_loading))
-            .collect();
-        assert_eq!(
-            deferred,
-            vec![
-                ("read", false),
-                ("bash", false),
-                ("glob", true),
-                ("mcp__x__tool", false),
-            ]
-        );
-    }
-
-    #[test]
-    fn mark_defer_loading_keeps_at_least_the_kernel_non_deferred() {
-        // Even with nothing discovered yet, the kernel alone satisfies
-        // Anthropic's "at least one non-deferred tool" requirement (and is
-        // harmless-but-unneeded overhead on the Responses wire, which has no
-        // such requirement).
-        let mut specs = vec![tool_spec("read"), tool_spec("glob"), tool_spec("grep")];
-        super::mark_defer_loading(&mut specs, &[]);
-        assert!(specs.iter().any(|s| !s.defer_loading));
     }
 }

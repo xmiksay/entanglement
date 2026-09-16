@@ -83,6 +83,13 @@ pub const DESCRIBE_TOOL: &str = "describe";
 /// strand the wire's own round-trip with no way to answer it.
 pub use entanglement_core::TOOL_SEARCH_CALL_TOOL as RESPONSES_TOOL_SEARCH_TOOL;
 
+/// The `invoke {name, args}` envelope a `native_first`/`invoke` client-side
+/// session advertises (ADR-0204). Core unwraps it, so a `ToolExec` carrying
+/// this name is one core refused to unwrap — never a registered tool, and
+/// deliberately not in [`TOOL_SEARCH_KERNEL`] or the runtime-owned roster,
+/// since only those two strategies advertise it.
+pub use entanglement_core::INVOKE_TOOL;
+
 /// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
 /// entirely (ADR-0196 §4): read-only catalog introspection, never a
 /// capability decision. Narrow and deliberate, like ADR-0190's original

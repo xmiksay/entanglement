@@ -263,6 +263,19 @@ pub fn decline_text(
     violation: &Violation,
     schema_already_delivered: bool,
 ) -> String {
+    decline_text_for(spec, violation, schema_already_delivered, false)
+}
+
+/// [`decline_text`] with the example call wrapped as `{"name", "args"}` when
+/// the session reaches this tool through the `invoke` envelope (ADR-0204,
+/// [`crate::tool_advertising::example_via_invoke`]) — a native-shaped example
+/// would teach a call the model can't make.
+pub fn decline_text_for(
+    spec: &ToolSpec,
+    violation: &Violation,
+    schema_already_delivered: bool,
+    via_invoke: bool,
+) -> String {
     let mut msg = format!(
         "schema violation calling `{}`: {}",
         spec.name,
@@ -275,9 +288,13 @@ pub fn decline_text(
         msg.push_str("\n\ncorrect usage:\n");
         msg.push_str(&serde_json::to_string_pretty(&schema_json).unwrap_or_default());
         msg.push_str("\n\nexample call:\n");
-        msg.push_str(
-            &serde_json::to_string_pretty(&minimal_example(&spec.schema)).unwrap_or_default(),
-        );
+        let example = minimal_example(&spec.schema);
+        let example = if via_invoke {
+            json!({ "name": spec.name, "args": example })
+        } else {
+            example
+        };
+        msg.push_str(&serde_json::to_string_pretty(&example).unwrap_or_default());
     }
     msg
 }

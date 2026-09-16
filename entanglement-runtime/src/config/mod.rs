@@ -53,7 +53,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{Permission, PermissionProfile, ToolAdvertising, WebSearchConfig};
+use entanglement_core::{
+    Discovery, Permission, PermissionProfile, ToolAdvertising, WebSearchConfig,
+};
 use serde::Deserialize;
 use serde_yaml::Value;
 
@@ -72,6 +74,7 @@ pub mod env_key;
 pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
+pub mod write_key;
 
 pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
@@ -219,6 +222,15 @@ struct RawConfig {
     /// `tool_advertising::resolve_advertising`.
     #[serde(default)]
     tool_advertising: Option<ToolAdvertising>,
+    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
+    /// provider name: `discovery: {zai: native_first}`. Applied over that
+    /// provider's (and its models') catalog `discovery:` value. Absent or
+    /// empty ⇒ no install-wide opinion; the catalog decides. A key naming a
+    /// provider the session isn't on — or one no catalog lists — is inert,
+    /// never an error: a user may keep entries for providers they switch
+    /// between, or for one a future `providers.yml` adds.
+    #[serde(default)]
+    discovery: HashMap<String, Discovery>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -280,6 +292,11 @@ pub struct Config {
     /// per-model chain resolves — kept as data here so the layered file
     /// merge and `inspect config` provenance treat it like every other key.
     pub tool_advertising: Option<ToolAdvertising>,
+    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
+    /// provider name. Empty (the default) ⇒ the catalog's provider/model
+    /// `discovery:` decides. Read at resolution time by
+    /// `tool_advertising::resolve_discovery`, one tier above the catalog.
+    pub discovery: HashMap<String, Discovery>,
 }
 
 /// Which of the three precedence layers a value came from. Ordered low → high so
@@ -433,6 +450,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         // layered `Value` merge can't see the process env.
         session_retention_days: resolve_session_retention(raw.session_retention_days),
         tool_advertising: raw.tool_advertising,
+        discovery: raw.discovery,
     };
     Ok(Resolved {
         config,
@@ -462,6 +480,7 @@ fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
         "editor",
         "session_retention_days",
         "tool_advertising",
+        "discovery",
     ];
     KEYS.iter()
         .filter_map(|key| {

@@ -1,11 +1,14 @@
 //! `describe(names)` (#560, ADR-0196 §4): the full schema for one or more
 //! discovered names, byte-identical in shape to a native `<tools>` entry —
-//! the serialized [`ToolSpec`] itself, not a friendlier rendering. Under the
-//! `client_side` encoding (§3, the only one this phase implements) a
-//! successfully resolved name also joins the session's discovered set, so
-//! the next round's `tool_spec_resolver` advertises it directly.
+//! the serialized [`ToolSpec`] itself, not a friendlier rendering. Under
+//! `ToolSearch` mode a successfully resolved name also joins the session's
+//! discovered set: on `client_side` under `append` the next round's
+//! `tool_spec_resolver` advertises it directly (under `native_first`/`invoke`
+//! the set only drives dedup and the reply names how to call it, ADR-0204); on `anthropic_native` it stays `defer_loading`
+//! for the whole session and the reply's `tool_reference` blocks deliver it
+//! (ADR-0202 §1), so that reply carries no schema text at all.
 
-use entanglement_core::{ContentPart, Holly, SessionId, ToolAdvertising, ToolSpec};
+use entanglement_core::{ContentPart, Discovery, Holly, SessionId, ToolAdvertising, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -115,31 +118,53 @@ fn unknown_entry(
 /// delivered (#560 describe-dedup follow-up: a model stuck re-`describe`-ing
 /// an unchanging tool — seen looping up to 131 times on one name — must not
 /// keep re-paying, and re-reading, the same schema JSON every round). Worded
-/// per whether the discovered tail is actually growing the advertised array
-/// (ADR-0200's `advertise_discovered`): an append-mode session can truthfully
-/// say the tool is now directly callable; a frozen-array session must not —
-/// the schema stands from where it was first shown, but the tool never
-/// joined the advertised list, so claiming otherwise would be false.
+/// per the session's strategy (ADR-0204): under `append` the tool joined the
+/// advertised array and is ready to call; otherwise it never will, so the
+/// note repeats how to reach it.
 fn already_delivered_entry(
     advertising: &AdvertisingState,
     session: &SessionId,
     name: &str,
 ) -> Value {
-    let note = if advertising.advertise_discovered(session) {
-        format!("{name}: schema already provided above — the tool is ready to call")
-    } else {
-        format!(
-            "{name}: schema already provided above — this session does not \
-             auto-advertise discovered tools (the tool list won't show it), \
-             but the schema already shown is still valid and the call will \
-             still dispatch"
-        )
+    let note = match call_hint(advertising.discovery(session)) {
+        None => format!("{name}: schema already provided above — the tool is ready to call"),
+        Some(hint) => format!("{name}: schema already provided above. {hint}"),
     };
     json!({ "name": name, "note": note })
 }
 
+/// How to call a loaded tool in a session whose tools array never grows
+/// (ADR-0204) — the wording the live probe validated. `None` under `append`,
+/// where the tool is simply advertised next round.
+fn call_hint(discovery: Discovery) -> Option<&'static str> {
+    match discovery {
+        Discovery::Append => None,
+        Discovery::NativeFirst => Some(
+            "Call each directly by its name as a normal tool call; only if you cannot, \
+             call invoke {\"name\": \"<tool>\", \"args\": {...}}.",
+        ),
+        Discovery::Invoke => Some(
+            "Call each through invoke {\"name\": \"<tool>\", \"args\": {...}}; \
+             they cannot be called directly.",
+        ),
+    }
+}
+
+/// The plain-text `describe` reply: the schema entries as JSON, preceded by
+/// a `Loaded: …` call instruction when this strategy needs one and something
+/// newly resolved.
+fn text_reply(entries: &[Value], resolved: &[String], discovery: Discovery) -> String {
+    let json = serde_json::to_string_pretty(entries).unwrap_or_default();
+    match call_hint(discovery) {
+        Some(hint) if !resolved.is_empty() => {
+            format!("Loaded: {}. {hint}\n\n{json}", resolved.join(", "))
+        }
+        _ => json,
+    }
+}
+
 /// Resolve every requested name against the given inputs, marking each new
-/// success into `discovered` when `mode` is `ToolSearch` — the pure core of
+/// success into `discovered` in every mode — the pure core of
 /// `describe`, independent of the tool round-trip. A name already present in
 /// `discovered` (a prior `describe()` this session, or an `arg_validate`
 /// schema-violation decline, ADR-0196 §6 — same set) short-circuits to
@@ -158,7 +183,6 @@ async fn build_entries(
     mcp_scopes: Option<&McpScopes>,
     advertising: &AdvertisingState,
     session: &SessionId,
-    mode: ToolAdvertising,
     names: &[String],
 ) -> (Vec<Value>, Vec<String>) {
     let mut entries = Vec::with_capacity(names.len());
@@ -175,13 +199,13 @@ async fn build_entries(
         }
         match resolve_spec(registry, mcp_scopes, session, name).await {
             Ok(spec) => {
-                if mode == ToolAdvertising::ToolSearch {
-                    advertising
-                        .discovered
-                        .lock()
-                        .expect("discovered-tool mutex poisoned")
-                        .mark(session, name);
-                }
+                // Every mode records a delivery: `Full` appends a tool its
+                // start snapshot lacks, `append` grows its tail (ADR-0204).
+                advertising
+                    .discovered
+                    .lock()
+                    .expect("discovered-tool mutex poisoned")
+                    .mark(session, name);
                 resolved.push(name.clone());
                 entries.push(spec_to_json(&spec));
             }
@@ -234,34 +258,43 @@ pub async fn run_describe(
     };
 
     let mode = advertising.mode(&session);
-    let (entries, resolved) = build_entries(
-        &registry,
-        skills,
-        mcp_scopes,
-        advertising,
-        &session,
-        mode,
-        &names,
-    )
-    .await;
-    let output = serde_json::to_string_pretty(&entries).unwrap_or_default();
-
-    // ADR-0196 §3, `anthropic_native` encoding: append a `tool_reference`
-    // part per newly-resolved name alongside the schema text this reply
-    // already carries — the API auto-expands each reference into the
-    // matching (already-sent, `defer_loading: true`) tool definition. Every
-    // other encoding, and a `Full`-mode session (where nothing is deferred
-    // to begin with), keeps the plain text reply unchanged.
+    let (entries, resolved) =
+        build_entries(&registry, skills, mcp_scopes, advertising, &session, &names).await;
+    // ADR-0196 §3 / ADR-0202 §1, `anthropic_native` encoding: the API expands
+    // each `tool_reference` into the matching (already-sent, still
+    // `defer_loading: true`) definition, so repeating the schema as text would
+    // deliver it twice. Every other encoding, and a `Full`-mode session (where
+    // nothing is deferred to begin with), keeps the plain JSON reply.
     if mode == ToolAdvertising::ToolSearch
         && advertising.encoding(&session) == Encoding::AnthropicNative
         && !resolved.is_empty()
     {
-        let mut content = vec![ContentPart::text(output)];
-        content.extend(resolved.into_iter().map(ContentPart::tool_reference));
+        let content = native_reply(&entries, resolved);
         seam::reply_content(holly, session, request_id, content, false, None, None).await;
     } else {
+        let output = text_reply(&entries, &resolved, advertising.discovery(&session));
         seam::reply(holly, session, request_id, output, false).await;
     }
+}
+
+/// The `anthropic_native` reply: one `Loaded: a, b` line, then the JSON of
+/// every entry that is *not* a resolved schema (unknown names, "already
+/// provided" notes), then one `tool_reference` per resolved name. A schema
+/// entry is exactly one carrying `schema` — `unknown_entry` and
+/// `already_delivered_entry` never do.
+fn native_reply(entries: &[Value], resolved: Vec<String>) -> Vec<ContentPart> {
+    let mut text = format!("Loaded: {}", resolved.join(", "));
+    let rest: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e.get("schema").is_none())
+        .collect();
+    if !rest.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&serde_json::to_string_pretty(&rest).unwrap_or_default());
+    }
+    let mut content = vec![ContentPart::text(text)];
+    content.extend(resolved.into_iter().map(ContentPart::tool_reference));
+    content
 }
 
 #[cfg(test)]
@@ -335,7 +368,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glob".to_string()],
         )
         .await;
@@ -370,7 +402,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["endpoint__weather".to_string()],
         )
         .await;
@@ -393,7 +424,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glob".to_string(), "nope".to_string()],
         )
         .await;
@@ -402,7 +432,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_mode_resolves_but_does_not_mark_discovered() {
+    async fn full_mode_resolves_and_marks_discovered() {
         let reg = registry();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
@@ -412,7 +442,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::Full,
             &["glob".to_string()],
         )
         .await;
@@ -421,12 +450,12 @@ mod tests {
         // distinguish them.
         assert!(entries[0].get("schema").is_some());
         assert!(entries[0].get("error").is_none());
-        assert!(advertising
-            .discovered
-            .lock()
-            .unwrap()
-            .names(&session)
-            .is_empty());
+        // ADR-0204 §5: a `Full` session appends a schema its start snapshot
+        // lacks, so the delivery is recorded like any other.
+        assert_eq!(
+            advertising.discovered.lock().unwrap().names(&session),
+            vec!["glob".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -440,7 +469,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["poll".to_string()],
         )
         .await;
@@ -458,7 +486,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glbo".to_string()],
         )
         .await;
@@ -487,7 +514,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["git".to_string()],
         )
         .await;
@@ -534,7 +560,6 @@ mod tests {
             Some(scopes.as_ref()),
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["mcp__kb__search".to_string()],
         )
         .await;
@@ -570,7 +595,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glob".to_string()],
         )
         .await;
@@ -585,7 +609,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glob".to_string()],
         )
         .await;
@@ -626,7 +649,6 @@ mod tests {
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
             &["glob".to_string(), "grep".to_string()],
         )
         .await;
@@ -648,48 +670,183 @@ mod tests {
         );
     }
 
-    /// #560 follow-up: under a `client_side` session that opted out of
-    /// growing its advertised array (ADR-0200's `advertise_discovered:
-    /// false`), the short-line wording must not claim the tool is now
-    /// "ready to call" — it never joined the advertised list, so that would
-    /// be false. It states the truth instead: the schema stands, the tool
-    /// list just won't show it.
+    /// ADR-0204: under a fixed-array strategy the short line must not claim
+    /// the tool is "ready to call" (it never joins the advertised list); it
+    /// repeats how to reach it instead.
     #[tokio::test]
-    async fn already_delivered_wording_is_truthful_under_a_frozen_advertised_array() {
-        let reg = registry();
+    async fn already_delivered_wording_follows_the_strategy() {
+        for (strategy, expect) in [
+            (Discovery::NativeFirst, "only if you cannot, call invoke"),
+            (Discovery::Invoke, "cannot be called directly"),
+        ] {
+            let reg = registry();
+            let advertising = AdvertisingState::new();
+            let session = SessionId::new("s");
+            pin(&advertising, &session, Encoding::ClientSide);
+            advertising
+                .modes
+                .lock()
+                .unwrap()
+                .set_discovery(&session, strategy);
+            advertising
+                .discovered
+                .lock()
+                .unwrap()
+                .mark(&session, "glob");
+
+            let (entries, _resolved) = build_entries(
+                &reg,
+                &SkillRegistry::default(),
+                None,
+                &advertising,
+                &session,
+                &["glob".to_string()],
+            )
+            .await;
+            let note = entries[0]["note"].as_str().expect("a short note entry");
+            assert!(
+                note.starts_with("glob: schema already provided above. "),
+                "{note}"
+            );
+            assert!(!note.contains("ready to call"), "{strategy:?}: {note}");
+            assert!(note.contains(expect), "{strategy:?}: {note}");
+        }
+    }
+
+    #[test]
+    fn text_reply_prefixes_the_call_instruction_only_when_needed() {
+        let entries = vec![json!({"name": "grep", "schema": {}})];
+        let resolved = vec!["grep".to_string()];
+        let plain = serde_json::to_string_pretty(&entries).unwrap();
+        assert_eq!(text_reply(&entries, &resolved, Discovery::Append), plain);
+        assert_eq!(
+            text_reply(&entries, &resolved, Discovery::NativeFirst),
+            format!(
+                "Loaded: grep. Call each directly by its name as a normal tool call; only if \
+                 you cannot, call invoke {{\"name\": \"<tool>\", \"args\": {{...}}}}.\n\n{plain}"
+            )
+        );
+        assert_eq!(
+            text_reply(&entries, &resolved, Discovery::Invoke),
+            format!(
+                "Loaded: grep. Call each through invoke {{\"name\": \"<tool>\", \"args\": \
+                 {{...}}}}; they cannot be called directly.\n\n{plain}"
+            )
+        );
+        // Nothing newly resolved: the entries' own notes carry the guidance.
+        assert_eq!(text_reply(&entries, &[], Discovery::Invoke), plain);
+    }
+
+    /// ADR-0204 §2: a `describe` under `native_first`/`invoke` records the
+    /// discovery (dedup still needs it) but the advertised array the resolver
+    /// builds from that set is byte-identical before and after.
+    #[tokio::test]
+    async fn describe_leaves_the_fixed_array_resolver_output_unchanged() {
+        for strategy in [Discovery::NativeFirst, Discovery::Invoke] {
+            let reg = registry_with_grep();
+            let advertising = AdvertisingState::new();
+            let session = SessionId::new("s");
+            pin(&advertising, &session, Encoding::ClientSide);
+            advertising
+                .modes
+                .lock()
+                .unwrap()
+                .set_discovery(&session, strategy);
+            let surface = || {
+                let discovered = advertising.discovered.lock().unwrap().names(&session);
+                crate::tool_advertising::client_side_surface(
+                    reg.specs(),
+                    &discovered,
+                    advertising.discovery(&session),
+                    |n| reg.spec_for(n),
+                )
+            };
+            let before = surface();
+            build_entries(
+                &reg,
+                &SkillRegistry::default(),
+                None,
+                &advertising,
+                &session,
+                &["glob".to_string(), "grep".to_string()],
+            )
+            .await;
+            assert_eq!(
+                advertising.discovered.lock().unwrap().names(&session).len(),
+                2,
+                "describe still records for dedup"
+            );
+            assert_eq!(
+                format!("{before:?}"),
+                format!("{:?}", surface()),
+                "{strategy:?}"
+            );
+        }
+    }
+
+    /// ADR-0202 §1: on `anthropic_native` the reply names what loaded and
+    /// carries references — never the resolved schema JSON — while misses and
+    /// "already provided" notes still come through as JSON.
+    #[tokio::test]
+    async fn anthropic_native_reply_is_references_plus_a_name_line_and_misses_only() {
+        let reg = registry_with_grep();
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
-        pin(&advertising, &session, Encoding::ClientSide);
-        advertising
-            .modes
-            .lock()
-            .unwrap()
-            .set_advertise_discovered(&session, false);
+        pin(&advertising, &session, Encoding::AnthropicNative);
         advertising
             .discovered
             .lock()
             .unwrap()
-            .mark(&session, "glob");
-
-        let (entries, _resolved) = build_entries(
+            .mark(&session, "read");
+        let names = ["glob", "grep", "nope", "read"].map(String::from);
+        let (entries, resolved) = build_entries(
             &reg,
             &SkillRegistry::default(),
             None,
             &advertising,
             &session,
-            ToolAdvertising::ToolSearch,
+            &names,
+        )
+        .await;
+
+        let content = native_reply(&entries, resolved);
+        let ContentPart::Text { text } = &content[0] else {
+            panic!("first part is the text line: {content:?}");
+        };
+        assert!(text.starts_with("Loaded: glob, grep"), "{text}");
+        assert!(!text.contains("\"schema\""), "no schema JSON: {text}");
+        assert!(text.contains("unknown tool: `nope`"), "{text}");
+        assert!(text.contains("schema already provided above"), "{text}");
+        assert_eq!(
+            &content[1..],
+            &[
+                ContentPart::tool_reference("glob"),
+                ContentPart::tool_reference("grep")
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_native_reply_with_only_hits_is_just_the_name_line() {
+        let reg = registry();
+        let advertising = AdvertisingState::new();
+        let session = SessionId::new("s");
+        let (entries, resolved) = build_entries(
+            &reg,
+            &SkillRegistry::default(),
+            None,
+            &advertising,
+            &session,
             &["glob".to_string()],
         )
         .await;
-        let note = entries[0]["note"].as_str().expect("a short note entry");
-        assert!(note.contains("schema already provided above"), "{note}");
-        assert!(
-            !note.contains("ready to call"),
-            "a frozen-array session must not falsely claim the tool is now callable: {note}"
-        );
-        assert!(
-            note.contains("does not auto-advertise"),
-            "the wording must truthfully explain why: {note}"
+        let content = native_reply(&entries, resolved);
+        assert_eq!(
+            content,
+            vec![
+                ContentPart::text("Loaded: glob"),
+                ContentPart::tool_reference("glob")
+            ]
         );
     }
 }

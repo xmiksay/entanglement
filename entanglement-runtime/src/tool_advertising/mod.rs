@@ -14,10 +14,12 @@
 //!    model in `providers.yml`);
 //! 4. default `tool_search`.
 //!
-//! **Per-session, resolved at start.** The resolver and executor are
+//! **Per-session, pinned at first resolution.** The resolver and executor are
 //! engine-global and session-multiplexed, so the resolved mode is held in a
-//! session→mode map ([`SessionToolAdvertising`]) owned by the tool
-//! executor's event loop, seeded from the session's initial model. A live
+//! session→mode map ([`SessionToolAdvertising`]), pinned by the tool-spec
+//! resolver the first time it runs for a session, from the model core hands
+//! it ([`AdvertisingState::ensure_pinned`]) — never from a broadcast event,
+//! which core's first round does not wait for. A live
 //! `SetModel` keeps the session's mode — switching mid-session would bust
 //! the prompt cache the mode exists to protect and strand half-emitted
 //! history — but a differing catalog preference on the new model is logged.
@@ -35,133 +37,33 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{Catalog, ModelEntry, SessionId, ToolAdvertising};
+use entanglement_core::{
+    Catalog, Discovery, ModelEntry, SessionId, SessionModel, ToolAdvertising, ToolSpec,
+};
 
-use crate::config::{Config, TOOL_ADVERTISING_ENV};
+use crate::config::Config;
 
 mod discovered;
-pub use discovered::{append_discovered_tail, DiscoveredSet};
+pub use discovered::{client_side_surface, DiscoveredSet};
+
+mod discovery;
+
+mod invoke;
+pub use invoke::{example_via_invoke, unknown_tool_reply};
 
 mod encoding;
 pub use encoding::Encoding;
 use encoding::{resolve_encoding, resolve_encoding_by_id};
 
-mod overlay;
-pub use overlay::advertise_new_overlay_enables;
+mod precedence;
 
-/// Which precedence tier won an advertising resolution — reported by
-/// `skutter inspect config` so "why is this session tool_search?" has an
-/// answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdvertisingSource {
-    Env,
-    Config,
-    Catalog,
-    Default,
-}
+pub mod surface;
 
-impl AdvertisingSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            AdvertisingSource::Env => "env",
-            AdvertisingSource::Config => "config",
-            AdvertisingSource::Catalog => "catalog",
-            AdvertisingSource::Default => "default",
-        }
-    }
-}
-
-/// The config/env half of the precedence chain, independent of any model:
-/// `None` when neither tier is set, so the catalog gets its say. Shared by
-/// the per-session resolver and `skutter inspect config` (whose global view
-/// has no model to consult).
-pub fn configured_advertising(config: &Config) -> Option<ToolAdvertising> {
-    if let Some(raw) = std::env::var(TOOL_ADVERTISING_ENV)
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        // Warn-and-fall-through, not error: a typo'd env var must not kill
-        // startup (the retention-env house pattern) — but it must be loud,
-        // because the user asked for a mode and silently getting another is
-        // the worse failure.
-        return match ToolAdvertising::parse(&raw) {
-            Some(mode) => Some(mode),
-            None => {
-                tracing::warn!(
-                    "ignoring unparseable {TOOL_ADVERTISING_ENV}={raw:?}; \
-                     falling back to config/catalog/default"
-                );
-                config.tool_advertising
-            }
-        };
-    }
-    config.tool_advertising
-}
-
-/// Which precedence tier the *global* (model-less) view would answer from —
-/// `skutter inspect config`'s provenance line. The catalog tier can only be
-/// reached per model, so globally it reports as the default.
-pub fn configured_advertising_source(config: &Config) -> AdvertisingSource {
-    if std::env::var(TOOL_ADVERTISING_ENV)
-        .ok()
-        .is_some_and(|v| !v.is_empty() && ToolAdvertising::parse(&v).is_some())
-    {
-        AdvertisingSource::Env
-    } else if config.tool_advertising.is_some() {
-        AdvertisingSource::Config
-    } else {
-        AdvertisingSource::Default
-    }
-}
-
-/// Resolve a `(provider, model)` pair's tool-advertising mode under the full
-/// precedence chain: env > config > that model's catalog entry >
-/// `tool_search`. The catalog miss (unknown provider/model — a user
-/// `providers.yml` entry can name anything) is not an error: it simply
-/// contributes no preference, exactly like an entry that omits
-/// `tool_advertising:`.
-pub fn resolve_advertising(
-    config: &Config,
-    catalog: Option<&Catalog>,
-    provider: &str,
-    model: &str,
-) -> ToolAdvertising {
-    if let Some(mode) = configured_advertising(config) {
-        return mode;
-    }
-    catalog
-        .and_then(|c| c.model(provider, model))
-        .and_then(
-            |ModelEntry {
-                 tool_advertising, ..
-             }| *tool_advertising,
-        )
-        .unwrap_or_default()
-}
-
-/// Resolve by model id alone, when only `SessionStarted.model` (a profile's
-/// bare model field, no provider) is known. Model ids are unique across the
-/// embedded catalog in practice; on a cross-provider collision the first
-/// match wins, which is harmless — both candidates lacking a
-/// `tool_advertising:` preference (the shipped state) is the only case
-/// where it could matter.
-pub fn resolve_advertising_by_id(
-    config: &Config,
-    catalog: Option<&Catalog>,
-    model: &str,
-) -> ToolAdvertising {
-    if let Some(mode) = configured_advertising(config) {
-        return mode;
-    }
-    catalog
-        .and_then(|c| c.model_by_id(model))
-        .and_then(
-            |ModelEntry {
-                 tool_advertising, ..
-             }| *tool_advertising,
-        )
-        .unwrap_or_default()
-}
+mod repin;
+pub use precedence::{
+    configured_advertising, configured_advertising_source, resolve_advertising,
+    resolve_advertising_by_id, AdvertisingSource,
+};
 
 /// The session→mode map (ADR-0196 §2): each live session's tool-advertising
 /// mode, resolved once at session start from that session's initial model.
@@ -176,6 +78,9 @@ pub fn resolve_advertising_by_id(
 #[derive(Debug, Default)]
 pub struct SessionToolAdvertising {
     modes: HashMap<SessionId, Pinned>,
+    /// A live re-pin requested before the session's first resolution,
+    /// applied by the pin itself ([`repin`]).
+    pending: HashMap<SessionId, repin::Override>,
 }
 
 /// One session's pinned facts: the advertising mode plus the encoding its
@@ -185,8 +90,8 @@ pub struct SessionToolAdvertising {
 struct Pinned {
     mode: ToolAdvertising,
     encoding: Encoding,
-    /// ADR-0200; defaulted `true` by `pin`, set via `set_advertise_discovered`.
-    advertise_discovered: bool,
+    /// ADR-0204; `Append` from `pin`, set via `set_discovery`.
+    discovery: Discovery,
 }
 
 impl SessionToolAdvertising {
@@ -194,8 +99,8 @@ impl SessionToolAdvertising {
         Self::default()
     }
 
-    /// Pin a session's mode + encoding. Called exactly once per session, at
-    /// start.
+    /// Pin a session's mode + encoding. Called once per session, at its first
+    /// resolution.
     pub fn pin(&mut self, session: SessionId, mode: ToolAdvertising, encoding: Encoding) {
         tracing::debug!(
             session = %session.0,
@@ -206,7 +111,7 @@ impl SessionToolAdvertising {
         let pinned = Pinned {
             mode,
             encoding,
-            advertise_discovered: true,
+            discovery: Discovery::Append,
         };
         self.modes.insert(session, pinned);
     }
@@ -226,6 +131,7 @@ impl SessionToolAdvertising {
     /// resume re-pins from its own `SessionStarted`/`ModelChanged` pair.
     pub fn forget(&mut self, session: &SessionId) {
         self.modes.remove(session);
+        self.pending.remove(session);
     }
 }
 
@@ -240,18 +146,34 @@ impl SessionToolAdvertising {
 pub struct AdvertisingInputs {
     config: Arc<Config>,
     catalog: Option<Arc<Catalog>>,
+    /// The startup backend's `(provider, model)`: what a session with no bound
+    /// model actually talks to, which core cannot name.
+    default_model: Option<(String, String)>,
 }
 
 impl AdvertisingInputs {
     pub fn new(config: Arc<Config>, catalog: Option<Arc<Catalog>>) -> Self {
-        Self { config, catalog }
+        Self {
+            config,
+            catalog,
+            default_model: None,
+        }
     }
 
-    /// Fold a session start into `modes`: pin the session's mode + encoding,
-    /// resolved from the pairing of its initial `SessionStarted.model` (a
-    /// profile's model field — a bare model id) with the `ModelChanged` a
-    /// pin-driven rebind emits right after, whichever carries a `(provider,
-    /// model)`. Called from the executor loop only, so `&mut` needs no lock.
+    /// Resolve a session with no bound model as `provider`/`model`.
+    pub fn with_default_model(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.default_model = Some((provider.into(), model.into()));
+        self
+    }
+
+    /// Pin the session's mode + encoding + discovery from its bound
+    /// `(provider, model)` — a bare model id still resolves through the
+    /// catalog, and no model at all means the startup default. A re-pin
+    /// requested before this point is applied on top.
     pub fn pin_session_start(
         &self,
         modes: &mut SessionToolAdvertising,
@@ -259,40 +181,45 @@ impl AdvertisingInputs {
         provider: Option<&str>,
         model: Option<&str>,
     ) {
+        let (provider, model) = match (provider, model, &self.default_model) {
+            (None, None, Some((p, m))) => (Some(p.as_str()), Some(m.as_str())),
+            _ => (provider, model),
+        };
+        let configured = configured_advertising(&self.config);
+        let catalog = self.catalog.as_deref();
         let mode = match (provider, model) {
             // The pin-rebind pair names both halves — resolve precisely.
-            (Some(p), Some(m)) => resolve_advertising(&self.config, self.catalog.as_deref(), p, m),
+            (Some(p), Some(m)) => resolve_advertising(configured, catalog, p, m),
             // A bare model id (profile `model:` without `provider:`) still
             // carries a catalog preference if it's listed anywhere.
-            (None, Some(m)) => resolve_advertising_by_id(&self.config, self.catalog.as_deref(), m),
+            (None, Some(m)) => resolve_advertising_by_id(configured, catalog, m),
             // No model fact at all: the config/env tiers alone decide (which
             // is `tool_search` when unset — the new default).
-            _ => configured_advertising(&self.config).unwrap_or_default(),
+            _ => configured.unwrap_or_default(),
         };
         // The encoding is wire-derived only (ADR-0196 §3) — no config/env
         // override, unlike the mode — so it needs just the provider half
         // when one is known; a bare model id still resolves it by finding
         // which provider lists that id (mirrors `resolve_advertising_by_id`).
         let encoding = match (provider, model) {
-            (Some(p), Some(_)) => resolve_encoding(self.catalog.as_deref(), p),
-            (None, Some(m)) => resolve_encoding_by_id(self.catalog.as_deref(), m),
+            (Some(p), Some(_)) => resolve_encoding(catalog, p),
+            (None, Some(m)) => resolve_encoding_by_id(catalog, m),
             _ => Encoding::default(),
         };
         modes.pin(session.clone(), mode, encoding);
-        // ADR-0200: same two-tier lookup as `encoding` above, a plain field.
-        modes.set_advertise_discovered(
+        // ADR-0204: same two-tier lookup as `encoding`, a model entry's
+        // `discovery` over its provider's; kept across a later `SetModel`.
+        modes.set_discovery(
             session,
-            encoding::resolve_advertise_discovered_pair(self.catalog.as_deref(), provider, model),
+            discovery::resolve_discovery(&self.config, catalog, provider, model),
         );
+        modes.apply_pending(session);
     }
 
     /// Fold a `ModelChanged` into `modes`: **keep** the pinned mode, but log
     /// when the new model's catalog preference differs (ADR-0196 §2 — the
-    /// session keeps its mode until restart). No-op for an unpinned session
-    /// (a start pair the loop missed, e.g. broadcast lag before it
-    /// subscribed); the next event self-heals nothing here because mode is
-    /// start-only by design — Phase P3's resolver falls back to the global
-    /// resolution for such a session.
+    /// session keeps its mode until restart). No-op for a session not pinned
+    /// yet: its first resolution will pin from the new model anyway.
     pub fn note_model_changed(
         &self,
         modes: &SessionToolAdvertising,
@@ -348,7 +275,7 @@ pub fn note_model_changed(
 }
 
 /// The shared session state Phase P3's resolvers need (#560, ADR-0196 §2-3):
-/// the pinned mode map plus the `client_side`-encoding discovered-tool set.
+/// the pinned mode map, the discovered-tool set, and the env-date pin (0202).
 /// One `Arc` constructed by the caller (`main.rs`) and handed to three
 /// places that used to see disjoint state — the executor loop (writer of
 /// both), the `tool_spec_resolver` closure (reader of both, ADR-0076), and
@@ -359,6 +286,11 @@ pub fn note_model_changed(
 pub struct AdvertisingState {
     pub modes: Mutex<SessionToolAdvertising>,
     pub discovered: Mutex<DiscoveredSet>,
+    pub env_dates: Mutex<crate::env_date::EnvDatePins>,
+    /// `Full`-mode surface per session, snapshotted at first resolution and
+    /// grown only by a delivered schema (ADR-0204 §5): a tool registered or
+    /// removed later never inserts into or shrinks the cached array.
+    pub full_surfaces: Mutex<HashMap<SessionId, Vec<ToolSpec>>>,
 }
 
 impl AdvertisingState {
@@ -366,13 +298,48 @@ impl AdvertisingState {
         Self::default()
     }
 
+    /// Pin `session` from the model its tool-spec resolution sees; a no-op
+    /// once pinned. The resolver calls this before reading anything, so the
+    /// facts round 1 advertises are the facts every later round advertises.
+    pub fn ensure_pinned(
+        &self,
+        inputs: &AdvertisingInputs,
+        session: &SessionId,
+        model: SessionModel<'_>,
+    ) {
+        let mut modes = self
+            .modes
+            .lock()
+            .expect("tool-advertising mode mutex poisoned");
+        if modes.get(session).is_none() {
+            inputs.pin_session_start(&mut modes, session, model.provider, model.model);
+        }
+    }
+
+    /// Release every per-session record on end/hibernate. A resumed session
+    /// re-pins at its first round and rediscovers what it needs.
+    pub fn forget(&self, session: &SessionId) {
+        self.modes
+            .lock()
+            .expect("tool-advertising mode mutex poisoned")
+            .forget(session);
+        self.discovered
+            .lock()
+            .expect("discovered-tool mutex poisoned")
+            .forget(session);
+        self.env_dates
+            .lock()
+            .expect("env-date pin mutex poisoned")
+            .forget(session);
+        self.full_surfaces
+            .lock()
+            .expect("full-surface mutex poisoned")
+            .remove(session);
+    }
+
     /// This session's pinned mode, defaulting to [`ToolAdvertising::default`]
-    /// (`tool_search`) when the map hasn't pinned it — the executor loop
-    /// pins synchronously off `SessionStarted`, strictly before any
-    /// `ToolExec`/round for that same session can reach this reader (one
-    /// sequential loop), so in practice this default only ever fires for the
-    /// test-only executor wrappers that wire no [`AdvertisingInputs`] at all
-    /// (`get`'s documented "not a hole" contract, `SessionToolAdvertising`).
+    /// (`tool_search`) before its first resolution pins it — only readers
+    /// outside a round see that (the TUI `/tools` view, test wrappers).
     pub fn mode(&self, session: &SessionId) -> ToolAdvertising {
         self.modes
             .lock()

@@ -6,10 +6,20 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
-use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
+pub(crate) mod render;
+pub(crate) mod summary;
+
 /// Send one prompt and stream events until `Done` (or timeout).
+///
+/// Follows a **compaction successor** (ADR-0205): when the context overflows,
+/// the engine compacts this session into a fresh one and retires the original,
+/// so the turn — and its `Done` — land on the successor. The `SessionStarted`
+/// that announces it carries `predecessor`, which is how this loop learns to
+/// keep listening there instead of waiting out the timeout on a session that
+/// will never speak again.
 ///
 /// `auto_approve` (`--yes`, #554) controls how a generic (non-`propose_plan`)
 /// `ToolRequest` is settled: there is no interactive user to answer it, and
@@ -43,6 +53,8 @@ pub async fn run_one(
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    // Rebound when a compaction forks this session away (see the doc above).
+    let mut session = session.clone();
     loop {
         let ev = match tokio::time::timeout(Duration::from_secs(60), sub.recv()).await {
             Ok(Ok(ev)) => ev,
@@ -55,13 +67,27 @@ pub async fn run_one(
             Ok(Err(RecvError::Closed)) => break,
             Err(_) => anyhow::bail!("timed out waiting for engine event"),
         };
-        if ev.session() != Some(session) {
+        // Checked *before* the session filter: the announcement belongs to the
+        // successor, so filtering first would drop the very event that says
+        // where this run continues.
+        if let OutEvent::SessionStarted {
+            session: successor,
+            predecessor: Some(source),
+            ..
+        } = &ev
+        {
+            if *source == session {
+                tracing::debug!(%source, %successor, "run follows the compaction successor");
+                session = successor.clone();
+            }
+        }
+        if ev.session() != Some(&session) {
             continue;
         }
         if json {
             writeln!(out, "{}", serde_json::to_string(&ev)?)?;
         } else {
-            render_text(&mut out, &ev)?;
+            render::render_text(&mut out, &ev)?;
         }
         out.flush()?;
         // No interactive user on the one-shot head: auto-answer every `ask_user`
@@ -143,212 +169,6 @@ pub async fn run_one(
         }
         if matches!(ev, OutEvent::Done { .. }) {
             break;
-        }
-    }
-    Ok(())
-}
-
-/// Human-friendly rendering of a single event.
-fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
-    match ev {
-        OutEvent::SessionStarted { .. } => {}
-        OutEvent::SessionEnded { .. } => {}
-        // Memory eviction (#318); the one-shot head never hibernates, so nothing
-        // to render.
-        OutEvent::SessionHibernated { .. } => {}
-        OutEvent::SessionList { .. } => {}
-        // `ListQuestions` reply (#515): a session-less snapshot query; the
-        // one-shot head never issues it, so nothing to render.
-        OutEvent::QuestionList { .. } => {}
-        // `ListOperations` reply (#607, ADR-0161 §6): same shape, and the
-        // one-shot head never issues it either.
-        OutEvent::OperationList { .. } => {}
-        // MCP ops (#375) are engine-global queries/commands; the one-shot
-        // head never issues them, so nothing to render.
-        OutEvent::McpList { .. } => {}
-        OutEvent::McpChanged { .. } => {}
-        // MCP OAuth progress (ADR-0153). The authorize URL is always printed —
-        // a one-shot/headless run may have no browser to open, and the URL is
-        // the only way to complete the flow there.
-        OutEvent::McpAuthChanged { status } => {
-            if let Some(url) = &status.authorize_url {
-                match &status.user_code {
-                    Some(code) => writeln!(
-                        out,
-                        "→ {} · open {url} and enter code {code} to authorize",
-                        status.name
-                    )?,
-                    None => writeln!(out, "→ {} · open to authorize: {url}", status.name)?,
-                }
-            } else if let Some(err) = &status.error {
-                writeln!(out, "✗ {} · {err}", status.name)?
-            } else if let Some(state) = &status.state {
-                writeln!(out, "✓ {} · {state}", status.name)?
-            }
-        }
-        // History is a late-subscriber query reply (#160); the one-shot head
-        // never issues `ReplayFrom`, so nothing to render.
-        OutEvent::History { .. } => {}
-        OutEvent::Status { state, .. } => match state {
-            AgentState::Thinking => writeln!(out, "… thinking")?,
-            AgentState::Working => writeln!(out, "… working")?,
-            AgentState::WaitingAgent => writeln!(out, "… waiting for sub-agent")?,
-            AgentState::WaitingApproval => writeln!(out, "… waiting for approval")?,
-            AgentState::WaitingAnswer => writeln!(out, "… waiting for answer")?,
-            AgentState::Paused => writeln!(out, "‖ paused")?,
-            AgentState::Error => writeln!(out, "! turn ended in error")?,
-            _ => {}
-        },
-        OutEvent::AgentChanged { agent, .. } => writeln!(out, "# agent: {agent}")?,
-        OutEvent::ModelChanged {
-            provider, model, ..
-        } => writeln!(out, "# model: {provider}/{model}")?,
-        OutEvent::GenerationChanged { generation, .. } => {
-            writeln!(out, "# generation: {generation:?}")?
-        }
-        OutEvent::SessionMetaChanged { name, action, .. } => writeln!(
-            out,
-            "# session: name={} action={}",
-            name.as_deref().unwrap_or("-"),
-            action.as_deref().unwrap_or("-")
-        )?,
-        // Live tool overlay (#539): render the effective pattern list so a
-        // one-shot run driven by an embedder shows what was injected.
-        OutEvent::ToolOverlayChanged { entries, .. } => {
-            let list: Vec<String> = entries
-                .iter()
-                .map(|e| {
-                    if e.allow {
-                        format!("{} (allow)", e.pattern)
-                    } else {
-                        e.pattern.clone()
-                    }
-                })
-                .collect();
-            writeln!(out, "# tools enabled: {}", list.join(", "))?
-        }
-        OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
-        OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
-        OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,
-        // Streaming tool-arg fragment (#194): the batch renderer prints the whole
-        // call on `ToolCall`, so the per-fragment delta is display-only noise here.
-        OutEvent::ToolCallDelta { .. } => {}
-        OutEvent::ToolCall { tool, input, .. } => writeln!(out, "→ {tool}: {input}")?,
-        OutEvent::ToolRequest { tool, input, .. } => writeln!(out, "? {tool}: {input}")?,
-        OutEvent::UserQuestion { questions, .. } => {
-            for q in &questions.0 {
-                writeln!(out, "? {}", q.question)?;
-                for opt in &q.options {
-                    writeln!(out, "  - {}", opt.label)?;
-                }
-            }
-        }
-        // Runtime plumbing (#58): execution round-trip, not user-facing.
-        OutEvent::ToolExec { .. } => {}
-        // `is_error` (#636, ADR-0176) picks the sigil — the text itself is
-        // unchanged, so a denied/failed call was always readable, just not
-        // visually distinct from a success at a glance.
-        OutEvent::ToolOutput {
-            output, is_error, ..
-        } => writeln!(out, "{} {output}", if *is_error { '✗' } else { '=' })?,
-        OutEvent::TaskList { content, .. } => {
-            writeln!(out, "▢ tasks:")?;
-            for line in content.lines() {
-                writeln!(out, "  {line}")?;
-            }
-        }
-        OutEvent::Usage {
-            input_tokens,
-            output_tokens,
-            cost_usd,
-            ..
-        } => match cost_usd {
-            Some(cost) => writeln!(
-                out,
-                "$ usage: {input_tokens} in / {output_tokens} out (${cost:.4})"
-            )?,
-            None => writeln!(out, "$ usage: {input_tokens} in / {output_tokens} out")?,
-        },
-        OutEvent::Error { message, .. } => writeln!(out, "! {message}")?,
-        OutEvent::Done { .. } => writeln!(out, "✓ done")?,
-        OutEvent::Compacted { summary, auto, .. } => {
-            if *auto {
-                writeln!(
-                    out,
-                    "▸ auto-compacted: context overflowed the model's window, \
-                     summarized in place to keep the turn going:\n{summary}"
-                )?
-            } else {
-                writeln!(
-                    out,
-                    "▸ compacted: summary ready — fork into a new session to continue \
-                     from it (the original is preserved):\n{summary}"
-                )?
-            }
-        }
-        OutEvent::FileChange {
-            path, change_kind, ..
-        } => writeln!(out, "✓ {change_kind:?}: {path}")?,
-        // Watcher-driven out-of-band plan-file edit notice (#627, ADR-0145
-        // "Consequences"): a non-TUI head sees this live too, not only as a
-        // refusal at the next `propose_plan(path=...)` call.
-        OutEvent::PlanChanged { path, .. } => writeln!(out, "◆ plan file changed on disk: {path}")?,
-        // Skill-active posture (#400, ADR-0106; posture-only since ADR-0194): a
-        // wire-facing audit event for a head to render, not required for the
-        // one-shot text render.
-        OutEvent::SkillActive { skill_id, .. } => match skill_id {
-            Some(id) => writeln!(out, "◆ skill active: {id}")?,
-            None => writeln!(out, "◆ skill cleared")?,
-        },
-        // Ambiguous-stop bounded retry (#ADR-0118): the model's stream ended
-        // without a confident finish signal, so the turn is retrying in place.
-        // Render a one-line notice; its non-delta arrival also flushes the
-        // preceding partial `TextDelta` line so the retry's text stays separate.
-        OutEvent::AmbiguousRetry { .. } => writeln!(out, "↻ model stop was ambiguous — retrying")?,
-        // Persisted provider-side web-search block (#481): already rendered
-        // live via `ReasoningDelta`'s query/source lines — nothing new to show.
-        OutEvent::SearchResult { .. } => {}
-        // Captured extended-thinking block: the persistence rail for reasoning
-        // already rendered live via `ReasoningDelta` — nothing new to show.
-        OutEvent::ReasoningBlock { .. } => {}
-        // LLM endpoint throttle transition (#517, ADR-0141): the wire-visible
-        // counterpart to the TUI's `throttle_status()` poll — this is the
-        // signal that reaches a non-TUI head, so it renders in full.
-        OutEvent::Throttle {
-            endpoint,
-            throttled,
-            in_flight,
-            cap,
-            retry_in_ms,
-            pacing_in_ms,
-            waiters,
-            shared_leases,
-        } => {
-            if *throttled {
-                let detail = match (retry_in_ms, pacing_in_ms) {
-                    (Some(ms), _) => format!("retry {:.1}s", *ms as f64 / 1000.0),
-                    (None, Some(ms)) => format!("pacing · next {:.1}s", *ms as f64 / 1000.0),
-                    (None, None) => "busy".to_string(),
-                };
-                // `shared_leases` (#552) is surfaced only when it disagrees
-                // with this process's own `in_flight` — otherwise it's just
-                // noise repeating the same number.
-                let shared = shared_leases
-                    .filter(|leases| leases != in_flight)
-                    .map(|leases| format!(" · shared {leases}/{cap}"))
-                    .unwrap_or_default();
-                let queued = if *waiters > 0 {
-                    format!(" · {waiters} queued")
-                } else {
-                    String::new()
-                };
-                writeln!(
-                    out,
-                    "⚠ {endpoint} throttled · {detail} · {in_flight}/{cap}{shared}{queued}"
-                )?
-            } else {
-                writeln!(out, "✓ {endpoint} throttle cleared")?
-            }
         }
     }
     Ok(())

@@ -117,6 +117,7 @@ mod tests {
             editor: None,
             session_retention_days: 30,
             tool_advertising: None,
+            discovery: Default::default(),
         }
     }
 

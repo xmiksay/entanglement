@@ -1,54 +1,66 @@
-//! Keeps the `<env>` block's baked date accurate across a long-lived process
-//! (#566, rider to the prompt-caching audit).
+//! Pins the `<env>` block's `Date:` line per session (#566, ADR-0202 §5).
 //!
-//! [`system_prompt::EnvBlock`][crate::system_prompt::EnvBlock] is generated
-//! once, at process start, and baked verbatim into every
-//! [`AgentProfile::system_prompt`][entanglement_core::AgentProfile] — the
-//! system block otherwise stays byte-stable across rounds, which is exactly
-//! what makes it cacheable, but it also means a process that outlives
-//! midnight UTC keeps sending a stale `Date:` line until an unrelated
-//! definitions reload or a restart happens to re-bake it. [`date_resolver`]
-//! fixes that without giving up the byte-stability: wired as the engine's
-//! [`SystemPromptResolver`][entanglement_core::SystemPromptResolver], it is
-//! consulted once per turn and only produces a *different* string on the one
-//! turn where the calendar date has actually rolled over — every other turn
-//! it returns `None`, so the engine falls back to the same baked (and
-//! therefore still cached) prompt.
+//! [`system_prompt::EnvBlock`][crate::system_prompt::EnvBlock] is baked once
+//! into every [`AgentProfile::system_prompt`][entanglement_core::AgentProfile]
+//! at load time. The system block is the provider cache's second segment
+//! (`tools → system → messages`), so **any** byte change there re-bills the
+//! whole history at the cache-write rate. Re-stamping today's date every turn
+//! did exactly that once per UTC midnight for every live session; a
+//! definitions reload re-baking a new date did it too. Instead each session
+//! keeps the date it first resolved for its whole life: a session spanning
+//! midnight tells the model yesterday's date (a turn that needs the wall
+//! clock has `bash`), a new session gets today's. The pin is forgotten when
+//! the session ends or hibernates (`tool_runner`'s lifecycle arm), so a
+//! resumed session re-pins to its resume day.
 
-/// Patch a baked system prompt's `<env>` date line to `today`. Returns `None`
+use std::collections::HashMap;
+
+use entanglement_core::SessionId;
+
+/// Session → the `Date:` value its system prompt carries for its lifetime.
+/// Held on [`AdvertisingState`][crate::tool_advertising::AdvertisingState] —
+/// the one `Arc` both the system-prompt resolver (writer) and the executor's
+/// session-end arm (forgetter) already share.
+#[derive(Debug, Default)]
+pub struct EnvDatePins {
+    dates: HashMap<SessionId, String>,
+}
+
+impl EnvDatePins {
+    /// The session's pinned date, pinning `today` on first sight. Never
+    /// changes an existing pin — that stability is the whole point.
+    pub fn pin(&mut self, session: &SessionId, today: &str) -> String {
+        self.dates
+            .entry(session.clone())
+            .or_insert_with(|| today.to_string())
+            .clone()
+    }
+
+    pub fn forget(&mut self, session: &SessionId) {
+        self.dates.remove(session);
+    }
+}
+
+/// Patch a baked system prompt's `<env>` date line to `date`. Returns `None`
 /// — falling back to the unmodified baked prompt — when there's no `<env>`
 /// block (a subagent's prompt omits it) or the date already matches, so the
-/// prompt stays byte-identical for as long as it's accurate. `pub(crate)`:
-/// also called from [`crate::system_prompt_mode`], which composes this same
-/// patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming — only one
-/// `SystemPromptResolver` slot exists on `EngineConfig`, so the two concerns
-/// share one resolver function.
-pub(crate) fn refresh_env_date(system_prompt: &str, today: &str) -> Option<String> {
+/// prompt stays byte-identical. Called from [`crate::system_prompt_mode`],
+/// which owns the single `SystemPromptResolver` slot `EngineConfig` exposes.
+pub(crate) fn refresh_env_date(system_prompt: &str, date: &str) -> Option<String> {
     let marker = "\nDate: ";
     let start = system_prompt.find(marker)? + marker.len();
     let end = system_prompt[start..]
         .find('\n')
         .map(|i| start + i)
         .unwrap_or(system_prompt.len());
-    if &system_prompt[start..end] == today {
+    if &system_prompt[start..end] == date {
         return None;
     }
     let mut out = String::with_capacity(system_prompt.len());
     out.push_str(&system_prompt[..start]);
-    out.push_str(today);
+    out.push_str(date);
     out.push_str(&system_prompt[end..]);
     Some(out)
-}
-
-/// Builds the [`entanglement_core::SystemPromptResolver`] the runtime wires
-/// onto `EngineConfig` so every turn re-checks the env-block date. Cheap
-/// (string search, no I/O), so there's no reason to gate it to session start
-/// only — a session that spans midnight UTC picks up the new date on its very
-/// next turn instead of waiting for a restart.
-pub fn date_resolver() -> entanglement_core::SystemPromptResolver {
-    std::sync::Arc::new(|_session, profile| {
-        refresh_env_date(&profile.system_prompt, &crate::date::today_utc())
-    })
 }
 
 #[cfg(test)]
@@ -85,28 +97,26 @@ mod tests {
     }
 
     #[test]
-    fn resolver_falls_back_to_none_within_the_same_day() {
-        use entanglement_core::{
-            AgentMode, AgentProfile, Permission, PermissionProfile, SessionId,
-        };
+    fn a_session_keeps_its_first_date_across_a_date_change() {
+        let mut pins = EnvDatePins::default();
+        let s = SessionId::new("s1");
+        assert_eq!(pins.pin(&s, "2026-09-15"), "2026-09-15");
+        assert_eq!(pins.pin(&s, "2026-09-16"), "2026-09-15");
+    }
 
-        let resolver = date_resolver();
-        let today = crate::date::today_utc();
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: format!("<env>\nDate: {today}\n</env>"),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
-        let session = SessionId::new("s1");
-        assert_eq!(resolver(&session, &profile), None);
+    #[test]
+    fn a_new_session_pins_the_new_date() {
+        let mut pins = EnvDatePins::default();
+        pins.pin(&SessionId::new("old"), "2026-09-15");
+        assert_eq!(pins.pin(&SessionId::new("new"), "2026-09-16"), "2026-09-16");
+    }
+
+    #[test]
+    fn forgetting_a_session_lets_it_re_pin() {
+        let mut pins = EnvDatePins::default();
+        let s = SessionId::new("s1");
+        pins.pin(&s, "2026-09-15");
+        pins.forget(&s);
+        assert_eq!(pins.pin(&s, "2026-09-16"), "2026-09-16");
     }
 }

@@ -6,6 +6,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+mod pairing;
+pub use pairing::pair_records;
+
 /// Returns the base data directory for entanglement session storage.
 ///
 /// This is `<data_dir>/entanglement/sessions`, creating it if it doesn't exist.
@@ -287,35 +290,6 @@ pub fn integrity_gap(records: &[LogRecord]) -> Option<u64> {
         }
     }
     any.then_some(dropped)
-}
-
-/// Pairs a log's records into the `(Option<InMsg>, OutEvent)` tuples that
-/// [`entanglement_core::Holly::resume`] / `Session::replay` expect.
-///
-/// Each `Out` record is paired with the most recent preceding `In` record (the
-/// message that produced it); the `In` is then consumed so it pairs with exactly
-/// one `Out`. `In` records with no following `Out` are dropped — replay folds
-/// state from events, so an unanswered inbound message carries nothing to restore.
-pub fn pair_records(records: &[LogRecord]) -> Vec<(Option<InMsg>, OutEvent)> {
-    let mut paired: Vec<(Option<InMsg>, OutEvent)> = Vec::new();
-    let mut last_in: Option<InMsg> = None;
-
-    for record in records {
-        match &record.payload {
-            LogPayload::In(in_msg) => {
-                last_in = Some(in_msg.clone());
-            }
-            LogPayload::Out(out_event) => {
-                paired.push((last_in.take(), out_event.clone()));
-            }
-            // A gap tombstone carries no state to restore. Resume paths call
-            // `integrity_gap` and refuse before reaching here; this arm only
-            // keeps pairing total-ordered if a caller pairs a gapped log anyway.
-            LogPayload::Gap { .. } => {}
-        }
-    }
-
-    paired
 }
 
 /// Lists all sessions in the current working directory's session folder.

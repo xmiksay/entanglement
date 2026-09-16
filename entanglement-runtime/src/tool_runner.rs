@@ -695,38 +695,13 @@ pub fn spawn_tool_executor_with_policy(
                     session,
                     parent,
                     profile,
-                    model,
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
-                    // Tool advertising pinned at start (ADR-0196 §2): resolved
-                    // from *this session's* initial model, so concurrent
-                    // sessions can differ (a pinned cheap-model `explore`
-                    // child vs its parent). The start pairing: `model` here
-                    // is the profile's bare model field; a pin-driven
-                    // rebind's `ModelChanged` (provider+model) follows
-                    // immediately for a pinned profile and pins the precise
-                    // pair via the `ModelChanged` arm's first-observation
-                    // rule below. `pin` is idempotent-safe by design — the
-                    // start pair is the authority, a later re-observed start
-                    // (resume) re-resolves the same value.
-                    if let Some(inputs) = advertising_inputs.as_ref() {
-                        let mut modes = advertising
-                            .modes
-                            .lock()
-                            .expect("tool-advertising mode mutex poisoned");
-                        inputs.pin_session_start(
-                            &mut modes,
-                            &session,
-                            // The startup default's provider name is not
-                            // announced (`Session::provider` starts `None`,
-                            // core never learns it) — a bare model id is the
-                            // best start-time fact, and enough for the
-                            // catalog tier.
-                            None,
-                            model.as_deref(),
-                        );
-                    }
+                    // Tool advertising is NOT pinned here: this broadcast
+                    // races core's first round, so the tool-spec resolver
+                    // pins at first resolution (`AdvertisingState::
+                    // ensure_pinned`, ADR-0204).
                     // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                     // for a previously-hibernated child (#609, ADR-0162 §4) — a
                     // no-op for any other session, since a fresh registration is
@@ -776,17 +751,9 @@ pub fn spawn_tool_executor_with_policy(
                 }
                 // The session's model changed (`SetModel` / a profile pin
                 // re-bind, #218/#323). Tool advertising is *not* re-resolved
-                // (ADR-0196 §2): the session keeps the mode pinned at start —
-                // switching mid-session would bust the prompt cache the mode
-                // protects and strand half-emitted history. What this arm
-                // does: (a) a start-pair upgrade — a session whose start
-                // carried only a bare model id (the startup default's
-                // provider is never announced) gets its *first* precise
-                // `(provider, model)` pair re-pinned once, which matters only
-                // when config is unset and the two lookups could disagree
-                // (same id under two providers, one preferring `full`);
-                // (b) otherwise the retention notice — same-held-mode plus a
-                // log when the new model's catalog preference differs.
+                // (ADR-0196 §2): a pinned session keeps its mode — switching
+                // mid-session would bust the prompt cache the mode protects —
+                // and this only logs when the new model prefers another one.
                 Ok(OutEvent::ModelChanged {
                     session,
                     provider,
@@ -794,20 +761,11 @@ pub fn spawn_tool_executor_with_policy(
                     ..
                 }) => {
                     if let Some(inputs) = advertising_inputs.as_ref() {
-                        let mut modes = advertising
+                        let modes = advertising
                             .modes
                             .lock()
                             .expect("tool-advertising mode mutex poisoned");
-                        if modes.get(&session).is_none() {
-                            inputs.pin_session_start(
-                                &mut modes,
-                                &session,
-                                Some(&provider),
-                                Some(&model),
-                            );
-                        } else {
-                            inputs.note_model_changed(&modes, &session, &provider, &model);
-                        }
+                        inputs.note_model_changed(&modes, &session, &provider, &model);
                     }
                 }
                 // A hibernated session (#318) tore down just like an ended one, so
@@ -817,25 +775,9 @@ pub fn spawn_tool_executor_with_policy(
                 // mirror core's full-replacement semantics — an empty list
                 // clears the entry entirely.
                 Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
-                    // ADR-0199 part 2: a newly-added enable entry, under a
-                    // ToolSearch/client_side session, also joins the
-                    // discovered set — mirrors what a successful `describe`
-                    // call already does, so the resolver advertises the
-                    // matching tool(s) next round with no extra discovery
-                    // round-trip. Must run against `previous` (the
-                    // about-to-be-replaced list) before it's overwritten
-                    // below, so a re-send of an already-enabled pattern is
-                    // correctly seen as "nothing new".
-                    let previous = overlays.get(&session).cloned().unwrap_or_default();
-                    let registered_names =
-                        tools.read().expect("tool registry lock poisoned").names();
-                    tool_advertising::advertise_new_overlay_enables(
-                        &advertising,
-                        &registered_names,
-                        &session,
-                        &previous,
-                        &entries,
-                    );
+                    // An enable never touches the advertised array (ADR-0204):
+                    // the tool becomes explore-visible and dispatchable, and
+                    // is appended only when its schema is delivered.
                     if entries.is_empty() {
                         overlays.remove(&session);
                     } else {
@@ -890,20 +832,10 @@ pub fn spawn_tool_executor_with_policy(
                         .remove(&session);
                     // The plan-file staleness binding (#513) is moot too.
                     plan_files.forget_session(&session);
-                    // And the session's pinned tool advertising plus its
-                    // discovered-tool set (ADR-0196 §2-3) — a resume re-pins
-                    // from its own replayed start pair, and rediscovery is
-                    // cheap (the model re-`describe`s what it needs).
-                    advertising
-                        .modes
-                        .lock()
-                        .expect("tool-advertising mode mutex poisoned")
-                        .forget(&session);
-                    advertising
-                        .discovered
-                        .lock()
-                        .expect("discovered-tool mutex poisoned")
-                        .forget(&session);
+                    // And its pinned tool advertising, discovered set, `Full`
+                    // snapshot and `<env>` date (ADR-0196 §2-3, ADR-0202 §5) —
+                    // a resume re-pins at its first round.
+                    advertising.forget(&session);
                     // The loop-breaker's last-call tracker (#560, ADR-0196
                     // §6) is equally session-scoped — nothing to break a
                     // loop against once the session is gone.
@@ -1103,8 +1035,13 @@ pub fn spawn_tool_executor_with_policy(
                                 }
                                 _ => {
                                     let holly = holly.clone();
+                                    let output = tool_advertising::unknown_tool_reply(
+                                        &advertising,
+                                        &session,
+                                        &tools_snapshot,
+                                        &tool,
+                                    );
                                     tokio::spawn(async move {
-                                        let output = tools_snapshot.unknown_tool_message(&tool);
                                         seam::reply(&holly, session, request_id, output, true)
                                             .await;
                                     });
@@ -1804,7 +1741,8 @@ pub(crate) async fn dispatch(
                 }
             }
             None => {
-                let output = tools.unknown_tool_message(&tool);
+                let output =
+                    tool_advertising::unknown_tool_reply(advertising, &session, tools, &tool);
                 seam::reply(holly, session, request_id, output, true).await;
                 return;
             }
@@ -2070,7 +2008,9 @@ async fn run_and_reply(
                     .expect("discovered-tool mutex poisoned")
                     .mark(&session, &tool);
             }
-            let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
+            let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
+            let mut output =
+                arg_validate::decline_text_for(&spec, &violation, already_delivered, via_invoke);
             if validation.note(&session, &tool, &input, true) {
                 output.push_str("\n\n");
                 output.push_str(arg_validate::LOOP_BREAKER_NOTE);

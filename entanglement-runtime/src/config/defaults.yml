@@ -98,3 +98,15 @@ session_retention_days: 30
 # live /model switch keeps it). `null` (the default) leaves the choice to
 # the catalog.
 tool_advertising: null
+
+# Client-side discovery strategy, per provider (ADR-0204): how a
+# tool_search-mode session on an OpenAI-compatible wire reaches a tool it found
+# through explore/describe — "append" (the schema joins the advertised tools
+# array, one prompt-cache miss per discovery), "native_first" (fixed array; call
+# the tool by its real name, fall back to the `invoke` envelope only if the
+# model can't) or "invoke" (fixed array; always through the envelope). Keyed by
+# provider name, e.g. `{zai: native_first}`; an entry wins over that provider's
+# (and its models') catalog `discovery:` value. Empty by default, so the catalog
+# decides. Precedence: this key > catalog ModelEntry > catalog ProviderEntry >
+# append. There is no environment variable for this one.
+discovery: {}

@@ -20,31 +20,36 @@ fn full_catalog() -> Catalog {
     .expect("test catalog parses")
 }
 
+/// The env+config tier as the resolver sees it, with the env value passed in
+/// rather than set on the process — see `precedence.rs`'s module doc.
+fn configured(env: Option<&str>, mode: Option<ToolAdvertising>) -> Option<ToolAdvertising> {
+    precedence::configured_advertising_from(env, &config_with(mode))
+}
+
 #[test]
 fn defaults_to_tool_search_with_nothing_set() {
-    let config = config_with(None);
     assert_eq!(
-        resolve_advertising(&config, None, "any", "thing"),
+        resolve_advertising(configured(None, None), None, "any", "thing"),
         ToolAdvertising::ToolSearch
     );
 }
 
 #[test]
 fn catalog_preference_wins_over_default() {
-    let config = config_with(None);
     let catalog = full_catalog();
+    let none = configured(None, None);
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "fully_advertised"),
+        resolve_advertising(none, Some(&catalog), "p", "fully_advertised"),
         ToolAdvertising::Full
     );
     // A different model under the same config falls to the new default
     // (tool_search), and an unknown provider/model is not an error.
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "plain"),
+        resolve_advertising(none, Some(&catalog), "p", "plain"),
         ToolAdvertising::ToolSearch
     );
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "nope", "fully_advertised"),
+        resolve_advertising(none, Some(&catalog), "nope", "fully_advertised"),
         ToolAdvertising::ToolSearch
     );
 }
@@ -54,87 +59,96 @@ fn config_beats_catalog_and_env_beats_config() {
     let catalog = full_catalog();
 
     // config (tool_search) > catalog (full).
-    let config = config_with(Some(ToolAdvertising::ToolSearch));
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "fully_advertised"),
+        resolve_advertising(
+            configured(None, Some(ToolAdvertising::ToolSearch)),
+            Some(&catalog),
+            "p",
+            "fully_advertised"
+        ),
         ToolAdvertising::ToolSearch
     );
     // config (full) > catalog (absent → tool_search).
-    let config = config_with(Some(ToolAdvertising::Full));
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "plain"),
+        resolve_advertising(
+            configured(None, Some(ToolAdvertising::Full)),
+            Some(&catalog),
+            "p",
+            "plain"
+        ),
         ToolAdvertising::Full
     );
-
-    // env beats both. `ENTANGLEMENT_TOOL_ADVERTISING` is process-global,
-    // so serialize against every other env-touching test in this crate.
-    let _g = crate::config::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let config = config_with(Some(ToolAdvertising::ToolSearch));
-    std::env::set_var(TOOL_ADVERTISING_ENV, "full");
+    // env beats both.
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "fully_advertised"),
+        resolve_advertising(
+            configured(Some("full"), Some(ToolAdvertising::ToolSearch)),
+            Some(&catalog),
+            "p",
+            "fully_advertised"
+        ),
         ToolAdvertising::Full,
         "env must beat both config and catalog"
     );
     // Case-insensitive.
-    std::env::set_var(TOOL_ADVERTISING_ENV, "TOOL_SEARCH");
     assert_eq!(
-        resolve_advertising(&config_with(Some(ToolAdvertising::Full)), None, "p", "x"),
+        resolve_advertising(
+            configured(Some("TOOL_SEARCH"), Some(ToolAdvertising::Full)),
+            None,
+            "p",
+            "x"
+        ),
         ToolAdvertising::ToolSearch
     );
     // A bad value warns and falls through to config (tool_search here).
-    std::env::set_var(TOOL_ADVERTISING_ENV, "hybrid");
     assert_eq!(
-        resolve_advertising(&config, Some(&catalog), "p", "fully_advertised"),
+        resolve_advertising(
+            configured(Some("hybrid"), Some(ToolAdvertising::ToolSearch)),
+            Some(&catalog),
+            "p",
+            "fully_advertised"
+        ),
         ToolAdvertising::ToolSearch,
         "unparseable env falls back to the config tier, not the default"
     );
-    std::env::remove_var(TOOL_ADVERTISING_ENV);
+    // An empty env value is unset, not unparseable.
+    assert_eq!(configured(Some(""), None), None);
 }
 
 #[test]
 fn by_id_resolution_matches_the_paired_form() {
-    let config = config_with(None);
     let catalog = full_catalog();
     assert_eq!(
-        resolve_advertising_by_id(&config, Some(&catalog), "fully_advertised"),
+        resolve_advertising_by_id(None, Some(&catalog), "fully_advertised"),
         ToolAdvertising::Full
     );
     assert_eq!(
-        resolve_advertising_by_id(&config, Some(&catalog), "plain"),
+        resolve_advertising_by_id(None, Some(&catalog), "plain"),
         ToolAdvertising::ToolSearch
     );
 }
 
 #[test]
 fn source_reporting_tracks_the_winning_tier() {
-    let _g = crate::config::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let source = precedence::configured_advertising_source_from;
+    assert_eq!(source(None, &config_with(None)), AdvertisingSource::Default);
     assert_eq!(
-        configured_advertising_source(&config_with(None)),
-        AdvertisingSource::Default
-    );
-    assert_eq!(
-        configured_advertising_source(&config_with(Some(ToolAdvertising::Full))),
+        source(None, &config_with(Some(ToolAdvertising::Full))),
         AdvertisingSource::Config
     );
-    std::env::set_var(TOOL_ADVERTISING_ENV, "tool_search");
     assert_eq!(
-        configured_advertising_source(&config_with(Some(ToolAdvertising::Full))),
+        source(
+            Some("tool_search"),
+            &config_with(Some(ToolAdvertising::Full))
+        ),
         AdvertisingSource::Env,
         "env beats config in the provenance view too"
     );
     // An unparseable env value is reported as *not* the winner — the
     // resolution above fell through to config/default.
-    std::env::set_var(TOOL_ADVERTISING_ENV, "banana");
     assert_eq!(
-        configured_advertising_source(&config_with(None)),
+        source(Some("banana"), &config_with(None)),
         AdvertisingSource::Default
     );
-    std::env::remove_var(TOOL_ADVERTISING_ENV);
 }
 
 #[test]
