@@ -279,33 +279,10 @@ impl App {
         }
     }
 
-    pub fn input_tokens(&self) -> u64 {
-        self.sessions.active_view().input_tokens()
-    }
-
-    pub fn output_tokens(&self) -> u64 {
-        self.sessions.active_view().output_tokens()
-    }
-
-    /// Accumulated session cost in USD (#192), summed from `OutEvent::Usage`.
-    pub fn cost_usd(&self) -> f64 {
-        self.sessions.active_view().cost_usd()
-    }
-
-    /// Cumulative cached-prefix input tokens for the active session (#560).
-    pub fn cached_input_tokens(&self) -> u64 {
-        self.sessions.active_view().cached_input_tokens()
-    }
-
-    /// Most recent round's token counts for the active session (#560).
-    pub fn last_round_usage(&self) -> Option<&crate::tui::session_view::RoundUsage> {
-        self.sessions.active_view().last_round_usage()
-    }
-
-    /// Whether the active session's most recent round is a full cache miss
-    /// right after a round that had cache hits (#560).
-    pub fn last_round_full_miss(&self) -> bool {
-        self.sessions.active_view().last_round_full_miss()
+    /// The active session's token/cost ledger (#192, #560) — the status bar
+    /// and `/cost` both render from it.
+    pub fn cost(&self) -> &crate::tui::session_view::CostLedger {
+        self.sessions.active_view().cost()
     }
 
     #[allow(dead_code)]

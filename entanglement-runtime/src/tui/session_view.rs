@@ -1,4 +1,4 @@
-use entanglement_core::{AgentState, OutEvent, Question, SessionId};
+use entanglement_core::{AgentState, CompactionMode, OutEvent, Question, SessionId};
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -6,12 +6,15 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::transcript::cache::RenderCache;
 
+mod cost;
+mod generation;
 mod reducer;
 mod scroll;
 #[cfg(test)]
 mod tests;
 mod usage;
 
+pub use cost::CostLedger;
 pub use usage::RoundUsage;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -256,31 +259,11 @@ pub struct SessionView {
     /// that mints the block's stable id: a reasoning run's first `ReasoningDelta`
     /// or a tool op's `ToolCall` (#340). Absent = collapsed (the default).
     expanded_blocks: HashSet<usize>,
-    /// Token usage accumulated from `OutEvent::Usage` deltas, per session (#192).
-    /// Held on the view (not head-global) so a resumed session restores its
-    /// totals — the resume path replays persisted records through `apply_event`,
-    /// which folds Usage here.
-    input_tokens: u64,
-    output_tokens: u64,
-    cost_usd: f64,
-    /// Cumulative cached-prefix input tokens (#560, cache-hit visibility) —
-    /// the cached share of `input_tokens` above; `format_cache_hit_rate`
-    /// derives the fraction the status bar renders.
-    cached_input_tokens: u64,
-    /// Whether any round so far carried catalog pricing (`cost_usd: Some(_)`
-    /// on the wire event). `cost_usd` alone can't tell "genuinely free" apart
-    /// from "no pricing known" — this flag lets a fan-out rollup fall back to
-    /// token-only display instead of quietly under-reporting a subtree's real
-    /// spend (#560).
-    cost_known: bool,
-    /// Most recent round's token counts, for the status bar's per-round
-    /// cached-share line and the full-miss-after-hit check (#560). `None`
-    /// until the first `OutEvent::Usage` lands.
-    last_round: Option<RoundUsage>,
-    /// Set alongside `last_round` when that round is a full cache miss right
-    /// after a round that had cache hits — the status bar renders this round
-    /// in the existing warning style instead of the normal one (#560).
-    last_round_full_miss: bool,
+    /// Token/cost accounting folded from `OutEvent::Usage` (#192, #560),
+    /// per session and held on the view (not head-global) so a resumed
+    /// session restores it — the resume path replays persisted records
+    /// through `apply_event`.
+    cost: CostLedger,
     /// In-progress streamed tool calls (#194): `request_id → transcript index`
     /// of the `ToolCall` entry whose `input` is growing as `ToolCallDelta`
     /// fragments arrive. The assembled `ToolCall` finalizes and removes the
@@ -318,13 +301,7 @@ impl SessionView {
             expanded_blocks: HashSet::new(),
             streaming_tool_calls: HashMap::new(),
             render_cache: RenderCache::new(),
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
-            cached_input_tokens: 0,
-            cost_known: false,
-            last_round: None,
-            last_round_full_miss: false,
+            cost: CostLedger::default(),
         }
     }
 
@@ -406,70 +383,37 @@ impl SessionView {
         self.task_list.as_ref()
     }
 
-    /// Accumulated prompt/completion tokens for this session (#192).
+    /// Whole billed prompt volume for this session (uncached + cache-read +
+    /// cache-write, every purpose) — the "in" figure a rollup sums (#192).
     pub fn input_tokens(&self) -> u64 {
-        self.input_tokens
+        self.cost.prompt_total()
     }
 
     pub fn output_tokens(&self) -> u64 {
-        self.output_tokens
+        self.cost.output_tokens()
     }
 
     /// Accumulated session cost in USD, summed from `OutEvent::Usage`.
     pub fn cost_usd(&self) -> f64 {
-        self.cost_usd
+        self.cost.cost_usd()
     }
 
     /// Whether [`Self::cost_usd`] reflects real catalog pricing (`true`) or is
     /// just the zero default because no round so far carried pricing
-    /// (`false`) — see the field doc on `cost_known` (#560).
+    /// (`false`) — see [`CostLedger`] (#560).
     pub fn cost_known(&self) -> bool {
-        self.cost_known
+        self.cost.cost_known()
     }
 
-    /// Cumulative cached-prefix input tokens (#560).
+    /// Cumulative cache-read input tokens (#560).
     pub fn cached_input_tokens(&self) -> u64 {
-        self.cached_input_tokens
+        self.cost.cached_tokens()
     }
 
-    /// Most recent round's token counts (#560), for the status bar's
-    /// per-round cached-share line.
-    pub fn last_round_usage(&self) -> Option<&RoundUsage> {
-        self.last_round.as_ref()
-    }
-
-    /// Whether the most recent round is a full cache miss right after a round
-    /// that had cache hits (#560) — the status bar renders that round's usage
-    /// line in the existing warning style when this is set.
-    pub fn last_round_full_miss(&self) -> bool {
-        self.last_round_full_miss
-    }
-
-    /// Folds one round's usage into the cumulative totals and the last-round
-    /// state the status bar reads (#560). `cost_usd` is `None` when the
-    /// round's model carries no catalog pricing — see `cost_known`.
-    fn record_usage(
-        &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
-        cached_input_tokens: u64,
-        cost_usd: Option<f64>,
-    ) {
-        let cur = RoundUsage {
-            input: input_tokens,
-            output: output_tokens,
-            cached: cached_input_tokens,
-        };
-        self.last_round_full_miss = usage::is_full_miss(self.last_round.as_ref(), &cur);
-        self.last_round = Some(cur);
-
-        self.input_tokens += input_tokens;
-        self.output_tokens += output_tokens;
-        self.cached_input_tokens += cached_input_tokens;
-        if let Some(cost) = cost_usd {
-            self.cost_usd += cost;
-            self.cost_known = true;
-        }
+    /// The full per-purpose / per-model ledger behind the accessors above —
+    /// what the status bar and `/cost` render from.
+    pub fn cost(&self) -> &CostLedger {
+        &self.cost
     }
 
     pub fn scroll_offset(&self) -> usize {

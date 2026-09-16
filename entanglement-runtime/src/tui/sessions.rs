@@ -111,12 +111,12 @@ impl SessionRegistry {
         }
     }
 
-    /// Adopt an externally-minted session id: create its view if absent and
-    /// switch to it. Used by the `propose_plan` handoff (#141), which mints a
-    /// fresh root `build` session head-side rather than through [`create`].
-    pub fn adopt(&mut self, id: SessionId) {
-        self.view_or_insert(&id);
-        self.switch_to(id);
+    /// Create `id`'s view if absent, leaving the active session alone. Used by
+    /// the compaction hand-off (ADR-0205), which must seed the successor's
+    /// transcript before deciding whether to switch to it — a *background*
+    /// session compacting must not yank the user's view.
+    pub fn ensure(&mut self, id: &SessionId) {
+        self.view_or_insert(id);
     }
 
     /// Every session in **spawn-tree order** (roots in insertion order, each
@@ -321,6 +321,8 @@ pub struct UsageRollup {
     /// unpriced session's cost would understate the real total, so the whole
     /// rollup falls back to token-only display instead (#560).
     pub cost_usd: Option<f64>,
+    /// Sessions folded in (own + descendants) — `/cost` names the child count.
+    pub sessions: usize,
 }
 
 impl UsageRollup {
@@ -331,6 +333,7 @@ impl UsageRollup {
             output_tokens: view.output_tokens(),
             cached_input_tokens: view.cached_input_tokens(),
             cost_usd: priced.then(|| view.cost_usd()),
+            sessions: 1,
         }
     }
 
@@ -338,6 +341,7 @@ impl UsageRollup {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.sessions += other.sessions;
         self.cost_usd = match (self.cost_usd, other.cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             _ => None,

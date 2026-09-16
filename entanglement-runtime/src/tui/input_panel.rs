@@ -8,10 +8,11 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
-use crate::tui::format::{format_cache_hit_rate, format_round_usage, format_tokens};
 use crate::tui::modals;
 use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
+
+mod status_usage;
 
 pub fn draw_top_padding(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
@@ -227,23 +228,6 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // Provider name comes from the resolved catalog entry / `ModelChanged`;
     // show it beside the model when known.
     let provider_display = app.active_provider().to_string();
-    // Session-cumulative cache-hit rate rides alongside the totals (#560) —
-    // this is the "wherever session totals already display" surface.
-    let cache_rate = format_cache_hit_rate(app.cached_input_tokens(), app.input_tokens());
-    let in_label = match &cache_rate {
-        Some(rate) => format!("{} in ({rate})", format_tokens(app.input_tokens())),
-        None => format!("{} in", format_tokens(app.input_tokens())),
-    };
-    let tokens_display = if app.cost_usd() > 0.0 {
-        format!(
-            "{in_label} / {} out (${:.4})",
-            format_tokens(app.output_tokens()),
-            app.cost_usd()
-        )
-    } else {
-        format!("{in_label} / {} out", format_tokens(app.output_tokens()))
-    };
-
     // `provider · model` pair, skipping the provider segment + separator when
     // it's unknown so we never leave a dangling `·`.
     let mut pm_spans: Vec<Span> = Vec::new();
@@ -265,23 +249,11 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // notice), else a rate-limit throttle indicator that shows *only* while an
     // endpoint is backing off (quiet otherwise).
     let mut spans: Vec<Span> = pm_spans;
-    spans.push(Span::raw(" | "));
-    spans.push(Span::styled(
-        tokens_display,
-        Style::default().fg(Color::Yellow),
+    // Context, spend, and the last round's cache share (ADR-0202 §7).
+    spans.extend(status_usage::usage_spans(
+        app.cost(),
+        app.model_info().context_window,
     ));
-    // Last round's cache share (#560): a full miss right after a hit renders
-    // in the same red/bold style the throttle indicator below uses, so a
-    // cache regression is as loud as a rate-limit one.
-    if let Some(round) = app.last_round_usage() {
-        spans.push(Span::raw(" | "));
-        let style = if app.last_round_full_miss() {
-            Style::default().fg(Color::Red).bold()
-        } else {
-            Style::default().fg(Color::Yellow).dim()
-        };
-        spans.push(Span::styled(format_round_usage(round), style));
-    }
     if app.quit_pending() {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(

@@ -104,7 +104,8 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
 
     // The handoff mints a fresh root build session and switches to it.
     let build_session = SessionId::new("build-fresh");
-    reg.adopt(build_session.clone());
+    reg.ensure(&build_session);
+    reg.switch_to(build_session.clone());
     assert_eq!(reg.active_id(), &build_session);
     // The plan session stays alive after accept (a later re-propose mints
     // another fresh build session).
@@ -399,6 +400,7 @@ fn restore_from_records_rebuilds_token_totals() {
             cached_input_tokens: 0,
             cache_write_tokens: 0,
             cost_usd: Some(0.0123),
+            purpose: entanglement_core::UsagePurpose::Turn,
         }),
     );
 
@@ -476,6 +478,7 @@ fn usage(id: &SessionId, seq: u64, input: u64, output: u64, cost_usd: Option<f64
         cached_input_tokens: 0,
         cache_write_tokens: 0,
         cost_usd,
+        purpose: entanglement_core::UsagePurpose::Turn,
     }
 }
 

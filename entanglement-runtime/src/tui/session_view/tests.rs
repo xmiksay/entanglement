@@ -63,6 +63,8 @@ fn tool_call_deltas_grow_one_entry_then_the_assembled_call_finalizes_it() {
         request_id: "c1".into(),
         tool: "edit".into(),
         input: r#"{"path":"a.rs"}"#.into(),
+        provider_meta: None,
+        envelope: None,
     }));
     assert_eq!(v.transcript().len(), 1);
     match &v.transcript()[0] {
@@ -78,6 +80,8 @@ fn tool_call(seq: u64, request_id: &str, tool: &str, input: &str) -> OutEvent {
         request_id: request_id.into(),
         tool: tool.into(),
         input: input.into(),
+        provider_meta: None,
+        envelope: None,
     }
 }
 
@@ -92,6 +96,7 @@ fn tool_output(seq: u64, request_id: &str, tool: &str, output: &str) -> OutEvent
         is_error: false,
         duration_ms: None,
         exit_code: None,
+        envelope: None,
     }
 }
 
@@ -154,6 +159,8 @@ fn tool_call_without_deltas_still_pushes_an_entry() {
         request_id: "c1".into(),
         tool: "read".into(),
         input: "{}".into(),
+        provider_meta: None,
+        envelope: None,
     }));
     assert_eq!(v.transcript().len(), 1);
 }
@@ -671,6 +678,8 @@ fn tool_call_first_clears_pending_prompt() {
         request_id: "t1".into(),
         tool: "read".into(),
         input: "{}".into(),
+        provider_meta: None,
+        envelope: None,
     });
     assert!(!user_pending(&v));
 }
@@ -707,7 +716,7 @@ fn supervisor_error_with_seq_zero_renders_even_after_seq_advances() {
 }
 
 #[test]
-fn compacted_renders_a_fork_notice() {
+fn compacted_renders_a_successor_notice() {
     let mut v = SessionView::new();
     assert!(v.apply_event(OutEvent::Compacted {
         session: sid(),
@@ -715,6 +724,7 @@ fn compacted_renders_a_fork_notice() {
         summary: "user asked for X, agent did Y".into(),
         kept: 0,
         auto: false,
+        mode: CompactionMode::Summary,
     }));
     let notice = v
         .transcript()
@@ -727,7 +737,7 @@ fn compacted_renders_a_fork_notice() {
             _ => None,
         })
         .expect("Compacted renders a tool-output-style notice");
-    assert!(notice.contains("forked"));
+    assert!(notice.contains("continuing in a new session"), "{notice}");
     assert!(notice.contains("user asked for X, agent did Y"));
     // Replayed (seq not advancing) is deduped like any other content event.
     assert!(!v.apply_event(OutEvent::Compacted {
@@ -736,11 +746,12 @@ fn compacted_renders_a_fork_notice() {
         summary: "replay".into(),
         kept: 0,
         auto: false,
+        mode: CompactionMode::Summary,
     }));
 }
 
 #[test]
-fn auto_compacted_renders_an_in_place_notice() {
+fn auto_compacted_renders_a_successor_notice_too() {
     let mut v = SessionView::new();
     assert!(v.apply_event(OutEvent::Compacted {
         session: sid(),
@@ -748,6 +759,7 @@ fn auto_compacted_renders_an_in_place_notice() {
         summary: "context overflowed, summarized in place".into(),
         kept: 0,
         auto: true,
+        mode: CompactionMode::Summary,
     }));
     let notice = v
         .transcript()
@@ -760,7 +772,10 @@ fn auto_compacted_renders_an_in_place_notice() {
             _ => None,
         })
         .expect("Compacted renders a tool-output-style notice");
-    assert!(!notice.contains("forked"), "auto-compaction never forks");
+    // ADR-0205: the automatic paths fork like every other compaction, so the
+    // notice says the same thing — only *why* it happened differs.
+    assert!(notice.contains("overflowed the model's window"), "{notice}");
+    assert!(notice.contains("continuing in a new session"), "{notice}");
     assert!(notice.contains("context overflowed, summarized in place"));
 }
 
@@ -785,58 +800,4 @@ fn session_meta_changed_folds_name_and_action() {
         action: None,
     }));
     assert_eq!(v.action(), None);
-}
-
-fn usage_event(seq: u64, input: u64, output: u64, cached: u64, cost_usd: Option<f64>) -> OutEvent {
-    OutEvent::Usage {
-        session: sid(),
-        seq,
-        input_tokens: input,
-        output_tokens: output,
-        cached_input_tokens: cached,
-        cache_write_tokens: 0,
-        cost_usd,
-    }
-}
-
-#[test]
-fn usage_accumulates_cumulative_totals_and_tracks_the_pricing_flag() {
-    let mut v = SessionView::new();
-    assert!(!v.cost_known());
-
-    v.apply_event(usage_event(1, 50_000, 1_000, 48_000, None));
-    assert_eq!(v.input_tokens(), 50_000);
-    assert_eq!(v.output_tokens(), 1_000);
-    assert_eq!(v.cached_input_tokens(), 48_000);
-    assert_eq!(v.cost_usd(), 0.0);
-    // No pricing on this round — the zero above must not read as "known free".
-    assert!(!v.cost_known());
-
-    v.apply_event(usage_event(2, 10_000, 500, 0, Some(0.02)));
-    assert_eq!(v.input_tokens(), 60_000);
-    assert_eq!(v.cached_input_tokens(), 48_000);
-    assert!((v.cost_usd() - 0.02).abs() < 1e-9);
-    assert!(v.cost_known());
-}
-
-#[test]
-fn usage_full_miss_after_a_hit_is_flagged_on_the_latest_round_only() {
-    let mut v = SessionView::new();
-    v.apply_event(usage_event(1, 50_000, 1_000, 48_000, None));
-    assert!(!v.last_round_full_miss());
-
-    // A large-input round right after a cache hit, now caching nothing.
-    v.apply_event(usage_event(2, 51_200, 1_100, 0, None));
-    assert!(v.last_round_full_miss());
-    let round = v.last_round_usage().expect("round recorded");
-    assert_eq!(
-        (round.input, round.output, round.cached),
-        (51_200, 1_100, 0)
-    );
-
-    // A further round after the miss doesn't re-trigger: the previous round
-    // (round 2) also cached nothing, so there's no hit-to-miss transition —
-    // the flag reflects the transition, not a standing "cache is cold" state.
-    v.apply_event(usage_event(3, 500, 100, 0, None));
-    assert!(!v.last_round_full_miss());
 }

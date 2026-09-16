@@ -97,6 +97,9 @@ pub(super) async fn handle_event(
                 if app.showing_sessions_modal() {
                     return handle_sessions_modal_event(app, holly, key).await;
                 }
+                if app.showing_settings_dialog() {
+                    return crate::tui::settings_events::handle_settings_key(app, holly, key).await;
+                }
                 // Checked before the profile picker: `e` opens the tools dialog
                 // *over* the picker without closing it (#330), so it must win the
                 // routing while both are marked open.
@@ -564,7 +567,10 @@ pub(super) async fn handle_event(
                                                 return Ok(false);
                                             }
                                             if cmd == crate::tui::commands::Command::Set {
-                                                send_set(app, holly, &text).await;
+                                                crate::tui::set_command::send_set(
+                                                    app, holly, &text,
+                                                )
+                                                .await;
                                                 return Ok(false);
                                             }
                                             if cmd == crate::tui::commands::Command::Show {
@@ -818,28 +824,6 @@ async fn send_compact(app: &mut App, holly: &Holly, text: &str) {
             args: serde_json::Value::Object(args),
         })
         .await;
-}
-
-/// Send `/set <key> <value>` as an [`InMsg::SetGeneration`] (#376): parses the
-/// raw text into a partial [`entanglement_core::GenerationParams`] override
-/// (same raw-text re-parse pattern as [`send_compact`], since `parse_command`
-/// dropped the trailing args), records it as a pending persist so the
-/// confirming `GenerationChanged` writes it to `agent-generation.yml`, then
-/// sends the change. A parse error (unknown key, malformed value) is rendered
-/// as a status line instead — no engine traffic, and no pending persist.
-async fn send_set(app: &mut App, holly: &Holly, text: &str) {
-    match crate::tui::commands::parse_set_args(text) {
-        Ok(overrides) => {
-            app.record_pending_generation_persist(overrides);
-            let _ = holly
-                .send(InMsg::SetGeneration {
-                    session: app.active_session_id().clone(),
-                    overrides,
-                })
-                .await;
-        }
-        Err(message) => app.record_set_error(message),
-    }
 }
 
 /// Send `/show` as a no-override [`InMsg::SetGeneration`] query (#376): the

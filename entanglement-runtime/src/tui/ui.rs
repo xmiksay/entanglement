@@ -132,6 +132,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_tools_view(f, app);
     }
 
+    if app.showing_settings_dialog() {
+        modals::draw_settings_dialog(f, app);
+    }
+
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
     }

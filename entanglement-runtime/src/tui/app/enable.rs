@@ -82,55 +82,48 @@ impl App {
     /// `/enable mcp <name>` and the `/mcp` panel's `e` key write; checking it
     /// lazily connects the server on submit (`enable_command::lazy_enable_entries`).
     pub fn open_session_tools_dialog(&mut self) {
+        let rows = self.session_tool_rows(&[]);
+        self.session_tools_dialog.show(rows);
+        self.mark_dirty();
+    }
+
+    /// The checklist rows over the roster, every available server's
+    /// whole-server pattern, and `extra` patterns (deduped) — shared with the
+    /// `/set` dialog's Tools tab.
+    pub(super) fn session_tool_rows(&self, extra: &[String]) -> Vec<SessionToolRow> {
         let session = self.active_session_id().clone();
         let agent = self.sessions.active_view().agent().to_string();
         let profile = self.available_profiles.iter().find(|p| p.name == agent);
         let overlay = self.overlay_entries(&session);
-        let mut rows: Vec<SessionToolRow> = self
-            .tool_roster
-            .iter()
-            .map(|name| {
-                let profile_default = profile
-                    .map(|p| {
-                        AgentProfile::mask_allows(p.tools.as_deref(), &p.disallowed_tools, name)
-                    })
-                    .unwrap_or(true);
-                let checked =
-                    ToolOverlayEntry::disposition(&overlay, name).unwrap_or(profile_default);
-                let allow = ToolOverlayEntry::find(&overlay, name)
+        let row = |name: &str| {
+            let profile_default = profile
+                .map(|p| AgentProfile::mask_allows(p.tools.as_deref(), &p.disallowed_tools, name))
+                .unwrap_or(true);
+            SessionToolRow {
+                name: name.to_string(),
+                profile_default,
+                checked: ToolOverlayEntry::disposition(&overlay, name).unwrap_or(profile_default),
+                allow: ToolOverlayEntry::find(&overlay, name)
                     .map(|e| e.allow)
-                    .unwrap_or(false);
-                SessionToolRow {
-                    name: name.clone(),
-                    profile_default,
-                    checked,
-                    allow,
-                }
-            })
-            .collect();
+                    .unwrap_or(false),
+            }
+        };
+        let mut names: Vec<String> = self.tool_roster.clone();
         if let Some(handles) = self.mcp_handles() {
-            for server in handles.avail.available_names() {
-                let pattern = format!("mcp__{server}__*");
-                let profile_default = profile
-                    .map(|p| {
-                        AgentProfile::mask_allows(p.tools.as_deref(), &p.disallowed_tools, &pattern)
-                    })
-                    .unwrap_or(true);
-                let checked =
-                    ToolOverlayEntry::disposition(&overlay, &pattern).unwrap_or(profile_default);
-                let allow = ToolOverlayEntry::find(&overlay, &pattern)
-                    .map(|e| e.allow)
-                    .unwrap_or(false);
-                rows.push(SessionToolRow {
-                    name: pattern,
-                    profile_default,
-                    checked,
-                    allow,
-                });
+            names.extend(
+                handles
+                    .avail
+                    .available_names()
+                    .into_iter()
+                    .map(|server| format!("mcp__{server}__*")),
+            );
+        }
+        for pattern in extra {
+            if !names.contains(pattern) {
+                names.push(pattern.clone());
             }
         }
-        self.session_tools_dialog.show(rows);
-        self.mark_dirty();
+        names.iter().map(|n| row(n)).collect()
     }
 
     pub fn close_session_tools_dialog(&mut self) {

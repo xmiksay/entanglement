@@ -1,19 +1,26 @@
+use std::borrow::Cow;
+
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span, Text},
 };
 
-use crate::tui::diff::DiffRenderer;
+use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::Theme;
-use crate::tui::wrap;
 
+mod discovery;
 mod expansion;
+mod orchestration;
+mod readable;
 mod search_output;
 
 pub use expansion::render_write_approval_body;
 use search_output::{render_glob_output, render_grep_output};
 
+/// The standalone `ToolOutput` block (an output with no paired call): the
+/// per-tool output renderer, readable `key: value` lines for any other named
+/// tool, plain text for a head-local status notice (`None`).
 pub fn render_tool_output(
     tool_name: Option<&str>,
     output: &str,
@@ -25,265 +32,133 @@ pub fn render_tool_output(
         Some("read") => render_read_output(output, theme, available_width),
         Some("glob") => render_glob_output(output, theme, available_width),
         Some("grep") => render_grep_output(output, theme, available_width),
-        Some("bash") => render_plain_output(output, theme, available_width),
-        _ => render_plain_output(output, theme, available_width),
+        Some("explore") => Text::from(discovery::render_explore_output(output, available_width)),
+        Some("describe") => Text::from(discovery::render_describe_output(output, available_width)),
+        Some(_) => Text::from(readable::render_output(output, available_width)),
+        None => render_plain_output(output, theme, available_width),
     }
 }
 
-/// Build the expanded body of a tool block from **both** the call `input` and
-/// its `output` (#341). Each operation gets a body that means something:
-/// `read` → the full path + the file body, `edit` → the full path + a real
-/// diff, `write` → the full path + the new content, `apply_patch` → the full
-/// path + the patch rendered as a real diff, `bash`/`call` → the full command
-/// (+ `workdir`) + its output, `glob`/`grep` → the full pattern/filter, the
-/// orchestration tools (`agent`/`ask_user`/`propose_plan`/…) → readable prose
-/// instead of raw JSON, and every unknown tool → pretty-printed input followed
-/// by the output body. Every arm above must render *something* — an approval
-/// preview (called with an empty `output`) must never be left blank (#519).
+/// Build the expanded body of a tool block: a per-tool body for the call
+/// `input` (#341), then its `output` once the call has run — `None` while it
+/// is in flight or awaiting approval (#519: an approval preview is never left
+/// blank). Every tool reads as what it did: `read` → the full path + the file
+/// body, `edit` → the path + a real diff, `write`/`apply_patch` → the path +
+/// the content/patch as a diff, `bash`/`call`/`rhai` → the full command or
+/// script + its output, `glob`/`grep` → the full pattern/filter, the
+/// orchestration tools → readable prose, `explore`/`describe` → the query and
+/// a readable index/schema summary, and everything else (MCP, endpoint, skill
+/// and unknown tools) → `key: value` arguments and output (ADR-0204 §6). A
+/// failed call's (`is_error`) output is marked in the error color.
 ///
-/// `md` renders the plan/task markdown for `propose_plan`/`update_tasks`; it
-/// is ignored by the other arms. Wired into the live
-/// transcript by `flush_tool_call`'s expanded branch (#340) and into the
-/// approval tail by `transcript.rs` (#487/#519).
+/// `md` renders the markdown bodies (plans, task snapshots, sub-agent
+/// replies). Wired into the live transcript by `flush_tool_call`'s expanded
+/// branch (#340) and into the approval tail by `transcript.rs` (#487/#519).
 pub fn render_expansion(
     tool: Option<&str>,
     input: &str,
-    output: &str,
+    output: Option<&str>,
+    is_error: bool,
     theme: Theme,
     available_width: u16,
     md: &MarkdownRenderer,
 ) -> Text<'static> {
-    match tool {
-        Some("read") => expansion::render_read_expansion(input, output, theme, available_width),
-        Some("edit") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
-            let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
-            let mut lines = Vec::new();
-            lines.extend(expansion::location_line("edit", input, "path"));
-            lines.extend(DiffRenderer::render_change(old, new).lines);
-            Text::from(lines)
+    let (tool, input) = match tool {
+        Some(t) => {
+            let (t, i) = summary::unwrap_invoke(t, input);
+            (Some(t), i)
         }
-        Some("write") => expansion::render_write_expansion(input),
-        Some("apply_patch") => expansion::render_apply_patch_expansion(input),
-        Some(t @ ("bash" | "call")) => {
-            expansion::render_command_expansion(t, input, output, theme, available_width)
-        }
-        Some("glob") => expansion::render_glob_expansion(input, output, theme, available_width),
-        Some("grep") => expansion::render_grep_expansion(input, output, theme, available_width),
-        Some("agent") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_prompt_body(
-                v.get("prompt").and_then(|p| p.as_str()).unwrap_or(""),
-                available_width,
-            )
-        }
-        Some("poll") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_poll_body(
-                v.get("handle").and_then(|s| s.as_str()).unwrap_or(""),
-                v.get("timeout_secs").and_then(|t| t.as_u64()),
-            )
-        }
-        Some("agent_send") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_agent_send_body(
-                v.get("agent_id").and_then(|s| s.as_str()).unwrap_or(""),
-                v.get("prompt").and_then(|p| p.as_str()).unwrap_or(""),
-                available_width,
-            )
-        }
-        Some("ask_user") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_ask_user_body(&v)
-        }
-        Some("propose_plan") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            // The approval prompt's `ToolRequest.input` always carries the
-            // *resolved* `content` (#513) regardless of whether the model
-            // called `content` or `path`; a raw `ToolCall`'s input (rendered
-            // in the transcript before resolution) may carry only `path` — no
-            // file content to show without a disk read, so name the file
-            // instead of leaving the block blank (#519).
-            match v.get("content").and_then(|s| s.as_str()) {
-                Some(content) => render_markdown_body(md, content, available_width),
-                None => {
-                    let path = v
-                        .get("path")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("(unknown)");
-                    render_markdown_body(md, &format!("_plan file: `{path}`_"), available_width)
-                }
-            }
-        }
-        Some("update_tasks") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
-            render_markdown_body(md, content, available_width)
-        }
-        Some("load_skill") => {
-            let v: serde_json::Value =
-                serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-            render_skill_body(v.get("skill_name").and_then(|s| s.as_str()).unwrap_or(""))
-        }
-        _ => {
-            let mut lines = Vec::new();
-            match serde_json::from_str::<serde_json::Value>(input)
-                .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
-            {
-                Some(pretty) => {
-                    for line in pretty.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
-                }
-                None => {
-                    for line in input.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
-                }
-            }
-            lines.extend(render_plain_output(output, theme, available_width).lines);
-            Text::from(lines)
-        }
-    }
-}
-
-/// Wrap and indent a multi-line plain-text body (e.g. an `agent` `prompt`).
-/// Word-wraps at `available_width - 4` so long prompts don't overflow
-/// horizontally, matching how assistant text runs are wrapped.
-fn render_prompt_body(prompt: &str, available_width: u16) -> Text<'static> {
-    let mut lines = Vec::new();
-    let wrap_width = available_width.saturating_sub(4);
-    for raw in prompt.lines() {
-        if raw.trim().is_empty() {
-            lines.push(Line::from(""));
-            continue;
-        }
-        for wline in wrap::wrap_line(Line::from(raw.to_string()), wrap_width) {
-            lines.push(Line::from(format!("  {}", collect_line(&wline))));
-        }
+        None => (None, Cow::Borrowed(input)),
+    };
+    let tool = tool.as_deref();
+    let mut lines = input_body(tool, &input, available_width, md);
+    match output {
+        Some(out) if is_error => lines.extend(readable::render_error_output(
+            out,
+            available_width,
+            theme.error_colors().fg,
+        )),
+        Some(out) => lines.extend(output_body(tool, out, theme, available_width, md)),
+        None => {}
     }
     Text::from(lines)
 }
 
-/// A compact `handle` + `timeout_secs` summary for a `poll` body.
-fn render_poll_body(handle: &str, timeout_secs: Option<u64>) -> Text<'static> {
-    let mut lines = Vec::new();
-    lines.push(Line::from(format!("  handle: {handle}")));
-    if let Some(t) = timeout_secs {
-        lines.push(Line::from(format!("  timeout_secs: {t}")));
-    }
-    Text::from(lines)
-}
-
-/// An `agent_id` line followed by the prompt body — the `agent_send` (#609)
-/// counterpart of `render_prompt_body`, naming which sub-agent the follow-up
-/// prompt is going to.
-fn render_agent_send_body(agent_id: &str, prompt: &str, available_width: u16) -> Text<'static> {
-    let mut lines = vec![Line::from(format!("  agent_id: {agent_id}"))];
-    lines.extend(render_prompt_body(prompt, available_width).lines);
-    Text::from(lines)
-}
-
-/// An `ask_user` body (#488): each question followed by its numbered option
-/// labels. Accepts the current `{"questions": [...]}` array shape as well as
-/// the legacy single-question `{"question", "options"}` shape, so a replayed
-/// pre-#488 log still renders.
-fn render_ask_user_body(value: &serde_json::Value) -> Text<'static> {
-    let mut lines = Vec::new();
-    let questions = value
-        .get("questions")
-        .and_then(|q| q.as_array())
-        .cloned()
-        .unwrap_or_else(|| vec![value.clone()]);
-    for question in &questions {
-        if let Some(q) = question.get("question").and_then(|s| s.as_str()) {
-            lines.push(Line::from(format!("  {q}")));
-        }
-        if let Some(options) = question.get("options").and_then(|o| o.as_array()) {
-            for (i, opt) in options.iter().enumerate() {
-                if let Some(label) = opt.get("label").and_then(|s| s.as_str()) {
-                    lines.push(Line::from(format!("  {}. {label}", i + 1)));
-                }
-            }
-        }
-        if question
-            .get("multi_select")
-            .and_then(|f| f.as_bool())
-            .unwrap_or(false)
-        {
-            lines.push(Line::from("  (multiple selections allowed)"));
-        }
-    }
-    Text::from(lines)
-}
-
-/// A `load_skill` body: the skill name on its own indented line.
-fn render_skill_body(skill_name: &str) -> Text<'static> {
-    Text::from(vec![Line::from(format!("  {skill_name}"))])
-}
-
-/// Render a markdown body (a plan or task snapshot) via the shared
-/// [`MarkdownRenderer`], word-wrapping each rendered line at
-/// `available_width - 4` so long paragraphs don't overflow — mirroring how
-/// assistant text runs are wrapped (`render_text_run`).
-fn render_markdown_body(
-    md: &MarkdownRenderer,
-    markdown: &str,
+fn input_body(
+    tool: Option<&str>,
+    input: &str,
     available_width: u16,
-) -> Text<'static> {
-    if markdown.trim().is_empty() {
-        return Text::default();
+    md: &MarkdownRenderer,
+) -> Vec<Line<'static>> {
+    match tool {
+        Some("read") => expansion::render_read_input(input),
+        Some("edit") => expansion::render_edit_input(input),
+        Some("write") => expansion::render_write_expansion(input).lines,
+        Some("apply_patch") => expansion::render_apply_patch_expansion(input).lines,
+        Some(t @ ("bash" | "call")) => expansion::render_command_input(t, input, available_width),
+        Some("glob") => expansion::render_glob_input(input),
+        Some("grep") => expansion::render_grep_input(input),
+        Some("rhai") => expansion::render_rhai_input(input, available_width),
+        Some("explore") => discovery::render_explore_input(input),
+        Some("describe") => discovery::render_describe_input(input),
+        Some(
+            t @ ("agent" | "agent_send" | "poll" | "ask_user" | "propose_plan" | "update_tasks"
+            | "load_skill"),
+        ) => orchestration::render_input(t, input, available_width, md),
+        _ => readable::render_args(input, available_width),
     }
-    let wrap_width = available_width.saturating_sub(4);
-    let mut lines = Vec::new();
-    for line in md.render(markdown).lines {
-        for wline in wrap::wrap_line(line, wrap_width) {
-            lines.push(Line::from(format!("  {}", collect_line(&wline))));
+}
+
+fn output_body(
+    tool: Option<&str>,
+    output: &str,
+    theme: Theme,
+    available_width: u16,
+    md: &MarkdownRenderer,
+) -> Vec<Line<'static>> {
+    match tool {
+        // An empty glob/grep result *is* the answer ("no matches").
+        Some("glob") => render_glob_output(output, theme, available_width).lines,
+        Some("grep") => render_grep_output(output, theme, available_width).lines,
+        _ if output.trim().is_empty() => Vec::new(),
+        Some("read") => render_read_output(output, theme, available_width).lines,
+        Some("edit") => render_edit_output(output, theme, available_width).lines,
+        Some("bash" | "call") => render_plain_output(output, theme, available_width).lines,
+        Some("explore") => discovery::render_explore_output(output, available_width),
+        Some("describe") => discovery::render_describe_output(output, available_width),
+        Some("agent" | "agent_send") => {
+            orchestration::render_markdown_body(md, output, available_width).lines
         }
+        _ => readable::render_output(output, available_width),
     }
-    Text::from(lines)
+}
+
+/// A tool input parsed as JSON, `Null` when malformed (e.g. a still-streaming
+/// fragment) so every body degrades to its empty fields instead of failing.
+pub(super) fn parse_input(input: &str) -> serde_json::Value {
+    serde_json::from_str(input).unwrap_or(serde_json::Value::Null)
 }
 
 /// Flatten a `Line`'s spans into a single owned `String` for the indentation
-/// helpers above (they re-wrap into a fresh `Line` with the 2-space indent
-/// applied uniformly, which is all these orchestration bodies need). Also
-/// used by `expansion`'s `render_wrapped_labeled` for the same reason.
+/// helpers (they re-wrap into a fresh `Line` with the indent applied
+/// uniformly, which is all these bodies need).
 pub(super) fn collect_line(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
-fn render_edit_output(output: &str, _theme: Theme, _available_width: u16) -> Text<'static> {
-    if output.contains("created file:") {
+fn render_edit_output(output: &str, theme: Theme, available_width: u16) -> Text<'static> {
+    if output.contains("created file:") || output.contains("matches replaced") {
         let line = Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
             Span::raw(output.to_string()),
         ]);
         return Text::from(vec![line]);
     }
-
-    if output.contains("matches replaced") {
-        let line = Line::from(vec![
-            Span::styled("✓ ", Style::default().fg(Color::Green)),
-            Span::raw(output.to_string()),
-        ]);
-        return Text::from(vec![line]);
-    }
-
-    Text::raw(output.to_string())
+    render_plain_output(output, theme, available_width)
 }
 
 /// The file body of a `read`. The filename lives in the block header (#340), so
-/// the expanded body is just the contents — indented like other tool output.
-/// Also used by `expansion::render_read_expansion` for the same reason.
+/// the body is just the contents — indented like other tool output.
 pub(super) fn render_read_output(
     output: &str,
     _theme: Theme,
@@ -302,11 +177,12 @@ pub(super) fn render_plain_output(
     _theme: Theme,
     _available_width: u16,
 ) -> Text<'static> {
-    let mut lines = Vec::new();
-    for line in output.lines() {
-        lines.push(Line::from(format!("  {}", line)));
-    }
-    Text::from(lines)
+    Text::from(
+        output
+            .lines()
+            .map(|line| Line::from(format!("  {line}")))
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(test)]
@@ -353,7 +229,8 @@ mod tests {
         let result = render_expansion(
             Some("read"),
             r#"{"path":"src/main.rs"}"#,
-            "fn main() {}\n",
+            Some("fn main() {}\n"),
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -369,7 +246,8 @@ mod tests {
         let result = render_expansion(
             Some("edit"),
             r#"{"path":"a.rs","oldString":"a","newString":"b"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -393,7 +271,8 @@ mod tests {
         let result = render_expansion(
             Some("write"),
             r#"{"path":"a.rs","content":"hello\nworld"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -414,7 +293,8 @@ mod tests {
         let result = render_expansion(
             Some("propose_plan"),
             r##"{"content":"# Goal\nDo X","path":".entanglement/plans/s1.md"}"##,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -442,7 +322,8 @@ mod tests {
         let result = render_expansion(
             Some("propose_plan"),
             r#"{"path":".entanglement/plans/s1.md"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -459,7 +340,8 @@ mod tests {
         let result = render_expansion(
             Some("update_tasks"),
             r##"{"content":"# Step 1"}"##,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -480,7 +362,8 @@ mod tests {
         let result = render_expansion(
             Some("agent"),
             r#"{"agent":"backend","prompt":"wire it up"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -501,7 +384,8 @@ mod tests {
         let result = render_expansion(
             Some("ask_user"),
             r#"{"question":"Which?","options":[{"label":"A","description":"x"}]}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -529,7 +413,8 @@ mod tests {
                 {"question":"Which DB?","options":[{"label":"Postgres"}]},
                 {"question":"Which regions?","options":[{"label":"us-east"}],"multi_select":true}
             ]}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -549,7 +434,8 @@ mod tests {
         let result = render_expansion(
             Some("load_skill"),
             r#"{"skill_name":"arch"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -570,7 +456,8 @@ mod tests {
         let result = render_expansion(
             Some("agent_send"),
             r#"{"agent_id":"s-abc123","prompt":"focus on Y instead"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -589,7 +476,8 @@ mod tests {
         let result = render_expansion(
             Some("poll"),
             r#"{"handle":"abc","timeout_secs":60}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -599,5 +487,57 @@ mod tests {
             text.contains("abc") && text.contains("60"),
             "poll expansion should render the handle and timeout_secs: {text:?}"
         );
+    }
+
+    #[test]
+    fn test_expansion_poll_and_agent_show_their_output() {
+        let md = MarkdownRenderer::new();
+        let poll = render_expansion(
+            Some("poll"),
+            r#"{"handle":"j1"}"#,
+            Some("exited 0\nbuild ok"),
+            false,
+            Theme::default(),
+            80,
+            &md,
+        );
+        assert!(flatten(&poll).contains("build ok"), "{:?}", flatten(&poll));
+        let agent = render_expansion(
+            Some("agent"),
+            r#"{"agent":"explore","prompt":"look"}"#,
+            Some("**Found** it"),
+            false,
+            Theme::default(),
+            80,
+            &md,
+        );
+        let text = flatten(&agent);
+        assert!(
+            text.contains("look") && text.contains("Found it"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn test_expansion_invoke_envelope_renders_the_inner_edit() {
+        let direct = render_expansion(
+            Some("edit"),
+            r#"{"path":"a.rs","oldString":"a","newString":"b"}"#,
+            None,
+            false,
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let enveloped = render_expansion(
+            Some("invoke"),
+            r#"{"name":"edit","args":{"path":"a.rs","oldString":"a","newString":"b"}}"#,
+            None,
+            false,
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        assert_eq!(flatten(&direct), flatten(&enveloped));
     }
 }

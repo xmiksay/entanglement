@@ -1,10 +1,9 @@
-//! Per-tool approval/expansion bodies that show the **full**, untruncated
-//! decision-relevant detail — the location, diff, or command — rather than
-//! relying on the one-line collapsed header, which truncates its primary arg
-//! to fit the terminal width (#519). Split out of `tool_render.rs` to keep
-//! that file under the 400-line cap; `render_expansion`'s dispatcher (the
-//! parent module) calls into these per-tool bodies, and shares its low-level
-//! `render_*_output` helpers + `collect_line` back down via `pub(super)`.
+//! Per-tool approval/expansion **input** bodies for the file, exec and script
+//! tools, showing the **full**, untruncated decision-relevant detail — the
+//! location, diff, command or script — rather than relying on the one-line
+//! collapsed header, which truncates its primary arg to fit the terminal width
+//! (#519). `render_expansion` (the parent module) dispatches here and appends
+//! the call's output after these bodies.
 
 use std::path::Path;
 
@@ -15,10 +14,9 @@ use ratatui::{
 };
 
 use crate::tui::diff::DiffRenderer;
-use crate::tui::theme::Theme;
 use crate::tui::wrap;
 
-use super::collect_line;
+use super::{collect_line, parse_input};
 
 /// A full, untruncated `  {label}: {value}` line for a path/command tool's
 /// body (#519) — reuses [`permission::permission_arg`], the same value the
@@ -31,25 +29,28 @@ pub(super) fn location_line(tool: &str, input: &str, label: &str) -> Option<Line
 }
 
 /// A `read` body: the full path (+ `offset`/`limit` when set) so the target is
-/// never left to the truncatable header alone, followed by the file contents
-/// once the call has run (#519).
-pub(super) fn render_read_expansion(
-    input: &str,
-    output: &str,
-    theme: Theme,
-    available_width: u16,
-) -> Text<'static> {
-    let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-    let mut lines = Vec::new();
-    lines.extend(location_line("read", input, "path"));
+/// never left to the truncatable header alone (#519).
+pub(super) fn render_read_input(input: &str) -> Vec<Line<'static>> {
+    let v = parse_input(input);
+    let mut lines: Vec<Line<'static>> = location_line("read", input, "path").into_iter().collect();
     if let Some(offset) = v.get("offset").and_then(|o| o.as_u64()) {
         lines.push(Line::from(format!("  offset: {offset}")));
     }
     if let Some(limit) = v.get("limit").and_then(|o| o.as_u64()) {
         lines.push(Line::from(format!("  limit: {limit}")));
     }
-    lines.extend(super::render_read_output(output, theme, available_width).lines);
-    Text::from(lines)
+    lines
+}
+
+/// An `edit` body: the full path plus a real `-`/`+` diff of
+/// `oldString` → `newString` (#341), never the raw JSON args.
+pub(super) fn render_edit_input(input: &str) -> Vec<Line<'static>> {
+    let v = parse_input(input);
+    let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
+    let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
+    let mut lines: Vec<Line<'static>> = location_line("edit", input, "path").into_iter().collect();
+    lines.extend(DiffRenderer::render_change(old, new).lines);
+    lines
 }
 
 /// A `write` body: the full path plus the proposed content. Used for both the
@@ -59,7 +60,7 @@ pub(super) fn render_read_expansion(
 /// once the call has actually run (the disk already equals `content` by
 /// then).
 pub(super) fn render_write_expansion(input: &str) -> Text<'static> {
-    let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+    let v = parse_input(input);
     let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines = Vec::new();
     lines.extend(location_line("write", input, "path"));
@@ -120,15 +121,12 @@ pub(super) fn render_apply_patch_expansion(input: &str) -> Text<'static> {
 
 /// A `bash`/`call` body: the full command (multiline-safe, word-wrapped —
 /// never left to the truncated one-line header, #519) plus `workdir` when set
-/// (permission-relevant since #425), followed by the command output once the
-/// call has run.
-pub(super) fn render_command_expansion(
+/// (permission-relevant since #425).
+pub(super) fn render_command_input(
     tool: &str,
     input: &str,
-    output: &str,
-    theme: Theme,
     available_width: u16,
-) -> Text<'static> {
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(command) = permission::permission_arg(tool, input) {
         lines.extend(render_wrapped_labeled("command", &command, available_width));
@@ -136,38 +134,43 @@ pub(super) fn render_command_expansion(
     if let Some(workdir) = permission::permission_workdir(tool, input) {
         lines.push(Line::from(format!("  workdir: {workdir}")));
     }
-    lines.extend(super::render_plain_output(output, theme, available_width).lines);
-    Text::from(lines)
+    lines
+}
+
+/// A `rhai` body: the full script, every line wrapped, plus the `timeout` and
+/// `background` knobs when set — the script is what gets approved, so it is
+/// never left to the header's first-line hint.
+pub(super) fn render_rhai_input(input: &str, available_width: u16) -> Vec<Line<'static>> {
+    let v = parse_input(input);
+    let script = v.get("script").and_then(|s| s.as_str()).unwrap_or("");
+    let mut lines = render_wrapped_labeled("script", script, available_width);
+    if let Some(timeout) = v.get("timeout").and_then(|t| t.as_u64()) {
+        lines.push(Line::from(format!("  timeout: {timeout}s")));
+    }
+    if v.get("background").and_then(|b| b.as_bool()) == Some(true) {
+        lines.push(Line::from("  background: true"));
+    }
+    lines
 }
 
 /// A `glob` body: the full pattern (+ `exclude` list when set) as labeled
 /// lines instead of an empty/raw-JSON body (#519).
-pub(super) fn render_glob_expansion(
-    input: &str,
-    output: &str,
-    theme: Theme,
-    available_width: u16,
-) -> Text<'static> {
-    let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
-    let mut lines = Vec::new();
-    lines.extend(location_line("glob", input, "pattern"));
+pub(super) fn render_glob_input(input: &str) -> Vec<Line<'static>> {
+    let v = parse_input(input);
+    let mut lines: Vec<Line<'static>> = location_line("glob", input, "pattern")
+        .into_iter()
+        .collect();
     if let Some(exclude) = non_empty_str_array(&v, "exclude") {
         lines.push(Line::from(format!("  exclude: {}", exclude.join(", "))));
     }
-    lines.extend(super::render_glob_output(output, theme, available_width).lines);
-    Text::from(lines)
+    lines
 }
 
 /// A `grep` body: the regex `pattern`, the optional file-filter `path`, and
 /// any `exclude` list as labeled lines (#519) — `permission_arg` alone only
 /// ever surfaces one of `pattern`/`path`, but a reviewer needs both.
-pub(super) fn render_grep_expansion(
-    input: &str,
-    output: &str,
-    theme: Theme,
-    available_width: u16,
-) -> Text<'static> {
-    let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+pub(super) fn render_grep_input(input: &str) -> Vec<Line<'static>> {
+    let v = parse_input(input);
     let mut lines = Vec::new();
     if let Some(pattern) = v.get("pattern").and_then(|s| s.as_str()) {
         lines.push(Line::from(format!("  pattern: {pattern}")));
@@ -178,8 +181,7 @@ pub(super) fn render_grep_expansion(
     if let Some(exclude) = non_empty_str_array(&v, "exclude") {
         lines.push(Line::from(format!("  exclude: {}", exclude.join(", "))));
     }
-    lines.extend(super::render_grep_output(output, theme, available_width).lines);
-    Text::from(lines)
+    lines
 }
 
 /// A non-empty `Vec<String>` from a JSON array field, or `None` for an
@@ -238,6 +240,7 @@ fn render_wrapped_labeled(label: &str, value: &str, available_width: u16) -> Vec
 mod tests {
     use super::*;
     use crate::tui::markdown::MarkdownRenderer;
+    use crate::tui::theme::Theme;
 
     fn flatten(text: &Text<'_>) -> String {
         text.lines
@@ -258,7 +261,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("read"),
             r#"{"path":"src/very/long/nested/module/path/main.rs","offset":10,"limit":50}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -277,7 +281,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("edit"),
             r#"{"path":"src/main.rs","oldString":"a","newString":"b"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -294,7 +299,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("grep"),
             r#"{"pattern":"TODO.*fixme","path":"src/*.rs"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -312,7 +318,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("grep"),
             r#"{"pattern":"TODO","path":"src/**/*.rs","exclude":["target/*","*.bak"]}"#,
-            "src/main.rs:10:// TODO fix\nsrc/lib.rs:20:// TODO later\n",
+            Some("src/main.rs:10:// TODO fix\nsrc/lib.rs:20:// TODO later\n"),
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -332,7 +339,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("glob"),
             r#"{"pattern":"**/*.rs","exclude":["target/*","*.bak"]}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -350,7 +358,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("bash"),
             r#"{"command":"git status"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -369,7 +378,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("bash"),
             &serde_json::json!({ "command": long_command }).to_string(),
-            "",
+            None,
+            false,
             Theme::default(),
             60,
             &MarkdownRenderer::new(),
@@ -396,7 +406,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("bash"),
             r#"{"command":"echo one\necho two\necho three"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -412,7 +423,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("call"),
             r#"{"command":"git","args":["status","-s"],"workdir":"sub/dir"}"#,
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -428,7 +440,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("apply_patch"),
             &serde_json::json!({ "path": "a.txt", "patch": patch }).to_string(),
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -458,7 +471,8 @@ mod tests {
         let result = super::super::render_expansion(
             Some("apply_patch"),
             &serde_json::json!({ "path": "a.txt", "patch": "not a real patch" }).to_string(),
-            "",
+            None,
+            false,
             Theme::default(),
             80,
             &MarkdownRenderer::new(),
@@ -507,5 +521,29 @@ mod tests {
         assert!(text.contains("new file"), "{text:?}");
         assert!(text.contains("hello"), "{text:?}");
         assert!(text.contains("world"), "{text:?}");
+    }
+
+    #[test]
+    fn test_expansion_rhai_shows_full_script_knobs_and_result() {
+        let result = super::super::render_expansion(
+            Some("rhai"),
+            r#"{"script":"let x = 40;\nx + 2","timeout":20,"background":true}"#,
+            Some("42"),
+            false,
+            Theme::default(),
+            80,
+            &MarkdownRenderer::new(),
+        );
+        let lines: Vec<String> = result.lines.iter().map(collect_line).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "  script: let x = 40;",
+                "    x + 2",
+                "  timeout: 20s",
+                "  background: true",
+                "  42"
+            ]
+        );
     }
 }

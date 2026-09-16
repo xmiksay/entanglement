@@ -35,6 +35,8 @@ mod mcp;
 mod mention;
 mod pickers;
 mod quit;
+mod settings;
+mod settings_apply;
 mod slash;
 mod state;
 mod stop_confirm;
@@ -46,7 +48,7 @@ mod view;
 
 pub use inspect::InspectTab;
 pub use stop_confirm::StopConfirm;
-pub use types::{CompactFork, ModalClickAreas, ProfileInfo, UiEffect};
+pub use types::{ModalClickAreas, ProfileInfo, UiEffect};
 
 #[cfg(test)]
 mod tests;
@@ -222,12 +224,12 @@ pub struct App {
     // Deferred terminal-owning effect (editor / export) for the event loop to run.
     pending_effect: Option<UiEffect>,
 
-    // Deferred session fork on compaction (ADR-0101): a `Compacted` event forks
-    // the summary into a new session via `InMsg::Spawn`. The head-side view
-    // switch + the summary-as-first-user-message record happen synchronously in
-    // `handle_out_event`; the engine `Spawn` is recorded here for the async main
-    // loop (which owns `Holly`) to send.
-    pending_compact_fork: Option<CompactFork>,
+    // Seed text of a compaction, keyed by the session that compacted
+    // (ADR-0205). The engine forks the successor itself now, so the head's job
+    // is only to carry the summary across: recorded when `Compacted` arrives,
+    // consumed when the successor's `SessionStarted` names its predecessor, so
+    // the new session's transcript opens with what it is continuing from.
+    compaction_seeds: HashMap<SessionId, String>,
 
     // In-session inspection overlay (#214): resolved prompt / agents / skills.
     inspect: inspect::InspectState,
@@ -258,6 +260,9 @@ pub struct App {
     // Cascade-vs-detach confirm for `Stop` on a plan session with a live
     // sponsored `propose_plan` build child (#626, ADR-0145 "Consequences").
     pending_stop_confirm: Option<StopConfirm>,
+
+    // Bare `/set`'s tabbed settings dialog + the catalog its model rows use.
+    settings: settings::SettingsState,
 }
 
 impl App {
@@ -434,21 +439,16 @@ impl App {
         if let OutEvent::ToolOverlayChanged { session, entries } = &event {
             self.handle_tool_overlay_changed(session, entries.clone());
         }
-        // Compaction forks (ADR-0101): intercept before routing, so the source
-        // view renders a fork notice, a new view is minted + switched to, and a
-        // pending `Spawn` is recorded for the async main loop to send. Deduped
-        // by seq against the source view's watermark so a replayed/lagged
-        // duplicate doesn't fork a second time (mirrors the reducer's own
-        // seq-dedupe guard). Auto-compaction (`auto: true`, #398, ADR-0103) is
-        // an in-place mutation the live engine already applied — no fork: the
-        // session already continued under the reduced context, so the
-        // reducer's own `Compacted` arm renders an in-place notice on the same
-        // view via the ordinary `sessions.handle_out_event` routing below.
+        // Compaction (ADR-0205): every path forks a successor, and the engine
+        // mints it — the head no longer sends the `Spawn` itself. All that is
+        // left here is carrying the summary across to the successor, which
+        // announces itself separately (below). Deduped by seq against the
+        // source view's watermark so a replayed/lagged duplicate doesn't
+        // overwrite a newer seed (mirrors the reducer's own dedupe guard).
         if let OutEvent::Compacted {
             session: source,
             seq,
             summary,
-            auto: false,
             ..
         } = &event
         {
@@ -458,8 +458,20 @@ impl App {
                 .map(|v| *seq > v.last_seen_seq())
                 .unwrap_or(true);
             if is_new {
-                self.handle_compacted(source.clone(), summary.clone());
+                self.note_compaction_seed(source.clone(), summary.clone());
             }
+        }
+        // The successor of a compaction announces itself with `predecessor`
+        // set (ADR-0205) — the head follows that lineage rather than tracking
+        // a fork it issued, so this works for a session that compacted while
+        // the user was looking somewhere else, and on a reconnect/replay.
+        if let OutEvent::SessionStarted {
+            session: successor,
+            predecessor: Some(source),
+            ..
+        } = &event
+        {
+            self.follow_successor(source.clone(), successor.clone());
         }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();

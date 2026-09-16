@@ -173,7 +173,8 @@ pub(crate) fn render_approval_tool_body(
         tool_render::render_expansion(
             Some(tool),
             input,
-            "",
+            None,
+            false,
             theme,
             available_width,
             app.markdown_renderer(),

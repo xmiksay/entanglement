@@ -122,11 +122,17 @@ impl SessionView {
                 true
             }
             // The model switch (#218) shows in the app-global context bar, not the
-            // per-session transcript — no view state to fold here.
-            OutEvent::ModelChanged { .. } => false,
-            // Generation-parameter changes (#374) have no dedicated TUI surface
-            // yet (#376 owns the `/set`/`/show` display) — no view state to fold.
-            OutEvent::GenerationChanged { .. } => false,
+            // per-session transcript; the ledger only notes which model the
+            // next `Usage` rounds bill to (#560 `/cost` by-model split).
+            OutEvent::ModelChanged {
+                provider, model, ..
+            } => {
+                self.cost.set_model(&provider, &model);
+                false
+            }
+            // A cache-keyed knob change warns once and excuses the next full
+            // miss (`generation.rs`); `App` owns the `/set`/`/show` line (#376).
+            OutEvent::GenerationChanged { generation, .. } => self.fold_generation(generation),
             // The live tool overlay (#539): the event loop renders the
             // confirmation status line and tracks the per-session list on the
             // `App` (for `/enable`/`/disable` to compute replacements) — no
@@ -348,14 +354,8 @@ impl SessionView {
             // Token totals live per-view so a resumed session restores its
             // accumulated counts (#192): the resume path replays persisted
             // records through here.
-            OutEvent::Usage {
-                input_tokens,
-                output_tokens,
-                cached_input_tokens,
-                cost_usd,
-                ..
-            } => {
-                self.record_usage(input_tokens, output_tokens, cached_input_tokens, cost_usd);
+            ev @ OutEvent::Usage { .. } => {
+                self.cost.fold_event(&ev);
                 true
             }
             OutEvent::Error { seq, message, .. } => {
@@ -395,22 +395,33 @@ impl SessionView {
             // before continuing the turn; there is no fork, so the notice
             // reports the in-place summary instead. Reuses the tool-output
             // entry, like `record_status`'s out-of-band notices.
+            // Every compaction forks a successor and retires this session
+            // (ADR-0205); `auto`/`mode` only say which path got here. The view
+            // switch is `App`'s job (it needs the successor's id, which
+            // arrives on a separate event) — this is just the notice left
+            // behind on the session that compacted.
             OutEvent::Compacted {
-                seq, summary, auto, ..
+                seq,
+                summary,
+                auto,
+                mode,
+                ..
             } => {
                 if seq > self.last_seen_seq {
-                    let output = if auto {
-                        format!(
-                            "Auto-compacted: the context overflowed the model's \
-                             window, so it was summarized in place to keep the \
-                             turn going.\n\n{summary}"
-                        )
-                    } else {
-                        format!(
-                            "Compacted: forked the summary into a new session. \
-                             The original is preserved.\n\n{summary}"
-                        )
+                    let how = match (auto, mode) {
+                        (false, _) => "Compacted".to_string(),
+                        (true, CompactionMode::Summary) => "Auto-compacted: the context \
+                             overflowed the model's window, so it was summarized"
+                            .to_string(),
+                        (true, CompactionMode::Prune) => "Auto-compacted: the context \
+                             overflowed the model's window and no summary was available, \
+                             so the oldest tool output was pruned"
+                            .to_string(),
                     };
+                    let output = format!(
+                        "{how} — continuing in a new session. This one is retired; \
+                         its history is preserved.\n\n{summary}"
+                    );
                     self.transcript.push(TranscriptEntry::ToolOutput {
                         tool: Some("compact".to_string()),
                         output,

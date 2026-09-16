@@ -191,7 +191,7 @@ impl App {
             modal_click: ModalClickAreas::default(),
             input_area: Rect::default(),
             pending_effect: None,
-            pending_compact_fork: None,
+            compaction_seeds: HashMap::new(),
             inspect: Default::default(),
             approval_pager: Default::default(),
             root: PathBuf::from("."),
@@ -201,6 +201,7 @@ impl App {
             quit_pending_at: None,
             toast: None,
             pending_stop_confirm: None,
+            settings: super::settings::SettingsState::new(catalog),
         }
     }
 }

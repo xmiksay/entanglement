@@ -18,6 +18,7 @@ pub enum Command {
     Plan,
     Tasks,
     Inspect,
+    Cost,
     Editor,
     Export,
     Resume,
@@ -49,6 +50,7 @@ impl Command {
             Command::Plan => "plan",
             Command::Tasks => "tasks",
             Command::Inspect => "inspect",
+            Command::Cost => "cost",
             Command::Editor => "editor",
             Command::Export => "export",
             Command::Compact => "compact",
@@ -78,12 +80,13 @@ impl Command {
             Command::Plan => "Open the bound plan file in $EDITOR",
             Command::Tasks => "Show the task list in the sidebar",
             Command::Inspect => "Inspect prompt, agents & skills",
+            Command::Cost => "Show this session's token & cost breakdown",
             Command::Editor => "Open editor",
             Command::Export => "Export conversation",
             Command::Resume => "Continue a past session",
             Command::Compact => "Compact the conversation history (LLM summary, --keep N to preserve trailing messages)",
             Command::Set => {
-                "Set a generation parameter (temperature, effort, thinking_budget, max_tokens)"
+                "Session settings dialog (bare), or set one generation parameter: <temperature|effort|thinking_budget|max_tokens> <value>"
             }
             Command::Show => "Show the current effective generation parameters",
             Command::Mcp => "Manage MCP servers (list, add, remove)",
@@ -135,6 +138,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Editor,
         Command::Export,
         Command::Compact,
+        Command::Cost,
         Command::Set,
         Command::Show,
         Command::Mcp,
@@ -155,7 +159,7 @@ pub fn all_commands() -> Vec<Command> {
 /// merge semantics. `text` is the raw input including the leading `/set` (the
 /// `/compact` raw-text re-parse pattern, since [`parse_command`] only matches the
 /// command name and drops everything after it). Recognised keys: `temperature`
-/// (f32), `effort` (`low|medium|high`), `thinking_budget`/`thinking_budget_tokens`
+/// (f32), `effort` (`low|medium|high|xhigh|max`), `thinking_budget`/`thinking_budget_tokens`
 /// (u32), `max_tokens`/`max_output_tokens` (u32). An unknown key or a value that
 /// fails to parse for its key is a friendly `Err` message, not a panic.
 ///
@@ -279,6 +283,7 @@ mod tests {
         assert_eq!(parse_command("/plan"), Some(Command::Plan));
         assert_eq!(parse_command("/tasks"), Some(Command::Tasks));
         assert_eq!(parse_command("/inspect"), Some(Command::Inspect));
+        assert_eq!(parse_command("/cost"), Some(Command::Cost));
         assert_eq!(parse_command("/editor"), Some(Command::Editor));
         assert_eq!(parse_command("/export"), Some(Command::Export));
         assert_eq!(parse_command("/compact"), Some(Command::Compact));
