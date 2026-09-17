@@ -14,7 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
 };
 
 use crate::common::{spawn_tool_executor, unknown_tool};
@@ -375,9 +375,6 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         system_prompt: "Review the changes.".into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Ask),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

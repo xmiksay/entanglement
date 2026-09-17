@@ -1,9 +1,8 @@
 //! The live side effects of the `/set` dialog's plan. Each step goes through
 //! the path its single-purpose command already uses: `SetAgent`/`SetModel`/
 //! `SetGeneration` with the ADR-0081/0095 persist-on-confirmation pendings,
-//! `/enable`'s lazy MCP connect + `SetToolOverlay`, the ADR-0083 allowlist
-//! materializer, the shared advertising state's live re-pin, and
-//! `/aux-model`'s store write.
+//! `/enable`'s lazy MCP connect + `SetToolOverlay`, the shared advertising
+//! state's live re-pin, and `/aux-model`'s store write.
 
 use entanglement_core::{Holly, InMsg, SessionId};
 
@@ -41,10 +40,6 @@ impl LiveEffects<'_> {
             let entries = entries.clone();
             self.send(InMsg::SetToolOverlay { session, entries })
                 .await?;
-        }
-        if let Some((agent, allowlist)) = &change.persist {
-            crate::agents::save_tools_override(&self.app.root, agent, allowlist.as_deref())
-                .map_err(|e| format!("saving the allowlist for '{agent}': {e:#}"))?;
         }
         Ok(())
     }

@@ -70,8 +70,9 @@ pub enum RowId {
     Tool(usize),
     Mode,
     Discovery,
-    /// "Save mode/discovery as default" — its own flag, since the Tools tab's
-    /// other persist checkbox saves the overlay as an agent allowlist.
+    /// "Save mode/discovery as default" — no other persist flag on the Tools
+    /// tab any more (ADR-0207 retired the per-agent allowlist the overlay
+    /// used to optionally materialize).
     AdvertisingPersist,
     Aux(Purpose),
     /// Headers, hints and disabled read-only lines — never focusable.
@@ -125,8 +126,9 @@ pub struct SettingsDialog {
     /// Focus per tab, as an index into that tab's focusable rows.
     focus: [usize; 4],
     list: ListState,
-    /// "Save as default" for Session, Generation, Tools; Aux is always on.
-    persist: [bool; 3],
+    /// "Save as default" for Session, Generation; Aux is always on and Tools
+    /// has nothing left to save as default (ADR-0207).
+    persist: [bool; 2],
     session: SessionTab,
     generation: GenerationTab,
     tools: ToolsTab,
@@ -146,7 +148,7 @@ impl SettingsDialog {
             stage: Stage::Editing,
             focus: [0; 4],
             list: ListState::default(),
-            persist: [false; 3],
+            persist: [false; 2],
             session,
             generation: GenerationTab::new(current, caps),
             tools,
@@ -184,7 +186,9 @@ impl SettingsDialog {
     pub fn persist(&self, tab: Tab) -> bool {
         match tab {
             Tab::Aux => true,
-            other => self.persist[other.index()],
+            Tab::Tools => false,
+            Tab::Session => self.persist[0],
+            Tab::Generation => self.persist[1],
         }
     }
 
@@ -211,7 +215,7 @@ impl SettingsDialog {
                 note("agent choice applies to this session only · PgUp/PgDn: jump provider"),
             ],
             Tab::Generation => self.generation_rows(agent),
-            Tab::Tools => self.tools_rows(agent),
+            Tab::Tools => self.tools_rows(),
             Tab::Aux => {
                 let mut rows = vec![RowView {
                     disabled: Some(AUX_PERSIST_REASON),
@@ -258,19 +262,11 @@ impl SettingsDialog {
         rows
     }
 
-    fn tools_rows(&self, agent: &str) -> Vec<RowView> {
+    fn tools_rows(&self) -> Vec<RowView> {
         let t = &self.tools;
-        let mut rows = vec![
-            row(
-                RowId::Persist,
-                "save as default",
-                format!(
-                    "{} overlay as agent '{agent}' allowlist (next restart)",
-                    checkbox(self.persist[2])
-                ),
-            ),
-            note("── (a) tools this session · Space: toggle, a: auto-allow ──"),
-        ];
+        let mut rows = vec![note(
+            "── (a) tools this session · Space: toggle, a: auto-allow ──",
+        )];
         for i in t.indices(false) {
             let r = &t.rows()[i];
             let tag = match (r.checked, r.profile_default, r.allow) {
@@ -377,7 +373,11 @@ impl SettingsDialog {
     /// `←`/`→`/`Space` on the focused row.
     pub fn activate(&mut self, forward: bool) {
         match self.focused_id() {
-            RowId::Persist if self.tab != Tab::Aux => {
+            // Session (0) and Generation (1) are the only tabs with a
+            // `Persist` row now (Aux is always-on, Tools has nothing left to
+            // save as default, ADR-0207) — `self.tab.index()` is always a
+            // valid `persist` slot whenever this row is actually focused.
+            RowId::Persist if matches!(self.tab, Tab::Session | Tab::Generation) => {
                 let i = self.tab.index();
                 self.persist[i] = !self.persist[i];
             }
@@ -484,7 +484,7 @@ impl SettingsDialog {
                 persist_for: keep(1),
             });
         }
-        plan.extend(self.tools.overlay_step(keep(2)));
+        plan.extend(self.tools.overlay_step());
         plan.extend(self.tools.adv.repin());
         plan.extend(self.tools.adv.persist_step());
         plan.extend(

@@ -13,15 +13,12 @@ use crate::config::aux_models::Purpose;
 /// Section (a)/(b) of the Tools tab, as one step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolsChange {
-    /// The full-replacement overlay; `None` when only saving as default.
+    /// The full-replacement overlay.
     pub entries: Option<Vec<ToolOverlayEntry>>,
     /// Servers newly switched on (lazily connected when `allowed`, #542).
     pub enable_servers: Vec<String>,
     /// Servers newly switched off (session enablement mark withdrawn).
     pub disable_servers: Vec<String>,
-    /// `(agent, allowlist)` to materialize as a user-layer override
-    /// (ADR-0083); `None` allowlist = inherit all.
-    pub persist: Option<(String, Option<Vec<String>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,9 +107,6 @@ impl ApplyStep {
                 }
                 if !t.disable_servers.is_empty() {
                     parts.push(format!("mcp off: {}", t.disable_servers.join(", ")));
-                }
-                if let Some((agent, _)) = &t.persist {
-                    parts.push(format!("allowlist saved for '{agent}' (next restart)"));
                 }
                 parts.join(", ")
             }

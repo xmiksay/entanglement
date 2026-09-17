@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::id_gen::{DefaultIdGen, IdGen};
-use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile, SessionId};
+use crate::protocol::{AgentMode, AgentProfile, SessionId};
 use entanglement_provider::{
     AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
     ModelResolver, ToolSpec,
@@ -381,9 +381,6 @@ fn default_profile() -> AgentProfile {
                 .into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         // `build` spawns everything except primaries (the target-side mode gate,
         // #119) — no `spawnable_agents` list, so user-defined exploration agents
         // stay spawnable without editing this built-in.

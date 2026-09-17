@@ -152,7 +152,10 @@ fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mod
     )
 }
 
-fn unmasked_profile(name: &str, perm: Permission) -> ProfileRegistry {
+/// `perm` is unused here (the profile carries no permission fact any more,
+/// ADR-0207) but kept as a parameter since every call site also feeds it to
+/// [`mode_table_with_default`] to build the mode that actually grades.
+fn unmasked_profile(name: &str, _perm: Permission) -> ProfileRegistry {
     let mut profiles = ProfileRegistry::default();
     profiles.insert(AgentProfile {
         name: name.into(),
@@ -161,9 +164,6 @@ fn unmasked_profile(name: &str, perm: Permission) -> ProfileRegistry {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(perm),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

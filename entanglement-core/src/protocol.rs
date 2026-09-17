@@ -714,8 +714,9 @@ fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
 }
 
 /// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173)
-/// and the agent tool mask's `tools:`/`disallowed_tools:` entries (#537,
-/// ADR-0148): `*` matches any run of characters (including `/` and the empty
+/// and the session tool overlay's [`ToolOverlayEntry::pattern`] (#537,
+/// ADR-0148 — the agent tool mask this once also served is retired,
+/// ADR-0207): `*` matches any run of characters (including `/` and the empty
 /// string), `?` matches exactly one, everything else is literal. Deliberately
 /// separator-agnostic and free of `**`/character-classes — so `bash(git *)`,
 /// `edit(src/*)` and `mcp__docs__*` all read naturally and core stays
@@ -808,13 +809,20 @@ pub enum AgentMode {
     All,
 }
 
-/// A bundle of system prompt + model + permissions that defines how a session
-/// reasons and what it may do. A session runs under exactly one profile at a
+/// A bundle of identity — system prompt, model/provider pin, spawn posture —
+/// that defines who a session is. A session runs under exactly one profile at a
 /// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
 /// agent concept. The `name` is the switch key in [`InMsg::SetAgent`].
 ///
+/// **Authority is not here.** ADR-0207 moved every permission fact — the tool
+/// mask (`tools`/`disallowed_tools`) and the `permission` rules — out of the
+/// profile and onto the session's independent permission **mode** axis; a
+/// profile no longer says what a session may do, only who it is. (`sandbox`/
+/// `can_spawn`/`spawnable_agents`/`mode` are still here — a later ADR-0207
+/// stage folds those into mode facts too.)
+///
 /// Profiles are **file-defined** in the runtime (markdown + YAML frontmatter,
-/// ADR-0034): `name`/`mode`/`model`/`permission` come from the frontmatter and
+/// ADR-0034): `name`/`mode`/`model` come from the frontmatter and
 /// `system_prompt` is the file body. `description` drives delegation matching —
 /// it is the one field disclosed to a spawning model (via the `agent` tool
 /// description).
@@ -838,30 +846,6 @@ pub struct AgentProfile {
     /// logs/frames written before #323 deserialize with `provider: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    pub permission: PermissionProfile,
-    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only tools matching an entry
-    /// are accepted **at dispatch** (the registry is intersected with this
-    /// set); `None` ⇒ inherit every tool. The mask does not narrow what is
-    /// *advertised* — the schema of a masked tool still reaches the model, and
-    /// calling it is declined by the runtime's dispatch gate with an
-    /// attributed refusal, keeping the advertised surface stable within a
-    /// session (and with it the provider's prompt cache).
-    /// Each entry is a `*`/`?` wildcard pattern (#537, ADR-0148) matched with
-    /// the same [`glob_match`] the #173 argument scopes use — a literal entry
-    /// degenerates to exact equality, so `read` behaves as before while
-    /// `"mcp__*"` admits every MCP tool and `"mcp__docs__*"` one server's,
-    /// names unknowable at profile-parse time (servers connect later).
-    /// Distinct from [`permission`][Self::permission]: this controls a tool's
-    /// *existence*, not `Allow`/`Ask`/`Deny` among tools that exist.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
-    /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
-    /// matching an entry — same wildcard-pattern semantics as
-    /// [`tools`][Self::tools] (#537, ADR-0148) — is refused at dispatch, even
-    /// if the allowlist (or an inherit-all `None`) would otherwise include it.
-    /// Like the allowlist it is dispatch-only: the tool stays advertised.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
     /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
     /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
     /// every other mode open. When it (or the derived default) is `false`, the
@@ -883,7 +867,7 @@ pub struct AgentProfile {
     /// inherits the process-global `ENTANGLEMENT_SANDBOX` default. Opaque to
     /// core — validated and interpreted entirely by the runtime
     /// (`host::sandbox`), which owns the `bwrap` mechanism; core only carries
-    /// and serializes it, same as `permission`.
+    /// and serializes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
 }
@@ -898,48 +882,6 @@ impl AgentProfile {
         match (self.provider.as_deref(), self.model.as_deref()) {
             (Some(provider), Some(model)) => Some((provider, model)),
             _ => None,
-        }
-    }
-
-    /// Whether this profile's mask admits `tool`: present unless the denylist
-    /// removes it, or an allowlist is set and omits it. This is the *physical*
-    /// restriction of #116 — orthogonal to [`PermissionProfile::for_tool`],
-    /// which grades `Allow`/`Ask`/`Deny` among the tools the mask admits.
-    ///
-    /// **Advertisement no longer consults this predicate, and neither does
-    /// dispatch.** ADR-0207 (permission modes) retired the runtime-side mask
-    /// gate this predicate used to feed (`permission::tool_masked`/
-    /// `tool_mask_source`, deleted) — the runtime now grades every call from
-    /// the session's permission mode instead. This method (and the
-    /// `tools`/`disallowed_tools` fields it reads) survives only for the
-    /// runtime's own UI-facing tooling (`tool_state`, `inspect agents`, the
-    /// TUI's mask editor) until ADR-0207's later stage removes them too.
-    ///
-    /// Plan authorship still keys off the mask *data* (#231, ADR-0049): the
-    /// runtime advertises `propose_plan` only to a profile that *explicitly*
-    /// allowlists it (literal name, never a pattern —
-    /// `plan_tasks::explicitly_allowlists`), so plan authority is
-    /// default-closed without a dedicated flag.
-    /// Entries are `*`/`?` wildcard patterns (#537, ADR-0148) matched by
-    /// [`glob_match`], evaluated dynamically here at dispatch time — which is
-    /// what lets a mask cover MCP tools (`mcp__<server>__<tool>`) whose names
-    /// don't exist yet when profiles are parsed.
-    pub fn advertises_tool(&self, tool: &str) -> bool {
-        Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
-    }
-
-    /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
-    /// callable on a projection of the mask (a head holding only
-    /// `tools`/`disallowed_tools`, e.g. the TUI's profile info) so no caller
-    /// re-implements the pattern semantics. Consulted at **dispatch**, not at
-    /// advertisement.
-    pub fn mask_allows(tools: Option<&[String]>, disallowed: &[String], tool: &str) -> bool {
-        if disallowed.iter().any(|t| glob_match(t, tool)) {
-            return false;
-        }
-        match tools {
-            Some(allow) => allow.iter().any(|t| glob_match(t, tool)),
-            None => true,
         }
     }
 
@@ -972,36 +914,25 @@ impl AgentProfile {
         matches!(self.mode, AgentMode::Subagent | AgentMode::All)
     }
 
-    /// The wire-facing posture of this profile (#189): mode, the #116 tool mask
-    /// (`tools`/`disallowed_tools`), and the permission rules. Carried on
+    /// The wire-facing posture of this profile (#189): just `mode` now that
+    /// ADR-0207 moved the tool mask and permission rules off the profile and
+    /// onto the session's independent permission mode axis. Carried on
     /// [`OutEvent::AgentChanged`] and [`SessionInfo`] so a reconnecting head — or
-    /// a sub-agent debugger — can render *why* a tool is allowed/asked/denied
-    /// without folding the broadcast or re-reading the agent `.md` layers.
+    /// a sub-agent debugger — can see the profile's mode without folding the
+    /// broadcast or re-reading the agent `.md` layers.
     pub fn detail(&self) -> ProfileDetail {
-        ProfileDetail {
-            mode: self.mode,
-            tools: self.tools.clone(),
-            disallowed_tools: self.disallowed_tools.clone(),
-            permission: self.permission.clone(),
-        }
+        ProfileDetail { mode: self.mode }
     }
 }
 
-/// Resolved permission posture of an [`AgentProfile`], carried on the wire so a
-/// head need not re-read the agent `.md` layers to render it (#189). A projection
-/// of [`AgentProfile`] — its policy-bearing fields minus the system prompt and
-/// spawn/plan flags that heads don't render for a posture panel.
+/// Resolved wire-facing posture of an [`AgentProfile`] (#189). Since ADR-0207
+/// moved every permission fact off the profile and onto the session's mode
+/// axis, this is now just `mode` — kept as its own type (rather than inlining
+/// `mode` onto the events that carry it) so a later ADR-0207 stage can widen
+/// it with mode facts without another wire shape change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileDetail {
     pub mode: AgentMode,
-    /// Tool allowlist (#116); `None` ⇒ inherit every advertised tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
-    /// Tool denylist (#116), applied after the allowlist.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    /// Per-tool `Allow | Ask | Deny` rules + fallback.
-    pub permission: PermissionProfile,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2978,10 +2909,6 @@ mod tests {
                     sponsored: false,
                     profile_detail: Some(ProfileDetail {
                         mode: AgentMode::Subagent,
-                        tools: Some(vec!["read".into(), "glob".into()]),
-                        disallowed_tools: vec!["edit".into()],
-                        permission: PermissionProfile::new(Permission::Deny)
-                            .with("read", Permission::Allow),
                     }),
                 },
             ],
@@ -3323,19 +3250,12 @@ mod tests {
             system_prompt: "secret prompt body".into(),
             model: Some("glm-5.2".into()),
             provider: None,
-            permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
-            tools: Some(vec!["read".into(), "grep".into()]),
-            disallowed_tools: vec!["edit".into()],
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,
         };
         let detail = profile.detail();
         assert_eq!(detail.mode, AgentMode::Subagent);
-        assert_eq!(detail.tools, Some(vec!["read".into(), "grep".into()]));
-        assert_eq!(detail.disallowed_tools, vec!["edit".to_string()]);
-        assert_eq!(detail.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(detail.permission.for_tool("edit"), Permission::Deny);
     }
 
     #[test]
@@ -3345,9 +3265,6 @@ mod tests {
             agent: "plan".into(),
             profile_detail: Some(ProfileDetail {
                 mode: AgentMode::Primary,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
             }),
         };
         let json = serde_json::to_string(&ev).unwrap();
@@ -3592,23 +3509,6 @@ mod tests {
         assert!(ToolOverlayEntry::find(&[entry], "edit").is_some());
     }
 
-    fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {
-        AgentProfile {
-            name: "m".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
-            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        }
-    }
-
     fn spawn_profile(
         mode: AgentMode,
         can_spawn: Option<bool>,
@@ -3621,9 +3521,6 @@ mod tests {
             system_prompt: String::new(),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn,
             spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
             sandbox: None,
@@ -3664,79 +3561,6 @@ mod tests {
     }
 
     #[test]
-    fn advertises_tool_inherits_all_when_unmasked() {
-        let p = masked_profile(None, vec![]);
-        assert!(p.advertises_tool("edit"));
-        assert!(p.advertises_tool("anything"));
-    }
-
-    #[test]
-    fn advertises_tool_allowlist_restricts_to_listed() {
-        let p = masked_profile(Some(vec!["read", "glob", "grep"]), vec![]);
-        assert!(p.advertises_tool("read"));
-        assert!(p.advertises_tool("grep"));
-        assert!(!p.advertises_tool("edit"));
-        assert!(!p.advertises_tool("agent"));
-    }
-
-    #[test]
-    fn advertises_tool_denylist_wins_over_allowlist() {
-        // `edit` is in the allowlist yet also denied — denylist is applied last.
-        let p = masked_profile(Some(vec!["read", "edit"]), vec!["edit"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
-    fn advertises_tool_denylist_alone_subtracts_from_inherit_all() {
-        let p = masked_profile(None, vec!["bash"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("bash"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_allowlist_matches_mcp_namespace() {
-        // #537: `mcp__*` admits every MCP tool from every server, nothing else.
-        let p = masked_profile(Some(vec!["read", "mcp__*"]), vec![]);
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(p.advertises_tool("mcp__jira__create_issue"));
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_server_scoped() {
-        let p = masked_profile(Some(vec!["mcp__docs__*"]), vec![]);
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(!p.advertises_tool("mcp__jira__create_issue"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_denylist_subtracts_from_inherit_all() {
-        // Strip MCP from an otherwise-unmasked profile.
-        let p = masked_profile(None, vec!["mcp__*"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("mcp__docs__search"));
-    }
-
-    #[test]
-    fn advertises_tool_deny_glob_beats_allow_glob() {
-        // All MCP except one server: deny is applied last, patterns included.
-        let p = masked_profile(Some(vec!["mcp__*"]), vec!["mcp__docs__*"]);
-        assert!(p.advertises_tool("mcp__jira__create_issue"));
-        assert!(!p.advertises_tool("mcp__docs__search"));
-    }
-
-    #[test]
-    fn advertises_tool_star_is_inherit_all_and_empty_is_nothing() {
-        let all = masked_profile(Some(vec!["*"]), vec![]);
-        assert!(all.advertises_tool("read"));
-        assert!(all.advertises_tool("mcp__docs__search"));
-        let none = masked_profile(Some(vec![]), vec![]);
-        assert!(!none.advertises_tool("read"));
-    }
-
-    #[test]
     fn overlay_disposition_deny_beats_enable_beats_none() {
         // #539: deny entries win regardless of list order; enable entries win
         // over "no opinion"; an unmatched tool leaves the profile mask to
@@ -3761,29 +3585,6 @@ mod tests {
             ToolOverlayEntry::find(&entries, "mcp__jira__create").is_some(),
             "find returns the enable entry; existence was already refused by disposition"
         );
-    }
-
-    #[test]
-    fn advertises_tool_literal_entry_stays_exact() {
-        // No implicit prefixing: a literal never matches a longer name.
-        let p = masked_profile(Some(vec!["mcp__docs"]), vec![]);
-        assert!(!p.advertises_tool("mcp__docs__search"));
-        assert!(p.advertises_tool("mcp__docs"));
-    }
-
-    #[test]
-    fn mask_is_a_dispatch_predicate_for_every_tool_including_poll() {
-        // Advertisement no longer consults the mask, so no tool needs an
-        // advertisement-side exemption (superseding ADR-0190's
-        // `ALWAYS_ADVERTISED_TOOLS` short-circuit): this predicate answers one
-        // question only — does the mask admit the tool at dispatch — and it
-        // answers it uniformly, `poll` included.
-        let allowlist = masked_profile(Some(vec!["read"]), vec![]);
-        assert!(allowlist.advertises_tool("read"));
-        assert!(!allowlist.advertises_tool("poll"));
-        let denylist = masked_profile(None, vec!["poll"]);
-        assert!(denylist.advertises_tool("read"));
-        assert!(!denylist.advertises_tool("poll"));
     }
 
     #[test]

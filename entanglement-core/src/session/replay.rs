@@ -337,7 +337,7 @@ mod tests {
     /// A registry carrying a restricted `Subagent` leaf alongside the built-in
     /// `build`, for the #638 profile-fold tests below.
     fn cfg_with_leaf_profile(name: &str) -> EngineConfig {
-        use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
+        use crate::protocol::{AgentMode, AgentProfile};
 
         let mut cfg = EngineConfig::default();
         cfg.profiles.insert(AgentProfile {
@@ -347,9 +347,6 @@ mod tests {
             system_prompt: "leaf".into(),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Deny),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,

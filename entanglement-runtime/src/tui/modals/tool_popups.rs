@@ -1,7 +1,9 @@
 //! Tool/MCP availability popups: the `/mcp list` panel (#373, selectable
-//! since #539), bare `/enable`'s session-tools checklist (#539), and the
-//! `/agent` picker's tools-allowlist checklist (#330). Split from
-//! `popups.rs` once it crossed the 400-line cap.
+//! since #539), bare `/enable`'s session-tools checklist (#539), and `/tools`
+//! (#560 P9, ADR-0199 part 3). Split from `popups.rs` once it crossed the
+//! 400-line cap. The `/agent` picker's tools-allowlist checklist (#330) this
+//! module also used to draw is retired (ADR-0207: no more per-agent tool
+//! mask to allowlist).
 
 use ratatui::{
     style::{Color, Style},
@@ -11,7 +13,6 @@ use ratatui::{
 };
 
 use super::centered_rect;
-use crate::tool_state::DispatchState;
 use crate::tui::app::App;
 
 /// Draw the `/mcp list` result panel (#373, selectable since #539): connected
@@ -180,55 +181,6 @@ pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, area, app.session_tools_dialog_state());
 }
 
-/// Draw the `/agent` picker's `e` tools-checklist dialog (#330): every tool
-/// with a checkbox reflecting the profile's current effective mask **and** the
-/// dispatch state that mask + the profile's permission grades produce
-/// (`allowed`/`asks`/`declines`, `crate::tool_state`) — the checkbox alone
-/// would read as "the model can't see this tool", which stopped being true
-/// once advertisement decoupled from enforcement. Unchecking a row flips its
-/// state to `declines` live, before the override is saved. `Space` toggles,
-/// `Enter` saves a user-layer override, `Esc` discards.
-pub fn draw_tools_dialog(f: &mut Frame, app: &mut App) {
-    let agent = app.tools_dialog().agent().to_string();
-    let tools = app.tools_dialog().tools().to_vec();
-    let width = tools.iter().map(|t| t.chars().count()).max().unwrap_or(0);
-
-    let items: Vec<ListItem> = tools
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let checked = app.tools_dialog().is_checked(i);
-            let (mark, style) = if checked {
-                ("[x] ", Style::default())
-            } else {
-                ("[ ] ", Style::default().dim())
-            };
-            let dispatch = app.tools_dialog().tool_state(i);
-            let color = match dispatch.state {
-                DispatchState::Allowed => Color::Green,
-                DispatchState::Asks => Color::Yellow,
-                DispatchState::Declines => Color::Red,
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(mark, style),
-                Span::styled(format!("{name:<width$}  "), style),
-                Span::styled(dispatch.label(), Style::default().fg(color)),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "Tool mask — {agent} (Space: toggle, Enter: save, Esc: cancel)"
-        )))
-        .highlight_style(Style::default().bg(Color::DarkGray));
-
-    let area = centered_rect(60, 60, f.area());
-    app.set_tools_dialog_rect(area);
-    f.render_widget(Clear, area);
-    f.render_stateful_widget(list, area, app.tools_dialog_state());
-}
-
 /// Draw `/tools` (#560 P9, ADR-0199 part 3): every row from
 /// `App::tools_view_rows`, grouped visually by kind label, filtered live by
 /// the typed free text and the `Tab`-cycled category. The title bar doubles
@@ -283,38 +235,4 @@ pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
     let area = centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.tools_view_state());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use entanglement_core::SessionId;
-    use ratatui::{backend::TestBackend, Terminal};
-
-    /// Every row of the `/agent` checklist shows its dispatch state beside the
-    /// checkbox — a masked-out tool reads `declines`, not "absent".
-    #[test]
-    fn tools_dialog_rows_render_their_dispatch_state() {
-        let mut app = App::new_for_test(SessionId::new("s1"));
-        app.open_tools_dialog(); // `build`: default-allow, inherit-all mask.
-        app.tools_dialog_toggle(); // uncheck the first row.
-
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal.draw(|f| draw_tools_dialog(f, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let rendered = (0..30)
-            .map(|y| {
-                (0..100)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(rendered.contains("Tool mask — build"), "{rendered}");
-        assert!(rendered.contains("[ ] read"), "{rendered}");
-        assert!(rendered.contains("declines"), "{rendered}");
-        assert!(rendered.contains("[x] edit"), "{rendered}");
-        assert!(rendered.contains("allowed"), "{rendered}");
-    }
 }

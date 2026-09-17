@@ -20,7 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, SessionModel, ToolSpec,
+    LlmResponse, LlmStream, SessionId, SessionModel, ToolSpec,
 };
 
 /// Per-session log of the advertised tool-name lists, one inner `Vec` per
@@ -54,7 +54,8 @@ impl Llm for RecordingLlm {
 
 /// The read-only `explore` profile the runtime ships as `explore.md`; core no
 /// longer carries it (#201), so the mask test registers it directly. Its
-/// `read`/`glob`/`grep` allowlist masks out anything else.
+/// read-only posture is a runtime permission-mode fact now (ADR-0207) — the
+/// profile itself carries no mask.
 fn explore_profile() -> AgentProfile {
     AgentProfile {
         name: "explore".into(),
@@ -63,12 +64,6 @@ fn explore_profile() -> AgentProfile {
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny)
-            .with("read", Permission::Allow)
-            .with("glob", Permission::Allow)
-            .with("grep", Permission::Allow),
-        tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,
@@ -270,9 +265,9 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             ToolSpec::new("poll", "join background jobs and sub-agents"),
         ]
     }));
-    // A profile that masks everything but `read`: neither `poll` nor `edit` is
-    // in its allowlist. Both are still advertised — the allowlist decides what
-    // may *run*, not what the model can see.
+    // A named-restrictive profile: it carries no mask of its own any more
+    // (ADR-0207 moved that onto the session's permission mode), so `poll` and
+    // `edit` are advertised exactly as any other profile would see them.
     cfg.profiles.insert(AgentProfile {
         name: "locked".into(),
         description: "read-only".into(),
@@ -280,9 +275,6 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
-        tools: Some(vec!["read".into()]),
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

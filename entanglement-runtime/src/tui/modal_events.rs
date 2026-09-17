@@ -118,15 +118,6 @@ async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
     if app.showing_settings_dialog() {
         return super::settings_events::click_settings(app, column, row);
     }
-    // Highest priority first: the tools dialog overlays the profile picker
-    // (`e` opens it over the picker without closing it, #330), so it wins.
-    if app.showing_tools_dialog() {
-        let area = app.tools_dialog_rect();
-        if let Some(idx) = list_row_index(area, row, app.tools_dialog().tools().len()) {
-            app.tools_dialog_state().select(Some(idx));
-        }
-        return;
-    }
     if app.showing_session_tools_dialog() {
         let area = app.session_tools_dialog_rect();
         if let Some(idx) = list_row_index(area, row, app.session_tools_dialog().rows().len()) {
@@ -343,7 +334,6 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_profile_picker()
         || app.showing_model_picker()
         || app.showing_key_dialog()
-        || app.showing_tools_dialog()
         || app.showing_command_palette()
         || app.showing_resume_modal()
         || app.showing_help()
@@ -364,8 +354,6 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.model_picker_next();
     } else if app.showing_key_dialog() {
         app.key_dialog_next();
-    } else if app.showing_tools_dialog() {
-        app.tools_dialog_next();
     } else if app.showing_command_palette() {
         app.command_palette().select_next();
     } else if app.showing_resume_modal() {
@@ -397,8 +385,6 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.model_picker_prev();
     } else if app.showing_key_dialog() {
         app.key_dialog_prev();
-    } else if app.showing_tools_dialog() {
-        app.tools_dialog_prev();
     } else if app.showing_command_palette() {
         app.command_palette().select_prev();
     } else if app.showing_resume_modal() {
@@ -446,11 +432,6 @@ pub(super) async fn handle_profile_picker_event(
         }
         KeyCode::PageUp => {
             app.profile_picker_page_up(DIALOG_PAGE_SIZE);
-        }
-        // `e`: edit the highlighted profile's tool allowlist (#330) — opens the
-        // checklist dialog over the picker, leaving it open underneath.
-        KeyCode::Char('e') => {
-            app.open_tools_dialog();
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
@@ -542,29 +523,6 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
             }
             _ => {}
         },
-    }
-    Ok(false)
-}
-
-/// Drive the `/agent` picker's `e` tools-checklist dialog (#330): `Space`
-/// toggles the highlighted row, `Enter` materializes the checked set as a
-/// user-layer override and closes, `Esc` discards. No engine traffic — the
-/// write is head-side and takes effect on the next restart.
-pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
-    match key.code {
-        KeyCode::Esc => app.close_tools_dialog(),
-        KeyCode::Enter => {
-            let _ = app.submit_tools_dialog();
-        }
-        KeyCode::Char(' ') => app.tools_dialog_toggle(),
-        KeyCode::Down | KeyCode::Char('j') => app.tools_dialog_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.tools_dialog_prev(),
-        KeyCode::PageDown => app.tools_dialog_page_down(DIALOG_PAGE_SIZE),
-        KeyCode::PageUp => app.tools_dialog_page_up(DIALOG_PAGE_SIZE),
-        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
-            return Ok(true);
-        }
-        _ => {}
     }
     Ok(false)
 }

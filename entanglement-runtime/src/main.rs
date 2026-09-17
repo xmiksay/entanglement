@@ -25,8 +25,8 @@ use entanglement_runtime::{
     agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
     mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
     propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
-    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
-    SharedRegistry, ToolRegistry,
+    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch, SharedRegistry,
+    ToolRegistry,
 };
 use mode::ModeTable;
 use tool_runner::{DiscoverySurface, EscapeRoot};
@@ -277,30 +277,29 @@ async fn build_config(
     // spawn, and a non-spawning profile gets nothing — so it lives in
     // `profile_tool_specs` (appended by core for the active profile), not the
     // shared `tool_specs`. Empty entries are simply omitted.
-    // Plan authorship (#231, ADR-0049; #513, ADR-0145): `propose_plan` — the
-    // sole plan-authorship tool, `update_plan` removed — is advertised only to
-    // a profile that *explicitly* allowlists it — the default-closed gate that
-    // replaces the old `owns_plan` flag, so it never leaks to an inherit-all
-    // profile. It rides the same per-profile seam as the spawn family; core's
-    // #116 mask filters it again at turn time.
     let profile_tool_specs = cfg
         .profiles
         .iter()
         .filter_map(|p| {
-            let mut specs = subagent::spawn_specs_for(p, &cfg.profiles);
-            specs.extend(propose_plan::specs_for(p));
+            let specs = subagent::spawn_specs_for(p, &cfg.profiles);
             (!specs.is_empty()).then(|| (p.name.clone(), specs))
         })
         .collect();
     cfg.profile_tool_specs = profile_tool_specs;
     // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
-    // no cross-agent authority, so it rides the shared specs (a read-only profile
-    // masks it out via its allowlist + permission). The runtime executor
-    // intercepts it to emit the `TaskList` snapshot.
+    // no cross-agent authority, so it rides the shared specs (a read-only
+    // session's permission mode declines the call at dispatch). The runtime
+    // executor intercepts it to emit the `TaskList` snapshot.
     cfg.tool_specs.push(plan_tasks::update_tasks_spec());
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());
+    // `propose_plan` (#231, ADR-0049; #513, ADR-0145) is advertised
+    // unconditionally now (ADR-0207 §7: the old default-closed per-profile
+    // allowlist gate is retired along with the mask it read) — it joins the
+    // shared specs like `update_tasks`; the force-park on `Ask` is the only
+    // gate left.
+    cfg.tool_specs.push(propose_plan::propose_plan_spec());
     // `poll` (#605, ADR-0161) is runtime-owned like `ask_user` but not a spawn
     // tool either — it joins both background `bash` jobs and sub-agents, so it
     // rides the shared specs rather than the per-profile spawn family.
@@ -308,17 +307,17 @@ async fn build_config(
     // `rhai` is a runtime-owned sandboxed script tool (#122, ADR-0046). Its
     // bindings are exactly the root-contained quintet, so it is no more
     // privileged than the always-registered tools and rides the shared specs
-    // (registered by default; a profile masks it like any tool via its
-    // allowlist). The executor intercepts it before permission resolution.
-    // Behind the `rhai` feature (#502, ADR-0135) — absent entirely from a lean
-    // build that opts out of it.
+    // (registered by default; graded like any tool through the session's
+    // permission mode). The executor intercepts it before permission
+    // resolution. Behind the `rhai` feature (#502, ADR-0135) — absent
+    // entirely from a lean build that opts out of it.
     #[cfg(feature = "rhai")]
     cfg.tool_specs.push(script::rhai_spec());
-    // The `/agent` picker's tools-checklist dialog (#330) offers every advertised
-    // tool name — captured here (before `cfg` is moved into `Holly::spawn`), not
-    // via the `ToolRegistry` alone, so it also includes the runtime-owned specs
-    // appended above (`update_tasks`/`ask_user`/`rhai`) that aren't registry
-    // tools but are still maskable via a profile's `tools`/`disallowed_tools`.
+    // `/tools` and the bare `/enable` checklist offer every advertised tool
+    // name — captured here (before `cfg` is moved into `Holly::spawn`), not
+    // via the `ToolRegistry` alone, so it also includes the runtime-owned
+    // specs appended above (`update_tasks`/`ask_user`/`rhai`) that aren't
+    // registry tools.
     let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
     tool_names.sort();
     tool_names.dedup();

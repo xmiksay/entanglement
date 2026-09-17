@@ -64,7 +64,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use entanglement_core::{AgentProfile, AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
+use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId, ToolSpec};
 use tokio::sync::broadcast::Receiver;
 
 use crate::agent_registry::AgentRegistry;
@@ -82,11 +82,11 @@ use resolve::{parse_plan_input, resolve_plan};
 /// a `build` session (ADR-0042).
 pub const HANDOFF_PROFILE: &str = "build";
 
-/// The `propose_plan` tool schema. Advertised only to a profile that explicitly
-/// allowlists `propose_plan` via
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] (#231,
-/// ADR-0049) — the default-closed plan-authorship gate, so the tool never leaks
-/// to an inherit-all profile.
+/// The `propose_plan` tool schema. Advertised **unconditionally** now
+/// (ADR-0207 §7 — the old default-closed, per-profile allowlist gate is
+/// retired along with the mask it read): every session sees it, and the
+/// force-park on `Ask` below is the only gate left — a decision only the user
+/// makes, never a profile. Rides the shared `tool_specs`, like `update_tasks`.
 pub fn propose_plan_spec() -> ToolSpec {
     ToolSpec::with_schema(
         PROPOSE_PLAN_TOOL,
@@ -117,21 +117,6 @@ pub fn propose_plan_spec() -> ToolSpec {
             }
         }),
     )
-}
-
-/// The per-profile `propose_plan` specs (#141, ADR-0042; #231, ADR-0049): the
-/// tool advertised to a session running under `profile`, gated by explicit
-/// allowlist membership so it never leaks to an inherit-all profile. Empty for
-/// a profile that does not opt in. Appended to
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig]
-/// alongside the spawn family; core's `run_turn` filters it through the #116 tool
-/// mask, which the same allowlist entry satisfies.
-pub fn specs_for(profile: &AgentProfile) -> Vec<ToolSpec> {
-    if crate::plan_tasks::explicitly_allowlists(profile, PROPOSE_PLAN_TOOL) {
-        vec![propose_plan_spec()]
-    } else {
-        Vec::new()
-    }
 }
 
 /// Compose the first user message of the handoff `build` session from an accepted
@@ -376,23 +361,6 @@ mod tests {
             "the accepted plan must reach the build session verbatim: {msg}"
         );
         assert!(msg.starts_with("The following implementation plan"));
-    }
-
-    #[test]
-    fn specs_advertised_only_to_explicit_allowlisters() {
-        // Plan authorship is default-closed (#231, ADR-0049): only a profile that
-        // explicitly allowlists `propose_plan` gets the spec. The built-in `plan`
-        // profile does (its allowlist lists it); `build` (inherit-all) and
-        // `explore` (read trio) do not.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        assert!(
-            specs_for(reg.get("build").unwrap()).is_empty(),
-            "an inherit-all profile gets no propose_plan spec"
-        );
-        assert!(specs_for(reg.get("explore").unwrap()).is_empty());
-        let plan_specs = specs_for(reg.get("plan").unwrap());
-        assert_eq!(plan_specs.len(), 1);
-        assert_eq!(plan_specs[0].name, PROPOSE_PLAN_TOOL);
     }
 
     #[test]

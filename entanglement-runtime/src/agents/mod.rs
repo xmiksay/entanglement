@@ -1,9 +1,9 @@
 //! File-based agent definitions (#112, ADR-0034).
 //!
 //! An agent is a markdown file with YAML frontmatter: the frontmatter is the
-//! config bundle (`name`/`description`/`mode`/`model`/`permission`/…), the body
-//! below the closing `---` is the agent's system-prompt body. Definitions are
-//! discovered at startup and folded into a core [`ProfileRegistry`].
+//! identity bundle (`name`/`description`/`mode`/`model`/…), the body below the
+//! closing `---` is the agent's system-prompt body. Definitions are discovered
+//! at startup and folded into a core [`ProfileRegistry`].
 //!
 //! The body is not stored raw: as each definition is parsed it is composed into
 //! the final `system_prompt` by [`crate::system_prompt::assemble`] (shared
@@ -33,13 +33,14 @@
 //! file is warned and skipped — it must not abort the load. A foreign agent
 //! defaults to `mode: all` so it is spawnable as a delegation target.
 //!
-//! # Tool mask (#116) and deferred frontmatter
+//! # Authority left the agent (ADR-0207)
 //!
-//! `tools`/`disallowed_tools` (the tool mask) now reach the core
-//! [`AgentProfile`] and are **enforced** (#116, ADR-0038): core filters the
-//! advertised specs by the mask at turn time and the runtime executor refuses a
-//! masked call at dispatch, so a restricted agent's model never sees the schema
-//! and a hallucinated call is still refused.
+//! `tools`/`disallowed_tools` (the tool mask, #116/ADR-0038) and `permission`
+//! (#59) are no longer agent frontmatter keys: authority is a second,
+//! independent session axis now — the permission **mode** — not anything an
+//! `AgentProfile` carries. A definition naming `tools:`/`disallowed_tools:`/
+//! `permission:` fails to parse (`deny_unknown_fields`), same as any other
+//! unrecognized key.
 //!
 //! `can_spawn`/`spawnable_agents` (fine-grained spawn control) now reach the core
 //! [`AgentProfile`] and are **enforced** (#119, ADR-0040): `can_spawn` gates the
@@ -58,9 +59,6 @@ use crate::mcp::McpCapabilityIndex;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 use crate::tool_names;
-
-mod materialize;
-pub use materialize::{rewrite_tools, save_tools_override, winning_raw_text};
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
@@ -98,20 +96,10 @@ struct AgentDefinition {
     /// is a loud load error (a provider with nothing to run is meaningless).
     #[serde(default)]
     provider: Option<String>,
-    /// Per-tool `Allow | Ask | Deny` rules. Omitted ⇒ allow-all.
-    #[serde(default)]
-    permission: Option<serde_yaml::Value>,
     /// Fold the project brief into this agent's system prompt (#113). Opt-in:
     /// omitted ⇒ the brief is not included even when a brief file exists.
     #[serde(default)]
     include_brief: bool,
-    /// Tool allowlist; omitted ⇒ inherit all. Enforced (#116, ADR-0038): masks
-    /// both the advertised specs and dispatch.
-    #[serde(default)]
-    tools: Option<Vec<String>>,
-    /// Tool denylist, applied after the allowlist (#116, ADR-0038).
-    #[serde(default)]
-    disallowed_tools: Vec<String>,
     /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
     /// derive from `mode` (`subagent` closed, otherwise open).
     #[serde(default)]
@@ -129,8 +117,8 @@ struct AgentDefinition {
     sandbox: Option<String>,
     /// Skills to **preload** into this agent's system prompt (#117): the listed
     /// skills' full bodies are injected at load (paths substituted, same pipeline
-    /// as `load_skill`). Preload only — *not* an allowlist: runtime skill access
-    /// is the orthogonal `load_skill` tool mask (`tools`/`disallowed_tools`).
+    /// as `load_skill`). Preload only — *not* an allowlist: runtime `load_skill`
+    /// access is governed by the session's permission mode, not the profile.
     #[serde(default)]
     skills: Option<Vec<String>>,
 }
@@ -152,8 +140,10 @@ struct ForeignAgentFrontmatter {
 impl ForeignAgentFrontmatter {
     /// Map onto the native definition: `mode: all` (a Claude agent is a
     /// delegation target, so it must be spawnable; `all` keeps it selectable as
-    /// a primary too — shadow with a native definition to restrict), allow-all
-    /// permission, no tool mask, no brief/preload.
+    /// a primary too — shadow with a native definition to restrict), no
+    /// brief/preload. No authority to drop any more (ADR-0207) — a foreign
+    /// agent's posture is whatever session mode it runs under, same as any
+    /// native one.
     fn into_definition(self) -> AgentDefinition {
         AgentDefinition {
             name: self.name,
@@ -161,10 +151,7 @@ impl ForeignAgentFrontmatter {
             mode: AgentMode::All,
             model: None,
             provider: None,
-            permission: None,
             include_brief: false,
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,
@@ -295,7 +282,7 @@ pub fn built_in_registry() -> Result<ProfileRegistry> {
 /// layer/source won, and every lower-layer definition of the same name it
 /// overrode.
 pub struct AgentResolution {
-    /// The fully assembled winning profile (mode/model/permission/mask + prompt).
+    /// The fully assembled winning profile (mode/model pin/spawn posture + prompt).
     pub profile: AgentProfile,
     /// Which precedence layer the winner came from.
     pub layer: AgentLayer,
@@ -312,11 +299,10 @@ pub struct AgentResolution {
 /// exactly as at load (native aborts, foreign warns and skips).
 ///
 /// `skutter inspect agents` (unlike [`load_registry`]) doesn't already resolve
-/// the user config's MCP servers, so this reports each profile's permission
-/// rules with an empty [`McpCapabilityIndex`] — a bare `read: allow` here shows
-/// only the built-in fan-out, not any config-side MCP capability hint (#426).
-/// Real permission resolution (`load_registry`, driving the engine) still sees
-/// the full fan-out; only this debug view is scoped down.
+/// the user config's MCP servers, so this parses with an empty
+/// [`McpCapabilityIndex`] — harmless now that agent parsing carries no
+/// permission fan-out of its own (ADR-0207); kept for
+/// [`build_profile`]'s shared signature.
 pub fn resolve_registry(
     root: &Path,
     ctx: &PromptContext,
@@ -382,9 +368,8 @@ pub struct AgentPromptReport {
 /// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
 /// without spawning the engine (#184). `Ok(None)` if no such agent exists;
 /// malformed definitions behave exactly as at load (native aborts, foreign
-/// warns and skips). Like [`resolve_registry`], resolves permission with an
-/// empty [`McpCapabilityIndex`] (#426) — this view doesn't consult the user
-/// config's MCP servers.
+/// warns and skips). Parses with an empty [`McpCapabilityIndex`], kept for
+/// [`build_profile`]'s shared signature (#426; harmless now, ADR-0207).
 pub fn prompt_report(
     root: &Path,
     agent: &str,
@@ -512,20 +497,22 @@ fn parse_definition(
 /// composing the final `system_prompt` via [`assemble`]. Split out from
 /// [`parse_definition`] so `inspect` can reuse it after it has the definition in
 /// hand (to also render the per-part breakdown from the same inputs).
+///
+/// `_mcp` is dead weight since ADR-0207 (agent parsing carries no permission
+/// fan-out any more) — kept only so every call site in this module shares one
+/// signature; [`permission_from_value`]/`expand_capabilities` still need a real
+/// [`McpCapabilityIndex`] for the config `permissions:` ceiling
+/// ([`crate::config`]).
 fn build_profile(
     def: AgentDefinition,
     body: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
-    mcp: &McpCapabilityIndex,
+    _mcp: &McpCapabilityIndex,
 ) -> Result<AgentProfile> {
     if def.name.trim().is_empty() {
         bail!("agent frontmatter `name` must not be empty");
     }
-    let permission = match &def.permission {
-        Some(v) => permission_from_value(v, mcp)?,
-        None => PermissionProfile::new(Permission::Allow),
-    };
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
     let include_brief = def.include_brief;
     let mode = def.mode;
@@ -563,9 +550,6 @@ fn build_profile(
         system_prompt: assemble(body, include_brief, mode, ctx, &preloaded),
         model,
         provider,
-        permission,
-        tools: def.tools,
-        disallowed_tools: def.disallowed_tools,
         can_spawn: def.can_spawn,
         spawnable_agents: def.spawnable_agents,
         sandbox,
@@ -594,55 +578,7 @@ fn build_profile(
         skills = skills_in_prompt,
         "assembled agent system prompt",
     );
-    warn_unrecognized_mask_entries(&profile);
     Ok(profile)
-}
-
-/// Warn on a `tools`/`disallowed_tools` mask entry or `permission` rule key
-/// that names nothing [`tool_names::is_recognized_mask_entry`] can vouch for
-/// (#623) — most likely a stale or typo'd tool name, e.g. one retired by a
-/// rename (`bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`,
-/// #605/#606). Today an unrecognized mask entry silently masks nothing and an
-/// unrecognized permission-rule key silently never matches, so a stale config
-/// degrades quietly instead of failing loud; this surfaces the drift at load
-/// time instead of leaving it to be noticed the hard way (ADR-0161 "Config
-/// churn", ADR-0166). Deliberately a warning, not a load error: an entry this
-/// function can't vouch for might still be a not-yet-connected MCP tool this
-/// process just hasn't discovered the exact spelling of, so aborting the load
-/// would be the wrong failure mode.
-fn warn_unrecognized_mask_entries(profile: &AgentProfile) {
-    let mask_entries = profile
-        .tools
-        .iter()
-        .flatten()
-        .map(|t| ("tools", t.as_str()))
-        .chain(
-            profile
-                .disallowed_tools
-                .iter()
-                .map(|t| ("disallowed_tools", t.as_str())),
-        );
-    for (field, entry) in mask_entries {
-        if !tool_names::is_recognized_mask_entry(entry) {
-            tracing::warn!(
-                agent = %profile.name,
-                field,
-                entry,
-                "agent tool mask names an unrecognized tool — check for a stale or renamed tool name",
-            );
-        }
-    }
-    for (key, _) in &profile.permission.rules {
-        let (tool, _) = split_capability_key(key);
-        if !tool_names::is_recognized_mask_entry(tool) {
-            tracing::warn!(
-                agent = %profile.name,
-                field = "permission",
-                entry = %key,
-                "agent permission rule names an unrecognized tool — check for a stale or renamed tool name",
-            );
-        }
-    }
 }
 
 /// Resolve a definition's `skills:` preload (#117) to rendered bodies via the
@@ -1210,381 +1146,41 @@ mod tests {
     }
 
     #[test]
-    fn built_ins_parse_with_expected_shape() {
+    fn built_ins_parse_with_expected_identity_and_spawn_shape() {
         // The embedded built-ins must parse — this is what lets `load_registry`
-        // treat their parse as infallible.
+        // treat their parse as infallible. ADR-0207 left each built-in with no
+        // permission posture of its own (mode/model/spawn only); the actual
+        // read-only/read-write behavior is a runtime permission-mode fact now.
         let mut reg = ProfileRegistry::default();
         for (file, contents) in BUILT_INS {
             let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
             reg.insert(p);
         }
+
         let build = reg.get("build").expect("build built-in");
         assert_eq!(build.mode, AgentMode::Primary);
-        assert_eq!(build.permission.for_tool("edit"), Permission::Allow);
         assert!(build.system_prompt.starts_with("You are a coding agent"));
-        // Plan authorship is default-closed (#231, ADR-0049; #513): inherit-all
-        // `build` does not explicitly allowlist `propose_plan`, so it authors
-        // no plan.
-        assert!(!crate::plan_tasks::explicitly_allowlists(
-            build,
-            "propose_plan"
-        ));
 
         let plan = reg.get("plan").expect("plan built-in");
-        assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
-        // #524, ADR-0142: `write`'s bare grade is a hard `deny` (fanning out to
-        // `edit`/`write`/`apply_patch` via the capability key, #418) — the
-        // plans-folder carve-out below is the only crack in an otherwise
-        // physically read-only agent.
-        assert_eq!(plan.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(plan.permission.for_tool("write"), Permission::Deny);
-        // #524: the plans-folder carve-out (opencode-style) — `write`/`edit`
-        // succeed for `.entanglement/plans/*.md` even though the bare grade is
-        // `deny`, but nowhere else.
-        assert_eq!(
-            plan.permission
-                .resolve("write", Some(".entanglement/plans/foo.md")),
-            Permission::Allow
-        );
-        assert_eq!(
-            plan.permission
-                .resolve("edit", Some(".entanglement/plans/foo.md")),
-            Permission::Allow
-        );
-        assert_eq!(
-            plan.permission.resolve("write", Some("src/main.rs")),
-            Permission::Deny
-        );
-        // #418: `plan.md`'s `read: allow` is now a capability key, so it fans
-        // out to `grep`/`glob` too (both are read-only and already advertised)
-        // — an intentional, pinned flip from the pre-#418 `ask` default rather
-        // than a silent diff.
-        assert_eq!(plan.permission.for_tool("grep"), Permission::Allow);
-        assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
-        // Plan authors the plan (#231, ADR-0049; #513, ADR-0145): its tool mask
-        // carries the read trio + delegation/skill tools + `propose_plan`, plus
-        // `write`/`edit` scoped to the plans folder (#524). Children spawned
-        // under it inherit the clamp. Its allowlist explicitly opts into plan
-        // authorship.
-        assert!(crate::plan_tasks::explicitly_allowlists(
-            plan,
-            "propose_plan"
-        ));
-        assert!(plan.advertises_tool("read"));
-        assert!(plan.advertises_tool("agent"));
-        assert!(plan.advertises_tool("load_skill"));
-        assert!(plan.advertises_tool("propose_plan"));
-        assert!(plan.advertises_tool("edit"));
-        assert!(plan.advertises_tool("write"));
-        // #597: `call`/`bash` are on plan's own mask too — not so plan runs
-        // shell itself, but so the ancestor-chain mask intersection (ADR-0038)
-        // stops erasing them from an `explore` child it delegates research to.
-        // `explore.md` still grades its own call/bash `Ask`.
-        assert!(plan.advertises_tool("call"));
-        assert!(plan.advertises_tool("bash"));
-        // The *coarse* (no-argument) grade for `call` stays `Deny`: `call` is
-        // a `MULTI_GROUP` tool (ADR-0114) whose bare grade is the least
-        // privileged of every bare capability — `write: deny` pulls it down
-        // regardless of any bare `call: ...` a profile writes. `bash` isn't
-        // multi-group, so its coarse grade is plain `default: ask`.
-        assert_eq!(plan.permission.for_tool("call"), Permission::Deny);
-        assert_eq!(plan.permission.for_tool("bash"), Permission::Ask);
-        // A real invocation always carries its command as the `call`/`bash`
-        // argument (#173/#425), so `call(*): ask` — an arg-scoped capability
-        // key, which ADR-0114 lets refine `call`'s multi-group floor — is what
-        // actually governs dispatch: any concrete command resolves `Ask`, not
-        // the coarse `Deny` above.
-        assert_eq!(
-            plan.permission.resolve("call", Some("gh issue view 594")),
-            Permission::Ask
-        );
-        assert_eq!(
-            plan.permission.resolve("bash", Some("git status")),
-            Permission::Ask
-        );
+        assert_eq!(plan.mode, AgentMode::Primary);
 
         let explore = reg.get("explore").expect("explore built-in");
         assert_eq!(explore.mode, AgentMode::Subagent);
-        assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
-        // Read-only `explore` never authors a plan and cannot mutate tasks (#175):
-        // its allowlist omits `propose_plan`/`update_tasks` and permission denies.
-        assert!(!explore.advertises_tool("propose_plan"));
-        assert!(!explore.advertises_tool("update_tasks"));
-        assert_eq!(
-            explore.permission.for_tool("update_tasks"),
-            Permission::Deny
-        );
-        // #explore-ask-shell (ADR-0137): the read-only reference agent now
-        // advertises exec tools (`call`/`bash`/`rhai`) at `Ask` grade so a
-        // `git status`/`git diff` it needs isn't a hard dead-end — each call
-        // escalates to the user, never runs silently. File mutation stays
-        // hard-denied, and it still cannot spawn.
-        assert!(explore.advertises_tool("read"));
-        assert!(explore.advertises_tool("glob"));
-        assert!(explore.advertises_tool("grep"));
-        assert!(explore.advertises_tool("call"));
-        assert!(explore.advertises_tool("bash"));
-        // #615/#605: `poll` rides along with `bash` so a background job
-        // `explore` starts is actually readable, not a write-only dead-end.
-        // `poll` is intercepted before permission resolution (ADR-0161 §3), so
-        // it carries no grade of its own — only advertisement matters here.
-        assert!(explore.advertises_tool("poll"));
-        assert!(explore.advertises_tool("rhai"));
-        assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(explore.permission.for_tool("bash"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("call"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("rhai"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(explore.permission.for_tool("write"), Permission::Deny);
-        assert!(!explore.advertises_tool("edit"));
-        assert!(!explore.advertises_tool("write"));
-        assert!(!explore.advertises_tool("agent"));
 
-        // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
-        // everything, inherit-all tool mask) so it can actually compile/run tests
-        // to verify a fix — unlike the read-only spawn targets (`explore`,
-        // `research`), it never gets stuck unable to execute.
         let debug = reg.get("debug").expect("debug built-in");
         assert_eq!(debug.mode, AgentMode::Subagent);
         assert!(debug.spawnable_as_subagent());
-        assert_eq!(debug.permission.for_tool("edit"), Permission::Allow);
-        assert_eq!(debug.permission.for_tool("bash"), Permission::Allow);
-        assert!(debug.tools.is_none(), "inherit-all, like build");
-        // Plan authorship is default-closed (#231, ADR-0049), same as `build`.
-        assert!(!crate::plan_tasks::explicitly_allowlists(
-            debug,
-            "propose_plan"
-        ));
 
-        // `research` (ADR-0167, mode since flipped to `primary` so the TUI
-        // Tab ring cycles build → plan → research): the global read-only Q&A
-        // agent, with no plan authorship or plans-folder carve-out, unlike
-        // `plan`. Delegation goes to read-only `explore` leaves.
+        // `research` (ADR-0167): a `primary` agent that may only delegate to
+        // the read-only `explore` leaf — the one spawn-control fact ADR-0207
+        // left on a profile.
         let research = reg.get("research").expect("research built-in");
         assert_eq!(research.mode, AgentMode::Primary);
-        assert_eq!(research.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(research.permission.for_tool("grep"), Permission::Allow);
-        assert_eq!(research.permission.for_tool("glob"), Permission::Allow);
-        // `write: deny` fans to the whole write capability, with no carve-out
-        // anywhere — the mask omits the write tools too, so this is belt and
-        // suspenders.
-        assert_eq!(research.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(research.permission.for_tool("write"), Permission::Deny);
-        assert_eq!(
-            research.permission.resolve("write", Some("src/main.rs")),
-            Permission::Deny
-        );
-        assert!(!research.advertises_tool("edit"));
-        assert!(!research.advertises_tool("write"));
-        assert!(!research.advertises_tool("propose_plan"));
-        // Same multi-group floor as `plan` (ADR-0114/ADR-0159): `call`'s coarse
-        // grade is dragged to `Deny` by `write: deny`, while the arg-scoped
-        // `call(*): ask` governs every real dispatch; the later literal
-        // `rhai: ask` out-ranks the floor for `rhai` by last-match.
-        assert_eq!(research.permission.for_tool("call"), Permission::Deny);
-        assert_eq!(research.permission.for_tool("bash"), Permission::Ask);
-        assert_eq!(research.permission.for_tool("rhai"), Permission::Ask);
-        assert_eq!(
-            research.permission.resolve("call", Some("git log")),
-            Permission::Ask
-        );
-        assert_eq!(
-            research
-                .permission
-                .resolve("bash", Some("git blame src/lib.rs")),
-            Permission::Ask
-        );
-        // `agent_send` (#609, ADR-0162) rides the mask next to `agent`, as it
-        // does on `plan`: a research parent re-engages an explore child it
-        // already launched instead of respawning one and losing its context.
-        // The spawn family bypasses the permission ladder, so the mask *is* the
-        // gate — its nominal grade is just research's `default: ask`.
-        for tool in [
-            "read",
-            "glob",
-            "grep",
-            "agent",
-            "agent_send",
-            "poll",
-            "call",
-            "bash",
-            "rhai",
-        ] {
-            assert!(
-                research.advertises_tool(tool),
-                "research must advertise `{tool}`"
-            );
-        }
-        assert_eq!(research.permission.for_tool("agent_send"), Permission::Ask);
-        // Explore-only spawn closure: research may spawn, but only the
-        // read-only `explore` leaf (which cannot spawn at all) — the subtree
-        // can never widen into a write-capable profile. As a primary, research
-        // itself is no longer a legal spawn target.
         assert!(research.may_spawn());
         assert!(!research.spawnable_as_subagent());
         assert!(research.spawn_target_allowed("explore"));
         assert!(!research.spawn_target_allowed("build"));
         assert!(!research.spawn_target_allowed("research"));
-    }
-
-    /// ADR-0195 §3: the curated read-only Allow rules shipped in the embedded
-    /// (lowest, shadowable) agent layer — exact-prefix command globs for
-    /// commands that cannot mutate anything. Least-privilege tiers (`explore`,
-    /// `research`) pre-approve them; every other command still escalates; and
-    /// the config ceiling still clamps them down like any profile grade.
-    #[test]
-    fn curated_read_only_rules_allow_inspection_but_not_mutation() {
-        let mut reg = ProfileRegistry::default();
-        for (file, contents) in BUILT_INS {
-            let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
-            reg.insert(p);
-        }
-
-        // Both least-privileged tiers pre-approve the curated set …
-        for name in ["explore", "research"] {
-            let profile = reg.get(name).expect("built-in");
-            assert_eq!(
-                profile.permission.resolve("bash", Some("find .")),
-                Permission::Allow,
-                "{name}: `bash find .` is curated read-only"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("rg pattern src")),
-                Permission::Allow,
-                "{name}: `call rg …` is curated read-only"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("cat README.md")),
-                Permission::Allow,
-                "{name}: `call cat …` is curated read-only"
-            );
-            // … while everything outside it still escalates.
-            assert_eq!(
-                profile.permission.resolve("bash", Some("git status")),
-                Permission::Ask,
-                "{name}: a non-curated command still asks"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("git status")),
-                Permission::Ask,
-                "{name}: a non-curated `call` still asks"
-            );
-            // And nothing outside the curated set runs silently on `explore` —
-            // the prefix never widens past its own commands (`bash: ask` is an
-            // explicit rule there, so an unlisted command escalates rather
-            // than hitting the `default: deny` floor).
-            if name == "explore" {
-                assert_eq!(
-                    profile.permission.resolve("bash", Some("rm -rf /")),
-                    Permission::Ask,
-                    "explore: an unlisted command escalates, never auto-runs"
-                );
-            }
-        }
-
-        // The ceiling clamps the curated Allow down exactly as it clamps any
-        // profile grade (#172): a `bash: deny` ceiling wins over every rule.
-        let explore = reg.get("explore").expect("built-in");
-        let deny_bash = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("bash", Some("find .")),
-                &deny_bash,
-                "bash",
-                Some("find ."),
-                None,
-            ),
-            Permission::Deny,
-            "a ceiling denying `bash` must clamp the curated Allow"
-        );
-        // A narrower arg-scoped ceiling (`bash(find *): ask`) re-tightens just
-        // the curated slice it names, leaving an unrelated rule untouched.
-        let ask_find =
-            PermissionProfile::new(Permission::Allow).with("bash(find *)", Permission::Ask);
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("bash", Some("find .")),
-                &ask_find,
-                "bash",
-                Some("find ."),
-                None,
-            ),
-            Permission::Ask,
-            "an arg-scoped ceiling re-tightens the curated slice"
-        );
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("call", Some("rg pattern")),
-                &ask_find,
-                "call",
-                Some("rg pattern"),
-                None,
-            ),
-            Permission::Allow,
-            "a `bash`-scoped ceiling leaves the curated `call` rules alone"
-        );
-    }
-
-    /// The explore/research/plan provider-bundled-MCP gap: all three profiles
-    /// mask in `mcp_enable` + `"mcp__*"` and grade `mcp_enable: allow`
-    /// outright (ADR-0152's tier is the consent boundary, not the profile),
-    /// while a bundled server's own tools ride the ordinary `read`
-    /// capability fan-out — so a read-hinted tool (e.g. z.ai's
-    /// `web_search_prime`) grades Allow but an unhinted one still falls
-    /// through to each profile's own default.
-    #[test]
-    fn explore_research_and_plan_can_enable_and_use_a_read_hinted_bundled_mcp_tool() {
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert(
-            "read".to_string(),
-            vec!["mcp__web_search_prime__webSearchPrime".to_string()],
-        );
-        for (file, contents) in BUILT_INS {
-            if *file != "explore.md" && *file != "research.md" && *file != "plan.md" {
-                continue;
-            }
-            let p = parse_definition(
-                contents,
-                &PromptContext::default(),
-                &SkillRegistry::default(),
-                &mcp,
-            )
-            .unwrap_or_else(|e| panic!("{file}: {e}"));
-            assert!(
-                p.advertises_tool("mcp_enable"),
-                "{file}: must mask in mcp_enable"
-            );
-            assert!(
-                p.advertises_tool("mcp__web_search_prime__webSearchPrime"),
-                "{file}: \"mcp__*\" mask entry must admit a namespaced MCP tool"
-            );
-            assert_eq!(
-                p.permission.for_tool("mcp_enable"),
-                Permission::Allow,
-                "{file}: mcp_enable is graded outright — the tier gates consent, not this profile"
-            );
-            assert_eq!(
-                p.permission
-                    .for_tool("mcp__web_search_prime__webSearchPrime"),
-                Permission::Allow,
-                "{file}: a read-hinted bundled MCP tool must ride the `read: allow` fan-out"
-            );
-            // An MCP tool the catalog never hinted `read` is not admitted by
-            // the fan-out and falls through to the profile's own default
-            // (posture pinned: explore denies, research/plan ask) — the same
-            // capability index, a second tool absent from it.
-            let expected_default = if *file == "explore.md" {
-                Permission::Deny
-            } else {
-                Permission::Ask
-            };
-            assert_eq!(
-                p.permission.for_tool("mcp__some_write_server__delete"),
-                expected_default,
-                "{file}: an unhinted MCP tool must not silently grade Allow"
-            );
-        }
     }
 
     #[test]
@@ -1613,8 +1209,6 @@ mod tests {
         let (def, body) = parse_raw(&raw).unwrap().expect("foreign agent parses");
         assert_eq!(def.name, "helper");
         assert_eq!(def.mode, AgentMode::All, "delegation target ⇒ mode all");
-        assert_eq!(def.tools, None, "Claude tool names are dropped, no mask");
-        assert!(def.permission.is_none(), "allow-all default");
         assert_eq!(body, "body");
     }
 
@@ -1673,28 +1267,22 @@ mod tests {
             parse("---\nname: x\ndescription: d\nmodel: inherit\n---\nDo the thing.\n").unwrap();
         assert_eq!(p.system_prompt, "Do the thing.");
         assert_eq!(p.model, None);
-        // Omitted permission ⇒ allow-all.
-        assert_eq!(p.permission.for_tool("edit"), Permission::Allow);
     }
 
     #[test]
-    fn unrecognized_mask_and_permission_entries_warn_but_do_not_fail_the_load() {
-        // #623: a stale/renamed tool name (e.g. a config that predates
-        // #605/#606's `bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`
-        // rename) must not brick startup — it degrades to a `tracing::warn!`
-        // (unobservable here with no test subscriber wired) while the profile
-        // still loads with the mask/rule intact verbatim.
-        let p = parse(
-            "---\nname: x\ndescription: d\ntools: [read, agent_spawn]\n\
-             disallowed_tools: [bash_output]\npermission:\n  agent_poll: ask\n---\nbody",
-        )
-        .unwrap();
-        assert_eq!(
-            p.tools.as_deref(),
-            Some(&["read".to_string(), "agent_spawn".to_string()][..])
-        );
-        assert_eq!(p.disallowed_tools, vec!["bash_output".to_string()]);
-        assert_eq!(p.permission.for_tool("agent_poll"), Permission::Ask);
+    fn tools_disallowed_tools_and_permission_frontmatter_keys_are_rejected() {
+        // ADR-0207: authority left the agent entirely. A definition naming any
+        // of the three retired keys is now a plain unknown-field load error,
+        // same as any other typo — not a silently-ignored or warned-about key.
+        for frontmatter in [
+            "---\nname: x\ndescription: d\ntools: [read]\n---\nbody",
+            "---\nname: x\ndescription: d\ndisallowed_tools: [bash]\n---\nbody",
+            "---\nname: x\ndescription: d\npermission:\n  default: ask\n---\nbody",
+        ] {
+            let err = parse(frontmatter).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("unknown field"), "got: {msg}");
+        }
     }
 
     #[test]
@@ -1704,49 +1292,24 @@ mod tests {
     }
 
     #[test]
-    fn mode_all_and_tool_mask_reach_the_profile() {
+    fn mode_all_and_spawn_control_reach_the_profile() {
         let p = parse(
-            "---\nname: x\ndescription: d\nmode: all\ntools: [read, grep]\n\
-             disallowed_tools: [bash]\ncan_spawn: true\nspawnable_agents: [explore]\n---\nbody",
+            "---\nname: x\ndescription: d\nmode: all\ncan_spawn: true\n\
+             spawnable_agents: [explore]\n---\nbody",
         )
         .unwrap();
         assert_eq!(p.mode, AgentMode::All);
-        // `tools`/`disallowed_tools` now reach the core profile and drive the
-        // advertised-set mask (#116).
-        assert_eq!(
-            p.tools.as_deref(),
-            Some(&["read".to_string(), "grep".to_string()][..])
-        );
-        assert_eq!(p.disallowed_tools, vec!["bash".to_string()]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-        assert!(!p.advertises_tool("bash"));
-        // `can_spawn`/`spawnable_agents` now reach the core profile too (#119).
+        // `can_spawn`/`spawnable_agents` reach the core profile (#119) — the
+        // only per-profile posture fields ADR-0207 left in place.
         assert!(p.may_spawn());
         assert!(p.spawn_target_allowed("explore"));
         assert!(!p.spawn_target_allowed("build"));
     }
 
     #[test]
-    fn tool_mask_glob_entry_parses_and_matches_mcp() {
-        // #537: a wildcard entry rides the frontmatter verbatim (no parse-time
-        // expansion — MCP tool names don't exist yet when profiles load) and
-        // matches dynamically at advertisement time.
-        let p = parse(
-            "---\nname: x\ndescription: d\ntools: [read, \"mcp__*\"]\n\
-             disallowed_tools: [\"mcp__jira__*\"]\n---\nbody",
-        )
-        .unwrap();
-        assert!(p.advertises_tool("read"));
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(!p.advertises_tool("mcp__jira__create_issue"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
     fn skills_preload_injects_body_into_system_prompt() {
-        // `skills:` preloads the full body; the tool mask is untouched (preload is
-        // not an allowlist), so `load_skill` stays advertised for the rest (#117).
+        // `skills:` preloads the full body; `load_skill` access is a runtime
+        // permission-mode fact now, not anything the profile masks (#117).
         let skills = skill_registry("git", false, "Run `git commit` carefully.");
         let p = parse_with_skills(
             "---\nname: x\ndescription: d\nskills: [git]\n---\nBody.",
@@ -1768,25 +1331,6 @@ mod tests {
             "{}",
             p.system_prompt
         );
-        // Preload does not touch the tool mask — `load_skill` still advertised.
-        assert!(p.advertises_tool("load_skill"));
-    }
-
-    #[test]
-    fn preload_and_mask_are_independent_mechanisms() {
-        // The "preload X but block everything else" corner case (#117): preload a
-        // skill body *and* mask `load_skill` out so no other skill is loadable.
-        let skills = skill_registry("git", false, "git body");
-        let p = parse_with_skills(
-            "---\nname: x\ndescription: d\nskills: [git]\n\
-             disallowed_tools: [load_skill]\n---\nBody.",
-            &skills,
-        )
-        .unwrap();
-        // Body is preloaded...
-        assert!(p.system_prompt.contains("git body"), "{}", p.system_prompt);
-        // ...but runtime access to *any* skill is masked off.
-        assert!(!p.advertises_tool("load_skill"));
     }
 
     #[test]

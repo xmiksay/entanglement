@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, GenerationParams,
     GenerationResolver, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent,
-    Permission, PermissionProfile, ProfileRegistry, SessionId,
+    ProfileRegistry, SessionId,
 };
 
 /// Every request's effective generation knobs, in order.
@@ -54,9 +54,6 @@ fn profile(name: &str) -> AgentProfile {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

@@ -15,8 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Message, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId,
+    LlmResponse, LlmStream, Message, OutEvent, ProfileRegistry, SessionId,
 };
 
 type Seen = Arc<Mutex<Vec<Vec<Message>>>>;
@@ -54,9 +53,6 @@ fn page_writer() -> AgentProfile {
         system_prompt: "You write pages.".into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

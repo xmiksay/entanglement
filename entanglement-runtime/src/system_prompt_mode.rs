@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn full_mode_keeps_the_skill_index_and_only_the_date_ever_changes() {
-        use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile};
+        use entanglement_core::{AgentMode, AgentProfile};
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -175,9 +175,6 @@ mod tests {
             ),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,
@@ -189,7 +186,7 @@ mod tests {
 
     #[test]
     fn tool_search_mode_always_returns_the_slimmed_prompt() {
-        use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile};
+        use entanglement_core::{AgentMode, AgentProfile};
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -208,9 +205,6 @@ mod tests {
             ),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,
@@ -222,7 +216,7 @@ mod tests {
     }
 
     fn full_profile(date: &str) -> AgentProfile {
-        use entanglement_core::{AgentMode, Permission, PermissionProfile};
+        use entanglement_core::AgentMode;
         AgentProfile {
             name: "build".into(),
             description: String::new(),
@@ -230,9 +224,6 @@ mod tests {
             system_prompt: format!("<env>\nDate: {date}\n</env>"),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,

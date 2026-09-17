@@ -33,13 +33,14 @@ use entanglement_runtime::tool_runner::{
     spawn_tool_executor, spawn_tool_executor_with_policy, EscapeRoot,
 };
 
-/// `rhai`'s own permission grading still resolves through the `AgentProfile`
-/// chain (ADR-0207 stage 4 grades the *generic* dispatch route from the
-/// session's mode; `crate::script::BindingPolicy` is out of that stage's
-/// scope) — but `ProfileResolver` (the seam `spawn_tool_executor_with_policy`
-/// takes) now needs a mode table regardless of which route a given test
-/// exercises. A single `"build"`-named, `default: Allow` mode mirrors the
-/// pre-ADR-0207 `build` agent's `default: allow` for every test in this file
+/// `rhai`'s own permission grading resolves through the same session-mode
+/// route as any other tool now (ADR-0207 stage 4b: `crate::script::
+/// BindingPolicy` reuses the ancestor chain + `PermissionResolver`, not the
+/// retired `AgentProfile`-chain path) — `ProfileResolver` (the seam
+/// `spawn_tool_executor_with_policy` takes) needs a mode table regardless of
+/// which route a given test exercises. A single `"build"`-named, `default:
+/// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
+/// every test in this file
 /// that isn't specifically about mode grading.
 fn allow_all_table() -> Arc<ModeTable> {
     let mode = Mode {
@@ -296,15 +297,13 @@ fn spawn_with_rhai_escape(
     (holly, store)
 }
 
-/// A single primary profile with a caller-shaped permission, advertising every
-/// tool (no mask) so binding behavior is decided by permission alone.
-/// [`one_profile`] with an explicit tool mask — the ADR-0206 alias test
-/// needs a profile that masks `glob` (and with it `glob_json`).
-fn one_profile_with_tools(
-    name: &str,
-    permission: PermissionProfile,
-    tools: Option<Vec<String>>,
-) -> ProfileRegistry {
+/// A single primary profile named for the caller's scenario — grading itself
+/// comes entirely from the session's permission mode now (ADR-0207), never
+/// from this `AgentProfile`, which carries no permission/mask fact any more.
+/// `_permission` stays as a parameter only because most call sites also feed
+/// the same value to [`mode_table_for`] to build the mode that actually
+/// grades the test.
+fn one_profile(name: &str, _permission: PermissionProfile) -> ProfileRegistry {
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
@@ -314,29 +313,6 @@ fn one_profile_with_tools(
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission,
-        tools,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    profiles
-}
-
-fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: name.into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission,
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,
@@ -1027,30 +1003,24 @@ async fn grep_json_returns_addressable_match_records() {
 /// ADR-0206/ADR-0207: a structured-output escape hatch is not a permission
 /// escape hatch — `glob_json` still grades as its alias target `glob` (the
 /// `graded_name` alias, unretired by ADR-0207), so a denied profile still
-/// denies it (see `glob_json` denial coverage elsewhere). The retired
-/// `tools:` allowlist that used to *mask* `glob_json` when it omitted `glob`
-/// (ADR-0207 §8, "the mask machinery is deleted") no longer has any effect —
-/// an allow-all profile that never names `glob` in `tools` still runs it.
+/// denies it (see `glob_json` denial coverage elsewhere); here an allow-all
+/// mode lets it run.
 #[tokio::test]
-async fn glob_json_alias_grades_as_glob_and_is_not_masked_by_the_retired_tools_field() {
+async fn glob_json_alias_grades_as_glob() {
     let dir = TempDir::new("glob-json-mask");
     std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
-    let profiles = one_profile_with_tools(
-        "build",
-        PermissionProfile::new(Permission::Allow),
-        Some(vec!["read".into(), "rhai".into()]),
+    let holly = spawn_with_rhai(
+        r#"glob_json("*.rs").files.len()"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
     );
-    let holly = spawn_with_rhai(r#"glob_json("*.rs").files.len()"#, &dir.path, profiles);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     prompt(&holly, &sid, "build").await;
     let events = collect(sub, &sid).await;
 
     let out = rhai_output(&events).expect("expected rhai output");
-    assert!(
-        out.contains('1'),
-        "glob_json must run — `tools` omitting `glob` no longer masks it: {out}"
-    );
+    assert!(out.contains('1'), "glob_json must run: {out}");
 }
 
 /// ADR-0206: the zero-match shape is an empty array plus a notice — the
@@ -1186,53 +1156,6 @@ async fn call_binding_denied_surfaces_as_catchable_script_error() {
     assert!(
         out.contains("caught") && out.contains("denied"),
         "deny should throw a catchable error; got {out}"
-    );
-}
-
-#[tokio::test]
-async fn call_binding_is_not_masked_by_the_retired_tools_field() {
-    // ADR-0207 §8 ("the mask machinery is deleted"): a profile's `tools`
-    // allowlist omitting `call` no longer withholds the binding — it just
-    // grades through the profile's own permission chain, same as any other
-    // binding. Explicit `call`/`bash` mask coverage is retired along with the
-    // mechanism; `call_binding_denied_surfaces_as_catchable_script_error`
-    // covers a real permission `Deny`.
-    let dir = TempDir::new("call-masked");
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "readonly".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        // The retired `tools` allowlist still omits `call` — proving it no
-        // longer has any grading effect. `rhai` itself must stay listed so
-        // the run reaches the binding at all.
-        tools: Some(vec!["read".into(), RHAI_TOOL.into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    let holly = spawn_with_rhai_exec(
-        r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
-        &dir.path,
-        profiles,
-        false,
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    prompt(&holly, &sid, "readonly").await;
-    let events = collect(sub, &sid).await;
-
-    let out = rhai_output(&events).expect("expected rhai output");
-    assert!(
-        out.contains("ran"),
-        "call omitted from the retired `tools` field must still run under an \
-         allow-all profile; got {out}"
     );
 }
 

@@ -323,7 +323,7 @@ fn discovery_is_disabled_with_a_reason_off_client_side_or_under_full() {
 }
 
 fn persist_row(d: &SettingsDialog) -> RowView {
-    d.tools_rows("build")
+    d.tools_rows()
         .into_iter()
         .find(|r| r.id == RowId::AdvertisingPersist)
         .expect("the advertising persist row")
@@ -461,7 +461,6 @@ fn tools_changes_become_one_overlay_step_with_server_enables() {
     };
     assert_eq!(change.enable_servers, vec!["docs"]);
     assert_eq!(change.entries.as_ref().map(Vec::len), Some(1));
-    assert!(change.persist.is_none());
 }
 
 #[derive(Default)]

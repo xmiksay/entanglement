@@ -6,7 +6,7 @@
 //! enablement, ADR-0163 #611) and parse errors render as a transcript status
 //! line.
 
-use entanglement_core::{AgentProfile, SessionId, ToolOverlayEntry};
+use entanglement_core::{SessionId, ToolOverlayEntry};
 use ratatui::widgets::ListState;
 
 use crate::tui::session_tools_dialog::{SessionToolRow, SessionToolsDialog};
@@ -70,10 +70,10 @@ impl App {
 
     /// Open the bare-`/enable` checklist over the full advertised roster,
     /// seeding each row from the active session's *effective* availability:
-    /// the profile's mask default overridden by the live overlay's disposition
-    /// (#539). The profile is resolved from the active view's agent name; an
-    /// unknown name (e.g. before the first `AgentChanged` lands) falls back to
-    /// inherit-all, matching a `tools: None` profile.
+    /// every profile inherits every tool now (ADR-0207 moved authority off
+    /// the profile and onto the session's independent permission mode, so
+    /// there is no more per-profile mask to seed a default from), overridden
+    /// by the live overlay's disposition (#539).
     ///
     /// A provider-bundled/`allowed` MCP server (#542) isn't in `tool_roster` —
     /// its tools don't exist until enabled — so it would otherwise be invisible
@@ -92,13 +92,11 @@ impl App {
     /// `/set` dialog's Tools tab.
     pub(super) fn session_tool_rows(&self, extra: &[String]) -> Vec<SessionToolRow> {
         let session = self.active_session_id().clone();
-        let agent = self.sessions.active_view().agent().to_string();
-        let profile = self.available_profiles.iter().find(|p| p.name == agent);
         let overlay = self.overlay_entries(&session);
         let row = |name: &str| {
-            let profile_default = profile
-                .map(|p| AgentProfile::mask_allows(p.tools.as_deref(), &p.disallowed_tools, name))
-                .unwrap_or(true);
+            // No profile carries a mask any more (ADR-0207) — every tool is a
+            // session's default until its own overlay says otherwise.
+            let profile_default = true;
             SessionToolRow {
                 name: name.to_string(),
                 profile_default,

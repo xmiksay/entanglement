@@ -10,7 +10,7 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
-use entanglement_core::{AgentMode, Permission, PermissionProfile, SessionId};
+use entanglement_core::{AgentMode, SessionId};
 use ratatui::layout::Rect;
 
 use super::{App, ModalClickAreas, ProfileInfo, HISTORY_CAPACITY};
@@ -28,20 +28,11 @@ impl App {
                     name: "build".to_string(),
                     description: "Coding agent".to_string(),
                     mode: AgentMode::Primary,
-                    tools: None,
-                    disallowed_tools: Vec::new(),
-                    permission: PermissionProfile::new(Permission::Allow),
-                    may_spawn: true,
                 },
                 ProfileInfo {
                     name: "plan".to_string(),
                     description: "Planning agent".to_string(),
                     mode: AgentMode::Primary,
-                    tools: None,
-                    disallowed_tools: Vec::new(),
-                    permission: PermissionProfile::new(Permission::Ask)
-                        .with("write", Permission::Deny),
-                    may_spawn: true,
                 },
             ],
             vec![
@@ -60,7 +51,7 @@ impl App {
     /// `subagent` leaf like `explore` is never a manual entry agent. The caller
     /// (the runtime head) filters and orders them from the loaded
     /// `ProfileRegistry`. `tool_roster` is the full advertised tool-name roster
-    /// (#330) the `/agent` picker's `e` tools-checklist dialog offers.
+    /// (#330) `/tools` and the bare `/enable` checklist offer.
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
@@ -74,10 +65,6 @@ impl App {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
                 mode: AgentMode::Primary,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Allow),
-                may_spawn: true,
             }]
         } else {
             entry_profiles
@@ -157,7 +144,6 @@ impl App {
             tool_overlays: HashMap::new(),
             session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog::new(),
             tool_roster,
-            tools_dialog: crate::tui::tools_dialog::ToolsDialog::new(),
             advertising: None,
             tools_view: crate::tui::tools_view::ToolsView::new(),
             model_info: ModelInfo {

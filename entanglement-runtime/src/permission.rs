@@ -330,19 +330,9 @@ fn rank(p: Permission) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::{AgentMode, PermissionProfile};
+    use entanglement_core::AgentMode;
 
-    fn profile(name: &str, mode: AgentMode, permission: PermissionProfile) -> AgentProfile {
-        masked_profile(name, mode, permission, None, Vec::new())
-    }
-
-    fn masked_profile(
-        name: &str,
-        mode: AgentMode,
-        permission: PermissionProfile,
-        tools: Option<Vec<&str>>,
-        disallowed: Vec<&str>,
-    ) -> AgentProfile {
+    fn profile(name: &str, mode: AgentMode) -> AgentProfile {
         AgentProfile {
             name: name.into(),
             description: String::new(),
@@ -350,9 +340,6 @@ mod tests {
             system_prompt: String::new(),
             model: None,
             provider: None,
-            permission,
-            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
-            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,
@@ -384,19 +371,9 @@ mod tests {
     fn spawn_refusal_honors_the_allowlist() {
         let mut reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         // A worker leaf (Subagent) plus a second spawnable target.
-        reg.insert(masked_profile(
-            "worker",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Allow),
-            None,
-            Vec::new(),
-        ));
+        reg.insert(profile("worker", AgentMode::Subagent));
         // A spawner scoped to only `explore`.
-        let mut scoped = profile(
-            "scoped",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
+        let mut scoped = profile("scoped", AgentMode::Primary);
         scoped.spawnable_agents = Some(vec!["explore".into()]);
         assert!(spawn_refusal(Some(&scoped), "explore", &reg).is_none());
         let r = spawn_refusal(Some(&scoped), "worker", &reg).expect("out-of-list refused");

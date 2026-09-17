@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use entanglement_core::{
-    AgentMode, AgentProfile, ConfigError, EngineConfig, Holly, InMsg, OutEvent, Permission,
-    PermissionProfile, ProfileRegistry, SessionId,
+    AgentMode, AgentProfile, ConfigError, EngineConfig, Holly, InMsg, OutEvent, ProfileRegistry,
+    SessionId,
 };
 
 fn custom_profile(name: &str) -> AgentProfile {
@@ -20,9 +20,6 @@ fn custom_profile(name: &str) -> AgentProfile {
         system_prompt: "custom".to_string(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

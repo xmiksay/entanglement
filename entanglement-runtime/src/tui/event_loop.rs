@@ -11,7 +11,7 @@ use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
     handle_resume_modal_event, handle_session_tools_dialog_event, handle_sessions_modal_event,
-    handle_tools_dialog_event, handle_tools_view_event, DIALOG_PAGE_SIZE,
+    handle_tools_view_event, DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -99,12 +99,6 @@ pub(super) async fn handle_event(
                 }
                 if app.showing_settings_dialog() {
                     return crate::tui::settings_events::handle_settings_key(app, holly, key).await;
-                }
-                // Checked before the profile picker: `e` opens the tools dialog
-                // *over* the picker without closing it (#330), so it must win the
-                // routing while both are marked open.
-                if app.showing_tools_dialog() {
-                    return handle_tools_dialog_event(app, key).await;
                 }
                 // Bare `/enable`'s session-tools checklist (#539).
                 if app.showing_session_tools_dialog() {

@@ -11,8 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall,
+    LlmResponse, LlmStream, MessageRole, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
@@ -401,9 +400,6 @@ fn all_mode_worker() -> AgentProfile {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,
@@ -455,12 +451,9 @@ async fn read_only_subagent_cannot_use_blocking_agent() {
 /// value — and must be refused the capability. Asserts exactly one child
 /// starts and the refusal is relayed.
 async fn assert_leaf_spawn_refused(background: bool) {
-    // Isolate the ADR-0024 capability gate from the #116 tool mask: give this
-    // test's `explore` an allowlist that *advertises* `agent`, so the
-    // mask does not preempt — the refusal must then come from the Subagent-mode
-    // capability gate ("cannot spawn"), not the mask ("Declined by"). (The
-    // stock `explore` masks `agent` too; that path is covered by the
-    // `tool_mask` tests.)
+    // No mask to isolate from any more (ADR-0207 retired it): `agent` is
+    // advertised to every profile regardless, so the refusal comes purely
+    // from the ADR-0024 Subagent-mode capability gate ("cannot spawn").
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(AgentProfile {
@@ -470,14 +463,6 @@ async fn assert_leaf_spawn_refused(background: bool) {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
-        tools: Some(vec![
-            "read".into(),
-            "glob".into(),
-            "grep".into(),
-            "agent".into(),
-        ]),
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,
@@ -945,9 +930,6 @@ fn subagent_helper() -> AgentProfile {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

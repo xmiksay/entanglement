@@ -39,7 +39,6 @@ mod slash_popup;
 mod stop_command;
 mod theme;
 mod tool_render;
-mod tools_dialog;
 mod tools_view;
 mod transcript;
 mod ui;
@@ -260,10 +259,6 @@ fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
             name: p.name.clone(),
             description: p.description.clone(),
             mode: p.mode,
-            tools: p.tools.clone(),
-            disallowed_tools: p.disallowed_tools.clone(),
-            permission: p.permission.clone(),
-            may_spawn: p.may_spawn(),
         })
         .collect()
 }
@@ -426,7 +421,7 @@ mod tests {
     /// sleeping past the window the bug lived in before ever draining.
     #[tokio::test]
     async fn early_subscribe_survives_the_bootstrap_setagent_race() {
-        use entanglement_core::{AgentMode, AgentProfile, InMsg, Permission, PermissionProfile};
+        use entanglement_core::{AgentMode, AgentProfile, InMsg};
 
         let mut cfg = EngineConfig::default();
         cfg.profiles.insert(AgentProfile {
@@ -436,9 +431,6 @@ mod tests {
             system_prompt: "Plan only.".into(),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Ask),
-            tools: None,
-            disallowed_tools: Vec::new(),
             can_spawn: None,
             spawnable_agents: None,
             sandbox: None,

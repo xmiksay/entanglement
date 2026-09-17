@@ -53,13 +53,6 @@ impl App {
         self.modal_click.key_dialog
     }
 
-    pub fn set_tools_dialog_rect(&mut self, area: Rect) {
-        self.modal_click.tools_dialog = area;
-    }
-    pub fn tools_dialog_rect(&self) -> Rect {
-        self.modal_click.tools_dialog
-    }
-
     pub fn set_session_tools_dialog_rect(&mut self, area: Rect) {
         self.modal_click.session_tools_dialog = area;
     }

@@ -41,7 +41,6 @@ mod slash;
 mod state;
 mod stop_confirm;
 mod toast;
-mod tools;
 mod tools_view;
 mod types;
 mod view;
@@ -140,14 +139,14 @@ pub struct App {
     tool_overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     // Bare `/enable`'s session-tools checklist dialog (#539): toggle any
     // advertised tool's availability for the active session; the overlay is
-    // the diff against the profile mask.
+    // the diff against the session's inherit-all default (ADR-0207 — no
+    // profile carries a mask any more).
     session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog,
 
-    // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
-    // tool roster (host + MCP + runtime-owned specs, from
-    // `EngineConfig::tool_specs` at startup) plus the checklist's own state.
+    // The full advertised tool roster (host + MCP + runtime-owned specs, from
+    // `EngineConfig::tool_specs` at startup) — feeds `/tools` and the bare
+    // `/enable` session-tools checklist.
     tool_roster: Vec<String>,
-    tools_dialog: crate::tui::tools_dialog::ToolsDialog,
 
     // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
     // P9, ADR-0199 part 3): read-only here — `/tools`' status column

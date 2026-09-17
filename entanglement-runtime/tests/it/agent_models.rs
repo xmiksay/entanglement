@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
+use entanglement_core::{AgentMode, AgentProfile, ProfileRegistry};
 use entanglement_runtime::config::agent_models::AgentModelStore;
 
 // `ENTANGLEMENT_AGENT_MODELS_FILE` is process-global; tests that set it serialize.
@@ -22,9 +22,6 @@ fn profile(name: &str) -> AgentProfile {
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

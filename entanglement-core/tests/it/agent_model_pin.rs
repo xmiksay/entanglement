@@ -15,8 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, ModelResolver, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, ResolvedModel, SessionId,
+    LlmResponse, LlmStream, ModelResolver, OutEvent, ProfileRegistry, ResolvedModel, SessionId,
 };
 
 /// Every request's effective model id (`req.model`), in order.
@@ -79,9 +78,6 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
         system_prompt: String::new(),
         model: pin.map(|(_, m)| m.to_string()),
         provider: pin.map(|(p, _)| p.to_string()),
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
         can_spawn: None,
         spawnable_agents: None,
         sandbox: None,

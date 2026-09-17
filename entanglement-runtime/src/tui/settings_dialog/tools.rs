@@ -208,11 +208,10 @@ impl ToolsTab {
         self.rows.get(i) != self.initial.get(i)
     }
 
-    /// The overlay/MCP step, when the rows changed or the overlay should be
-    /// saved as the agent's allowlist (`persist_for`).
-    pub fn overlay_step(&self, persist_for: Option<String>) -> Option<ApplyStep> {
+    /// The overlay/MCP step, when the rows changed.
+    pub fn overlay_step(&self) -> Option<ApplyStep> {
         let changed = self.rows != self.initial;
-        if !changed && persist_for.is_none() {
+        if !changed {
             return None;
         }
         let flipped = |on: bool| -> Vec<String> {
@@ -223,20 +222,10 @@ impl ToolsTab {
                 .filter_map(|(now, _)| server_of(&now.name).map(str::to_string))
                 .collect()
         };
-        // Every row checked collapses to "inherit all", like the `/agent`
-        // allowlist dialog, so saving doesn't freeze today's roster.
-        let allowlist = (!self.rows.iter().all(|r| r.checked)).then(|| {
-            self.rows
-                .iter()
-                .filter(|r| r.checked)
-                .map(|r| r.name.clone())
-                .collect()
-        });
         Some(ApplyStep::Tools(ToolsChange {
             entries: changed.then(|| overlay_diff(&self.rows)),
             enable_servers: flipped(true),
             disable_servers: flipped(false),
-            persist: persist_for.map(|agent| (agent, allowlist)),
         }))
     }
 
