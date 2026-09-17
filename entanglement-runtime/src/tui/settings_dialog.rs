@@ -64,7 +64,6 @@ pub enum Stage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowId {
     Persist,
-    Agent,
     Model,
     Gen(GenField),
     Tool(usize),
@@ -142,7 +141,7 @@ impl SettingsDialog {
         tools: ToolsTab,
         aux: AuxTab,
     ) -> Self {
-        let caps = session.final_model().0.caps;
+        let caps = session.final_model().caps;
         Self {
             tab: Tab::Session,
             stage: Stage::Editing,
@@ -204,15 +203,15 @@ impl SettingsDialog {
                         checkbox(self.persist[0])
                     ),
                 ),
-                RowView {
-                    changed: self.session.agent_change().is_some(),
-                    ..row(RowId::Agent, "agent", agent.to_string())
-                },
+                // Read-only (ADR-0207 §9): the agent is fixed for the
+                // session's whole life, so this is display, not a `RowId` —
+                // never focusable, never part of the plan.
+                note(&format!("agent: {agent} (fixed for this session)")),
                 RowView {
                     changed: self.session.model_change().is_some(),
                     ..row(RowId::Model, "model", self.session.model_label())
                 },
-                note("agent choice applies to this session only · PgUp/PgDn: jump provider"),
+                note("PgUp/PgDn: jump provider"),
             ],
             Tab::Generation => self.generation_rows(agent),
             Tab::Tools => self.tools_rows(),
@@ -231,7 +230,7 @@ impl SettingsDialog {
     }
 
     fn generation_rows(&self, agent: &str) -> Vec<RowView> {
-        let (model, _) = self.session.final_model();
+        let model = self.session.final_model();
         let mut rows = vec![
             row(
                 RowId::Persist,
@@ -381,10 +380,6 @@ impl SettingsDialog {
                 let i = self.tab.index();
                 self.persist[i] = !self.persist[i];
             }
-            RowId::Agent => {
-                self.session.cycle_agent(forward);
-                self.refresh_caps();
-            }
             RowId::Model => {
                 self.session.cycle_model(forward);
                 self.refresh_caps();
@@ -417,7 +412,7 @@ impl SettingsDialog {
 
     /// The Generation tab tracks the model the session will end up on.
     fn refresh_caps(&mut self) {
-        self.generation.set_caps(self.session.final_model().0.caps);
+        self.generation.set_caps(self.session.final_model().caps);
     }
 
     pub fn pending(&self) -> Vec<String> {
@@ -467,9 +462,6 @@ impl SettingsDialog {
         let agent = self.session.final_agent().to_string();
         let keep = |i: usize| self.persist[i].then(|| agent.clone());
         let mut plan = Vec::new();
-        if let Some(a) = self.session.agent_change() {
-            plan.push(ApplyStep::Agent(a));
-        }
         if let Some((provider, model)) = self.session.model_change() {
             plan.push(ApplyStep::Model {
                 provider,

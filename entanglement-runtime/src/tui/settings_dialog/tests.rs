@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use entanglement_provider::{
     Catalog, Discovery, GenerationParams, ReasoningEffort, ToolAdvertising,
 };
@@ -31,13 +29,7 @@ fn tool(name: &str, profile_default: bool) -> SessionToolRow {
 }
 
 fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialog {
-    let session = SessionTab::new(
-        vec!["build".into(), "plan".into()],
-        "build",
-        options(),
-        (provider, model),
-        HashMap::new(),
-    );
+    let session = SessionTab::new("general".to_string(), options(), (provider, model));
     let tools = ToolsTab::new(
         vec![
             tool("read", true),
@@ -107,11 +99,12 @@ fn tabs_cycle_forward_and_back_with_wrap() {
 fn pending_tracks_changes_and_reverting_clears_them() {
     let mut d = dialog();
     assert!(d.pending().is_empty());
-    focus(&mut d, RowId::Agent);
+    focus(&mut d, RowId::Model);
     d.activate(true);
-    assert_eq!(d.pending(), vec!["agent → plan"]);
-    d.activate(true);
-    assert!(d.pending().is_empty(), "back on the starting agent");
+    assert_eq!(d.pending().len(), 1);
+    assert!(d.pending()[0].starts_with("model → "), "{:?}", d.pending());
+    d.activate(false);
+    assert!(d.pending().is_empty(), "back on the starting model");
     assert!(matches!(d.confirm(), Confirm::Close));
 }
 
@@ -144,7 +137,7 @@ fn persist_flags_are_per_tab_and_aux_is_always_on() {
     let Confirm::Apply(plan) = d.confirm() else {
         panic!("a plan");
     };
-    assert!(matches!(&plan[0], ApplyStep::Model { persist_for: Some(a), .. } if a == "build"));
+    assert!(matches!(&plan[0], ApplyStep::Model { persist_for: Some(a), .. } if a == "general"));
     assert!(matches!(
         &plan[1],
         ApplyStep::Generation {
@@ -481,8 +474,6 @@ impl SettingsEffects for Recorder {
 
 fn everything_changed() -> SettingsDialog {
     let mut d = dialog();
-    focus(&mut d, RowId::Agent);
-    d.activate(true);
     focus(&mut d, RowId::Model);
     d.activate(true);
     d.set_tab(Tab::Generation);
@@ -503,7 +494,6 @@ fn everything_changed() -> SettingsDialog {
 
 fn kind(step: &ApplyStep) -> &'static str {
     match step {
-        ApplyStep::Agent(_) => "agent",
         ApplyStep::Model { .. } => "model",
         ApplyStep::Generation { .. } => "generation",
         ApplyStep::Tools(_) => "tools",
@@ -531,11 +521,8 @@ async fn apply_runs_in_the_settled_order_and_repin_waits_for_confirmation() {
     };
     let report = run_plan(&plan, &mut fx).await;
     let order: Vec<_> = fx.calls.iter().map(kind).collect();
-    assert_eq!(
-        order,
-        ["agent", "model", "generation", "tools", "repin", "aux"]
-    );
-    assert_eq!(report.applied.len(), 6);
+    assert_eq!(order, ["model", "generation", "tools", "repin", "aux"]);
+    assert_eq!(report.applied.len(), 5);
     assert!(report.failed.is_none());
 }
 
@@ -554,15 +541,12 @@ async fn a_failing_step_stops_the_plan_and_the_summary_says_what_applied() {
     let order: Vec<_> = fx.calls.iter().map(kind).collect();
     assert_eq!(
         order,
-        ["agent", "model", "generation", "tools"],
+        ["model", "generation", "tools"],
         "repin/aux never attempted"
     );
     assert_eq!(report.skipped.len(), 2);
     let summary = report.summary(&[]);
-    assert!(
-        summary.starts_with("applied: agent → plan; model → "),
-        "{summary}"
-    );
+    assert!(summary.starts_with("applied: model → "), "{summary}");
     assert!(summary.contains("FAILED: tool overlay"), "{summary}");
     assert!(summary.contains("connect refused"), "{summary}");
     assert!(

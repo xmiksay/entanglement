@@ -119,8 +119,8 @@ impl Llm for SpawnPollLlm {
 fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConfig {
     EngineConfig {
         llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
-        // Core carries only `build` now (#201); spawn tests target `explore`/`plan`,
-        // so the engine needs the full runtime trio.
+        // Core carries only `general` now (#201); spawn tests target `general`/
+        // `plan`/`debug`, so the engine needs the full runtime trio.
         profiles: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
@@ -130,7 +130,7 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
 #[tokio::test]
 async fn spawn_launches_child_and_poll_collects_its_answer() {
     let cfg = config(|| SpawnPollLlm {
-        target: "explore",
+        target: "general",
         child_answer: "child-answer",
     });
     let profiles = cfg.profiles.clone();
@@ -254,13 +254,13 @@ impl Llm for FanOutLlm {
                     ToolCall {
                         id: "s1".into(),
                         name: "agent".into(),
-                        input: r#"{"agent":"explore","prompt":"task-a","background":true}"#.into(),
+                        input: r#"{"agent":"general","prompt":"task-a","background":true}"#.into(),
                         provider_meta: None,
                     },
                     ToolCall {
                         id: "s2".into(),
                         name: "agent".into(),
-                        input: r#"{"agent":"explore","prompt":"task-b","background":true}"#.into(),
+                        input: r#"{"agent":"general","prompt":"task-b","background":true}"#.into(),
                         provider_meta: None,
                     },
                 ],
@@ -432,7 +432,7 @@ impl Llm for RecursiveLlm {
 /// control is bounded only by the session's mode `max_depth`/`max_agents`,
 /// never by the target's own profile. This drives the fan-out (`max_agents`)
 /// limit test below: the root repeatedly delegates a trivial blocking
-/// `agent` call to `explore`, which always answers immediately (never
+/// `agent` call to `general`, which always answers immediately (never
 /// recurses), so the *fan-out* budget — not depth — is what eventually
 /// refuses it.
 struct SequentialFanOutLlm;
@@ -458,7 +458,7 @@ impl Llm for SequentialFanOutLlm {
         Ok(call(
             &format!("spawn{rounds}"),
             "agent",
-            r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+            r#"{"agent":"general","prompt":"child-task"}"#.into(),
         ))
     }
 }
@@ -507,7 +507,7 @@ async fn spawn_fan_out_is_bounded_and_refusal_is_relayed() {
     let refusal = refusal.expect("the 9th sequential spawn should be refused by fan-out");
     assert!(refusal.contains('8'), "names the limit: {refusal}");
     assert!(refusal.contains("build"), "names the mode: {refusal}");
-    // root(0) + 8 successful explore children = 9 sessions; the 9th spawn
+    // root(0) + 8 successful general children = 9 sessions; the 9th spawn
     // attempt is refused before a child starts.
     assert_eq!(
         sessions_started, 9,
@@ -532,7 +532,7 @@ impl Llm for BlockingAgentLlm {
             None => Ok(call(
                 "agent1",
                 "agent",
-                r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+                r#"{"agent":"general","prompt":"child-task"}"#.into(),
             )),
         }
     }
@@ -639,7 +639,7 @@ impl Llm for StopThenPollLlm {
         Ok(call(
             "agent1",
             "agent",
-            r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+            r#"{"agent":"general","prompt":"child-task"}"#.into(),
         ))
     }
 }
@@ -743,7 +743,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
     );
 }
 
-/// Parent spawns an `explore` child (non-blocking), then polls it with
+/// Parent spawns a `general` child (non-blocking), then polls it with
 /// `timeout_secs: 0` — the indefinite-wait sentinel (ADR-0123). The child is
 /// gated on a release signal so the poll is provably parked; the test releases
 /// the child, then asserts the poll returned the answer (not a still-running
@@ -776,7 +776,7 @@ impl Llm for ZeroTimeoutPollLlm {
             None => Ok(call(
                 "spawn1",
                 "agent",
-                r#"{"agent":"explore","prompt":"child-task","background":true}"#.into(),
+                r#"{"agent":"general","prompt":"child-task","background":true}"#.into(),
             )),
         }
     }
@@ -998,14 +998,20 @@ async fn every_registered_agent_is_a_valid_spawn_target() {
     );
 }
 
-/// Switch `session` to `agent` (auto-creating the session actor) and wait for
-/// the `AgentChanged` ack, so the next prompt runs under that profile.
+/// Spawn `session` fresh under `agent` (ADR-0207 §9: an agent is chosen once,
+/// at spawn — there is no live `SetAgent` switch any more) and wait for the
+/// `AgentChanged` ack, so the next prompt runs under that profile.
 async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: session.clone(),
+            parent: None,
+            predecessor: None,
             agent: agent.into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -1018,12 +1024,12 @@ async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
 }
 
 #[tokio::test]
-async fn research_spawns_explore() {
-    // ADR-0167 (mode since flipped to `primary` for the Tab cycle): a research
-    // root delegates to a read-only `explore` child — the spawn works end to
-    // end, and the child runs under the `explore` profile.
+async fn plan_spawns_general() {
+    // ADR-0207 §6/§9: spawning is unconditional now, so a `plan` root
+    // delegates to a `general` child with no allowlist to clear — the spawn
+    // works end to end, and the child runs under the `general` profile.
     let cfg = config(|| SpawnPollLlm {
-        target: "explore",
+        target: "general",
         child_answer: "child-answer",
     });
     let profiles = cfg.profiles.clone();
@@ -1036,7 +1042,7 @@ async fn research_spawns_explore() {
     );
 
     let root = SessionId::new("root");
-    set_agent(&holly, &root, "research").await;
+    set_agent(&holly, &root, "plan").await;
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::prompt(root.clone(), "parent-task"))
@@ -1068,13 +1074,13 @@ async fn research_spawns_explore() {
 
     assert_eq!(
         child_profile.as_deref(),
-        Some("explore"),
-        "the child should run under the `explore` profile"
+        Some("general"),
+        "the child should run under the `general` profile"
     );
     assert!(saw_polled_answer, "poll should surface the child's answer");
 }
 
-/// A parent that launches an `explore` child in the background and then
+/// A parent that launches a `general` child in the background and then
 /// re-engages *that same child* with `agent_send` instead of respawning. The
 /// child answers each round from its own prompt, so the second answer proves
 /// the follow-up actually reached the live child.
@@ -1096,7 +1102,7 @@ impl Llm for SpawnThenSendLlm {
             None => Ok(call(
                 "spawn1",
                 "agent",
-                r#"{"agent":"explore","prompt":"child-task","background":true}"#.to_string(),
+                r#"{"agent":"general","prompt":"child-task","background":true}"#.to_string(),
             )),
             // The blocking `agent_send` folded the child's second answer back.
             Some(t) if t.contains("child-second") => Ok(finish("parent done")),
@@ -1115,12 +1121,12 @@ impl Llm for SpawnThenSendLlm {
 }
 
 #[tokio::test]
-async fn research_re_engages_its_explore_child_with_agent_send() {
-    // #609, ADR-0162: `agent_send` is on research's mask next to `agent`, so a
-    // research parent sends an existing explore child another round instead of
-    // respawning it and losing the context it built. Advertisement is no longer
-    // mask-driven, but dispatch still is — without the mask entry this call
-    // would come back as `Declined by agent profile `research``.
+async fn plan_re_engages_its_general_child_with_agent_send() {
+    // #609, ADR-0162: a `plan` parent sends an existing `general` child
+    // another round instead of respawning it and losing the context it
+    // built. No profile carries a mask any more (ADR-0207), so there is no
+    // allowlist for `agent_send` to clear — this pins that the call still
+    // reaches the live child rather than being declined at dispatch.
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(SpawnThenSendLlm) as Box<dyn Llm>),
         profiles: entanglement_runtime::agents::built_in_registry()
@@ -1137,7 +1143,7 @@ async fn research_re_engages_its_explore_child_with_agent_send() {
     );
 
     let root = SessionId::new("root");
-    set_agent(&holly, &root, "research").await;
+    set_agent(&holly, &root, "plan").await;
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::prompt(root.clone(), "parent-task"))
@@ -1160,10 +1166,10 @@ async fn research_re_engages_its_explore_child_with_agent_send() {
         }
     }
 
-    let output = send_output.expect("research must reach `agent_send` — its mask admits it");
+    let output = send_output.expect("plan must reach `agent_send`");
     assert!(
         !output.contains("Declined"),
-        "agent_send must survive research's own dispatch mask: {output}"
+        "agent_send must not be declined at dispatch: {output}"
     );
     assert!(
         output.contains("child-second"),
@@ -1176,12 +1182,11 @@ async fn research_re_engages_its_explore_child_with_agent_send() {
 }
 
 #[tokio::test]
-async fn research_can_spawn_debug() {
+async fn plan_can_spawn_debug() {
     // ADR-0207 §6: spawning is never graded and any agent is a valid target
-    // — `research` spawning `debug` (previously refused as off its
-    // explore-only allowlist, ADR-0040) now succeeds like any other pair.
-    // Write authority is bounded by the session's *mode*, not by who may
-    // spawn whom.
+    // — `plan` spawning `debug` (previously refused as off an allowlist,
+    // ADR-0040) now succeeds like any other pair. Write authority is bounded
+    // by the session's *mode*, not by who may spawn whom.
     let cfg = config(|| SpawnPollLlm {
         target: "debug",
         child_answer: "debug-child-answer",
@@ -1196,7 +1201,7 @@ async fn research_can_spawn_debug() {
     );
 
     let root = SessionId::new("root");
-    set_agent(&holly, &root, "research").await;
+    set_agent(&holly, &root, "plan").await;
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::prompt(root.clone(), "start"))
@@ -1220,19 +1225,19 @@ async fn research_can_spawn_debug() {
 
     assert!(
         child_started,
-        "spawning `debug` from `research` should start a child session"
+        "spawning `debug` from `plan` should start a child session"
     );
     assert!(
         saw_child_answer,
-        "the `debug` child's answer should reach `research`"
+        "the `debug` child's answer should reach `plan`"
     );
 }
 
 #[tokio::test]
-async fn research_spawn_without_agent_falls_to_default_explore() {
-    // A spawn omitting `agent` falls to `DEFAULT_SUBAGENT` (`explore`), which
-    // research's explore-only allowlist permits — the default-target fill-in
-    // lands on the read-only leaf, no explicit `agent:` needed.
+async fn spawn_without_agent_falls_to_default_general() {
+    // A spawn omitting `agent` falls to `DEFAULT_SUBAGENT` (`general`,
+    // ADR-0207 stage 6a) — the default-target fill-in lands on the default
+    // worker persona, no explicit `agent:` needed.
     let cfg = config(|| SpawnPollLlm {
         target: "",
         child_answer: "default-child-answer",
@@ -1247,7 +1252,7 @@ async fn research_spawn_without_agent_falls_to_default_explore() {
     );
 
     let root = SessionId::new("root");
-    set_agent(&holly, &root, "research").await;
+    set_agent(&holly, &root, "plan").await;
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::prompt(root.clone(), "parent-task"))
@@ -1279,8 +1284,8 @@ async fn research_spawn_without_agent_falls_to_default_explore() {
 
     assert_eq!(
         child_profile.as_deref(),
-        Some("explore"),
-        "the default target should be the `explore` profile"
+        Some("general"),
+        "the default target should be the `general` profile"
     );
     assert!(saw_polled_answer, "poll should surface the child's answer");
 }
@@ -1301,16 +1306,18 @@ fn specs_advertise_the_agent_tool_with_a_background_flag() {
     assert_eq!(names, vec!["agent", "agent_send"]);
     let agent = &specs[0];
     // Every registered agent is disclosed in both the description and the
-    // enum now — `build`/`plan` included, not just the old subagent leaves.
+    // enum now — `general`/`plan`/`debug` (ADR-0207 stage 6a's collapsed
+    // roster), not just the old subagent leaves.
     assert!(
-        agent.description.contains("explore:"),
+        agent.description.contains("general:"),
         "roster in description"
     );
     let enum_names = agent.schema["properties"]["agent"]["enum"]
         .as_array()
         .unwrap();
-    assert!(enum_names.iter().any(|n| n == "explore"));
-    assert!(enum_names.iter().any(|n| n == "build"));
+    assert!(enum_names.iter().any(|n| n == "general"));
+    assert!(enum_names.iter().any(|n| n == "plan"));
+    assert!(enum_names.iter().any(|n| n == "debug"));
     assert_eq!(
         agent.schema["properties"]["background"]["type"],
         serde_json::json!("boolean"),

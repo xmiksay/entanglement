@@ -275,7 +275,7 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
             session: child.clone(),
             parent: Some(parent.clone()),
             predecessor: None,
-            agent: "explore".into(),
+            agent: "general".into(),
             prompt: "edit something".into(),
             user: None,
             sponsored: false,

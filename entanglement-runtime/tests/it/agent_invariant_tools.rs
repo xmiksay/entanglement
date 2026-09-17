@@ -1,9 +1,10 @@
 //! ADR-0207 §9: the advertised tools array no longer varies by agent — the
 //! `agent`/`agent_send` spawn family is a constant roster now
 //! ([`entanglement_runtime::subagent::agent_specs`], stage 5b), not a
-//! per-profile table swapped on `SetAgent` the way `profile_tool_specs` used
-//! to. Stage 5a found the exact failure mode this guards against: a spec
-//! pushed onto a resolver-replaced list never reaches the model, so this
+//! per-profile table the old `profile_tool_specs` swapped on a live agent
+//! switch (`SetAgent`, itself retired in stage 6a — an agent is chosen once,
+//! at spawn). Stage 5a found the exact failure mode this guards against: a
+//! spec pushed onto a resolver-replaced list never reaches the model, so this
 //! drives a *real* engine + executor and asserts against what the LLM
 //! actually receives — not `subagent::agent_specs`'s return value in
 //! isolation.
@@ -51,7 +52,7 @@ async fn recorded_at(seen: &Arc<Mutex<Vec<Vec<String>>>>, index: usize) -> Vec<S
 }
 
 #[tokio::test]
-async fn advertised_tools_are_byte_identical_across_set_agent() {
+async fn advertised_tools_are_byte_identical_across_agents() {
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     // Mirrors `main.rs`'s wiring: the constant `agent`/`agent_send` roster
@@ -83,56 +84,61 @@ async fn advertised_tools_are_byte_identical_across_set_agent() {
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
 
-    let sid = SessionId::new("s1");
-    // Round 1: the session's starting agent (`build`, core's `DEFAULT_MODE`
-    // fallback) — no explicit `SetAgent` needed for the first round.
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    let build_names = recorded_at(&seen, 0).await;
-
-    // Round 2: switch to `plan` mid-session and prompt again.
+    // ADR-0207 §9: an agent is chosen once, at spawn, and fixed for the
+    // session's whole life — so the "does the array vary by agent" question
+    // is now asked across three separately-spawned sessions, not one session
+    // switched three times.
+    let general_sid = SessionId::new("s-general");
     holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "plan".into(),
-        })
+        .send(InMsg::prompt(general_sid.clone(), "go"))
         .await
         .unwrap();
+    let general_names = recorded_at(&seen, 0).await;
+
+    let plan_sid = SessionId::new("s-plan");
     holly
-        .send(InMsg::prompt(sid.clone(), "go again"))
+        .send(InMsg::Spawn {
+            session: plan_sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "plan".into(),
+            prompt: "go again".into(),
+            user: None,
+            sponsored: false,
+        })
         .await
         .unwrap();
     let plan_names = recorded_at(&seen, 1).await;
 
-    // Round 3: switch to the read-only leaf `explore` and prompt a third time.
+    let debug_sid = SessionId::new("s-debug");
     holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
+        .send(InMsg::Spawn {
+            session: debug_sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "debug".into(),
+            prompt: "go once more".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    holly
-        .send(InMsg::prompt(sid.clone(), "go once more"))
-        .await
-        .unwrap();
-    let explore_names = recorded_at(&seen, 2).await;
+    let debug_names = recorded_at(&seen, 2).await;
 
     assert!(
-        build_names.iter().any(|n| n == "agent"),
-        "the agent tool must be advertised unconditionally; got {build_names:?}"
+        general_names.iter().any(|n| n == "agent"),
+        "the agent tool must be advertised unconditionally; got {general_names:?}"
     );
     assert!(
-        build_names.iter().any(|n| n == "agent_send"),
-        "got {build_names:?}"
+        general_names.iter().any(|n| n == "agent_send"),
+        "got {general_names:?}"
     );
     assert_eq!(
-        build_names, plan_names,
-        "SetAgent build->plan must not perturb the advertised array"
+        general_names, plan_names,
+        "the advertised array must not vary between a `general` and a `plan` session"
     );
     assert_eq!(
-        plan_names, explore_names,
-        "SetAgent plan->explore must not perturb the advertised array either — \
-         explore is a spawn leaf in name only now (ADR-0207 §4/§6), not a \
-         narrower advertised surface"
+        plan_names, debug_names,
+        "the advertised array must not vary between a `plan` and a `debug` session either"
     );
 }

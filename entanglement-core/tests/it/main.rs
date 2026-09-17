@@ -15,7 +15,6 @@ mod compaction_fork;
 mod compaction_shape;
 mod config_validation;
 mod context_limit;
-mod fresh_session_handoff;
 mod generation_params;
 mod hibernate;
 mod history_propagation;

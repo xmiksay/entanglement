@@ -1,5 +1,5 @@
 ---
-name: build
+name: general
 description: Coding agent — implements changes using the available tools.
 include_brief: true
 ---

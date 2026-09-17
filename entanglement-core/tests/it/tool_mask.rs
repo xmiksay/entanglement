@@ -2,9 +2,10 @@
 //!
 //! Core's turn loop advertises **every** spec the config provides — the profile
 //! mask and the session tool overlay no longer filter it. WHY: a surface that
-//! changes mid-session (an overlay toggle, `SetAgent` to a differently-masked
-//! profile, a live tool enable) invalidates the provider's prompt cache from
-//! the tools block onward, i.e. the whole prompt. The mask still binds, but at
+//! changes mid-session (an overlay toggle, a live tool enable) invalidates the
+//! provider's prompt cache from the tools block onward, i.e. the whole prompt
+//! — moot for the agent axis specifically now anyway, since an agent is fixed
+//! for a session's whole life (ADR-0207 §9). The mask still binds, but at
 //! the runtime's dispatch gate: the enforcement half is
 //! `entanglement-runtime/tests/it/tool_mask.rs`, which pins the attributed
 //! decline every masked call now gets.
@@ -103,15 +104,21 @@ async fn restrictive_profile_still_advertises_the_full_set() {
     // The rewrite of the old `explore_profile_hides_edit_via_set_agent`: a
     // read-only-named profile (`explore`, whose restriction is a runtime
     // permission-mode fact, not anything `AgentProfile` carries, ADR-0207)
-    // still sees `edit`'s schema — switching agents mid-session leaves the
-    // advertised array (and the provider's prompt cache) untouched.
+    // still sees `edit`'s schema — spawning under a differently-postured
+    // agent leaves the advertised array (and the provider's prompt cache)
+    // untouched.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -155,14 +162,15 @@ async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
     let mut events = holly.subscribe();
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: "before the overlay".into(),
+            user: None,
+            sponsored: false,
         })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::prompt(sid.clone(), "before the overlay"))
         .await
         .unwrap();
     let baseline = first_recorded(&seen).await;

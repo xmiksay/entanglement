@@ -68,7 +68,7 @@ impl Llm for LaunchOnlyLlm {
         Ok(call(
             "spawn1",
             "agent",
-            r#"{"agent":"explore","prompt":"child-task","background":true}"#.into(),
+            r#"{"agent":"general","prompt":"child-task","background":true}"#.into(),
         ))
     }
 }
@@ -159,7 +159,7 @@ async fn list_operations_surfaces_a_launched_but_never_polled_agent() {
             assert_eq!(operations.len(), 1, "the dangling child should be listed");
             assert_eq!(operations[0].session, parent);
             assert_eq!(operations[0].kind, OperationKind::Agent);
-            assert_eq!(operations[0].launched_by, "explore");
+            assert_eq!(operations[0].launched_by, "general");
             return;
         }
     }

@@ -106,7 +106,6 @@ pub enum Action {
     NewSession,
     ListSessions,
     PickAgent,
-    CycleAgent,
     PickModel,
     ToggleSidebar,
     OpenEditor,
@@ -129,7 +128,6 @@ impl Action {
             Action::NewSession => "Create a new session",
             Action::ListSessions => "List and switch sessions",
             Action::PickAgent => "Pick agent profile",
-            Action::CycleAgent => "Cycle through agent profiles",
             Action::PickModel => "Pick model",
             Action::ToggleSidebar => "Toggle sidebar",
             Action::OpenEditor => "Open editor",
@@ -150,7 +148,6 @@ impl Action {
             Action::NewSession => "Sessions",
             Action::ListSessions => "Sessions",
             Action::PickAgent => "Agent",
-            Action::CycleAgent => "Agent",
             Action::PickModel => "Agent",
             Action::ToggleSidebar => "UI",
             Action::OpenEditor => "UI",
@@ -192,10 +189,6 @@ impl KeyMap {
         bindings.insert(
             leader.clone().extend_with(Key::Char('a')),
             Action::PickAgent,
-        );
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('A')),
-            Action::CycleAgent,
         );
         bindings.insert(
             leader.clone().extend_with(Key::Char('m')),

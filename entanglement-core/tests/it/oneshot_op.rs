@@ -251,7 +251,7 @@ async fn compact_happy_path_emits_compacted_and_forks_a_successor() {
             }) = fork_sub.recv().await
             {
                 if p == sid {
-                    assert_eq!(profile, "build", "the successor inherits the profile");
+                    assert_eq!(profile, "general", "the successor inherits the profile");
                     return session;
                 }
             }

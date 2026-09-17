@@ -98,7 +98,7 @@ pub enum AgentState {
     /// until `InMsg::ResumeSession` lifts the hold. A session mid-stream when
     /// `PauseSession` arrives is not interrupted — the pause takes effect at the
     /// next round boundary (turn end or tool-call park), the same "deferred until
-    /// safe" mechanism `SetAgent`/`SetModel` already use mid-stream — so this
+    /// safe" mechanism `SetModel` already uses mid-stream — so this
     /// state is never observed while actively streaming; send `Stop` for an
     /// immediate interrupt.
     Paused,
@@ -124,9 +124,9 @@ pub enum FileChangeKind {
 /// A live session's identity + lineage, as reported in an
 /// [`OutEvent::SessionList`] enumeration snapshot (ADR-0028). Mirrors the fields
 /// a head would otherwise have to reconstruct by folding the `SessionStarted` /
-/// `SessionEnded` broadcast itself. `profile` is the session's *starting*
-/// profile (the supervisor tracks creation, not per-turn `SetAgent` switches —
-/// a head follows those via [`OutEvent::AgentChanged`]).
+/// `SessionEnded` broadcast itself. `profile` is the session's agent — fixed
+/// for its whole life (ADR-0207 §9: an agent is chosen when a session starts,
+/// never switched) — as announced by [`OutEvent::AgentChanged`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session: SessionId,
@@ -786,9 +786,12 @@ impl ApprovalScope {
 }
 
 /// A bundle of identity — system prompt, model/provider pin — that defines who
-/// a session is. A session runs under exactly one profile at a time; switching
-/// (e.g. `plan` ↔ `debug`) changes the profile. Mirrors opencode's agent
-/// concept. The `name` is the switch key in [`InMsg::SetAgent`].
+/// a session is. Chosen once, when the session starts (`--agent`, `config.yml`'s
+/// `agent:`, or the `agent` tool's own argument for a spawned child), and fixed
+/// for that session's whole life: there is no live "switch profile" message
+/// (ADR-0207 §9 retired `SetAgent` — a persona is text already sent, so
+/// delegating to a different one is a fresh spawn, not a rewrite of this
+/// session's own system prompt). Mirrors opencode's agent concept.
 ///
 /// **Authority is not here.** ADR-0207 moved every permission fact — the tool
 /// mask (`tools`/`disallowed_tools`), the `permission` rules, spawn control
@@ -815,11 +818,11 @@ pub struct AgentProfile {
     /// Provider this profile pins its [`model`][Self::model] to (#323, ADR-0081).
     /// A profile with **both** `provider` and `model` set forms a *model pin*
     /// ([`model_pin`][Self::model_pin]): the runtime re-binds the session's
-    /// backend to `(provider, model)` on `SetAgent` and at session start, so a
-    /// profile carries its own endpoint, not just a model id within the startup
-    /// provider. `model` without `provider` keeps today's request-level fallback
-    /// (no rebind) — the legacy behaviour. Back-compat: `#[serde(default)]`, so
-    /// logs/frames written before #323 deserialize with `provider: None`.
+    /// backend to `(provider, model)` at session start, so a profile carries its
+    /// own endpoint, not just a model id within the startup provider. `model`
+    /// without `provider` keeps today's request-level fallback (no rebind) — the
+    /// legacy behaviour. Back-compat: `#[serde(default)]`, so logs/frames written
+    /// before #323 deserialize with `provider: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 }
@@ -827,8 +830,8 @@ pub struct AgentProfile {
 impl AgentProfile {
     /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
     /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
-    /// set, so the runtime can re-bind the session's backend to that endpoint on
-    /// `SetAgent`/session start. A `model`-only profile returns `None` — it keeps
+    /// set, so the runtime can re-bind the session's backend to that endpoint at
+    /// session start. A `model`-only profile returns `None` — it keeps
     /// the legacy request-level model fallback and triggers no rebind.
     pub fn model_pin(&self) -> Option<(&str, &str)> {
         match (self.provider.as_deref(), self.model.as_deref()) {
@@ -992,21 +995,21 @@ pub enum InMsg {
     /// cancelling anything or evicting memory — the middle ground `Stop`
     /// (destroys the in-flight round) and `HibernateSession` (evicts memory)
     /// don't cover. An idle session defers its next `Prompt` (and
-    /// `SetAgent`/`SetModel`/`SetGeneration`/`Oneshot`) until
+    /// `SetModel`/`SetGeneration`/`Oneshot`) until
     /// [`ResumeSession`][InMsg::ResumeSession]; a session parked on a tool-call
     /// batch keeps folding arriving `ToolResult`s into `Context` as normal, but
     /// the turn does not continue past a drained batch until resumed — so the
     /// same round picks up again with no re-prompt needed. A session actively
     /// streaming when this arrives is unaffected until the round reaches its
     /// next safe point (turn end or park) — mirroring how a mid-stream
-    /// `SetAgent`/`SetModel` is deferred, *not* raced via `tokio::select!` like
+    /// `SetModel` is deferred, *not* raced via `tokio::select!` like
     /// `Stop` — so `PauseSession` never interrupts an in-flight model
     /// round-trip; use `Stop` for that. `Stop`/`HibernateSession` always take
     /// priority: both apply regardless of `paused`, and neither clears it.
     /// Idempotent; wire-allowed like `Stop` (no elevated capability).
     PauseSession { session: SessionId },
     /// Lift a hold placed by [`PauseSession`][InMsg::PauseSession] (#516,
-    /// ADR-0144). A deferred idle `Prompt`/`SetAgent`/`SetModel`/
+    /// ADR-0144). A deferred idle `Prompt`/`SetModel`/
     /// `SetGeneration`/`Oneshot` now applies; a parked turn whose batch already
     /// drained while paused continues immediately with no new model request
     /// needed to re-enter it. A no-op on a session that isn't paused.
@@ -1133,22 +1136,19 @@ pub enum InMsg {
     /// (like [`Resume`][InMsg::Resume]): it is *not* wire-allowed — a wire head
     /// cannot evict another session's memory. Unknown ids are a no-op.
     HibernateSession { session: SessionId },
-    /// Switch the session to a different agent profile by name (e.g. `plan`).
-    SetAgent { session: SessionId, agent: String },
     /// Switch the session's permission **mode** by name (ADR-0207). Authority
     /// is a second axis, independent of the agent: core carries `mode` as an
     /// **opaque name it never evaluates** — the runtime owns the mode table
     /// (`research`/`plan`/`build`/`auto` for `skutter`) and every rule that
-    /// name resolves to, exactly as core already carries
-    /// [`AgentProfile::permission`] without evaluating it. Applied once the
-    /// live turn ends when one is running (stash replay), like
-    /// [`SetAgent`][InMsg::SetAgent]. Always succeeds and confirms with
-    /// [`OutEvent::ModeChanged`] — core has no table to validate `mode`
-    /// against, so (unlike `SetAgent`'s unknown-agent case) there is nothing
-    /// to fail here; an unresolvable name is the runtime's problem to reject
-    /// at the point it is evaluated. **Trusted-only**: unlike `SetAgent`
-    /// (identity, wire-allowed), a mode carries real authority, so it is
-    /// refused from an untrusted wire head (see
+    /// name resolves to. Applied once the
+    /// live turn ends when one is running (stash replay), the same
+    /// deferred-until-safe shape [`SetModel`][InMsg::SetModel] uses. Always
+    /// succeeds and confirms with [`OutEvent::ModeChanged`] — core has no
+    /// table to validate `mode` against, so there is nothing to fail here; an
+    /// unresolvable name is the runtime's problem to reject at the point it is
+    /// evaluated. **Trusted-only**: a mode carries real authority (unlike the
+    /// agent, which is identity fixed at session start and never switched,
+    /// ADR-0207 §9), so it is refused from an untrusted wire head (see
     /// [`wire_allowed`][InMsg::wire_allowed]).
     SetMode { session: SessionId, mode: String },
     /// Switch the session's live model/provider without restarting the engine
@@ -1160,7 +1160,7 @@ pub enum InMsg {
     /// same-provider model change and a full provider switch uniformly. On
     /// success the session emits [`OutEvent::ModelChanged`]; an unknown
     /// provider / missing key surfaces [`OutEvent::Error`]. Applied once the live
-    /// turn ends when one is running (stash replay), like [`SetAgent`][InMsg::SetAgent].
+    /// turn ends when one is running (stash replay), like [`SetMode`][InMsg::SetMode].
     SetModel {
         session: SessionId,
         provider: String,
@@ -1177,11 +1177,11 @@ pub enum InMsg {
     /// params — even when every override happens to match the current value — so a
     /// head can rely on the reply to confirm the write landed. Applied once the
     /// live turn ends when one is running (stash replay), like
-    /// [`SetAgent`][InMsg::SetAgent]/[`SetModel`][InMsg::SetModel]. The merged
-    /// result is also recorded as this session's per-profile memory
-    /// (`Session::profile_generation`), so a later `SetAgent` switch back to the
-    /// same profile re-applies it — the generation-parameter analogue of the model
-    /// pin's session memory (#323, ADR-0081).
+    /// [`SetMode`][InMsg::SetMode]/[`SetModel`][InMsg::SetModel]. The merged
+    /// result is also recorded in `Session::profile_generation`, so a resumed
+    /// session's replay-reconstructed live override isn't clobbered by the
+    /// persisted default `EngineConfig::generation_resolver` would otherwise
+    /// re-apply at session start (#374, ADR-0094).
     SetGeneration {
         session: SessionId,
         overrides: GenerationParams,
@@ -1221,7 +1221,7 @@ pub enum InMsg {
     /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
     /// Always succeeds and always emits `ToolOverlayChanged` with the full
     /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
-    /// deferred while a turn is live (stash replay), like `SetAgent`.
+    /// deferred while a turn is live (stash replay), like `SetMode`.
     /// **Trusted-only** (not wire-allowed, #472, ADR-0124): it can hand the
     /// model tools with no restart and — with `allow: true` — no approval
     /// prompt.
@@ -1234,7 +1234,7 @@ pub enum InMsg {
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
     /// `op` (`"compact"` today; an unknown op emits a recoverable `Error`).
     /// Mutates only the caller's own `Context`, so it is wire-allowed. Deferred
-    /// while a turn is live (stash replay), like `SetAgent`/`SetModel`.
+    /// while a turn is live (stash replay), like `SetMode`/`SetModel`.
     /// `"compact"`'s `args`: `instructions` (optional free-text steer) and
     /// `kept` (optional `u64`, default `0` — a keep-tail request, #397/
     /// ADR-0102, clamped to the nearest safe turn boundary).
@@ -1382,7 +1382,6 @@ impl InMsg {
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
             | InMsg::HibernateSession { session }
-            | InMsg::SetAgent { session, .. }
             | InMsg::SetMode { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
@@ -1434,13 +1433,13 @@ impl InMsg {
     ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
     ///   by ADR-0177). An empty `entries` list (clearing back to the profile
     ///   default) is vacuously deny-only and also wire-allowed.
-    /// - [`SetMode`][InMsg::SetMode] (ADR-0207): unlike `SetAgent` — which only
-    ///   swaps identity/persona and stays wire-allowed — a mode *is* the
-    ///   session's authority. A wire-forged `SetMode` would let an
-    ///   unauthenticated head widen its own permission posture (e.g.
-    ///   `research` → `build`), so it is trusted-only; the analogous widening
-    ///   the model itself may request is the graded `request_mode` tool, not
-    ///   this frame.
+    /// - [`SetMode`][InMsg::SetMode] (ADR-0207): a mode *is* the session's
+    ///   authority — unlike the agent, which is identity fixed at session
+    ///   start and carries no live switch message at all (ADR-0207 §9). A
+    ///   wire-forged `SetMode` would let an unauthenticated head widen its own
+    ///   permission posture (e.g. `research` → `build`), so it is
+    ///   trusted-only; the analogous widening the model itself may request is
+    ///   the graded `request_mode` tool, not this frame.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1479,7 +1478,6 @@ impl InMsg {
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
             | InMsg::CloseSession { .. }
-            | InMsg::SetAgent { .. }
             | InMsg::SetModel { .. }
             | InMsg::SetGeneration { .. }
             | InMsg::SetSessionMeta { .. }
@@ -1524,7 +1522,6 @@ impl InMsg {
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
-            InMsg::SetAgent { .. } => "set_agent",
             InMsg::SetMode { .. } => "set_mode",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
@@ -1763,13 +1760,12 @@ pub enum OutEvent {
     },
     /// The session's live generation knobs changed (point-in-time, no `seq`),
     /// in reply to [`InMsg::SetGeneration`] (#374, ADR-0094) or an implicit
-    /// overlay applied on `SetAgent`/session start. Carries the **full** resolved
+    /// overlay applied at session start. Carries the **full** resolved
     /// [`GenerationParams`] — not just what changed — so a head can render the
     /// effective state directly and so replay can restore it verbatim by simply
     /// overwriting [`Session::generation`][crate::session::Session]. Also folded
-    /// into `Session::profile_generation` on replay, keyed by the active profile
-    /// at the time (mirrors [`ModelChanged`][OutEvent::ModelChanged]'s
-    /// `profile_models` reconstruction).
+    /// into `Session::profile_generation` on replay, so a resumed session's live
+    /// override survives the session-start default re-application.
     GenerationChanged {
         session: SessionId,
         generation: GenerationParams,
@@ -2348,9 +2344,10 @@ mod tests {
             entries: vec![],
         }
         .wire_allowed());
-        // Mode carries real authority (ADR-0207), unlike `SetAgent` (identity
-        // only, wire-allowed) — a wire head must not be able to widen its own
-        // permission posture by naming a mode directly.
+        // Mode carries real authority (ADR-0207), unlike the agent (identity
+        // fixed at session start, no live switch message at all) — a wire head
+        // must not be able to widen its own permission posture by naming a mode
+        // directly.
         assert!(!InMsg::SetMode {
             session: s.clone(),
             mode: "build".into(),
@@ -2382,10 +2379,6 @@ mod tests {
                 after_seq: 0,
             },
             InMsg::CloseSession { session: s.clone() },
-            InMsg::SetAgent {
-                session: s.clone(),
-                agent: "plan".into(),
-            },
             InMsg::SetModel {
                 session: s.clone(),
                 provider: "zai".into(),

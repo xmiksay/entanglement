@@ -37,7 +37,7 @@ fn toggle_opens_populated_overlay_and_tabs_cycle() {
     app.inspect_next_tab();
     assert_eq!(app.inspect_tab(), InspectTab::Agents);
     // The flat agents view lists the built-in roster as a fallback summary.
-    assert!(app.inspect_content().contains("build"));
+    assert!(app.inspect_content().contains("general"));
     // The Agents tab opens on its list level, with the built-in roster as
     // selectable rows.
     assert!(app.inspect_showing_list());

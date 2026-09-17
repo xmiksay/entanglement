@@ -2,8 +2,6 @@
 //! seeding it from the live session + managed stores, and running the
 //! confirmed plan through [`LiveEffects`][super::settings_apply::LiveEffects].
 
-use std::collections::HashMap;
-
 use entanglement_core::{Holly, SessionId};
 use entanglement_provider::{Catalog, Discovery, ToolAdvertising};
 use ratatui::layout::Rect;
@@ -71,23 +69,15 @@ impl App {
     pub fn open_settings_dialog(&mut self) {
         let session_id = self.active_session_id().clone();
         let agent = self.agent().to_string();
-        let agents: Vec<String> = self
-            .available_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
         let models = model_options(&self.settings.catalog);
         let aux_models = models
             .iter()
             .map(|m| (m.provider.clone(), m.model.clone()))
             .collect();
-        let pins = self.agent_pins(&agents);
         let session = SessionTab::new(
-            agents,
-            &agent,
+            agent.clone(),
             models,
             (&self.active_provider, &self.model_info.id),
-            pins,
         );
         let current = self
             .sessions
@@ -127,19 +117,6 @@ impl App {
                 self.mark_dirty();
             }
         }
-    }
-
-    fn agent_pins(&self, agents: &[String]) -> HashMap<String, (String, String)> {
-        let Some(Ok(store)) = self.agent_models.as_ref().map(|s| s.lock()) else {
-            return HashMap::new();
-        };
-        agents
-            .iter()
-            .filter_map(|a| {
-                let (p, m) = store.get(a)?;
-                Some((a.clone(), (p.to_string(), m.to_string())))
-            })
-            .collect()
     }
 
     /// One whole-server row per MCP server whose tools are in the roster —
@@ -225,8 +202,14 @@ mod tests {
         let d = app.settings_dialog().expect("dialog open");
         assert_eq!(d.tab(), Tab::Session);
         let rows = d.rows();
+        // The agent row is read-only display now (ADR-0207 §9): a `Note`
+        // naming the fixed agent, not a focusable `RowId`.
+        assert!(
+            rows.iter()
+                .any(|r| r.id == RowId::Note && r.label.contains("agent: build")),
+            "{rows:?}"
+        );
         let value = |id| rows.iter().find(|r| r.id == id).map(|r| r.value.clone());
-        assert_eq!(value(RowId::Agent).as_deref(), Some("build"));
         assert_eq!(value(RowId::Model).as_deref(), Some("zai/glm-5.3"));
         assert!(d.pending().is_empty());
     }
@@ -235,12 +218,9 @@ mod tests {
     fn cancel_discards_and_reopen_starts_fresh() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.open_settings_dialog();
-        focus(&mut app, RowId::Agent);
+        focus(&mut app, RowId::Model);
         app.settings_dialog_mut().unwrap().activate(true);
-        assert_eq!(
-            app.settings_dialog().unwrap().pending(),
-            vec!["agent → plan"]
-        );
+        assert_eq!(app.settings_dialog().unwrap().pending().len(), 1);
         app.close_settings_dialog();
         assert!(!app.showing_settings_dialog());
         app.open_settings_dialog();
@@ -248,13 +228,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_sends_the_agent_switch_and_records_one_summary() {
+    async fn confirm_sends_the_model_switch_and_records_one_summary() {
         let holly = Holly::spawn(EngineConfig::default());
         let mut inbound = holly.subscribe_inbound();
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.open_settings_dialog();
-        focus(&mut app, RowId::Agent);
+        focus(&mut app, RowId::Model);
         app.settings_dialog_mut().unwrap().activate(true);
+        let pending = app.settings_dialog().unwrap().pending();
+        assert_eq!(pending.len(), 1, "{pending:?}");
         app.confirm_settings_dialog(&holly).await;
 
         assert!(!app.showing_settings_dialog());
@@ -262,11 +244,11 @@ mod tests {
             .await
             .expect("an inbound message")
             .expect("channel open");
-        assert!(matches!(msg, InMsg::SetAgent { ref agent, .. } if agent == "plan"));
+        assert!(matches!(msg, InMsg::SetModel { .. }), "{msg:?}");
         let summaries = app
             .transcript()
             .iter()
-            .filter(|e| format!("{e:?}").contains("applied: agent → plan"))
+            .filter(|e| format!("{e:?}").contains("applied: model → "))
             .count();
         assert_eq!(summaries, 1);
     }

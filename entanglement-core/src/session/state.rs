@@ -35,9 +35,8 @@ pub struct Session {
     /// one never changes the other. Defaults to
     /// [`DEFAULT_MODE`][crate::holly::DEFAULT_MODE], set by
     /// [`SetMode`][super::SessionCmd::SetMode] and reconstructed on replay from
-    /// [`ModeChanged`][crate::protocol::OutEvent::ModeChanged] records (last
-    /// write wins, mirroring [`profile_models`][Self::profile_models]'s
-    /// sibling fields).
+    /// [`ModeChanged`][crate::protocol::OutEvent::ModeChanged] records
+    /// (last write wins).
     pub mode: String,
     /// Effective model id when the user switched model/provider mid-session
     /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
@@ -46,42 +45,27 @@ pub struct Session {
     /// another switch.
     pub model: Option<String>,
     /// Catalog provider name the session's [`llm`][Self::llm] is currently bound
-    /// to (#323, ADR-0081). Tracked so a per-profile pin re-bind on `SetAgent`
-    /// can no-op when the target `(provider, model)` already matches the live
-    /// binding — a child spawned straight onto its pinned endpoint never
-    /// rebuilds. `None` until the first pin/switch (the startup default, whose
-    /// provider name core is not told).
+    /// to (#323, ADR-0081). `None` until the first pin/switch (the startup
+    /// default, whose provider name core is not told).
     pub provider: Option<String>,
-    /// Per-profile model choices made via
-    /// [`SetModel`][super::SessionCmd::SetModel] this session (#323, ADR-0081):
-    /// profile name → the resolved `(provider, model)`. This is the
-    /// session-memory layer that wins over a profile's static
-    /// [`model_pin`][crate::protocol::AgentProfile::model_pin] when `SetAgent`
-    /// switches back to that profile, so a live `/model` choice sticks per profile
-    /// for the life of the session. Reconstructed on replay from the
-    /// [`ModelChanged`][crate::protocol::OutEvent::ModelChanged] records.
-    pub profile_models: HashMap<String, (String, String)>,
     /// Effective generation knobs for the active model (#218). Seeded from
     /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
     /// on a model switch so temperature / max-output / thinking follow the model.
     pub generation: Option<GenerationParams>,
-    /// Per-profile generation choices made via
-    /// [`SetGeneration`][super::SessionCmd::SetGeneration] this session (#374,
-    /// ADR-0094) — the generation-parameter analogue of
-    /// [`profile_models`][Self::profile_models] (#323, ADR-0081). Keyed by
-    /// profile name, holding the **full** merged effective params (not a partial
-    /// override), so a `SetAgent` switch back to that profile re-applies it
-    /// verbatim, winning over the profile's persisted/catalog default.
-    /// Reconstructed on replay from
+    /// This session's live [`SetGeneration`][super::SessionCmd::SetGeneration]
+    /// choice, if any (#374, ADR-0094): keyed by the (fixed-for-life, ADR-0207
+    /// §9) active profile name, holding the **full** merged effective params
+    /// (not a partial override). Consulted only at session start, to keep a
+    /// resumed session's replay-reconstructed live override from being
+    /// silently re-clobbered by `EngineConfig::generation_resolver`'s
+    /// persisted default. Reconstructed on replay from
     /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
     /// records.
     pub profile_generation: HashMap<String, GenerationParams>,
     /// The session's live tool overlay (#539, ADR-0149): patterns a trusted
     /// head injected via [`SetToolOverlay`][super::SessionCmd::SetToolOverlay]
     /// whose matching tools are advertised **in addition to** (and regardless
-    /// of) the active profile's #116 mask. Session-scoped — it survives a
-    /// `SetAgent` profile switch by design (that is its whole point) and is
-    /// reconstructed on replay from
+    /// of) the active profile's #116 mask. Reconstructed on replay from
     /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
     /// records. Empty by default (no overlay).
     pub tool_overlay: Vec<ToolOverlayEntry>,
@@ -189,7 +173,6 @@ impl Session {
             mode: DEFAULT_MODE.to_string(),
             model: None,
             provider: None,
-            profile_models: HashMap::new(),
             generation: cfg.generation,
             profile_generation: HashMap::new(),
             tool_overlay: Vec::new(),
@@ -211,9 +194,9 @@ impl Session {
     /// Apply a re-resolved model to this session and announce it (#323, ADR-0081
     /// — the factored-out `SetModel` success arm, #218). Rebuilds the backend,
     /// retargets the effective model + generation + context-window budget, tracks
-    /// the bound [`provider`][Self::provider] (for the pin no-op guard), and emits
-    /// [`OutEvent::ModelChanged`]. The single locus the live `SetModel` switch,
-    /// the per-profile pin re-bind on `SetAgent`, and the session-start pin all
+    /// the bound [`provider`][Self::provider], and emits [`OutEvent::ModelChanged`].
+    /// The single locus the live `SetModel` switch and the session-start pin
+    /// (fresh apply, plus a resumed session's corrective re-announce) both
     /// funnel through.
     pub(super) fn rebind(
         &mut self,

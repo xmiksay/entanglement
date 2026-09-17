@@ -108,12 +108,12 @@ async fn changing_prompt_takes_effect_next_turn() {
 }
 
 /// Absent resolver ⇒ behaviour unchanged: the request carries the active
-/// profile's own `system_prompt` (the built-in `build` profile's).
+/// profile's own `system_prompt` (the built-in `general` profile's).
 #[tokio::test]
 async fn absent_resolver_uses_profile_prompt() {
     let seen: SeenBySession = Arc::new(Mutex::new(HashMap::new()));
     let cfg = recording_config(&seen);
-    let profile_prompt = cfg.profiles.get("build").unwrap().system_prompt.clone();
+    let profile_prompt = cfg.profiles.get("general").unwrap().system_prompt.clone();
 
     let holly = Holly::spawn(cfg);
     holly
@@ -131,7 +131,7 @@ async fn absent_resolver_uses_profile_prompt() {
 async fn none_return_falls_back_to_profile_prompt() {
     let seen: SeenBySession = Arc::new(Mutex::new(HashMap::new()));
     let mut cfg = recording_config(&seen);
-    let profile_prompt = cfg.profiles.get("build").unwrap().system_prompt.clone();
+    let profile_prompt = cfg.profiles.get("general").unwrap().system_prompt.clone();
     cfg.system_prompt_resolver = Some(Arc::new(|_sid, _profile| None));
 
     let holly = Holly::spawn(cfg);

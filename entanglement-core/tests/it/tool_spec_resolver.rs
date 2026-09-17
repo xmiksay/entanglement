@@ -210,13 +210,17 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: "look".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid, "look")).await.unwrap();
 
     let reqs = recorded_at_least(&seen, "s", 1).await;
     let names = &reqs[0];
@@ -275,13 +279,17 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "locked".into(),
+            prompt: "look".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid, "look")).await.unwrap();
 
     let reqs = recorded_at_least(&seen, "s", 1).await;
     let names = &reqs[0];
@@ -325,9 +333,9 @@ async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
     }));
     let mut pinned = cfg
         .profiles
-        .get("build")
+        .get("general")
         .cloned()
-        .expect("default registry has build");
+        .expect("default registry has general");
     pinned.provider = Some("p".into());
     pinned.model = Some("m".into());
     cfg.profiles.insert(pinned);

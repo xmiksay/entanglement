@@ -151,18 +151,12 @@ async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
         return;
     }
     if app.showing_profile_picker() {
+        // Read-only (ADR-0207 §9): a click just moves the highlight or, off
+        // the list, closes the picker — there is nothing left to send.
         let area = app.profile_picker_rect();
         let len = app.available_profiles().len();
         if let Some(idx) = list_row_index(area, row, len) {
             app.profile_picker_state().select(Some(idx));
-            if let Some(agent_name) = app.select_profile_picker() {
-                let _ = holly
-                    .send(InMsg::SetAgent {
-                        session: app.active_session_id().clone(),
-                        agent: agent_name,
-                    })
-                    .await;
-            }
         } else if !rect_contains(area, column, row) {
             app.close_profile_picker();
         }
@@ -255,6 +249,18 @@ async fn resume_selected(app: &mut App, holly: &Holly) {
                         "Refusing to resume session {}: log is missing {} dropped record(s)",
                         id,
                         dropped
+                    );
+                } else if let Some((retired, replacement)) =
+                    crate::session_store::retired_agent(&records)
+                {
+                    // ADR-0207 stage 6a: a log naming a retired agent can't
+                    // resume — see the matching check in `main.rs`.
+                    tracing::error!(
+                        "Refusing to resume session {}: its log names the retired agent `{}` \
+                         — {}",
+                        id,
+                        retired,
+                        replacement
                     );
                 } else {
                     app.restore_session(id.clone(), &records);
@@ -402,24 +408,13 @@ fn wheel_modal_prev(app: &mut App) -> bool {
     true
 }
 
-pub(super) async fn handle_profile_picker_event(
-    app: &mut App,
-    holly: &Holly,
-    key: KeyEvent,
-) -> Result<bool> {
+/// Read-only (ADR-0207 §9): navigates and closes, never sends anything — the
+/// picker lists the roster and marks the session's own agent, with no way to
+/// switch.
+pub(super) async fn handle_profile_picker_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Enter => {
             app.close_profile_picker();
-        }
-        KeyCode::Enter => {
-            if let Some(agent_name) = app.select_profile_picker() {
-                let _ = holly
-                    .send(entanglement_core::InMsg::SetAgent {
-                        session: app.active_session_id().clone(),
-                        agent: agent_name,
-                    })
-                    .await;
-            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.profile_picker_next();
@@ -866,6 +861,18 @@ pub(super) async fn handle_resume_modal_event(
                                 "Refusing to resume session {}: log is missing {} dropped record(s)",
                                 id,
                                 dropped
+                            );
+                        } else if let Some((retired, replacement)) =
+                            crate::session_store::retired_agent(&records)
+                        {
+                            // ADR-0207 stage 6a: a log naming a retired agent
+                            // can't resume — see the matching check in `main.rs`.
+                            tracing::error!(
+                                "Refusing to resume session {}: its log names the retired agent \
+                                 `{}` — {}",
+                                id,
+                                retired,
+                                replacement
                             );
                         } else {
                             // Visible transcript first, then engine context.

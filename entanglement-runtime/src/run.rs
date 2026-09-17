@@ -30,24 +30,15 @@ pub(crate) mod summary;
 /// retired (ADR-0207 §11) — `--mode auto` is the real unattended posture now
 /// (deny-by-default, run/turn/duration budgets, no silent widening), so this
 /// head no longer takes a flag to override its default.
-pub async fn run_one(
-    holly: &Holly,
-    session: &SessionId,
-    agent: Option<&str>,
-    prompt: &str,
-    format: &str,
-) -> Result<()> {
+///
+/// `session` must already exist — resumed, or bound by the caller's own
+/// `InMsg::Spawn` (ADR-0207 §9: an agent is chosen once, at spawn, so that
+/// choice is the caller's job, not this loop's) — this only ever sends the
+/// plain follow-up `Prompt` and drives the turn to `Done`.
+pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &str) -> Result<()> {
     let json = format == "json";
     let mut sub = holly.subscribe();
 
-    if let Some(a) = agent {
-        holly
-            .send(InMsg::SetAgent {
-                session: session.clone(),
-                agent: a.to_string(),
-            })
-            .await?;
-    }
     holly
         .send(InMsg::prompt(session.clone(), prompt.to_string()))
         .await?;

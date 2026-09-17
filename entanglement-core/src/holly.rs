@@ -98,17 +98,20 @@ const FORK_CAPACITY: usize = 64;
 /// between attempts lets a merely-behind session drain; a genuinely stalled one
 /// sheds after the last attempt rather than blocking routing to other sessions.
 const ROUTE_ATTEMPTS: usize = 8;
-/// Profile a new session starts under (opencode-style: `build` is the default).
-/// Public so a head synthesizing its own trusted `Spawn` (the authenticated
-/// wire head, ADR-0174) names the same profile the lazy-`Prompt` path
-/// resolves, instead of a hardcoded string that could drift.
-pub const DEFAULT_PROFILE: &str = "build";
+/// Profile a new session starts under (ADR-0207 stage 6a collapsed the
+/// three-persona-plus-two roster to `general`/`plan`/`debug`; `general` is
+/// the default worker persona, formerly named `build`). Public so a head
+/// synthesizing its own trusted `Spawn` (the authenticated wire head,
+/// ADR-0174) names the same profile the lazy-`Prompt` path resolves, instead
+/// of a hardcoded string that could drift.
+pub const DEFAULT_PROFILE: &str = "general";
 /// Permission mode a new session starts under (ADR-0207): authority is a
 /// second, independent axis from the agent, so this deliberately shares no
-/// definition with [`DEFAULT_PROFILE`] — it only happens to be the same
-/// string today because `skutter`'s four-mode table names its ordinary
-/// interactive posture `build` too. Core carries this name opaquely; it
-/// validates against nothing, since the mode table lives in the runtime.
+/// definition with [`DEFAULT_PROFILE`] — it only happens to share a spelling
+/// with the *former* default agent name because `skutter`'s four-mode table
+/// names its ordinary interactive posture `build` too. Core carries this name
+/// opaquely; it validates against nothing, since the mode table lives in the
+/// runtime.
 pub const DEFAULT_MODE: &str = "build";
 
 /// Handle to the running engine. Cheap to clone; the actor task lives until all

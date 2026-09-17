@@ -92,7 +92,7 @@ async fn list_sessions_enumerates_live_sessions() {
     let ids: Vec<_> = sessions.iter().map(|i| i.session.clone()).collect();
     assert!(ids.contains(&s1) && ids.contains(&s2), "got {ids:?}");
     let info = sessions.iter().find(|i| i.session == s1).unwrap();
-    assert_eq!(info.profile, "build");
+    assert_eq!(info.profile, "general");
     assert!(info.root && info.parent.is_none());
 }
 
@@ -206,7 +206,7 @@ async fn close_session_cascades_to_descendants() {
             session: child.clone(),
             parent: Some(parent.clone()),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
             sponsored: false,
@@ -223,7 +223,7 @@ async fn close_session_cascades_to_descendants() {
             session: grandchild.clone(),
             parent: Some(child.clone()),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "sub-subtask".into(),
             user: None,
             sponsored: false,
@@ -431,9 +431,11 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
 }
 
 #[tokio::test]
-async fn set_agent_emits_agent_changed() {
+async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
     // Core carries only the `build` built-in (#201); the runtime owns the
-    // plan/explore trio. Register a second profile here to exercise the switch.
+    // plan/debug pair. Register a second profile here to spawn under it
+    // directly (ADR-0207 §9: an agent is chosen once, at spawn — there is no
+    // live `SetAgent` switch to exercise any more).
     let mut cfg = EngineConfig::default();
     cfg.profiles.insert(AgentProfile {
         name: "reviewer".into(),
@@ -446,9 +448,14 @@ async fn set_agent_emits_agent_changed() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "reviewer".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -468,8 +475,11 @@ async fn set_agent_emits_agent_changed() {
             break;
         }
     }
-    assert!(saw_build, "session should start under build");
-    assert!(saw_reviewer, "should switch to reviewer");
+    assert!(
+        !saw_build,
+        "a session spawned directly under `reviewer` never touches `build`"
+    );
+    assert!(saw_reviewer, "should start under reviewer");
 }
 
 #[tokio::test]
@@ -516,7 +526,7 @@ async fn spawn_starts_child_with_parent_link() {
             session: child.clone(),
             parent: Some(parent.clone()),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "do the subtask".into(),
             user: None,
             sponsored: false,
@@ -606,7 +616,7 @@ async fn duplicate_spawn_is_ignored() {
                 session: child.clone(),
                 parent: Some(SessionId::new("parent")),
                 predecessor: None,
-                agent: "build".into(),
+                agent: "general".into(),
                 prompt: "go".into(),
                 user: None,
                 sponsored: false,
@@ -643,9 +653,14 @@ async fn custom_profile_is_selectable() {
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "paranoid".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();

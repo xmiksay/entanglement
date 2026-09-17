@@ -292,6 +292,53 @@ pub fn integrity_gap(records: &[LogRecord]) -> Option<u64> {
     any.then_some(dropped)
 }
 
+/// Agent names ADR-0207 stage 6a retired from the built-in roster, mapped to a
+/// short pointer at their replacement — `build` was renamed (same body,
+/// `general`); `explore`/`research` had no persona to rename *to*, since the
+/// read-only posture they carried is a permission **mode** now (`research`),
+/// not an agent identity. Deliberately no alias table (the user's own call):
+/// a log naming one of these can't resume, full stop.
+const RETIRED_AGENT_REPLACEMENT: &[(&str, &str)] = &[
+    (
+        "build",
+        "renamed to `general` (same body, same default worker persona)",
+    ),
+    (
+        "explore",
+        "retired — its read-only posture is the `research` permission mode now, \
+         not a persona; start a fresh session under any agent with `--mode research`",
+    ),
+    (
+        "research",
+        "retired — its read-only posture is the `research` permission mode now, \
+         not a persona; start a fresh session under any agent with `--mode research`",
+    ),
+];
+
+/// The first retired agent name (ADR-0207 stage 6a) this log names, if any —
+/// checked across every `SessionStarted`/`AgentChanged` record in the whole
+/// root file (a cascaded resume rebuilds every spawned child from the same
+/// file, so a retired name anywhere in it would strand that child). Callers
+/// about to resume must refuse: the named profile no longer exists, so
+/// falling back to a different one would silently replay the conversation
+/// under an identity it never actually ran under.
+#[allow(dead_code)]
+pub fn retired_agent(records: &[LogRecord]) -> Option<(&'static str, &'static str)> {
+    for record in records {
+        let name = match &record.payload {
+            LogPayload::Out(OutEvent::SessionStarted { profile, .. }) => profile.as_str(),
+            LogPayload::Out(OutEvent::AgentChanged { agent, .. }) => agent.as_str(),
+            _ => continue,
+        };
+        if let Some(&(retired, replacement)) =
+            RETIRED_AGENT_REPLACEMENT.iter().find(|(r, _)| *r == name)
+        {
+            return Some((retired, replacement));
+        }
+    }
+    None
+}
+
 /// Lists all sessions in the current working directory's session folder.
 ///
 /// Reads the first line of each `.jsonl` file to extract metadata.

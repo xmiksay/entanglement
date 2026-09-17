@@ -132,9 +132,14 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
     );
 
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: agent.into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -174,8 +179,8 @@ fn decline(events: &[OutEvent]) -> (String, bool) {
 
 #[tokio::test]
 async fn malformed_envelope_under_invoke_explains_the_schema_on_dispatch() {
-    // `build` admits every tool, so the registry miss is found in `dispatch`.
-    let (output, is_error) = decline(&run_malformed_invoke(Discovery::Invoke, "build").await);
+    // `general` admits every tool, so the registry miss is found in `dispatch`.
+    let (output, is_error) = decline(&run_malformed_invoke(Discovery::Invoke, "general").await);
     assert!(output.starts_with("malformed invoke call"), "{output}");
     assert!(output.contains(r#""args": {...}"#), "{output}");
     assert!(is_error);
@@ -183,16 +188,16 @@ async fn malformed_envelope_under_invoke_explains_the_schema_on_dispatch() {
 
 #[tokio::test]
 async fn malformed_envelope_under_native_first_explains_the_schema_on_a_mask_miss() {
-    // `explore`'s allowlist doesn't name `invoke`: the mask-miss path.
-    let (output, is_error) =
-        decline(&run_malformed_invoke(Discovery::NativeFirst, "explore").await);
+    // No profile carries a mask any more (ADR-0207); this pins the same
+    // dispatch decline path a mask-miss used to take, now on mode alone.
+    let (output, is_error) = decline(&run_malformed_invoke(Discovery::NativeFirst, "debug").await);
     assert!(output.starts_with("malformed invoke call"), "{output}");
     assert!(is_error);
 }
 
 #[tokio::test]
 async fn stray_invoke_under_append_is_an_ordinary_unknown_tool() {
-    for agent in ["build", "explore"] {
+    for agent in ["general", "debug"] {
         let (output, is_error) = decline(&run_malformed_invoke(Discovery::Append, agent).await);
         assert!(
             output.starts_with("unknown tool: `invoke`"),

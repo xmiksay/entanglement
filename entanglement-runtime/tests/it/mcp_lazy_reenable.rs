@@ -300,9 +300,14 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -364,9 +369,14 @@ async fn disabled_tier_gets_a_truthful_decline_not_unknown_tool() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -413,9 +423,14 @@ async fn genuinely_unknown_tool_keeps_the_unknown_tool_hint() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
@@ -463,9 +478,14 @@ async fn enable_failure_is_distinguishable_and_a_repeat_call_is_guarded() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();

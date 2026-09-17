@@ -1,6 +1,6 @@
 //! Config validation + graceful profile fallback (issue #106 part 2).
 //!
-//! A custom [`ProfileRegistry`] without the required `build` profile must be a
+//! A custom [`ProfileRegistry`] without the required `general` profile must be a
 //! clean construction-time error via [`EngineConfig::validate`], and — should an
 //! embedder skip that check — the supervisor must fall back to a synthesized
 //! default rather than panicking and taking down every session.
@@ -21,8 +21,8 @@ fn custom_profile(name: &str) -> AgentProfile {
     }
 }
 
-/// A registry an embedder assembled without the built-in `build` profile.
-fn registry_without_build() -> ProfileRegistry {
+/// A registry an embedder assembled without the built-in `general` profile.
+fn registry_without_general() -> ProfileRegistry {
     let mut reg = ProfileRegistry::default();
     reg.insert(custom_profile("reviewer"));
     reg
@@ -35,8 +35,8 @@ fn default_config_validates() {
 }
 
 #[test]
-fn registry_missing_build_is_a_construction_error() {
-    let reg = registry_without_build();
+fn registry_missing_general_is_a_construction_error() {
+    let reg = registry_without_general();
     assert_eq!(reg.validate(), Err(ConfigError::MissingDefaultProfile));
 
     let cfg = EngineConfig {
@@ -47,12 +47,12 @@ fn registry_missing_build_is_a_construction_error() {
 }
 
 #[tokio::test]
-async fn supervisor_falls_back_when_build_missing() {
-    // An unvalidated registry without `build` used to panic the supervisor on
+async fn supervisor_falls_back_when_general_missing() {
+    // An unvalidated registry without `general` used to panic the supervisor on
     // the first session spawn (`.expect`). It must now degrade gracefully: the
-    // session starts under a synthesized `build` profile.
+    // session starts under a synthesized `general` profile.
     let cfg = EngineConfig {
-        profiles: registry_without_build(),
+        profiles: registry_without_general(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -79,7 +79,7 @@ async fn supervisor_falls_back_when_build_missing() {
         }
     };
     assert_eq!(
-        started, "build",
-        "fallback should synthesize the build profile"
+        started, "general",
+        "fallback should synthesize the general profile"
     );
 }

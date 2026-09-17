@@ -46,30 +46,26 @@ impl App {
 
     /// `entry_profiles` are every registered agent (ADR-0207 §4 retires the
     /// old `mode ∈ {primary, all}` filter — any agent may be a session root)
-    /// the `/agent` picker and Tab-cycle offer, in the order the caller (the
-    /// runtime head) loaded them from the `ProfileRegistry`. `tool_roster` is
-    /// the full advertised tool-name roster (#330) `/tools` and the bare
-    /// `/enable` checklist offer.
+    /// the (read-only, ADR-0207 §9) `/agent` picker lists, in the order the
+    /// caller (the runtime head) loaded them from the `ProfileRegistry`.
+    /// `tool_roster` is the full advertised tool-name roster (#330) `/tools`
+    /// and the bare `/enable` checklist offer.
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
         entry_profiles: Vec<ProfileInfo>,
         tool_roster: Vec<String>,
     ) -> Self {
-        // Fall back to `build` if a custom registry somehow exposed no entry
-        // agent, so the picker/cycle is never empty (it indexes unconditionally).
+        // Fall back to `general` if a custom registry somehow exposed no entry
+        // agent, so the picker is never empty (it indexes unconditionally).
         let available_profiles = if entry_profiles.is_empty() {
             vec![ProfileInfo {
-                name: "build".to_string(),
+                name: "general".to_string(),
                 description: "Coding agent".to_string(),
             }]
         } else {
             entry_profiles
         };
-
-        // The Tab cycle ring is every agent now (ADR-0207 §4) — shared with
-        // the definitions-watcher reload path (#329, `App::refresh_profiles`).
-        let primary_profile_order = super::pickers::primary_order(&available_profiles);
 
         let mut profile_picker_state = ListState::default();
         profile_picker_state.select(Some(0));
@@ -120,7 +116,6 @@ impl App {
             showing_profile_picker: false,
             profile_picker_state,
             available_profiles,
-            primary_profile_order,
             showing_model_picker: false,
             model_picker_state,
             available_models,

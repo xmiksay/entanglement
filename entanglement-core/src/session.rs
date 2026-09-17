@@ -124,13 +124,11 @@ pub(crate) enum SessionCmd {
     /// text). Approval (`Approve`/`Reject`) is no longer a core command: the
     /// runtime tool executor owns it (#59) and never reaches the session loop.
     ToolResult(String, Vec<ContentPart>, bool, Option<u64>, Option<i32>),
-    SetAgent(String),
     /// Switch the live permission mode by name (ADR-0207) — carried opaquely,
-    /// like the field it sets ([`Session::mode`]). Unlike `SetAgent`, core
-    /// holds no table to validate the name against, so this always succeeds:
-    /// see the handler for the always-succeed / stash-deferred shape it
-    /// borrows from [`SetGeneration`][SessionCmd::SetGeneration] and
-    /// [`SetAgent`][SessionCmd::SetAgent] respectively.
+    /// like the field it sets ([`Session::mode`]). Core holds no table to
+    /// validate the name against, so this always succeeds: see the handler
+    /// for the always-succeed / stash-deferred shape it shares with
+    /// [`SetGeneration`][SessionCmd::SetGeneration].
     SetMode(String),
     /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
@@ -158,7 +156,7 @@ pub(crate) enum SessionCmd {
     /// Hold the session at `AgentState::Paused` (#516, ADR-0144) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the
     /// existing generic mechanism in `stream.rs` and applied at the next round
-    /// boundary, exactly like a mid-stream `SetAgent`). Idempotent.
+    /// boundary, exactly like a mid-stream `SetMode`). Idempotent.
     Pause,
     /// Lift a hold placed by `Pause` (#516, ADR-0144). A no-op if not paused.
     Unpause,
@@ -484,91 +482,11 @@ pub(crate) async fn session_loop(
                         == Forked::Yes;
                 }
             }
-            Some(SessionCmd::SetAgent(name)) => {
-                if s.turn.is_some() || s.paused {
-                    // Applied once the turn ends (stash replay), same as when
-                    // it arrived mid-stream before #270; likewise deferred
-                    // while paused (#516, ADR-0144).
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::SetAgent(name),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
-                }
-                match cfg.profiles.get(&name) {
-                    Some(p) => {
-                        let p = p.clone();
-                        s.profile = p.clone();
-                        let _ = events.send(OutEvent::AgentChanged {
-                            session: session.clone(),
-                            agent: p.name.clone(),
-                        });
-                        // Per-profile model pin (#323, ADR-0081): re-bind the
-                        // backend to this profile's model. Precedence: session
-                        // memory (a `/model` choice made under this profile) >
-                        // the profile's static `model_pin()`. A pin-less profile
-                        // with no memory keeps the current binding — no rebuild,
-                        // no `ModelChanged`. The `AgentChanged` above already
-                        // succeeded, so a resolver error here surfaces the same
-                        // `Error` as `SetModel` and keeps the old binding.
-                        let pin = s.profile_models.get(&p.name).cloned().or_else(|| {
-                            p.model_pin().map(|(pr, m)| (pr.to_string(), m.to_string()))
-                        });
-                        if let Some((provider, model)) = pin {
-                            let unchanged = s.provider.as_deref() == Some(provider.as_str())
-                                && s.model.as_deref() == Some(model.as_str());
-                            if !unchanged {
-                                if let Some(resolver) = cfg.model_resolver.as_ref() {
-                                    match resolver(s.user.as_ref(), &provider, &model) {
-                                        Ok(resolved) => s.rebind(&session, resolved, &events),
-                                        Err(e) => {
-                                            let _ = events.send(OutEvent::Error {
-                                                session: session.clone(),
-                                                seq: next_seq(&s.seq),
-                                                message: format!("cannot switch model: {e}"),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Per-profile generation overlay (#374, ADR-0094 —
-                        // mirrors the model pin's precedence exactly, #323): session
-                        // memory (a live `SetGeneration` recorded under this
-                        // profile) wins, then this profile's persisted override via
-                        // `cfg.generation_resolver`, then the current binding
-                        // unchanged (no-op — no spurious `GenerationChanged`, same
-                        // guard as the pin-less-profile case above).
-                        let overlay =
-                            s.profile_generation.get(&p.name).copied().or_else(|| {
-                                cfg.generation_resolver.as_ref().and_then(|r| r(&p.name))
-                            });
-                        if let Some(generation) = overlay {
-                            if s.generation != Some(generation) {
-                                s.generation = Some(generation);
-                                let _ = events.send(OutEvent::GenerationChanged {
-                                    session: session.clone(),
-                                    generation,
-                                });
-                            }
-                        }
-                    }
-                    None => {
-                        let _ = events.send(OutEvent::Error {
-                            session: session.clone(),
-                            seq: next_seq(&s.seq),
-                            message: format!("unknown agent: {name}"),
-                        });
-                    }
-                }
-            }
             // Live mode switch (ADR-0207): deferred while a turn is live, same
-            // as `SetAgent` — but unlike `SetAgent` there is no registry to
-            // fail against (core carries no mode table), so this always
-            // succeeds, the `SetGeneration`/`SetToolOverlay` shape. Pure state:
+            // as every other live-adjust command below — but unlike `SetModel`
+            // there is no registry to fail against (core carries no mode
+            // table), so this always succeeds, the
+            // `SetGeneration`/`SetToolOverlay` shape. Pure state:
             // the model-visible notice is rebuilt from `s.mode` fresh every
             // round (`stream.rs`), never pushed into `ctx` here — see
             // `mode::mode_notice`'s doc for why, and how that keeps a switch
@@ -594,7 +512,7 @@ pub(crate) async fn session_loop(
             // Live model/provider switch (#218): re-resolve against the runtime's
             // catalog-backed resolver, rebuild the backend, and retarget the
             // request model + generation + context-window budget — no restart.
-            // Deferred during a live turn (stash replay), like `SetAgent`.
+            // Deferred during a live turn (stash replay), like `SetMode`.
             Some(SessionCmd::SetModel(provider, model)) => {
                 if s.turn.is_some() || s.paused {
                     stash_or_reject(
@@ -617,14 +535,6 @@ pub(crate) async fn session_loop(
                 match resolver(s.user.as_ref(), &provider, &model) {
                     Ok(resolved) => {
                         s.rebind(&session, resolved, &events);
-                        // Record the choice as this profile's session memory (#323):
-                        // a later `SetAgent` back to it re-applies this binding,
-                        // winning over the profile's static pin. Uses the resolved
-                        // canonical `(provider, model)` so switch-back re-resolves
-                        // the same endpoint.
-                        if let (Some(p), Some(m)) = (s.provider.clone(), s.model.clone()) {
-                            s.profile_models.insert(s.profile.name.clone(), (p, m));
-                        }
                     }
                     Err(e) => {
                         let _ = events.send(OutEvent::Error {
@@ -638,7 +548,7 @@ pub(crate) async fn session_loop(
             // Live generation-parameter adjustment (#374, ADR-0094): unlike
             // `SetModel`, there is no resolver to fail against, so this always
             // succeeds. Deferred during a live turn (stash replay), like
-            // `SetAgent`/`SetModel`.
+            // `SetMode`/`SetModel`.
             Some(SessionCmd::SetGeneration(overrides)) => {
                 if s.turn.is_some() || s.paused {
                     stash_or_reject(
@@ -653,9 +563,10 @@ pub(crate) async fn session_loop(
                 let mut merged = s.generation.unwrap_or_default();
                 merged.apply_overrides(overrides);
                 s.generation = Some(merged);
-                // Session memory (#323-style, mirrors `profile_models`): a later
-                // `SetAgent` switch back to this profile re-applies it, winning
-                // over the profile's persisted/catalog default.
+                // Recorded so a resumed session's replay-reconstructed live
+                // override survives the session-start default re-application
+                // (`EngineConfig::generation_resolver`) rather than being
+                // silently overwritten by it (#374, ADR-0094).
                 s.profile_generation.insert(s.profile.name.clone(), merged);
                 let _ = events.send(OutEvent::GenerationChanged {
                     session: session.clone(),

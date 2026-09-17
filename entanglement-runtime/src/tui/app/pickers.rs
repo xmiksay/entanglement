@@ -6,16 +6,6 @@ use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 
 use super::{App, ProfileInfo};
 
-/// The Tab-cycle ring: every registered agent (ADR-0207 §4 retires the
-/// primary/subagent/all `mode` distinction, so there is no more leaf-only
-/// profile to exclude — any agent may be a session root, hence cyclable).
-/// Shared by [`App::new`][super::construct] and [`App::refresh_profiles`]
-/// (#329) so a definitions-watcher reload derives the ring identically to
-/// startup.
-pub(super) fn primary_order(available_profiles: &[ProfileInfo]) -> Vec<String> {
-    available_profiles.iter().map(|p| p.name.clone()).collect()
-}
-
 impl App {
     pub fn showing_profile_picker(&self) -> bool {
         self.showing_profile_picker
@@ -46,18 +36,6 @@ impl App {
     pub fn close_profile_picker(&mut self) {
         self.showing_profile_picker = false;
         self.mark_dirty();
-    }
-
-    pub fn select_profile_picker(&mut self) -> Option<String> {
-        if let Some(selected) = self.profile_picker_state.selected() {
-            if selected < self.available_profiles.len() {
-                let profile_name = self.available_profiles[selected].name.clone();
-                self.showing_profile_picker = false;
-                self.mark_dirty();
-                return Some(profile_name);
-            }
-        }
-        None
     }
 
     pub fn profile_picker_next(&mut self) {
@@ -105,43 +83,6 @@ impl App {
                 .select(Some(selected.saturating_sub(n)));
             self.mark_dirty();
         }
-    }
-
-    /// Advance the active session to the next agent in the Tab cycle ring
-    /// (#322) — every registered agent is on-ring now (ADR-0207 §4).
-    pub fn cycle_primary_profile(&mut self) -> Option<String> {
-        let current = self.sessions.active_view().agent().to_string();
-        let next_index = match self
-            .primary_profile_order
-            .iter()
-            .position(|name| name == &current)
-        {
-            Some(idx) => (idx + 1) % self.primary_profile_order.len(),
-            None => 0,
-        };
-        let new_agent = self.primary_profile_order[next_index].clone();
-        self.sessions.active_view_mut().set_agent(new_agent.clone());
-        self.mark_dirty();
-        Some(new_agent)
-    }
-
-    /// Reverse of [`cycle_primary_profile`][Self::cycle_primary_profile]
-    /// (Shift+Tab, #322).
-    pub fn cycle_primary_profile_back(&mut self) -> Option<String> {
-        let current = self.sessions.active_view().agent().to_string();
-        let len = self.primary_profile_order.len();
-        let prev_index = match self
-            .primary_profile_order
-            .iter()
-            .position(|name| name == &current)
-        {
-            Some(idx) => (idx + len - 1) % len,
-            None => len - 1,
-        };
-        let new_agent = self.primary_profile_order[prev_index].clone();
-        self.sessions.active_view_mut().set_agent(new_agent.clone());
-        self.mark_dirty();
-        Some(new_agent)
     }
 
     pub fn showing_sessions_modal(&self) -> bool {
@@ -246,18 +187,17 @@ impl App {
         self.agent_models = Some(store);
     }
 
-    /// Re-derive the `/agent` picker roster + Tab-cycle ring from a freshly
+    /// Re-derive the `/agent` picker's (read-only) roster from a freshly
     /// reloaded registry (#329), the live-reload counterpart of the roster
     /// [`App::new`][super::construct] builds once at startup. The current
     /// picker selection index is left as-is (best-effort — a picker that
     /// happens to be open mid-reload may briefly point at a shifted row).
     pub fn refresh_profiles(&mut self, entry_profiles: Vec<ProfileInfo>) {
         // A reload that somehow yields no entry agent keeps the previous
-        // roster rather than emptying the picker/ring it indexes unconditionally.
+        // roster rather than emptying the picker it lists unconditionally.
         if entry_profiles.is_empty() {
             return;
         }
-        self.primary_profile_order = primary_order(&entry_profiles);
         self.available_profiles = entry_profiles;
         self.mark_dirty();
     }
@@ -266,18 +206,18 @@ impl App {
     /// active agent plus the picked `(provider, model)`. The matching
     /// `ModelChanged` for the active session commits it (see
     /// [`persist_model_if_pending`][Self::persist_model_if_pending]); an `Error`
-    /// clears it. A `ModelChanged` from a `SetAgent` pin application has no pending
-    /// recorded here, so it never writes.
+    /// clears it.
     pub fn record_pending_model_persist(&mut self, provider: String, model: String) {
         let agent = self.agent().to_string();
         self.pending_model_persist = Some((agent, provider, model));
     }
 
     /// Commit a pending persist when its confirming `ModelChanged` arrives for the
-    /// active session (#323). Matches the pending `(provider, model)` so a
-    /// `ModelChanged` raced in by an interleaved `SetAgent` pin never commits the
-    /// wrong pin. Writes via the store, drops the pending, and records a transcript
-    /// status line. A write failure is logged and surfaced, never fatal.
+    /// active session (#323). Matches the pending `(provider, model)` so an
+    /// unrelated `ModelChanged` (e.g. the session-start pin re-announce) never
+    /// commits the wrong pin. Writes via the store, drops the pending, and
+    /// records a transcript status line. A write failure is logged and
+    /// surfaced, never fatal.
     pub(super) fn persist_model_if_pending(
         &mut self,
         session: &SessionId,

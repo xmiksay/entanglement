@@ -596,31 +596,6 @@ fn model_changed_tracks_active_provider_and_model() {
 }
 
 #[test]
-fn tab_cycle_visits_every_registered_agent() {
-    // ADR-0207 §4: any agent may be a session root, so the Tab cycle ring is
-    // every registered agent now — no more `mode: primary`-only filtering,
-    // no more "off-ring" agent a picker pick could strand you on.
-    let sid = SessionId::new("test");
-    let mut app = app_with_three_agents(sid.clone());
-    set_agent(&mut app, &sid, "build");
-
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("plan"));
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("helper"));
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("build"));
-}
-
-#[test]
-fn reverse_tab_cycle_wraps_around_every_agent() {
-    let sid = SessionId::new("test");
-    let mut app = app_with_three_agents(sid.clone());
-    set_agent(&mut app, &sid, "build");
-
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("helper"));
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("plan"));
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("build"));
-}
-
-#[test]
 fn agent_picker_lists_every_entry_agent() {
     let sid = SessionId::new("test");
     let app = app_with_three_agents(sid);

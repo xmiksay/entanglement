@@ -222,18 +222,18 @@ mod tests {
     /// `skill_detail` and the CLI's `inspect_agents`/`inspect_skills` helpers.
     #[test]
     fn detail_matches_cli_renderer_for_built_in_agent_and_skill() {
-        // The built-in `build` agent / `rhai` skill are always present
+        // The built-in `general` agent / `rhai` skill are always present
         // (embedded), so this is cwd-independent — but resolve against a temp
         // root with no overrides so a user-layer definition can't perturb it.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
-        let agent = agent_detail(root, "build");
+        let agent = agent_detail(root, "general");
         assert!(
             agent
                 .as_ref()
-                .is_some_and(|s| s.contains("name:        build") && s.contains("layer:")),
-            "agent_detail should render the built-in `build` profile, got: {agent:?}"
+                .is_some_and(|s| s.contains("name:        general") && s.contains("layer:")),
+            "agent_detail should render the built-in `general` profile, got: {agent:?}"
         );
 
         let skill = skill_detail(root, "rhai");

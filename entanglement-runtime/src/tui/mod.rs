@@ -72,7 +72,7 @@ use event_loop::handle_event;
 #[allow(clippy::too_many_arguments)]
 pub async fn tui(
     holly: &Holly,
-    mut holly_sub: tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>, // subscribed pre-`SetAgent` by the caller (#598)
+    mut holly_sub: tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>, // subscribed pre-bootstrap-`Spawn` by the caller (#598)
     initial_session: SessionId,
     model_info: ModelInfo,
     provider_name: String,
@@ -411,15 +411,16 @@ mod tests {
     }
 
     /// Regression for #598: a subscribe-after-send race in the TUI bootstrap
-    /// let the session task's `SessionStarted`/initial `AgentChanged` +
-    /// corrective `AgentChanged` (from a queued `SetAgent`) race ahead of
-    /// `tui()`'s `holly.subscribe()`, permanently stranding the badge on
-    /// `SessionView`'s hardcoded `"build"` default. `main.rs` now subscribes
-    /// before sending the bootstrap `SetAgent` and threads that receiver into
-    /// `tui()` — proven here by subscribing first, sending `SetAgent`, then
+    /// let the session task's `SessionStarted`/initial `AgentChanged` race
+    /// ahead of `tui()`'s `holly.subscribe()`, permanently stranding the badge
+    /// on `SessionView`'s hardcoded `"build"` default. `main.rs` now
+    /// subscribes before sending the bootstrap identity-binding `Spawn` (the
+    /// agent-switch message this used to race did the same lazy-create thing
+    /// `SetAgent` did before ADR-0207 §9 retired it) and threads that receiver
+    /// into `tui()` — proven here by subscribing first, sending `Spawn`, then
     /// sleeping past the window the bug lived in before ever draining.
     #[tokio::test]
-    async fn early_subscribe_survives_the_bootstrap_setagent_race() {
+    async fn early_subscribe_survives_the_bootstrap_spawn_race() {
         use entanglement_core::{AgentProfile, InMsg};
 
         let mut cfg = EngineConfig::default();
@@ -435,9 +436,14 @@ mod tests {
 
         let mut holly_sub = holly.subscribe();
         holly
-            .send(InMsg::SetAgent {
+            .send(InMsg::Spawn {
                 session: sid.clone(),
+                parent: None,
+                predecessor: None,
                 agent: "plan".into(),
+                prompt: String::new(),
+                user: None,
+                sponsored: false,
             })
             .await
             .unwrap();
@@ -454,7 +460,7 @@ mod tests {
         assert_eq!(
             app.agent(),
             "plan",
-            "an early subscription must not lose the bootstrap SetAgent's AgentChanged"
+            "an early subscription must not lose the bootstrap Spawn's AgentChanged"
         );
     }
 }

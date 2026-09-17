@@ -1,9 +1,9 @@
-//! Per-agent-profile provider/model pinning + rebind on `SetAgent` (#323,
-//! ADR-0081). A profile pins its own `(provider, model)`; switching to it — via
-//! `SetAgent`, at session start, or on replay — re-binds the session's backend
-//! through the same `model_resolver` seam a live `/model` (`SetModel`) switch
-//! uses (#218). Precedence: per-session memory (a `/model` choice made under a
-//! profile) > the profile's static pin > keep the current binding.
+//! Per-agent-profile provider/model pinning (#323, ADR-0081). A profile pins
+//! its own `(provider, model)`; spawning under it — at session start, or on
+//! replay — re-binds the session's backend through the same `model_resolver`
+//! seam a live `/model` (`SetModel`) switch uses (#218). ADR-0207 §9 retired
+//! the live `SetAgent` switch this used to also apply on, so the only
+//! remaining "rebind" moments are spawn-time and replay.
 //!
 //! The scaffolding mirrors `model_switch.rs`: a recording backend captures each
 //! request's effective model, and a resolver maps a fixed set of `(provider,
@@ -133,30 +133,32 @@ fn is_done(session: &SessionId) -> impl Fn(&OutEvent) -> bool + '_ {
 }
 
 #[tokio::test]
-async fn pinned_profile_rebinds_on_set_agent() {
+async fn pinned_profile_rebinds_at_spawn() {
     let start: Seen = Arc::new(Mutex::new(Vec::new()));
     let switched: Seen = Arc::new(Mutex::new(Vec::new()));
     let profiles = registry([
-        profile("build", None),
+        profile("general", None),
         profile("plan", Some(("anthropic", "claude-x"))),
     ]);
     let holly = Holly::spawn(config(&start, &switched, profiles));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
-    // First turn under pin-less `build` → startup backend, no model pin.
-    holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // Switch to the pinned `plan`: AgentChanged then ModelChanged, in that order.
+    // Spawn straight under the pinned `plan`: AgentChanged then ModelChanged,
+    // in that order, before the turn runs (ADR-0207 §9 — no live switch).
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "plan".into(),
+            prompt: "one".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    let evs = drain_until(&mut sub, |e| matches!(e, OutEvent::ModelChanged { .. })).await;
+    let evs = drain_until(&mut sub, is_done(&sid)).await;
     let agent_idx = evs
         .iter()
         .position(|e| matches!(e, OutEvent::AgentChanged { agent, .. } if agent == "plan"));
@@ -167,7 +169,11 @@ async fn pinned_profile_rebinds_on_set_agent() {
         agent_idx.unwrap() < model_idx.unwrap(),
         "AgentChanged precedes ModelChanged"
     );
-    match evs.last().unwrap() {
+    match evs
+        .iter()
+        .find(|e| matches!(e, OutEvent::ModelChanged { .. }))
+        .unwrap()
+    {
         OutEvent::ModelChanged {
             provider, model, ..
         } => {
@@ -177,193 +183,64 @@ async fn pinned_profile_rebinds_on_set_agent() {
         _ => unreachable!(),
     }
 
-    // Next turn hits the switched backend, naming the pinned model.
-    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    assert_eq!(start.lock().unwrap().clone(), vec![None]);
+    assert!(
+        start.lock().unwrap().is_empty(),
+        "startup backend never used"
+    );
     assert_eq!(
         switched.lock().unwrap().clone(),
         vec![Some("claude-x".into())]
     );
 }
 
+/// Session-start pin application is best-effort (unlike the old live
+/// `SetAgent` handler it replaced, ADR-0207 §9): a resolver failure just
+/// warns and keeps the startup default — no `OutEvent::Error`, matching
+/// replay's stance.
 #[tokio::test]
-async fn pinless_profile_keeps_live_override() {
-    let start: Seen = Arc::new(Mutex::new(Vec::new()));
-    let switched: Seen = Arc::new(Mutex::new(Vec::new()));
-    let profiles = registry([profile("build", None), profile("coder", None)]);
-    let holly = Holly::spawn(config(&start, &switched, profiles));
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-
-    holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // Live `/model` override under pin-less `build`.
-    holly
-        .send(InMsg::SetModel {
-            session: sid.clone(),
-            provider: "zai".into(),
-            model: "glm-b".into(),
-        })
-        .await
-        .unwrap();
-    drain_until(&mut sub, |e| matches!(e, OutEvent::ModelChanged { .. })).await;
-
-    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // Switch to another pin-less profile with no memory: no ModelChanged, the
-    // override survives.
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "coder".into(),
-        })
-        .await
-        .unwrap();
-    let evs = drain_until(
-        &mut sub,
-        |e| matches!(e, OutEvent::AgentChanged { agent, .. } if agent == "coder"),
-    )
-    .await;
-    assert!(
-        !evs.iter()
-            .any(|e| matches!(e, OutEvent::ModelChanged { .. })),
-        "a pin-less profile with no memory must not rebind"
-    );
-
-    holly
-        .send(InMsg::prompt(sid.clone(), "three"))
-        .await
-        .unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // The startup backend was used once; both post-override turns — including the
-    // one after switching to a pin-less profile — kept the live override.
-    assert_eq!(start.lock().unwrap().clone(), vec![None]);
-    assert_eq!(
-        switched.lock().unwrap().clone(),
-        vec![Some("glm-b".into()), Some("glm-b".into())]
-    );
-}
-
-#[tokio::test]
-async fn session_memory_wins_over_static_pin_on_switch_back() {
+async fn resolver_error_at_spawn_keeps_default_binding() {
     let start: Seen = Arc::new(Mutex::new(Vec::new()));
     let switched: Seen = Arc::new(Mutex::new(Vec::new()));
     let profiles = registry([
-        profile("build", None),
-        profile("plan", Some(("anthropic", "claude-x"))),
-        profile("other", Some(("zai", "glm-c"))),
-    ]);
-    let holly = Holly::spawn(config(&start, &switched, profiles));
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-
-    // Under `plan`, a live `/model` choice records session memory for `plan`.
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "plan".into(),
-        })
-        .await
-        .unwrap();
-    drain_until(&mut sub, |e| matches!(e, OutEvent::ModelChanged { .. })).await;
-    holly
-        .send(InMsg::SetModel {
-            session: sid.clone(),
-            provider: "zai".into(),
-            model: "glm-b".into(),
-        })
-        .await
-        .unwrap();
-    drain_until(&mut sub, |e| matches!(e, OutEvent::ModelChanged { .. })).await;
-
-    // Switch away (to a differently-pinned profile), then back to `plan`.
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "other".into(),
-        })
-        .await
-        .unwrap();
-    drain_until(
-        &mut sub,
-        |e| matches!(e, OutEvent::ModelChanged { model, .. } if model == "glm-c"),
-    )
-    .await;
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "plan".into(),
-        })
-        .await
-        .unwrap();
-    let evs = drain_until(&mut sub, |e| matches!(e, OutEvent::ModelChanged { .. })).await;
-    // Memory (`glm-b`) wins over `plan`'s static pin (`claude-x`).
-    match evs.last().unwrap() {
-        OutEvent::ModelChanged { model, .. } => assert_eq!(model, "glm-b"),
-        _ => unreachable!(),
-    }
-
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-    assert_eq!(
-        switched.lock().unwrap().last().unwrap().clone(),
-        Some("glm-b".into())
-    );
-}
-
-#[tokio::test]
-async fn resolver_error_keeps_binding_but_switches_agent() {
-    let start: Seen = Arc::new(Mutex::new(Vec::new()));
-    let switched: Seen = Arc::new(Mutex::new(Vec::new()));
-    let profiles = registry([
-        profile("build", None),
+        profile("general", None),
         profile("bad", Some(("nope", "x"))), // resolver rejects this pair
     ]);
     let holly = Holly::spawn(config(&start, &switched, profiles));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
-    holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // The agent switch still succeeds; the failed pin surfaces the same Error as
-    // SetModel and keeps the old binding.
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "bad".into(),
+            prompt: "one".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    let evs = drain_until(
-        &mut sub,
-        |e| matches!(e, OutEvent::Error { session, .. } if *session == sid),
-    )
-    .await;
+    let evs = drain_until(&mut sub, is_done(&sid)).await;
     assert!(
         evs.iter()
             .any(|e| matches!(e, OutEvent::AgentChanged { agent, .. } if agent == "bad")),
-        "AgentChanged still succeeds"
+        "the spawn still succeeds under `bad`"
     );
-    match evs.last().unwrap() {
-        OutEvent::Error { message, .. } => assert!(message.contains("cannot switch model")),
-        _ => unreachable!(),
-    }
+    assert!(
+        !evs.iter().any(|e| matches!(e, OutEvent::Error { .. })),
+        "best-effort at session start: no Error surfaces"
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, OutEvent::ModelChanged { .. })),
+        "the failed pin never rebinds"
+    );
 
-    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-    // Still on the startup backend — the failed pin did not rebind (the switched
-    // backend was never built). The profile's model rides the request as a
-    // request-level fallback, but that is not a backend rebind.
     assert_eq!(
         start.lock().unwrap().len(),
-        2,
-        "both turns hit the startup backend"
+        1,
+        "the turn hit the startup backend"
     );
     assert!(
         switched.lock().unwrap().is_empty(),
@@ -375,8 +252,8 @@ async fn resolver_error_keeps_binding_but_switches_agent() {
 async fn session_start_applies_the_pin() {
     let start: Seen = Arc::new(Mutex::new(Vec::new()));
     let switched: Seen = Arc::new(Mutex::new(Vec::new()));
-    // The default `build` profile itself carries a pin.
-    let profiles = registry([profile("build", Some(("anthropic", "claude-x")))]);
+    // The default `general` profile itself carries a pin.
+    let profiles = registry([profile("general", Some(("anthropic", "claude-x")))]);
     let holly = Holly::spawn(config(&start, &switched, profiles));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -406,60 +283,57 @@ async fn model_only_pin_stays_request_level() {
     let start: Seen = Arc::new(Mutex::new(Vec::new()));
     let switched: Seen = Arc::new(Mutex::new(Vec::new()));
     let profiles = registry([
-        profile("build", None),
+        profile("general", None),
         model_only_profile("legacy", "glm-legacy"),
     ]);
     let holly = Holly::spawn(config(&start, &switched, profiles));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
-    holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // A model-only profile has no pin: SetAgent emits no ModelChanged, so the
-    // model rides the request as a fallback on the *unchanged* startup backend.
+    // A model-only profile has no pin: spawning under it emits no
+    // `ModelChanged`, so the model rides the request as a fallback on the
+    // *unchanged* startup backend.
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "legacy".into(),
+            prompt: "one".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    let evs = drain_until(
-        &mut sub,
-        |e| matches!(e, OutEvent::AgentChanged { agent, .. } if agent == "legacy"),
-    )
-    .await;
+    let evs = drain_until(&mut sub, is_done(&sid)).await;
     assert!(
         !evs.iter()
             .any(|e| matches!(e, OutEvent::ModelChanged { .. })),
         "a model-only profile must not rebind"
     );
 
-    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
-    drain_until(&mut sub, is_done(&sid)).await;
-
-    // Both turns ran on the startup backend; the second carried the model-only
-    // fallback as `req.model` (never a rebind onto the switched backend).
+    // The turn ran on the startup backend, carrying the model-only fallback
+    // as `req.model` (never a rebind onto the switched backend).
     assert_eq!(
         start.lock().unwrap().clone(),
-        vec![None, Some("glm-legacy".into())]
+        vec![Some("glm-legacy".into())]
     );
     assert!(switched.lock().unwrap().is_empty());
 }
 
 #[test]
-fn replay_rebinds_and_reconstructs_memory() {
+fn replay_rebinds_and_reconstructs_the_profile() {
     let start: Seen = Arc::new(Mutex::new(Vec::new()));
     let switched: Seen = Arc::new(Mutex::new(Vec::new()));
     let profiles = registry([
-        profile("build", None),
+        profile("general", None),
         profile("plan", Some(("anthropic", "claude-x"))),
     ]);
     let cfg = config(&start, &switched, profiles);
     let sid = SessionId::new("s1");
 
-    // A log: started under build, switched agent to plan, switched model to glm-b.
+    // A log: started under `plan` (its own `AgentChanged` confirms it), then
+    // switched model to `glm-b` live.
     let records: Vec<(Option<InMsg>, OutEvent)> = vec![
         (
             None,
@@ -467,7 +341,7 @@ fn replay_rebinds_and_reconstructs_memory() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".into(),
+                profile: "plan".into(),
                 model: None,
                 root: true,
                 ts: 0,
@@ -495,13 +369,10 @@ fn replay_rebinds_and_reconstructs_memory() {
 
     let session =
         entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
-    // Re-bound to the switched model, tracking the resolved provider.
+    // Re-bound to the switched model, tracking the resolved provider — wins
+    // over `plan`'s own static pin (`claude-x`), the same live-choice-wins
+    // precedence `SetModel` has.
     assert_eq!(session.model.as_deref(), Some("glm-b"));
     assert_eq!(session.provider.as_deref(), Some("zai"));
     assert_eq!(session.profile.name, "plan");
-    // Per-profile memory reconstructed from the ModelChanged record.
-    assert_eq!(
-        session.profile_models.get("plan"),
-        Some(&("zai".to_string(), "glm-b".to_string()))
-    );
 }

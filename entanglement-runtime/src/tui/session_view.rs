@@ -362,10 +362,6 @@ impl SessionView {
         &self.agent
     }
 
-    pub fn set_agent(&mut self, agent: String) {
-        self.agent = agent;
-    }
-
     pub fn mode(&self) -> &str {
         &self.mode
     }

@@ -6,6 +6,7 @@ use anyhow::Result;
 
 use super::replay_pending::TurnFold;
 use super::Session;
+use crate::holly::DEFAULT_PROFILE;
 use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, UsagePurpose};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, ToolCall};
@@ -36,9 +37,9 @@ impl Session {
     ) -> Result<Self> {
         let default_profile = cfg
             .profiles
-            .get("build")
+            .get(DEFAULT_PROFILE)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("default 'build' profile not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("default `{DEFAULT_PROFILE}` profile not found"))?;
 
         // Fold only `target`'s own records — otherwise a sibling/child session's
         // text/tool events are misattributed to `target`'s `Context` (#275). A log
@@ -116,13 +117,15 @@ impl Session {
                     session.user = user.clone();
                     session.sponsored = *sponsored;
                     // Seed from the session's own authoritative statement of what
-                    // it was spawned as (#638), rather than depending solely on a
-                    // later `AgentChanged` record surviving in the log — a hole in
+                    // it was spawned as (#638), rather than depending solely on the
+                    // startup `AgentChanged` record surviving in the log — a hole in
                     // the retained prefix that drops just that record must not
-                    // silently degrade a restricted leaf back to the base `build`
+                    // silently degrade a restricted leaf back to the base default
                     // seed. An unknown profile name falls back to the base seed
-                    // (same behavior `AgentChanged` already has below); a later
-                    // in-session `/agent` switch still overrides via that fold.
+                    // (same behavior `AgentChanged` already has below); the two
+                    // records agree by construction (ADR-0207 §9: an agent is fixed
+                    // at spawn, so there is no later switch to fold over), but the
+                    // `AgentChanged` fold stays as a defensive re-application.
                     if let Some(p) = cfg.profiles.get(profile) {
                         session.profile = p.clone();
                     }
@@ -208,16 +211,6 @@ impl Session {
                 OutEvent::ModelChanged {
                     provider, model, ..
                 } => {
-                    // Reconstruct the per-profile session memory (#323, ADR-0081):
-                    // the logged `(provider, model)` is the resolved canonical pair,
-                    // keyed by the active profile the preceding `AgentChanged` folds
-                    // set. So a resumed session re-applies a `/model` choice per
-                    // profile exactly like the live one, wins over a static pin on a
-                    // later `SetAgent` switch-back.
-                    session.profile_models.insert(
-                        session.profile.name.clone(),
-                        (provider.clone(), model.clone()),
-                    );
                     if let Some(resolver) = cfg.model_resolver.as_ref() {
                         match resolver(session.user.as_ref(), provider, model) {
                             Ok(resolved) => {
@@ -312,7 +305,7 @@ mod tests {
     use super::*;
 
     fn started(session: &str, parent: Option<&str>, predecessor: Option<&str>) -> OutEvent {
-        started_as(session, parent, predecessor, "build")
+        started_as(session, parent, predecessor, "general")
     }
 
     fn started_as(
@@ -513,10 +506,10 @@ mod tests {
     }
 
     /// #638: a resumed sub-agent's profile must come back from its own
-    /// `SessionStarted.profile`, not depend on a later `AgentChanged` record
+    /// `SessionStarted.profile`, not depend on the startup `AgentChanged` record
     /// surviving in the log — a hole in the retained prefix that drops just
     /// that record must not silently degrade a restricted leaf back to the
-    /// base `build` seed (the privilege-escalating direction).
+    /// base default seed (the privilege-escalating direction).
     #[test]
     fn replay_seeds_profile_from_session_started_without_agent_changed() {
         let cfg = cfg_with_leaf_profile("page-writer");
@@ -526,15 +519,14 @@ mod tests {
         assert_eq!(s.profile.name, "page-writer");
     }
 
-    /// A later in-session `/agent` switch (a genuine `AgentChanged` record)
-    /// still overrides the `SessionStarted` seed — the fold order documented
-    /// at the fix site.
+    /// A startup `AgentChanged` record that disagrees with `SessionStarted`'s
+    /// own seed still wins — the fold order documented at the fix site.
     #[test]
     fn replay_agent_changed_overrides_session_started_profile() {
         let cfg = cfg_with_leaf_profile("page-writer");
         let sid = SessionId::new("child");
         let records: Vec<(Option<InMsg>, OutEvent)> = vec![
-            (None, started_as("child", Some("root"), None, "build")),
+            (None, started_as("child", Some("root"), None, "general")),
             (
                 None,
                 OutEvent::AgentChanged {
@@ -558,6 +550,6 @@ mod tests {
             started_as("child", Some("root"), None, "no-such-profile"),
         )];
         let s = Session::replay(&records, &cfg, &SessionId::new("child")).unwrap();
-        assert_eq!(s.profile.name, "build");
+        assert_eq!(s.profile.name, "general");
     }
 }

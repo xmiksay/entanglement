@@ -150,7 +150,7 @@ pub struct EngineConfig {
     /// an [`OutEvent::Error`][crate::protocol::OutEvent::Error].
     pub model_resolver: Option<ModelResolver>,
     /// Resolves a named agent profile's **persisted** generation override (#374,
-    /// ADR-0094), applied at session start and on `SetAgent` with the same
+    /// ADR-0094), applied at session start with the same
     /// precedence as the model pin: per-session memory
     /// ([`Session::profile_generation`][crate::session::Session]) wins, then this
     /// resolver's persisted value, then the current binding (a profile with
@@ -322,10 +322,10 @@ impl ProfileRegistry {
         self.profiles.insert(profile.name.clone(), profile);
     }
 
-    /// Fail if the required `build` profile is absent. Embedders that assemble a
-    /// custom registry should call this before handing it to [`Holly::spawn`];
-    /// the supervisor otherwise falls back to a synthesized default (see
-    /// [`resolve`][Self::resolve]) rather than panicking.
+    /// Fail if the required [`DEFAULT_PROFILE`] profile is absent. Embedders that
+    /// assemble a custom registry should call this before handing it to
+    /// [`Holly::spawn`]; the supervisor otherwise falls back to a synthesized
+    /// default (see [`resolve`][Self::resolve]) rather than panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.profiles.contains_key(DEFAULT_PROFILE) {
             Ok(())
@@ -334,10 +334,11 @@ impl ProfileRegistry {
         }
     }
 
-    /// Resolve a profile by name, falling back to the default `build` profile
-    /// and finally to a synthesized built-in `build`. Never panics: a registry
-    /// missing `build` (an unvalidated custom one) yields a degraded-but-safe
-    /// session instead of crashing the supervisor and taking down every session.
+    /// Resolve a profile by name, falling back to the default
+    /// [`DEFAULT_PROFILE`] profile and finally to a synthesized built-in one.
+    /// Never panics: a registry missing the default (an unvalidated custom
+    /// one) yields a degraded-but-safe session instead of crashing the
+    /// supervisor and taking down every session.
     pub(super) fn resolve(&self, name: &str) -> AgentProfile {
         self.get(name)
             .or_else(|| self.get(DEFAULT_PROFILE))
@@ -352,15 +353,16 @@ impl ProfileRegistry {
     }
 }
 
-/// The built-in `build` profile — the only profile core carries. It is both the
-/// default a fresh session starts under and the synthesized fallback the
+/// The built-in `general` profile — the only profile core carries. It is both
+/// the default a fresh session starts under and the synthesized fallback the
 /// supervisor uses when a custom registry omits it (see
 /// [`ProfileRegistry::resolve`]). An inherit-all coding agent: no tool mask, no
 /// plan authority (default-closed, #231/ADR-0049). The runtime re-defines this
-/// same shape as `build.md` and owns the `plan`/`explore` siblings (#201).
+/// same shape as `general.md` (formerly `build.md`, ADR-0207 stage 6a) and
+/// owns the `plan`/`debug` siblings (#201).
 fn default_profile() -> AgentProfile {
     AgentProfile {
-        name: "build".into(),
+        name: "general".into(),
         description: "Coding agent — implements changes using the available tools.".into(),
         system_prompt:
             "You are a coding agent. Implement the requested changes using the available tools."

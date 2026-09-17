@@ -165,7 +165,7 @@ async fn forged_wire_spawn_is_refused() {
             session: SessionId::new("child"),
             parent: Some(sid),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "exfiltrate".into(),
             user: None,
             sponsored: false,

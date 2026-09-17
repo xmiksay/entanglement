@@ -179,9 +179,9 @@ mod tests {
         let cfg = EngineConfig::default();
         let profile = cfg
             .profiles
-            .get("build")
+            .get("general")
             .cloned()
-            .expect("the build profile");
+            .expect("the general profile");
         let mut s = Session::new_empty(&cfg, profile);
         let (events, mut sub) = broadcast::channel(8);
         let session = SessionId::new("s1");
@@ -211,9 +211,9 @@ mod tests {
         let cfg = EngineConfig::default();
         let profile = cfg
             .profiles
-            .get("build")
+            .get("general")
             .cloned()
-            .expect("the build profile");
+            .expect("the general profile");
         let mut s = Session::new_empty(&cfg, profile);
         let (engine_tx, mut engine_rx) = mpsc::channel(8);
         s.engine = Some(engine_tx);
@@ -268,7 +268,7 @@ mod tests {
             } => {
                 assert_eq!(parent, None, "the successor is a root, not a child");
                 assert_eq!(predecessor, Some(session.clone()));
-                assert_eq!(agent, "build", "the source's profile carries over");
+                assert_eq!(agent, "general", "the source's profile carries over");
                 assert!(prompt.contains("the gist"));
                 successor
             }

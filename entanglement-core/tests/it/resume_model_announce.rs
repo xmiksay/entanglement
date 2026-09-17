@@ -84,10 +84,10 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
 
 fn registry() -> ProfileRegistry {
     let mut reg = ProfileRegistry::default();
-    // `Session::replay` falls back to a default `build` profile in a couple of
-    // edge cases (unrelated to what these tests exercise), so it must exist
-    // alongside the pinned `plan` profile these tests actually use.
-    reg.insert(profile("build", None));
+    // `Session::replay` falls back to the default `general` profile in a
+    // couple of edge cases (unrelated to what these tests exercise), so it
+    // must exist alongside the pinned `plan` profile these tests actually use.
+    reg.insert(profile("general", None));
     reg.insert(profile("plan", Some(("anthropic", "claude-x"))));
     reg
 }

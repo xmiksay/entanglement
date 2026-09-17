@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
 };
 
 use crate::common::{spawn_tool_executor, unknown_tool};
@@ -338,11 +338,16 @@ async fn custom_max_turns_is_honored() {
 /// path; `SetAgent` is a convenient one because its effect — switching the
 /// profile — is observable on the next turn.)
 #[tokio::test]
-async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
+async fn setmode_arriving_between_tool_calls_is_stashed_and_applied() {
     // First turn: a tool call (no preamble) so the engine enters the
     // tool-dispatch loop where the second try_recv site lives. The tool is
     // unknown to the registry, which surfaces as a ToolOutput string — the
-    // turn completes normally and the stashed SetAgent is then applied.
+    // turn completes normally and the stashed SetMode is then applied.
+    //
+    // `SetMode` stands in for the old `SetAgent` this test pinned before
+    // ADR-0207 §9 retired it: both share the exact same deferred-until-safe
+    // stash shape (`s.turn.is_some()`), so `SetMode` is the general
+    // regression coverage for that stash mechanism now.
     let delay = Duration::from_millis(100);
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -356,25 +361,16 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         },
         // Second turn: just text, so we can assert it lands.
         LlmResponse {
-            text: "post-setagent-reply".into(),
+            text: "post-setmode-reply".into(),
             tool_calls: vec![],
         },
     ]);
-    let mut cfg = EngineConfig {
+    let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
-    // Core carries only the `build` built-in (#201); register a second profile to
-    // switch to, so the stashed SetAgent has a real target to resolve.
-    cfg.profiles.insert(AgentProfile {
-        name: "reviewer".into(),
-        description: String::new(),
-        system_prompt: "Review the changes.".into(),
-        model: None,
-        provider: None,
-    });
     let holly = Holly::spawn(cfg);
     // The tool call is an unknown tool; execution is now a runtime round-trip
     // (#58) so the turn only completes once the executor answers.
@@ -386,27 +382,27 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
         .send(InMsg::prompt(sid.clone(), "first"))
         .await
         .unwrap();
-    // Inject SetAgent mid-turn. Before ADR-0018 this was silently dropped;
-    // the next Prompt would still run under the `build` profile.
+    // Inject SetMode mid-turn. Before ADR-0018 this was silently dropped;
+    // the next Prompt would still run under the prior mode.
     tokio::time::sleep(Duration::from_millis(20)).await;
-    // Subscribe BEFORE sending SetAgent so we don't miss the AgentChanged
+    // Subscribe BEFORE sending SetMode so we don't miss the ModeChanged
     // event when the engine replays the stashed command after turn 1 ends.
     let mut sub2 = holly.subscribe();
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "reviewer".into(),
+            mode: "reviewer".into(),
         })
         .await
         .unwrap();
 
-    // Watch for the AgentChanged event (fires when the stashed SetAgent is
+    // Watch for the ModeChanged event (fires when the stashed SetMode is
     // replayed after turn 1 completes).
     let mut saw_reviewer = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub2.recv()).await {
-        if let OutEvent::AgentChanged { agent, session, .. } = ev {
-            if session == sid && agent == "reviewer" {
+        if let OutEvent::ModeChanged { mode, session, .. } = ev {
+            if session == sid && mode == "reviewer" {
                 saw_reviewer = true;
                 break;
             }
@@ -414,7 +410,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     }
     assert!(
         saw_reviewer,
-        "stashed SetAgent should have switched the session to the reviewer profile"
+        "stashed SetMode should have switched the session to the reviewer mode"
     );
 
     // Now send a real follow-up Prompt; it runs on the still-alive session.
@@ -426,7 +422,7 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     // And confirm the second turn's reply also surfaced via the original sub.
     let texts = collect_texts_for(sub, &sid, Duration::from_millis(500)).await;
     assert!(
-        texts.iter().any(|t| t == "post-setagent-reply"),
+        texts.iter().any(|t| t == "post-setmode-reply"),
         "second turn (post-stash-replay) should produce its reply; got {texts:?}"
     );
 }

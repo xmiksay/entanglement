@@ -568,13 +568,17 @@ async fn collect_auto_approving(
 
 async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: agent.into(),
+            prompt: "go".into(),
+            user: None,
+            sponsored: false,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 }
 
 #[tokio::test]

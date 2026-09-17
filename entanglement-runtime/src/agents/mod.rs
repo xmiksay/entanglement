@@ -9,16 +9,19 @@
 //! the final `system_prompt` by [`crate::system_prompt::assemble`] (shared
 //! preamble + body + project brief + env block + skill index, #113). Baking the
 //! assembled prompt into the registry here keeps every downstream consumer
-//! (session start, `SetAgent`, spawn) a pass-through.
+//! (session start, spawn) a pass-through.
 //!
 //! # Layers & precedence
 //!
 //! Three layers, later wins on a `name` collision:
 //!
-//! 1. **built-in** — embedded [`include_str!`] files (`build`, `plan`,
-//!    `explore`, `debug`, `research`), parsed through the *same* loader. Editing a built-in
-//!    is just dropping a same-`name` file in a higher layer; there is no special
-//!    "edit built-ins" code path.
+//! 1. **built-in** — embedded [`include_str!`] files (`general`, `plan`,
+//!    `debug` — ADR-0207 stage 6a collapsed the five-persona roster:
+//!    `build` renamed to `general` (unchanged body, the default worker
+//!    persona), `explore`/`research` retired since their read-only posture is
+//!    a permission **mode** now, not a persona), parsed through the *same*
+//!    loader. Editing a built-in is just dropping a same-`name` file in a
+//!    higher layer; there is no special "edit built-ins" code path.
 //! 2. **user** — `~/.claude/agents/*.md` (cross-vendor, lenient), then
 //!    `${config_dir}/entanglement/agents/*.md` (native, strict).
 //! 3. **project** — `.claude/agents` then `.agents/agents` (both lenient), then
@@ -42,6 +45,29 @@
 //! and any agent may be a session root or a spawn target (ADR-0207 §4/§6).
 //! A definition naming any of those fails to parse (`deny_unknown_fields`),
 //! same as any other unrecognized key.
+//!
+//! # `SetAgent` is gone (ADR-0207 §9, stage 6a)
+//!
+//! An agent is chosen once, when a session starts, and is fixed for that
+//! session's life — a spawned sub-agent is a fresh session with its own
+//! system prompt, which is what delegating to a different persona actually
+//! needs; there is no live "switch profile" message any more.
+//!
+//! # Migrating a legacy native-layer file
+//!
+//! A user/project **native** definition (`${config_dir}/entanglement/agents`,
+//! `<root>/.entanglement/agents`) authored before ADR-0207 may still carry the
+//! retired authority keys (`migrate::RETIRED_AGENT_KEYS`). Rather than bricking the
+//! load on every one of them forever, [`migrate_legacy_agent_file`] self-heals
+//! a **strict**-layer parse failure that is caused by exactly those keys: it
+//! backs the file up to `<file>.bak`, rewrites it without them, and warns
+//! naming the file and the closest replacement permission **mode** inferred
+//! from what the dropped rules allowed. A parse failure the retired keys
+//! don't explain (a genuine typo) still aborts loudly — this must never paper
+//! over a mistake by guessing. Foreign (lenient) files are unaffected: they
+//! never carried these keys as anything but ignored noise (ADR-0074).
+
+mod migrate;
 
 use std::path::{Path, PathBuf};
 
@@ -54,16 +80,15 @@ use crate::mcp::McpCapabilityIndex;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
 use crate::tool_names;
+use migrate::migrate_legacy_agent_file;
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
 /// the agent's identity is its frontmatter `name`.
 const BUILT_INS: &[(&str, &str)] = &[
-    ("build.md", include_str!("build.md")),
+    ("general.md", include_str!("general.md")),
     ("plan.md", include_str!("plan.md")),
-    ("explore.md", include_str!("explore.md")),
     ("debug.md", include_str!("debug.md")),
-    ("research.md", include_str!("research.md")),
 ];
 
 /// Env var overriding the user agents directory (tests + non-XDG setups).
@@ -74,7 +99,7 @@ const AGENTS_DIR_ENV: &str = "ENTANGLEMENT_AGENTS_DIR";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentDefinition {
-    /// Unique id; what `agent { agent }` / `SetAgent` reference.
+    /// Unique id; what `agent { agent }` spawns by.
     name: String,
     /// One-line summary; the only field disclosed to a spawning model.
     description: String,
@@ -83,7 +108,7 @@ struct AgentDefinition {
     model: Option<String>,
     /// Provider this profile pins `model` to (#323, ADR-0081). Set alongside
     /// `model` to form a *model pin*: the session re-binds to `(provider, model)`
-    /// on `SetAgent`/session start. `inherit`/omitted ⇒ no provider pin; `model`
+    /// at session start. `inherit`/omitted ⇒ no provider pin; `model`
     /// alone stays the legacy request-level fallback. `provider` without `model`
     /// is a loud load error (a provider with nothing to run is meaningless).
     #[serde(default)]
@@ -138,9 +163,37 @@ fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
         Strictness::Strict => {
             let (frontmatter, body) = crate::frontmatter::split(&raw.content)
                 .with_context(|| format!("parsing agent `{}`", raw.source))?;
-            let def: AgentDefinition = serde_yaml::from_str(&frontmatter)
-                .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
-            Ok(Some((def, body)))
+            match serde_yaml::from_str::<AgentDefinition>(&frontmatter) {
+                Ok(def) => Ok(Some((def, body))),
+                Err(e) => {
+                    // A real on-disk file (not an embedded built-in, which
+                    // never carries the retired keys) gets one self-heal
+                    // attempt before the parse error aborts the load.
+                    let Some(path) = raw.path.as_deref() else {
+                        return Err(e).with_context(|| {
+                            format!("invalid frontmatter in agent `{}`", raw.source)
+                        });
+                    };
+                    match migrate_legacy_agent_file(path, &frontmatter, &body)? {
+                        Some(cleaned) => {
+                            let def: AgentDefinition = serde_yaml::from_str(&cleaned)
+                                .with_context(|| {
+                                    format!(
+                                        "invalid frontmatter in agent `{}` even after dropping \
+                                         retired keys",
+                                        raw.source
+                                    )
+                                })?;
+                            Ok(Some((def, body)))
+                        }
+                        // No retired key explains the failure — a genuine
+                        // typo, so the original error stands (no guessing).
+                        None => Err(e).with_context(|| {
+                            format!("invalid frontmatter in agent `{}`", raw.source)
+                        }),
+                    }
+                }
+            }
         }
         Strictness::Lenient => {
             let parsed = crate::frontmatter::split(&raw.content).and_then(|(frontmatter, body)| {
@@ -216,10 +269,10 @@ pub fn load_registry(
     Ok(reg)
 }
 
-/// Parse *only* the embedded built-in set (`build`/`plan`/`explore`/`debug`)
+/// Parse *only* the embedded built-in set (`general`/`plan`/`debug`)
 /// into a [`ProfileRegistry`], skipping the user/project layers
 /// [`load_registry`] consults. The runtime is the single source of the
-/// built-ins (#201): core carries only the `build` fallback
+/// built-ins (#201): core carries only the `general` fallback
 /// [`ProfileRegistry::new`] synthesizes, so callers that need the full set
 /// without touching the filesystem parse the embedded markdown here. Prompts
 /// are composed with an identity [`PromptContext`] (no brief/env/skills),
@@ -254,7 +307,7 @@ pub struct AgentResolution {
     pub profile: AgentProfile,
     /// Which precedence layer the winner came from.
     pub layer: AgentLayer,
-    /// The winner's origin (`built-in (build.md)` or a file path).
+    /// The winner's origin (`built-in (general.md)` or a file path).
     pub source: String,
     /// Lower-layer definitions of the same name the winner overrode, in
     /// precedence order — `(layer, source)` each. Empty when nothing was shadowed.
@@ -320,7 +373,7 @@ pub fn resolve_registry(
 /// Everything `skutter inspect prompt` needs for one agent (#184): the winning
 /// definition's source, the assembled profile, and the per-part breakdown.
 pub struct AgentPromptReport {
-    /// Where the winning definition came from (`built-in (build.md)` or a path).
+    /// Where the winning definition came from (`built-in (general.md)` or a path).
     pub source: String,
     /// The fully assembled profile (its `system_prompt` is the resolved prompt).
     pub profile: AgentProfile,
@@ -384,13 +437,17 @@ pub fn prompt_report(
 pub use crate::layers::Layer as AgentLayer;
 
 /// A discovered agent definition file *before* parsing: which layer it came from
-/// (#185), a display label for its origin (`built-in (build.md)` or the file
-/// path), and the raw file content.
+/// (#185), a display label for its origin (`built-in (general.md)` or the file
+/// path), the raw file content, and — for a real on-disk file only — the path
+/// itself, so a strict-layer parse failure can attempt the retired-key
+/// self-heal ([`migrate_legacy_agent_file`]). `None` for an embedded built-in,
+/// which has no file to rewrite and never carries a retired key.
 struct RawAgent {
     layer: AgentLayer,
     strictness: Strictness,
     source: String,
     content: String,
+    path: Option<PathBuf>,
 }
 
 /// Enumerate every agent definition in precedence order — embedded built-ins,
@@ -406,6 +463,7 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
             strictness: Strictness::Strict,
             source: format!("built-in ({file})"),
             content: (*contents).to_string(),
+            path: None,
         })
         .collect();
     crate::layers::load_layers(root, "agents", AGENTS_DIR_ENV, built_ins, read_dir_raws)
@@ -438,6 +496,7 @@ fn read_dir_raws(
             strictness,
             source: path.display().to_string(),
             content,
+            path: Some(path),
         });
     }
     Ok(())
@@ -1077,12 +1136,12 @@ mod tests {
     }
 
     #[test]
-    fn built_in_registry_resolves_all_five_profiles() {
+    fn built_in_registry_resolves_the_three_profiles() {
         // Exercises the public seam itself (#585): a parse failure here comes
         // back as an `Err` an embedder can handle, not a panic baked into the
         // function.
         let reg = built_in_registry().expect("embedded built-ins must parse");
-        for name in ["build", "plan", "explore", "debug", "research"] {
+        for name in ["general", "plan", "debug"] {
             assert!(reg.get(name).is_some(), "missing built-in `{name}`");
         }
     }
@@ -1101,13 +1160,11 @@ mod tests {
             reg.insert(p);
         }
 
-        let build = reg.get("build").expect("build built-in");
-        assert!(build.system_prompt.starts_with("You are a coding agent"));
+        let general = reg.get("general").expect("general built-in");
+        assert!(general.system_prompt.starts_with("You are a coding agent"));
 
         assert!(reg.get("plan").is_some());
-        assert!(reg.get("explore").is_some());
         assert!(reg.get("debug").is_some());
-        assert!(reg.get("research").is_some());
     }
 
     #[test]
@@ -1123,6 +1180,7 @@ mod tests {
             strictness: Strictness::Lenient,
             source: "~/.claude/agents/test.md".into(),
             content: content.into(),
+            path: None,
         }
     }
 
@@ -1215,6 +1273,77 @@ mod tests {
             let msg = format!("{err:#}");
             assert!(msg.contains("unknown field"), "got: {msg}");
         }
+    }
+
+    /// End-to-end through [`parse_raw`] against a real file: a native-layer
+    /// definition still carrying `tools`/`permission` self-heals instead of
+    /// bricking the load — backed up, rewritten, and re-parsed transparently.
+    #[test]
+    fn legacy_native_file_self_heals_with_backup_and_warning() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("legacy.md");
+        std::fs::write(
+            &path,
+            "---\nname: reviewer\ndescription: d\ntools: [read, glob, grep]\npermission:\n  default: ask\n---\nBody text.\n",
+        )
+        .unwrap();
+        let raw = RawAgent {
+            layer: AgentLayer::User,
+            strictness: Strictness::Strict,
+            source: path.display().to_string(),
+            content: std::fs::read_to_string(&path).unwrap(),
+            path: Some(path.clone()),
+        };
+
+        let (def, body) = parse_raw(&raw).unwrap().expect("self-healed and parsed");
+        assert_eq!(def.name, "reviewer");
+        assert_eq!(body, "Body text.");
+
+        // The backup keeps the original bytes with the retired keys intact.
+        let bak = path.with_extension("md.bak");
+        let backed_up = std::fs::read_to_string(&bak).expect("backup written");
+        assert!(backed_up.contains("tools:"));
+
+        // The file itself was rewritten without the retired keys, and a
+        // second parse (no more raw-content caching) succeeds directly —
+        // proving the rewrite, not just an in-memory patch, is what's live.
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(!rewritten.contains("tools:"));
+        assert!(!rewritten.contains("permission:"));
+        assert!(rewritten.contains("Body text."));
+        let raw2 = RawAgent {
+            content: rewritten,
+            ..raw
+        };
+        assert!(parse_raw(&raw2).unwrap().is_some());
+    }
+
+    /// A parse failure the retired keys don't explain (a genuine typo) still
+    /// aborts loudly — the self-heal must never paper over a real mistake.
+    #[test]
+    fn a_typo_unrelated_to_retired_keys_still_aborts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("typo.md");
+        std::fs::write(
+            &path,
+            "---\nname: x\ndescription: d\ntypo_field: 1\n---\nbody",
+        )
+        .unwrap();
+        let raw = RawAgent {
+            layer: AgentLayer::User,
+            strictness: Strictness::Strict,
+            source: path.display().to_string(),
+            content: std::fs::read_to_string(&path).unwrap(),
+            path: Some(path.clone()),
+        };
+
+        let err = parse_raw(&raw).unwrap_err();
+        assert!(format!("{err:#}").contains("typo_field"));
+        // No migration side effect: the file is untouched, no backup written.
+        assert!(!path.with_extension("md.bak").exists());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("typo_field"));
     }
 
     #[test]

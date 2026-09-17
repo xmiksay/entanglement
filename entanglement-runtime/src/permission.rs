@@ -300,10 +300,10 @@ mod tests {
     fn spawn_refusal_only_checks_target_existence() {
         let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         // Every registered agent is a valid spawn target now (ADR-0207 §6) —
-        // `build`, `plan`, and the leaf `explore` alike.
-        assert!(spawn_refusal("build", &reg).is_none());
+        // `general`, `plan`, and `debug` alike.
+        assert!(spawn_refusal("general", &reg).is_none());
         assert!(spawn_refusal("plan", &reg).is_none());
-        assert!(spawn_refusal("explore", &reg).is_none());
+        assert!(spawn_refusal("debug", &reg).is_none());
         // Unknown target name is refused.
         let r = spawn_refusal("ghost", &reg).expect("unknown refused");
         assert!(r.contains("unknown agent profile"), "got: {r}");

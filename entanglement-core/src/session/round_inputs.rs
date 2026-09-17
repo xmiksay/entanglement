@@ -18,9 +18,9 @@ use entanglement_provider::ToolSpec;
 /// active skill's `allowed_tools` (#400, ADR-0106) do not filter here — they
 /// are enforced exclusively by the runtime's dispatch gate, exactly as the
 /// `Allow`/`Ask`/`Deny` permission ladder always has been. WHY: every
-/// mid-session change to this array (an overlay toggle, a skill mask, a
-/// `SetAgent` to a differently-masked profile) invalidated the provider's
-/// prompt cache from the tools block onward — i.e. the whole prompt. A
+/// mid-session change to this array (an overlay toggle, a skill mask)
+/// invalidated the provider's prompt cache from the tools block onward — i.e.
+/// the whole prompt. A
 /// surface that is stable within a session keeps that cache warm; the only
 /// thing traded away is "the model cannot even attempt the call", and every
 /// attempt is now visibly declined at dispatch instead.
@@ -42,7 +42,8 @@ use entanglement_provider::ToolSpec;
 /// is a constant roster the runtime folds into the plain shared
 /// `cfg.tool_specs` like every other runtime-owned tool — there is no more
 /// per-profile table to append here. That is the whole point: the advertised
-/// array no longer varies by profile, so `SetAgent` costs no cache.
+/// array no longer varies by profile — moot anyway, now that an agent is
+/// fixed for a session's whole life (ADR-0207 §9, `SetAgent` is gone).
 pub(super) fn resolve_specs(cfg: &EngineConfig, session: &SessionId, s: &Session) -> Vec<ToolSpec> {
     match &cfg.tool_spec_resolver {
         Some(resolve) => resolve(

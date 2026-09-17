@@ -1,8 +1,9 @@
 //! The `/set` dialog's apply pipeline: a plan of steps in the settled order
-//! (agent → model → generation → tools/MCP → re-pin → aux), executed through
-//! a side-effect seam so the order and stop-on-failure rule are testable
-//! without an engine. Each live effect reuses the single-purpose command's
-//! own message/store path (`app/settings.rs`).
+//! (model → generation → tools/MCP → re-pin → aux — no `agent` step, ADR-0207
+//! §9: the agent row is read-only display, there is no live switch), executed
+//! through a side-effect seam so the order and stop-on-failure rule are
+//! testable without an engine. Each live effect reuses the single-purpose
+//! command's own message/store path (`app/settings.rs`).
 
 use entanglement_core::ToolOverlayEntry;
 use entanglement_provider::{Discovery, GenerationParams, ToolAdvertising};
@@ -23,7 +24,6 @@ pub struct ToolsChange {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplyStep {
-    Agent(String),
     /// `persist_for` = the agent whose model pin the confirming
     /// `ModelChanged` writes (ADR-0081); `None` = session only.
     Model {
@@ -68,7 +68,6 @@ fn saved(agent: &Option<String>, what: &str) -> String {
 impl ApplyStep {
     pub fn label(&self) -> String {
         match self {
-            ApplyStep::Agent(a) => format!("agent → {a}"),
             ApplyStep::Model {
                 provider,
                 model,

@@ -103,7 +103,7 @@ pub(super) async fn handle_event(
                     return handle_tools_view_event(app, holly, key).await;
                 }
                 if app.showing_profile_picker() {
-                    return handle_profile_picker_event(app, holly, key).await;
+                    return handle_profile_picker_event(app, key).await;
                 }
                 if app.showing_model_picker() {
                     return handle_model_picker_event(app, holly, key).await;
@@ -421,13 +421,6 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
-                            } else if let Some(agent_name) = app.cycle_primary_profile() {
-                                let _ = holly
-                                    .send(entanglement_core::InMsg::SetAgent {
-                                        session: app.active_session_id().clone(),
-                                        agent: agent_name,
-                                    })
-                                    .await;
                             }
                         }
                         // crossterm reports Shift+Tab as `BackTab` (the SHIFT
@@ -443,13 +436,6 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
-                            } else if let Some(agent_name) = app.cycle_primary_profile_back() {
-                                let _ = holly
-                                    .send(entanglement_core::InMsg::SetAgent {
-                                        session: app.active_session_id().clone(),
-                                        agent: agent_name,
-                                    })
-                                    .await;
                             }
                         }
                         KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {

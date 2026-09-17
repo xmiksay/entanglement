@@ -62,11 +62,11 @@ pub struct App {
     history_index: Option<usize>,
     history_search_term: Option<String>,
 
-    // Profile picker state — catalog is global, selection acts on the active session.
+    // Profile picker state (ADR-0207 §9: read-only, lists the roster and marks
+    // the session's own — there is no live switch any more).
     showing_profile_picker: bool,
     profile_picker_state: ListState,
     available_profiles: Vec<ProfileInfo>,
-    primary_profile_order: Vec<String>,
 
     // Model picker state — catalog is global, selection is display-only (requires restart)
     showing_model_picker: bool,
@@ -80,8 +80,9 @@ pub struct App {
     // Per-agent model pins (#323, ADR-0081): the managed `agent-models.yml` store,
     // and the pending persist recorded when the `/model` picker confirms. The
     // matching `ModelChanged` for the active session commits the write; an `Error`
-    // (or a `ModelChanged` with no pending, i.e. a `SetAgent` pin application)
-    // clears it without writing. `None` store in tests / when no config dir.
+    // (or an unrelated `ModelChanged` with no pending, e.g. the session-start
+    // pin re-announce) clears it without writing. `None` store in tests / when
+    // no config dir.
     agent_models:
         Option<std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>>,
     /// `(agent, provider, model)` awaiting its `ModelChanged` confirmation.
@@ -91,9 +92,8 @@ pub struct App {
     // the managed `agent-generation.yml` store, and the pending persist recorded
     // when `/set`'s Enter sends `InMsg::SetGeneration`. The matching
     // `GenerationChanged` for the active session commits the write; an `Error`
-    // (or a `GenerationChanged` with no pending, i.e. a `/show` query or a
-    // `SetAgent` reapplication) clears it without writing. `None` store in tests
-    // / when no config dir.
+    // (or a `GenerationChanged` with no pending, e.g. a `/show` query) clears
+    // it without writing. `None` store in tests / when no config dir.
     agent_generation: Option<
         std::sync::Arc<std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>>,
     >,
@@ -396,9 +396,9 @@ impl App {
                 context_window: context_window.map(|w| w as u32),
             });
             // Persist-on-confirmation (#323): a `/model` pick recorded a pending
-            // persist; its matching `ModelChanged` commits the write. A
-            // `ModelChanged` from a `SetAgent` pin application has no pending, so
-            // it never writes.
+            // persist; its matching `ModelChanged` commits the write. An
+            // unrelated `ModelChanged` (e.g. the session-start pin re-announce)
+            // has no pending, so it never writes.
             self.persist_model_if_pending(session, provider, model);
         }
         // A generation-knob change (#374/#376): always render a status line with

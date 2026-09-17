@@ -113,7 +113,7 @@ pub(super) async fn run_attempt(
     // request — instead of replaying as a separate turn after `Done`. Reached
     // on every attempt, including an ambiguous-stop retry, so a prompt sent
     // while the model is being nudged to finish still lands before the retry
-    // streams. Non-`Prompt` commands (`SetAgent`) stay stashed for the
+    // streams. Non-`Prompt` commands (`SetMode`) stay stashed for the
     // session loop to handle once this turn ends.
     let mut i = 0;
     while i < stash.len() {

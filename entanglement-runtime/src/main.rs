@@ -1057,7 +1057,7 @@ enum Cmd {
         /// Session id to use (generates UUID if not specified).
         #[arg(long)]
         session: Option<String>,
-        /// Agent profile to run under (build | plan | explore | custom).
+        /// Agent profile to run under (general | plan | debug | custom).
         #[arg(long)]
         agent: Option<String>,
         /// Output format.
@@ -1076,7 +1076,7 @@ enum Cmd {
     Tui {
         #[arg(long)]
         session: Option<String>,
-        /// Agent profile to run under (build | plan | explore | custom).
+        /// Agent profile to run under (general | plan | debug | custom).
         #[arg(long)]
         agent: Option<String>,
     },
@@ -1697,6 +1697,7 @@ async fn main() -> Result<()> {
             format,
             resume,
         }) => {
+            let fresh = resume.is_none();
             let session_id = if let Some(resume_id) = &resume {
                 SessionId::new(resume_id.clone())
             } else {
@@ -1716,6 +1717,16 @@ async fn main() -> Result<()> {
                          reconstruct an incomplete conversation. Start a fresh session instead."
                     );
                 }
+                // ADR-0207 stage 6a: a log naming a retired agent can't resume
+                // — the profile no longer exists, and silently falling back to
+                // a different one would replay the conversation under an
+                // identity it never actually ran under.
+                if let Some((retired, replacement)) = session_store::retired_agent(&records) {
+                    anyhow::bail!(
+                        "Refusing to resume {resume_session_id}: its log names the retired \
+                         agent `{retired}` — {replacement}. Start a fresh session instead."
+                    );
+                }
 
                 holly
                     .resume(session_id.clone(), pair_records(&records))
@@ -1723,14 +1734,34 @@ async fn main() -> Result<()> {
             }
 
             // CLI `--agent` wins; else the user config's default agent (#172).
+            // An agent is fixed for a session's whole life (ADR-0207 §9), so
+            // this only ever applies to a fresh spawn below — warn rather than
+            // silently ignoring an explicit `--agent` alongside `--resume`.
             let agent = agent.or_else(|| user_config.agent.clone());
-            if let Some(ref a) = agent {
+            if fresh {
+                // An empty-prompt `Spawn` just binds the session's identity
+                // (agent); the real prompt goes through `run_one` below, once
+                // any `--mode` switch (next) has already landed — sending it
+                // first would race the still-nonexistent session id into the
+                // supervisor's lazy-create-under-default fallback instead of
+                // this chosen agent (see `holly.rs`'s unknown-session-id path).
                 holly
-                    .send(InMsg::SetAgent {
+                    .send(InMsg::Spawn {
                         session: session_id.clone(),
-                        agent: a.to_string(),
+                        parent: None,
+                        predecessor: None,
+                        agent: agent
+                            .clone()
+                            .unwrap_or_else(|| entanglement_core::DEFAULT_PROFILE.to_string()),
+                        prompt: String::new(),
+                        user: None,
+                        sponsored: false,
                     })
                     .await?;
+            } else if agent.is_some() {
+                tracing::warn!(
+                    "--agent is ignored with --resume: a resumed session's agent is fixed"
+                );
             }
             // `--mode` (ADR-0207 §11): `SetMode` is trusted-only (a mode *is*
             // the session's authority), so this direct `Holly::send` — not
@@ -1744,7 +1775,7 @@ async fn main() -> Result<()> {
                     .await?;
             }
             let prompt = prompt.join(" ");
-            run_one(&holly, &session_id, agent.as_deref(), &prompt, &format).await
+            run_one(&holly, &session_id, &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => {
             let session_id =
@@ -1761,19 +1792,27 @@ async fn main() -> Result<()> {
         Some(Cmd::Tui { session, agent }) => {
             let session_id =
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
-            // Subscribe *before* the bootstrap `SetAgent` send below, matching
+            // Subscribe *before* the bootstrap `Spawn` send below, matching
             // the "subscribe before send" convention `subagent.rs` follows for
             // spawned children — otherwise the session task can emit
             // `SessionStarted`/`AgentChanged` before `tui()` gets around to
             // subscribing, permanently desyncing the agent badge (#598).
             let holly_sub = holly.subscribe();
             // CLI `--agent` wins; else the user config's default agent (#172).
+            // An empty-prompt `Spawn` just binds the session's identity — the
+            // agent is fixed for the session's whole life from here (ADR-0207
+            // §9); the user's real first prompt arrives later, through the TUI.
             let agent = agent.or_else(|| user_config.agent.clone());
             if let Some(a) = agent {
                 holly
-                    .send(InMsg::SetAgent {
+                    .send(InMsg::Spawn {
                         session: session_id.clone(),
-                        agent: a.to_string(),
+                        parent: None,
+                        predecessor: None,
+                        agent: a,
+                        prompt: String::new(),
+                        user: None,
+                        sponsored: false,
                     })
                     .await?;
             }
@@ -1812,15 +1851,20 @@ async fn main() -> Result<()> {
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             if cli.prompt.is_empty() {
                 let session_id = SessionId::new(holly.next_id(IdKind::Session));
-                // Subscribe before the bootstrap `SetAgent` send — see the
+                // Subscribe before the bootstrap `Spawn` send — see the
                 // matching comment on the `Cmd::Tui` arm above (#598).
                 let holly_sub = holly.subscribe();
                 let agent = user_config.agent.clone();
                 if let Some(ref a) = agent {
                     holly
-                        .send(InMsg::SetAgent {
+                        .send(InMsg::Spawn {
                             session: session_id.clone(),
+                            parent: None,
+                            predecessor: None,
                             agent: a.to_string(),
+                            prompt: String::new(),
+                            user: None,
+                            sponsored: false,
                         })
                         .await?;
                 }
@@ -1852,11 +1896,21 @@ async fn main() -> Result<()> {
             } else {
                 let session_id = SessionId::new(holly.next_id(IdKind::Session));
                 let agent = user_config.agent.clone();
+                // An empty-prompt `Spawn` binds the session's identity before
+                // any `--mode` switch below reaches the supervisor — sending
+                // `SetMode` first would race the still-nonexistent id into the
+                // lazy-create-under-default fallback instead of this agent
+                // (see the explicit `Run` arm above).
                 if let Some(ref a) = agent {
                     holly
-                        .send(InMsg::SetAgent {
+                        .send(InMsg::Spawn {
                             session: session_id.clone(),
+                            parent: None,
+                            predecessor: None,
                             agent: a.to_string(),
+                            prompt: String::new(),
+                            user: None,
+                            sponsored: false,
                         })
                         .await?;
                 }
@@ -1870,7 +1924,7 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 let prompt = cli.prompt.join(" ");
-                run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
+                run_one(&holly, &session_id, &prompt, "text").await
             }
         }
     };

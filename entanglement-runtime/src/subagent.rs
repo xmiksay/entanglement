@@ -153,9 +153,11 @@ impl SpawnGuard {
     }
 }
 
-/// Sub-agent profile used when the model omits `agent` — read-only explore is
-/// the safe default.
-const DEFAULT_SUBAGENT: &str = "explore";
+/// Sub-agent profile used when the model omits `agent` (ADR-0207 stage 6a:
+/// the roster collapsed to `general`/`plan`/`debug` — read-only posture is a
+/// permission mode now, not a persona, so the default target is simply the
+/// default worker persona, same as [`entanglement_core::holly::DEFAULT_PROFILE`]).
+const DEFAULT_SUBAGENT: &str = "general";
 
 /// The `agent`/`agent_send` tool specs, advertised unconditionally to every
 /// session (ADR-0207 §4/§6): spawning is never *graded* — `agent`/
@@ -854,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_input_defaults_agent_to_explore() {
+    fn parse_input_defaults_agent_to_general() {
         let (agent, prompt, _) = parse_input(r#"{"prompt":"look around"}"#);
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "look around");
@@ -870,9 +872,9 @@ mod tests {
 
     #[test]
     fn agent_specs_list_every_registered_agent() {
-        // ADR-0207 §6: spawning is unconditional and the roster is constant —
-        // every registered agent is a valid target, `build`/`plan` included
-        // (the old primary/subagent target-mode gate is retired).
+        // ADR-0207 §6/§9: spawning is unconditional and the roster is
+        // constant — every registered agent is a valid target (stage 6a's
+        // collapsed three-persona roster: `general`/`plan`/`debug`).
         let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         let specs = agent_specs(&reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
@@ -880,9 +882,8 @@ mod tests {
         let enum_names = specs[0].schema["properties"]["agent"]["enum"]
             .as_array()
             .unwrap();
-        assert!(enum_names.iter().any(|n| n == "explore"));
+        assert!(enum_names.iter().any(|n| n == "general"));
         assert!(enum_names.iter().any(|n| n == "debug"));
-        assert!(enum_names.iter().any(|n| n == "build"));
         assert!(enum_names.iter().any(|n| n == "plan"));
     }
 

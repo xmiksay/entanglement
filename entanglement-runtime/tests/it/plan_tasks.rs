@@ -167,20 +167,26 @@ fn deny_update_tasks_mode_table() -> Arc<ModeTable> {
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
 
-/// Drive a prompt (optionally switching agent first) and collect the session's
-/// events until `Done`.
+/// Drive a prompt (optionally spawning fresh under a chosen agent first) and
+/// collect the session's events until `Done`.
 async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>) -> Vec<OutEvent> {
     let mut sub = holly.subscribe();
     if let Some(a) = agent {
         holly
-            .send(InMsg::SetAgent {
+            .send(InMsg::Spawn {
                 session: sid.clone(),
+                parent: None,
+                predecessor: None,
                 agent: a.into(),
+                prompt: "go".into(),
+                user: None,
+                sponsored: false,
             })
             .await
             .unwrap();
+    } else {
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     }
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let mut events = Vec::new();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
         if ev.session() != Some(sid) {

@@ -127,10 +127,6 @@ impl App {
                 self.toggle_profile_picker();
                 false
             }
-            Action::CycleAgent => {
-                self.cycle_primary_profile();
-                false
-            }
             Action::PickModel => {
                 self.toggle_model_picker();
                 false

@@ -212,7 +212,7 @@ async fn lazy_prompt_still_auto_creates_a_fresh_root() {
             root,
             ..
         } => {
-            assert_eq!(profile, "build");
+            assert_eq!(profile, "general");
             assert_eq!(parent, None);
             assert!(root);
         }
