@@ -190,7 +190,14 @@ pub async fn run_rhai(
     // `rhai`'s own permission gate (Allow/Ask/Deny), like any host tool.
     match self_perm {
         Permission::Deny => {
-            let out = format!("tool `{RHAI_TOOL}` denied by permission profile");
+            // Same wording as a binding's refusal below and as
+            // `tool_runner::dispatch`'s: one denial, one explanation. It said
+            // "denied by permission profile" until now — naming a concept
+            // ADR-0207 retired, in the one path the mode migration missed.
+            let out = format!(
+                "tool `{RHAI_TOOL}` denied by mode `{}` — use /mode to switch",
+                policy.mode
+            );
             seam::reply(&holly, session, request_id, out, true).await;
             return;
         }

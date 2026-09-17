@@ -10,7 +10,7 @@ chosen once at session start and fixed for that session's life. The mode
 supplies *what it may do* — every permission fact — and is orthogonal:
 switching mode never touches the agent, and vice versa. This replaces the
 pre-[ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-world, where `AgentProfile` carried both in one struct (`permission`,
+world, where `Agent` carried both in one struct (`permission`,
 `tools`/`disallowed_tools`, `can_spawn`/`spawnable_agents`, `sandbox`, `mode:
 primary|subagent|all`) and nothing could change posture without changing
 persona, or persona without changing posture
@@ -20,7 +20,7 @@ persona, or persona without changing posture
 [ADR-0134](../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) —
 all superseded).
 
-A session runs under exactly one core [`AgentProfile`][profile], now
+A session runs under exactly one core [`Agent`][profile], now
 **identity only**: `{ name, description, system_prompt, model?, provider? }`.
 `description` drives delegation matching (§8, the only field a spawning model
 sees); `model`/`provider` are the existing per-profile model pin (below,
@@ -104,13 +104,13 @@ below realize one model:
   `build`, `auto` — and reads no `modes/` directory: a user can tune one via
   `config.yml` `modes:` (below) but never define, add, or remove one; an
   embedder supplies its own table via `ModeTable::new` (the seam
-  multi-tenant/custom-posture embedding needs, mirroring how `AgentProfile`
+  multi-tenant/custom-posture embedding needs, mirroring how `Agent`
   registries are pluggable). `entanglement-core` carries only an opaque
   `mode: String` on the session — it persists it, replays it, and emits
   `OutEvent::ModeChanged`, but never evaluates it; `Permission`/
   `PermissionProfile` (unchanged shapes: `Allow`/`Ask`/`Deny`, a
   `(pattern, grade)` rule list + a `default`) stay core types — no longer
-  carried by `AgentProfile`, which dropped its `permission` field entirely —
+  carried by `Agent`, which dropped its `permission` field entirely —
   now serving only as the `config.yml` `permissions:` ceiling's wire shape
   (below); `Capability` is new and lives entirely in the runtime
   (`entanglement-runtime::capability`), never in core.
@@ -277,7 +277,7 @@ below realize one model:
   it sent the session's `InMsg::Spawn`. The recipe (documented in
   [`../embedding.md`](../embedding.md) §7, sketched compiling in
   `examples/embedded.rs`): wrap an inner resolver — typically
-  `ProfileResolver`, so the process-global #172 ceiling still applies first —
+  `ModeResolver`, so the process-global #172 ceiling still applies first —
   and clamp its result a *second* time by the resolving session's own user's
   ceiling via the same `clamp_to_base` least-privilege composition #172
   itself uses; key `Always`-scope grants by the user (the storage key itself
@@ -401,7 +401,7 @@ below realize one model:
   roster collapsed by [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   §1):** agents are markdown files with YAML frontmatter (the config bundle)
   + a body (the system prompt), discovered at startup by the **runtime**
-  (`entanglement_runtime::agents::load_registry`) into a `ProfileRegistry`.
+  (`entanglement_runtime::agents::load_registry`) into a `AgentCatalog`.
   Three layers, later wins on a `name` collision: embedded built-ins —
   **`general`, `plan`, `debug`** — shipped as `include_str!` `.md` and parsed
   through the *same* loader) < user (`~/.claude/agents/*.md` then
@@ -431,12 +431,12 @@ below realize one model:
   Plan authorship (`propose_plan`, ✅ #231/#513, below) and the plan-approval
   mode switch (below) complete the picture. The built-ins are defined
   **once**, here as markdown (#201): core carries only the `general` profile
-  its `resolve()` fallback needs (`DEFAULT_PROFILE = "general"`; it can't
+  its `resolve()` fallback needs (`DEFAULT_AGENT = "general"`; it can't
   parse frontmatter, so it holds no `plan`/`debug` copy to drift from these
   files). Embedders using core directly get that single fallback via
-  `ProfileRegistry::new()`; the runtime rebuilds the full set from the
+  `AgentCatalog::new()`; the runtime rebuilds the full set from the
   embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
-  your own with `ProfileRegistry::insert`.
+  your own with `AgentCatalog::insert`.
 - **The four built-in modes, at a glance** — what a session can actually do,
   independent of which agent runs it. Source of truth:
   `entanglement-runtime/src/mode/builtin/*.yml`
@@ -472,7 +472,7 @@ below realize one model:
   §9 — `SetModel`/`SetGeneration` themselves survive; only the `SetAgent`
   rebind trigger is gone):**
   a profile's frontmatter may set `provider:` beside `model:`. Both set = a
-  **model pin** (`AgentProfile::model_pin()`): starting a session under the
+  **model pin** (`Agent::model_pin()`): starting a session under the
   profile re-binds the session's whole backend to that `(provider, model)` —
   through the same `model_resolver` seam a live `/model` (`SetModel`) switch
   uses ([ADR-0063](../adr/0063-realtime-model-provider-switch.md)) — so a
@@ -504,9 +504,9 @@ below realize one model:
   but through a **separate** seam:
   `EngineConfig.generation_resolver: Option<GenerationResolver>`, a
   `Fn(&str) -> Option<GenerationParams>` keyed by profile *name* rather than a
-  field baked into `AgentProfile`. `GenerationParams` carries
+  field baked into `Agent`. `GenerationParams` carries
   `temperature: Option<f32>`, which has no total `Eq`, so it cannot join
-  `AgentProfile`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
+  `Agent`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
   fields do — the resolver indirection is the price of keeping
   `GenerationParams` a plain `Copy` value type. `Session.profile_generation`
   (session memory) and the resolver's return (the persisted tier) are both
@@ -517,8 +517,8 @@ below realize one model:
   (`${config_dir}/entanglement/agent-generation.yml`, override
   `ENTANGLEMENT_AGENT_GENERATION_FILE`, sibling of `agent-models.yml`) has the
   same `load`/`get`/`set`/`reload` shape and the same fail-open/locked-write
-  behavior — but **no** `apply(&mut ProfileRegistry)`: there's nothing on
-  `AgentProfile` to overlay, so `AgentGenerationStore::resolver(store)` builds
+  behavior — but **no** `apply(&mut AgentCatalog)`: there's nothing on
+  `Agent` to overlay, so `AgentGenerationStore::resolver(store)` builds
   the `GenerationResolver` closure directly (resolved fresh on every call, so a
   `set`/`reload` is visible without rebuilding it). **TUI surface (✅ #376,
   [ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md)):**
@@ -619,7 +619,7 @@ below realize one model:
   **fully non-maskable**: no session overlay deny can withdraw them even at
   dispatch (the ADR-0190 `poll` pattern, extended to two more tools —
   contrast `poll` itself, whose *dispatch* a mode can still decline, just not
-  un-advertise). With `AgentProfile` carrying no more authority, **nothing
+  un-advertise). With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
   now, bounded only by the mode's `max_depth`/`max_agents`, neither of which
@@ -759,7 +759,7 @@ below realize one model:
   ask.
 - **`general`/`debug` — the two built-in spawn targets, at a glance:**
   `general` (the old `build` body, unchanged) is the **default** `agent`
-  target (`DEFAULT_SUBAGENT`/`DEFAULT_PROFILE = "general"`) when the caller
+  target (`DEFAULT_SUBAGENT`/`DEFAULT_AGENT = "general"`) when the caller
   omits `agent` — the safe, unscoped-delegation choice, and any agent may
   spawn it or be spawned by it now (there is no more `primary`/`subagent`
   distinction to gate that). `debug` carries the identical body — full
@@ -934,7 +934,7 @@ below realize one model:
   any preloaded bodies — no env/skill-index, and never the parent's assembled
   prompt (each agent is composed from *its own* body + `include_brief` flag).
   Composition is a pure, unit-tested harness function baked into
-  `AgentProfile.system_prompt` at load time, so session start / spawn
+  `Agent.system_prompt` at load time, so session start / spawn
   both read the finished prompt and core stays a verbatim pass-through into
   `LlmRequest.system` — there is no more live `SetAgent` to re-read it on
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
@@ -943,7 +943,7 @@ below realize one model:
   more — the index lists every discoverable skill regardless of session mode.
   **Per-turn prompt override (✅ #310, [ADR-0078](../adr/0078-per-turn-dynamic-system-prompt.md)):**
   an optional `EngineConfig.system_prompt_resolver: Option<Arc<dyn Fn(&SessionId,
-  &AgentProfile) -> Option<String> + Send + Sync>>` (type alias
+  &Agent) -> Option<String> + Send + Sync>>` (type alias
   `SystemPromptResolver`) is consulted fresh at every turn build in `run_round`
   (`session/turn.rs`), resolved once and threaded into `stream_round` where
   `s.profile.system_prompt` was read directly. A `Some(prompt)` return **overrides**
@@ -1068,7 +1068,7 @@ below realize one model:
   mode class-allows `read`, so the default is permissive — a subagent may
   discover and load any skill exactly like its parent, unless the mode or an
   overlay says otherwise.
-- **Where dispatch runs (✅ #59):** the `AgentProfile` *shape* stays a core
+- **Where dispatch runs (✅ #59):** the `Agent` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](../adr/0003-agent-and-permission-profiles.md) /
   [ADR-0010](../adr/0010-single-head-crate-and-bash-opt-in.md), authority
@@ -1079,7 +1079,7 @@ below realize one model:
   — and parks the turn as explicit `TurnState` until each `ToolResult` lands
   (§8); it carries the opaque `mode: String` and never evaluates it, exactly
   as it never read `PermissionProfile` before. The runtime's
-  `ProfileResolver` (`policy.rs`) tracks each session's live permission mode
+  `ModeResolver` (`policy.rs`) tracks each session's live permission mode
   against a `ModeTable` it holds, resolves the grade through
   `Mode::resolve`'s longest-match engine, and — for `Ask` — emits the
   `ToolRequest` prompt and awaits `Approve`/`Reject`/`Stop`, so every head
@@ -1087,14 +1087,14 @@ below realize one model:
   not core, acts on them).
 - **Authoritative gating, fail-closed (✅ #156, [ADR-0070](../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md),
   carried into [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  per `ProfileResolver`'s own doc comment):** the pre-ADR-0207 profile map was
+  per `ModeResolver`'s own doc comment):** the pre-ADR-0207 profile map was
   folded *only* from the **lossy** `SessionStarted`/`AgentChanged` broadcast,
   with a fail-*open* default — an unseen session resolved to `Allow` and
   *unmasked*, inverting the posture exactly when overload made a dropped
   frame most likely. The mode's own map (`perm_modes`,
   folded from `OutEvent::ModeChanged`, announced unconditionally at session
   start like `AgentChanged`) keeps the same fail-**closed** discipline
-  today: `ProfileResolver::resolve` denies outright — no whole-mode lookup,
+  today: `ModeResolver::resolve` denies outright — no whole-mode lookup,
   no capability check — when the session isn't in the map yet
   (`Permission::Deny`), and denies again (with a `warn!`, defense in depth
   against an unreachable path since only `InMsg::SetMode` writes this map

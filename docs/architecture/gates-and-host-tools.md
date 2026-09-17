@@ -891,15 +891,15 @@ hooks, rhai, and plan/tasks tools.
   can hit a DB; `is_granted` is a sync fast check. A multi-tenant store writes its
   "always" rule to the DB and resolves later reads through its own resolver, so its
   `is_granted` can return `false`.
-- **Defaults (byte-identical CLI):** `ProfileResolver` grades from the session's
-  permission **mode** (ADR-0207 stage 4), not its `AgentProfile` — it reads the
+- **Defaults (byte-identical CLI):** `ModeResolver` grades from the session's
+  permission **mode** (ADR-0207 stage 4), not its `Agent` — it reads the
   `Arc<Mutex<session→mode map>>` the executor folds `OutEvent::ModeChanged`
   into, resolves the tool's declared `Capability` against the mode's rules, and
   clamps the result to the config ceiling internally, so `resolve_effective`'s
   outer chain-fold needs no separate `clamp_to_base` call. `DefaultGrantStore`
   wraps the managed file store (`grants::FileGrantStore`). `rhai`'s
   `BindingPolicy` (ADR-0207 stage 4b) reuses this *same* resolver + ancestor
-  chain for every binding call — the earlier `AgentProfile`-chain grading path
+  chain for every binding call — the earlier `Agent`-chain grading path
   that used to serve `rhai` alone (`permission::effective_permission`) is
   retired along with it.
 
@@ -911,7 +911,7 @@ hooks, rhai, and plan/tasks tools.
 dispatch table without restarting the engine. The two convenience wrappers,
 `spawn_tool_executor`/`spawn_tool_executor_with_hooks`, keep their historical
 owned-`ToolRegistry` signature and `.shared()`-wrap internally (mirroring the
-existing `profiles: Arc<RwLock<ProfileRegistry>>` pattern, §"Pluggable policy
+existing `profiles: Arc<RwLock<AgentCatalog>>` pattern, §"Pluggable policy
 seams" above), so existing single-owner callers and tests are unaffected.
 `ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
 `names` alongside `register`.

@@ -19,7 +19,7 @@ state machine in `session/replay_pending.rs`).
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
 `EngineConfig::llm_factory`), the
-active `AgentProfile`, a per-session `seq`, and `turn: Option<TurnState>` — the
+active `Agent`, a per-session `seq`, and `turn: Option<TurnState>` — the
 in-flight turn as **explicit, serde-serializable state** (#270,
 [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)): `Some`
 while a turn is live (streaming or parked on unresolved tool calls), `None`
@@ -37,12 +37,12 @@ Turn loop (`run_round`, driven by `drive_turn`): assemble `tools` — **every**
 spec `EngineConfig.tool_specs` (or the per-session `tool_spec_resolver`) yields,
 verbatim, with **no filtering**: there is no more per-agent tool mask to
 filter with — [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-retired it along with the rest of `AgentProfile`'s authority fields, and the
+retired it along with the rest of `Agent`'s authority fields, and the
 session's permission mode grades every call at dispatch instead — and the
 skill mask is removed too ([ADR-0194](../adr/0194-skills-are-additive-only.md):
 skills are additive-only), so the advertised surface stays stable within a
 session and the provider's prompt cache survives an overlay toggle or a
-skill load. With `AgentProfile` carrying no more authority, the array no
+skill load. With `Agent` carrying no more authority, the array no
 longer varies by agent either — `propose_plan`/`request_mode` are pushed
 into the base `tool_specs` unconditionally and the `agent`/`agent_send` spawn
 schema is now provably identical regardless of which session asks, so the
@@ -60,7 +60,7 @@ high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
 `ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
 (`explore`/`describe`) plus `propose_plan`/`request_mode`/`agent`/
 `agent_send` — the old ADR-0192 "profile-defining specs" carve-out no longer
-applies: with `AgentProfile` carrying no authority
+applies: with `Agent` carrying no authority
 ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)),
 none of these vary across sessions any more either, so they are simply part
 of the kernel now, not an exception to it. Everything
@@ -195,7 +195,7 @@ into `Session::rebind`, shared by the live switch and the pin path below.
 narrowed by [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
 §9 — `SetAgent` itself is deleted, so this is now the *only* rebind locus)
 reuses that same `rebind`: **at session start**, a profile carrying a **model
-pin** (`AgentProfile::model_pin()` — both `provider` and `model` set)
+pin** (`Agent::model_pin()` — both `provider` and `model` set)
 re-binds the backend to it, so an agent chosen at spawn can pin its own
 endpoint (guarded on `Session.provider`/`model` so a resumed session already
 on its pinned endpoint doesn't rebuild). Precedence: per-session memory
@@ -211,9 +211,9 @@ from the folded `ModelChanged` records.
 mirrors the model pin above, but through a **separate** seam:
 `EngineConfig.generation_resolver: Option<GenerationResolver>` (a
 runtime-supplied `Fn(&str) -> Option<GenerationParams>`, keyed by profile
-*name* rather than baked into `AgentProfile` — `GenerationParams`'s
+*name* rather than baked into `Agent` — `GenerationParams`'s
 `temperature: Option<f32>` has no total `Eq`, so it can't join
-`AgentProfile`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
+`Agent`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
 fields do). `Session.generation` starts at the catalog default
 (`EngineConfig.generation`, resolved from the active model at session
 creation, unchanged from #191) and layers on top of it, at
@@ -230,8 +230,8 @@ pin's `Session.model.is_none()` guard). Replay reconstructs
 reconstructs `profile_models` from `ModelChanged`. The runtime's persisted
 store (`AgentGenerationStore`, a managed `agent-generation.yml` sibling of
 `agent-models.yml`) is documented in the heads/persistence doc; unlike
-`AgentModelStore` it has no `apply(&mut ProfileRegistry)` — there is nothing
-on `AgentProfile` to overlay, so its `resolver(...)` builds the
+`AgentModelStore` it has no `apply(&mut AgentCatalog)` — there is nothing
+on `Agent` to overlay, so its `resolver(...)` builds the
 `GenerationResolver` closure directly instead. The TUI `/set`/`/show` surface
 and its persist-on-confirmation write to that store (#376,
 [ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md))
@@ -774,7 +774,7 @@ pluggable, embedder-supplied `PermissionResolver` (§permission modes in
 session (a per-user ceiling, say), so `tool_runner::resolve_effective` folds
 every session in the chain to the least-privileged grade
 (`Deny < Ask < Allow`) rather than trusting only the leaf — for the built-in
-`ProfileResolver`, every session in one spawn tree already shares the
+`ModeResolver`, every session in one spawn tree already shares the
 identical mode (§6), so this clamp is a no-op there and matters only for a
 custom resolver. Filesystem isolation (a separate child root) and
 bidirectional session-to-session messaging are still deferred (see

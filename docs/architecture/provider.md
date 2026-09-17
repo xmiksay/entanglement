@@ -407,7 +407,7 @@ model)` at factory-build time, the same point `resolve_rpm`/`resolve_concurrency
 resolve the provider-level knobs; that model is the *client's* — the startup
 default or whatever `SetModel` last rebound to — and diverges from a given
 request's actual model whenever a profile pins `model:` **without**
-`provider:` (the documented request-level fallback: `AgentProfile::model_pin`
+`provider:` (the documented request-level fallback: `Agent::model_pin`
 returns `None`, so `SetAgent` doesn't rebind the client). The mismatch paired
 the wrong model's cap with the request's real model at `execute_with_retry`'s
 `model`/`model_concurrency` call site, and — because `EndpointState::model_slot`

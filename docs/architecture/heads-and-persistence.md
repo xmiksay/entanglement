@@ -58,7 +58,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   plus which lower-layer definitions it overrode.
   [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   moved every permission fact (the tool mask, the permission rules, plan
-  authorship, spawn control, sandbox confinement) off `AgentProfile` and
+  authorship, spawn control, sandbox confinement) off `Agent` and
   onto the session's independent permission mode, so this view lost the
   columns those facts used to fill — a profile has no posture left to
   render here at all. Same engine-free discovery as `inspect prompt`, via a

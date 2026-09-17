@@ -210,7 +210,7 @@ rather than keying a phantom per-session view). The **`profile_detail`** field
 this paragraph used to describe (**#189**, on `AgentChanged`/`SessionInfo`) is
 **deleted entirely** — [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
 retired the `mode`/tool-mask/`PermissionProfile` posture it carried along
-with `AgentProfile`'s authority fields, so there is nothing left to resolve
+with `Agent`'s authority fields, so there is nothing left to resolve
 into it. A head wanting a session's permission posture reads `ModeChanged`
 (the opaque `mode: String`, fired once at session start and again on every
 live `SetMode`) and, for the mode's actual rules, `skutter inspect modes

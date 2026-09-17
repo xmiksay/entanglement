@@ -216,7 +216,7 @@ never here**; each bullet is the claim + where to read it:
   (ADR-0204).
   Nothing filters advertisement any more — there is no agent tool mask to
   filter with ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
-  retired it along with `AgentProfile`'s authority fields). Authority is
+  retired it along with `Agent`'s authority fields). Authority is
   graded entirely at the runtime's dispatch gate by the session's
   **permission mode**: a `Capability::Control` tool (`explore`/`describe`/
   `poll`/`ask_user`/`update_tasks`/`load_skill`/`mcp_enable`/`agent`/
@@ -339,7 +339,7 @@ never here**; each bullet is the claim + where to read it:
   server's traffic counts against the same key budget its LLM endpoint
   enforces. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
   [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)/[ADR-0182](../docs/adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md)/[ADR-0187](../docs/adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md).
-- **There is no agent tool mask any more** — `AgentProfile`'s `tools`/
+- **There is no agent tool mask any more** — `Agent`'s `tools`/
   `disallowed_tools`/`permission`/`sandbox`/`can_spawn`/`spawnable_agents`/
   `mode` fields, `mask_request.rs`, `decline.rs` and ADR-0198's approval
   ladder are all deleted
