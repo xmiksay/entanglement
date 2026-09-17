@@ -753,3 +753,28 @@ fn resume_modal_d_deletes_past_session_and_drops_it_from_list() {
     let survivor_path = crate::session_store::session_path(dir.path(), &survivor_id).unwrap();
     assert!(survivor_path.exists(), "survivor untouched");
 }
+
+/// `Tab`/`Shift+Tab` cycle the permission mode, wrapping in both directions
+/// from wherever the session currently is.
+///
+/// Regression guard: the binding used to cycle *agents*, and ADR-0207 removed
+/// that without giving it a new subject — so `Tab` silently did nothing until a
+/// user noticed. Pinning both directions keeps it attached to the axis that can
+/// still change mid-session.
+#[test]
+fn tab_cycles_the_permission_mode_in_both_directions() {
+    let app = App::new_for_test(SessionId::new("test"));
+    // Roster is the fixed four; the test session starts in `build` (index 2).
+    assert_eq!(app.mode(), "build");
+
+    assert_eq!(
+        app.cycle_mode(true).as_deref(),
+        Some("auto"),
+        "build -> auto"
+    );
+    assert_eq!(
+        app.cycle_mode(false).as_deref(),
+        Some("plan"),
+        "build -> plan going back"
+    );
+}

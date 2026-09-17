@@ -463,6 +463,31 @@ impl App {
         Some(name)
     }
 
+    /// The mode `Tab`/`Shift+Tab` should switch to, or `None` when the roster
+    /// has nothing to cycle to.
+    ///
+    /// `Tab` used to cycle *agents*. ADR-0207 fixed an agent for a session's
+    /// life, so that binding lost its subject — but the muscle memory is worth
+    /// keeping, and mode is now the axis a user can actually change mid-session.
+    /// Pure: the caller sends the `SetMode`, so this stays testable without a
+    /// live engine.
+    pub fn cycle_mode(&self, forward: bool) -> Option<String> {
+        let modes = &self.available_modes;
+        if modes.len() < 2 {
+            return None;
+        }
+        let here = modes
+            .iter()
+            .position(|m| m.name == self.mode())
+            .unwrap_or(0);
+        let next = if forward {
+            (here + 1) % modes.len()
+        } else {
+            (here + modes.len() - 1) % modes.len()
+        };
+        Some(modes[next].name.clone())
+    }
+
     pub fn showing_resume_modal(&self) -> bool {
         self.showing_resume_modal
     }

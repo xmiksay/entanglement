@@ -424,6 +424,17 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
+                            } else if let Some(mode) = app.cycle_mode(true) {
+                                // Cycles the permission mode, not the agent:
+                                // ADR-0207 fixed the agent at session start, so
+                                // mode is the only axis left that a keystroke
+                                // can meaningfully switch.
+                                let _ = holly
+                                    .send(InMsg::SetMode {
+                                        session: app.active_session_id().clone(),
+                                        mode,
+                                    })
+                                    .await;
                             }
                         }
                         // crossterm reports Shift+Tab as `BackTab` (the SHIFT
@@ -439,6 +450,17 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
+                            } else if let Some(mode) = app.cycle_mode(false) {
+                                // Cycles the permission mode, not the agent:
+                                // ADR-0207 fixed the agent at session start, so
+                                // mode is the only axis left that a keystroke
+                                // can meaningfully switch.
+                                let _ = holly
+                                    .send(InMsg::SetMode {
+                                        session: app.active_session_id().clone(),
+                                        mode,
+                                    })
+                                    .await;
                             }
                         }
                         KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
