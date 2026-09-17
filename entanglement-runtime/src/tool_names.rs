@@ -33,8 +33,15 @@ pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "
 
 /// Tool name the plan agent calls to submit its plan (`content` XOR `path`)
 /// for approval (#141, ADR-0042; #513, ADR-0145 — the sole plan-authorship
-/// tool, `update_plan` removed).
+/// tool, `update_plan` removed; ADR-0207 §7 grades it by `Capability::Plan`
+/// instead of per-profile membership).
 pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
+
+/// Tool name a session calls to ask the user to widen its permission mode
+/// when a needed tool is blocked (ADR-0207 §10) — `Capability::Control`,
+/// never graded, but still force-parks an approval like [`PROPOSE_PLAN_TOOL`]:
+/// widening is real authority, only the user grants it.
+pub const REQUEST_MODE_TOOL: &str = "request_mode";
 
 /// Tool name the model calls to spawn a sub-agent — blocks for its answer by
 /// default; `background: true` returns a handle immediately instead, joined
@@ -105,10 +112,16 @@ pub fn is_non_maskable(tool: &str) -> bool {
 
 /// The `ToolSearch`-mode advertised set (ADR-0196 §2): the fixed
 /// high-frequency host tools plus the runtime-owned roster plus the
-/// discovery pair. Excludes the profile-defining specs (`propose_plan`,
-/// `agent`/`agent_send`) — those are threaded separately by
-/// `cfg.profile_tool_specs` (core-side, per-profile, ADR-0192's carve-out)
-/// and reach every mode's advertised array regardless of this list.
+/// discovery pair. `propose_plan`/`request_mode` join it too (ADR-0207 §7/
+/// §9/§10): both must be advertised unconditionally and their schema never
+/// varies by profile, so — unlike `agent`/`agent_send`, which genuinely do
+/// vary per profile and stay in `cfg.profile_tool_specs` (core-side,
+/// ADR-0192's carve-out), appended after this kernel — there is no reason
+/// left to hold either out of it. Keeping both here (not just in
+/// [`crate::discover::runtime_owned_specs`]) is what keeps them visible from
+/// round one under the default `client_side` `tool_search` encoding, which
+/// filters its pool down to exactly this list
+/// ([`crate::tool_advertising::client_side_surface`]).
 pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     "read",
     "edit",
@@ -121,6 +134,8 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     LOAD_SKILL_TOOL,
     EXPLORE_TOOL,
     DESCRIBE_TOOL,
+    PROPOSE_PLAN_TOOL,
+    REQUEST_MODE_TOOL,
 ];
 
 /// Capability-level permission keys (#418, ADR-0114) and the tools each fans

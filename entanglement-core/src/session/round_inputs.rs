@@ -39,12 +39,15 @@ use entanglement_provider::ToolSpec;
 ///
 /// Per-profile specs (#119, ADR-0040) ride after it: the active profile's
 /// spawnable roster (the `agent_*` family with a target enum scoped to who
-/// *this* profile may spawn) plus the plan-authorship tools (#231) live
-/// outside the shared `tool_specs` because their *schema* differs per
-/// profile. That per-profile split is orthogonal to the mask: it varies
-/// across profiles, never within a session's turn sequence, so it survives
-/// the advertisement/enforcement decoupling untouched. The runtime leaves the
-/// entry empty for a profile that may not spawn / does not author plans.
+/// *this* profile may spawn) lives outside the shared `tool_specs` because
+/// its *schema* differs per profile. That per-profile split is orthogonal to
+/// the mask: it varies across profiles, never within a session's turn
+/// sequence, so it survives the advertisement/enforcement decoupling
+/// untouched. The runtime leaves the entry empty for a profile that may not
+/// spawn. Plan authorship (`propose_plan`) is *not* here any more (ADR-0207
+/// §7): its schema never varied by profile even under the old per-profile
+/// scheme, so it rides the plain shared surface like every other
+/// runtime-owned tool, graded by capability instead of advertisement.
 pub(super) fn resolve_specs(cfg: &EngineConfig, session: &SessionId, s: &Session) -> Vec<ToolSpec> {
     let mut specs: Vec<ToolSpec> = match &cfg.tool_spec_resolver {
         Some(resolve) => resolve(

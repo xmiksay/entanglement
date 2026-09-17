@@ -40,8 +40,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentProfile, AgentState, ApprovalScope, Holly, IdKind, InMsg, OutEvent, Permission,
-    PermissionProfile, ProfileRegistry, SessionId, ToolCall,
+    AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
+    ProfileRegistry, SessionId, ToolCall,
 };
 
 use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
@@ -66,7 +66,7 @@ use crate::tool_advertising::{self, SharedAdvertisingState};
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL, LOAD_SKILL_TOOL,
-    POLL_TOOL, PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
+    POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
 };
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
@@ -142,9 +142,10 @@ enum Intercept {
     /// path, two return shapes.
     Spawn,
     /// `agent_send`: sends a follow-up prompt to a sub-agent already launched
-    /// with `agent` — steer a running child, follow up a finished one, or
-    /// re-engage a `propose_plan` sponsored build (#609, ADR-0162). Session
-    /// orchestration only, like `Spawn` — gated by
+    /// with `agent` — steer a running child, or follow up a finished one
+    /// (#609, ADR-0162; ADR-0207 §7 retires the `propose_plan` sponsored
+    /// build this once also re-engaged). Session orchestration only, like
+    /// `Spawn` — gated by
     /// [`crate::agent_registry::AgentRegistry::begin_send`]'s ownership +
     /// lifecycle check instead of per-tool approval.
     AgentSend,
@@ -1135,72 +1136,42 @@ pub fn spawn_tool_executor_with_policy(
                             });
                         }
                         Intercept::ProposePlan => {
-                            // Approve spawns a sponsored `build` child of the
-                            // plan session (ADR-0138). The SpawnGuard mutation
-                            // (sponsor check + record) happens synchronously in
-                            // this single-threaded loop — race-free — and only
-                            // the resolved child id reaches the detached task.
-                            let child_events = holly.subscribe();
-                            let registry = registry.clone();
-                            let retained = retained.clone();
+                            // ADR-0207 §7: plan authorship is graded by the
+                            // session's mode (`Capability::Plan`), resolved
+                            // inside the detached task exactly like the
+                            // generic `Permission` route below
+                            // (`resolve_effective` over the same ancestor
+                            // chain) — a pluggable resolver can hit a DB, so
+                            // it never runs in this loop. Approval past that
+                            // grade is still the tool's own unconditional
+                            // semantics; no sponsored spawn, no SpawnGuard
+                            // mutation needed here any more.
+                            let chain = ancestor_chain(&spawn_guard, &session);
+                            let resolver = resolver.clone();
+                            let call_mode = perm_modes
+                                .lock()
+                                .expect("permission-mode mutex poisoned")
+                                .get(&session)
+                                .cloned()
+                                .unwrap_or_default();
                             let pending = pending.clone();
                             let holly = holly.clone();
                             let plan_files = plan_files.clone();
                             let plan_root = plan_root.clone();
-                            // Bound the sponsored spawn (exempt from the per-root
-                            // fan-out cap, not from depth). A refusal folds back
-                            // as the tool result so the plan turn continues.
-                            let sponsored = match spawn_guard.try_sponsor_spawn(&session) {
-                                Ok(()) => {
-                                    let child = SessionId::new(holly.next_id(IdKind::Session));
-                                    spawn_guard
-                                        .record_sponsored_start(child.clone(), session.clone());
-                                    Some(child)
-                                }
-                                Err(refusal) => {
-                                    let holly = holly.clone();
-                                    let sess = session.clone();
-                                    let rid = request_id.clone();
-                                    tokio::spawn(async move {
-                                        seam::reply(&holly, sess, rid, refusal, true).await;
-                                    });
-                                    None
-                                }
-                            };
-                            if let Some(child) = sponsored {
-                                // Registered with `CancelRegistry` (#513): a
-                                // `Stop` targeting the plan session aborts this
-                                // whole task at any point — the Ask-wait *and*
-                                // the post-approval blocking build-wait — with
-                                // no reply owed (core cancels the turn on the
-                                // same `Stop`). The sponsored build child is a
-                                // separate session with its own tasks, so
-                                // aborting this one never touches it: "detach"
-                                // is simply what an unregistered Stop already
-                                // does here. A head wanting to stop the child
-                                // too sends it a second, explicit `Stop`.
-                                let reg_session = session.clone();
-                                let handle = tokio::spawn(async move {
-                                    crate::propose_plan::run_propose_plan(
-                                        holly,
-                                        pending,
-                                        registry,
-                                        retained,
-                                        child_events,
-                                        plan_files,
-                                        plan_root,
-                                        session,
-                                        request_id,
-                                        input,
-                                        child,
-                                    )
-                                    .await;
-                                });
-                                cancels.register(
-                                    &reg_session,
-                                    TaskCanceller::task(handle.abort_handle()),
-                                );
-                            }
+                            // Registered with `CancelRegistry` (#513): a
+                            // `Stop` targeting the plan session aborts the
+                            // Ask-wait at any point, with no reply owed
+                            // (core cancels the turn on the same `Stop`).
+                            let reg_session = session.clone();
+                            let handle = tokio::spawn(async move {
+                                crate::propose_plan::run_propose_plan(
+                                    holly, pending, resolver, chain, call_mode, plan_files,
+                                    plan_root, session, request_id, input,
+                                )
+                                .await;
+                            });
+                            cancels
+                                .register(&reg_session, TaskCanceller::task(handle.abort_handle()));
                         }
                         Intercept::Discover => {
                             // Read-only, non-maskable, always-`Allow` (#560,
@@ -1586,8 +1557,10 @@ async fn dispatch(
     // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
     // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
     // honored exactly as execution itself would see it. `update_tasks` is a
-    // runtime state tool with no registry entry (#231, ADR-0049) —
-    // `run_and_reply` handles it separately — so it's exempt from this
+    // runtime state tool with no registry entry (#231, ADR-0049) — `run_and_reply`
+    // handles it separately — and `request_mode` (ADR-0207 §10) is likewise a
+    // pure orchestration pseudo-tool with no registry entry, handled specially
+    // just below in the `Control` bypass — so both are exempt from this
     // registry check.
     //
     // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
@@ -1599,7 +1572,10 @@ async fn dispatch(
     // reserve that message strictly for a name matching no registered tool
     // AND no configured/bundled server in any tier.
     let mut refreshed_tools: Option<ToolRegistry> = None;
-    if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
+    if !tools.contains(&tool)
+        && !crate::plan_tasks::is_state_tool(&tool)
+        && tool != REQUEST_MODE_TOOL
+    {
         match crate::mcp::available::server_name_of(&tool) {
             Some(server) => {
                 match crate::mcp::available::try_lazy_reenable(
@@ -1671,15 +1647,27 @@ async fn dispatch(
     // session state and cannot itself read, write or execute anything on the
     // host, so it is never graded — checked by *capability*, not by adding
     // another `Intercept` route to remember, so it automatically covers
-    // `update_tasks`/`load_skill`/`mcp_enable` today and any future Control
-    // tool (e.g. stage 5's `request_mode`) with nothing to update here.
-    // `mcp_enable` is the one that looks like it should escalate: enabling a
-    // server only makes its tools *dispatchable*, and every one of those is
-    // still graded on its own merits at its own call, so this can't widen
-    // anything. Bypasses the overlay too (`overlay_denied` below never
-    // reached) — Control is "never graded" outright, the same posture
-    // `Intercept::Discover`'s sibling routes already take.
+    // `update_tasks`/`load_skill`/`mcp_enable`/`request_mode` with nothing to
+    // update here for *grading*. `mcp_enable` is the one that looks like it
+    // should escalate: enabling a server only makes its tools *dispatchable*,
+    // and every one of those is still graded on its own merits at its own
+    // call, so this can't widen anything. Bypasses the overlay too
+    // (`overlay_denied` below never reached) — Control is "never graded"
+    // outright, the same posture `Intercept::Discover`'s sibling routes
+    // already take.
     if capability::capability_of(&tool, tools) == Some([Capability::Control].as_slice()) {
+        // `request_mode` (ADR-0207 §10) is the one Control tool whose
+        // semantics — like `propose_plan`'s — *require* an unconditional
+        // approval park: widening a session's own authority is a decision
+        // only the user makes, never one `run_and_reply`'s straight-through
+        // execution can grant. A name check here, not a second `Intercept`
+        // route, is what keeps this a capability-driven bypass rather than
+        // another routing table entry to remember.
+        if tool == REQUEST_MODE_TOOL {
+            crate::request_mode::run_request_mode(holly, pending, session, request_id, input, mode)
+                .await;
+            return;
+        }
         run_and_reply(
             holly,
             tools,

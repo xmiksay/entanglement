@@ -1,23 +1,21 @@
 //! Integration tests for the runtime-owned `propose_plan` tool (#141, ADR-0042;
-//! #513, ADR-0145, amending ADR-0138).
+//! #513, ADR-0145; #560, ADR-0207 §7, which retires the sponsored-build
+//! handoff below in favor of a plain mode switch).
 //!
 //! The model calls `propose_plan(content XOR path)`; the executor intercepts it
-//! on `ToolExec` (before permission resolution, like `ask_user`) and
-//! **force-parks it on the `Ask` path unconditionally** — a `ToolRequest` is
-//! emitted even under an all-`Allow` profile, *unless* the call is malformed
-//! (both/neither of `content`/`path`, a missing/non-`.md` file, or a stale
-//! `path`), which replies immediately with no prompt at all. Per ADR-0145:
+//! on `ToolExec` (before permission resolution, like `ask_user`) and, once past
+//! the mode grade for `Capability::Plan`, **force-parks it on the `Ask` path
+//! unconditionally** — a `ToolRequest` is emitted even under an all-`Allow`
+//! mode, *unless* the call is malformed (both/neither of `content`/`path`, a
+//! missing/non-`.md` file, or a stale `path`), which replies immediately with
+//! no prompt at all. Per ADR-0207 §7:
 //!
-//! - **Approve** spawns a sponsored `build` child of the plan session. The plan
-//!   session parks on `WaitingAgent`; the build child runs under the `build`
-//!   profile and its answer folds back as the `propose_plan` tool result (named
-//!   with the plan file's location), so the plan agent can cycle. The build
-//!   child also receives an `OutEvent::Plan` snapshot of the accepted plan.
+//! - **Approve** switches the session's mode to `build` (`InMsg::SetMode`) and
+//!   replies at once, naming the plan file — no child spawned, no blocking
+//!   wait; the same turn continues with the plan already in context.
 //! - **Reject** folds the typed reason back, unchanged, still naming the file.
-//! - **Stop** while parked on the blocking build wait detaches by default: the
-//!   plan session's wait is cancelled with no reply owed, and the build child
-//!   keeps running untouched. A head wanting the child stopped too sends it an
-//!   explicit second `Stop` ("cascade").
+//! - **Stop** while parked on the Ask wait unwinds silently: no `ToolResult` is
+//!   ever owed for that call.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
@@ -31,6 +29,7 @@ use entanglement_core::{
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
+use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver, SandboxConfig};
 use entanglement_runtime::skills::SkillRegistry;
@@ -65,9 +64,10 @@ impl Llm for ScriptedLlm {
     }
 }
 
-/// Like [`ScriptedLlm`] but sleeps `delay` before its first response, so a test
-/// has a reliable window to act (e.g. send `Stop`) while a sponsored build
-/// child is still in flight instead of racing its instant completion.
+/// Like [`ScriptedLlm`] but sleeps `delay` before every response, so a test
+/// has a reliable window to act (e.g. edit the bound plan file out of band)
+/// between two of the session's own turns instead of racing the next tool
+/// call's instant dispatch.
 struct SlowScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,
     delay: Duration,
@@ -116,11 +116,25 @@ fn text_response(text: &str) -> LlmResponse {
 }
 
 /// Spawn a `Holly` + real tool executor rooted at `root`, with the given
-/// per-session `llm_factory`. Mirrors `tests/rhai.rs`'s `spawn_with_rhai_escape`
-/// harness: a real `EscapeRoot` (so `propose_plan` can resolve a project root)
-/// and the root-contained host registry (so a `write`/`edit` a test scripts
-/// against the bound plan file actually lands and fires `FileChange`).
+/// per-session `llm_factory`, graded against the always-`Allow` single-mode
+/// fixture (`mode_support::allow_all_table`). Mirrors `tests/rhai.rs`'s
+/// `spawn_with_rhai_escape` harness: a real `EscapeRoot` (so `propose_plan`
+/// can resolve a project root) and the root-contained host registry (so a
+/// `write`/`edit` a test scripts against the bound plan file actually lands
+/// and fires `FileChange`).
 fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>) -> Holly {
+    spawn_with_root_and_table(root, llm_factory, crate::mode_support::allow_all_table())
+}
+
+/// Like [`spawn_with_root`], but graded against an arbitrary `table` — used
+/// by the `Capability::Plan` mode-grading tests below, which need the real
+/// built-in `research`/`plan`/`build`/`auto` postures instead of the
+/// always-`Allow` fixture.
+fn spawn_with_root_and_table(
+    root: &Path,
+    llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>,
+    table: Arc<ModeTable>,
+) -> Holly {
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
@@ -137,7 +151,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let shared_tools = tools.shared();
     let resolver = Arc::new(ProfileResolver::new(
         perm_modes.clone(),
-        crate::mode_support::allow_all_table(),
+        table,
         shared_tools.clone(),
         base.clone(),
         Some(root.to_path_buf()),
@@ -211,37 +225,26 @@ async fn collect_until_done(
 }
 
 #[tokio::test]
-async fn approve_spawns_sponsored_build_and_folds_answer_back() {
+async fn approve_switches_the_session_to_build_mode_and_continues_the_turn() {
     let dir = tempdir();
     let root = dir.path();
-    let plan_responses = vec![
+    let scripted = Arc::new(vec![
         propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
-        text_response("plan agent acknowledged build result"),
-    ];
-    let build_responses = vec![text_response("build child finished the work")];
-    let first = Arc::new(Mutex::new(true));
-    let plan_responses = Arc::new(plan_responses);
-    let build_responses = Arc::new(build_responses);
+        text_response("continuing to implement the plan"),
+    ]);
     let holly = spawn_with_root(
         root,
-        Arc::new(move || {
-            let is_first = {
-                let mut g = first.lock().unwrap();
-                let was = *g;
-                *g = false;
-                was
-            };
-            if is_first {
-                Box::new(ScriptedLlm::new((*plan_responses).clone())) as Box<dyn Llm>
-            } else {
-                Box::new(ScriptedLlm::new((*build_responses).clone())) as Box<dyn Llm>
-            }
-        }),
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
     );
     let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
     let request_id = await_request(&holly, &sid).await;
 
+    // Subscribed *after* the approval, not before: `allow_all_table`'s one
+    // fixture mode happens to be named `"build"` too, so a subscriber that
+    // also captured session start would see that coincidental early
+    // `ModeChanged("build")` and could satisfy the assertion below without
+    // ever observing the real, approval-triggered switch.
+    let mut sub = holly.subscribe();
     holly
         .send(InMsg::Approve {
             session: sid.clone(),
@@ -251,91 +254,66 @@ async fn approve_spawns_sponsored_build_and_folds_answer_back() {
         .await
         .unwrap();
 
-    let mut saw_waiting_agent = false;
-    let mut saw_build_plan = false;
-    let mut saw_build_text = false;
+    // `InMsg::SetMode` is deferred while a turn is live, exactly like
+    // `SetAgent` (session.rs's stash) — and the turn very much still is:
+    // `run_propose_plan` sends `SetMode` *before* the `ToolResult` that
+    // continues it. So the approval's `ModeChanged` lands only once this
+    // whole turn concludes (after `Done`), not synchronously with the
+    // `ToolOutput` — collect a bit past `Done` instead of breaking on it.
+    let mut saw_mode_changed = false;
     let mut got_output = false;
-    let mut build_session: Option<SessionId> = None;
-    let mut pending_plan_for_build: Option<String> = None;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+    let mut saw_other_session = false;
+    let mut saw_done = false;
+    loop {
+        let per_event_timeout = if saw_done {
+            Duration::from_millis(300)
+        } else {
+            Duration::from_secs(5)
+        };
+        let Ok(Ok(ev)) = tokio::time::timeout(per_event_timeout, sub.recv()).await else {
+            break;
+        };
         match &ev {
-            OutEvent::Status {
-                session,
-                state: entanglement_core::AgentState::WaitingAgent,
-                ..
-            } if session == &sid => {
-                saw_waiting_agent = true;
+            OutEvent::ModeChanged { session, mode } if session == &sid => {
+                assert_eq!(
+                    mode, "build",
+                    "approval must switch the session to build mode"
+                );
+                saw_mode_changed = true;
             }
-            OutEvent::SessionStarted {
-                session,
-                parent: Some(p),
-                profile,
-                ..
-            } if p == &sid && profile == "build" => {
-                build_session = Some(session.clone());
-            }
-            OutEvent::Plan {
-                session, content, ..
-            } => {
-                if build_session.as_ref() == Some(session) {
-                    assert!(content.contains("Ship it"), "plan content: {content}");
-                    saw_build_plan = true;
-                } else if content.contains("Ship it") {
-                    pending_plan_for_build = Some(content.clone());
-                }
-            }
-            OutEvent::TextDelta { session, text, .. } => {
-                if build_session.as_ref() == Some(session) && text.contains("build child finished")
-                {
-                    saw_build_text = true;
-                    if let Some(c) = &pending_plan_for_build {
-                        assert!(c.contains("Ship it"));
-                        saw_build_plan = true;
-                    }
-                }
+            OutEvent::SessionStarted { session, .. } if session != &sid => {
+                saw_other_session = true;
             }
             OutEvent::ToolOutput {
                 session,
                 tool,
                 output,
+                is_error,
                 ..
             } if session == &sid && tool == PROPOSE_PLAN_TOOL => {
-                assert!(
-                    output.contains("completed in"),
-                    "approve must fold the build result back: {output}"
-                );
-                assert!(
-                    output.contains("build child finished the work"),
-                    "the build child's answer must reach the plan agent: {output}"
-                );
+                assert!(!is_error, "an approved plan is not a tool error: {output}");
                 assert!(
                     output.contains(".entanglement/plans/s1.md"),
                     "the tool result must name the plan file's location (#513): {output}"
                 );
-                if let Some(child) = &build_session {
-                    assert!(
-                        output.contains(&child.to_string()),
-                        "the tool result must name the build child's agent_id \
-                         (#609, ADR-0162 §5), so the plan agent can agent_send \
-                         it another round: {output}"
-                    );
-                }
+                assert!(
+                    output.contains("build"),
+                    "the tool result must name the mode it switched to: {output}"
+                );
                 got_output = true;
             }
-            OutEvent::Done { session, .. } if session == &sid => break,
+            OutEvent::Done { session, .. } if session == &sid => saw_done = true,
             _ => {}
         }
     }
-    assert!(saw_waiting_agent, "plan session must park on WaitingAgent");
-    assert!(
-        build_session.is_some(),
-        "a sponsored build child session must be spawned"
-    );
-    assert!(saw_build_plan, "build child must receive a Plan snapshot");
-    assert!(saw_build_text, "build child's text must stream");
+    assert!(saw_mode_changed, "approval must emit ModeChanged(build)");
     assert!(
         got_output,
-        "approve must fold the build's answer back as the propose_plan tool result"
+        "approve must reply at once — no child, no blocking wait"
+    );
+    assert!(
+        !saw_other_session,
+        "ADR-0207 §7: approval spawns no sponsored child any more"
     );
     assert_eq!(
         std::fs::read_to_string(root.join(".entanglement/plans/s1.md")).unwrap(),
@@ -704,11 +682,13 @@ async fn a_path_resubmit_after_the_agents_own_edit_succeeds() {
 
 #[tokio::test]
 async fn every_phase_re_parks_on_ask_independently() {
-    // Multi-phase plan -> build -> review loop: each propose_plan call force-
-    // parks on its own approval, even though the profile is Allow-all.
+    // Multi-phase plan -> build -> review loop, now all in the *same* session
+    // (ADR-0207 §7 retires the sponsored build child): each propose_plan call
+    // still force-parks on its own approval, even though the mode is
+    // Allow-all — proving grading doesn't skip the park on a second call.
     let dir = tempdir();
     let root = dir.path().to_path_buf();
-    let plan_responses = Arc::new(vec![
+    let scripted = Arc::new(vec![
         propose_plan_call(
             "p1",
             serde_json::json!({"content": "# Plan\n- [ ] 1\n- [ ] 2"}),
@@ -719,25 +699,10 @@ async fn every_phase_re_parks_on_ask_independently() {
         ),
         text_response("both phases done"),
     ]);
-    let build_responses = Arc::new(vec![text_response("phase built")]);
-    let first = Arc::new(Mutex::new(true));
-    let holly = spawn_with_root(&root, {
-        let plan_responses = plan_responses.clone();
-        let build_responses = build_responses.clone();
-        Arc::new(move || {
-            let is_first = {
-                let mut g = first.lock().unwrap();
-                let was = *g;
-                *g = false;
-                was
-            };
-            if is_first {
-                Box::new(ScriptedLlm::new((*plan_responses).clone())) as Box<dyn Llm>
-            } else {
-                Box::new(ScriptedLlm::new((*build_responses).clone())) as Box<dyn Llm>
-            }
-        })
-    });
+    let holly = spawn_with_root(
+        &root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     let request_id_1 = await_request(&holly, &sid).await;
@@ -795,71 +760,25 @@ async fn every_phase_re_parks_on_ask_independently() {
 }
 
 #[tokio::test]
-async fn stop_on_the_plan_session_detaches_the_build_child_which_keeps_running() {
+async fn stop_while_parked_on_the_ask_wait_owes_no_reply() {
+    // ADR-0207 §7 retired the post-approval blocking build wait along with
+    // the sponsored child, so the only wait left to interrupt is the Ask
+    // park itself — mirroring how every other force-parked runtime tool
+    // (`ask_user`, the generic `Ask` dispatch path) unwinds on `Stop`: core
+    // cancels the turn on the same `Stop`, so no `ToolResult` is ever owed.
     let dir = tempdir();
-    let root = dir.path().to_path_buf();
-    let plan_responses = Arc::new(vec![propose_plan_call(
+    let root = dir.path();
+    let scripted = Arc::new(vec![propose_plan_call(
         "p1",
         serde_json::json!({"content": "# Ship it"}),
     )]);
-    let first = Arc::new(Mutex::new(true));
-    let holly = spawn_with_root(&root, {
-        let plan_responses = plan_responses.clone();
-        Arc::new(move || {
-            let is_first = {
-                let mut g = first.lock().unwrap();
-                let was = *g;
-                *g = false;
-                was
-            };
-            if is_first {
-                Box::new(ScriptedLlm::new((*plan_responses).clone())) as Box<dyn Llm>
-            } else {
-                Box::new(SlowScriptedLlm {
-                    responses: Mutex::new(vec![text_response("build child finished the work")]),
-                    delay: Duration::from_millis(600),
-                }) as Box<dyn Llm>
-            }
-        })
-    });
+    let holly = spawn_with_root(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
-    let request_id = await_request(&holly, &sid).await;
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id,
-            scope: Default::default(),
-        })
-        .await
-        .unwrap();
-
-    // Wait for the sponsored build child's `SessionStarted` — it and the plan
-    // session's `WaitingAgent` status race (both are plain `holly.emit_*`
-    // calls in `launch_sponsored_build`, with no ordering guarantee between
-    // the child's async `Spawn` processing and the status emit), so key only
-    // on the event this test actually needs, not their relative order. The
-    // child is still mid-flight (its `SlowScriptedLlm` is still sleeping).
-    let mut build_session = None;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if let OutEvent::SessionStarted {
-            session,
-            parent: Some(p),
-            sponsored,
-            ..
-        } = &ev
-        {
-            if p == &sid {
-                // #626: the TUI's cascade-vs-detach confirm modal disambiguates
-                // `WaitingAgent`'s two callers by this flag — a sponsored build
-                // child must announce it, unlike a plain `agent`-spawned one.
-                assert!(sponsored, "a propose_plan build child must be sponsored");
-                build_session = Some(session.clone());
-                break;
-            }
-        }
-    }
-    let build_session = build_session.expect("a sponsored build child must have been spawned");
+    await_request(&holly, &sid).await;
 
     holly
         .send(InMsg::Stop {
@@ -868,127 +787,129 @@ async fn stop_on_the_plan_session_detaches_the_build_child_which_keeps_running()
         .await
         .unwrap();
 
-    // The plan session's propose_plan call must never get a reply — the wait
-    // was aborted, not resolved.
-    let plan_events = collect_until_done(&mut sub, &sid, Duration::from_millis(300)).await;
+    let events = collect_until_done(&mut sub, &sid, Duration::from_millis(300)).await;
     assert!(
-        !plan_events.iter().any(|e| matches!(
+        !events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { tool, .. } if tool == PROPOSE_PLAN_TOOL
         )),
-        "a detached Stop must owe no propose_plan reply: {plan_events:?}"
-    );
-
-    // The build child, left untouched, must still complete on its own —
-    // "detach" is Stop on the plan session simply never resuming this task.
-    let mut sub2 = holly.subscribe();
-    let mut child_finished = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub2.recv()).await {
-        if let OutEvent::TextDelta { session, text, .. } = &ev {
-            if session == &build_session && text.contains("build child finished") {
-                child_finished = true;
-                break;
-            }
-        }
-    }
-    assert!(
-        child_finished,
-        "the sponsored build child must keep running after the plan session's Stop (detach)"
+        "a Stop while parked on the Ask wait must owe no propose_plan reply: {events:?}"
     );
 }
 
-#[tokio::test]
-async fn stop_on_both_sessions_cascades_and_stops_the_build_child_too() {
-    let dir = tempdir();
-    let root = dir.path().to_path_buf();
-    let plan_responses = Arc::new(vec![propose_plan_call(
-        "p1",
-        serde_json::json!({"content": "# Ship it"}),
-    )]);
-    let first = Arc::new(Mutex::new(true));
-    let holly = spawn_with_root(&root, {
-        let plan_responses = plan_responses.clone();
-        Arc::new(move || {
-            let is_first = {
-                let mut g = first.lock().unwrap();
-                let was = *g;
-                *g = false;
-                was
-            };
-            if is_first {
-                Box::new(ScriptedLlm::new((*plan_responses).clone())) as Box<dyn Llm>
-            } else {
-                Box::new(SlowScriptedLlm {
-                    responses: Mutex::new(vec![text_response("build child finished the work")]),
-                    delay: Duration::from_millis(600),
-                }) as Box<dyn Llm>
-            }
-        })
-    });
-    let sid = SessionId::new("s1");
+/// ADR-0207 §7: `propose_plan` is advertised unconditionally now, but grading
+/// closes authorship outside `plan` mode — these tests exercise the real
+/// built-in `research`/`build`/`auto`/`plan` postures (`ModeTable::builtin()`),
+/// not the always-`Allow` fixture every other test in this file uses.
+async fn set_mode_and_wait(holly: &Holly, sid: &SessionId, mode: &str) {
     let mut sub = holly.subscribe();
-    let request_id = await_request(&holly, &sid).await;
     holly
-        .send(InMsg::Approve {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            request_id,
-            scope: Default::default(),
+            mode: mode.to_string(),
         })
         .await
         .unwrap();
-
-    let mut build_session = None;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if let OutEvent::SessionStarted {
-            session,
-            parent: Some(p),
-            ..
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if let OutEvent::ModeChanged {
+            session, mode: got, ..
         } = &ev
         {
-            if p == &sid {
-                build_session = Some(session.clone());
-                break;
+            if session == sid && got == mode {
+                return;
             }
         }
     }
-    let build_session = build_session.expect("a sponsored build child must have been spawned");
+    panic!("timed out waiting for ModeChanged({mode})");
+}
 
-    // Cascade: stop both sessions explicitly — the plan session's own Stop
-    // detaches the wait (as above); the caller also stops the child so it
-    // never gets to finish either.
-    holly
-        .send(InMsg::Stop {
-            session: sid.clone(),
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::Stop {
-            session: build_session.clone(),
-        })
-        .await
-        .unwrap();
+async fn assert_denied_by_mode(mode: &str) {
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("ok"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    set_mode_and_wait(&holly, &sid, mode).await;
+    let mut sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
 
-    // Neither session should ever surface the child's completion text —
-    // proving the cascade reached the child too, not just the plan session.
-    let mut sub2 = holly.subscribe();
-    let saw_child_finish = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match sub2.recv().await {
-                Ok(OutEvent::TextDelta { session, text, .. })
-                    if session == build_session && text.contains("build child finished") =>
-                {
-                    return true;
-                }
-                Ok(_) => continue,
-                Err(_) => return false,
-            }
-        }
-    })
-    .await
-    .unwrap_or(false);
     assert!(
-        !saw_child_finish,
-        "a cascaded Stop must also interrupt the build child"
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "`{mode}` denies Plan — no approval prompt must ever be parked: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { tool, output, is_error, .. }
+                if tool == PROPOSE_PLAN_TOOL && *is_error
+                    && output.contains("denied by mode")
+                    && output.contains(mode)
+        )),
+        "`{mode}` must decline propose_plan flat, naming the mode: {events:?}"
+    );
+    // No plan file materialized — the call was declined before it ever ran.
+    assert!(!root.join(".entanglement/plans/s1.md").exists());
+}
+
+#[tokio::test]
+async fn research_mode_denies_propose_plan() {
+    assert_denied_by_mode("research").await;
+}
+
+#[tokio::test]
+async fn build_mode_denies_propose_plan() {
+    assert_denied_by_mode("build").await;
+}
+
+#[tokio::test]
+async fn auto_mode_denies_propose_plan() {
+    assert_denied_by_mode("auto").await;
+}
+
+#[tokio::test]
+async fn plan_mode_still_force_parks_propose_plan() {
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("ok"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    set_mode_and_wait(&holly, &sid, "plan").await;
+    let request_id = await_request(&holly, &sid).await;
+
+    // Reject — this test only cares that `plan` mode reaches the park at
+    // all, the approve path is covered by the always-Allow-fixture tests
+    // above.
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Reject {
+            session: sid.clone(),
+            request_id,
+            reason: Some("not yet".into()),
+        })
+        .await
+        .unwrap();
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolOutput { tool, .. } if tool == PROPOSE_PLAN_TOOL)),
+        "plan mode must let the call reach the ordinary reject fold-back: {events:?}"
     );
 }

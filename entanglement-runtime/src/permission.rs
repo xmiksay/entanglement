@@ -202,16 +202,12 @@ pub fn overlay_denies(
 /// (ADR-0207 stage 4b) — a `rhai` binding resolves across the identical chain
 /// a direct tool call does.
 ///
-/// A **sponsored child** (ADR-0138) is a permission root: the chain stops at
-/// it (no ancestors), and stops at any sponsored ancestor mid-walk — the
-/// sub-tree rooted at a sponsored session is authorized by user plan approval,
-/// not by the chain above it.
+/// ADR-0207 §7 retires the sponsored-child exemption (ADR-0138): approving a
+/// `propose_plan` now switches the session's mode instead of spawning a
+/// permission-root child, so this walk always reaches all the way to the
+/// true root — no stop-early case left, no exemption from the clamp above.
 pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<SessionId> {
     let mut chain = vec![session.clone()];
-    // A sponsored session is a permission root — no ancestors to clamp it.
-    if guard.is_sponsored(session) {
-        return chain;
-    }
     let mut visited = HashSet::new();
     visited.insert(session.clone());
     let mut current = session.clone();
@@ -219,12 +215,6 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
         match guard.parent_of(&current) {
             Some(parent) if visited.insert(parent.clone()) => {
                 chain.push(parent.clone());
-                // A sponsored ancestor is itself a permission root (ADR-0138):
-                // its own perms clamp this sub-tree, but the chain above it
-                // does not. Stop the walk at it.
-                if guard.is_sponsored(&parent) {
-                    break;
-                }
                 current = parent;
             }
             _ => break,
@@ -423,6 +413,31 @@ mod tests {
         assert_eq!(
             overlay_grade_entry(&overlays, &chain_from_parent, "mcp__docs__search"),
             Some(overlays[&parent][0].clone())
+        );
+    }
+
+    /// ADR-0207 §7: the sponsored-child exemption (ADR-0138) is retired along
+    /// with the sponsored `propose_plan` build handoff — `SpawnGuard` no
+    /// longer has any API to mark a session a permission root, so every
+    /// child's chain walks all the way to its true root. A three-deep chain
+    /// (mirroring what a `plan` → `build` handoff used to short-circuit)
+    /// proves the clamp has no exemption left to consult.
+    #[test]
+    fn ancestor_clamp_has_no_sponsorship_exemption_left() {
+        let root = SessionId::new("root");
+        let mid = SessionId::new("mid");
+        let leaf = SessionId::new("leaf");
+        let mut guard = SpawnGuard::new();
+        guard.record_start(root.clone(), None);
+        guard.record_start(mid.clone(), Some(root.clone()));
+        guard.record_start(leaf.clone(), Some(mid.clone()));
+
+        let chain = ancestor_chain(&guard, &leaf);
+        assert_eq!(
+            chain,
+            vec![leaf.clone(), mid.clone(), root.clone()],
+            "the walk must reach every ancestor — nothing can mark itself a \
+             permission root any more"
         );
     }
 

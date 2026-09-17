@@ -64,6 +64,7 @@ mod provider_selection;
 mod record_sink;
 mod reoffer_dedupe;
 mod replay_from;
+mod request_mode;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "provider")]

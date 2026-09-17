@@ -477,6 +477,16 @@ async fn supervisor(
     // (and the tree-walk helpers that read it) reflect the real hierarchy;
     // previously nothing ever inserted here, so every session was a root.
     let mut parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
+    // session → its live mode (ADR-0207 §6), the supervisor's own cache — not
+    // the wire `SessionInfo`, which stays a spawn-time snapshot like its other
+    // fields. Written on every `SetMode` cascade and on `Spawn`/resume, read
+    // only to seed a fresh child's `initial_mode` from its parent. Sparse: an
+    // absent entry means `DEFAULT_MODE`, so a session never explicitly set
+    // never needs an entry. Cleared on `CloseSession` (the id is retired for
+    // good); left in place across a hibernate/resume cycle, since resume
+    // re-derives it from the replayed truth (`spawn_resumed`) and nothing
+    // consults it while the session is hibernated.
+    let mut modes: HashMap<SessionId, String> = HashMap::new();
     // Idle-TTL auto-hibernation sweep (#363). `None` (the default) makes this
     // branch never armed, so a `select!` with no `idle_ttl` configured takes the
     // exact same path as the old bare `rx.recv().await` — byte-identical
@@ -582,6 +592,7 @@ async fn supervisor(
                     session_meta.remove(&victim);
                 }
                 parent_links.remove(&victim);
+                modes.remove(&victim);
                 // Tombstone the id regardless of liveness: it is spent
                 // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
                 // can't respawn it blank.
@@ -602,6 +613,47 @@ async fn supervisor(
             // when it decides a settled root has been idle past `idle_ttl`.
             hibernate_subtree(session, &mut sessions, &mut session_meta, &mut parent_links).await;
             continue;
+        }
+
+        if let InMsg::SetMode { session, mode } = &msg {
+            // ADR-0207 §6: mode applies to the whole spawn sub-tree, not just
+            // the target — reusing `collect_subtree`, the exact tree-walk
+            // `CloseSession`/`HibernateSession` already cascade over, so a
+            // switch on a session with live children reaches them too. Each
+            // live descendant gets its own `SessionCmd::SetMode`, so it
+            // stashes/applies/announces through the same per-session path a
+            // direct switch would (deferred while its own turn is live, its
+            // own `ModeChanged` broadcast) — no session-loop special-casing
+            // needed for the cascade to be correct. `modes` is updated for
+            // every id in the subtree, live or not, so a hibernated
+            // descendant's cache entry is fixed up defensively too (it plays
+            // no functional role until that id resumes and re-derives the
+            // truth from its own replay anyway).
+            //
+            // Deliberately **no `continue`**: this only cascades onto the
+            // target's *other* descendants. The target session itself still
+            // falls through to the ordinary routing below, unchanged — that
+            // is what preserves `SetMode`'s existing lazy-create-if-unseen
+            // behavior (a `SetMode` sent before a session's first prompt
+            // pre-seeds its mode, same as every other session-scoped `InMsg`
+            // already could before this cascade existed).
+            modes.insert(session.clone(), mode.clone());
+            for descendant in collect_subtree(session, &parent_links) {
+                if &descendant == session {
+                    continue;
+                }
+                modes.insert(descendant.clone(), mode.clone());
+                if let Some(tx) = sessions.get(&descendant) {
+                    route_to_session(
+                        tx,
+                        SessionCmd::SetMode(mode.clone()),
+                        &descendant,
+                        &events,
+                        &seqs,
+                    )
+                    .await;
+                }
+            }
         }
 
         if let InMsg::Resume { records, .. } = &msg {
@@ -632,6 +684,7 @@ async fn supervisor(
                 &mut sessions,
                 &mut session_meta,
                 &mut parent_links,
+                &mut modes,
                 &events,
                 &seqs,
                 &activity,
@@ -665,6 +718,7 @@ async fn supervisor(
                     &mut sessions,
                     &mut session_meta,
                     &mut parent_links,
+                    &mut modes,
                     &events,
                     &seqs,
                     &activity,
@@ -742,6 +796,20 @@ async fn supervisor(
                         .and_then(|m| m.user.clone())
                 });
             let effective_user = inherited_user.or_else(|| user.clone());
+            // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
+            // spawned child starts under its parent's live mode. A
+            // compaction successor (predecessor set, no parent — the
+            // `/compact` fork, ADR-0110) is the same session continuing, so
+            // it inherits the source's mode the same way `effective_user`
+            // falls back to it above. Neither known ⇒ a genuine fresh root,
+            // `DEFAULT_MODE`.
+            let initial_mode = parent
+                .as_ref()
+                .and_then(|p| modes.get(p))
+                .or_else(|| predecessor.as_ref().and_then(|p| modes.get(p)))
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_MODE.to_string());
+            modes.insert(child.clone(), initial_mode.clone());
             // Record the parent link *before* spawning so it's in place for any
             // later lazy path, and so the child starts under the requested profile.
             parent_links.insert(child.clone(), parent.clone());
@@ -785,6 +853,7 @@ async fn supervisor(
                     predecessor,
                     effective_user,
                     sponsored,
+                    initial_mode,
                     seqs2,
                     activity2,
                     forks,
@@ -880,7 +949,19 @@ async fn supervisor(
             let forks = fork_tx.clone();
             tokio::spawn(async move {
                 session_loop(
-                    sid, srx, ev, cfg2, profile, None, None, None, None, false, seqs2, activity2,
+                    sid,
+                    srx,
+                    ev,
+                    cfg2,
+                    profile,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    DEFAULT_MODE.to_string(),
+                    seqs2,
+                    activity2,
                     forks,
                 )
                 .await
@@ -917,6 +998,7 @@ fn spawn_resumed(
     sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
     session_meta: &mut HashMap<SessionId, SessionInfo>,
     parent_links: &mut HashMap<SessionId, Option<SessionId>>,
+    modes: &mut HashMap<SessionId, String>,
     events: &broadcast::Sender<OutEvent>,
     seqs: &SeqRegistry,
     activity: &ActivityRegistry,
@@ -951,6 +1033,13 @@ fn spawn_resumed(
     if let Some(p) = parent.as_ref() {
         parent_links.insert(target.clone(), Some(p.clone()));
     }
+    // Re-derive the mode cache from the replayed truth rather than trusting
+    // whatever it held before this session hibernated (ADR-0207 §6): correct
+    // either way (hibernation itself never changes mode), but this is what
+    // keeps the cache right the first time a *newly* resumed id (never seen
+    // by this process before, e.g. a fresh `skutter` instance) spawns a
+    // child of its own.
+    modes.insert(target.clone(), initial_session.mode.clone());
     let children = initial_session.children.clone();
     let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
     let ev = events.clone();
@@ -969,12 +1058,14 @@ fn spawn_resumed(
             profile,
             Some(initial_session),
             parent,
-            // Resume reconstructs `predecessor`/`user`/`sponsored` from the log
-            // (replay); pass `None`/`false` for them so none is overwritten
-            // (session.rs's resumed-takes-precedence rule, #626 for the third).
+            // Resume reconstructs `predecessor`/`user`/`sponsored`/`mode` from
+            // the log (replay); pass `None`/`false`/`DEFAULT_MODE` for them so
+            // none is overwritten (session.rs's resumed-takes-precedence
+            // rule, #626 for `sponsored`, ADR-0207 §6 for `mode`).
             None,
             None,
             false,
+            DEFAULT_MODE.to_string(),
             seqs2,
             activity2,
             forks,

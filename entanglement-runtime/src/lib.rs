@@ -99,6 +99,7 @@ pub mod policy;
 pub mod poll;
 pub mod propose_plan;
 pub mod questions;
+pub mod request_mode;
 pub mod retained_output;
 // Sandboxed `rhai` script tool (#122, ADR-0046). Behind the `rhai` feature
 // (default-on, #502/ADR-0135) so a lean embedder can drop the dep via

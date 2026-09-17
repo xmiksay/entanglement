@@ -307,3 +307,129 @@ async fn resumed_session_reconstructs_the_same_mode() {
         Some("[mode: research]"),
     );
 }
+
+/// ADR-0207 §6: mode applies to the whole spawn sub-tree — a spawned child
+/// starts under its parent's *current* mode, not `DEFAULT_MODE`.
+#[tokio::test]
+async fn spawned_child_inherits_the_parents_live_mode() {
+    let holly = Holly::spawn(EngineConfig::default());
+    let parent = SessionId::new("parent-mode");
+    let child = SessionId::new("child-mode");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(parent.clone(), "hi"))
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
+    )
+    .await;
+    holly
+        .send(InMsg::SetMode {
+            session: parent.clone(),
+            mode: "research".into(),
+        })
+        .await
+        .unwrap();
+    recv_until(&mut sub, |e| {
+        matches!(e, OutEvent::ModeChanged { session, mode, .. } if *session == parent && mode == "research")
+    })
+    .await;
+
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
+            agent: "build".into(),
+            prompt: "subtask".into(),
+            user: None,
+            sponsored: false,
+        })
+        .await
+        .unwrap();
+    // The child's own session-start `ModeChanged` (unconditional, mirroring
+    // `AgentChanged`) must already carry the inherited mode, not `build`.
+    let ev = recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::ModeChanged { session, .. } if *session == child),
+    )
+    .await;
+    let OutEvent::ModeChanged { mode, .. } = ev else {
+        unreachable!()
+    };
+    assert_eq!(
+        mode, "research",
+        "a spawned child must inherit its parent's live mode, not DEFAULT_MODE"
+    );
+}
+
+/// ADR-0207 §6: a mode change reaches every live descendant, not just the
+/// target session — mirroring how `CloseSession`/`HibernateSession` already
+/// cascade over the spawn sub-tree.
+#[tokio::test]
+async fn set_mode_cascades_to_live_descendants() {
+    let holly = Holly::spawn(EngineConfig::default());
+    let parent = SessionId::new("parent-cascade");
+    let child = SessionId::new("child-cascade");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(parent.clone(), "hi"))
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
+    )
+    .await;
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
+            agent: "build".into(),
+            prompt: "subtask".into(),
+            user: None,
+            sponsored: false,
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+    )
+    .await;
+
+    holly
+        .send(InMsg::SetMode {
+            session: parent.clone(),
+            mode: "plan".into(),
+        })
+        .await
+        .unwrap();
+
+    // Both the target and the cascaded descendant announce `plan` — order
+    // between the two is an implementation detail (the cascade reaches the
+    // descendant before the target's own switch falls through the ordinary
+    // routing path), so collect until both are seen rather than assuming one
+    // precedes the other.
+    let mut parent_switched = false;
+    let mut child_switched = false;
+    while !parent_switched || !child_switched {
+        let ev = tokio::time::timeout(Duration::from_secs(3), sub.recv())
+            .await
+            .expect("timed out waiting for both ModeChanged(plan) events")
+            .expect("event stream closed");
+        if let OutEvent::ModeChanged { session, mode, .. } = &ev {
+            if mode == "plan" && *session == parent {
+                parent_switched = true;
+            }
+            if mode == "plan" && *session == child {
+                child_switched = true;
+            }
+        }
+    }
+}

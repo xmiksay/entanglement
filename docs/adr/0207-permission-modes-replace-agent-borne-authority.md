@@ -293,6 +293,25 @@ defaults. Setting one axis never changes the other.
 
 `explore`/`describe` gain non-tool kinds — `agents`, `skills`, `models`,
 `modes` — so the model can list what exists and explain why it is blocked.
+
+They also gain **`pending`**: everything in flight for the session's spawn
+sub-tree — running sub-agents, background jobs and scripts, retained outputs,
+open questions, parked approvals. Today nothing enumerates these. `poll` is
+the only model-facing path and it requires a handle already held, which makes
+a handle something the model must hoard in context to avoid losing.
+
+That is a real failure, not a convenience gap. Every compaction forks a
+successor seeded with a summary plus the kept tail (ADR-0205), and a handle —
+`x-…` for a job, an `agent_id` for a sub-agent — is just text in the
+transcript. If it falls outside the kept tail it is unreachable: the work
+keeps running, finishes, and its result is silently orphaned. The same applies
+across a hibernate/resume cycle. Listing makes handles **recoverable** instead
+of hoarded.
+
+Like the rest of the discovery pair it is `Capability::Control` — read-only
+session introspection that starts nothing and touches no host resource — so it
+is never graded and is available in every mode, `auto` included.
+
 `skutter inspect agents` shrinks to identity and provenance; `inspect modes`
 shows rules and per-tool outcome. The `/set` dialog's tools tab is left for a
 later change.

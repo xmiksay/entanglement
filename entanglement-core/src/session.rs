@@ -201,6 +201,13 @@ pub(crate) async fn session_loop(
     predecessor: Option<SessionId>,
     user: Option<UserId>,
     sponsored: bool,
+    // The mode a fresh spawn starts under — the parent's live mode at spawn
+    // time (ADR-0207 §6: mode applies to the whole spawn sub-tree), or
+    // `DEFAULT_MODE` for a root. Ignored on the resume path (a replayed
+    // session already carries the correct value in `s.mode`) — the caller
+    // passes `DEFAULT_MODE` there too, mirroring the `None`/`false` it passes
+    // for `predecessor`/`user`/`sponsored`.
+    initial_mode: String,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
     forks: mpsc::Sender<InMsg>,
@@ -213,11 +220,24 @@ pub(crate) async fn session_loop(
     let root = parent.is_none();
     let profile_name = profile.name.clone();
     let profile_model = profile.model.clone();
+    // Captured before `initial_session` is consumed below — `Session` isn't
+    // `Copy`, so this is the only place left to tell "fresh spawn" from
+    // "resumed" once `s` exists.
+    let is_resumed = initial_session.is_some();
 
     let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
     // Lets this session fork itself into a compaction successor (ADR-0205);
     // see `Session::engine`.
     s.engine = Some(forks);
+    // ADR-0207 §6: a spawned child inherits its parent's mode. A resumed
+    // session's `s.mode` is already correct (replay's last-write-wins fold
+    // over its own `ModeChanged` log), so only a genuinely fresh spawn takes
+    // `initial_mode` — mirroring the resumed-takes-precedence rule the
+    // `Option`-shaped fields below use, spelled with the captured `bool`
+    // instead since `mode` has no "unset" value of its own to fall back on.
+    if !is_resumed {
+        s.mode = initial_mode;
+    }
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
     // one already reconstructed it from its `SessionStarted` log (replay) — that
     // takes precedence over the raw `predecessor` param, which `Holly`'s `Resume`

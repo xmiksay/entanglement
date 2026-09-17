@@ -24,9 +24,9 @@ use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
     mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
-    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch, SharedRegistry,
-    ToolRegistry,
+    propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
+    system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch,
+    SharedRegistry, ToolRegistry,
 };
 use mode::ModeTable;
 use tool_runner::{DiscoverySurface, EscapeRoot};
@@ -300,6 +300,10 @@ async fn build_config(
     // shared specs like `update_tasks`; the force-park on `Ask` is the only
     // gate left.
     cfg.tool_specs.push(propose_plan::propose_plan_spec());
+    // `request_mode` (#560, ADR-0207 §10) is likewise unconditional — a
+    // blocked model must always be able to ask for more authority, in every
+    // mode including the one that would deny the ask itself.
+    cfg.tool_specs.push(request_mode::request_mode_spec());
     // `poll` (#605, ADR-0161) is runtime-owned like `ask_user` but not a spawn
     // tool either — it joins both background `bash` jobs and sub-agents, so it
     // rides the shared specs rather than the per-profile spawn family.

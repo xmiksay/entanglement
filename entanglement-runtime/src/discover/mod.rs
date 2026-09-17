@@ -137,6 +137,8 @@ pub fn runtime_owned_specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         crate::plan_tasks::update_tasks_spec(),
         crate::ask_user::ask_user_spec(),
+        crate::propose_plan::propose_plan_spec(),
+        crate::request_mode::request_mode_spec(),
         crate::poll::poll_spec(),
     ];
     #[cfg(feature = "rhai")]
@@ -195,6 +197,11 @@ mod tests {
         assert!(names.contains(&"update_tasks".to_string()));
         assert!(names.contains(&"ask_user".to_string()));
         assert!(names.contains(&"poll".to_string()));
+        // ADR-0207 §7/§10: `propose_plan`/`request_mode` are advertised
+        // unconditionally — they ride this same roster now, not a per-profile
+        // scheme (#231's `cfg.profile_tool_specs`, retired by stage 4c).
+        assert!(names.contains(&"propose_plan".to_string()));
+        assert!(names.contains(&"request_mode".to_string()));
         #[cfg(feature = "rhai")]
         assert!(names.contains(&"rhai".to_string()));
     }

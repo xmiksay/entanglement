@@ -1,8 +1,8 @@
-//! The capability vocabulary tools declare (#560, ADR-0207 §3) — stage 1 of
-//! the permission-modes rewrite: **vocabulary only**, nothing consumes it
-//! yet. `tool_names.rs`'s `CAPABILITIES`/`MULTI_GROUP` tables are untouched
-//! and still drive every real permission decision until a later stage cuts
-//! over.
+//! The capability vocabulary tools declare (#560, ADR-0207 §3). Consumed by
+//! [`crate::mode::rules`]'s grading (a bare `read`/`write`/`exec`/`plan`/
+//! `control` rule key matches a tool by capability, not name) and by
+//! `tool_runner::dispatch`'s `Control` bypass, which skips mode grading
+//! entirely for a `Capability::Control`-only tool.
 //!
 //! `Capability::Plan` and `Capability::Control` didn't exist under the old
 //! `tool_names.rs` capability-key table (`read`/`write`/`call` only) —
@@ -14,7 +14,7 @@
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL,
-    PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL, UPDATE_TASKS_TOOL,
+    PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RESPONSES_TOOL_SEARCH_TOOL, UPDATE_TASKS_TOOL,
 };
 use crate::tools::ToolRegistry;
 
@@ -38,7 +38,10 @@ pub enum Capability {
 /// three; `propose_plan` is `Plan`, not `Control`, because plan authorship is
 /// itself the thing a mode grants or refuses (ADR-0207 §7) — everything else
 /// here is pure session/tool orchestration that reads, writes or executes
-/// nothing on its own.
+/// nothing on its own. `request_mode` is genuinely `Control` (ADR-0207 §10):
+/// it orchestrates the session's own mode axis, not a host resource — its
+/// unconditional approval park is orchestration `tool_runner::dispatch`'s
+/// `Control` bypass branch special-cases by name, not a second capability.
 pub fn runtime_owned(name: &str) -> Option<&'static [Capability]> {
     #[cfg(feature = "rhai")]
     if name == RHAI_TOOL {
@@ -52,7 +55,8 @@ pub fn runtime_owned(name: &str) -> Option<&'static [Capability]> {
         | EXPLORE_TOOL
         | DESCRIBE_TOOL
         | RESPONSES_TOOL_SEARCH_TOOL
-        | UPDATE_TASKS_TOOL => Some(&[Capability::Control]),
+        | UPDATE_TASKS_TOOL
+        | REQUEST_MODE_TOOL => Some(&[Capability::Control]),
         PROPOSE_PLAN_TOOL => Some(&[Capability::Plan]),
         _ => None,
     }
@@ -83,6 +87,7 @@ mod tests {
             DESCRIBE_TOOL,
             RESPONSES_TOOL_SEARCH_TOOL,
             UPDATE_TASKS_TOOL,
+            REQUEST_MODE_TOOL,
         ] {
             assert_eq!(
                 runtime_owned(name),
