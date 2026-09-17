@@ -1,0 +1,165 @@
+//! Permission modes (#560, ADR-0207 stage 2 of 6): the mode table and its
+//! rule engine, built on the capability vocabulary stage 1 added
+//! ([`crate::capability`]). **Self-contained** — nothing on the dispatch
+//! path calls into this module yet; wiring `Session`/`InMsg::SetMode`/the
+//! dispatch gate to consult it is a later stage.
+//!
+//! A [`Mode`] is a resolved grade table: a `default` grade, [`Rules`], run
+//! [`Limits`], and an optional sandbox posture. [`ModeTable`] holds a named
+//! set of them — the runtime's own four built-ins ([`ModeTable::builtin`]),
+//! or an embedder's own table via [`ModeTable::new`] (ADR-0207 §2: "An
+//! embedder building on the library supplies its own table").
+//!
+//! The table is **code, not configuration**: `skutter` compiles in
+//! `research`/`plan`/`build`/`auto` and reads no `modes/` directory, ever. A
+//! `config.yml` `modes:` block only *tunes* one of them ([`tune::apply`]) —
+//! it can never define, add, or remove a mode.
+
+mod builtin;
+mod limits;
+mod rules;
+mod tune;
+
+pub use limits::{Limits, OnTimeout};
+pub use rules::Rules;
+pub use tune::{apply as apply_tuning, ModeTuning};
+
+use anyhow::{bail, Result};
+use entanglement_core::Permission;
+
+use crate::capability::Capability;
+
+/// One resolved permission mode (ADR-0207 §2/§4): a name, the grade used
+/// when nothing else matches, its rule table, its run limits, and its
+/// sandbox posture (`Some("bwrap")`/`Some("bubblewrap")`, mirroring
+/// `AgentProfile::sandbox`'s existing convention — `None` = unsandboxed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mode {
+    pub name: String,
+    pub default: Permission,
+    pub rules: Rules,
+    pub limits: Limits,
+    pub sandbox: Option<String>,
+}
+
+impl Mode {
+    /// Resolve the grade for one call under this mode. `capabilities` is the
+    /// tool's own [`Capability`] slice ([`crate::capability::capability_of`]);
+    /// `arg`/`workdir` are the same per-call scoping inputs
+    /// `PermissionProfile::resolve_scoped` already takes (ADR-0051/ADR-0116).
+    pub fn resolve(
+        &self,
+        tool_name: &str,
+        capabilities: &[Capability],
+        arg: Option<&str>,
+        workdir: Option<&str>,
+    ) -> Permission {
+        rules::resolve(
+            &self.rules,
+            self.default,
+            tool_name,
+            capabilities,
+            arg,
+            workdir,
+        )
+    }
+}
+
+/// A named set of modes. Construction validates only that names are unique
+/// — two modes named `research` would make [`ModeTable::get`] silently pick
+/// one, which is a worse failure than refusing to build the table at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModeTable {
+    modes: Vec<Mode>,
+}
+
+impl ModeTable {
+    /// The runtime's own four built-ins: `research`, `plan`, `build`,
+    /// `auto` (ADR-0207 §2).
+    pub fn builtin() -> Result<Self> {
+        Self::new(builtin::modes()?)
+    }
+
+    /// Build a table from an arbitrary mode list — the seam an embedder uses
+    /// to supply its own table instead of the built-in four (ADR-0207 §2).
+    pub fn new(modes: Vec<Mode>) -> Result<Self> {
+        for (i, mode) in modes.iter().enumerate() {
+            if modes[..i].iter().any(|m| m.name == mode.name) {
+                bail!("duplicate mode name '{}'", mode.name);
+            }
+        }
+        Ok(Self { modes })
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Mode> {
+        self.modes.iter().find(|m| m.name == name)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.modes.iter().map(|m| m.name.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The task's own worked example (ADR-0207 §4), pinned against the real
+    /// built-in `research` mode rather than a synthetic one.
+    #[test]
+    fn research_matches_the_worked_example() {
+        let table = ModeTable::builtin().expect("built-ins parse");
+        let research = table.get("research").expect("research exists");
+
+        assert_eq!(
+            research.resolve("edit", &[Capability::Write], None, None),
+            Permission::Deny,
+            "edit -> Deny (Write is class-denied)"
+        );
+        assert_eq!(
+            research.resolve("read", &[Capability::Read], None, None),
+            Permission::Allow,
+            "read -> Allow (Read is class-allowed)"
+        );
+        assert_eq!(
+            research.resolve("bash", &[Capability::Exec], Some("find ."), None),
+            Permission::Allow,
+            "bash find . -> Allow (bash(find *) scoped rule)"
+        );
+        assert_eq!(
+            research.resolve("bash", &[Capability::Exec], Some("curl x"), None),
+            Permission::Ask,
+            "bash curl x -> Ask (the default)"
+        );
+    }
+
+    #[test]
+    fn builtin_table_has_exactly_the_four_modes() {
+        let table = ModeTable::builtin().expect("built-ins parse");
+        let mut names: Vec<&str> = table.names().collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["auto", "build", "plan", "research"]);
+    }
+
+    #[test]
+    fn duplicate_mode_names_are_rejected() {
+        let base = ModeTable::builtin().expect("built-ins parse");
+        let research = base.get("research").expect("research exists").clone();
+        let dup = research.clone();
+        assert!(ModeTable::new(vec![research, dup]).is_err());
+    }
+
+    #[test]
+    fn embedder_can_supply_its_own_table() {
+        let custom = Mode {
+            name: "custom".to_string(),
+            default: Permission::Deny,
+            rules: Rules::default(),
+            limits: Limits::default(),
+            sandbox: None,
+        };
+        let table = ModeTable::new(vec![custom]).expect("single-mode table is valid");
+        assert!(table.get("custom").is_some());
+        assert!(table.get("research").is_none());
+    }
+}

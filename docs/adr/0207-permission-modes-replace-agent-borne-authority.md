@@ -121,9 +121,10 @@ protocol into `entanglement-runtime`.
 
 `Tool` gains `fn capabilities(&self) -> &'static [Capability]`, with
 `Capability { Read, Write, Exec, Plan, Control }`. A slice, not a single
-value, because `call` and `rhai` genuinely do all three. Config-declared `endpoint__*` tools are `Exec`;
-rhai-backed skill tools are multi; an alias inherits its target's capability,
-resolved before grading so it cannot launder. MCP tools are ordinary graded
+value, because `call` and `rhai` genuinely do all three. Config-declared
+`endpoint__*` tools are `Exec`; rhai-backed skill tools are multi; an alias
+inherits its target's capability, resolved before grading so it cannot
+launder. MCP tools are ordinary graded
 tools matched by name or pattern; their servers connect in the background at
 session start so the roster is known, and a server that is down warns and
 declines truthfully (ADR-0201's path).
@@ -136,37 +137,64 @@ server makes tools *dispatchable*, and every one of them is still graded.
 A mode denying a capability class is the guarantee: a tool added later with
 `Capability::Write` is refused by `research` with no list to update.
 
-### 4. Rules are grade-keyed lists
+### 4. Rules are grade-keyed lists, longest match wins
+
+Three keys — `allow`, `deny`, `prompt` — plus a `default`. `prompt` is the
+config spelling of the internal `Permission::Ask`; the config surface uses the
+word a user thinks in, the enum keeps core's name.
 
 ```yaml
 research:
-  default: ask
+  default: prompt
   deny:  [write]
-  allow: [read, bash(find *), bash(grep *), bash(rg *), bash(git log *)]
+  allow: [read, "bash(find *)", "bash(grep *)", "bash(rg *)"]
   max_depth: 2
   max_agents: 4
   sandbox: bwrap
 ```
 
-`deny` is **absolute** — a flat decline with no prompt, naming the mode and
-the way out. `ask` parks an ordinary approval. The argument-scoped
-`tool(pattern)` and workdir-scoped `tool{pattern}` grammars are unchanged
-(ADR-0051, ADR-0116); only the surrounding shape changes, which removes the
-`|`-alternation hack that existed solely because rule keys had to be unique.
+**The longest matching rule wins.** Not a tier order, not first or last match:
+the most specific rule is simply the longest one, so `write(docs/*)` beats
+`write`, and a reader can determine the outcome by inspection without knowing
+an evaluation order. Capability-class entries participate on the same footing,
+which is why the tuning guard in §5 exists — a long scoped rule would
+otherwise out-rank a class `deny`.
 
-`build` ships `default: ask` with a broad allow list and a destructive deny
+`deny` is **absolute**: a flat decline with no prompt, naming the mode and the
+way out. `prompt` parks an ordinary approval. The argument-scoped
+`tool(pattern)` and workdir-scoped `tool{pattern}` grammars are unchanged
+(ADR-0051, ADR-0116).
+
+**`bash` and `call` share one rule set.** A rule written for either applies to
+both — they are two spellings of the same capability, and grading them apart
+invites a rule that looks restrictive while the other spelling walks around it.
+Compound commands grade per segment for both (ADR-0197's `&&`/`||` splitting,
+now covering `call`), and **syntax that cannot be parsed falls back to
+`default`** rather than being graded on a guess.
+
+`build` ships `default: prompt` with a broad allow list and a destructive deny
 list — a change from the old `build` agent's `default: allow`.
 
 ### 5. Two config blocks, two jobs
 
-`config.yml` `modes:` **tunes** one mode: it may add or remove individual
-tool and argument-scoped rules, but may not change `default` and may not
-weaken a capability-class `deny`. `research: allow: [bash(cargo check)]` is
-accepted; `research: allow: [write]` is a load error. "Research cannot write"
-therefore holds on every machine.
+`config.yml` `modes:` **tunes** one mode by adding rules in the same
+`allow`/`deny`/`prompt` grammar. There is deliberately **no removal syntax**:
+longest-match makes one unnecessary, since a more specific rule simply
+out-ranks a shipped one. To stop `bash(wc *)` being pre-allowed, add a longer
+`deny` that covers the case you care about — the shipped rule stays visible
+and the override reads as an override.
+
+Tuning **may not weaken a capability-class `deny`**, and because longest-match
+lets a long scoped rule out-rank a short class name, that guard cannot be a
+string comparison. `research: allow: ["write(*)"]` names no class, yet grants
+exactly what `deny: [write]` forbids. The guard must therefore **resolve the
+tool each rule names to its real `Capability` set** and reject the rule when
+any of them is class-denied in that mode — which means tuning is validated
+where a `ToolRegistry` is in hand, not in isolation. "Research cannot write"
+is only true on every machine if this holds.
 
 `config.yml` `permissions:` remains the absolute ceiling clamping every mode,
-and adopts the same grade-keyed grammar.
+and adopts the same grammar.
 
 ### 6. Mode applies to the whole spawn sub-tree
 

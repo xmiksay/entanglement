@@ -1,0 +1,27 @@
+# research: read-only investigation. Cannot write, cannot author a plan;
+# every shell/call still asks except a curated read-only allowlist copied
+# verbatim from the old `explore.md`/`research.md` agent frontmatter
+# (ADR-0207 stage 2) — the two files agreed, so this is the one place that
+# fact now lives instead of two.
+default: ask
+deny: [write, plan]
+allow:
+  - read
+  - "bash(find *)"
+  - "bash(grep *)"
+  - "bash(ls *)"
+  - "bash(cat *)"
+  - "bash(head *)"
+  - "bash(tail *)"
+  - "bash(wc *)"
+  - "call(find *)"
+  - "call(grep *)"
+  - "call(rg *)"
+  - "call(ls *)"
+  - "call(cat *)"
+  - "call(head *)"
+  - "call(tail *)"
+  - "call(wc *)"
+max_depth: 2
+max_agents: 4
+sandbox: bwrap

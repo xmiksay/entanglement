@@ -1,0 +1,17 @@
+# plan: analyze and produce a plan, no code changes. `write` is class-denied
+# except the one carve-out plan authorship has always needed — the plan file
+# itself — expressed as a scoped tool-rule on the literal `write` tool
+# (ADR-0207 §4's "a scoped key always names the literal tool"), not a
+# weakening of the class deny. `plan` is class-allowed so `propose_plan`
+# (Capability::Plan) is usable here and nowhere else by default (ADR-0207
+# §7). Exec stays ungraded here (falls through to `default: ask`), matching
+# the old `plan` agent's `call(*): ask`.
+default: ask
+deny: [write]
+allow:
+  - read
+  - plan
+  - "write(.entanglement/plans/*.md)"
+max_depth: 2
+max_agents: 4
+sandbox: bwrap

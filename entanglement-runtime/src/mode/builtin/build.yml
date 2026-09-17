@@ -1,0 +1,28 @@
+# build: implements changes. `default: ask` is a deliberate change from the
+# old `build` agent's `default: allow` (ADR-0207 §4) — a broad allow list
+# gets almost everything through without a prompt, but a short destructive
+# deny list stays absolute regardless of the allow list's breadth. Plan
+# authorship is denied here on purpose: switching back to `plan` mode is the
+# way to revise, not writing over the plan file mid-build. The destructive
+# list itself is this stage's own illustrative first cut (ADR-0207 doesn't
+# enumerate one) — tune it via `config.yml` `modes:` as real footguns turn
+# up, `deny` entries only ever narrow further.
+default: ask
+deny:
+  - plan
+  - "bash(rm -rf /*)"
+  - "bash(rm -rf ~*)"
+  - "bash(git push --force*)"
+  - "bash(git push -f*)"
+  - "bash(git reset --hard*)"
+  - "bash(git clean -f*)"
+  - "bash(git branch -D*)"
+  - "call(rm -rf /*)"
+  - "call(rm -rf ~*)"
+allow:
+  - read
+  - write
+  - exec
+max_depth: 4
+max_agents: 8
+sandbox: bwrap

@@ -1,0 +1,26 @@
+# auto: unattended run (ADR-0207 §11). `default: deny` — there is no one to
+# ask, so an unlisted tool is refused outright rather than parking a prompt
+# nobody will answer; a 60s `question_timeout` bounds the two things that can
+# still park (a repeated identical denial, a genuine question) instead of
+# hanging forever. The allow/deny split mirrors `build`'s but denies `git
+# push` outright rather than just `--force`/`-f` — an unattended run should
+# not push at all without a human confirming it first.
+default: deny
+deny:
+  - plan
+  - "bash(rm -rf /*)"
+  - "bash(rm -rf ~*)"
+  - "bash(git push*)"
+  - "bash(git reset --hard*)"
+  - "bash(git clean -f*)"
+  - "bash(git branch -D*)"
+  - "call(rm -rf /*)"
+  - "call(rm -rf ~*)"
+allow:
+  - read
+  - write
+  - exec
+max_depth: 2
+max_agents: 4
+question_timeout: 60
+sandbox: bwrap

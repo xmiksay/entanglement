@@ -72,6 +72,11 @@ pub mod mask_request;
 // CLI/TUI/transport dep; the streamable-HTTP transport rides the `mcp-http`
 // feature (reqwest), keeping the lean build transport-free (ADR-0025).
 pub mod mcp;
+// Permission modes (#560, ADR-0207 stage 2 of 6): the mode table and its
+// grade-resolution engine, built on `capability`'s vocabulary. Nothing on
+// the dispatch path consults this yet — stage 4's job. Ungated — pure logic
+// over core types + capability + serde_yaml, needed by the lean build too.
+pub mod mode;
 // Live action narrator (#635): asks the aux `narrate` LLM what the agent is
 // doing on every tool call and sets it as `Session.action`. Mirrors
 // `session_title` below, including the `provider` gate (drains a provider
