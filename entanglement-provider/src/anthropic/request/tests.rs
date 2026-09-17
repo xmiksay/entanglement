@@ -38,6 +38,7 @@ fn body_omits_tools_when_empty() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert!(body.get("tools").is_none());
     assert_eq!(body["stream"], true);
@@ -60,6 +61,7 @@ fn body_includes_input_schema_when_tools_present() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["tools"][0]["name"], "greet");
     assert!(body["tools"][0]["input_schema"].is_object());
@@ -82,6 +84,7 @@ fn generation_max_output_tokens_overrides_fallback() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["max_tokens"], 8000);
     assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -105,6 +108,7 @@ fn thinking_budget_enables_thinking_and_drops_temperature() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["thinking"]["type"], "enabled");
     assert_eq!(body["thinking"]["budget_tokens"], 10_000);
@@ -132,6 +136,7 @@ fn thinking_budget_bumps_max_tokens_when_it_would_swallow_the_cap() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let max = body["max_tokens"].as_u64().unwrap();
     let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
@@ -155,6 +160,7 @@ fn high_reasoning_effort_enables_thinking_at_the_tier_default_budget() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["thinking"]["type"], "enabled");
     assert_eq!(
@@ -182,6 +188,7 @@ fn medium_reasoning_effort_uses_a_smaller_tier_budget() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(
         body["thinking"]["budget_tokens"],
@@ -206,6 +213,7 @@ fn low_reasoning_effort_leaves_thinking_off() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert!(body.get("thinking").is_none());
     assert!((body["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
@@ -228,6 +236,7 @@ fn explicit_thinking_budget_wins_over_reasoning_effort() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["thinking"]["budget_tokens"], 1234);
 }
@@ -251,6 +260,7 @@ fn adaptive_style_emits_adaptive_thinking_and_effort_not_a_budget() {
         None,
         None,
         model_spec(ThinkingStyle::Adaptive, false),
+        None,
     );
     assert_eq!(body["thinking"]["type"], "adaptive");
     assert!(
@@ -284,6 +294,7 @@ fn adaptive_style_maps_every_effort_tier() {
             None,
             None,
             model_spec(ThinkingStyle::Adaptive, false),
+            None,
         );
         assert_eq!(body["output_config"]["effort"], expected);
     }
@@ -312,6 +323,7 @@ fn adaptive_style_without_effort_leaves_thinking_off() {
         None,
         None,
         model_spec(ThinkingStyle::Adaptive, false),
+        None,
     );
     assert!(body.get("thinking").is_none());
     assert!(body.get("output_config").is_none());
@@ -338,6 +350,7 @@ fn adaptive_style_ignores_a_thinking_budget_and_never_bumps_max_tokens() {
         None,
         None,
         model_spec(ThinkingStyle::Adaptive, false),
+        None,
     );
     assert!(body.get("thinking").is_none());
     assert_eq!(body["max_tokens"], 4000);
@@ -518,6 +531,7 @@ fn body_omits_web_search_server_tool_without_config() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert!(body.get("tools").is_none());
 }
@@ -539,6 +553,7 @@ fn body_pushes_web_search_server_tool_when_configured() {
         Some(&ws),
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -565,6 +580,7 @@ fn web_search_server_tool_omits_unset_knobs() {
         Some(&ws),
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let tool = &body["tools"][0];
     assert_eq!(tool["type"], "web_search_20250305");
@@ -591,6 +607,7 @@ fn web_search_tool_version_overrides_the_hardcoded_default() {
         Some(&ws),
         Some("web_search_20260209"),
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     assert_eq!(body["tools"][0]["type"], "web_search_20260209");
 }
@@ -628,6 +645,7 @@ fn system_block_carries_a_cache_breakpoint() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let system = body["system"].as_array().unwrap();
     assert_eq!(system.len(), 1);
@@ -648,6 +666,7 @@ fn last_tool_entry_carries_a_cache_breakpoint() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert!(tools[0].get("cache_control").is_none());
@@ -666,6 +685,7 @@ fn single_user_turn_carries_the_history_breakpoint() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let blocks = body["messages"][0]["content"].as_array().unwrap();
     assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
@@ -691,6 +711,7 @@ fn last_user_turn_carries_the_near_breakpoint() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let out = body["messages"].as_array().unwrap();
     assert_eq!(out.len(), 3);
@@ -725,6 +746,7 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let out = body["messages"].as_array().unwrap();
     let marked: Vec<usize> = out
@@ -749,6 +771,107 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
     assert_eq!(total, 4);
 }
 
+/// Strip every `cache_control` annotation from a JSON value in place. Anchors
+/// legitimately move round to round (ADR-0202) — comparing them would make
+/// any growing-conversation prefix check spuriously fail — so the
+/// prefix-invariant test below compares real *content* only.
+fn strip_cache_control(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.remove("cache_control");
+            for val in map.values_mut() {
+                strip_cache_control(val);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_cache_control),
+        _ => {}
+    }
+}
+
+#[test]
+fn trailing_notice_does_not_break_the_growing_history_prefix() {
+    // The bug `LlmRequest::trailing_notice` + `append_final_user_block` fix:
+    // before it, the mode notice was chained onto `messages` as the actual
+    // last history message, so the near anchor landed on it — and because
+    // the notice is rebuilt fresh (different content, different position)
+    // every round, round N's cached write never recurred at round N+1,
+    // wasting it every single round (the bug's own description). This
+    // asserts the property that actually matters for a cache hit: the real
+    // history sent this round — everything except the ephemeral notice —
+    // must appear verbatim as a prefix of next round's real history, for a
+    // conversation that only ever grows (never rewrites earlier turns).
+    let round_n_history = vec![
+        msg(MessageRole::User, "u0"),
+        msg(MessageRole::Assistant, "a0"),
+        msg(MessageRole::User, "u1"),
+        msg(MessageRole::Assistant, "a1"),
+        msg(MessageRole::User, "u2"),
+        msg(MessageRole::Assistant, "a2"),
+        msg(MessageRole::User, "u3"),
+    ];
+    let spec = model_spec(ThinkingStyle::Budget, false);
+    let mut body_n = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &round_n_history,
+        &[],
+        1024,
+        None,
+        None,
+        None,
+        spec,
+        Some("[mode: research]"),
+    );
+    // Round N+1: the model answered and the user asked again — real growth,
+    // nothing earlier rewritten — and the mode changed too, so a naive fix
+    // that still let the notice touch `messages` would show up here.
+    let round_n1_history = {
+        let mut h = round_n_history.clone();
+        h.push(msg(MessageRole::Assistant, "a3"));
+        h.push(msg(MessageRole::User, "u4"));
+        h
+    };
+    let mut body_n1 = build_body(
+        "claude-sonnet-4-5",
+        "sys",
+        &round_n1_history,
+        &[],
+        1024,
+        None,
+        None,
+        None,
+        spec,
+        Some("[mode: build]"),
+    );
+
+    // The ADR-0202 cap holds with a notice in play too: system (1) + tools
+    // (0 here) + history (≤2) never exceeds 4 — a 5th marker is a 400.
+    assert!(count_cache_controls(&body_n) <= 4);
+    assert!(count_cache_controls(&body_n1) <= 4);
+
+    strip_cache_control(&mut body_n);
+    strip_cache_control(&mut body_n1);
+    let mut messages_n = body_n["messages"].as_array().unwrap().clone();
+    let messages_n1 = body_n1["messages"].as_array().unwrap().clone();
+    // Drop the trailing notice: it lands as the extra final block of the
+    // last (user) message, never as history in its own right.
+    messages_n.last_mut().unwrap()["content"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+
+    assert!(
+        messages_n1.len() > messages_n.len(),
+        "round N+1 must be strictly longer than round N"
+    );
+    assert_eq!(
+        messages_n1[..messages_n.len()],
+        messages_n[..],
+        "round N's real history (minus the ephemeral notice) must recur \
+         verbatim as a prefix of round N+1's"
+    );
+}
+
 #[test]
 fn short_history_marks_only_the_near_anchor() {
     // With fewer than three user turns there is no deep anchor — one marked
@@ -768,6 +891,7 @@ fn short_history_marks_only_the_near_anchor() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let out = body["messages"].as_array().unwrap();
     let marked = out
@@ -834,6 +958,7 @@ fn defer_loading_is_omitted_when_false_and_present_when_true() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert!(tools[0].get("defer_loading").is_none());
@@ -859,6 +984,7 @@ fn cache_breakpoint_skips_a_deferred_last_tool() {
         None,
         None,
         model_spec(ThinkingStyle::Budget, false),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools[0]["name"], "read");
@@ -936,6 +1062,7 @@ fn effort_body(effort: Option<ReasoningEffort>, spec: AnthropicModelSpec) -> ser
         None,
         None,
         spec,
+        None,
     )
 }
 

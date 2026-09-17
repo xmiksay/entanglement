@@ -176,6 +176,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let stream = llm.stream(req).await.expect("stream should start");
@@ -349,6 +350,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let stream = llm
@@ -438,6 +440,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
 
@@ -688,6 +691,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
 
@@ -775,6 +779,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
 
@@ -853,6 +858,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
 
@@ -913,6 +919,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
 
@@ -1003,6 +1010,7 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let stream = llm.stream(req).await.expect("stream should start");
@@ -1085,6 +1093,7 @@ async fn inline_think_stream_routes_reasoning_and_captures_a_block() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let events: Vec<_> = llm
@@ -1160,6 +1169,7 @@ async fn second_request_never_carries_thinking_back_to_an_inline_model() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let events: Vec<_> = llm
@@ -1197,6 +1207,7 @@ async fn second_request_never_carries_thinking_back_to_an_inline_model() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let _ = llm
@@ -1270,6 +1281,7 @@ async fn fields_reasoning_stream_captures_a_block() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let events: Vec<_> = llm
@@ -1345,6 +1357,7 @@ async fn second_request_replays_fields_reasoning_byte_identical_when_on() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let events: Vec<_> = llm
@@ -1382,6 +1395,7 @@ async fn second_request_replays_fields_reasoning_byte_identical_when_on() {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let _ = llm

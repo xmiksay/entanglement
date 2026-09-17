@@ -201,6 +201,7 @@ impl Llm for GeminiLlm {
             req.tools,
             req.generation,
             cached_content.as_deref(),
+            req.trailing_notice.as_deref(),
         );
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/{model}:streamGenerateContent?alt=sse");

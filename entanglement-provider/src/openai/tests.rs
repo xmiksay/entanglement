@@ -40,6 +40,7 @@ fn body_carries_prompt_cache_key_when_given() {
         None,
         Some("s-abc123"),
         ThinkingSpec::default(),
+        None,
     );
     assert_eq!(body["prompt_cache_key"], "s-abc123");
 }
@@ -55,6 +56,7 @@ fn body_prepends_system_message_and_omits_tools_when_empty() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
@@ -134,6 +136,7 @@ fn body_includes_tools_with_parameters_schema() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert_eq!(body["tools"][0]["type"], "function");
     assert_eq!(body["tools"][0]["function"]["name"], "greet");
@@ -157,6 +160,7 @@ fn generation_params_set_temperature_and_max_tokens() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
     assert_eq!(body["max_tokens"], 2048);
@@ -179,6 +183,7 @@ fn reasoning_effort_passes_through_verbatim_lowercase() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert_eq!(body["reasoning_effort"], "high");
 }
@@ -194,6 +199,7 @@ fn generation_params_omit_unset_knobs() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert!(body.get("temperature").is_none());
     assert!(body.get("max_tokens").is_none());
@@ -478,6 +484,7 @@ fn body_omits_web_search_tool_without_config() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     assert!(body.get("tools").is_none());
 }
@@ -498,6 +505,7 @@ fn body_pushes_web_search_tool_when_configured() {
         Some(&ws),
         None,
         zai_spec("zai", "glm-5.2"),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -527,6 +535,7 @@ fn web_search_tool_rides_alongside_function_tools() {
         Some(&ws),
         None,
         zai_spec("zai", "glm-5.2"),
+        None,
     );
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);
@@ -640,6 +649,7 @@ fn request_body_with_a_tool_reference_never_emits_the_native_key() {
         None,
         None,
         ThinkingSpec::default(),
+        None,
     );
     let dumped = serde_json::to_string(&body).unwrap();
     assert!(!dumped.contains("tool_reference"), "{dumped}");
@@ -893,6 +903,7 @@ fn effort_body(
         None,
         None,
         thinking,
+        None,
     )
 }
 
@@ -980,6 +991,7 @@ fn web_search_entry_rides_only_the_zai_dialect() {
             Some(&ws),
             None,
             thinking,
+            None,
         )
     };
     assert!(with(zai_spec("openai", "gpt-4o")).get("tools").is_none());

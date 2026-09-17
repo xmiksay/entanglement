@@ -410,6 +410,20 @@ pub struct LlmRequest<'a> {
     /// pin, so a dead pinned endpoint fails one caller's probe fast instead of
     /// retry-storming through the LLM-tuned ladder on every call.
     pub retry: Option<crate::client::RetryConfig>,
+    /// A short, ephemeral line appended after the conversation — e.g. core's
+    /// per-round permission-mode notice (ADR-0207 §9) — rendered as the
+    /// wire's final user-role turn but **never** part of `messages` and never
+    /// cached. Kept out of `messages` deliberately: every provider places its
+    /// cache breakpoints by inspecting real history (the last/third-to-last
+    /// user turn on Anthropic, ADR-0202/#673), and a value that is last every
+    /// round but different every round would anchor there and invalidate the
+    /// prefix each request instead of ever landing a hit. Each `build_body`
+    /// appends it *after* anchor placement, so it is invisible to that logic.
+    /// `None` behaves exactly as if the field did not exist. Owned (not
+    /// `&'a str`): every caller builds it fresh from live, non-`'a` state
+    /// (e.g. `Session::mode`) each round, so borrowing would just force the
+    /// caller to stash an extra local for a one-shot value.
+    pub trailing_notice: Option<String>,
 }
 
 /// Name of the client-side discovery envelope tool (ADR-0204): `invoke
@@ -668,9 +682,11 @@ fn echo_reply(req: &LlmRequest<'_>, full: bool) -> String {
         .collect();
     let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
     let mut reply = format!(
-        "echo: messages={total}, users={users:?}, system_len={}, system_sha={}, tools={tools:?}",
+        "echo: messages={total}, users={users:?}, system_len={}, system_sha={}, tools={tools:?}, \
+         trailing_notice={:?}",
         req.system.len(),
         sha8(req.system),
+        req.trailing_notice,
     );
     if full {
         reply.push_str("\nsystem:\n");
@@ -728,6 +744,7 @@ mod tests {
             generation: None,
             cache_key: None,
             retry: None,
+            trailing_notice: None,
         }
     }
 

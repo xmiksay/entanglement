@@ -31,7 +31,15 @@ struct RecordingLlm {
 #[async_trait]
 impl Llm for RecordingLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        self.seen.lock().unwrap().push(req.messages.to_vec());
+        // `trailing_notice` now carries the mode notice out of band from
+        // `messages` (the prompt-cache fix). Recorded as a synthesized final
+        // message so this file's existing "last message is the notice"
+        // assertions keep testing the same observable behavior.
+        let mut recorded = req.messages.to_vec();
+        if let Some(notice) = &req.trailing_notice {
+            recorded.push(Message::user(notice.clone()));
+        }
+        self.seen.lock().unwrap().push(recorded);
         Ok(stream_from_response(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],

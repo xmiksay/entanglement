@@ -176,6 +176,7 @@ mod tests {
             tools: &[],
             generation: None,
             cache_key: None,
+            trailing_notice: None,
             retry: None,
         };
         drain(&mut Scripted(events), req).await.expect("drains")

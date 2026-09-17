@@ -26,7 +26,15 @@ struct ScriptLlm {
 #[async_trait]
 impl Llm for ScriptLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        let history = serde_json::to_string(req.messages)?;
+        // `trailing_notice` carries the mode notice out of band from
+        // `messages` (the prompt-cache fix) — recorded as a synthesized
+        // final message so this file's history-shape assertions below keep
+        // testing the same observable behavior.
+        let mut probed = req.messages.to_vec();
+        if let Some(notice) = &req.trailing_notice {
+            probed.push(Message::user(notice.clone()));
+        }
+        let history = serde_json::to_string(&probed)?;
         self.requests.lock().unwrap().push(history);
         let resp = self.responses.lock().unwrap().pop_front();
         Ok(stream_from_response(resp.unwrap_or_else(|| text("ok"))))

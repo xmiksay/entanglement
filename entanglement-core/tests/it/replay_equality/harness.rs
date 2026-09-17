@@ -40,7 +40,16 @@ struct ScriptLlm {
 #[async_trait]
 impl Llm for ScriptLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        let history = serde_json::to_string(req.messages)?;
+        // The mode notice (ADR-0207 §9) now travels as `trailing_notice`, out
+        // of band from `messages` — the prompt-cache fix this harness's own
+        // callers depend on (`assert_resume_from` still pops it off as the
+        // synthesized last message, so its "history minus the notice" shape
+        // assertions stay unchanged).
+        let mut probed = req.messages.to_vec();
+        if let Some(notice) = &req.trailing_notice {
+            probed.push(Message::user(notice.clone()));
+        }
+        let history = serde_json::to_string(&probed)?;
         self.requests.lock().unwrap().push(history);
         let steps = self
             .scripts

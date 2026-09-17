@@ -28,11 +28,24 @@ pub(super) fn build_body(
     web_search: Option<&WebSearchConfig>,
     web_search_tool_version: Option<&str>,
     spec: AnthropicModelSpec,
+    trailing_notice: Option<&str>,
 ) -> Value {
     let g = generation.unwrap_or_default();
     let mut max_tokens = g.max_output_tokens.unwrap_or(default_max_tokens);
     let mut messages = convert_messages(messages, spec.replay_thinking);
     place_history_breakpoint(&mut messages);
+    // Appended *after* the breakpoint so the notice is invisible to anchor
+    // placement (it is never in the ~20-block lookback window a cache write
+    // needs to match) and carries no `cache_control` of its own — see
+    // `append_final_user_block`'s doc for why this fixes the prompt-cache
+    // bug `LlmRequest::trailing_notice` exists to avoid.
+    if let Some(notice) = trailing_notice {
+        append_final_user_block(
+            &mut messages,
+            json!({ "type": "text", "text": notice }),
+            "content",
+        );
+    }
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -238,6 +251,34 @@ pub(crate) fn coalesce_same_role(messages: Vec<Value>, content_key: &str) -> Vec
         }
     }
     out
+}
+
+/// Append `block` as the wire's final user-role turn (the trailing-notice
+/// fix, see `LlmRequest::trailing_notice`'s doc): merged into an existing
+/// trailing user turn when there is one, rather than pushed as a new
+/// message, because Anthropic and Gemini both reject non-alternating roles
+/// (`coalesce_same_role`'s doc above) and a request built after tool results
+/// or a plain user prompt already ends in a `user` turn. Deliberately no
+/// `cache_control` on `block` and no re-run of anchor placement — callers
+/// invoke this *after* `place_history_breakpoint`, so the notice never
+/// occupies a marker and never sits in the position the near anchor
+/// re-checks next round.
+///
+/// `pub(crate)` — reused by `crate::gemini::request`, which faces the
+/// identical alternating-role constraint (`coalesce_same_role`'s own doc).
+pub(crate) fn append_final_user_block(messages: &mut Vec<Value>, block: Value, content_key: &str) {
+    if let Some(last) = messages.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some("user") {
+            if let Some(arr) = last.get_mut(content_key).and_then(Value::as_array_mut) {
+                arr.push(block);
+                return;
+            }
+        }
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".to_string(), json!("user"));
+    obj.insert(content_key.to_string(), json!([block]));
+    messages.push(Value::Object(obj));
 }
 
 /// Render a message's content parts to Anthropic content blocks: `text` /

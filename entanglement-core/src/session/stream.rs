@@ -14,7 +14,7 @@ use super::mode::mode_notice;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
-    ContentPart, LlmEvent, LlmRequest, Message, StopReason, ToolCall, ToolSpec, Usage,
+    ContentPart, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage,
 };
 
 /// Outcome of one streamed round-trip.
@@ -65,25 +65,24 @@ pub(super) async fn stream_round(
     let mut shown = false;
     let stream_err: Option<String>;
     loop {
-        // The mode notice (ADR-0207 §9) rides as the *last* message of every
-        // request — after the real conversation, right before the model
-        // replies — rebuilt fresh from `s.mode` every round rather than ever
-        // pushed into `s.ctx`. See `mode::mode_notice`'s doc for why a
-        // persisted push would desync live vs. replayed history.
-        let messages_with_mode: Vec<Message> = s
-            .ctx
-            .messages()
-            .iter()
-            .cloned()
-            .chain(std::iter::once(Message::user(mode_notice(&s.mode))))
-            .collect();
+        // The mode notice (ADR-0207 §9) rides as `trailing_notice` — appended
+        // by each provider after the real conversation, right before the
+        // model replies — rebuilt fresh from `s.mode` every round rather than
+        // ever pushed into `s.ctx`. See `mode::mode_notice`'s doc for why a
+        // persisted push would desync live vs. replayed history, and
+        // `LlmRequest::trailing_notice`'s doc for why it travels out-of-band
+        // instead of chained onto `messages`: a provider's cache-anchor
+        // placement (ADR-0202/#673) inspects the *last* history message, and
+        // a value that is last every round but different every round would
+        // anchor there and invalidate the cached prefix each request instead
+        // of ever landing a hit.
         let req = LlmRequest {
             // The profile's prompt, or a per-turn `system_prompt_resolver`
             // override, resolved once by the caller (#310, ADR-0078).
             system,
             // A live model switch (#218) overrides the profile's pinned model.
             model: s.model.as_deref().or(s.profile.model.as_deref()),
-            messages: &messages_with_mode,
+            messages: s.ctx.messages(),
             tools: specs,
             generation,
             // Session-stable implicit-cache routing hint (#673): the same key
@@ -94,6 +93,7 @@ pub(super) async fn stream_round(
             // ladder — only aux traffic (narrate/session-title/summarize)
             // requests the fail-fast override (#560 follow-up).
             retry: None,
+            trailing_notice: Some(mode_notice(&s.mode)),
         };
         tracing::debug!(
             messages_count = req.messages.len(),
