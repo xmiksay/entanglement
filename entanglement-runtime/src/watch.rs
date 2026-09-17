@@ -235,7 +235,21 @@ pub(crate) fn spawn_debounced_watcher(
     let mut debouncer =
         match notify_debouncer_mini::new_debouncer(debounce, move |res: DebounceEventResult| {
             match res {
-                Ok(events) if !events.is_empty() => {
+                // `notify_debouncer_mini` can emit a provisional
+                // `AnyContinuous` event for a path ahead of its final `Any`
+                // — the same logical write straddling a debounce tick, not
+                // a second change (see `DebounceDataInner::debounced_events`:
+                // an entry still updating right at the deadline is reported
+                // once as `AnyContinuous` and rescheduled, only settling to
+                // `Any` on a later tick with no further updates). Counting
+                // `AnyContinuous` double-fired the reload callback for one
+                // edit; only a batch containing a real `Any` means "this
+                // change has settled".
+                Ok(events)
+                    if events
+                        .iter()
+                        .any(|e| e.kind == notify_debouncer_mini::DebouncedEventKind::Any) =>
+                {
                     tracing::debug!(count = events.len(), "definitions watcher: debounced batch");
                     let _ = tx.send(());
                 }
@@ -512,17 +526,16 @@ mod tests {
         }
         tokio::time::sleep(TEST_DEBOUNCE * 3).await;
 
-        // Usually collapses to exactly 1. `notify_debouncer_mini` can emit a
-        // provisional `AnyContinuous` plus a final `Any` (2 callbacks) when the
-        // last raw event's kernel delivery lands right at the debounce
-        // boundary — inherent scheduler jitter under a loaded host, not a
-        // watcher bug — so the assertion allows that one extra tick while still
-        // proving the burst collapsed (5 writes, nowhere near 5 callbacks).
-        let fired = count.load(Ordering::SeqCst);
-        assert!(
-            (1..=2).contains(&fired),
-            "a burst within the debounce window must collapse to 1 (occasionally 2 under \
-             scheduler jitter) callbacks, not {fired}"
+        // `notify_debouncer_mini` can emit a provisional `AnyContinuous`
+        // event ahead of the final `Any` for the same write — the debounced
+        // watcher now only counts a batch as a real change when it contains
+        // an `Any` (see `spawn_debounced_watcher`'s handler), so a burst
+        // collapses to exactly 1 callback, not "1 or 2 depending on
+        // scheduler jitter".
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a burst within the debounce window must collapse to exactly 1 callback"
         );
         handle.abort();
     }
