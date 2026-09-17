@@ -445,10 +445,53 @@ below realize one model:
 
   | Mode | default | notable rules | run limits |
   | --- | --- | --- | --- |
-  | `research` | `prompt` | `deny: [write, plan]`; `allow: [read, "bash(find *)", "bash(grep *)", "bash(rg *)", "bash(ls *)", "bash(cat *)", "bash(head *)", "bash(tail *)", "bash(wc *)"]` — read-only investigation, a curated read-only `bash`/`call` allowlist, no plan authorship | `max_depth: 2`, `max_agents: 4`, `sandbox: bwrap` |
-  | `plan` | `prompt` | `deny: [write]`; `allow: [read, plan, "write(.entanglement/plans/*.md)"]` — the plans-folder carve-out out-ranks the class deny by longest match; exec ungraded (falls through to `prompt`) | `max_depth: 2`, `max_agents: 4`, `sandbox: bwrap` |
-  | `build` (default) | `prompt` — a deliberate change from the old `build` agent's `default: allow` | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push --force*)", "bash(git push -f*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)"]`; `allow: [read, write, exec]` — broad allow, a short destructive-command deny list stays absolute regardless; plan authorship denied (revise via `/mode plan`, not a mid-build overwrite) | `max_depth: 4`, `max_agents: 8`, `sandbox: bwrap` |
-  | `auto` | `deny` — load-bearing, not decorative (§11) | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)"]`; `allow: [read, write, "bash(cargo *)", "bash(make *)", "bash(git status)", "bash(git diff *)", "bash(git log *)"]` — exec is an **explicit command list**, never the `exec` class, so `default: deny` still fires on anything unenumerated | `max_depth: 2`, `max_agents: 4`, `question_timeout: 60`, `sandbox: bwrap` |
+  | `research` | `prompt` | `deny: [write, plan]`; `allow: [read]` + the shared read-only exec set; `prompt` + the shared api-mutating escalation set — read-only investigation, no plan authorship | `max_depth: 2`, `max_agents: 4` |
+  | `plan` | `prompt` | `deny: [write]`; `allow: [read, plan, "write(.entanglement/plans/*.md)"]` + the shared read-only exec set; `prompt` + the shared api-mutating escalation set — the plans-folder carve-out out-ranks the class deny by longest match; anything outside the shared set falls through to `prompt` | `max_depth: 2`, `max_agents: 4` |
+  | `build` (default) | `prompt` — a deliberate change from the old `build` agent's `default: allow` | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push --force*)", "bash(git push -f*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)"]`; `allow: [read, write, exec]`; `prompt: ["bash(git push*)", gh/glab issue-or-PR/MR "create"/"merge", "bash(npm publish*)", "bash(cargo publish*)"]` + the shared api-mutating escalation set — broad allow, a short destructive-command deny list stays absolute regardless, and the network-mutating `prompt` entries out-rank the bare `exec` allow the same way; plan authorship denied (revise via `/mode plan`, not a mid-build overwrite) | `max_depth: 4`, `max_agents: 8` |
+  | `auto` | `deny` — load-bearing, not decorative (§11) | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)", gh/glab issue-or-PR/MR "create"/"merge", every mutating `gh api`/`glab api` spelling, "bash(npm publish*)", "bash(cargo publish*)"]`; `allow: [read, write, "bash(cargo *)", "bash(make *)"]` + the shared read-only exec set — exec is an **explicit command list**, never the `exec` class, so `default: deny` still fires on anything unenumerated; network-mutating commands are denied outright rather than prompted (nobody is watching to answer) | `max_depth: 2`, `max_agents: 4`, `question_timeout: 60` |
+
+  None of the four declares `sandbox` — ADR-0104 shipped bubblewrap
+  confinement as an **opt-in** (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it
+  in every built-in would make it mandatory, which breaks ordinary work (a
+  confined `git push` fails on `/etc/ssh/ssh_config.d/` ownership once the
+  namespace changes what ssh sees). The mechanism still exists — a mode may
+  declare `sandbox`, and `ENTANGLEMENT_SANDBOX` may only tighten it (§6) —
+  the shipped defaults just leave it off.
+
+  **The shared read-only exec set** (`entanglement-runtime/src/mode/builtin/readonly_exec.yml`,
+  spliced into `research`/`plan`/`auto` at parse time; `build` needs none of
+  it since it class-allows `exec` outright) is one list instead of the
+  per-mode copies that used to drift — inspection (`ls`/`find`/`stat`/…),
+  reading (`cat`/`head`/`tail`/…), search (`grep`/`rg`/`fd`/`ag`), text
+  tools (`sed`/`awk`/`sort`/`diff`/`jq`/…), read-only `git` subcommands
+  enumerated one by one (`status`/`log`/`diff`/`show`/`blame`/`branch`
+  bare-or-`--list`/`tag` bare-or-`-l`/`remote`/`describe`/`rev-parse`/
+  `ls-files`/`stash list`/`shortlog`/`config --get*`) rather than a broad
+  `git *`, which would also open `push`/`reset`/`checkout`/`clean`/`rebase`,
+  and read-only `gh`/`glab` subcommands the same way (`issue|pr|mr list`/
+  `view`, `pr diff`/`checks`/`status`, `repo view`, `run|ci list`/`view`,
+  `release list`/`view`, `label list`, `workflow list`, `search`,
+  `auth status`) plus the broad `gh api *`/`glab api *` (most API calls are
+  reads). Deliberately excluded: `env`/`printenv`/`export`/`set` (they would
+  dump provider API keys into the transcript). Deliberately **not**
+  deny-listed: the write-capable forms these patterns still reach
+  (`find -delete`, `sed -i`, `awk > file`) — an accepted trade-off, not an
+  oversight.
+
+  **The shared api-mutating escalation set**
+  (`entanglement-runtime/src/mode/builtin/readonly_exec_prompt.yml`, spliced
+  into `research`/`plan`/`build`'s `prompt` list) holds the longer, more
+  specific rules that out-rank a broader allow for one narrow case: a
+  mutating `gh api`/`glab api` call (`-X`/`--method` `POST`/`PUT`/`PATCH`/
+  `DELETE`, both spellings). Without it, `gh api -X DELETE ...` would ride
+  the broad `gh api *` allow (`research`/`plan`) or the bare `exec` class
+  allow (`build`) straight through. `auto` doesn't splice this list in —
+  a `prompt` nobody answers just times out — it carries the same commands
+  as explicit `deny` entries in its own YAML instead, alongside the rest of
+  its network-mutating deny list (`gh`/`glab` issue-or-PR/MR `create`/
+  `merge`, `npm publish`, `cargo publish`); `build` carries that same
+  non-`api` list as its own `prompt` entries, since there a human is present
+  to ask.
 
   Four cross-cutting facts complete the picture: **(1)** `bash` and `call`
   are both registered at startup unconditionally

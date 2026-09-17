@@ -4,9 +4,16 @@
 # (ADR-0207 §4's "a scoped key always names the literal tool"), which
 # out-ranks the shorter class deny under longest-match rather than
 # weakening it. `plan` is class-allowed so `propose_plan` (Capability::Plan)
-# is usable here and nowhere else by default (ADR-0207 §7). Exec stays
-# ungraded here (falls through to `default: prompt`), matching the old
-# `plan` agent's `call(*): ask`.
+# is usable here and nowhere else by default (ADR-0207 §7). Planning is
+# reading the codebase, so exec gets the same shared read-only allowlist as
+# `research` (`readonly_exec.yml`, spliced in by `builtin.rs`) instead of
+# falling through to `default: prompt` for every command including a bare
+# `ls` — this mode used to have no exec allowance at all, the worst
+# offender for approval-prompt fatigue. Anything outside that set still
+# falls through to `default: prompt`, including a mutating `gh api`/
+# `glab api` call — `readonly_exec_prompt.yml` (also spliced in, into
+# `prompt` this time) holds the longer rules that keep those escalating
+# despite the shared set's broad `gh api *`/`glab api *` allow.
 default: prompt
 deny: [write]
 allow:
@@ -15,4 +22,10 @@ allow:
   - "write(.entanglement/plans/*.md)"
 max_depth: 2
 max_agents: 4
-sandbox: bwrap
+# Sandbox is deliberately NOT declared here. ADR-0104 shipped bubblewrap as an
+# *opt-in* (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it in every built-in mode
+# silently made it mandatory, which broke ordinary work — a confined `git push`
+# fails with "Bad owner or permissions on /etc/ssh/ssh_config.d/…" because the
+# namespace changes the ownership ssh sees on its own config. The mechanism
+# stays (a mode may declare `sandbox:`, and ENTANGLEMENT_SANDBOX may only
+# tighten it, ADR-0207 §6) — the shipped defaults just don't turn it on.

@@ -24,6 +24,35 @@ allow:
   - read
   - write
   - exec
+# Network-mutating commands: `build` class-allows the whole `exec`
+# capability above, so without a longer, more specific rule these would run
+# unprompted — the same outward-effect category `auto` denies outright, but
+# here there's a human to ask instead of nobody. Each entry out-ranks the
+# bare `exec` allow under longest-match; the mutating `gh api`/`glab api`
+# entries are the shared `readonly_exec_prompt.yml` splice (`builtin.rs`) —
+# the same rules `research`/`plan` need to out-rank their own broader
+# `gh api *`/`glab api *` allow, reused here for a different broader rule.
+# The truly destructive forms (`git push --force*` etc.) stay `deny` above;
+# a longer `prompt` entry here could never win against them anyway.
+prompt:
+  - "bash(git push*)"
+  - "bash(gh pr create*)"
+  - "bash(gh pr merge*)"
+  - "bash(gh issue create*)"
+  - "bash(gh release create*)"
+  - "bash(gh repo create*)"
+  - "bash(glab mr create*)"
+  - "bash(glab mr merge*)"
+  - "bash(glab issue create*)"
+  - "bash(glab release create*)"
+  - "bash(npm publish*)"
+  - "bash(cargo publish*)"
 max_depth: 4
 max_agents: 8
-sandbox: bwrap
+# Sandbox is deliberately NOT declared here. ADR-0104 shipped bubblewrap as an
+# *opt-in* (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it in every built-in mode
+# silently made it mandatory, which broke ordinary work — a confined `git push`
+# fails with "Bad owner or permissions on /etc/ssh/ssh_config.d/…" because the
+# namespace changes the ownership ssh sees on its own config. The mechanism
+# stays (a mode may declare `sandbox:`, and ENTANGLEMENT_SANDBOX may only
+# tighten it, ADR-0207 §6) — the shipped defaults just don't turn it on.

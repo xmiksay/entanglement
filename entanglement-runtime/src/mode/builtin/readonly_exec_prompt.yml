@@ -1,0 +1,43 @@
+# Shared escalation list, spliced into `research`, `plan` and `build`'s
+# `prompt` list at parse time (see `readonly_exec_prompt` in
+# `../builtin.rs`) — the `prompt` counterpart to `readonly_exec.yml`'s
+# `allow` splice, same mechanism, different target list and grade.
+#
+# Every entry here is a mutating `gh api`/`glab api` call: `readonly_exec.yml`
+# allows the broad `bash(gh api *)`/`bash(glab api *)` (most `api` calls are
+# reads), and these longer, more specific rules out-rank that allow under
+# longest-match (`rules.rs`) whenever the command actually names a mutating
+# method — a network write is a network write whether it goes through
+# `gh pr create` or a raw `gh api -X DELETE ...`.
+#
+# Three consumers, three different broader rules being out-ranked:
+#   - `research`/`plan`: the shared `bash(gh api *)`/`bash(glab api *)`
+#     allow from `readonly_exec.yml`.
+#   - `build`: its own bare `exec` class allow (`build.yml` allows the whole
+#     `Exec` capability outright).
+# `auto` does NOT splice this list in — nobody is watching an unattended run
+# to answer a prompt, so the same commands are instead explicit `deny`
+# entries in `auto.yml` itself (a different grade can't come from the same
+# spliced list, and the set is short enough that duplicating it there, with
+# this comment as the pointer back, beats a same-file three-grade mechanism).
+#
+# Both flag spellings are covered separately (`-X POST` and `--method POST`,
+# and so on for PUT/PATCH/DELETE) — `gh`/`glab` accept either, and
+# longest-match only helps when the actual spelling used is the one
+# enumerated here.
+- "bash(gh api -X POST*)"
+- "bash(gh api -X PUT*)"
+- "bash(gh api -X PATCH*)"
+- "bash(gh api -X DELETE*)"
+- "bash(gh api --method POST*)"
+- "bash(gh api --method PUT*)"
+- "bash(gh api --method PATCH*)"
+- "bash(gh api --method DELETE*)"
+- "bash(glab api -X POST*)"
+- "bash(glab api -X PUT*)"
+- "bash(glab api -X PATCH*)"
+- "bash(glab api -X DELETE*)"
+- "bash(glab api --method POST*)"
+- "bash(glab api --method PUT*)"
+- "bash(glab api --method PATCH*)"
+- "bash(glab api --method DELETE*)"

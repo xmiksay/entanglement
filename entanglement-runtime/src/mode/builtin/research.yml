@@ -1,24 +1,26 @@
 # research: read-only investigation. Cannot write, cannot author a plan;
-# every shell call still prompts except a curated read-only allowlist copied
-# verbatim from the old `explore.md`/`research.md` agent frontmatter
-# (ADR-0207 stage 2) — the two files agreed, so this is the one place that
-# fact now lives instead of two. `bash` and `call` share this list
-# (ADR-0207 §4 revision: they're two spellings of the same Exec capability),
-# which collapses the old 7-`bash`+8-`call` curated pair into these 8 —
-# and folds in `rg`, which the old `call` list allowed but the old `bash`
-# list didn't (a real gap this unification closes rather than reproduces).
+# every shell call still prompts except the shared read-only exec allowlist
+# (`readonly_exec.yml`, spliced in by `builtin.rs`) — the old curated list
+# here and `auto`'s disagreed with each other (no `git`, no `sed`/`awk`/
+# `diff`/`stat`, and each named a different subset), which is exactly the
+# mask-list drift ADR-0207 removed for agents and this file used to
+# reintroduce. See `readonly_exec.yml` for what's in the set and why.
+#
+# That set includes the broad `gh api *`/`glab api *` (most API calls are
+# reads); a second shared list, `readonly_exec_prompt.yml`, is spliced into
+# `prompt` below with the longer, more specific rules that out-rank it for
+# a mutating method — so `gh api -X DELETE ...` still asks even though
+# `gh api *` is allowed.
 default: prompt
 deny: [write, plan]
 allow:
   - read
-  - "bash(find *)"
-  - "bash(grep *)"
-  - "bash(rg *)"
-  - "bash(ls *)"
-  - "bash(cat *)"
-  - "bash(head *)"
-  - "bash(tail *)"
-  - "bash(wc *)"
 max_depth: 2
 max_agents: 4
-sandbox: bwrap
+# Sandbox is deliberately NOT declared here. ADR-0104 shipped bubblewrap as an
+# *opt-in* (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it in every built-in mode
+# silently made it mandatory, which broke ordinary work — a confined `git push`
+# fails with "Bad owner or permissions on /etc/ssh/ssh_config.d/…" because the
+# namespace changes the ownership ssh sees on its own config. The mechanism
+# stays (a mode may declare `sandbox:`, and ENTANGLEMENT_SANDBOX may only
+# tighten it, ADR-0207 §6) — the shipped defaults just don't turn it on.

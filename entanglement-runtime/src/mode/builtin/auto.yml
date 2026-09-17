@@ -7,6 +7,12 @@
 # harmful nobody thought to enumerate permitted. `bash` and `call` share
 # these rules (ADR-0207 §4), so one spelling covers both.
 #
+# The exec allow list is the shared read-only set (`readonly_exec.yml`,
+# spliced in by `builtin.rs`) plus this mode's own build-tooling extras —
+# it used to carry its own hand-copied read-only subset that disagreed with
+# `research`'s (different git coverage, no `sed`/`awk`/`diff`); that drift
+# is exactly what a single shared list removes.
+#
 # The deny entries stay even though exec is not class-allowed: they cost
 # nothing and keep holding if a user tunes `exec` on via `config.yml`.
 default: deny
@@ -18,15 +24,58 @@ deny:
   - "bash(git reset --hard*)"
   - "bash(git clean -f*)"
   - "bash(git branch -D*)"
+  # Network-mutating commands: outward effects nobody is watching to
+  # approve, so `auto` denies them outright rather than prompting (a prompt
+  # would just time out unanswered, ADR-0207 §11). Each entry outranks the
+  # broader allow it would otherwise fall through to under longest-match —
+  # `gh api *`/`glab api *` (`readonly_exec.yml`, spliced into `allow` here)
+  # for the two `api` families, `cargo *` (this file's own `allow`) for
+  # `cargo publish`. `git push*` above already covers plain push; the rest
+  # have no broader allow to out-rank but are listed for the same reason the
+  # destructive entries above are: cheap, and still holding if a user tunes
+  # `exec` on. This is the `deny` twin of `readonly_exec_prompt.yml`
+  # (`build.yml` and the `research`/`plan` splice use `prompt` for the same
+  # commands) — `auto` can't reuse that list since it needs a different
+  # grade.
+  - "bash(gh pr create*)"
+  - "bash(gh pr merge*)"
+  - "bash(gh issue create*)"
+  - "bash(gh release create*)"
+  - "bash(gh repo create*)"
+  - "bash(gh api -X POST*)"
+  - "bash(gh api -X PUT*)"
+  - "bash(gh api -X PATCH*)"
+  - "bash(gh api -X DELETE*)"
+  - "bash(gh api --method POST*)"
+  - "bash(gh api --method PUT*)"
+  - "bash(gh api --method PATCH*)"
+  - "bash(gh api --method DELETE*)"
+  - "bash(glab mr create*)"
+  - "bash(glab mr merge*)"
+  - "bash(glab issue create*)"
+  - "bash(glab release create*)"
+  - "bash(glab api -X POST*)"
+  - "bash(glab api -X PUT*)"
+  - "bash(glab api -X PATCH*)"
+  - "bash(glab api -X DELETE*)"
+  - "bash(glab api --method POST*)"
+  - "bash(glab api --method PUT*)"
+  - "bash(glab api --method PATCH*)"
+  - "bash(glab api --method DELETE*)"
+  - "bash(npm publish*)"
+  - "bash(cargo publish*)"
 allow:
   - read
   - write
   - "bash(cargo *)"
   - "bash(make *)"
-  - "bash(git status)"
-  - "bash(git diff *)"
-  - "bash(git log *)"
 max_depth: 2
 max_agents: 4
 question_timeout: 60
-sandbox: bwrap
+# Sandbox is deliberately NOT declared here. ADR-0104 shipped bubblewrap as an
+# *opt-in* (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it in every built-in mode
+# silently made it mandatory, which broke ordinary work — a confined `git push`
+# fails with "Bad owner or permissions on /etc/ssh/ssh_config.d/…" because the
+# namespace changes the ownership ssh sees on its own config. The mechanism
+# stays (a mode may declare `sandbox:`, and ENTANGLEMENT_SANDBOX may only
+# tighten it, ADR-0207 §6) — the shipped defaults just don't turn it on.

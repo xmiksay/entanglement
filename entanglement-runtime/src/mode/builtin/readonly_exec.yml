@@ -1,0 +1,152 @@
+# Shared read-only exec allowlist, spliced into `research`, `plan` and
+# `auto` at parse time (see `readonly_exec_allow` in `../builtin.rs`). One
+# list, one place to edit — the old `research`/`auto` allow lists disagreed
+# on contents (no `git`, no `rg` in one of them) simply because nobody had
+# to look at both when editing either. `build` needs none of this: it
+# class-allows `exec` outright.
+#
+# Every entry uses the `bash(pattern)` scoped-tool grammar, which also
+# grades `call` (ADR-0207 §4: one Exec capability, two spellings). A
+# trailing `*` with **no separating space** (`"bash(ls*)"`, not
+# `"bash(ls *)"`) is deliberate: `glob_match` anchors at the start of the
+# command string, so `ls*` matches both bare `ls` (the star matches the
+# empty tail) and `ls -la` — bare invocation is exactly what prompted for
+# an approval before this change (`plan` had no exec allowance at all, so
+# even a bare `ls` triggered one).
+#
+# Git is enumerated by subcommand rather than a broad `git *` (do not
+# widen this to `git *`): enumerating a subcommand list excludes
+# `push`/`reset`/`checkout`/`clean`/`rebase` by construction, which a
+# blacklist can't guarantee — a blacklist only excludes what someone
+# thought to name. `git branch`/`git tag`/`git remote` each have a
+# mutating form (`-d`/`-D`, creating a tag, `add`/`remove`/`set-url`), so
+# those three stay exact (no trailing `*`) rather than prefix-matched —
+# widening them to `git branch*` would also allow `git branch -D main`.
+# `git config --get*` is scoped to the read-only `--get`/`--get-all`/
+# `--get-regexp` family, never bare `git config` (which also `--set`s).
+# The rest (`status`/`log`/`diff`/`show`/`blame`/`describe`/`rev-parse`/
+# `ls-files`/`shortlog`) never mutate the repo regardless of flags, so they
+# take the same bare-or-args `*` treatment as the plain Unix tools above.
+#
+# Deliberately excluded, do not add: `env`, `printenv`, `export`, `set`.
+# They don't write anything, but they dump every secret in the process
+# environment (`ZAI_API_KEY` and friends) straight into the transcript and
+# the model's own context — a different risk class from "reads a file",
+# and the reason this list stops short of "every read-only-sounding
+# command."
+#
+# Also deliberately NOT deny-listed: `find -delete`, `sed -i`, `awk > file`
+# and anything else these patterns reach that can write or delete. That is
+# an accepted, explicit trade-off (a user asked for these commands to stop
+# prompting, knowing some of them can mutate), not an oversight — do not
+# "complete" this file with deny rules for them.
+- "bash(ls*)"
+- "bash(pwd*)"
+- "bash(find*)"
+- "bash(tree*)"
+- "bash(stat*)"
+- "bash(file*)"
+- "bash(du*)"
+- "bash(df*)"
+- "bash(which*)"
+- "bash(realpath*)"
+- "bash(basename*)"
+- "bash(dirname*)"
+- "bash(readlink*)"
+- "bash(cat*)"
+- "bash(head*)"
+- "bash(tail*)"
+- "bash(nl*)"
+- "bash(wc*)"
+- "bash(grep*)"
+- "bash(rg*)"
+- "bash(fd*)"
+- "bash(ag*)"
+- "bash(sed*)"
+- "bash(awk*)"
+- "bash(sort*)"
+- "bash(uniq*)"
+- "bash(cut*)"
+- "bash(tr*)"
+- "bash(diff*)"
+- "bash(comm*)"
+- "bash(paste*)"
+- "bash(column*)"
+- "bash(jq*)"
+- "bash(yq*)"
+- "bash(echo*)"
+- "bash(date*)"
+- "bash(uname*)"
+- "bash(hostname*)"
+- "bash(whoami*)"
+- "bash(git status*)"
+- "bash(git log*)"
+- "bash(git diff*)"
+- "bash(git show*)"
+- "bash(git blame*)"
+- "bash(git describe*)"
+- "bash(git rev-parse*)"
+- "bash(git ls-files*)"
+- "bash(git shortlog*)"
+- "bash(git config --get*)"
+# `branch`/`tag`/`remote` take the listing *flags* explicitly rather than a
+# trailing `*`, because `branch -D`, `tag <name>` and `remote add` mutate and
+# a bare wildcard would admit them. Each flag below is read-only, and none is
+# a prefix of a destructive one (`-a`/`-r`/`-v` never reach `-d`/`-D`/`-m`).
+- "bash(git branch)"
+- "bash(git branch -a*)"
+- "bash(git branch -r*)"
+- "bash(git branch -v*)"
+- "bash(git branch --list*)"
+- "bash(git branch --all*)"
+- "bash(git branch --remote*)"
+- "bash(git tag)"
+- "bash(git tag -l*)"
+- "bash(git tag -n*)"
+- "bash(git tag --list*)"
+- "bash(git remote)"
+- "bash(git remote -v*)"
+- "bash(git remote show*)"
+- "bash(git remote get-url*)"
+- "bash(git stash list)"
+#
+# `gh`/`glab` read access: research, plan and auto all need to look up
+# issues/PRs/CI status without prompting for every lookup. Enumerated by
+# subcommand exactly like git and for the same reason — a broad `gh *`/
+# `glab *` would also admit `gh pr create`/`gh issue close`/a mutating
+# `gh api -X DELETE ...`, which are exactly the outward-facing writes this
+# file exists to keep behind a prompt (or a hard deny in `auto`). `gh api *`/
+# `glab api *` stay broad on purpose — most `api` calls are GETs — but every
+# mutating-method spelling (`-X POST/PUT/PATCH/DELETE`, `--method POST/...`)
+# has a longer, more specific rule that out-ranks it under longest-match:
+# `readonly_exec_prompt.yml` (spliced into `research`/`plan`/`build`'s
+# `prompt` list) and `auto.yml`'s own `deny` list (spliced lists are all one
+# grade; `auto` needs a different one, so it can't reuse the same file).
+- "bash(gh issue list*)"
+- "bash(gh issue view*)"
+- "bash(gh pr list*)"
+- "bash(gh pr view*)"
+- "bash(gh pr diff*)"
+- "bash(gh pr checks*)"
+- "bash(gh pr status*)"
+- "bash(gh repo view*)"
+- "bash(gh run list*)"
+- "bash(gh run view*)"
+- "bash(gh release list*)"
+- "bash(gh release view*)"
+- "bash(gh label list*)"
+- "bash(gh workflow list*)"
+- "bash(gh search *)"
+- "bash(gh auth status*)"
+- "bash(gh api *)"
+- "bash(glab issue list*)"
+- "bash(glab issue view*)"
+- "bash(glab mr list*)"
+- "bash(glab mr view*)"
+- "bash(glab mr diff*)"
+- "bash(glab repo view*)"
+- "bash(glab ci list*)"
+- "bash(glab ci view*)"
+- "bash(glab release list*)"
+- "bash(glab auth status*)"
+- "bash(glab api *)"

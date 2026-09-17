@@ -1222,13 +1222,15 @@ async fn curated_read_only_call_rg_runs_without_approval_under_research_mode() {
 }
 
 /// A non-curated command under the same mode still escalates — the curated
-/// set is exact-prefix, so `git status` (a read-only *operation* but not on
-/// the list) keeps its `Ask`.
+/// git subcommand list is exact-prefix and deliberately excludes `checkout`
+/// (a working-tree mutation), so `git checkout` (not on the list) keeps its
+/// `Ask`. (`git status` moved onto the curated read-only set alongside
+/// `log`/`diff`/`show`/etc., so it no longer exercises this path.)
 #[tokio::test]
 async fn a_non_curated_command_still_escalates_under_research_mode() {
     let holly = spawn_with_exec_tools_using(
         "bash",
-        &serde_json::json!({ "command": "git status" }).to_string(),
+        &serde_json::json!({ "command": "git checkout main" }).to_string(),
         builtin_modes(),
     );
     let sid = SessionId::new("s1");
@@ -1245,7 +1247,7 @@ async fn a_non_curated_command_still_escalates_under_research_mode() {
     }
     assert!(
         got_request,
-        "`git status` is not in the curated set — research mode must still ask"
+        "`git checkout` is not in the curated set — research mode must still ask"
     );
 }
 

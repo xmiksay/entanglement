@@ -254,9 +254,14 @@ guessing again:
   is no fallback to unsandboxed execution when `bwrap` can't be entered (missing
   binary, unprivileged user namespaces disabled) — the spawn simply errors, like
   any missing binary (ADR-0016). Confinement is a **mode** fact now, not a
-  per-agent one: each built-in mode's `sandbox`/`sandbox_network` YAML keys
-  (all four ship `sandbox: bwrap`, none opt into `sandbox_network`) apply to
-  the session's **whole spawn sub-tree** uniformly — there is no more
+  per-agent one: each built-in mode carries `sandbox`/`sandbox_network` YAML
+  keys, but none of the four ships `sandbox: bwrap` — declaring it in every
+  built-in would make confinement mandatory instead of opt-in, which breaks
+  ordinary work (a confined `git push` fails on `/etc/ssh/ssh_config.d/`
+  ownership once the namespace changes what ssh sees). A mode is still free
+  to declare `sandbox` (and `config.yml` `modes:` tuning can add it to a
+  built-in), applying to the session's **whole spawn sub-tree** uniformly
+  once it does — there is no more
   per-spawn override or ancestor-walk clamp to compute, since every session
   under one mode already gets the identical policy. `BashTool`/`CallTool`
   still hold a `sandbox_resolver: Arc<dyn policy::SandboxResolver>` rather

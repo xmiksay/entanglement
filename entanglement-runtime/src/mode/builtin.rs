@@ -17,6 +17,23 @@ const PLAN_YML: &str = include_str!("builtin/plan.yml");
 const BUILD_YML: &str = include_str!("builtin/build.yml");
 const AUTO_YML: &str = include_str!("builtin/auto.yml");
 
+/// The read-only exec allowlist shared by `research`, `plan` and `auto`
+/// (not `build`, which class-allows `exec` outright). A plain YAML list —
+/// not a mapping merge-keyed into each mode file — because YAML's `<<`
+/// merge grammar only merges mappings; splicing a *sequence* into another
+/// mode's `allow` list still has to happen somewhere, and doing it here in
+/// Rust after each mode's own YAML parses is the whole mechanism, with no
+/// anchor/alias indirection for a reader of the mode files to untangle.
+const READONLY_EXEC_YML: &str = include_str!("builtin/readonly_exec.yml");
+
+/// The `prompt`-list counterpart of [`READONLY_EXEC_YML`]: mutating
+/// `gh api`/`glab api` spellings that must out-rank a broader allow under
+/// longest-match — the shared `bash(gh api *)`/`bash(glab api *)` allow in
+/// `research`/`plan` (via `READONLY_EXEC_YML`) and the bare `exec` class
+/// allow in `build`. Spliced into `prompt`, never `allow` — see the file's
+/// own header for why `auto` doesn't use it.
+const READONLY_EXEC_PROMPT_YML: &str = include_str!("builtin/readonly_exec_prompt.yml");
+
 /// The on-disk shape of one mode's YAML — identical to a `config.yml`
 /// `modes:` tuning entry ([`super::tune::ModeTuning`]) except `default` is
 /// mandatory here and optional (reject-if-present) there. No
@@ -46,13 +63,20 @@ pub(super) struct RawMode {
     pub limits: Limits,
 }
 
-fn parse(name: &str, yaml: &str) -> Result<Mode> {
+/// Parse `yaml`, extending its `allow` list with `extra_allow` and its
+/// `prompt` list with `extra_prompt` — the two shared splices (empty slices
+/// for a mode that needs none of its own).
+fn parse(name: &str, yaml: &str, extra_allow: &[String], extra_prompt: &[String]) -> Result<Mode> {
     let raw: RawMode = serde_yaml::from_str(yaml)
         .with_context(|| format!("mode '{name}': invalid built-in YAML"))?;
+    let mut allow = raw.allow;
+    allow.extend(extra_allow.iter().cloned());
+    let mut prompt = raw.prompt;
+    prompt.extend(extra_prompt.iter().cloned());
     Ok(Mode {
         name: name.to_string(),
         default: raw.default,
-        rules: Rules::from_lists(&raw.deny, &raw.allow, &raw.prompt),
+        rules: Rules::from_lists(&raw.deny, &allow, &prompt),
         limits: raw.limits,
         sandbox: raw.sandbox,
         sandbox_network: raw.sandbox_network,
@@ -64,11 +88,20 @@ fn parse(name: &str, yaml: &str) -> Result<Mode> {
 /// to treat it as effectively infallible (stage 4's dispatch wiring can
 /// still propagate the `Result` rather than unwrap it).
 pub(super) fn modes() -> Result<Vec<Mode>> {
+    let readonly_exec: Vec<String> = serde_yaml::from_str(READONLY_EXEC_YML)
+        .context("built-in readonly_exec.yml: invalid YAML")?;
+    let readonly_exec_prompt: Vec<String> = serde_yaml::from_str(READONLY_EXEC_PROMPT_YML)
+        .context("built-in readonly_exec_prompt.yml: invalid YAML")?;
     Ok(vec![
-        parse("research", RESEARCH_YML)?,
-        parse("plan", PLAN_YML)?,
-        parse("build", BUILD_YML)?,
-        parse("auto", AUTO_YML)?,
+        parse(
+            "research",
+            RESEARCH_YML,
+            &readonly_exec,
+            &readonly_exec_prompt,
+        )?,
+        parse("plan", PLAN_YML, &readonly_exec, &readonly_exec_prompt)?,
+        parse("build", BUILD_YML, &[], &readonly_exec_prompt)?,
+        parse("auto", AUTO_YML, &readonly_exec, &[])?,
     ])
 }
 
@@ -85,11 +118,15 @@ mod tests {
     }
 
     #[test]
-    fn research_denies_write_and_allows_read_and_curated_exec() {
-        let research = parse("research", RESEARCH_YML).expect("parses");
+    fn research_denies_write_and_plan_and_allows_read() {
+        let research = parse("research", RESEARCH_YML, &[], &[]).expect("parses");
         assert_eq!(research.default, Permission::Ask);
         assert_eq!(
             research.resolve("edit", &[Capability::Write], None, None),
+            Permission::Deny
+        );
+        assert_eq!(
+            research.resolve("write", &[Capability::Write], None, None),
             Permission::Deny
         );
         assert_eq!(
@@ -100,33 +137,145 @@ mod tests {
             research.resolve("read", &[Capability::Read], None, None),
             Permission::Allow
         );
-        for verb in ["find", "grep", "rg", "ls", "cat", "head", "tail", "wc"] {
+    }
+
+    /// The set from `readonly_exec.yml` resolves to `Allow` in all three
+    /// modes that include it. None of these commands appear in
+    /// `research.yml`/`plan.yml`/`auto.yml` themselves (those files carry no
+    /// exec allow list of their own any more), so an `Allow` here can only
+    /// come from the one spliced-in shared list — proof it is genuinely
+    /// shared, not three independent copies: editing `readonly_exec.yml`
+    /// changes all three at once.
+    #[test]
+    fn shared_readonly_exec_set_resolves_allow_in_research_plan_and_auto() {
+        let modes = modes().expect("built-ins parse");
+        let commands = [
+            "ls", // bare invocation — no arguments
+            "git status",
+            "git log --oneline",
+            "git config --get user.name",
+            "sed -i s/a/b/ file.rs", // write-capable, knowingly allowed
+            "jq .foo file.json",
+        ];
+        for mode_name in ["research", "plan", "auto"] {
+            let mode = modes
+                .iter()
+                .find(|m| m.name == mode_name)
+                .expect("mode exists");
+            for cmd in commands {
+                assert_eq!(
+                    mode.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                    Permission::Allow,
+                    "mode '{mode_name}': bash {cmd:?} should be shared-allowed"
+                );
+                assert_eq!(
+                    mode.resolve("call", &[Capability::Exec], Some(cmd), None),
+                    Permission::Allow,
+                    "mode '{mode_name}': call {cmd:?} should be allowed too"
+                );
+            }
+        }
+    }
+
+    /// The shared set enumerates read-only git subcommands rather than
+    /// allowing bare `git *`, so `push`/`reset --hard` never resolve
+    /// `Allow` — `research`/`plan` have no rule for them at all (falling
+    /// through to `default: prompt`), and `auto`'s own destructive deny
+    /// list still catches them explicitly.
+    #[test]
+    fn shared_set_does_not_allow_git_push_or_reset_hard() {
+        let modes = modes().expect("built-ins parse");
+        let research = modes.iter().find(|m| m.name == "research").expect("exists");
+        let plan = modes.iter().find(|m| m.name == "plan").expect("exists");
+        let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
+        for cmd in ["git push origin main", "git reset --hard HEAD~1"] {
             assert_eq!(
-                research.resolve(
-                    "bash",
-                    &[Capability::Exec],
-                    Some(&format!("{verb} x")),
-                    None
-                ),
-                Permission::Allow,
-                "bash {verb} must be curated-allowed"
+                research.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                Permission::Ask,
+                "research: {cmd:?} must not be shared-allowed"
             );
             assert_eq!(
-                research.resolve(
-                    "call",
-                    &[Capability::Exec],
-                    Some(&format!("{verb} x")),
-                    None
-                ),
+                plan.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                Permission::Ask,
+                "plan: {cmd:?} must not be shared-allowed"
+            );
+            assert_eq!(
+                auto.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                Permission::Deny,
+                "auto: {cmd:?} must still be explicitly denied"
+            );
+        }
+    }
+
+    /// The full gh/glab + network-mutating matrix, run through the real
+    /// `Mode::resolve` (never eyeballed against the YAML) — a pattern list
+    /// that looks right and matches wrong is exactly how the git-branch
+    /// widening broke a test this same session (#0 of this change).
+    #[test]
+    fn gh_glab_and_network_mutating_commands_resolve_as_specified() {
+        let modes = modes().expect("built-ins parse");
+        let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
+        let (research, plan, build, auto) =
+            (mode("research"), mode("plan"), mode("build"), mode("auto"));
+        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+
+        // Read-only gh/glab lookups: curated-allowed everywhere, including
+        // the plain (non-mutating) `gh api` spelling.
+        for cmd in ["gh issue list", "gh api repos/o/r", "glab mr list"] {
+            for m in [research, plan, auto] {
+                assert_eq!(resolve(m, cmd), Permission::Allow, "{}: {cmd:?}", m.name);
+            }
+            // `build` reaches the same Allow through its bare `exec` class
+            // allow, not the curated set it doesn't have.
+            assert_eq!(resolve(build, cmd), Permission::Allow, "build: {cmd:?}");
+        }
+
+        // A mutating `gh api`/`glab api` spelling must not ride the broad
+        // `api *` allow through — it must escalate (research/plan/build ask,
+        // auto denies outright), in both the `-X` and `--method` spellings.
+        for cmd in [
+            "gh api -X DELETE repos/o/r",
+            "gh api --method DELETE repos/o/r",
+            "glab api -X POST projects/1/issues",
+        ] {
+            assert_ne!(
+                resolve(research, cmd),
                 Permission::Allow,
-                "call {verb} must be allowed too — bash/call share one rule set"
+                "research: {cmd:?}"
+            );
+            assert_eq!(resolve(research, cmd), Permission::Ask, "research: {cmd:?}");
+            assert_eq!(resolve(plan, cmd), Permission::Ask, "plan: {cmd:?}");
+            assert_eq!(resolve(build, cmd), Permission::Ask, "build: {cmd:?}");
+            assert_eq!(resolve(auto, cmd), Permission::Deny, "auto: {cmd:?}");
+        }
+
+        // Plain `git push`: prompts in build (out-ranking its bare `exec`
+        // allow), denied outright in auto.
+        assert_eq!(resolve(build, "git push"), Permission::Ask);
+        assert_eq!(resolve(auto, "git push"), Permission::Deny);
+        // The destructive force-push spelling stays a hard `deny` in build
+        // too — a longer `prompt` rule could never win against it anyway.
+        assert_eq!(resolve(build, "git push --force"), Permission::Deny);
+
+        // `cargo publish`: prompts in build, denied in auto even though
+        // auto's own `allow` has a broad `bash(cargo *)`.
+        assert_eq!(resolve(build, "cargo publish"), Permission::Ask);
+        assert_eq!(resolve(auto, "cargo publish"), Permission::Deny);
+
+        // A plain read-only command is unaffected by any of the above.
+        for m in [research, plan, auto, build] {
+            assert_eq!(
+                resolve(m, "ls -la"),
+                Permission::Allow,
+                "{}: ls -la",
+                m.name
             );
         }
     }
 
     #[test]
     fn plan_allows_plan_class_and_the_plans_folder_carve_out() {
-        let plan = parse("plan", PLAN_YML).expect("parses");
+        let plan = parse("plan", PLAN_YML, &[], &[]).expect("parses");
         assert_eq!(
             plan.resolve("propose_plan", &[Capability::Plan], None, None),
             Permission::Allow
@@ -148,7 +297,7 @@ mod tests {
 
     #[test]
     fn build_defaults_to_prompt_unlike_the_old_build_agent() {
-        let build = parse("build", BUILD_YML).expect("parses");
+        let build = parse("build", BUILD_YML, &[], &[]).expect("parses");
         assert_eq!(build.default, Permission::Ask);
         assert_eq!(
             build.resolve("edit", &[Capability::Write], None, None),
@@ -168,7 +317,7 @@ mod tests {
 
     #[test]
     fn auto_defaults_to_deny_with_a_bounded_question_timeout() {
-        let auto = parse("auto", AUTO_YML).expect("parses");
+        let auto = parse("auto", AUTO_YML, &[], &[]).expect("parses");
         assert_eq!(auto.default, Permission::Deny);
         assert_eq!(auto.limits.question_timeout, 60);
     }
