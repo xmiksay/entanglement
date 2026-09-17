@@ -163,7 +163,14 @@ impl PermissionResolver for ProfileResolver {
             capability::capability_of(tool, &registry).unwrap_or(&[])
         };
         let own = mode.resolve(tool, capabilities, arg.as_deref(), workdir.as_deref());
-        clamp_to_base(own, &self.base, tool, arg.as_deref(), workdir.as_deref())
+        clamp_to_base(
+            own,
+            &self.base,
+            tool,
+            capabilities,
+            arg.as_deref(),
+            workdir.as_deref(),
+        )
     }
 }
 

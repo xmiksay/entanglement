@@ -21,7 +21,7 @@ fn embedded_defaults_when_no_files() {
     let out = inspect_config(dir.path(), &dir.path().join("nope.yml"));
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("agent:    build"), "got: {stdout}");
+    assert!(stdout.contains("agent:    general"), "got: {stdout}");
     assert!(stdout.contains("provider: (auto-detect)"), "got: {stdout}");
     assert!(stdout.contains("default: Allow"), "got: {stdout}");
 }
@@ -55,7 +55,7 @@ fn repo_layer_overrides_user_layer() {
         "got: {stdout}"
     );
     assert!(
-        stdout.contains("agent:    build        ← default"),
+        stdout.contains("agent:    general      ← default"),
         "got: {stdout}"
     );
     assert!(stdout.contains("bash: Deny"), "got: {stdout}");
@@ -75,13 +75,13 @@ fn first_run_scaffolds_a_commented_template() {
 
     // The file now exists, is fully commented, and left the defaults in force.
     let written = std::fs::read_to_string(&cfg).unwrap();
-    assert!(written.contains("#agent: build"), "got: {written}");
+    assert!(written.contains("#agent: general"), "got: {written}");
     assert!(
         written.contains("scaffolded on first run"),
         "got: {written}"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("agent:    build"), "got: {stdout}");
+    assert!(stdout.contains("agent:    general"), "got: {stdout}");
 }
 
 #[test]

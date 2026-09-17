@@ -91,6 +91,15 @@ impl Rules {
             .iter()
             .any(|e| e.class == Some(class) && e.grade == Permission::Deny)
     }
+
+    /// Every rule as `(key, grade)`, in declaration order — display-only
+    /// (`skutter inspect modes`, ADR-0207 stage 6c): longest-match doesn't
+    /// care about this order at resolution time ([`resolve`]), but a reader
+    /// comparing a mode's built-in shape against its tuned one wants to see
+    /// what was actually added, in the order it was added.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, Permission)> {
+        self.entries.iter().map(|e| (e.key.as_str(), e.grade))
+    }
 }
 
 /// A bare (unscoped) key spelled exactly like one of the five capability

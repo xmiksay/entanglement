@@ -26,6 +26,11 @@
 //!   its persisted log — closes the one blind spot the four views above can't
 //!   reach, the per-session tool overlay (ADR-0149), which has no managed file
 //!   of its own.
+//! - [`modes`] (#560, ADR-0207 stage 6c): the four permission modes' resolved
+//!   rules (built-in + `config.yml` `modes:` tuning), limits, sandbox, and
+//!   per-tool outcome for a known roster — the replacement for the mask
+//!   columns `agents` lost in stage 4c, since authority moved off the agent
+//!   and onto the session's independent permission mode.
 //!
 //! Every `render_*` helper returns a `String` rather than printing directly, so
 //! the TUI in-session inspection overlay ([`tui`], #214) renders the exact same
@@ -36,6 +41,7 @@ mod aux_models;
 mod config;
 mod mcp;
 mod mcp_tokens;
+mod modes;
 mod prompt;
 mod session;
 mod skills;
@@ -46,6 +52,7 @@ pub use aux_models::inspect_aux_models;
 pub use config::inspect_config;
 pub use mcp::inspect_mcp;
 pub use mcp_tokens::inspect_mcp_tokens;
+pub use modes::inspect_modes;
 pub use prompt::inspect_prompt;
 pub use session::inspect_session;
 pub use skills::inspect_skills;

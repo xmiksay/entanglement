@@ -183,8 +183,14 @@ pub fn upsert_block(text: &str, key: &str, block: &str, comment: &str) -> String
 
 /// Replace `segments[start..end]` with `block`'s lines, reusing the replaced
 /// key line's own terminator so a CRLF file stays CRLF and a file whose last
-/// line has no newline doesn't grow one.
-fn splice(segments: &[&str], start: usize, end: usize, block: &str) -> String {
+/// line has no newline doesn't grow one. `pub(super)`: [`super::migrate_permissions`]
+/// reuses this pure line-range splice with its own, more conservative block-end
+/// rule ([`live_block_end`]'s column-0-comment-terminates-the-block heuristic,
+/// built for the tightly controlled first-run scaffold, mis-detects a
+/// hand-edited file that leaves a stray commented example between a live key
+/// and its real indented content — found corrupting a real `config.yml` via
+/// the integration suite).
+pub(super) fn splice(segments: &[&str], start: usize, end: usize, block: &str) -> String {
     let term = if segments[start].ends_with("\r\n") {
         "\r\n"
     } else {
@@ -467,12 +473,12 @@ mod tests {
         // Sibling settings and the scaffold's documentation are still there.
         assert!(text.contains("# entanglement — user configuration."));
         assert!(
-            text.contains("#agent: build"),
+            text.contains("#agent: general"),
             "untouched keys stay commented"
         );
         assert_eq!(
             resolved.agent.as_deref(),
-            Some("build"),
+            Some("general"),
             "from the defaults"
         );
     }

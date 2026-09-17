@@ -90,7 +90,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(app.agent().len() as u16 + 4),
+            Constraint::Length(app.mode().len() as u16 + 4),
             Constraint::Min(0),
         ])
         .split(chunks[4]);

@@ -111,17 +111,28 @@ pub fn resolve_model(
 /// a pure ceiling (it only tightens); the orthogonal "always allow" grants (#174,
 /// [`crate::grants`]) that *raise* an `Ask` are applied by the executor *after*
 /// this clamp, so a `Deny` here can never be re-opened by a stale grant.
+///
+/// `base` keeps its historical [`PermissionProfile`] type — the type every
+/// call site in the executor, `BindingPolicy`, and ~30 test fixtures already
+/// threads by value — but is graded through [`crate::mode::Mode::resolve`]
+/// via [`crate::mode::Mode::from_permission_profile`] (ADR-0207 stage 6c),
+/// not `PermissionProfile`'s own matcher: `config.yml`'s `permissions:`
+/// ceiling adopts the same `default`/`allow`/`deny`/`prompt` grammar a mode
+/// body uses (§5), so `capabilities` — the call's resolved
+/// [`crate::capability::Capability`] set — lets a bare `deny: [write]`
+/// ceiling rule catch every write-capable tool, not just one named
+/// literally `write`. An allow-all `base` with no rules converts to an
+/// empty-rules `Mode` and resolves identically to before this existed.
 pub fn clamp_to_base(
     perm: Permission,
     base: &PermissionProfile,
     tool: &str,
+    capabilities: &[crate::capability::Capability],
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    min_permission(
-        perm,
-        crate::permission_bash::resolve_scoped_bash_aware(base, tool, arg, workdir),
-    )
+    let ceiling = crate::mode::Mode::from_permission_profile(base);
+    min_permission(perm, ceiling.resolve(tool, capabilities, arg, workdir))
 }
 
 /// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
@@ -524,28 +535,61 @@ mod tests {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &open, "bash", None, None),
+            clamp_to_base(Permission::Allow, &open, "bash", &[], None, None),
             Permission::Allow
         );
         assert_eq!(
-            clamp_to_base(Permission::Ask, &open, "bash", None, None),
+            clamp_to_base(Permission::Ask, &open, "bash", &[], None, None),
             Permission::Ask
         );
         // A base `bash: ask` tightens an agent's Allow to Ask, but leaves a
         // stricter agent Deny untouched (least-privilege wins either way).
         let base = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", None, None),
+            clamp_to_base(Permission::Allow, &base, "bash", &[], None, None),
             Permission::Ask
         );
         assert_eq!(
-            clamp_to_base(Permission::Deny, &base, "bash", None, None),
+            clamp_to_base(Permission::Deny, &base, "bash", &[], None, None),
             Permission::Deny
         );
         // The base never loosens: base Allow over an agent Ask stays Ask.
         assert_eq!(
-            clamp_to_base(Permission::Ask, &base, "read", None, None),
+            clamp_to_base(Permission::Ask, &base, "read", &[], None, None),
             Permission::Ask
+        );
+    }
+
+    /// ADR-0207 stage 6c: `config.yml`'s `permissions: {deny: [write]}`
+    /// ceiling — a bare capability-class key spelled exactly like a mode's
+    /// own `deny: [write]` — must deny every write-capable tool (`edit`
+    /// included), not just a literal tool named `write`. This is the
+    /// ceiling's own version of the tuning guard's worked example.
+    #[test]
+    fn clamp_to_base_honors_capability_class_ceiling_rules() {
+        let base = PermissionProfile::new(Permission::Allow).with("write", Permission::Deny);
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "edit",
+                &[crate::capability::Capability::Write],
+                None,
+                None
+            ),
+            Permission::Deny,
+            "edit is Write-capable even though the ceiling rule literally says `write`"
+        );
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "read",
+                &[crate::capability::Capability::Read],
+                None,
+                None
+            ),
+            Permission::Allow
         );
     }
 
@@ -656,6 +700,7 @@ mod tests {
                 Permission::Allow,
                 &deny_etc,
                 "bash",
+                &[],
                 None,
                 Some("/etc/cron.d")
             ),
@@ -668,11 +713,25 @@ mod tests {
         // A config ceiling that hard-denies `rm *` but leaves other bash alone.
         let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("rm -rf /"), None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                &[],
+                Some("rm -rf /"),
+                None
+            ),
             Permission::Deny
         );
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("git status"), None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                &[],
+                Some("git status"),
+                None
+            ),
             Permission::Allow
         );
     }
@@ -689,6 +748,7 @@ mod tests {
                 Permission::Allow,
                 &base,
                 "bash",
+                &[],
                 Some("find . && rm x"),
                 None
             ),
@@ -701,6 +761,7 @@ mod tests {
                 Permission::Allow,
                 &base,
                 "bash",
+                &[],
                 Some("find . && git status"),
                 None
             ),

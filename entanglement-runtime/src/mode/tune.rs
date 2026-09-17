@@ -18,11 +18,13 @@
 //! supplies the resolver, and stage 4 will pass one backed by the real
 //! registry.
 
-use anyhow::{bail, Result};
+use std::collections::HashMap;
+
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::rules::{capability_class, rule_tool_name};
-use super::Mode;
+use super::{builtin, Mode, ModeTable};
 use crate::capability::Capability;
 use entanglement_core::Permission;
 
@@ -31,7 +33,7 @@ use entanglement_core::Permission;
 /// (ADR-0207 §4/§5). `default` is kept as a raw, never-parsed string purely
 /// so [`apply`] can name-and-reject an attempt to set it, instead of serde
 /// silently accepting and ignoring the key.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModeTuning {
     #[serde(default)]
@@ -119,6 +121,36 @@ fn reject_if_weakens_class_deny(
         }
     }
     Ok(())
+}
+
+/// Build the runtime's mode table for one process (ADR-0207 stage 6c): the
+/// four built-ins, each tuned by its `config.yml` `modes:` entry if present.
+/// `tuning`'s keys must name one of the four built-in modes — there is no
+/// syntax to define a fifth (§2) — so an unrecognized key is a loud config
+/// error, not a silently-ignored typo. `capability_of` should be backed by
+/// the live [`crate::tools::ToolRegistry`] (`crate::capability::capability_of`)
+/// so [`apply`]'s guard resolves a rule's real capability set, not a guess.
+pub fn build_table(
+    tuning: &HashMap<String, ModeTuning>,
+    capability_of: &dyn Fn(&str) -> Option<&'static [Capability]>,
+) -> Result<ModeTable> {
+    let builtins = builtin::modes().context("built-in permission modes must parse")?;
+    for name in tuning.keys() {
+        if !builtins.iter().any(|m| &m.name == name) {
+            bail!(
+                "config.yml `modes: {name}`: not a built-in permission mode \
+                 (research/plan/build/auto) — a mode can only be tuned, never defined"
+            );
+        }
+    }
+    let modes = builtins
+        .into_iter()
+        .map(|m| match tuning.get(&m.name) {
+            Some(t) => apply(&m, t, capability_of),
+            None => Ok(m),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ModeTable::new(modes)
 }
 
 #[cfg(test)]
@@ -243,5 +275,67 @@ mod tests {
             tuned.resolve("bash", &[Capability::Exec], Some("cargo test --lib"), None),
             Permission::Allow
         );
+    }
+
+    #[test]
+    fn build_table_with_no_tuning_is_the_plain_built_ins() {
+        let table = build_table(&HashMap::new(), &capability_of).expect("no tuning is always ok");
+        let mut names: Vec<&str> = table.names().collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["auto", "build", "plan", "research"]);
+    }
+
+    /// The task's own acceptance case: `research: allow: ["bash(cargo check)"]`
+    /// is accepted and actually widens `research`.
+    #[test]
+    fn build_table_applies_tuning_to_the_named_mode() {
+        let mut tuning = HashMap::new();
+        tuning.insert(
+            "research".to_string(),
+            ModeTuning {
+                allow: vec!["bash(cargo check)".to_string()],
+                ..Default::default()
+            },
+        );
+        let table = build_table(&tuning, &capability_of).expect("valid tuning");
+        let research = table.get("research").expect("research exists");
+        assert_eq!(
+            research.resolve("bash", &[Capability::Exec], Some("cargo check"), None),
+            Permission::Allow
+        );
+        // An untouched mode is unaffected.
+        let build = table.get("build").expect("build exists");
+        assert_eq!(
+            build.resolve("edit", &[Capability::Write], None, None),
+            Permission::Allow
+        );
+    }
+
+    /// The task's own rejection case: `research: allow: ["write(*)"]` must be
+    /// rejected — `build_table` propagates `apply`'s guard.
+    #[test]
+    fn build_table_propagates_the_capability_guard_rejection() {
+        let mut tuning = HashMap::new();
+        tuning.insert(
+            "research".to_string(),
+            ModeTuning {
+                allow: vec!["write(*)".to_string()],
+                ..Default::default()
+            },
+        );
+        let err = build_table(&tuning, &capability_of)
+            .expect_err("research: allow: [\"write(*)\"] must be rejected");
+        assert!(err.to_string().contains("write(*)"), "got: {err}");
+    }
+
+    /// ADR-0207 §2: the four built-ins are fixed — `modes:` can tune one,
+    /// never define a fifth.
+    #[test]
+    fn build_table_rejects_an_unknown_mode_name() {
+        let mut tuning = HashMap::new();
+        tuning.insert("researchx".to_string(), ModeTuning::default());
+        let err = build_table(&tuning, &capability_of)
+            .expect_err("an unrecognized mode name in `modes:` must be a loud error");
+        assert!(err.to_string().contains("researchx"), "got: {err}");
     }
 }

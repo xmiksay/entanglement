@@ -148,53 +148,39 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     AGENT_SEND_TOOL,
 ];
 
-/// Capability-level permission keys (#418, ADR-0114) and the tools each fans
-/// out to when a profile's `permission:` map uses the capability name instead
-/// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
-/// means a bare `read: allow` grades all three read-only tools identically.
-/// `call`'s member list is `bash` only: the literal `call` tool is
-/// [`MULTI_GROUP`], not a single-group member — see there for why. This table
-/// is the fixed, compile-time built-in membership only — an external MCP tool
-/// (`mcp__<server>__<tool>`) is never a member here, since it isn't
-/// self-describing; a bare capability key additionally fans out to whatever an
-/// MCP server's config-side `capabilities:` annotation maps to it (#426,
-/// `entanglement_runtime::mcp::capability_index`), a *data-driven* extension
-/// of this same table applied alongside it in
-/// `agents::expand_capabilities`. A config-declared endpoint tool
-/// (`endpoint__<name>`, #560 P8) joins the *same* data-driven `call` index —
-/// unlike an MCP tool, with no per-tool config hint needed: every endpoint
-/// tool is unconditionally a network call, so `config::parse`/`main.rs`
-/// simply add `endpoint__<name>` to the index's `call` bucket for every
-/// declared endpoint alongside whatever the `mcp:` section contributed
-/// (`entanglement_core::PermissionProfile::resolve` matches a rule key
-/// against a tool name literally or via the single `*` wildcard — not an
-/// arbitrary glob — so this can't be a static `endpoint__*` table entry the
-/// way an agent tool *mask* pattern could be, ADR-0148; it has to be a
-/// concrete per-name index like MCP's). A skill-declared endpoint tool
-/// (`skill__<skill>__<name>`) is deliberately **not** in that index — it
-/// shares the `skill__` namespace with alias/rhai-backed skill tools that
-/// grade under a different name entirely (see `skills::alias_tool`), so a
-/// profile wanting to grade it under `call` names it explicitly.
+/// Capability-level permission keys (#418, ADR-0114). ADR-0207 §3 replaced
+/// this table's role as the *grading* vocabulary — a mode/ceiling rule's bare
+/// class key (`read`/`write`/`exec`/`plan`/`control`) now matches by each
+/// tool's own declared [`crate::capability::Capability`] (`mode::rules`'s
+/// private `capability_class`), not this static membership list, and the
+/// agent-frontmatter/config-ceiling expansion that used to consume it
+/// (`agents::expand_capabilities`/`permission_from_value`) is retired along
+/// with it. What's left: validating an MCP server's
+/// config-side `capabilities:` annotation strings
+/// ([`is_capability_name`], `entanglement_runtime::mcp::capability_index`)
+/// and the `SessionDir` grant-widening read-triad check
+/// ([`is_read_capability_member`], ADR-0126) — both orthogonal to mode/
+/// ceiling grading.
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write", "apply_patch"]),
     ("call", &["bash"]),
 ];
 
-/// Tools that belong to *every* capability at once, because they can
-/// themselves read, write, or execute regardless of which capability key
-/// graded them: the argv-exec `call` tool and the sandboxed `rhai` script
-/// (bound to the quintet plus `call`/`bash`, see [`BINDING_TOOLS`]). Never
-/// expanded by a bare/arg-scoped capability rule — instead, `permission_from_value`
-/// grades them by the least-privileged bare `read`/`write`/`call` (+ literal
-/// `rhai`) grade a profile sets, so restricting any one capability tightens
-/// what these general-purpose tools may do.
+/// Tools that used to belong to *every* ADR-0114 capability at once for the
+/// now-retired frontmatter/ceiling expansion this fed
+/// (`agents::expand_capabilities`) — kept only as a historical marker;
+/// nothing reads it any more. Superseded by each tool's own declared
+/// [`crate::capability::Capability`] set (`call`/`rhai` both carry
+/// `Capability::Exec` directly, `rhai` several — see
+/// `crate::capability::runtime_owned`), which needs no such special-cased
+/// multi-membership list.
 pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
 
-/// Whether `name` names a capability (`read`/`write`/`call`) — shared by the
-/// frontmatter/ceiling expansion above and by an MCP server's config-side
-/// `capabilities` annotation (#426, `entanglement_runtime::mcp::capability_index`),
-/// which validates its declared capability strings against the same table.
+/// Whether `name` names a capability (`read`/`write`/`call`) — used by an MCP
+/// server's config-side `capabilities` annotation (#426,
+/// `entanglement_runtime::mcp::capability_index`), which validates its
+/// declared capability strings against the same table.
 pub fn is_capability_name(name: &str) -> bool {
     CAPABILITIES.iter().any(|(n, _)| *n == name)
 }

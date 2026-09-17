@@ -71,6 +71,31 @@ pub fn capability_of(name: &str, registry: &ToolRegistry) -> Option<&'static [Ca
     runtime_owned(name).or_else(|| registry.get(name).map(|tool| tool.capabilities()))
 }
 
+/// [`capability_of`] for the two call sites that have no live [`ToolRegistry`]
+/// in hand: [`crate::script::binding_policy::BindingPolicy`] grades a `rhai`
+/// binding call before dispatch ever looks one up, and `skutter inspect
+/// modes` (#560, ADR-0207 stage 6c) deliberately runs with "no engine"
+/// (matching every other `inspect` subcommand). Both only ever need the
+/// fixed, always-registered host quintet-plus-two
+/// ([`crate::tool_names::BINDING_TOOLS`]) plus `apply_patch`/`load_skill` —
+/// a closed set whose capability is a compile-time fact of each `Tool` impl,
+/// not something registration state could change — so hardcoding it here
+/// (mirroring [`runtime_owned`]'s own style) is precise, not a guess, and
+/// costs no second source of truth: growing the *real* per-tool capability
+/// declarations would still require touching this table by hand exactly
+/// like `runtime_owned`'s already does for the pseudo-tools.
+pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
+    if let Some(c) = runtime_owned(name) {
+        return Some(c);
+    }
+    match name {
+        "read" | "glob" | "grep" | "load_skill" => Some(&[Capability::Read]),
+        "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
+        "bash" | "call" => Some(&[Capability::Exec]),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +142,21 @@ mod tests {
     #[test]
     fn unknown_name_is_not_runtime_owned() {
         assert_eq!(runtime_owned("not_a_real_tool"), None);
+    }
+
+    #[test]
+    fn static_capability_of_covers_binding_tools_with_no_registry() {
+        for tool in crate::tool_names::BINDING_TOOLS {
+            assert!(
+                static_capability_of(tool).is_some(),
+                "{tool} must resolve with no live registry"
+            );
+        }
+        assert_eq!(
+            static_capability_of("write"),
+            Some([Capability::Write].as_slice())
+        );
+        assert_eq!(static_capability_of("not_a_real_tool"), None);
     }
 
     #[test]

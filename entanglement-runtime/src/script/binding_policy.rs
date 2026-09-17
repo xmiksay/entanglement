@@ -10,8 +10,7 @@ use std::sync::Arc;
 use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
 
 use crate::permission::{
-    ancestor_chain, min_permission, overlay_denies, overlay_entry_grade, overlay_grade_entry,
-    permission_workdir,
+    ancestor_chain, overlay_denies, overlay_entry_grade, overlay_grade_entry, permission_workdir,
 };
 use crate::permission_bash::resolve_scoped_bash_aware;
 use crate::permission_path::grading_arg;
@@ -146,9 +145,19 @@ impl BindingPolicy {
                     arg.as_deref(),
                     workdir.as_deref(),
                 );
-                min_permission(
+                // `tool` is always one of the fixed `BINDING_TOOLS` names here
+                // (via `graded_name`'s alias resolution above), so the ceiling
+                // clamp can use the no-registry static table (ADR-0207 stage
+                // 6c) — `BindingPolicy` grades a call before dispatch ever
+                // looks a live `ToolRegistry` up for it.
+                let capabilities = crate::capability::static_capability_of(tool).unwrap_or(&[]);
+                crate::permission::clamp_to_base(
                     grade,
-                    resolve_scoped_bash_aware(&self.base, tool, arg.as_deref(), workdir.as_deref()),
+                    &self.base,
+                    tool,
+                    capabilities,
+                    arg.as_deref(),
+                    workdir.as_deref(),
                 )
             }
             None => {

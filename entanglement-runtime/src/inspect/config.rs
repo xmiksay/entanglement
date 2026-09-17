@@ -134,7 +134,8 @@ fn render_config(resolved: &Resolved) -> String {
 
     let _ = writeln!(
         out,
-        "\npermissions ceiling (← {}, last matching rule wins):",
+        "\npermissions ceiling (← {}, longest matching rule wins, same grammar \
+         as a permission mode — see `inspect modes`):",
         from("permissions")
     );
     let _ = writeln!(out, "  default: {:?}", c.permissions.default);

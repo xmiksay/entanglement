@@ -23,22 +23,38 @@
 //!
 //! # Sections
 //!
-//! - `permissions` — the first section: tool name → `allow | ask | deny`, a
-//!   global ceiling combined least-privilege with each agent profile (see
-//!   [`crate::permission::clamp_to_base`]). Argument/path patterns (#173) build on
-//!   it. It is a pure *ceiling*; the orthogonal "always allow" grants (#174) that
-//!   *raise* an `Ask` live in a separate managed file ([`crate::grants`]), not here.
+//! - `permissions` — the first section: a `default`/`allow`/`deny`/`prompt`
+//!   ceiling in the same grammar a permission mode body uses (ADR-0207 §4/§5,
+//!   stage 6c) — not the old free-form `tool: allow|ask|deny` map, which a
+//!   startup pass ([`migrate_permissions`]) self-heals in place. Graded
+//!   least-privilege against the session's own mode via
+//!   [`crate::permission::clamp_to_base`], through
+//!   [`crate::mode::Mode::from_permission_profile`] so a bare capability-class
+//!   key (`deny: [write]`) catches every write-capable tool, not just one
+//!   named literally `write`. Argument/path patterns (#173) build on it. It
+//!   is a pure *ceiling*; the orthogonal "always allow" grants (#174) that
+//!   *raise* an `Ask` live in a separate managed file ([`crate::grants`]), not
+//!   here.
+//! - `modes` — per-mode tuning (ADR-0207 §5): adds `allow`/`deny`/`prompt`
+//!   rules onto one of the four built-in modes (there is no syntax to define
+//!   a fifth, or to remove a shipped rule — longest-match already makes a
+//!   removal syntax unnecessary). Applied over
+//!   [`crate::mode::ModeTable::builtin`] once a live tool registry exists to
+//!   validate a tuning rule's capability against ([`mode::apply_tuning`]).
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
 //!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
-//! - general settings — `agent` / `provider` / `model` / `verbose` / `max_turns`
-//!   / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an explicit CLI
-//!   flag or environment variable wins over the file (env > config > embedded
-//!   default). `idle_ttl_secs` (#401, ADR-0090) maps onto
-//!   `EngineConfig::idle_ttl`; `None` (the default) leaves auto-hibernation
-//!   off, exactly as before this setting existed. `auto_compact` (ADR-0103)
-//!   maps onto `EngineConfig::auto_compact` the same way — `None` keeps the
-//!   engine default (`true`), `false` restores prune-then-refuse.
+//! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
+//!   `max_turns` / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an
+//!   explicit CLI flag or environment variable wins over the file (env >
+//!   config > embedded default) — `mode`'s precedence is `--mode` > this >
+//!   the engine's `DEFAULT_MODE` (ADR-0207 §12), mirroring `agent`'s own
+//!   `--agent` > this > `DEFAULT_PROFILE`. `idle_ttl_secs` (#401, ADR-0090)
+//!   maps onto `EngineConfig::idle_ttl`; `None` (the default) leaves
+//!   auto-hibernation off, exactly as before this setting existed.
+//!   `auto_compact` (ADR-0103) maps onto `EngineConfig::auto_compact` the
+//!   same way — `None` keeps the engine default (`true`), `false` restores
+//!   prune-then-refuse.
 //!
 //! # First-run scaffold (#219)
 //!
@@ -53,27 +69,27 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{
-    Discovery, Permission, PermissionProfile, ToolAdvertising, WebSearchConfig,
-};
+use entanglement_core::{Discovery, PermissionProfile, ToolAdvertising, WebSearchConfig};
 use serde::Deserialize;
 use serde_yaml::Value;
 
-use crate::agents::permission_from_value;
 use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
+use crate::mode;
 
 pub mod agent_generation;
 pub mod agent_models;
 pub mod atomic;
 pub mod aux_models;
+mod ceiling;
 mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;
 pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
+mod migrate_permissions;
 pub mod write_key;
 
 pub use mcp_persist::save_mcp;
@@ -154,16 +170,37 @@ pub(crate) fn bare_config() -> Config {
 struct RawConfig {
     #[serde(default)]
     agent: Option<String>,
+    /// Default permission mode (ADR-0207 §12): `--mode` > this > the engine's
+    /// `DEFAULT_MODE`. Not validated against the table here — parsing has no
+    /// registry to build one against ([`ceiling`]'s doc); an unknown name is
+    /// caught where the table is actually built (`main.rs`, alongside
+    /// `modes:` below), the same reason `agent` above isn't validated here
+    /// either.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     provider: Option<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     verbose: bool,
-    /// Parsed into a [`PermissionProfile`] via the same reader agent frontmatter
-    /// uses ([`permission_from_value`]).
+    /// Parsed into the config ceiling's [`entanglement_core::PermissionProfile`]
+    /// via [`ceiling::build_ceiling_profile`] (ADR-0207 stage 6c) — the same
+    /// `default`/`allow`/`deny`/`prompt` grammar a mode body uses, not the
+    /// retired free-form `tool: allow|ask|deny` map. A file still in the old
+    /// shape is self-healed by [`migrate_permissions`] before it ever
+    /// reaches this deserialize.
     #[serde(default)]
-    permissions: Option<Value>,
+    permissions: Option<ceiling::RawCeiling>,
+    /// Per-mode tuning (ADR-0207 §5): each key must name one of the four
+    /// built-in modes (`research`/`plan`/`build`/`auto`) — there is no
+    /// syntax to define a fifth (§2) — and may only *add* `allow`/`deny`/
+    /// `prompt` rules, validated against a live [`crate::capability::Capability`]
+    /// resolver once the tool registry exists ([`mode::apply_tuning`],
+    /// `main.rs`). An unrecognized mode name is a loud error there, not
+    /// silently ignored here.
+    #[serde(default)]
+    modes: HashMap<String, mode::ModeTuning>,
     /// Lifecycle hooks (#199): external commands run around tool execution and on
     /// prompt ingress. Deserializes straight into [`Hooks`] (plain serde, unlike
     /// `permissions`); absent ⇒ no hooks.
@@ -238,14 +275,29 @@ struct RawConfig {
 pub struct Config {
     /// Default agent profile when the CLI passes none.
     pub agent: Option<String>,
+    /// Default permission mode when `--mode` is absent (ADR-0207 §12):
+    /// `--mode` > this > the engine's `DEFAULT_MODE` ("build"). `None` when
+    /// unset — the CLI falls through to the engine default itself, exactly
+    /// like `agent` above.
+    pub mode: Option<String>,
     /// Provider name (like `ENTANGLEMENT_PROVIDER`); `None` ⇒ auto-detect.
     pub provider: Option<String>,
     /// Model id override; `None` ⇒ the provider's catalog default.
     pub model: Option<String>,
     /// Log at `debug` by default (like `--verbose`).
     pub verbose: bool,
-    /// The global permission ceiling. Allow-all by default (a no-op).
+    /// The global permission ceiling, in the same `default`/`allow`/`deny`/
+    /// `prompt` grammar a mode body uses (ADR-0207 stage 6c). Allow-all by
+    /// default (a no-op). Graded through [`crate::mode::Mode::resolve`] via
+    /// [`crate::mode::Mode::from_permission_profile`], not this type's own
+    /// matcher — see [`crate::permission::clamp_to_base`].
     pub permissions: PermissionProfile,
+    /// Per-mode tuning (ADR-0207 §5): raw `config.yml` `modes:` data, keyed
+    /// by built-in mode name. Applied over [`crate::mode::ModeTable::builtin`]
+    /// once a live [`crate::tools::ToolRegistry`] exists to validate against
+    /// (`main.rs`) — kept raw here since `Config` resolution has no registry
+    /// to build a real [`crate::mode::ModeTable`] with.
+    pub modes: HashMap<String, mode::ModeTuning>,
     /// Lifecycle hooks (#199). Empty by default (a no-op).
     pub hooks: Hooks,
     /// External MCP tool servers (#198). Empty by default (a no-op).
@@ -358,13 +410,22 @@ impl Config {
 fn discover(root: &Path) -> Result<Vec<RawLayer>> {
     let mut layers = vec![default_layer()];
     if let Some(path) = user_config_path() {
+        migrate_permissions::migrate_if_legacy(&path).with_context(|| {
+            format!(
+                "migrating legacy `permissions:` shape in {}",
+                path.display()
+            )
+        })?;
         read_layer(ConfigLayer::User, &path, &mut layers)?;
     }
-    read_layer(
-        ConfigLayer::Project,
-        &root.join(".entanglement").join("config.yml"),
-        &mut layers,
-    )?;
+    let project_path = root.join(".entanglement").join("config.yml");
+    migrate_permissions::migrate_if_legacy(&project_path).with_context(|| {
+        format!(
+            "migrating legacy `permissions:` shape in {}",
+            project_path.display()
+        )
+    })?;
+    read_layer(ConfigLayer::Project, &project_path, &mut layers)?;
     Ok(layers)
 }
 
@@ -413,30 +474,15 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         merged = merge_value(merged, rl.doc.clone());
     }
     let raw: RawConfig = serde_yaml::from_value(merged).context("validating merged user config")?;
-    // The ceiling's `permission_from_value` needs the same MCP capability
-    // index (#426) `agents::load_registry` uses, built from this same `mcp:`
-    // section — `read: allow` in the ceiling should cover an annotated MCP
-    // tool exactly like it does in agent frontmatter.
-    let mut mcp_capabilities =
-        crate::mcp::capability_index(&raw.mcp).context("in user config `mcp` capabilities")?;
-    // Every declared endpoint tool joins the same data-driven `call` index
-    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
-    mcp_capabilities
-        .entry("call".to_string())
-        .or_default()
-        .extend(crate::endpoint::call_capability_names(&raw.endpoints));
-    let permissions = match &raw.permissions {
-        Some(v) => {
-            permission_from_value(v, &mcp_capabilities).context("in user config `permissions`")?
-        }
-        None => PermissionProfile::new(Permission::Allow),
-    };
+    let permissions = ceiling::build_ceiling_profile(raw.permissions.as_ref());
     let config = Config {
         agent: raw.agent,
+        mode: raw.mode,
         provider: raw.provider,
         model: raw.model,
         verbose: raw.verbose,
         permissions,
+        modes: raw.modes,
         hooks: raw.hooks,
         mcp: raw.mcp,
         endpoints: raw.endpoints,
@@ -466,10 +512,12 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
 fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
     const KEYS: &[&str] = &[
         "agent",
+        "mode",
         "provider",
         "model",
         "verbose",
         "permissions",
+        "modes",
         "hooks",
         "mcp",
         "endpoints",

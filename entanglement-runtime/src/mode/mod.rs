@@ -26,10 +26,10 @@ mod tune;
 
 pub use limits::{Limits, OnTimeout};
 pub use rules::Rules;
-pub use tune::{apply as apply_tuning, ModeTuning};
+pub use tune::{apply as apply_tuning, build_table, ModeTuning};
 
 use anyhow::{bail, Result};
-use entanglement_core::Permission;
+use entanglement_core::{Permission, PermissionProfile};
 use serde::Deserialize;
 
 use crate::capability::Capability;
@@ -99,6 +99,39 @@ impl Mode {
 }
 
 impl Mode {
+    /// Convert a legacy-shaped [`entanglement_core::PermissionProfile`] (the
+    /// runtime-wide ceiling/overlay carrier type every dispatch call site —
+    /// `spawn_tool_executor*`, `BindingPolicy`, ~30 test fixtures — already
+    /// threads by value) into an equivalent [`Mode`]-graded ceiling, so
+    /// [`crate::permission::clamp_to_base`] can grade it with real
+    /// capability-class awareness instead of `PermissionProfile`'s own
+    /// name-only, declaration-order-wins matcher.
+    ///
+    /// This is a pure re-interpretation, not a lossy approximation: a
+    /// `PermissionProfile`'s `rules: Vec<(pattern, grade)>` already uses the
+    /// identical key grammar (`tool`, `*`, `tool(pattern)`, `tool{pattern}`,
+    /// and — since `mode::rules::capability_class` matches on the bare
+    /// string alone — the five capability-class spellings too), so replaying
+    /// every entry through [`Rules::push`] costs nothing and gains the
+    /// longest-match engine for free. An empty-rules allow-all profile (the
+    /// overwhelming common case — every test fixture that just wants "no
+    /// ceiling") converts to an empty-rules `Mode`, byte-identical in
+    /// behavior to before this existed.
+    pub fn from_permission_profile(profile: &PermissionProfile) -> Self {
+        let mut rules = Rules::default();
+        for (key, grade) in &profile.rules {
+            rules.push(key, *grade);
+        }
+        Mode {
+            name: "ceiling".to_string(),
+            default: profile.default,
+            rules,
+            limits: Limits::default(),
+            sandbox: None,
+            sandbox_network: false,
+        }
+    }
+
     /// Resolve the grade for one call under this mode. `capabilities` is the
     /// tool's own [`Capability`] slice ([`crate::capability::capability_of`]);
     /// `arg`/`workdir` are the same per-call scoping inputs
@@ -203,6 +236,50 @@ mod tests {
         let research = base.get("research").expect("research exists").clone();
         let dup = research.clone();
         assert!(ModeTable::new(vec![research, dup]).is_err());
+    }
+
+    /// The ceiling's own version of the tuning guard's worked example
+    /// (ADR-0207 §5, stage 6c): a `config.yml` `permissions: {deny: [write]}`
+    /// ceiling must deny every write-capable tool, not just a literal tool
+    /// named `write` — the whole reason the ceiling reuses `Mode::resolve`
+    /// instead of `PermissionProfile`'s own name-only matcher.
+    #[test]
+    fn ceiling_from_permission_profile_denies_by_capability_class() {
+        let profile = PermissionProfile::new(Permission::Allow).with("write", Permission::Deny);
+        let ceiling = Mode::from_permission_profile(&profile);
+        assert_eq!(
+            ceiling.resolve("edit", &[Capability::Write], None, None),
+            Permission::Deny,
+            "edit is Write-capable even though the ceiling rule is spelled `write`"
+        );
+        assert_eq!(
+            ceiling.resolve("read", &[Capability::Read], None, None),
+            Permission::Allow
+        );
+    }
+
+    /// A scoped ceiling rule still out-ranks a shorter class deny, exactly
+    /// like a mode's own tuning (ADR-0207 §4/§5) — the ceiling is not a
+    /// second, cruder engine.
+    #[test]
+    fn ceiling_scoped_rule_outranks_a_shorter_class_deny() {
+        let profile = PermissionProfile::new(Permission::Allow)
+            .with("write", Permission::Deny)
+            .with("write(.entanglement/plans/*.md)", Permission::Allow);
+        let ceiling = Mode::from_permission_profile(&profile);
+        assert_eq!(
+            ceiling.resolve(
+                "write",
+                &[Capability::Write],
+                Some(".entanglement/plans/phase1.md"),
+                None
+            ),
+            Permission::Allow
+        );
+        assert_eq!(
+            ceiling.resolve("write", &[Capability::Write], Some("README.md"), None),
+            Permission::Deny
+        );
     }
 
     #[test]

@@ -22,9 +22,9 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
-    mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
+    agents, ask_user, capability, config, discover, endpoint, extra_roots, history, host, inspect,
+    logging, mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy,
+    poll, propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
     system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch,
     SharedRegistry, ToolRegistry,
 };
@@ -1182,6 +1182,15 @@ enum InspectCmd {
     /// which has no managed file of its own. Takes a **root** session id (see
     /// `skutter sessions`).
     Session { id: String },
+    /// List the four permission modes (no `name`), or print one mode's
+    /// resolved rules — built-in shape plus any `config.yml` `modes:` tuning
+    /// — plus its limits, sandbox, and per-tool outcome for a known roster
+    /// (#560, ADR-0207 stage 6c). The replacement for the mask columns
+    /// `agents` lost in stage 4c.
+    Modes {
+        /// Mode to detail (research | plan | build | auto). Omit for the table.
+        name: Option<String>,
+    },
 }
 
 /// Whether this invocation runs the TUI as its head — either the explicit
@@ -1295,6 +1304,7 @@ async fn main() -> Result<()> {
             InspectCmd::McpTokens => inspect::inspect_mcp_tokens(),
             InspectCmd::Mcp => inspect::inspect_mcp(&cwd),
             InspectCmd::Session { id } => inspect::inspect_session(&cwd, id),
+            InspectCmd::Modes { name } => inspect::inspect_modes(&cwd, name.as_deref()),
         };
     }
 
@@ -1555,11 +1565,27 @@ async fn main() -> Result<()> {
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
     // `ProfileResolver` grades every call from this map, not from `active`.
-    // The *same* map/table `sandbox_config` was built from in `build_config`
-    // (ADR-0207 §6, stage 5b) — sandboxing must see exactly the mode
-    // permission dispatch sees, not a second copy that can drift.
+    // `perm_modes` is the *same* map `sandbox_config` was built from in
+    // `build_config` (ADR-0207 §6, stage 5b) — sandboxing must see exactly
+    // the mode *names* dispatch sees, not a second copy that can drift.
+    //
+    // `mode_table` is deliberately **not** `sandbox_config.table` here
+    // (ADR-0207 stage 6c): that early table has to exist before the tool
+    // registry does (`register_default_tools` bakes its sandbox resolver in
+    // at construction), so it's built-in-only and carries no `config.yml`
+    // `modes:` tuning — harmless for sandboxing, since `ModeTuning` has no
+    // `sandbox`/limits fields to tune (only rule grades). Permission
+    // *grading* does need the tuned rules, and tuning's own guard (ADR-0207
+    // §5) needs a real capability resolver to validate against — both only
+    // available now that `tools` is fully populated.
     let perm_modes = sandbox_config.modes.clone();
-    let mode_table = sandbox_config.table.clone();
+    let mode_table = Arc::new({
+        let registry = tools.read().expect("tool registry lock poisoned");
+        mode::build_table(&user_config.modes, &|name| {
+            capability::capability_of(name, &registry)
+        })
+        .context("building the permission mode table from config.yml `modes:`")?
+    });
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         perm_modes.clone(),
         mode_table.clone(),
@@ -1768,14 +1794,20 @@ async fn main() -> Result<()> {
                     "--agent is ignored with --resume: a resumed session's agent is fixed"
                 );
             }
-            // `--mode` (ADR-0207 §11): `SetMode` is trusted-only (a mode *is*
-            // the session's authority), so this direct `Holly::send` — not
-            // the wire — is exactly the surface it's meant for.
-            if let Some(ref m) = cli.mode {
+            // `--mode` (ADR-0207 §11/§12): `SetMode` is trusted-only (a mode
+            // *is* the session's authority), so this direct `Holly::send` —
+            // not the wire — is exactly the surface it's meant for.
+            // Precedence: `--mode` > `config.yml` `mode:` > the engine's own
+            // `DEFAULT_MODE`, mirroring `agent`'s `--agent` > config > default
+            // just above. `None` either way sends nothing, leaving the
+            // session at `DEFAULT_MODE` exactly as before this setting
+            // existed.
+            let mode = cli.mode.clone().or_else(|| user_config.mode.clone());
+            if let Some(m) = mode {
                 holly
                     .send(InMsg::SetMode {
                         session: session_id.clone(),
-                        mode: m.to_string(),
+                        mode: m,
                     })
                     .await?;
             }
@@ -1919,12 +1951,15 @@ async fn main() -> Result<()> {
                         })
                         .await?;
                 }
-                // `--mode` (ADR-0207 §11) — see the explicit `Run` arm above.
-                if let Some(ref m) = cli.mode {
+                // `--mode` (ADR-0207 §11/§12) — see the explicit `Run` arm
+                // above for the full `--mode` > config `mode:` > default
+                // precedence.
+                let mode = cli.mode.clone().or_else(|| user_config.mode.clone());
+                if let Some(m) = mode {
                     holly
                         .send(InMsg::SetMode {
                             session: session_id.clone(),
-                            mode: m.to_string(),
+                            mode: m,
                         })
                         .await?;
                 }

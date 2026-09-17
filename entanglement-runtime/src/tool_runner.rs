@@ -1226,7 +1226,15 @@ async fn dispatch(
                 arg.as_deref(),
                 workdir.as_deref(),
             );
-            clamp_to_base(grade, ceiling, &tool, arg.as_deref(), workdir.as_deref())
+            let capabilities = crate::capability::capability_of(&tool, tools).unwrap_or(&[]);
+            clamp_to_base(
+                grade,
+                ceiling,
+                &tool,
+                capabilities,
+                arg.as_deref(),
+                workdir.as_deref(),
+            )
         }
         None => resolve_effective(resolver, chain, &tool, &input).await,
     };

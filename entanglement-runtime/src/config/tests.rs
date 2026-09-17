@@ -20,14 +20,36 @@ pub(super) fn defaults() -> Config {
 #[test]
 fn builtin_parses_with_expected_defaults() {
     let c = defaults();
-    // The embedded defaults are the pre-config behavior: build agent, auto-detect
+    // The embedded defaults are the pre-config behavior: general agent, auto-detect
     // provider, provider-default model, non-verbose, allow-all ceiling.
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
     assert_eq!(c.provider, None);
     assert_eq!(c.model, None);
     assert!(!c.verbose);
     assert_eq!(c.permissions.for_tool("bash"), Permission::Allow);
     assert_eq!(c.permissions.default, Permission::Allow);
+}
+
+/// Regression: `defaults.yml`'s `agent:` must name a real built-in agent.
+/// This is the check that was actually missing when stage 6a renamed the old
+/// `build` agent to `general` and left the embedded config default pointing
+/// at the retired name — every other test in this module asserted the
+/// *value* `Some("build")` without ever resolving it against a registry, so
+/// they kept passing while `skutter` itself failed every fresh install with
+/// "cannot spawn unknown agent profile `build`". Pinned against the real
+/// `agents::built_in_registry()`, not a hardcoded name list, so a future
+/// rename is caught here regardless of what the new name is.
+#[test]
+fn embedded_default_agent_resolves_against_the_built_in_registry() {
+    let agent = defaults().agent.expect("defaults.yml always sets `agent`");
+    let registry =
+        crate::agents::built_in_registry().expect("built-in agent definitions must parse");
+    assert!(
+        registry.get(&agent).is_some(),
+        "defaults.yml's `agent: {agent}` does not name a registered built-in agent \
+         ({:?}) — a fresh install with no user config would fail to spawn",
+        registry.iter().map(|p| p.name.as_str()).collect::<Vec<_>>()
+    );
 }
 
 /// Merge a user-file YAML string over the embedded defaults, the way the loader
@@ -38,17 +60,15 @@ pub(super) fn merge_user(user: &str) -> Config {
     let over: Value = serde_yaml::from_str(user).unwrap();
     let merged = merge_value(base, over);
     let raw: RawConfig = serde_yaml::from_value(merged).unwrap();
-    let mcp_capabilities = crate::mcp::capability_index(&raw.mcp).unwrap();
-    let permissions = match &raw.permissions {
-        Some(v) => permission_from_value(v, &mcp_capabilities).unwrap(),
-        None => PermissionProfile::new(Permission::Allow),
-    };
+    let permissions = ceiling::build_ceiling_profile(raw.permissions.as_ref());
     Config {
         agent: raw.agent,
+        mode: raw.mode,
         provider: raw.provider,
         model: raw.model,
         verbose: raw.verbose,
         permissions,
+        modes: raw.modes,
         hooks: raw.hooks,
         mcp: raw.mcp,
         endpoints: raw.endpoints,
@@ -63,13 +83,32 @@ pub(super) fn merge_user(user: &str) -> Config {
     }
 }
 
+/// The ceiling's *real* resolution path (ADR-0207 stage 6c): through
+/// `Mode::from_permission_profile`, not `PermissionProfile::for_tool`
+/// directly — the latter has no notion of a capability class, so a test that
+/// wants to see a bare `deny: [write]`/`deny: [exec]` ceiling rule catch
+/// every capable tool (not just one named literally `write`/`exec`) must
+/// grade through here.
+fn ceiling_grade(
+    c: &Config,
+    tool: &str,
+    capabilities: &[crate::capability::Capability],
+) -> Permission {
+    crate::mode::Mode::from_permission_profile(&c.permissions).resolve(
+        tool,
+        capabilities,
+        None,
+        None,
+    )
+}
+
 #[test]
 fn field_override_keeps_siblings() {
     // Overriding one scalar must not reset the others to nothing.
     let c = merge_user("provider: anthropic\n");
     assert_eq!(c.provider.as_deref(), Some("anthropic"));
     // Untouched siblings survive from the embedded defaults.
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
     assert!(!c.verbose);
     assert_eq!(c.permissions.default, Permission::Allow);
 }
@@ -85,7 +124,7 @@ fn max_turns_override_parses_and_defaults_to_200() {
     assert_eq!(c.max_turns, Some(400));
 
     // And it keeps siblings intact.
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
 }
 
 #[test]
@@ -100,7 +139,7 @@ fn auto_compact_defaults_to_enabled_and_can_be_turned_off() {
     assert_eq!(c.auto_compact, Some(false));
 
     // And it keeps siblings intact.
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
 }
 
 #[test]
@@ -115,7 +154,7 @@ fn idle_ttl_secs_defaults_to_none_and_parses_as_seconds() {
     assert_eq!(c.idle_ttl, Some(std::time::Duration::from_secs(1800)));
 
     // And it keeps siblings intact.
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
 }
 
 #[test]
@@ -131,52 +170,82 @@ fn editor_defaults_to_none_and_parses_a_string() {
     assert_eq!(merge_user("editor: \"  \"\n").editor, None);
 
     // …and it keeps siblings intact.
-    assert_eq!(merge_user("editor: nvim\n").agent.as_deref(), Some("build"));
+    assert_eq!(
+        merge_user("editor: nvim\n").agent.as_deref(),
+        Some("general")
+    );
 }
 
 #[test]
 fn permissions_merge_key_wise() {
-    // A user adds a `bash: ask` rule; the embedded `default: allow` survives
-    // because the two mappings merge key-wise (not whole-block replace).
-    let c = merge_user("permissions:\n  bash: ask\n");
+    // A user adds a `prompt: [bash]` rule; the embedded `default: allow`
+    // survives because the two mappings merge key-wise (not whole-block
+    // replace) — YAML sequences replace, but `permissions:`'s own mapping
+    // keys (`default` vs `prompt`) are distinct, so both land.
+    let c = merge_user("permissions:\n  prompt: [bash]\n");
     assert_eq!(c.permissions.default, Permission::Allow);
-    assert_eq!(c.permissions.for_tool("bash"), Permission::Ask);
-    assert_eq!(c.permissions.for_tool("read"), Permission::Allow);
+    use crate::capability::Capability;
+    assert_eq!(
+        ceiling_grade(&c, "bash", &[Capability::Exec]),
+        Permission::Ask
+    );
+    assert_eq!(
+        ceiling_grade(&c, "read", &[Capability::Read]),
+        Permission::Allow
+    );
 }
 
 #[test]
 fn permissions_default_can_be_overridden() {
-    let c = merge_user("permissions:\n  default: ask\n  read: allow\n");
+    let c = merge_user("permissions:\n  default: prompt\n  allow: [read]\n");
     assert_eq!(c.permissions.default, Permission::Ask);
-    assert_eq!(c.permissions.for_tool("read"), Permission::Allow);
-    assert_eq!(c.permissions.for_tool("bash"), Permission::Ask);
-}
-
-#[test]
-fn permissions_ceiling_honors_capability_keys() {
-    // #418: the shared `permission_from_value` expansion applies identically
-    // to the user-config ceiling — a bare `call: deny` denies both the `call`
-    // tool (via the multi-group pre-scan) and its single-group member `bash`.
-    let c = merge_user("permissions:\n  call: deny\n");
-    assert_eq!(c.permissions.for_tool("call"), Permission::Deny);
-    assert_eq!(c.permissions.for_tool("bash"), Permission::Deny);
-}
-
-#[test]
-fn permissions_ceiling_covers_an_mcp_annotated_tool() {
-    // #426: an MCP server's config-side `capabilities:` hint folds its tool
-    // into the ceiling's bare `read`/`write`/`call` fan-out exactly like it
-    // does for agent frontmatter.
-    let c = merge_user(
-        "permissions:\n  default: deny\n  read: allow\n\
-         mcp:\n  docs:\n    command: docs-server\n    capabilities:\n      search: read\n",
-    );
+    use crate::capability::Capability;
     assert_eq!(
-        c.permissions.for_tool("mcp__docs__search"),
+        ceiling_grade(&c, "read", &[Capability::Read]),
         Permission::Allow
     );
-    // An unannotated MCP tool name is untouched — still an ungrouped literal.
-    assert_eq!(c.permissions.for_tool("mcp__docs__other"), Permission::Deny);
+    assert_eq!(
+        ceiling_grade(&c, "bash", &[Capability::Exec]),
+        Permission::Ask
+    );
+}
+
+/// ADR-0207 stage 6c's whole point: a bare capability-class ceiling rule
+/// (`deny: [exec]`, the new grammar's spelling for what `call: deny` used to
+/// mean) denies every tool carrying that capability — `bash` included, even
+/// though the rule names neither literally.
+#[test]
+fn permissions_ceiling_honors_capability_classes() {
+    let c = merge_user("permissions:\n  deny: [exec]\n");
+    use crate::capability::Capability;
+    assert_eq!(
+        ceiling_grade(&c, "call", &[Capability::Exec]),
+        Permission::Deny
+    );
+    assert_eq!(
+        ceiling_grade(&c, "bash", &[Capability::Exec]),
+        Permission::Deny
+    );
+    assert_eq!(
+        ceiling_grade(&c, "read", &[Capability::Read]),
+        Permission::Allow
+    );
+}
+
+/// Every MCP tool currently grades as the fail-safe `Capability::Write`
+/// (`mcp::tool::McpTool::capabilities`, ADR-0207 §3 left per-server
+/// capability declarations for a later stage) — so a bare `deny: [write]`
+/// ceiling rule already covers every MCP tool with no server-side
+/// `capabilities:` annotation needed, unlike the old capability-index
+/// fan-out this replaces.
+#[test]
+fn permissions_ceiling_covers_every_mcp_tool_via_the_write_fallback() {
+    let c = merge_user("permissions:\n  default: deny\n  deny: [write]\n");
+    use crate::capability::Capability;
+    assert_eq!(
+        ceiling_grade(&c, "mcp__docs__search", &[Capability::Write]),
+        Permission::Deny
+    );
 }
 
 #[test]
@@ -213,7 +282,7 @@ fn project_layer_wins_over_user() {
     std::fs::create_dir_all(&repo_dir).unwrap();
     std::fs::write(
         repo_dir.join("config.yml"),
-        "provider: openai\npermissions:\n  bash: deny\n",
+        "provider: openai\npermissions:\n  deny: [bash]\n",
     )
     .unwrap();
 
@@ -227,7 +296,7 @@ fn project_layer_wins_over_user() {
     // survives; the embedded `agent` (both files silent) survives.
     assert_eq!(c.provider.as_deref(), Some("openai"));
     assert!(c.verbose);
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
     assert_eq!(c.permissions.for_tool("bash"), Permission::Deny);
 
     // Provenance names the winning layer per field.
@@ -249,7 +318,7 @@ fn missing_files_fall_back_to_embedded() {
     std::env::set_var(CONFIG_FILE_ENV, root.join("nope.yml"));
     let c = Config::load(root).unwrap();
     std::env::remove_var(CONFIG_FILE_ENV);
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
     assert_eq!(c.provider, None);
 }
 
@@ -269,7 +338,7 @@ fn comment_only_user_file_is_a_no_op() {
     std::env::remove_var(CONFIG_FILE_ENV);
 
     let c = &resolved.config;
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
     assert_eq!(c.provider, None);
     assert_eq!(c.permissions.default, Permission::Allow);
     // Only the embedded default layer — the comment-only file is skipped.
