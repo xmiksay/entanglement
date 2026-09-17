@@ -6,11 +6,24 @@
 //! consumes this.
 //!
 //! Deliberately narrow: anything the splitter cannot fully account for —
-//! output redirection, command/process substitution, a heredoc, subshell
-//! grouping, an unmatched quote — comes back [`SplitOutcome::Opaque`] rather
-//! than a best-effort guess, so a caller can fail closed instead of silently
-//! mis-grading a smuggled side effect. Every "fail closed" choice below is
-//! deliberate, not an oversight — see the inline WHY on each.
+//! a redirect naming a real file target, command/process substitution, a
+//! heredoc, subshell grouping, an unmatched quote — comes back
+//! [`SplitOutcome::Opaque`] rather than a best-effort guess, so a caller can
+//! fail closed instead of silently mis-grading a smuggled side effect. Every
+//! "fail closed" choice below is deliberate, not an oversight — see the
+//! inline WHY on each.
+//!
+//! Output redirection is **not** uniformly opaque, though it once was: a
+//! redirect that names (or can name) a real file — `>`/`>>`/`&>`/`&>>` with
+//! any target other than `/dev/null`, or the `>|` clobber form — stays
+//! opaque, since that is exactly the write-smuggling channel this splitter
+//! exists to catch. But file-descriptor duplication (`2>&1`, `1>&2`) and
+//! closing (`2>&-`) write no bytes anywhere — they only rewire which
+//! already-open stream a command's output lands on — and a redirect to
+//! `/dev/null` (`>/dev/null`, `2>/dev/null`, `&>/dev/null`, and their `>>`
+//! forms) writes nowhere. Both are kept as plain segment text: refusing them
+//! bought no safety and cost an approval prompt on most real-world commands
+//! (`cmd 2>&1 | tail`, `cmd 2>/dev/null` are extremely common shapes).
 
 /// The result of [`split`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,12 +123,32 @@ pub fn split(command: &str) -> SplitOutcome {
             // misread as segment separators — opaque rather than
             // mis-splitting the body.
             '<' if peek(&chars, i + 1) == Some('<') => return SplitOutcome::Opaque,
+            // `&>`/`&>>` (combined stdout+stderr redirect) — checked before
+            // the bare `&` operators below so it is never mis-split as a
+            // background operator followed by a stray `>`. See the module
+            // doc: opaque unless the target is exactly `/dev/null`.
+            '&' if peek(&chars, i + 1) == Some('>') => match classify_amp_gt(&chars, i) {
+                Redirect::Transparent(end) => {
+                    current.extend(&chars[i..end]);
+                    i = end;
+                    continue;
+                }
+                Redirect::Opaque => return SplitOutcome::Opaque,
+            },
             // Output redirection (`>`/`>>`) can append arbitrary bytes
             // anywhere a curated read-only rule allowed a command to run —
-            // never safe to fold into a segment. Bare stdin `<` is left as
-            // plain segment text below; it only reads, matching the design
-            // doc's explicit carve-out.
-            '>' => return SplitOutcome::Opaque,
+            // opaque unless it is provably harmless (fd duplication/closing,
+            // or a `/dev/null` target; see `classify_gt` and the module
+            // doc). Bare stdin `<` is left as plain segment text below; it
+            // only reads, matching the design doc's explicit carve-out.
+            '>' => match classify_gt(&chars, i) {
+                Redirect::Transparent(end) => {
+                    current.extend(&chars[i..end]);
+                    i = end;
+                    continue;
+                }
+                Redirect::Opaque => return SplitOutcome::Opaque,
+            },
             // Subshell grouping / arithmetic `((...))` is not implemented —
             // any bare paren is opaque rather than guessed at.
             '(' | ')' => return SplitOutcome::Opaque,
@@ -158,6 +191,102 @@ fn push_segment(segments: &mut Vec<String>, current: &mut String) {
         segments.push(trimmed.to_string());
     }
     current.clear();
+}
+
+/// The verdict for a `>`/`&>` redirect found at some index: either it is
+/// provably harmless and the caller should keep `chars[i..end]` as literal
+/// segment text, or the target can't be ruled out as a real file and the
+/// whole command must fail closed.
+enum Redirect {
+    Transparent(usize),
+    Opaque,
+}
+
+/// A word boundary: end of input, whitespace, or another operator
+/// character. Used to make sure a matched fd number / `/dev/null` isn't
+/// actually a prefix of some longer, unrecognized word (`>&12abc`,
+/// `>/dev/nullish`) — those fail closed rather than being guessed at.
+fn is_boundary(c: Option<char>) -> bool {
+    match c {
+        None => true,
+        Some(ch) => ch.is_whitespace() || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')'),
+    }
+}
+
+/// Length of the run of ASCII digits starting at `start` (possibly zero).
+fn digit_run_len(chars: &[char], start: usize) -> usize {
+    chars[start..]
+        .iter()
+        .take_while(|c| c.is_ascii_digit())
+        .count()
+}
+
+/// Whether the redirect target beginning at `start` (after any operator)
+/// is exactly `/dev/null` — skipping the whitespace bash allows between an
+/// operator and its target — followed by a word boundary. Returns the
+/// index just past `/dev/null` when it matches.
+fn dev_null_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    while matches!(peek(chars, i), Some(' ') | Some('\t')) {
+        i += 1;
+    }
+    const TARGET: &[char] = &['/', 'd', 'e', 'v', '/', 'n', 'u', 'l', 'l'];
+    if chars.get(i..i + TARGET.len())? != TARGET {
+        return None;
+    }
+    let end = i + TARGET.len();
+    is_boundary(peek(chars, end)).then_some(end)
+}
+
+/// Classify a `>` redirect at `i`: fd duplication/close (`N>&M`, `>&N`,
+/// `N>&-`), the `>|` clobber operator, or a target-taking `>`/`>>` — see
+/// the module doc for which of these stay [`Redirect::Transparent`].
+fn classify_gt(chars: &[char], i: usize) -> Redirect {
+    let width = if peek(chars, i + 1) == Some('>') {
+        2
+    } else {
+        1
+    };
+    let op_end = i + width;
+    if width == 1 && peek(chars, op_end) == Some('|') {
+        // `>|` forces the write even under `set -o noclobber` — always a
+        // real file target, there is no harmless spelling of it.
+        return Redirect::Opaque;
+    }
+    if width == 1 && peek(chars, op_end) == Some('&') {
+        let after_amp = op_end + 1;
+        if peek(chars, after_amp) == Some('-') {
+            return if is_boundary(peek(chars, after_amp + 1)) {
+                Redirect::Transparent(after_amp + 1)
+            } else {
+                Redirect::Opaque
+            };
+        }
+        let digits = digit_run_len(chars, after_amp);
+        return if digits > 0 && is_boundary(peek(chars, after_amp + digits)) {
+            Redirect::Transparent(after_amp + digits)
+        } else {
+            Redirect::Opaque
+        };
+    }
+    match dev_null_end(chars, op_end) {
+        Some(end) => Redirect::Transparent(end),
+        None => Redirect::Opaque,
+    }
+}
+
+/// Classify an `&>`/`&>>` redirect at `i` (`chars[i] == '&'`,
+/// `chars[i + 1] == '>'`, checked by the caller). Unlike `>&`, there is no
+/// fd-duplication reading of `&>` — it only ever names a target.
+fn classify_amp_gt(chars: &[char], i: usize) -> Redirect {
+    let mut op_end = i + 2;
+    if peek(chars, op_end) == Some('>') {
+        op_end += 1;
+    }
+    match dev_null_end(chars, op_end) {
+        Some(end) => Redirect::Transparent(end),
+        None => Redirect::Opaque,
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +419,96 @@ mod tests {
     #[test]
     fn empty_segments_are_dropped() {
         assert_eq!(segs("find . ;; echo hi"), vec!["find .", "echo hi"]);
+    }
+
+    /// Exhaustive fd-dup / `/dev/null` redirect matrix (the security
+    /// boundary this module exists to enforce) — every case from the task
+    /// brief plus edge cases the classifier logic has to get right.
+    #[test]
+    fn redirect_fd_dup_and_dev_null_matrix() {
+        let cases: &[(&str, SplitOutcome)] = &[
+            (
+                "git push origin main 2>&1 | tail -6",
+                SplitOutcome::Segments(vec![
+                    "git push origin main 2>&1".to_string(),
+                    "tail -6".to_string(),
+                ]),
+            ),
+            (
+                "cmd 2>&1",
+                SplitOutcome::Segments(vec!["cmd 2>&1".to_string()]),
+            ),
+            (
+                "cmd 1>&2",
+                SplitOutcome::Segments(vec!["cmd 1>&2".to_string()]),
+            ),
+            (
+                "cmd 2>&-",
+                SplitOutcome::Segments(vec!["cmd 2>&-".to_string()]),
+            ),
+            (
+                "cmd >&-",
+                SplitOutcome::Segments(vec!["cmd >&-".to_string()]),
+            ),
+            (
+                "cmd >&2",
+                SplitOutcome::Segments(vec!["cmd >&2".to_string()]),
+            ),
+            (
+                "cmd >/dev/null",
+                SplitOutcome::Segments(vec!["cmd >/dev/null".to_string()]),
+            ),
+            (
+                "cmd 2>/dev/null",
+                SplitOutcome::Segments(vec!["cmd 2>/dev/null".to_string()]),
+            ),
+            (
+                "cmd &>/dev/null",
+                SplitOutcome::Segments(vec!["cmd &>/dev/null".to_string()]),
+            ),
+            (
+                "cmd >> /dev/null",
+                SplitOutcome::Segments(vec!["cmd >> /dev/null".to_string()]),
+            ),
+            (
+                "cmd 2>> /dev/null",
+                SplitOutcome::Segments(vec!["cmd 2>> /dev/null".to_string()]),
+            ),
+            (
+                "cmd &>> /dev/null",
+                SplitOutcome::Segments(vec!["cmd &>> /dev/null".to_string()]),
+            ),
+            ("cat .env > /tmp/x", SplitOutcome::Opaque),
+            ("cat .env >> /tmp/x", SplitOutcome::Opaque),
+            ("cmd 2> err.log", SplitOutcome::Opaque),
+            ("cmd &> out.log", SplitOutcome::Opaque),
+            ("cmd &>> out.log", SplitOutcome::Opaque),
+            ("cmd >| f", SplitOutcome::Opaque),
+            (
+                r#"echo "a > b""#,
+                SplitOutcome::Segments(vec![r#"echo "a > b""#.to_string()]),
+            ),
+            (
+                "echo 'a > b'",
+                SplitOutcome::Segments(vec!["echo 'a > b'".to_string()]),
+            ),
+            ("cmd <(other)", SplitOutcome::Opaque),
+            ("cmd > $(mktemp)", SplitOutcome::Opaque),
+            // Ambiguous fd-dup targets: not a plain digit run or `-`, or a
+            // digit run immediately followed by more word characters —
+            // never provably a bare fd, so fail closed.
+            ("cmd >&word", SplitOutcome::Opaque),
+            ("cmd 2>&1abc", SplitOutcome::Opaque),
+            // `/dev/null`-lookalike is not the real target — fail closed.
+            ("cmd > /dev/nullish", SplitOutcome::Opaque),
+            // Bare stdin redirect is untouched by any of this.
+            (
+                "wc -l < file.txt",
+                SplitOutcome::Segments(vec!["wc -l < file.txt".to_string()]),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(split(input), *expected, "input: {input:?}");
+        }
     }
 }

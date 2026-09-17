@@ -165,6 +165,37 @@ mod tests {
     }
 
     #[test]
+    fn fd_dup_redirect_no_longer_forces_opaque_and_reaches_the_prompt_rule() {
+        // The regression this closes: `2>&1` used to force the whole
+        // command Opaque, which drops the arg-scoped rule and grades off
+        // the profile's *default* instead. Pin the default to `Allow` (a
+        // value neither segment's own rule produces) so this test can tell
+        // "reached `bash(git push*)`'s own `Ask`" apart from "fell through
+        // to the default and got lucky" — pre-fix this asserted `Allow`.
+        let profile = PermissionProfile::new(Permission::Allow)
+            .with("bash(tail *)", Permission::Allow)
+            .with("bash(git push*)", Permission::Ask);
+        assert_eq!(
+            resolve_scoped_bash_aware(
+                &profile,
+                "bash",
+                Some("git push origin main 2>&1 | tail -6"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    #[test]
+    fn dev_null_redirect_reaches_the_matching_allow_rule() {
+        let profile = PermissionProfile::new(Permission::Ask).with("bash(ls*)", Permission::Allow);
+        assert_eq!(
+            resolve_scoped_bash_aware(&profile, "bash", Some("ls -la 2>/dev/null"), None),
+            Permission::Allow
+        );
+    }
+
+    #[test]
     fn non_bash_tool_is_unaffected() {
         let profile = PermissionProfile::new(Permission::Ask).with("call(rm *)", Permission::Allow);
         assert_eq!(

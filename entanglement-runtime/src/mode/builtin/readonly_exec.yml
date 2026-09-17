@@ -109,6 +109,38 @@
 - "bash(git remote show*)"
 - "bash(git remote get-url*)"
 - "bash(git stash list)"
+# `fetch*` only ever writes remote-tracking refs (`refs/remotes/...`) and
+# tags — even `--prune` just drops stale remote-tracking refs, never the
+# working tree or a local branch. Do NOT reason from this to `git pull`:
+# pull is fetch immediately followed by a merge (or rebase) into the
+# current branch, which DOES alter the working tree — `pull` stays
+# unlisted, deliberately, forever (see the exclusion note below).
+- "bash(git fetch*)"
+- "bash(git ls-remote*)"
+- "bash(git show-ref*)"
+- "bash(git rev-list*)"
+- "bash(git cat-file*)"
+- "bash(git diff-tree*)"
+- "bash(git merge-base*)"
+- "bash(git for-each-ref*)"
+- "bash(git count-objects*)"
+- "bash(git grep*)"
+- "bash(git whatchanged*)"
+# `reflog`/`worktree`/`submodule`/`notes` each have a mutating subcommand
+# (`reflog expire`, `worktree add`/`remove`, `submodule update`, `notes
+# add`/`remove`), so each stays narrow rather than a trailing `*` on the
+# bare subcommand — exactly the `branch`/`tag`/`remote` treatment above.
+- "bash(git reflog)"
+- "bash(git reflog show*)"
+- "bash(git worktree list*)"
+- "bash(git submodule status*)"
+- "bash(git notes list*)"
+- "bash(git notes show*)"
+#
+# Deliberately excluded, do not add: `git pull` (fetch + merge/rebase into
+# the working tree), `git merge`, `git cherry-pick`, `git apply`, `git am`
+# (all apply changes to the working tree/index), `git gc`, `git prune`
+# (rewrite/discard repo objects).
 #
 # `gh`/`glab` read access: research, plan and auto all need to look up
 # issues/PRs/CI status without prompting for every lookup. Enumerated by

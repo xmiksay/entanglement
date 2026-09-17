@@ -109,6 +109,7 @@ pub(super) fn modes() -> Result<Vec<Mode>> {
 mod tests {
     use super::*;
     use crate::capability::Capability;
+    use crate::shell_split;
 
     #[test]
     fn all_four_builtins_parse() {
@@ -271,6 +272,137 @@ mod tests {
                 m.name
             );
         }
+    }
+
+    /// The read-only git subcommands added alongside the redirect-splitter
+    /// fix: enumerated exactly like the rest of `readonly_exec.yml` — a
+    /// trailing `*` only where every flag form stays read-only, an exact or
+    /// narrow-prefix form where the subcommand has a mutating variant.
+    #[test]
+    fn additional_readonly_git_subcommands_resolve_as_specified() {
+        let modes = modes().expect("built-ins parse");
+        let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
+        let (research, plan, build, auto) =
+            (mode("research"), mode("plan"), mode("build"), mode("auto"));
+        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+
+        // Trailing-`*` safe forms: never alter the working tree or local
+        // branches, `--prune` included.
+        for cmd in [
+            "git fetch github",
+            "git fetch --prune",
+            "git ls-remote origin",
+            "git show-ref --heads",
+            "git rev-list HEAD",
+            "git cat-file -p HEAD",
+            "git diff-tree -p HEAD",
+            "git merge-base main HEAD",
+            "git for-each-ref",
+            "git count-objects -v",
+            "git grep TODO",
+            "git whatchanged",
+        ] {
+            for m in [research, plan, auto] {
+                assert_eq!(resolve(m, cmd), Permission::Allow, "{}: {cmd:?}", m.name);
+            }
+            // `build` reaches the same Allow through its bare `exec` class
+            // allow, exactly like the gh/glab matrix above.
+            assert_eq!(resolve(build, cmd), Permission::Allow, "build: {cmd:?}");
+        }
+
+        // `git pull` is fetch + a merge into the working tree — deliberately
+        // never added here, however tempting "fetch is fine so pull must be
+        // too" sounds. Never resolves `Allow` via the shared set.
+        for cmd in ["git pull", "git pull --rebase", "git merge main"] {
+            for m in [research, plan] {
+                assert_ne!(resolve(m, cmd), Permission::Allow, "{}: {cmd:?}", m.name);
+            }
+        }
+
+        // `reflog`: only the bare form and `show` are read-only — `expire`
+        // (and everything else) must not ride a trailing `*`.
+        assert_eq!(resolve(research, "git reflog"), Permission::Allow);
+        assert_eq!(resolve(research, "git reflog show"), Permission::Allow);
+        assert_ne!(
+            resolve(research, "git reflog expire --expire=now --all"),
+            Permission::Allow
+        );
+
+        // `worktree`/`submodule`/`notes`: only the listing/read forms.
+        assert_eq!(resolve(research, "git worktree list"), Permission::Allow);
+        assert_ne!(
+            resolve(research, "git worktree add /tmp/w"),
+            Permission::Allow
+        );
+        assert_eq!(resolve(research, "git submodule status"), Permission::Allow);
+        assert_ne!(resolve(research, "git submodule update"), Permission::Allow);
+        assert_eq!(resolve(research, "git notes list"), Permission::Allow);
+        assert_eq!(resolve(research, "git notes show HEAD"), Permission::Allow);
+        assert_ne!(resolve(research, "git notes add -m x"), Permission::Allow);
+    }
+
+    /// The redirect-splitter fix (`shell_split::classify_gt`/
+    /// `classify_amp_gt`): a compound command whose only "unusual" bytes
+    /// are fd duplication (`2>&1`) or a `/dev/null` discard must split into
+    /// real segments and grade each one from the rules — not go opaque and
+    /// fall through to the mode's `default`.
+    #[test]
+    fn redirect_bearing_compounds_grade_per_segment_not_at_default() {
+        let modes = modes().expect("built-ins parse");
+        let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
+        let (research, build) = (mode("research"), mode("build"));
+        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+
+        // The reported command: every segment is a curated-allowed read,
+        // `2>&1` included — must resolve `Allow`, not `research`'s
+        // `default: prompt`.
+        assert_eq!(
+            resolve(research, "git push origin main 2>&1 | tail -6"),
+            Permission::Ask,
+            "the git-push segment itself is unmatched in research, so this \
+             one correctly asks — see the `build` case below for the \
+             positive (matched-rule) counterpart"
+        );
+
+        // In `build`, `git push*` is an explicit `prompt` rule (distinct
+        // from `default: prompt` only in *why* it lands there) — proven by
+        // swapping in the force-push spelling, which is a hard `deny` that
+        // `default` would never produce: if the redirect still forced this
+        // opaque, it would silently soften a `deny` down to `build`'s
+        // `default: prompt`.
+        assert_eq!(
+            resolve(build, "git push origin main 2>&1 | tail -6"),
+            Permission::Ask
+        );
+        assert_eq!(
+            resolve(build, "git push --force 2>&1 | tail -6"),
+            Permission::Deny,
+            "a hard deny rule must survive the redirect, not soften to build's default prompt"
+        );
+
+        // `ls -la 2>/dev/null` — the exact case from the report: `/dev/null`
+        // writes nowhere, so this must reach `readonly_exec.yml`'s
+        // `bash(ls*)` allow instead of asking.
+        assert_eq!(resolve(research, "ls -la 2>/dev/null"), Permission::Allow);
+
+        // The full follow-up command: every segment must resolve from the
+        // rules with none left to `default` — checked two ways: the split
+        // itself must not be Opaque, and every individual segment plus the
+        // folded whole must be `Allow`.
+        let full = "git fetch github 2>&1 | tail -3; echo ---; git log --oneline -3 github/master; echo ---; git log --oneline -1 648771e; git branch -r --contains 64";
+        let segments = match shell_split::split(full) {
+            shell_split::SplitOutcome::Segments(segs) => segs,
+            shell_split::SplitOutcome::Opaque => panic!("expected Segments, got Opaque"),
+        };
+        assert_eq!(segments.len(), 7, "segments: {segments:?}");
+        for seg in &segments {
+            assert_eq!(
+                resolve(research, seg),
+                Permission::Allow,
+                "segment {seg:?} must resolve from a rule, not fall to default"
+            );
+        }
+        assert_eq!(resolve(research, full), Permission::Allow);
     }
 
     #[test]
