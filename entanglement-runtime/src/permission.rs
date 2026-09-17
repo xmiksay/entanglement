@@ -58,13 +58,24 @@ pub fn spawn_refusal(target: &str, registry: &AgentCatalog) -> Option<String> {
 
 /// Resolve an `agent` call's optional `model` parameter against the active
 /// catalog (#560 P12, ADR-0207 §12): a spawning model may pick the child's
-/// model, free-string since it doesn't know provider prefixes — the first
-/// catalog entry whose model id matches wins. `Ok(None)` means "omitted,
-/// inherit exactly as before"; `Ok(Some((provider, model)))` is what the
-/// caller sends as `InMsg::SetModel` right after `InMsg::Spawn`. `Err`
-/// refuses the whole spawn (mirroring [`spawn_refusal`]'s "no silent
-/// substitution" posture) rather than silently falling back to inherit,
-/// naming every valid id so the model can retry correctly.
+/// model, in either a bare `id` (the first *usable* catalog entry whose model
+/// id matches wins) or a qualified `provider/id` form that targets exactly
+/// one provider — the only way to pick between two providers that
+/// legitimately share model ids against different endpoints (`zai` /
+/// `zai_paas`, ADR-0203). Only *usable* providers are considered
+/// ([`entanglement_provider::ProviderEntry::is_usable`] — a keyless or
+/// OAuth entry, or a keyed one whose env var is actually set): a model
+/// nothing can reach is worse to offer than not listing it at all.
+///
+/// `Ok(None)` means "omitted, inherit exactly as before"; `Ok(Some((provider,
+/// model)))` is what the caller sends as `InMsg::SetModel` right after
+/// `InMsg::Spawn`. `Err` refuses the whole spawn (mirroring
+/// [`spawn_refusal`]'s "no silent substitution" posture) rather than
+/// silently falling back to inherit, naming every valid *usable* id in
+/// `provider/id` form — unambiguous and directly reusable as the qualified
+/// spelling — so the model can retry correctly. No catalog and "a catalog
+/// but nothing in it is usable" are distinguished: they are different
+/// problems with different fixes (configure a catalog vs. set a key).
 pub fn resolve_model(
     requested: Option<&str>,
     catalog: Option<&entanglement_core::Catalog>,
@@ -77,17 +88,32 @@ pub fn resolve_model(
             "sub-agent spawn refused: model `{model}` requested but no catalog is configured"
         ));
     };
-    if let Some(provider) = catalog
-        .providers
+    let usable: Vec<_> = catalog.providers.iter().filter(|p| p.is_usable()).collect();
+    if usable.is_empty() {
+        return Err(format!(
+            "sub-agent spawn refused: model `{model}` requested but no configured provider is \
+             currently usable — set an API key (or connect one via OAuth) for at least one \
+             provider in the catalog"
+        ));
+    }
+
+    if let Some((provider_name, id)) = model.split_once('/') {
+        if let Some(provider) = usable
+            .iter()
+            .find(|p| p.name == provider_name && p.models.iter().any(|m| m.id == id))
+        {
+            return Ok(Some((provider.name.clone(), id.to_string())));
+        }
+    } else if let Some(provider) = usable
         .iter()
         .find(|p| p.models.iter().any(|m| m.id == model))
     {
         return Ok(Some((provider.name.clone(), model.to_string())));
     }
-    let mut ids: Vec<&str> = catalog
-        .providers
+
+    let mut ids: Vec<String> = usable
         .iter()
-        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
+        .flat_map(|p| p.models.iter().map(|m| format!("{}/{}", p.name, m.id)))
         .collect();
     ids.sort_unstable();
     ids.dedup();
@@ -406,6 +432,119 @@ mod tests {
     #[test]
     fn resolve_model_with_no_catalog_refuses_rather_than_guessing() {
         assert!(resolve_model(Some("glm-5.3"), None).is_err());
+    }
+
+    /// Two providers genuinely sharing a model id against different endpoints
+    /// (`zai`/`zai_paas`, ADR-0203) — `zai_key_env`/`paas_key_env` let each
+    /// test point at its own env var name so tests never race each other's
+    /// process-global state.
+    fn collision_catalog(
+        zai_key_env: &str,
+        paas_key_env: &str,
+        openai_key_env: &str,
+    ) -> entanglement_core::Catalog {
+        serde_yaml::from_str(&format!(
+            "providers:\n\
+             \x20\x20- name: zai\n\
+             \x20\x20\x20\x20key_env: {zai_key_env}\n\
+             \x20\x20\x20\x20default_model: glm-5.1\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.1\n\
+             \x20\x20- name: zai_paas\n\
+             \x20\x20\x20\x20key_env: {paas_key_env}\n\
+             \x20\x20\x20\x20default_model: glm-5.1\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.1\n\
+             \x20\x20- name: openai\n\
+             \x20\x20\x20\x20key_env: {openai_key_env}\n\
+             \x20\x20\x20\x20default_model: gpt-4o\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: gpt-4o\n"
+        ))
+        .expect("collision test catalog must parse")
+    }
+
+    /// `zai/glm-5.1` (Bug 1): the qualified form is accepted and targets
+    /// exactly the named provider, never the sibling that shares the id.
+    #[test]
+    fn resolve_model_qualified_form_targets_exactly_one_provider() {
+        std::env::set_var("PERM_TEST_ZAI_A_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_A_560", "k");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_A_560",
+            "PERM_TEST_PAAS_A_560",
+            "PERM_TEST_OPENAI_A_560_UNSET",
+        );
+        assert_eq!(
+            resolve_model(Some("zai_paas/glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai_paas".to_string(), "glm-5.1".to_string())))
+        );
+        assert_eq!(
+            resolve_model(Some("zai/glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai".to_string(), "glm-5.1".to_string())))
+        );
+        std::env::remove_var("PERM_TEST_ZAI_A_560");
+        std::env::remove_var("PERM_TEST_PAAS_A_560");
+    }
+
+    /// A colliding bare id resolves deterministically — the first usable
+    /// catalog entry carrying it (catalog order), not an error or a guess.
+    #[test]
+    fn resolve_model_bare_colliding_id_picks_first_usable_provider() {
+        std::env::set_var("PERM_TEST_ZAI_B_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_B_560", "k");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_B_560",
+            "PERM_TEST_PAAS_B_560",
+            "PERM_TEST_OPENAI_B_560_UNSET",
+        );
+        assert_eq!(
+            resolve_model(Some("glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai".to_string(), "glm-5.1".to_string())))
+        );
+        std::env::remove_var("PERM_TEST_ZAI_B_560");
+        std::env::remove_var("PERM_TEST_PAAS_B_560");
+    }
+
+    /// Bug 2: a provider with no usable key contributes nothing to the
+    /// refusal's valid-id list.
+    #[test]
+    fn resolve_model_refusal_lists_only_usable_providers() {
+        std::env::set_var("PERM_TEST_ZAI_C_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_C_560", "k");
+        std::env::remove_var("PERM_TEST_OPENAI_C_560_UNSET");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_C_560",
+            "PERM_TEST_PAAS_C_560",
+            "PERM_TEST_OPENAI_C_560_UNSET",
+        );
+        let err = resolve_model(Some("bogus"), Some(&catalog)).expect_err("unknown id refuses");
+        assert!(err.contains("zai/glm-5.1"), "{err}");
+        assert!(err.contains("zai_paas/glm-5.1"), "{err}");
+        assert!(!err.contains("gpt-4o"), "{err}");
+        std::env::remove_var("PERM_TEST_ZAI_C_560");
+        std::env::remove_var("PERM_TEST_PAAS_C_560");
+    }
+
+    /// Bug 2, the plain-message half: a catalog is configured but nothing in
+    /// it is usable — distinct from "no catalog configured" (different fix).
+    #[test]
+    fn resolve_model_no_usable_provider_says_so_plainly() {
+        std::env::remove_var("PERM_TEST_ZAI_D_560_UNSET");
+        std::env::remove_var("PERM_TEST_PAAS_D_560_UNSET");
+        std::env::remove_var("PERM_TEST_OPENAI_D_560_UNSET");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_D_560_UNSET",
+            "PERM_TEST_PAAS_D_560_UNSET",
+            "PERM_TEST_OPENAI_D_560_UNSET",
+        );
+        let err =
+            resolve_model(Some("glm-5.1"), Some(&catalog)).expect_err("nothing usable refuses");
+        assert!(
+            err.contains("no configured provider is currently usable"),
+            "{err}"
+        );
+        assert!(!err.contains("valid ids"), "{err}");
     }
 
     /// #628: `overlay_grade_entry` walks the same ancestor chain the mask

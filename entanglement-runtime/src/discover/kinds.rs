@@ -101,14 +101,25 @@ pub fn skills_index(ctx: &KindsCtx) -> String {
 /// `explore(kind: "models")`: the active catalog — id, context window, and
 /// pricing where known — so a model choosing a child's `agent` `model`
 /// parameter (or explaining a `request_mode`-adjacent limit) can see what's
-/// actually available. `None` catalog (a lean/test wrapper with no catalog
-/// wired) reports that plainly rather than an empty list.
+/// actually available. Only *usable* providers are listed (#560 P12 follow-up
+/// — [`entanglement_provider::ProviderEntry::is_usable`], the same filter
+/// [`crate::permission::resolve_model`] applies to its refusal): a model this
+/// session cannot possibly reach should not appear in discovery. `None`
+/// catalog (a lean/test wrapper with no catalog wired) and "a catalog but
+/// nothing in it is usable" are reported with distinct messages — different
+/// problems, different fixes — rather than folding into one empty list.
 pub fn models_index(ctx: &KindsCtx) -> String {
     let Some(catalog) = ctx.catalog.as_deref() else {
         return "MODELS: no catalog configured.".to_string();
     };
+    let usable: Vec<_> = catalog.providers.iter().filter(|p| p.is_usable()).collect();
+    if usable.is_empty() {
+        return "MODELS: catalog configured, but no provider is currently usable — \
+                set an API key (or connect one via OAuth) for at least one provider."
+            .to_string();
+    }
     let mut out = String::from("MODELS:");
-    for provider in &catalog.providers {
+    for provider in usable {
         for model in &provider.models {
             out.push_str(&format!(
                 "\n  {}/{} — {}{}",
@@ -273,6 +284,55 @@ mod tests {
     #[test]
     fn models_index_reports_no_catalog_plainly() {
         assert_eq!(models_index(&ctx()), "MODELS: no catalog configured.");
+    }
+
+    fn catalog_with(usable_key_env: &str, unusable_key_env: &str) -> Catalog {
+        serde_yaml::from_str(&format!(
+            "providers:\n\
+             \x20\x20- name: zai\n\
+             \x20\x20\x20\x20key_env: {usable_key_env}\n\
+             \x20\x20\x20\x20default_model: glm-5.1\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.1\n\
+             \x20\x20- name: openai\n\
+             \x20\x20\x20\x20key_env: {unusable_key_env}\n\
+             \x20\x20\x20\x20default_model: gpt-4o\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: gpt-4o\n"
+        ))
+        .expect("test catalog must parse")
+    }
+
+    /// Bug 2: an unusable provider's models never appear in discovery.
+    #[test]
+    fn models_index_omits_an_unusable_providers_models() {
+        std::env::set_var("KINDS_TEST_ZAI_560", "k");
+        std::env::remove_var("KINDS_TEST_OPENAI_560_UNSET");
+        let mut ctx = ctx();
+        ctx.catalog = Some(Arc::new(catalog_with(
+            "KINDS_TEST_ZAI_560",
+            "KINDS_TEST_OPENAI_560_UNSET",
+        )));
+        let out = models_index(&ctx);
+        assert!(out.contains("zai/glm-5.1"), "{out}");
+        assert!(!out.contains("gpt-4o"), "{out}");
+        std::env::remove_var("KINDS_TEST_ZAI_560");
+    }
+
+    /// Bug 2, plain-message half: a catalog is configured but nothing in it
+    /// is usable — a distinct message from "no catalog configured".
+    #[test]
+    fn models_index_reports_catalog_present_but_nothing_usable() {
+        std::env::remove_var("KINDS_TEST_ZAI_560_UNSET");
+        std::env::remove_var("KINDS_TEST_OPENAI_560_UNSET2");
+        let mut ctx = ctx();
+        ctx.catalog = Some(Arc::new(catalog_with(
+            "KINDS_TEST_ZAI_560_UNSET",
+            "KINDS_TEST_OPENAI_560_UNSET2",
+        )));
+        let out = models_index(&ctx);
+        assert!(out.contains("no provider is currently usable"), "{out}");
+        assert_ne!(out, "MODELS: no catalog configured.", "{out}");
     }
 
     #[test]
