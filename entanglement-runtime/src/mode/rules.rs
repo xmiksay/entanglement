@@ -125,8 +125,11 @@ pub(super) fn capability_class(key: &str) -> Option<Capability> {
 /// The tool name a rule key names: everything before an argument (`(`) or
 /// workdir (`{`) scope, or the whole key if unscoped. Used by the tuning
 /// guard (`tune.rs`) to resolve a scoped key like `write(*)` back to the
-/// literal tool it grants.
-pub(super) fn rule_tool_name(key: &str) -> &str {
+/// literal tool it grants, and by `config::mode_warn`'s stale-tuning-name
+/// check (crate-visible for that second, cross-module consumer) to extract
+/// the same tool part from a rule key like `bash(cargo check)` before
+/// validating it against the compile-time vocabulary.
+pub(crate) fn rule_tool_name(key: &str) -> &str {
     let cut = key.find(['(', '{']).unwrap_or(key.len());
     &key[..cut]
 }

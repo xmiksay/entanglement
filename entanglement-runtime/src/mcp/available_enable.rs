@@ -96,7 +96,7 @@ pub async fn enable_for_session(
                 let tools = {
                     let mut reg = registry.write().unwrap();
                     reg.unregister_prefix(&format!("mcp__{name}__"));
-                    register_tools(&mut reg, &client, name, defs)
+                    register_tools(&mut reg, &client, name, defs, &server.config.capabilities)
                 };
                 active.lock().unwrap().insert(
                     name.to_string(),

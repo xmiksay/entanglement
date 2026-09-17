@@ -7,6 +7,7 @@
 //! permission profiles and the same `ToolExec` round-trip as `read`/`bash`.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -29,21 +30,61 @@ pub struct McpTool {
     remote_name: String,
     description: String,
     schema: Value,
+    /// This tool's graded capability, resolved once at construction (ADR-0207
+    /// §3 grading, closing the gap ADR-0117 deferred). See
+    /// [`resolve_capability`] for where it comes from.
+    capabilities: &'static [Capability],
 }
 
 impl McpTool {
     /// Build a proxy for `def` on `server`. The advertised name is namespaced and
     /// sanitized so it can never collide with a host tool (`read`) or another
     /// server's tool, and stays within providers' `^[A-Za-z0-9_-]+$` tool-name rule.
-    pub fn new(client: Arc<McpClient>, server: &str, def: McpToolDef) -> Self {
+    ///
+    /// `capabilities` is the server's own config-side `capabilities:` map
+    /// (raw, un-namespaced tool name → `read`/`write`/`call`, ADR-0117),
+    /// exactly the field [`super::capability_index`] derives its index from —
+    /// read directly here, at each connect site, rather than through that
+    /// aggregated global index. That matters for a per-scope config
+    /// (`McpScope::servers`, ADR-0188) which never joins the process-global
+    /// `mcp:` map the index is built from: resolving locally means a scoped
+    /// server's own annotation still grades correctly instead of silently
+    /// falling through to the fail-safe default.
+    pub fn new(
+        client: Arc<McpClient>,
+        server: &str,
+        def: McpToolDef,
+        capabilities: &HashMap<String, String>,
+    ) -> Self {
         let name = namespaced_tool_name(server, &def.name);
+        let capabilities = resolve_capability(capabilities, &def.name);
         Self {
             client,
             name,
             remote_name: def.name,
             description: def.description,
             schema: def.input_schema,
+            capabilities,
         }
+    }
+}
+
+/// `read`/`write`/`call` → `Capability::{Read,Write,Exec}` (ADR-0117's own
+/// three-name vocabulary). Absent *or* an unrecognized string both fall back
+/// to `Write` — fail-safe, since an MCP server is the one tool source the
+/// runtime doesn't author: an unannotated tool must still be refused by a
+/// read-only mode, never silently allowed. A malformed string can't actually
+/// reach here today (`capability_index` bails on one at startup, ADR-0117),
+/// but this stays defensive rather than leaning on that upstream check.
+fn resolve_capability(
+    capabilities: &HashMap<String, String>,
+    remote_name: &str,
+) -> &'static [Capability] {
+    match capabilities.get(remote_name).map(String::as_str) {
+        Some("read") => &[Capability::Read],
+        Some("write") => &[Capability::Write],
+        Some("call") => &[Capability::Exec],
+        _ => &[Capability::Write],
     }
 }
 
@@ -53,13 +94,8 @@ impl Tool for McpTool {
         Cow::Owned(self.name.clone())
     }
 
-    // Explicit, not just the trait default: an external server is opaque —
-    // it could do anything — so this pins the fail-safe `Write` answer
-    // deliberately rather than leaving it to fall through unannotated.
-    // Reading a server's own per-server `capabilities:` config annotation to
-    // narrow this is a later stage's job, not this one.
     fn capabilities(&self) -> &'static [Capability] {
-        &[Capability::Write]
+        self.capabilities
     }
 
     fn description(&self) -> &str {
@@ -179,13 +215,52 @@ mod tests {
 
     #[tokio::test]
     async fn capability_is_write_the_fail_safe_default() {
-        let t = McpTool::new(dead_client(), "my server", def("read.file"));
+        let t = McpTool::new(
+            dead_client(),
+            "my server",
+            def("read.file"),
+            &HashMap::new(),
+        );
+        assert_eq!(t.capabilities(), &[Capability::Write]);
+    }
+
+    #[tokio::test]
+    async fn capability_resolves_from_the_configured_annotation() {
+        let caps = HashMap::from([("search".to_string(), "read".to_string())]);
+        let t = McpTool::new(dead_client(), "docs", def("search"), &caps);
+        assert_eq!(t.capabilities(), &[Capability::Read]);
+    }
+
+    #[tokio::test]
+    async fn call_annotation_resolves_to_exec() {
+        let caps = HashMap::from([("run".to_string(), "call".to_string())]);
+        let t = McpTool::new(dead_client(), "docs", def("run"), &caps);
+        assert_eq!(t.capabilities(), &[Capability::Exec]);
+    }
+
+    #[tokio::test]
+    async fn unrecognized_annotation_string_falls_back_to_write() {
+        let caps = HashMap::from([("search".to_string(), "bogus".to_string())]);
+        let t = McpTool::new(dead_client(), "docs", def("search"), &caps);
+        assert_eq!(t.capabilities(), &[Capability::Write]);
+    }
+
+    #[tokio::test]
+    async fn annotation_is_keyed_by_the_remote_name_not_the_namespaced_one() {
+        // A hint for a *different* tool on the same server must not leak.
+        let caps = HashMap::from([("other".to_string(), "read".to_string())]);
+        let t = McpTool::new(dead_client(), "docs", def("search"), &caps);
         assert_eq!(t.capabilities(), &[Capability::Write]);
     }
 
     #[tokio::test]
     async fn namespaces_and_sanitizes_the_name() {
-        let t = McpTool::new(dead_client(), "my server", def("read.file"));
+        let t = McpTool::new(
+            dead_client(),
+            "my server",
+            def("read.file"),
+            &HashMap::new(),
+        );
         assert_eq!(t.name(), "mcp__my_server__read_file");
     }
 
@@ -228,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema_and_description_pass_through() {
-        let t = McpTool::new(dead_client(), "srv", def("x"));
+        let t = McpTool::new(dead_client(), "srv", def("x"), &HashMap::new());
         assert_eq!(t.description(), "a tool");
         assert_eq!(t.schema(), json!({ "type": "object", "properties": {} }));
     }
@@ -253,6 +328,7 @@ mod tests {
                     "required": ["id"],
                 }),
             },
+            &HashMap::new(),
         );
         let mut reg = crate::tools::ToolRegistry::new();
         reg.register_arc(std::sync::Arc::new(t));
@@ -264,5 +340,54 @@ mod tests {
         // a re-derived shape.
         assert!(decline.contains("\"required\""), "{decline}");
         assert!(decline.contains("\"id\""), "{decline}");
+    }
+
+    /// End to end: a read-annotated MCP tool grades through the real
+    /// built-in `research` mode exactly like the `read` capability class,
+    /// and an unannotated one (the fail-safe `Write`) is refused there
+    /// (`research` class-denies `write`) but allowed under `build` — the
+    /// concrete regression this fix closes: a bundled read-only server
+    /// (e.g. z.ai's web search) must not be refused wholesale just because
+    /// `research` denies writes.
+    #[tokio::test]
+    async fn read_annotated_tool_runs_in_research_unannotated_is_refused_there_and_allowed_in_build(
+    ) {
+        use crate::capability::capability_of;
+        use crate::mode::ModeTable;
+        use entanglement_core::Permission;
+
+        let caps = HashMap::from([("webSearch".to_string(), "read".to_string())]);
+        let read_tool = McpTool::new(dead_client(), "search", def("webSearch"), &caps);
+        let unannotated_tool =
+            McpTool::new(dead_client(), "search", def("mystery"), &HashMap::new());
+
+        let mut registry = crate::tools::ToolRegistry::new();
+        registry.register(read_tool);
+        registry.register(unannotated_tool);
+
+        let table = ModeTable::builtin().expect("built-in modes must parse");
+        let research = table.get("research").expect("research exists");
+        let build = table.get("build").expect("build exists");
+
+        let read_caps =
+            capability_of("mcp__search__webSearch", &registry).expect("read tool registered");
+        let unannotated_caps =
+            capability_of("mcp__search__mystery", &registry).expect("unannotated tool registered");
+
+        assert_eq!(
+            research.resolve("mcp__search__webSearch", read_caps, None, None),
+            Permission::Allow,
+            "a read-annotated MCP tool must run in research mode"
+        );
+        assert_eq!(
+            research.resolve("mcp__search__mystery", unannotated_caps, None, None),
+            Permission::Deny,
+            "an unannotated MCP tool is class-denied write, so research refuses it"
+        );
+        assert_eq!(
+            build.resolve("mcp__search__mystery", unannotated_caps, None, None),
+            Permission::Allow,
+            "the same unannotated tool is allowed under build"
+        );
     }
 }

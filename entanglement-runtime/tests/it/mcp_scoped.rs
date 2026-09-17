@@ -206,6 +206,7 @@ async fn two_scopes_with_the_same_server_name_use_their_own_endpoint_and_bearer(
             global_client.clone(),
             "kb",
             def,
+            &HashMap::new(),
         ));
     }
     assert!(base.contains("mcp__kb__search"));

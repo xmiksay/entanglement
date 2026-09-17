@@ -40,7 +40,11 @@
 //!   a fifth, or to remove a shipped rule — longest-match already makes a
 //!   removal syntax unnecessary). Applied over
 //!   [`crate::mode::ModeTable::builtin`] once a live tool registry exists to
-//!   validate a tuning rule's capability against ([`mode::apply_tuning`]).
+//!   validate a tuning rule's capability against ([`mode::apply_tuning`]). A
+//!   rule naming a tool outside the compile-time vocabulary (a typo, or a
+//!   name retired by a rename) logs a non-fatal startup warning naming the
+//!   file, the mode and the entry ([`mode_warn`], reviving ADR-0166's
+//!   posture for this rule language).
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
 //!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
@@ -90,6 +94,7 @@ pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
 mod migrate_permissions;
+mod mode_warn;
 pub mod write_key;
 
 pub use mcp_persist::save_mcp;
@@ -469,6 +474,7 @@ fn read_layer(layer: ConfigLayer, path: &Path, layers: &mut Vec<RawLayer>) -> Re
 /// typo in any layer is rejected.
 fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
     ceiling_warn::warn_project_permission_overrides(raw_layers);
+    mode_warn::warn_stale_mode_tuning_names(raw_layers);
     let mut merged = Value::Null;
     for rl in raw_layers {
         merged = merge_value(merged, rl.doc.clone());

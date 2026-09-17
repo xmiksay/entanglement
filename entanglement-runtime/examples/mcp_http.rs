@@ -64,7 +64,12 @@ async fn main() -> anyhow::Result<()> {
     let mut registry = ToolRegistry::new();
     for def in client.list_tools().await? {
         println!("registering mcp tool `{}`", def.name);
-        registry.register(McpTool::new(client.clone(), "example", def));
+        registry.register(McpTool::new(
+            client.clone(),
+            "example",
+            def,
+            &HashMap::new(),
+        ));
     }
 
     let names: Vec<String> = registry.specs().into_iter().map(|s| s.name).collect();

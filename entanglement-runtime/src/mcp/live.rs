@@ -87,7 +87,7 @@ pub async fn mcp_add(
     let tools = {
         let mut reg = registry.write().expect("tool registry lock poisoned");
         reg.unregister_prefix(&prefix);
-        register_tools(&mut reg, &client, &name, defs)
+        register_tools(&mut reg, &client, &name, defs, &cfg.capabilities)
     };
     let transport = transport_label(&cfg);
     active
@@ -162,7 +162,7 @@ pub async fn mcp_reconnect(
     let tools = {
         let mut reg = registry.write().expect("tool registry lock poisoned");
         reg.unregister_prefix(&prefix);
-        register_tools(&mut reg, &client, name, defs)
+        register_tools(&mut reg, &client, name, defs, &cfg.capabilities)
     };
     let transport = transport_label(cfg);
     active

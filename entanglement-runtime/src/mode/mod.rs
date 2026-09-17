@@ -25,6 +25,10 @@ mod rules;
 mod tune;
 
 pub use limits::{Limits, OnTimeout};
+// `rule_tool_name` is crate-visible (not just `pub(super)` to this module)
+// purely for `config::mode_warn`'s stale-tuning-rule-name check — the only
+// consumer outside `mode`/`tune`.
+pub(crate) use rules::rule_tool_name;
 pub use rules::Rules;
 pub use tune::{apply as apply_tuning, build_table, ModeTuning};
 
