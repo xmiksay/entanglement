@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, SessionId, ToolCall,
 };
 
@@ -92,7 +92,7 @@ async fn list_sessions_enumerates_live_sessions() {
     let ids: Vec<_> = sessions.iter().map(|i| i.session.clone()).collect();
     assert!(ids.contains(&s1) && ids.contains(&s2), "got {ids:?}");
     let info = sessions.iter().find(|i| i.session == s1).unwrap();
-    assert_eq!(info.profile, "general");
+    assert_eq!(info.agent, "general");
     assert!(info.root && info.parent.is_none());
 }
 
@@ -209,7 +209,6 @@ async fn close_session_cascades_to_descendants() {
             agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -226,7 +225,6 @@ async fn close_session_cascades_to_descendants() {
             agent: "general".into(),
             prompt: "sub-subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -437,7 +435,7 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
     // directly (ADR-0207 §9: an agent is chosen once, at spawn — there is no
     // live `SetAgent` switch to exercise any more).
     let mut cfg = EngineConfig::default();
-    cfg.profiles.insert(AgentProfile {
+    cfg.agents.insert(Agent {
         name: "reviewer".into(),
         description: String::new(),
         system_prompt: "Review the changes.".into(),
@@ -455,7 +453,6 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
             agent: "reviewer".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -529,7 +526,6 @@ async fn spawn_starts_child_with_parent_link() {
             agent: "general".into(),
             prompt: "do the subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -569,7 +565,6 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
             agent: "does-not-exist".into(),
             prompt: "go".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -580,7 +575,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
         match &ev {
             OutEvent::Error {
                 session, message, ..
-            } if session == &child && message.contains("unknown agent profile") => {
+            } if session == &child && message.contains("unknown agent") => {
                 saw_error = true;
                 break;
             }
@@ -619,7 +614,6 @@ async fn duplicate_spawn_is_ignored() {
                 agent: "general".into(),
                 prompt: "go".into(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();
@@ -642,7 +636,7 @@ async fn duplicate_spawn_is_ignored() {
 #[tokio::test]
 async fn custom_profile_is_selectable() {
     let mut cfg = EngineConfig::default();
-    cfg.profiles.insert(AgentProfile {
+    cfg.agents.insert(Agent {
         name: "paranoid".into(),
         description: String::new(),
         system_prompt: "Ask before anything.".into(),
@@ -660,7 +654,6 @@ async fn custom_profile_is_selectable() {
             agent: "paranoid".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

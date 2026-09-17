@@ -21,9 +21,9 @@
 //! ```
 //!
 //! Unlike [`AgentModelStore`][super::agent_models::AgentModelStore], this store
-//! does **not** overlay onto a loaded [`ProfileRegistry`][entanglement_core::ProfileRegistry]:
+//! does **not** overlay onto a loaded [`AgentCatalog`][entanglement_core::AgentCatalog]:
 //! [`GenerationParams`] carries a non-`Eq` `f32` (`temperature`), so it can't
-//! join [`AgentProfile`][entanglement_core::AgentProfile]'s `PartialEq + Eq`
+//! join [`Agent`][entanglement_core::Agent]'s `PartialEq + Eq`
 //! derive the way the model pin's `provider`/`model` fields do. Instead
 //! [`AgentGenerationStore::resolver`] wraps a shared handle to the store in a
 //! [`GenerationResolver`] closure keyed by profile name — the seam

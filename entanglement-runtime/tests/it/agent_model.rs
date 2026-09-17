@@ -16,7 +16,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::AdvertisingInputs;
@@ -95,7 +95,7 @@ fn engine_config(model_arg: &'static str) -> EngineConfig {
         Arc::new(move || Box::new(SpawnModelLlm { model_arg }) as Box<dyn Llm>);
     EngineConfig {
         llm_factory: Arc::new(move || Box::new(SpawnModelLlm { model_arg }) as Box<dyn Llm>),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         model_resolver: Some(Arc::new(move |_user, provider: &str, model: &str| {
             Ok(ResolvedModel {
@@ -125,7 +125,7 @@ fn load_config() -> entanglement_runtime::config::Config {
 
 fn spawn_executor(
     holly: &Holly,
-    profiles: entanglement_core::ProfileRegistry,
+    agents: entanglement_core::AgentCatalog,
 ) -> tokio::task::JoinHandle<()> {
     let catalog: Catalog = serde_yaml::from_str(CATALOG).expect("catalog yaml");
     let inputs = Arc::new(AdvertisingInputs::new(
@@ -136,7 +136,7 @@ fn spawn_executor(
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         crate::mode_support::allow_all_table(),
         tools.clone(),
@@ -150,7 +150,7 @@ fn spawn_executor(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
@@ -173,7 +173,7 @@ fn spawn_executor(
 #[tokio::test]
 async fn unknown_model_refuses_the_spawn_and_names_every_valid_id() {
     let cfg = engine_config("bogus-model");
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     let _executor = spawn_executor(&holly, profiles);
 
@@ -218,7 +218,7 @@ async fn unknown_model_refuses_the_spawn_and_names_every_valid_id() {
 #[tokio::test]
 async fn valid_model_rebinds_the_childs_session_before_its_first_turn() {
     let cfg = engine_config("gpt-4o");
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     let _executor = spawn_executor(&holly, profiles);
 

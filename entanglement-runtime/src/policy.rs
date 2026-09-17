@@ -5,7 +5,7 @@
 //! allow" grant comes from: it drives two trait objects, a [`PermissionResolver`]
 //! and a [`GrantStore`]. The single-user CLI plugs in the defaults below — the
 //! session's permission **mode** clamped by the config ceiling
-//! ([`ProfileResolver`], ADR-0207 stage 4) and the managed grants file
+//! ([`ModeResolver`], ADR-0207 stage 4) and the managed grants file
 //! ([`DefaultGrantStore`]). A multi-tenant embedder that stores rules per user
 //! in its own DB swaps both without forking the executor, keeping the shared
 //! interception ladder, spawn gating, hooks, rhai, and plan/tasks tools.
@@ -93,7 +93,7 @@ pub trait GrantStore: Send + Sync {
 }
 
 /// The single-user CLI resolver (ADR-0207 stage 4): grades a call from the
-/// session's **mode**, not its agent profile — `AgentProfile` no longer
+/// session's **mode**, not its agent profile — `Agent` no longer
 /// carries any permission fact. Looks up the mode name in the folded `modes`
 /// map (mirrors `OutEvent::ModeChanged` the way `active` mirrors
 /// `AgentChanged`), resolves it against `table`, reads the tool's declared
@@ -110,7 +110,7 @@ pub trait GrantStore: Send + Sync {
 /// path-arg tool's argument is normalized relative to before matching an
 /// arg-scoped rule — `None` (the test-only executor wrappers) keeps the
 /// pre-#485 verbatim match.
-pub struct ProfileResolver {
+pub struct ModeResolver {
     modes: Arc<Mutex<HashMap<SessionId, String>>>,
     table: Arc<ModeTable>,
     registry: SharedRegistry,
@@ -118,7 +118,7 @@ pub struct ProfileResolver {
     root: Option<PathBuf>,
 }
 
-impl ProfileResolver {
+impl ModeResolver {
     pub fn new(
         modes: Arc<Mutex<HashMap<SessionId, String>>>,
         table: Arc<ModeTable>,
@@ -137,7 +137,7 @@ impl ProfileResolver {
 }
 
 #[async_trait]
-impl PermissionResolver for ProfileResolver {
+impl PermissionResolver for ModeResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
@@ -198,8 +198,8 @@ impl SandboxResolver for SandboxPolicy {
 /// **mode** fact now, not a per-profile one, and a mode applies to its whole
 /// spawn sub-tree — so there is no more per-session ancestor floor to freeze
 /// at spawn (ADR-0104's amendment retired ADR-0134's scoping entirely).
-/// Reads the same session→mode map [`ProfileResolver`] grades permission
-/// from, resolves it against `table` exactly like `ProfileResolver` does, and
+/// Reads the same session→mode map [`ModeResolver`] grades permission
+/// from, resolves it against `table` exactly like `ModeResolver` does, and
 /// derives the mode's [`SandboxPolicy`][crate::host::SandboxPolicy] via
 /// [`crate::mode::Mode::sandbox_policy`] — then layers `base` (the
 /// process-global `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK`
@@ -207,7 +207,7 @@ impl SandboxResolver for SandboxPolicy {
 /// what the mode declares, never loosen it. An unseen session (never folded,
 /// or an unknown mode name) falls back to `base` alone: sandboxing is defense
 /// in depth on top of the permission gate, not the gate itself, so this does
-/// not fail-closed to maximum confinement the way [`ProfileResolver::resolve`]
+/// not fail-closed to maximum confinement the way [`ModeResolver::resolve`]
 /// fails closed to `Deny`.
 pub struct ModeSandboxResolver {
     modes: Arc<Mutex<HashMap<SessionId, String>>>,
@@ -243,7 +243,7 @@ impl SandboxResolver for ModeSandboxResolver {
 
 /// Bundled per-process sandbox state (ADR-0207 §6, stage 5b): the same
 /// session→mode map and [`crate::mode::ModeTable`] the executor's
-/// `ProfileResolver` grades permission from, plus the process-global default
+/// `ModeResolver` grades permission from, plus the process-global default
 /// an unseen session falls back to. Grouped into one value so a caller that
 /// doesn't care about mode-scoped sandboxing — every test helper, the
 /// `embedded` example — passes a single [`SandboxConfig::none`].
@@ -267,7 +267,7 @@ impl SandboxConfig {
 
     /// The real single-user wiring: `base` from `ENTANGLEMENT_SANDBOX`/
     /// `ENTANGLEMENT_SANDBOX_NETWORK`, sharing the *same* `modes` map and
-    /// mode `table` the caller's `ProfileResolver` uses — sandboxing must see
+    /// mode `table` the caller's `ModeResolver` uses — sandboxing must see
     /// exactly the mode permission dispatch sees, not a second copy that can
     /// drift.
     pub fn new(
@@ -354,7 +354,7 @@ mod tests {
 
     /// A single-mode table carrying a `read(src/*)` scoped rule, the mode
     /// resolver's counterpart of the old `build_profile_with_scoped_read`
-    /// `AgentProfile` fixture — `ProfileResolver` grades from the session's
+    /// `Agent` fixture — `ModeResolver` grades from the session's
     /// mode now, so the fixture is a `Mode`, not a profile.
     fn table_with_scoped_read() -> Arc<ModeTable> {
         let mode = Mode {
@@ -386,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_matches_an_absolute_in_root_path_when_root_is_wired() {
         let session = SessionId::new("s1");
-        let resolver = ProfileResolver::new(
+        let resolver = ModeResolver::new(
             modes_map(&session),
             table_with_scoped_read(),
             empty_registry(),
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_does_not_relativize_without_a_wired_root() {
         let session = SessionId::new("s1");
-        let resolver = ProfileResolver::new(
+        let resolver = ModeResolver::new(
             modes_map(&session),
             table_with_scoped_read(),
             empty_registry(),
@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_denies_an_unseen_session() {
         let session = SessionId::new("s1");
-        let resolver = ProfileResolver::new(
+        let resolver = ModeResolver::new(
             Arc::new(Mutex::new(HashMap::new())),
             table_with_scoped_read(),
             empty_registry(),

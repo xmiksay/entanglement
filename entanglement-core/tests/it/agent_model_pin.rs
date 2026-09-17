@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, ModelResolver, OutEvent, ProfileRegistry, ResolvedModel, SessionId,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId,
 };
 
 /// Every request's effective model id (`req.model`), in order.
@@ -70,8 +70,8 @@ fn resolver(seen: &Seen) -> ModelResolver {
     })
 }
 
-fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
-    AgentProfile {
+fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
+    Agent {
         name: name.to_string(),
         description: String::new(),
         system_prompt: String::new(),
@@ -81,24 +81,24 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
 }
 
 /// A model-only profile (legacy request-level fallback, no provider pin).
-fn model_only_profile(name: &str, model: &str) -> AgentProfile {
+fn model_only_profile(name: &str, model: &str) -> Agent {
     let mut p = profile(name, None);
     p.model = Some(model.to_string());
     p
 }
 
-fn registry(profiles: impl IntoIterator<Item = AgentProfile>) -> ProfileRegistry {
-    let mut reg = ProfileRegistry::default();
-    for p in profiles {
+fn registry(agents: impl IntoIterator<Item = Agent>) -> AgentCatalog {
+    let mut reg = AgentCatalog::default();
+    for p in agents {
         reg.insert(p);
     }
     reg
 }
 
-fn config(seen: &Seen, switch_seen: &Seen, profiles: ProfileRegistry) -> EngineConfig {
+fn config(seen: &Seen, switch_seen: &Seen, agents: AgentCatalog) -> EngineConfig {
     EngineConfig {
         llm_factory: recording_factory(seen),
-        profiles,
+        agents,
         model_resolver: Some(resolver(switch_seen)),
         ..EngineConfig::default()
     }
@@ -154,7 +154,6 @@ async fn pinned_profile_rebinds_at_spawn() {
             agent: "plan".into(),
             prompt: "one".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -217,7 +216,6 @@ async fn resolver_error_at_spawn_keeps_default_binding() {
             agent: "bad".into(),
             prompt: "one".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -301,7 +299,6 @@ async fn model_only_pin_stays_request_level() {
             agent: "legacy".into(),
             prompt: "one".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -341,12 +338,11 @@ fn replay_rebinds_and_reconstructs_the_profile() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "plan".into(),
+                agent: "plan".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -374,5 +370,5 @@ fn replay_rebinds_and_reconstructs_the_profile() {
     // precedence `SetModel` has.
     assert_eq!(session.model.as_deref(), Some("glm-b"));
     assert_eq!(session.provider.as_deref(), Some("zai"));
-    assert_eq!(session.profile.name, "plan");
+    assert_eq!(session.agent.name, "plan");
 }

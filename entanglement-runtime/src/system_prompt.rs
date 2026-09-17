@@ -32,7 +32,7 @@
 //! ever a leaf" case to compose differently for.
 //!
 //! Composition is a pure function so it is unit-testable with no model in the
-//! loop. The runtime bakes the assembled prompt into each [`AgentProfile`] at
+//! loop. The runtime bakes the assembled prompt into each [`Agent`] at
 //! load time (see [`crate::agents::load_registry`]); core stays a pass-through
 //! that ships `system_prompt` verbatim as `LlmRequest.system`.
 

@@ -21,7 +21,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::REQUEST_MODE_TOOL;
@@ -81,7 +81,7 @@ fn spawn_with_builtin_modes(llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + S
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -89,7 +89,7 @@ fn spawn_with_builtin_modes(llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + S
     let shared_tools = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let perm_modes: Arc<Mutex<HashMap<SessionId, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
         shared_tools.clone(),

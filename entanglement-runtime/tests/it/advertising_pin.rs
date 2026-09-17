@@ -22,7 +22,7 @@ use entanglement_runtime::config::Config;
 use entanglement_runtime::mcp::AvailableMcp;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
@@ -140,7 +140,7 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
     ));
     let holly = Holly::spawn(EngineConfig {
         llm_factory: factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         model_resolver: Some(Arc::new(move |_user, provider: &str, model: &str| {
             Ok(ResolvedModel {
                 provider: provider.into(),
@@ -168,7 +168,7 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         crate::mode_support::allow_all_table(),
         tools.clone(),

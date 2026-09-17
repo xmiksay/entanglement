@@ -73,7 +73,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             }) as Box<dyn Llm>
         }),
         tool_specs,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -104,7 +104,6 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             agent: "plan".into(),
             prompt: "go again".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -119,7 +118,6 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             agent: "debug".into(),
             prompt: "go once more".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

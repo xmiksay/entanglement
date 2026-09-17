@@ -12,12 +12,11 @@ fn list_sessions_skips_one_bad_file() {
                 session: id.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".to_string(),
+                agent: "build".to_string(),
                 model: None,
                 root: true,
                 ts,
                 user: None,
-                sponsored: false,
             }),
         )
     };
@@ -259,12 +258,11 @@ fn list_sessions_captures_first_prompt_content_and_legacy_text() {
                 session: id.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".to_string(),
+                agent: "build".to_string(),
                 model: None,
                 root: true,
                 ts: 1000,
                 user: None,
-                sponsored: false,
             }),
         )
     };
@@ -322,12 +320,11 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             session: root_id.clone(),
             parent: None,
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: true,
             ts: 1000,
             user: None,
-            sponsored: false,
         }),
     );
 
@@ -337,12 +334,11 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             session: child1_id.clone(),
             parent: Some(root_id.clone()),
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: false,
             ts: 2000,
             user: None,
-            sponsored: false,
         }),
     );
 
@@ -352,12 +348,11 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
             session: child2_id.clone(),
             parent: Some(root_id.clone()),
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: false,
             ts: 3000,
             user: None,
-            sponsored: false,
         }),
     );
 

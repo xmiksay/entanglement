@@ -113,7 +113,7 @@ async fn changing_prompt_takes_effect_next_turn() {
 async fn absent_resolver_uses_profile_prompt() {
     let seen: SeenBySession = Arc::new(Mutex::new(HashMap::new()));
     let cfg = recording_config(&seen);
-    let profile_prompt = cfg.profiles.get("general").unwrap().system_prompt.clone();
+    let profile_prompt = cfg.agents.get("general").unwrap().system_prompt.clone();
 
     let holly = Holly::spawn(cfg);
     holly
@@ -131,7 +131,7 @@ async fn absent_resolver_uses_profile_prompt() {
 async fn none_return_falls_back_to_profile_prompt() {
     let seen: SeenBySession = Arc::new(Mutex::new(HashMap::new()));
     let mut cfg = recording_config(&seen);
-    let profile_prompt = cfg.profiles.get("general").unwrap().system_prompt.clone();
+    let profile_prompt = cfg.agents.get("general").unwrap().system_prompt.clone();
     cfg.system_prompt_resolver = Some(Arc::new(|_sid, _profile| None));
 
     let holly = Holly::spawn(cfg);

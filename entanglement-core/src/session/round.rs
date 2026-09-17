@@ -152,7 +152,7 @@ pub(super) async fn run_attempt(
         let model = s
             .model
             .as_deref()
-            .or(s.profile.model.as_deref())
+            .or(s.agent.model.as_deref())
             .or(cfg.default_model.as_deref());
         let cost = model
             .and_then(|m| cfg.pricing.get(m))
@@ -231,7 +231,7 @@ pub(super) async fn run_attempt(
         for call in &dispatch {
             let envelope = envelopes.get(&call.id);
             emit_tool_call(events, session, call, envelope, &s.seq);
-            emit_tool_exec(events, session, call, envelope, &s.profile.name, &s.seq);
+            emit_tool_exec(events, session, call, envelope, &s.agent.name, &s.seq);
         }
         if let Some(turn) = s.turn.as_mut() {
             turn.begin_batch(dispatch, envelopes);

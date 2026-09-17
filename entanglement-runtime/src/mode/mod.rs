@@ -1,8 +1,8 @@
 //! Permission modes (#560, ADR-0207): the mode table and its rule engine,
 //! built on the capability vocabulary ([`crate::capability`]). Wired into
-//! the dispatch ladder via `crate::policy::ProfileResolver` (stage 4): a
+//! the dispatch ladder via `crate::policy::ModeResolver` (stage 4): a
 //! session's mode, folded from `OutEvent::ModeChanged`, resolves every
-//! call's grade here instead of through `AgentProfile`.
+//! call's grade here instead of through `Agent`.
 //!
 //! A [`Mode`] is a resolved grade table: a `default` grade, [`Rules`], run
 //! [`Limits`], and an optional sandbox posture. [`ModeTable`] holds a named
@@ -67,7 +67,7 @@ where
 /// every `bash`/`call` the whole spawn sub-tree makes, `None` leaves it
 /// unsandboxed; `sandbox_network` shares the host network namespace with a
 /// confined command (ignored when `sandbox` is `None`). Stage 5b moved
-/// confinement here from the old per-profile `AgentProfile::sandbox` — a
+/// confinement here from the old per-profile `Agent::sandbox` — a
 /// mode applies to its whole spawn sub-tree (ADR-0207 §6), so there is no
 /// more per-session ancestor floor to freeze at spawn: every session under
 /// one mode gets the identical policy.

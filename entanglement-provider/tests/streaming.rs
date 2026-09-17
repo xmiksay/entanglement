@@ -729,7 +729,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
 async fn model_concurrency_resolves_the_requests_model_not_the_clients_default() {
     // #550: a profile's `model:` set without `provider:` sends a request whose
     // `LlmRequest::model` diverges from the client's own `default_model` (the
-    // documented request-level fallback — `AgentProfile::model_pin` returns
+    // documented request-level fallback — `Agent::model_pin` returns
     // `None` so `SetAgent` never rebinds the client to a fresh backend). Both
     // clients below are constructed with `default_model = "glm-5.2"` (cap 5)
     // but every actual request asks for `"glm-4.7-flash"` (cap 1) — proving

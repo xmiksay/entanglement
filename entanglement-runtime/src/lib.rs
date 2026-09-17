@@ -39,7 +39,7 @@ pub mod ask_user;
 pub mod aux_llm;
 pub mod cancel;
 // The capability vocabulary tools declare (#560, ADR-0207 §3), consumed by
-// `crate::policy::ProfileResolver` (stage 4) to grade a call by its tool's
+// `crate::policy::ModeResolver` (stage 4) to grade a call by its tool's
 // declared capabilities under the session's permission mode.
 pub mod capability;
 pub mod config;
@@ -68,7 +68,7 @@ pub mod layers;
 pub mod mcp;
 // Permission modes (#560, ADR-0207): the mode table and its grade-resolution
 // engine, built on `capability`'s vocabulary. Wired into the dispatch ladder
-// (`crate::policy::ProfileResolver`) as of stage 4. Ungated — pure logic
+// (`crate::policy::ModeResolver`) as of stage 4. Ungated — pure logic
 // over core types + capability + serde_yaml, needed by the lean build too.
 pub mod mode;
 // Live action narrator (#635): asks the aux `narrate` LLM what the agent is

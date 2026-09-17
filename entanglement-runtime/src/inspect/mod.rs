@@ -7,7 +7,7 @@
 //! (like `Sessions`). The three commands live in one submodule each — see their
 //! module docs for the specific blind spot each closes:
 //!
-//! - [`prompt`] (#184): the assembled `AgentProfile.system_prompt`, or its
+//! - [`prompt`] (#184): the assembled `Agent.system_prompt`, or its
 //!   per-slice `--parts` breakdown.
 //! - [`agents`] (#185): the silent layer-collision winner + full resolved profile.
 //! - [`skills`] (#186): the exact model-facing disclosures, plus a `load_skill`

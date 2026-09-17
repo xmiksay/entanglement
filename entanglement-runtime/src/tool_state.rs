@@ -13,8 +13,8 @@
 //! through such a rule (`PermissionProfile::scoped_grades`), rendered as a
 //! suffix: `declines (allowed by argument)`.
 //!
-//! ADR-0207 moved the actual dispatch grade off `AgentProfile` and onto the
-//! session's permission mode (`crate::policy::ProfileResolver`), so this module
+//! ADR-0207 moved the actual dispatch grade off `Agent` and onto the
+//! session's permission mode (`crate::policy::ModeResolver`), so this module
 //! no longer grades a *profile* — [`graded`] grades a bare [`PermissionProfile`]
 //! a caller already has in hand (e.g. the config `permissions:` ceiling).
 
@@ -47,7 +47,7 @@ impl DispatchState {
     }
 }
 
-/// One tool's dispatch state under one profile: the outcome of a bare call,
+/// One tool's dispatch state under one agent: the outcome of a bare call,
 /// plus any *other* outcome an argument-/workdir-scoped rule can reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolState {

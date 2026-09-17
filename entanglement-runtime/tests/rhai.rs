@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
+    stream_from_response, Agent, AgentCatalog, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
+    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
     ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
@@ -25,7 +25,7 @@ use entanglement_runtime::host::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -36,7 +36,7 @@ use entanglement_runtime::tool_runner::{
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool now (ADR-0207 stage 4b: `crate::script::
 /// BindingPolicy` reuses the ancestor chain + `PermissionResolver`, not the
-/// retired `AgentProfile`-chain path) — `ProfileResolver` (the seam
+/// retired `Agent`-chain path) — `ModeResolver` (the seam
 /// `spawn_tool_executor_with_policy` takes) needs a mode table regardless of
 /// which route a given test exercises. A single `"build"`-named, `default:
 /// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
@@ -110,7 +110,7 @@ impl Drop for TempDir {
 /// Spawn a Holly whose scripted LLM calls `rhai` once with `script`, wired to a
 /// real host-tool registry rooted at `root` and the given `profiles`. The `rhai`
 /// tool call id is `t1` (so nested binding approvals use `t1:rhai:<tool>`).
-fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegistry) -> Holly {
+fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -131,7 +131,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -146,7 +146,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        profiles,
+        agents,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly
@@ -161,13 +161,13 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
 fn spawn_with_rhai_exec(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     bash_registered: bool,
 ) -> Holly {
     spawn_with_rhai_exec_and_base(
         script,
         root,
-        profiles,
+        agents,
         bash_registered,
         PermissionProfile::new(Permission::Allow),
     )
@@ -180,7 +180,7 @@ fn spawn_with_rhai_exec(
 fn spawn_with_rhai_exec_and_base(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     bash_registered: bool,
     base: PermissionProfile,
 ) -> Holly {
@@ -204,7 +204,7 @@ fn spawn_with_rhai_exec_and_base(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -214,7 +214,7 @@ fn spawn_with_rhai_exec_and_base(
     if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
-    let _executor = spawn_tool_executor(&holly, tools, profiles, base);
+    let _executor = spawn_tool_executor(&holly, tools, agents, base);
     holly
 }
 
@@ -227,7 +227,7 @@ fn spawn_with_rhai_exec_and_base(
 fn spawn_with_rhai_escape(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
 ) -> (Holly, Arc<ExtraRootStore>) {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
@@ -249,7 +249,7 @@ fn spawn_with_rhai_escape(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -260,7 +260,7 @@ fn spawn_with_rhai_escape(
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         allow_all_table(),
         shared_tools.clone(),
@@ -278,7 +278,7 @@ fn spawn_with_rhai_escape(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
@@ -300,14 +300,14 @@ fn spawn_with_rhai_escape(
 
 /// A single primary profile named for the caller's scenario — grading itself
 /// comes entirely from the session's permission mode now (ADR-0207), never
-/// from this `AgentProfile`, which carries no permission/mask fact any more.
+/// from this `Agent`, which carries no permission/mask fact any more.
 /// `_permission` stays as a parameter only because most call sites also feed
 /// the same value to [`mode_table_for`] to build the mode that actually
 /// grades the test.
-fn one_profile(name: &str, _permission: PermissionProfile) -> ProfileRegistry {
+fn one_profile(name: &str, _permission: PermissionProfile) -> AgentCatalog {
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
+    profiles.insert(Agent {
         name: name.into(),
         description: String::new(),
         system_prompt: String::new(),
@@ -319,7 +319,7 @@ fn one_profile(name: &str, _permission: PermissionProfile) -> ProfileRegistry {
 
 /// A single `"build"`-named mode carrying `permission`'s own `default` +
 /// `rules` (ADR-0207 stage 4b): the mode-table analog of the
-/// `AgentProfile.permission` these `rhai`-binding tests used to grade off
+/// `Agent.permission` these `rhai`-binding tests used to grade off
 /// directly, before `crate::script::BindingPolicy` moved onto the mode table.
 /// Named `"build"` — not the caller's agent name — because a session's mode
 /// is `DEFAULT_MODE` ("build") unless something sends `SetMode`, which none
@@ -373,7 +373,7 @@ fn mode_table_for(permission: &PermissionProfile) -> Arc<ModeTable> {
 fn spawn_with_rhai_mode(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     mode_table: Arc<ModeTable>,
 ) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
@@ -396,7 +396,7 @@ fn spawn_with_rhai_mode(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -404,7 +404,7 @@ fn spawn_with_rhai_mode(
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(GlobJsonTool::new(root.to_path_buf()));
     tools.register(GrepJsonTool::new(root.to_path_buf()));
-    spawn_with_policy_over(&holly, tools, profiles, mode_table, None);
+    spawn_with_policy_over(&holly, tools, agents, mode_table, None);
     holly
 }
 
@@ -415,7 +415,7 @@ fn spawn_with_rhai_mode(
 fn spawn_with_rhai_exec_mode(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     bash_registered: bool,
     mode_table: Arc<ModeTable>,
     base: Option<PermissionProfile>,
@@ -440,7 +440,7 @@ fn spawn_with_rhai_exec_mode(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -453,7 +453,7 @@ fn spawn_with_rhai_exec_mode(
     spawn_with_policy_over(
         &holly,
         tools,
-        profiles,
+        agents,
         mode_table,
         Some(base.unwrap_or_else(|| PermissionProfile::new(Permission::Allow))),
     );
@@ -461,14 +461,14 @@ fn spawn_with_rhai_exec_mode(
 }
 
 /// Shared `spawn_tool_executor_with_policy` wiring for
-/// [`spawn_with_rhai_mode`]/[`spawn_with_rhai_exec_mode`]: a `ProfileResolver`
+/// [`spawn_with_rhai_mode`]/[`spawn_with_rhai_exec_mode`]: a `ModeResolver`
 /// over the given `mode_table` (instead of `ModeTable::builtin()`), clamped
 /// to `base` (defaulting allow-all) — mirrors `spawn_with_rhai_escape`'s own
 /// inline wiring minus the escape-root policy.
 fn spawn_with_policy_over(
     holly: &Holly,
     tools: entanglement_runtime::ToolRegistry,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     mode_table: Arc<ModeTable>,
     base: Option<PermissionProfile>,
 ) {
@@ -476,7 +476,7 @@ fn spawn_with_policy_over(
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
@@ -490,7 +490,7 @@ fn spawn_with_policy_over(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
@@ -575,7 +575,6 @@ async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
             agent: agent.into(),
             prompt: "go".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -1439,21 +1438,21 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         },
     ]);
 
-    let profiles =
+    let agents =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         allow_all_table(),
         shared_tools.clone(),
@@ -1467,7 +1466,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         skills,
         PermissionProfile::new(Permission::Allow),
         active,
@@ -1528,7 +1527,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
 fn spawn_with_rhai_background(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
 ) -> (Holly, entanglement_runtime::script_ops::ScriptRegistry) {
     let input = serde_json::json!({ "script": script, "background": true }).to_string();
     let scripted = Arc::new(vec![
@@ -1550,7 +1549,7 @@ fn spawn_with_rhai_background(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1560,7 +1559,7 @@ fn spawn_with_rhai_background(
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         allow_all_table(),
         shared_tools.clone(),
@@ -1575,7 +1574,7 @@ fn spawn_with_rhai_background(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         scripts.clone(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,

@@ -25,7 +25,7 @@ pub fn allow_all_table() -> Arc<ModeTable> {
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
 
-/// An empty permission-mode map — `ProfileResolver` folds `OutEvent::ModeChanged`
+/// An empty permission-mode map — `ModeResolver` folds `OutEvent::ModeChanged`
 /// into this live, so an empty map here is fine: every session starts in
 /// `DEFAULT_MODE` ("build") and core emits `ModeChanged` before the first
 /// `ToolExec`, folding it in before any call is ever graded.

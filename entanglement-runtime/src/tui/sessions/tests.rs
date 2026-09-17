@@ -460,12 +460,11 @@ fn started(id: &SessionId, parent: Option<&SessionId>) -> OutEvent {
         session: id.clone(),
         parent: parent.cloned(),
         predecessor: None,
-        profile: "build".to_string(),
+        agent: "build".to_string(),
         model: None,
         root: parent.is_none(),
         ts: 1,
         user: None,
-        sponsored: false,
     }
 }
 

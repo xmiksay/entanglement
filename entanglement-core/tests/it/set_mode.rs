@@ -248,12 +248,11 @@ async fn resumed_session_reconstructs_the_same_mode() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".into(),
+                agent: "build".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -346,7 +345,6 @@ async fn spawned_child_inherits_the_parents_live_mode() {
             agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -393,7 +391,6 @@ async fn set_mode_cascades_to_live_descendants() {
             agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

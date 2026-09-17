@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, MessageRole, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
@@ -121,7 +121,7 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
         llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
         // Core carries only `general` now (#201); spawn tests target `general`/
         // `plan`/`debug`, so the engine needs the full runtime trio.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     }
@@ -133,7 +133,7 @@ async fn spawn_launches_child_and_poll_collects_its_answer() {
         target: "general",
         child_answer: "child-answer",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     // Empty registry: `agent`/`poll` are orchestration, handled
     // before execution.
@@ -275,11 +275,11 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(FanOutLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -339,17 +339,17 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     // Any registered agent is a valid spawn target now (ADR-0207 §6), so the
     // `worker` profile just needs to exist; the chain recurses until the
     // session's mode `max_depth` refuses it. `spawn_tool_executor`'s default
-    // `ProfileResolver` puts every session under `DEFAULT_MODE` ("build"),
+    // `ModeResolver` puts every session under `DEFAULT_MODE` ("build"),
     // whose built-in `max_depth` is 4.
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(worker_profile());
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(RecursiveLlm) as Box<dyn Llm>),
-        profiles,
+        agents: profiles,
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -392,8 +392,8 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
 
 /// Any registered agent is a valid spawn target now (ADR-0207 §6) — `worker`
 /// just needs to exist so `RecursiveLlm` can keep naming it as it recurses.
-fn worker_profile() -> AgentProfile {
-    AgentProfile {
+fn worker_profile() -> Agent {
+    Agent {
         name: "worker".into(),
         description: "recursive worker".into(),
         system_prompt: String::new(),
@@ -465,17 +465,17 @@ impl Llm for SequentialFanOutLlm {
 
 #[tokio::test]
 async fn spawn_fan_out_is_bounded_and_refusal_is_relayed() {
-    // `spawn_tool_executor`'s default `ProfileResolver` puts every session
+    // `spawn_tool_executor`'s default `ModeResolver` puts every session
     // under `DEFAULT_MODE` ("build"), whose built-in `max_agents` is 8: the
     // 9th sequential blocking spawn beneath the same root must be refused,
     // naming the limit and the mode (ADR-0207 §6).
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(SequentialFanOutLlm) as Box<dyn Llm>),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -543,11 +543,11 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(BlockingAgentLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -657,11 +657,11 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
             }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -791,11 +791,11 @@ async fn poll_zero_timeout_blocks_until_completion() {
             Box::new(ZeroTimeoutPollLlm { release: r.clone() }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -935,7 +935,7 @@ async fn spawn_of_an_unknown_agent_name_is_refused() {
         target: "ghost",
         child_answer: "unused",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -957,7 +957,7 @@ async fn every_registered_agent_is_a_valid_spawn_target() {
         target: "plan",
         child_answer: "child-answer",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -1011,7 +1011,6 @@ async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
             agent: agent.into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -1032,7 +1031,7 @@ async fn plan_spawns_general() {
         target: "general",
         child_answer: "child-answer",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -1055,10 +1054,10 @@ async fn plan_spawns_general() {
         match &ev {
             OutEvent::SessionStarted {
                 parent: Some(p),
-                profile,
+                agent,
                 root: false,
                 ..
-            } if p == &root => child_profile = Some(profile.clone()),
+            } if p == &root => child_profile = Some(agent.clone()),
             OutEvent::ToolOutput {
                 session,
                 tool,
@@ -1129,11 +1128,11 @@ async fn plan_re_engages_its_general_child_with_agent_send() {
     // reaches the live child rather than being declined at dispatch.
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(SpawnThenSendLlm) as Box<dyn Llm>),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -1191,7 +1190,7 @@ async fn plan_can_spawn_debug() {
         target: "debug",
         child_answer: "debug-child-answer",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -1242,7 +1241,7 @@ async fn spawn_without_agent_falls_to_default_general() {
         target: "",
         child_answer: "default-child-answer",
     });
-    let profiles = cfg.profiles.clone();
+    let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
         &holly,
@@ -1265,10 +1264,10 @@ async fn spawn_without_agent_falls_to_default_general() {
         match &ev {
             OutEvent::SessionStarted {
                 parent: Some(p),
-                profile,
+                agent,
                 root: false,
                 ..
-            } if p == &root => child_profile = Some(profile.clone()),
+            } if p == &root => child_profile = Some(agent.clone()),
             OutEvent::ToolOutput {
                 session,
                 tool,

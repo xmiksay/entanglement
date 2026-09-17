@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, ModelResolver, OutEvent, ProfileRegistry, ResolvedModel, SessionId,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId,
 };
 
 type Seen = Arc<Mutex<Vec<Option<String>>>>;
@@ -72,8 +72,8 @@ fn resolver(seen: &Seen) -> ModelResolver {
     })
 }
 
-fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
-    AgentProfile {
+fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
+    Agent {
         name: name.to_string(),
         description: String::new(),
         system_prompt: String::new(),
@@ -82,8 +82,8 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
     }
 }
 
-fn registry() -> ProfileRegistry {
-    let mut reg = ProfileRegistry::default();
+fn registry() -> AgentCatalog {
+    let mut reg = AgentCatalog::default();
     // `Session::replay` falls back to the default `general` profile in a
     // couple of edge cases (unrelated to what these tests exercise), so it
     // must exist alongside the pinned `plan` profile these tests actually use.
@@ -94,7 +94,7 @@ fn registry() -> ProfileRegistry {
 
 fn config(seen: &Seen) -> EngineConfig {
     EngineConfig {
-        profiles: registry(),
+        agents: registry(),
         model_resolver: Some(resolver(seen)),
         ..EngineConfig::default()
     }
@@ -147,12 +147,11 @@ fn diverged_log(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "plan".into(),
+                agent: "plan".into(),
                 model: Some("claude-x".into()),
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -238,7 +237,6 @@ async fn fresh_session_start_is_unaffected() {
             agent: "plan".into(),
             prompt: "hi".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -285,12 +283,11 @@ async fn resuming_an_already_corrected_log_stays_idempotent() {
             session: sid.clone(),
             parent: None,
             predecessor: None,
-            profile: "plan".into(),
+            agent: "plan".into(),
             model: Some("glm-b".into()),
             root: true,
             ts: 1,
             user: None,
-            sponsored: false,
         },
     ));
     log.push((

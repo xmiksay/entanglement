@@ -4,7 +4,7 @@ use ratatui::widgets::ListState;
 
 use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 
-use super::{App, ProfileInfo};
+use super::{AgentInfo, App};
 
 impl App {
     pub fn showing_profile_picker(&self) -> bool {
@@ -15,7 +15,7 @@ impl App {
         &mut self.profile_picker_state
     }
 
-    pub fn available_profiles(&self) -> &[ProfileInfo] {
+    pub fn available_profiles(&self) -> &[AgentInfo] {
         &self.available_profiles
     }
 
@@ -192,7 +192,7 @@ impl App {
     /// [`App::new`][super::construct] builds once at startup. The current
     /// picker selection index is left as-is (best-effort — a picker that
     /// happens to be open mid-reload may briefly point at a shifted row).
-    pub fn refresh_profiles(&mut self, entry_profiles: Vec<ProfileInfo>) {
+    pub fn refresh_profiles(&mut self, entry_profiles: Vec<AgentInfo>) {
         // A reload that somehow yields no entry agent keeps the previous
         // roster rather than emptying the picker it lists unconditionally.
         if entry_profiles.is_empty() {
@@ -380,7 +380,7 @@ impl App {
         &mut self.mode_picker_state
     }
 
-    pub fn available_modes(&self) -> &[ProfileInfo] {
+    pub fn available_modes(&self) -> &[AgentInfo] {
         &self.available_modes
     }
 

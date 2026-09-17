@@ -301,7 +301,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -309,7 +309,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
-        Arc::new(entanglement_runtime::policy::ProfileResolver::new(
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
             perm_modes.clone(),
             mode_table.clone(),
             shared_tools.clone(),

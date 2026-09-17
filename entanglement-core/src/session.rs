@@ -53,7 +53,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentProfile, AgentState, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, UserId};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -183,7 +183,7 @@ pub(crate) enum SessionCmd {
 }
 
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
-/// and `AgentChanged` so a head knows the starting profile.
+/// and `AgentChanged` so a head knows the starting agent.
 ///
 /// If `initial_session` is provided, it's used as the starting state (for resume);
 /// otherwise, a fresh session is created.
@@ -193,18 +193,17 @@ pub(crate) async fn session_loop(
     mut rx: mpsc::Receiver<SessionCmd>,
     events: broadcast::Sender<OutEvent>,
     cfg: EngineConfig,
-    profile: AgentProfile,
+    agent: Agent,
     initial_session: Option<Session>,
     parent: Option<SessionId>,
     predecessor: Option<SessionId>,
     user: Option<UserId>,
-    sponsored: bool,
     // The mode a fresh spawn starts under — the parent's live mode at spawn
     // time (ADR-0207 §6: mode applies to the whole spawn sub-tree), or
     // `DEFAULT_MODE` for a root. Ignored on the resume path (a replayed
     // session already carries the correct value in `s.mode`) — the caller
     // passes `DEFAULT_MODE` there too, mirroring the `None`/`false` it passes
-    // for `predecessor`/`user`/`sponsored`.
+    // for `predecessor`/`user`.
     initial_mode: String,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
@@ -216,14 +215,14 @@ pub(crate) async fn session_loop(
         .as_millis() as u64;
 
     let root = parent.is_none();
-    let profile_name = profile.name.clone();
-    let profile_model = profile.model.clone();
+    let agent_name = agent.name.clone();
+    let agent_model = agent.model.clone();
     // Captured before `initial_session` is consumed below — `Session` isn't
     // `Copy`, so this is the only place left to tell "fresh spawn" from
     // "resumed" once `s` exists.
     let is_resumed = initial_session.is_some();
 
-    let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, profile));
+    let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, agent));
     // Lets this session fork itself into a compaction successor (ADR-0205);
     // see `Session::engine`.
     s.engine = Some(forks);
@@ -252,33 +251,24 @@ pub(crate) async fn session_loop(
     // multi-user identity.
     let effective_user = s.user.clone().or_else(|| user.clone());
     s.user = effective_user.clone();
-    // Same resumed-takes-precedence shape, `bool`-flavored: a resumed session
-    // already carries the correct value in `s.sponsored` (reconstructed by
-    // replay from its own `SessionStarted` log record) and the caller passes
-    // `false` for the param on that path so it can't clobber a `true`; a fresh
-    // spawn's `s.sponsored` starts at the `Session::new_empty` default
-    // (`false`), so the param carries the real value there instead (#626).
-    let effective_sponsored = s.sponsored || sponsored;
-    s.sponsored = effective_sponsored;
-    // Same resumed-takes-precedence rule as `predecessor`/`user`/`sponsored`
+    // Same resumed-takes-precedence rule as `predecessor`/`user`
     // above: a resumed session's replay already rebound `s.model` from its
     // `ModelChanged` log (ADR-0081 — session memory wins over the static
-    // profile pin `profile_model`), so the *announced* value must reflect
+    // agent pin `agent_model`), so the *announced* value must reflect
     // that resolved binding, not the pin a fresh session still falls back to.
     // A fresh session has `s.model == None` here (the pin re-bind below hasn't
     // run yet), so this is unchanged there.
-    let effective_model = s.model.clone().or_else(|| profile_model.clone());
+    let effective_model = s.model.clone().or_else(|| agent_model.clone());
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
         parent,
         predecessor: effective_predecessor,
-        profile: profile_name,
+        agent: agent_name,
         model: effective_model,
         root,
         ts,
         user: effective_user,
-        sponsored: effective_sponsored,
     });
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
@@ -296,7 +286,7 @@ pub(crate) async fn session_loop(
     });
     let _ = events.send(OutEvent::AgentChanged {
         session: session.clone(),
-        agent: s.profile.name.clone(),
+        agent: s.agent.name.clone(),
     });
     // Announce the starting mode unconditionally, mirroring `AgentChanged`
     // above — a head that (re)connects learns the live posture without
@@ -309,7 +299,7 @@ pub(crate) async fn session_loop(
         mode: s.mode.clone(),
     });
 
-    // Session-start model pin (#323, ADR-0081): bind the starting profile's pin
+    // Session-start model pin (#323, ADR-0081): bind the starting agent's pin
     // when no model is bound yet. A fresh `build`/spawned sub-agent (e.g. a
     // cheap-model `explore`) lands straight on its pinned endpoint; a resumed
     // session already re-bound from its `ModelChanged` log (so `s.model` is
@@ -317,7 +307,7 @@ pub(crate) async fn session_loop(
     // startup default, matching replay's stance.
     if s.model.is_none() {
         if let Some((provider, model)) = s
-            .profile
+            .agent
             .model_pin()
             .map(|(p, m)| (p.to_string(), m.to_string()))
         {
@@ -326,7 +316,7 @@ pub(crate) async fn session_loop(
                     Ok(resolved) => s.rebind(&session, resolved, &events),
                     Err(e) => tracing::warn!(
                         provider, model, error = %e,
-                        "session start: could not apply profile model pin; keeping default"
+                        "session start: could not apply agent model pin; keeping default"
                     ),
                 }
             }
@@ -355,16 +345,16 @@ pub(crate) async fn session_loop(
     }
 
     // Session-start persisted generation overlay (#374, ADR-0094 — mirrors the
-    // model pin above): apply the starting profile's persisted generation
-    // override via `cfg.generation_resolver` when no per-profile memory is
+    // model pin above): apply the starting agent's persisted generation
+    // override via `cfg.generation_resolver` when no per-agent memory is
     // already recorded for it. A resumed session's memory reconstructed by
     // replay (see `Session::replay`'s `GenerationChanged` fold) skips this, same
     // as the pin's `s.model.is_none()` guard.
-    if !s.profile_generation.contains_key(&s.profile.name) {
+    if !s.generation_by_agent.contains_key(&s.agent.name) {
         if let Some(generation) = cfg
             .generation_resolver
             .as_ref()
-            .and_then(|r| r(&s.profile.name))
+            .and_then(|r| r(&s.agent.name))
         {
             if s.generation != Some(generation) {
                 s.generation = Some(generation);
@@ -394,7 +384,7 @@ pub(crate) async fn session_loop(
                 session: session.clone(),
                 state: AgentState::Thinking,
             });
-            reoffer_pending(&events, &session, turn, &s.profile.name, &s.seq);
+            reoffer_pending(&events, &session, turn, &s.agent.name, &s.seq);
         }
     }
 
@@ -444,7 +434,7 @@ pub(crate) async fn session_loop(
                     Ok(cmd) => cmd,
                     Err(_elapsed) => {
                         if let Some(turn) = s.turn.as_ref() {
-                            reoffer_pending(&events, &session, turn, &s.profile.name, &s.seq);
+                            reoffer_pending(&events, &session, turn, &s.agent.name, &s.seq);
                         }
                         continue;
                     }
@@ -567,7 +557,7 @@ pub(crate) async fn session_loop(
                 // override survives the session-start default re-application
                 // (`EngineConfig::generation_resolver`) rather than being
                 // silently overwritten by it (#374, ADR-0094).
-                s.profile_generation.insert(s.profile.name.clone(), merged);
+                s.generation_by_agent.insert(s.agent.name.clone(), merged);
                 let _ = events.send(OutEvent::GenerationChanged {
                     session: session.clone(),
                     generation: merged,

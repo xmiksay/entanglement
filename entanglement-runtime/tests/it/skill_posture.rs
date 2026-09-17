@@ -165,7 +165,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -173,7 +173,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
     let perm_modes = crate::mode_support::perm_modes();
     let shared_tools = tools.shared();
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
-        Arc::new(entanglement_runtime::policy::ProfileResolver::new(
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
             perm_modes.clone(),
             crate::mode_support::allow_all_table(),
             shared_tools.clone(),

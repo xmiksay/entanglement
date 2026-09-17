@@ -120,11 +120,10 @@ pub(crate) fn fork_successor(
             predecessor: Some(session.clone()),
             // The successor runs under the source's current profile, so its
             // model pin and permissions carry over.
-            agent: s.profile.name.clone(),
+            agent: s.agent.name.clone(),
             prompt: seed_prompt(compaction.mode, compaction.seed),
             // Inherited from the predecessor by the supervisor (#522).
             user: None,
-            sponsored: false,
         },
         close: InMsg::CloseSession {
             session: session.clone(),
@@ -178,7 +177,7 @@ mod tests {
     fn no_engine_handle_means_no_event_and_no_fork() {
         let cfg = EngineConfig::default();
         let profile = cfg
-            .profiles
+            .agents
             .get("general")
             .cloned()
             .expect("the general profile");
@@ -210,7 +209,7 @@ mod tests {
     async fn a_fork_announces_the_source_then_spawns_a_root_successor_and_closes_the_source() {
         let cfg = EngineConfig::default();
         let profile = cfg
-            .profiles
+            .agents
             .get("general")
             .cloned()
             .expect("the general profile");

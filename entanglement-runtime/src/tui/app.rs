@@ -45,7 +45,7 @@ mod types;
 mod view;
 
 pub use inspect::InspectTab;
-pub use types::{ModalClickAreas, ProfileInfo, UiEffect};
+pub use types::{AgentInfo, ModalClickAreas, UiEffect};
 
 #[cfg(test)]
 mod tests;
@@ -66,7 +66,7 @@ pub struct App {
     // the session's own — there is no live switch any more).
     showing_profile_picker: bool,
     profile_picker_state: ListState,
-    available_profiles: Vec<ProfileInfo>,
+    available_profiles: Vec<AgentInfo>,
 
     // Model picker state — catalog is global, selection is display-only (requires restart)
     showing_model_picker: bool,
@@ -78,13 +78,13 @@ pub struct App {
     active_provider: String,
 
     // Permission-mode picker state (#560 P12, ADR-0207 §12): the four
-    // built-in modes, name-sorted match to `ProfileInfo`'s shape (name +
+    // built-in modes, name-sorted match to `AgentInfo`'s shape (name +
     // description) so the picker reuses the same row rendering as
     // `available_profiles`. Unlike the (now read-only) profile picker,
     // confirming here sends a live `InMsg::SetMode`.
     showing_mode_picker: bool,
     mode_picker_state: ListState,
-    available_modes: Vec<ProfileInfo>,
+    available_modes: Vec<AgentInfo>,
 
     // Per-agent model pins (#323, ADR-0081): the managed `agent-models.yml` store,
     // and the pending persist recorded when the `/model` picker confirms. The

@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, EngineConfig, Holly, InMsg, OutEvent, SessionId};
 
 /// Wait for the first event matching `pred`, tolerating broadcast lag and events
 /// for other sessions. Panics on timeout so a black hole (no event) fails loudly.
@@ -31,7 +31,7 @@ async fn recv_until(
 /// `build` profile, so `Session::replay` errors before folding any record.
 fn cfg_without_build_profile() -> EngineConfig {
     EngineConfig {
-        profiles: ProfileRegistry::default(),
+        agents: AgentCatalog::default(),
         ..EngineConfig::default()
     }
 }

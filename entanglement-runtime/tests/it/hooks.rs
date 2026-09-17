@@ -123,7 +123,7 @@ fn engine(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: built_in_registry().expect("built-in agents must parse"),
+        agents: built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     (Holly::spawn(cfg), tools)

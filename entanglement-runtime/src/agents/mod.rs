@@ -3,7 +3,7 @@
 //! An agent is a markdown file with YAML frontmatter: the frontmatter is the
 //! identity bundle (`name`/`description`/`model`/…), the body below the
 //! closing `---` is the agent's system-prompt body. Definitions are discovered
-//! at startup and folded into a core [`ProfileRegistry`].
+//! at startup and folded into a core [`AgentCatalog`].
 //!
 //! The body is not stored raw: as each definition is parsed it is composed into
 //! the final `system_prompt` by [`crate::system_prompt::assemble`] (shared
@@ -41,7 +41,7 @@
 //! (#59), `can_spawn`/`spawnable_agents` (#119, ADR-0040), `sandbox`
 //! (ADR-0134) and `mode` (primary/subagent/all, ADR-0034) are no longer
 //! agent frontmatter keys: authority is a second, independent session axis
-//! now — the permission **mode** — not anything an `AgentProfile` carries,
+//! now — the permission **mode** — not anything an `Agent` carries,
 //! and any agent may be a session root or a spawn target (ADR-0207 §4/§6).
 //! A definition naming any of those fails to parse (`deny_unknown_fields`),
 //! same as any other unrecognized key.
@@ -51,7 +51,7 @@
 //! An agent is chosen once, when a session starts, and is fixed for that
 //! session's life — a spawned sub-agent is a fresh session with its own
 //! system prompt, which is what delegating to a different persona actually
-//! needs; there is no live "switch profile" message any more.
+//! needs; there is no live "switch agent" message any more.
 //!
 //! # Migrating a legacy native-layer file
 //!
@@ -72,7 +72,7 @@ mod migrate;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{AgentProfile, ProfileRegistry};
+use entanglement_core::{Agent, AgentCatalog};
 use serde::Deserialize;
 
 use crate::layers::Strictness;
@@ -105,7 +105,7 @@ struct AgentDefinition {
     /// Provider model override, or `inherit` / omitted for the session default.
     #[serde(default)]
     model: Option<String>,
-    /// Provider this profile pins `model` to (#323, ADR-0081). Set alongside
+    /// Provider this agent pins `model` to (#323, ADR-0081). Set alongside
     /// `model` to form a *model pin*: the session re-binds to `(provider, model)`
     /// at session start. `inherit`/omitted ⇒ no provider pin; `model`
     /// alone stays the legacy request-level fallback. `provider` without `model`
@@ -119,7 +119,7 @@ struct AgentDefinition {
     /// Skills to **preload** into this agent's system prompt (#117): the listed
     /// skills' full bodies are injected at load (paths substituted, same pipeline
     /// as `load_skill`). Preload only — *not* an allowlist: runtime `load_skill`
-    /// access is governed by the session's permission mode, not the profile.
+    /// access is governed by the session's permission mode, not the agent.
     #[serde(default)]
     skills: Option<Vec<String>>,
 }
@@ -223,7 +223,7 @@ fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
 /// collision (project > user > built-in). A malformed file in any layer aborts.
 ///
 /// `ctx` carries the deterministic system-prompt inputs (shared preamble,
-/// project brief, environment block, skill index): each profile's body is
+/// project brief, environment block, skill index): each agent's body is
 /// composed into a final `system_prompt` via [`assemble`] as it is parsed
 /// (#113). Pass [`PromptContext::default`] for the raw, un-composed bodies.
 ///
@@ -237,8 +237,8 @@ pub fn load_registry(
     ctx: &PromptContext,
     skills: &SkillRegistry,
     mcp: &McpCapabilityIndex,
-) -> Result<ProfileRegistry> {
-    let mut reg = ProfileRegistry::default();
+) -> Result<AgentCatalog> {
+    let mut reg = AgentCatalog::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
     // longer silent (#185): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect agents` surfaces.
@@ -250,29 +250,29 @@ pub fn load_registry(
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills, mcp)
+        let agent = build_agent(def, &body, ctx, skills, mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
         if let Some((prior_layer, prior_source)) =
-            winning.insert(profile.name.clone(), (raw.layer, raw.source.clone()))
+            winning.insert(agent.name.clone(), (raw.layer, raw.source.clone()))
         {
             tracing::debug!(
-                agent = %profile.name,
+                agent = %agent.name,
                 layer = raw.layer.label(),
                 replaces = %format!("{} ({})", prior_layer.label(), prior_source),
                 source = %raw.source,
                 "agent definition overrides a lower layer",
             );
         }
-        reg.insert(profile);
+        reg.insert(agent);
     }
     Ok(reg)
 }
 
 /// Parse *only* the embedded built-in set (`general`/`plan`/`debug`)
-/// into a [`ProfileRegistry`], skipping the user/project layers
+/// into a [`AgentCatalog`], skipping the user/project layers
 /// [`load_registry`] consults. The runtime is the single source of the
 /// built-ins (#201): core carries only the `general` fallback
-/// [`ProfileRegistry::new`] synthesizes, so callers that need the full set
+/// [`AgentCatalog::new`] synthesizes, so callers that need the full set
 /// without touching the filesystem parse the embedded markdown here. Prompts
 /// are composed with an identity [`PromptContext`] (no brief/env/skills),
 /// matching the raw built-in bodies.
@@ -284,15 +284,15 @@ pub fn load_registry(
 /// entirely. So a parse failure here is surfaced as a `Result` — same as
 /// every other layer — rather than an unconditional panic baked into a
 /// library function.
-pub fn built_in_registry() -> Result<ProfileRegistry> {
+pub fn built_in_registry() -> Result<AgentCatalog> {
     let ctx = PromptContext::default();
     let skills = SkillRegistry::default();
     let mcp = McpCapabilityIndex::new();
-    let mut reg = ProfileRegistry::default();
+    let mut reg = AgentCatalog::default();
     for (file, contents) in BUILT_INS {
-        let profile = parse_definition(contents, &ctx, &skills, &mcp)
+        let agent = parse_definition(contents, &ctx, &skills, &mcp)
             .with_context(|| format!("embedded built-in agent `{file}` must parse"))?;
-        reg.insert(profile);
+        reg.insert(agent);
     }
     Ok(reg)
 }
@@ -302,8 +302,8 @@ pub fn built_in_registry() -> Result<ProfileRegistry> {
 /// layer/source won, and every lower-layer definition of the same name it
 /// overrode.
 pub struct AgentResolution {
-    /// The fully assembled winning profile (mode/model pin/spawn posture + prompt).
-    pub profile: AgentProfile,
+    /// The fully assembled winning agent (mode/model pin/spawn posture + prompt).
+    pub agent: Agent,
     /// Which precedence layer the winner came from.
     pub layer: AgentLayer,
     /// The winner's origin (`built-in (general.md)` or a file path).
@@ -322,7 +322,7 @@ pub struct AgentResolution {
 /// the user config's MCP servers, so this parses with an empty
 /// [`McpCapabilityIndex`] — harmless now that agent parsing carries no
 /// permission fan-out of its own (ADR-0207); kept for
-/// [`build_profile`]'s shared signature.
+/// [`build_agent`]'s shared signature.
 pub fn resolve_registry(
     root: &Path,
     ctx: &PromptContext,
@@ -333,20 +333,20 @@ pub fn resolve_registry(
     // definitions in precedence order so the last is the winner and the rest are
     // what it shadowed.
     let mut order: Vec<String> = Vec::new();
-    let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, AgentProfile)>> =
+    let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, Agent)>> =
         std::collections::HashMap::new();
     for raw in discover(root)? {
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills, &mcp)
+        let agent = build_agent(def, &body, ctx, skills, &mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
-        let name = profile.name.clone();
+        let name = agent.name.clone();
         let entry = by_name.entry(name.clone()).or_default();
         if entry.is_empty() {
             order.push(name);
         }
-        entry.push((raw.layer, raw.source, profile));
+        entry.push((raw.layer, raw.source, agent));
     }
 
     let mut resolved: Vec<AgentResolution> = order
@@ -355,27 +355,27 @@ pub fn resolve_registry(
             let mut defs = by_name
                 .remove(&name)
                 .expect("name recorded on first insert");
-            let (layer, source, profile) = defs.pop().expect("at least one definition per name");
+            let (layer, source, agent) = defs.pop().expect("at least one definition per name");
             let shadowed = defs.into_iter().map(|(l, s, _)| (l, s)).collect();
             AgentResolution {
-                profile,
+                agent,
                 layer,
                 source,
                 shadowed,
             }
         })
         .collect();
-    resolved.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
+    resolved.sort_by(|a, b| a.agent.name.cmp(&b.agent.name));
     Ok(resolved)
 }
 
 /// Everything `skutter inspect prompt` needs for one agent (#184): the winning
-/// definition's source, the assembled profile, and the per-part breakdown.
+/// definition's source, the assembled agent, and the per-part breakdown.
 pub struct AgentPromptReport {
     /// Where the winning definition came from (`built-in (general.md)` or a path).
     pub source: String,
-    /// The fully assembled profile (its `system_prompt` is the resolved prompt).
-    pub profile: AgentProfile,
+    /// The fully assembled agent (its `system_prompt` is the resolved prompt).
+    pub agent: Agent,
     /// The included prompt slices with their sources, in prompt order.
     pub parts: Vec<PromptPart>,
     /// Whether the definition opted into the project brief (`include_brief`).
@@ -389,7 +389,7 @@ pub struct AgentPromptReport {
 /// without spawning the engine (#184). `Ok(None)` if no such agent exists;
 /// malformed definitions behave exactly as at load (native aborts, foreign
 /// warns and skips). Parses with an empty [`McpCapabilityIndex`], kept for
-/// [`build_profile`]'s shared signature (#426; harmless now, ADR-0207).
+/// [`build_agent`]'s shared signature (#426; harmless now, ADR-0207).
 pub fn prompt_report(
     root: &Path,
     agent: &str,
@@ -420,10 +420,10 @@ pub fn prompt_report(
         p.source = source.clone();
     }
     let brief_included = parts.iter().any(|p| p.label == "project brief");
-    let profile = build_profile(def, &body, ctx, skills, &McpCapabilityIndex::new())?;
+    let agent = build_agent(def, &body, ctx, skills, &McpCapabilityIndex::new())?;
     Ok(Some(AgentPromptReport {
         source,
-        profile,
+        agent,
         parts,
         include_brief,
         brief_included,
@@ -502,7 +502,7 @@ fn read_dir_raws(
 }
 
 /// Split frontmatter from body, parse the frontmatter as YAML, and build a core
-/// [`AgentProfile`]. The body is composed with `ctx` into the final
+/// [`Agent`]. The body is composed with `ctx` into the final
 /// `system_prompt` via [`assemble`]: shared preamble + body + brief (if
 /// `include_brief`) + env + skills — unconditional for every agent now
 /// (ADR-0207 §4 retires the old `Subagent`-mode reduced form, #113).
@@ -511,14 +511,14 @@ fn parse_definition(
     ctx: &PromptContext,
     skills: &SkillRegistry,
     mcp: &McpCapabilityIndex,
-) -> Result<AgentProfile> {
+) -> Result<Agent> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
-    build_profile(def, &body, ctx, skills, mcp)
+    build_agent(def, &body, ctx, skills, mcp)
 }
 
-/// Build a core [`AgentProfile`] from an already-parsed definition + body,
+/// Build a core [`Agent`] from an already-parsed definition + body,
 /// composing the final `system_prompt` via [`assemble`]. Split out from
 /// [`parse_definition`] so `inspect` can reuse it after it has the definition in
 /// hand (to also render the per-part breakdown from the same inputs).
@@ -528,20 +528,20 @@ fn parse_definition(
 /// signature; [`permission_from_value`]/`expand_capabilities` still need a real
 /// [`McpCapabilityIndex`] for the config `permissions:` ceiling
 /// ([`crate::config`]).
-fn build_profile(
+fn build_agent(
     def: AgentDefinition,
     body: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
     _mcp: &McpCapabilityIndex,
-) -> Result<AgentProfile> {
+) -> Result<Agent> {
     if def.name.trim().is_empty() {
         bail!("agent frontmatter `name` must not be empty");
     }
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
     let include_brief = def.include_brief;
     // `inherit` is the "no pin" sentinel on both model and provider (matching
-    // `model`'s existing filter); drop it before it reaches the profile.
+    // `model`'s existing filter); drop it before it reaches the agent.
     let model = def.model.filter(|m| m != "inherit");
     let provider = def.provider.filter(|p| p != "inherit");
     // A provider pin needs a model to run (#323, ADR-0081): `provider:` without
@@ -552,7 +552,7 @@ fn build_profile(
             def.name
         );
     }
-    let profile = AgentProfile {
+    let agent = Agent {
         name: def.name,
         description: def.description,
         system_prompt: assemble(body, include_brief, ctx, &preloaded),
@@ -572,13 +572,13 @@ fn build_profile(
     };
     let skills_in_prompt = ctx.skills.len();
     tracing::debug!(
-        agent = %profile.name,
-        prompt_len = profile.system_prompt.len(),
+        agent = %agent.name,
+        prompt_len = agent.system_prompt.len(),
         brief = %brief,
         skills = skills_in_prompt,
         "assembled agent system prompt",
     );
-    Ok(profile)
+    Ok(agent)
 }
 
 /// Resolve a definition's `skills:` preload (#117) to rendered bodies via the
@@ -601,7 +601,7 @@ mod tests {
 
     /// Parse with an identity context + empty skill registry so tests assert the
     /// raw body verbatim (no preload injection).
-    fn parse(content: &str) -> Result<AgentProfile> {
+    fn parse(content: &str) -> Result<Agent> {
         parse_definition(
             content,
             &PromptContext::default(),
@@ -611,7 +611,7 @@ mod tests {
     }
 
     /// Parse against a supplied skill registry, to exercise `skills:` preload.
-    fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<AgentProfile> {
+    fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<Agent> {
         parse_definition(
             content,
             &PromptContext::default(),
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_registry_resolves_the_three_profiles() {
+    fn built_in_registry_resolves_the_three_agents() {
         // Exercises the public seam itself (#585): a parse failure here comes
         // back as an `Err` an embedder can handle, not a panic baked into the
         // function.
@@ -655,7 +655,7 @@ mod tests {
         // description, system prompt, model/provider pin); read-only/
         // read-write behavior and spawn bounds are both runtime permission-
         // mode facts now, and any agent is a valid spawn target.
-        let mut reg = ProfileRegistry::default();
+        let mut reg = AgentCatalog::default();
         for (file, contents) in BUILT_INS {
             let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
             reg.insert(p);
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn skills_preload_injects_body_into_system_prompt() {
         // `skills:` preloads the full body; `load_skill` access is a runtime
-        // permission-mode fact now, not anything the profile masks (#117).
+        // permission-mode fact now, not anything the agent masks (#117).
         let skills = skill_registry("git", false, "Run `git commit` carefully.");
         let p = parse_with_skills(
             "---\nname: x\ndescription: d\nskills: [git]\n---\nBody.",

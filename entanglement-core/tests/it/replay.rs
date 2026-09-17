@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, CompactionMode, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, SessionId,
+    stream_from_response, Agent, CompactionMode, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, SessionId,
 };
 
 /// An LLM that replays a scripted list of responses, in order.
@@ -425,7 +425,7 @@ async fn profile_changes_during_replay() {
     // Core carries only the `build` built-in (#201); replay resolves the
     // `AgentChanged` name against the registry, so register the target here.
     let mut cfg = factory(vec![]);
-    cfg.profiles.insert(AgentProfile {
+    cfg.agents.insert(Agent {
         name: "reviewer".into(),
         description: String::new(),
         system_prompt: "Review the changes.".into(),
@@ -436,7 +436,7 @@ async fn profile_changes_during_replay() {
 
     assert!(result.is_ok());
     let session = result.unwrap();
-    assert_eq!(session.profile.name, "reviewer");
+    assert_eq!(session.agent.name, "reviewer");
 }
 
 #[tokio::test]
@@ -1020,12 +1020,11 @@ async fn child_session_tail_is_not_misattributed_to_the_root() {
                 session: root.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".to_string(),
+                agent: "build".to_string(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         prompt_record(&root, "hello"),
@@ -1070,12 +1069,11 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
                 session: root.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".to_string(),
+                agent: "build".to_string(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         prompt_record(&root, "hello root"),
@@ -1103,12 +1101,11 @@ async fn child_session_committed_events_are_not_folded_into_the_root() {
                 session: child.clone(),
                 parent: Some(root.clone()),
                 predecessor: None,
-                profile: "build".to_string(),
+                agent: "build".to_string(),
                 model: None,
                 root: false,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         prompt_record(&child, "child task"),

@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentProfile, EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolSpec};
+use entanglement_core::{Agent, EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolSpec};
 use entanglement_runtime::host;
 use entanglement_runtime::persistence::{spawn_persistence_subscriber_with_sink, RecordSink};
 use entanglement_runtime::session_store::{integrity_gap, pair_records, LogRecord};
@@ -89,11 +89,9 @@ async fn main() -> anyhow::Result<()> {
                 .cloned()
                 .unwrap_or_default()
         })),
-        system_prompt_resolver: Some(Arc::new(
-            move |session: &SessionId, _profile: &AgentProfile| {
-                prompt_cache_read.read().unwrap().get(session).cloned()
-            },
-        )),
+        system_prompt_resolver: Some(Arc::new(move |session: &SessionId, _profile: &Agent| {
+            prompt_cache_read.read().unwrap().get(session).cloned()
+        })),
         ..EngineConfig::default() // EchoLlm — no provider key, deterministic
     });
 

@@ -108,7 +108,7 @@ pub fn agent_detail(cwd: &Path, name: &str) -> Option<String> {
             .context("resolving agent registry")?;
         Ok(resolved
             .iter()
-            .find(|r| r.profile.name == name)
+            .find(|r| r.agent.name == name)
             .map(render_agent_detail))
     };
     // Match the overlay's inline-error convention so a resolution failure still
@@ -161,8 +161,8 @@ fn tui_agent_views(cwd: &Path, agent: &str) -> (Vec<InspectItem>, String) {
         let items: Vec<InspectItem> = resolved
             .iter()
             .map(|r| InspectItem {
-                name: r.profile.name.clone(),
-                summary: r.profile.description.clone(),
+                name: r.agent.name.clone(),
+                summary: r.agent.description.clone(),
                 layer: r.layer.label().to_string(),
             })
             .collect();
@@ -170,7 +170,7 @@ fn tui_agent_views(cwd: &Path, agent: &str) -> (Vec<InspectItem>, String) {
         // Flat summary: the table, with the active agent's detail appended so the
         // "why was this denied / which layer won" state is one glance away.
         let mut out = render_agent_table(&resolved);
-        if let Some(entry) = resolved.iter().find(|r| r.profile.name == agent) {
+        if let Some(entry) = resolved.iter().find(|r| r.agent.name == agent) {
             out.push('\n');
             let _ = writeln!(out, "═══ active agent: {agent} ═══\n");
             out.push_str(&render_agent_detail(entry));

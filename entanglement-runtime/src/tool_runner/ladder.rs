@@ -25,7 +25,7 @@ mod orchestration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{Catalog, Holly, PermissionProfile, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, Catalog, Holly, PermissionProfile, SessionId};
 
 use crate::agent_registry::AgentRegistry;
 use crate::cancel::CancelRegistry;
@@ -155,7 +155,7 @@ pub(super) struct LadderCtx {
     pub pending: crate::pending::PendingDecisions,
     pub open_questions: OpenQuestions,
     pub resolver: Arc<dyn PermissionResolver>,
-    pub profiles: Arc<RwLock<ProfileRegistry>>,
+    pub agents: Arc<RwLock<AgentCatalog>>,
     pub perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     pub mode_table: Arc<ModeTable>,
     pub plan_files: Arc<PlanFileRegistry>,

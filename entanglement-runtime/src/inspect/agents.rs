@@ -8,9 +8,9 @@
 //! prints a table or a per-agent detail view.
 //!
 //! ADR-0207 moved every permission fact (the tool mask, the permission rules,
-//! plan authorship) off `AgentProfile` and onto the session's independent
+//! plan authorship) off `Agent` and onto the session's independent
 //! permission mode; stage 5b moved spawn control, sandbox confinement and
-//! the primary/subagent/all `mode` distinction off it too — a profile no
+//! the primary/subagent/all `mode` distinction off it too — an agent no
 //! longer has a posture to render here at all, only identity (name,
 //! description, model/provider pin, assembled prompt).
 
@@ -24,7 +24,7 @@ use crate::skills;
 use crate::system_prompt::PromptContext;
 
 /// With no `name`, print a table of every resolved agent (name, model, layer,
-/// source). With a `name`, print the full resolved profile — identity,
+/// source). With a `name`, print the full resolved agent — identity,
 /// prompt length — plus which lower-layer definitions it overrode.
 pub fn inspect_agents(cwd: &Path, name: Option<&str>) -> Result<()> {
     let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
@@ -38,7 +38,7 @@ pub fn inspect_agents(cwd: &Path, name: Option<&str>) -> Result<()> {
         Some(name) => {
             let entry = resolved
                 .iter()
-                .find(|r| r.profile.name == name)
+                .find(|r| r.agent.name == name)
                 .with_context(|| {
                     format!("unknown agent `{name}` (no matching definition found)")
                 })?;
@@ -60,8 +60,8 @@ pub(super) fn render_agent_table(resolved: &[AgentResolution]) -> String {
         .iter()
         .map(|r| {
             vec![
-                r.profile.name.clone(),
-                r.profile.model.clone().unwrap_or_else(|| "inherit".into()),
+                r.agent.name.clone(),
+                r.agent.model.clone().unwrap_or_else(|| "inherit".into()),
                 r.layer.label().to_string(),
                 r.source.clone(),
             ]
@@ -71,12 +71,12 @@ pub(super) fn render_agent_table(resolved: &[AgentResolution]) -> String {
     super::render_table(&["NAME", "MODEL", "LAYER", "SOURCE"], &rows)
 }
 
-/// Full resolved profile for one agent: identity/provenance and the
+/// Full resolved definition for one agent: identity/provenance and the
 /// assembled-prompt length. Permission/mask/plan-authorship/spawn-control/
 /// sandbox posture is gone (ADR-0207): it lives on the session's permission
-/// mode now, not this profile — any agent is a valid spawn target (§6).
+/// mode now, not this agent — any agent is a valid spawn target (§6).
 pub(super) fn render_agent_detail(entry: &AgentResolution) -> String {
-    let p = &entry.profile;
+    let p = &entry.agent;
     let mut out = String::new();
     let _ = writeln!(out, "name:        {}", p.name);
     let _ = writeln!(out, "description: {}", p.description);
@@ -114,19 +114,19 @@ pub(super) fn render_agent_detail(entry: &AgentResolution) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::AgentProfile;
+    use entanglement_core::Agent;
 
-    fn resolution(profile: AgentProfile) -> AgentResolution {
+    fn resolution(agent: Agent) -> AgentResolution {
         AgentResolution {
-            profile,
+            agent,
             layer: AgentLayer::BuiltIn,
             source: "built-in (t.md)".into(),
             shadowed: Vec::new(),
         }
     }
 
-    fn profile() -> AgentProfile {
-        AgentProfile {
+    fn agent() -> Agent {
+        Agent {
             name: "t".into(),
             description: String::new(),
             system_prompt: "prompt body".into(),
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn table_lists_name_model_layer_source() {
-        let rows = vec![resolution(profile())];
+        let rows = vec![resolution(agent())];
         let table = render_agent_table(&rows);
         assert!(table.contains("NAME"), "{table}");
         assert!(table.contains("MODEL"), "{table}");
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn detail_shows_identity_no_permission_or_spawn_posture() {
-        let detail = render_agent_detail(&resolution(profile()));
+        let detail = render_agent_detail(&resolution(agent()));
         assert!(detail.contains("name:        t"), "{detail}");
         assert!(
             detail.contains("assembled system prompt: 11 chars"),
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn detail_reports_no_lower_layer_override_by_default() {
-        let detail = render_agent_detail(&resolution(profile()));
+        let detail = render_agent_detail(&resolution(agent()));
         assert!(
             detail.contains("overrides:   (none — no lower-layer definition)"),
             "{detail}"

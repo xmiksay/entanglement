@@ -40,7 +40,6 @@ mod session_lifecycle;
 mod set_generation;
 mod set_mode;
 mod set_session_meta;
-mod spawn_sponsored;
 mod stop_semantics;
 mod system_prompt_resolver;
 mod tool_call_delta;

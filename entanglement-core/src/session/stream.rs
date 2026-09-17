@@ -81,7 +81,7 @@ pub(super) async fn stream_round(
             // override, resolved once by the caller (#310, ADR-0078).
             system,
             // A live model switch (#218) overrides the profile's pinned model.
-            model: s.model.as_deref().or(s.profile.model.as_deref()),
+            model: s.model.as_deref().or(s.agent.model.as_deref()),
             messages: s.ctx.messages(),
             tools: specs,
             generation,

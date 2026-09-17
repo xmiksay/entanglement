@@ -6,10 +6,10 @@
 //! Core emits [`OutEvent::ToolExec`] for **every** host tool and parks on
 //! [`InMsg::ToolResult`]; it no longer consults `PermissionProfile`. This task:
 //!
-//! 1. tracks each session's active [`AgentProfile`] — folded from `SessionStarted`
+//! 1. tracks each session's active [`Agent`] — folded from `SessionStarted`
 //!    / `AgentChanged` (ADR-0020) but **self-healed** on every `ToolExec` from the
-//!    profile name the event carries (#156), resolved against the
-//!    [`ProfileRegistry`] handed at startup. That fold is a *lossy* broadcast, so
+//!    agent name the event carries (#156), resolved against the
+//!    [`AgentCatalog`] handed at startup. That fold is a *lossy* broadcast, so
 //!    under burst a dropped lifecycle event would otherwise leave a restricted
 //!    session unseen; the self-heal makes the gate authoritative. The grade
 //!    itself comes from the session's permission **mode** (ADR-0207 stage 4),
@@ -38,8 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentProfile, AgentState, ApprovalScope, Holly, InMsg, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall,
+    Agent, AgentCatalog, AgentState, Holly, InMsg, OutEvent, PermissionProfile, SessionId,
 };
 
 // The interception ladder (issue #451): `Intercept` classifies a `ToolExec`
@@ -50,97 +49,56 @@ use entanglement_core::{
 mod ladder;
 use ladder::{Intercept, LadderCtx};
 
-use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
+use crate::tools::{SharedRegistry, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::arg_validate;
 use crate::cancel::{CancelAllOnDrop, CancelRegistry};
-use crate::capability::{self, Capability};
 use crate::hooks::Hooks;
 use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::mode::ModeTable;
-use crate::permission::{clamp_to_base, min_permission};
-use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
-use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
+use crate::policy::{DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver};
 use crate::run_limits;
 use crate::seam;
-use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
 use crate::tool_advertising::{self, SharedAdvertisingState};
-use crate::tool_names::{LOAD_SKILL_TOOL, REQUEST_MODE_TOOL};
 
-/// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
-/// granted under `mode` (#174, ADR-0207 §8: a grant matches only the mode it
-/// was earned in): a session-scoped or persisted "always allow" grant lets an
-/// *identical* later call in the *same mode* skip the prompt. Only `Ask` is
-/// widened — a `Deny` (a hard policy floor) and an outright `Allow` pass
-/// through untouched.
-fn apply_grant(
-    grants: &dyn GrantStore,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    perm: Permission,
-    mode: &str,
-) -> Permission {
-    if perm == Permission::Ask && grants.is_granted(session, tool, arg, mode) {
-        Permission::Allow
-    } else {
-        perm
-    }
-}
-
-/// Least-privileged resolver grade across a call's ancestor chain — the sub-agent
-/// privilege ceiling (ADR-0024) applied *on top of* whatever the pluggable
-/// [`PermissionResolver`] returns, so a tenant rule can never widen a child
-/// beyond its parent. For the default [`ProfileResolver`] each per-session
-/// resolve already clamps to the config ceiling internally, so folding them
-/// least-privilege here is the whole of it — no separate outer `clamp_to_base`
-/// needed. An empty chain is impossible — the leaf session is always present —
-/// but defaults to `Deny` if one ever arrives.
-///
-/// `pub(crate)`: also the grading primitive [`crate::script::BindingPolicy`]
-/// reuses (ADR-0207 stage 4b) so a `rhai` binding — and `rhai`'s own
-/// dispatch, `Intercept::Rhai` above — resolve through the *exact* same
-/// pluggable resolver + chain walk a direct tool call does, instead of a
-/// second `AgentProfile`-chain path.
-pub(crate) async fn resolve_effective(
-    resolver: &dyn PermissionResolver,
-    chain: &[SessionId],
-    tool: &str,
-    input: &str,
-) -> Permission {
-    let mut perm = Permission::Allow;
-    let mut any = false;
-    for session in chain {
-        perm = min_permission(perm, resolver.resolve(session, tool, input).await);
-        any = true;
-    }
-    if any {
-        perm
-    } else {
-        Permission::Deny
-    }
-}
+// The generic tool-call primitives (issue #451) — `dispatch`, the parked-
+// approval tail `await_decision`, and the run-against-the-registry step
+// `run_and_reply` — split out so this file stays the executor loop shell
+// (lifecycle folding + `LadderCtx` construction); `apply_grant`/
+// `resolve_effective` live in `dispatch::grade`. Re-exported at their
+// pre-split paths (`tool_runner::dispatch`/`apply_grant`/`resolve_effective`)
+// since `ladder::graded`, `propose_plan`, and `script::binding_policy` all
+// call them by those paths.
+mod dispatch;
+pub(crate) use dispatch::dispatch;
+pub(crate) use dispatch::grade::resolve_effective;
+// `apply_grant`'s only caller outside `dispatch` is the rhai route in
+// `ladder::graded`, which is feature-gated — so an ungated re-export is an
+// unused import in the `--no-default-features` lean build (ADR-0025) and
+// `make check-lean` fails it under `-D warnings`.
+#[cfg(feature = "rhai")]
+pub(crate) use dispatch::grade::apply_grant;
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
-/// engine's outbox closes. `profiles` is the runtime's copy of the engine's
-/// [`ProfileRegistry`] — the permission *shape* stays a core type; the runtime
+/// engine's outbox closes. `agents` is the runtime's copy of the engine's
+/// [`AgentCatalog`] — the permission *shape* stays a core type; the runtime
 /// only reads it (ADR-0003). `base` is the user config's global permission
 /// ceiling (#172): every resolved grade is clamped least-privilege against it.
 pub fn spawn_tool_executor(
     holly: &Holly,
     tools: ToolRegistry,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     base: PermissionProfile,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_tool_executor_with_hooks(holly, tools, profiles, base, Hooks::default())
+    spawn_tool_executor_with_hooks(holly, tools, agents, base, Hooks::default())
 }
 
 /// Wrap a caller's [`SkillRegistry`] for [`spawn_tool_executor_with_policy`]'s
-/// `skills` parameter, mirroring [`wrap_profiles`]. The convenience wrappers
+/// `skills` parameter, mirroring [`wrap_agents`]. The convenience wrappers
 /// below plug in an empty registry — no `load_skill` mask ever activates for
 /// their (~30, test-only) callers, matching their historical no-skill-mask
 /// behavior byte-for-byte.
@@ -148,13 +106,13 @@ fn wrap_skills(skills: SkillRegistry) -> Arc<RwLock<Arc<SkillRegistry>>> {
     Arc::new(RwLock::new(Arc::new(skills)))
 }
 
-/// Wrap a caller's owned [`ProfileRegistry`] for [`spawn_tool_executor_with_policy`],
+/// Wrap a caller's owned [`AgentCatalog`] for [`spawn_tool_executor_with_policy`],
 /// which reads it through an `Arc<RwLock<..>>` so a live definitions watcher
 /// (#329) can swap it for a fresher one without restarting the executor. The
 /// convenience wrappers here keep their historical owned-registry signature for
 /// existing callers (and tests) that need no live reload.
-fn wrap_profiles(profiles: ProfileRegistry) -> Arc<RwLock<ProfileRegistry>> {
-    Arc::new(RwLock::new(profiles))
+fn wrap_agents(agents: AgentCatalog) -> Arc<RwLock<AgentCatalog>> {
+    Arc::new(RwLock::new(agents))
 }
 
 /// Like [`spawn_tool_executor`] but with user-configured lifecycle hooks (#199,
@@ -165,14 +123,14 @@ fn wrap_profiles(profiles: ProfileRegistry) -> Arc<RwLock<ProfileRegistry>> {
 pub fn spawn_tool_executor_with_hooks(
     holly: &Holly,
     tools: ToolRegistry,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     base: PermissionProfile,
     hooks: Hooks,
 ) -> tokio::task::JoinHandle<()> {
     // The default single-user policy (#311, ADR-0207 stage 4): the executor
     // folds lifecycle events into `active` (still needed for spawn gating
     // and the `rhai` binding policy) and `modes` (the session→mode map
-    // `ProfileResolver` grades from — sandboxing reads the identical map via
+    // `ModeResolver` grades from — sandboxing reads the identical map via
     // `crate::policy::ModeSandboxResolver`, ADR-0207 §6, wired independently
     // by a caller that wants it; these test-only wrappers don't). "Always
     // allow" grants persist to the managed file.
@@ -182,7 +140,7 @@ pub fn spawn_tool_executor_with_hooks(
     let shared_tools = tools.shared();
     // No escape-root policy wired here (root: None) — the strict-containment
     // 4-arg wrapper keeps the pre-#485 verbatim arg match (ADR-0125).
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
@@ -207,7 +165,7 @@ pub fn spawn_tool_executor_with_hooks(
         // reachable here — the executor's own `rhai` arm writes it and its
         // `poll` arm reads it back, both inside this one executor.
         crate::script_ops::ScriptRegistry::new(),
-        wrap_profiles(profiles),
+        wrap_agents(agents),
         wrap_skills(SkillRegistry::default()),
         base,
         active,
@@ -243,16 +201,16 @@ pub fn spawn_tool_executor_with_hooks(
 /// a [`PermissionResolver`] decides each call's `Allow | Ask | Deny` grade and a
 /// [`GrantStore`] persists "always allow" grants, so a multi-tenant embedder can
 /// store rules per user in its own DB without forking the executor. `active` is
-/// the shared per-session profile map the executor folds lifecycle events into —
+/// the shared per-session agent map the executor folds lifecycle events into —
 /// still driving spawn gating (#119), the sandbox policy, and the `rhai`
 /// binding policy, which stay in the ladder on top of the resolver.
 /// `perm_modes` is the same fold for the session's permission mode
-/// (ADR-0207 stage 4), which the default [`ProfileResolver`] grades every
-/// call from. The two default wrappers above plug in [`ProfileResolver`] +
+/// (ADR-0207 stage 4), which the default [`ModeResolver`] grades every
+/// call from. The two default wrappers above plug in [`ModeResolver`] +
 /// [`DefaultGrantStore`] for the CLI.
 ///
-/// `profiles` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
-/// [`ProfileRegistry`]) so a runtime definitions watcher can swap in a
+/// `agents` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
+/// [`AgentCatalog`]) so a runtime definitions watcher can swap in a
 /// freshly-reloaded registry without restarting this executor — every lookup
 /// below takes a brief read lock and clones the hit into the (already-cloning)
 /// `active`/mask/spawn-refusal call sites, so a reload mid-flight is invisible
@@ -264,7 +222,7 @@ pub fn spawn_tool_executor_with_hooks(
 /// [`ToolRegistry`]) so a live tool-registration change — MCP add/remove (#4) —
 /// is visible to this executor without a restart: each dispatch takes a brief
 /// read lock and clones an owned snapshot *before* spawning the detached task
-/// (never held across a tool's `.await`), mirroring the `profiles` pattern
+/// (never held across a tool's `.await`), mirroring the `agents` pattern
 /// above.
 ///
 /// `skills` (#400, ADR-0106) is the same live-reloadable handle
@@ -275,7 +233,7 @@ pub fn spawn_tool_executor_with_hooks(
 ///
 /// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
 /// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
-/// jobs `bash` actually spawned; unlike `tools`/`skills`/`profiles` this isn't
+/// jobs `bash` actually spawned; unlike `tools`/`skills`/`agents` this isn't
 /// itself hot-swappable, only cheaply cloned (an `Arc` internally). `retained`
 /// (#608) is the same story for
 /// [`crate::retained_output::RetainedOutputRegistry`]: the caller's
@@ -346,13 +304,13 @@ pub fn spawn_tool_executor_with_policy(
     // as `jobs`/`retained`: the `rhai` launcher writes, `poll`'s `x-` path and
     // the `ListOperations` router read.
     scripts: crate::script_ops::ScriptRegistry,
-    profiles: Arc<RwLock<ProfileRegistry>>,
+    agents: Arc<RwLock<AgentCatalog>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
-    active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+    active: Arc<Mutex<HashMap<SessionId, Agent>>>,
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
-    // the shared map the default `resolver` (`ProfileResolver`) grades every
+    // the shared map the default `resolver` (`ModeResolver`) grades every
     // call from. An unseen session fails closed, mirroring `active`. Named
     // `perm_modes` (not `modes`) to stay distinct from
     // `tool_advertising`'s unrelated session→`ToolAdvertising`-mode map.
@@ -368,7 +326,7 @@ pub fn spawn_tool_executor_with_policy(
     // reads the identical `perm_modes` map directly via
     // `crate::policy::SandboxConfig`/`ModeSandboxResolver`, wired into
     // `bash`/`call` at registration time, since a mode's sandbox posture
-    // needs no lifecycle-event bookkeeping the way the old per-profile
+    // needs no lifecycle-event bookkeeping the way the old per-agent
     // ancestor floor did — the whole spawn sub-tree shares one mode.
     mode_table: Arc<crate::mode::ModeTable>,
     // Per-session plan-file staleness tracking (#513), taken as a param
@@ -431,11 +389,11 @@ pub fn spawn_tool_executor_with_policy(
         // drops, whether that's an explicit `.abort()` at shutdown or the loop
         // below breaking on the engine's outbox closing.
         let mut background: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-        // Active profile per session. Folded from lifecycle events, but the fold
+        // Active agent per session. Folded from lifecycle events, but the fold
         // is a *lossy* broadcast — so it is authoritatively self-healed on every
-        // `ToolExec` from the profile name that event carries (#156). See the
+        // `ToolExec` from the agent name that event carries (#156). See the
         // `ToolExec` arm below. Shared (`Arc<Mutex<..>>`, a param) with the
-        // default `ProfileResolver` (#311) so it reads the same folded view; this
+        // default `ModeResolver` (#311) so it reads the same folded view; this
         // loop is the sole writer, so the brief locks never contend.
         //
         // Per-session *in-flight* request_id dedupe (#274, ADR-0071): the set of
@@ -659,7 +617,7 @@ pub fn spawn_tool_executor_with_policy(
         // field is `Arc`-cheap to clone, and cloning (instead of moving)
         // leaves each original binding intact for the lifecycle-folding
         // arms below, which keep reading several of them directly
-        // (`profiles`, `active`, `perm_modes`, …).
+        // (`agents`, `active`, `perm_modes`, …).
         let ctx = LadderCtx {
             holly: holly.clone(),
             registry: registry.clone(),
@@ -669,7 +627,7 @@ pub fn spawn_tool_executor_with_policy(
             pending: pending.clone(),
             open_questions: open_questions.clone(),
             resolver: resolver.clone(),
-            profiles: profiles.clone(),
+            agents: agents.clone(),
             perm_modes: perm_modes.clone(),
             mode_table: mode_table.clone(),
             plan_files: plan_files.clone(),
@@ -700,7 +658,7 @@ pub fn spawn_tool_executor_with_policy(
                 Ok(OutEvent::SessionStarted {
                     session,
                     parent,
-                    profile,
+                    agent,
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
@@ -713,34 +671,34 @@ pub fn spawn_tool_executor_with_policy(
                     // no-op for any other session, since a fresh registration is
                     // already `Live` and an untracked id has no entry to update.
                     registry.mark_live(&session);
-                    let started_profile = profiles
+                    let started_agent = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
-                        .get(&profile)
+                        .expect("agent-catalog lock poisoned")
+                        .get(&agent)
                         .cloned();
-                    if let Some(p) = started_profile.clone() {
+                    if let Some(p) = started_agent.clone() {
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session.clone(), p);
                     }
                 }
                 Ok(OutEvent::AgentChanged { session, agent }) => {
-                    if let Some(p) = profiles
+                    if let Some(p) = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
+                        .expect("agent-catalog lock poisoned")
                         .get(&agent)
                         .cloned()
                     {
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session, p);
                     }
                 }
                 // The session's permission mode changed (ADR-0207 stage 4):
                 // fold the same way `active` folds `AgentChanged`, so
-                // `ProfileResolver` reads the current mode. Fires once at
+                // `ModeResolver` reads the current mode. Fires once at
                 // session start (mirroring `AgentChanged`) and again on every
                 // `InMsg::SetMode`. The session's own tool overlay is
                 // mode-scoped (ADR-0207 §8, "the overlay becomes mode-scoped")
@@ -757,7 +715,7 @@ pub fn spawn_tool_executor_with_policy(
                         overlays.remove(&session);
                     }
                 }
-                // The session's model changed (`SetModel` / a profile pin
+                // The session's model changed (`SetModel` / an agent pin
                 // re-bind, #218/#323). Tool advertising is *not* re-resolved
                 // (ADR-0196 §2): a pinned session keeps its mode — switching
                 // mid-session would bust the prompt cache the mode protects —
@@ -921,7 +879,7 @@ pub fn spawn_tool_executor_with_policy(
                         continue;
                     }
                     // Authoritative self-heal (#156): the emitting session's
-                    // active profile rides on the `ToolExec` itself, so resolve it
+                    // active agent rides on the `ToolExec` itself, so resolve it
                     // from the registry and overwrite the folded entry *before*
                     // any permission decision (spawn gating and the `rhai`
                     // binding policy still read `active`; sandboxing reads
@@ -930,23 +888,23 @@ pub fn spawn_tool_executor_with_policy(
                     // `SessionStarted`/`AgentChanged` would leave a restricted
                     // session unseen and (pre-#156) fail *open*. This makes the
                     // leaf's gate authoritative regardless of that drop; the
-                    // fail-closed `ProfileResolver` default (an unseen session's
+                    // fail-closed `ModeResolver` default (an unseen session's
                     // mode) covers only the residual unknown case.
-                    if let Some(p) = profiles
+                    if let Some(p) = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
+                        .expect("agent-catalog lock poisoned")
                         .get(&agent)
                         .cloned()
                     {
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session.clone(), p);
                     }
                     // The tool mask is retired (ADR-0207 §8, "the mask
                     // machinery is deleted"): every tool advertised is
                     // dispatchable, graded by the session's permission mode
-                    // instead of withheld by an agent-profile allowlist. The
+                    // instead of withheld by an agent allowlist. The
                     // routes below are a `match` (mutually exclusive), so
                     // adding one is a compiler-checked exhaustiveness change,
                     // not an ordering hazard. Each handler runs on its own
@@ -982,658 +940,6 @@ pub fn spawn_tool_executor_with_policy(
     })
 }
 
-/// Resolve one `ToolExec` per its permission and reply with a `ToolResult`.
-///
-/// The grade comes from the pluggable [`PermissionResolver`] (#311) — the
-/// default [`ProfileResolver`][crate::policy::ProfileResolver] grades from
-/// the session's permission mode (ADR-0207 stage 4) — clamped least-privilege
-/// across the call's ancestor `chain` (the sub-agent ceiling, ADR-0024) and
-/// upgraded from `Ask` to `Allow` by an existing [`GrantStore`] grant scoped
-/// to `mode` (ADR-0207 §8). The DB-backed resolve runs here in the detached
-/// task, not the loop.
-///
-/// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
-/// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
-/// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
-#[allow(clippy::too_many_arguments)]
-async fn dispatch(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    resolver: &dyn PermissionResolver,
-    chain: &[SessionId],
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    pending: &crate::pending::PendingDecisions,
-    escape_root: Option<&EscapeRoot>,
-    // The nearest ancestor-chain link's live overlay entry for this call
-    // (#539, ADR-0149; `arg_pattern` #611/ADR-0163; chain reach #628):
-    // `Some` when a `ToolOverlayEntry` matched the tool at `session` or one
-    // of its ancestors — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
-    // materializes it into a profile that replaces the profile chain's grade
-    // (that override is the overlay's point; the injecting head is trusted),
-    // clamped against `ceiling` below so the config permission ceiling (#172)
-    // still wins.
-    overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
-    // Whether the nearest ancestor-chain link with an overlay *opinion* about
-    // this tool is a **deny** (#634, ADR-0207 §8 restore — gap 2 of stage
-    // 4b): resolved by the caller alongside `overlay_entry` above, from the
-    // same `overlays`/`chain` the loop already holds. Checked before the
-    // mode grade even runs, and before `overlay_entry`'s enable materializes
-    // a grade — a deny withdraws the tool from the session outright, the way
-    // the retired `tool_mask_source` used to.
-    overlay_denied: bool,
-    ceiling: &PermissionProfile,
-    // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
-    // delivered-schema dedup (shares `advertising.discovered` with `describe`,
-    // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
-    // register into, and to re-snapshot from on success — `tools` above is
-    // an already-cloned snapshot that a fresh registration is invisible to),
-    // the availability roster + connected-server map `enable_for_session`
-    // needs, and the endpoint-pool client its connect rides.
-    registry: &SharedRegistry,
-    mcp_avail: &AvailableMcp,
-    mcp_active: &ActiveServers,
-    http: Option<&entanglement_core::HttpClient>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-    // The session's current permission mode (ADR-0207 stage 4), resolved by
-    // the caller before spawning (mirrors `overlay_entry`/`chain` above) —
-    // threaded through to the grant lookup/record so a grant is matched
-    // and recorded against the mode it was actually earned under (§8).
-    mode: String,
-    // `mode`'s resolved `Limits` (ADR-0207 §11, stage 5c), resolved by the
-    // caller alongside `mode` itself — governs whether a bare `Ask` collapses
-    // to a denial (`run_limits::collapses_ask`) and how long a parked
-    // approval waits (`run_limits::timeout`).
-    limits: crate::mode::Limits,
-    // Per-session, per-turn repeat-denial tracker (ADR-0207 §11): a second
-    // identical collapsed-`Ask` denial parks an approval instead of refusing
-    // silently again.
-    denials: &crate::run_limits::DenialTracker,
-) {
-    // A hallucinated tool name can never execute, so reject it *before* the
-    // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
-    // a call that can only fail, `pre_tool_use` vetoes a call that was never
-    // executable, and an `Always`-scoped approval could record a grant for a
-    // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
-    // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
-    // honored exactly as execution itself would see it. `update_tasks` is a
-    // runtime state tool with no registry entry (#231, ADR-0049) — `run_and_reply`
-    // handles it separately — and `request_mode` (ADR-0207 §10) is likewise a
-    // pure orchestration pseudo-tool with no registry entry, handled specially
-    // just below in the `Control` bypass — so both are exempt from this
-    // registry check.
-    //
-    // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
-    // hallucination — a resumed session's replay restores its tool-overlay/
-    // permission state (so the call reaches here, never masked) but MCP
-    // registration is process-lifetime, never persisted, so nothing
-    // re-registers on resume. Self-heal by consulting the same three-state
-    // tier `mcp_enable`/`/enable mcp` do before ever reporting "unknown":
-    // reserve that message strictly for a name matching no registered tool
-    // AND no configured/bundled server in any tier.
-    let mut refreshed_tools: Option<ToolRegistry> = None;
-    if !tools.contains(&tool)
-        && !crate::plan_tasks::is_state_tool(&tool)
-        && tool != REQUEST_MODE_TOOL
-    {
-        match crate::mcp::available::server_name_of(&tool) {
-            Some(server) => {
-                match crate::mcp::available::try_lazy_reenable(
-                    mcp_avail, server, &session, registry, mcp_active, http,
-                )
-                .await
-                {
-                    crate::mcp::available::LazyReenableOutcome::Enabled => {
-                        // The enable registered into the *live* `registry`,
-                        // invisible to the already-cloned `tools` snapshot —
-                        // re-fetch it and let the rest of this function run
-                        // against the fresh view (alias rewrite, grading,
-                        // escape-root, hooks, the approval round-trip all
-                        // still apply below, exactly as if the tool had
-                        // been registered all along).
-                        let snap = registry
-                            .read()
-                            .expect("tool registry lock poisoned")
-                            .clone();
-                        if !snap.contains(&tool) {
-                            // Shouldn't happen (enable_for_session just
-                            // registered it) — fail safe, not panic.
-                            let output = snap.unknown_tool_message(&tool);
-                            seam::reply(holly, session, request_id, output, true).await;
-                            return;
-                        }
-                        refreshed_tools = Some(snap);
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Disabled => {
-                        let output = crate::mcp::available::disabled_decline(server);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Failed(msg) => {
-                        seam::reply(holly, session, request_id, msg, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Unknown => {
-                        let output = tools.unknown_tool_message(&tool);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                }
-            }
-            None => {
-                let output =
-                    tool_advertising::unknown_tool_reply(advertising, &session, tools, &tool);
-                seam::reply(holly, session, request_id, output, true).await;
-                return;
-            }
-        }
-    }
-    let tools = refreshed_tools.as_ref().unwrap_or(tools);
-    // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
-    // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
-    // tool is sugar for — must not launder permission through its own
-    // namespaced name (`Tool::alias_rewrite`'s doc). Rewriting *here*, before
-    // grading/escape-root/hooks/the approval round-trip all run, means every
-    // one of them operates on the wrapped tool's real name and merged input —
-    // exactly as if the model had called it directly — with zero special-
-    // casing anywhere else in this pipeline. A tool that never aliases
-    // (everything but `skills::alias_tool::AliasTool`) leaves `(tool, input)`
-    // untouched.
-    let (tool, input) = match tools.get(&tool).and_then(|t| t.alias_rewrite(&input)) {
-        Some(rewritten) => rewritten,
-        None => (tool, input),
-    };
-    // ADR-0207 §3: a `Capability::Control`-only tool reads/orchestrates
-    // session state and cannot itself read, write or execute anything on the
-    // host, so it is never graded — checked by *capability*, not by adding
-    // another `Intercept` route to remember, so it automatically covers
-    // `update_tasks`/`load_skill`/`mcp_enable`/`request_mode` with nothing to
-    // update here for *grading*. `mcp_enable` is the one that looks like it
-    // should escalate: enabling a server only makes its tools *dispatchable*,
-    // and every one of those is still graded on its own merits at its own
-    // call, so this can't widen anything. Bypasses the overlay too
-    // (`overlay_denied` below never reached) — Control is "never graded"
-    // outright, the same posture `Intercept::Discover`'s sibling routes
-    // already take.
-    if capability::capability_of(&tool, tools) == Some([Capability::Control].as_slice()) {
-        // `request_mode` (ADR-0207 §10) is the one Control tool whose
-        // semantics — like `propose_plan`'s — *require* an unconditional
-        // approval park: widening a session's own authority is a decision
-        // only the user makes, never one `run_and_reply`'s straight-through
-        // execution can grant. A name check here, not a second `Intercept`
-        // route, is what keeps this a capability-driven bypass rather than
-        // another routing table entry to remember.
-        if tool == REQUEST_MODE_TOOL {
-            crate::request_mode::run_request_mode(holly, pending, session, request_id, input, mode)
-                .await;
-            return;
-        }
-        run_and_reply(
-            holly,
-            tools,
-            skills,
-            active_skill,
-            hooks,
-            advertising,
-            validation,
-            session,
-            request_id,
-            tool,
-            input,
-        )
-        .await;
-        return;
-    }
-    // A matching overlay **deny** entry withdraws the tool from the session
-    // outright (#634, ADR-0207 §8's restore of the retired `tool_mask_source`
-    // behavior) — checked before the mode grade runs, and before hooks, since
-    // the tool doesn't "exist" for this session at all right now. An overlay
-    // **enable** still overrides even a mode `deny` (`overlay_entry` below,
-    // materialized further down) — that asymmetry is deliberate: the user's
-    // own `/enable`/`/disable` is trusted-frame-only (ADR-0177), so the model
-    // can reach neither directly.
-    if overlay_denied {
-        let output =
-            format!("tool `{tool}` withdrawn for this session by /disable — /enable to restore");
-        seam::reply(holly, session, request_id, output, true).await;
-        return;
-    }
-    // Resolve + apply grants first (matching the pre-seam order where `perm` was
-    // computed before the hook ran), so a grant upgrade and the veto compose the
-    // same way. The tool-specific argument (command/path, #173) lets an
-    // argument-scoped rule resolve against the call. Normalized root-relative
-    // (#485, ADR-0125) so an in-root absolute path grades identically to its
-    // relative spelling and keys the same grant — computed once here and
-    // threaded into `await_decision` below instead of recomputed there, so the
-    // grant lookup (`apply_grant`) and grant record (on approval) provably
-    // share one key.
-    let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
-    let workdir = crate::permission::permission_workdir(&tool, &input);
-    let base_perm = match overlay_entry {
-        Some(entry) => {
-            let overlay_profile = crate::permission::overlay_entry_grade(&tool, &entry);
-            let grade = crate::permission_bash::resolve_scoped_bash_aware(
-                &overlay_profile,
-                &tool,
-                arg.as_deref(),
-                workdir.as_deref(),
-            );
-            let capabilities = crate::capability::capability_of(&tool, tools).unwrap_or(&[]);
-            clamp_to_base(
-                grade,
-                ceiling,
-                &tool,
-                capabilities,
-                arg.as_deref(),
-                workdir.as_deref(),
-            )
-        }
-        None => resolve_effective(resolver, chain, &tool, &input).await,
-    };
-    let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm, &mode);
-    if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
-        seam::reply(holly, session, request_id, reason, true).await;
-        return;
-    }
-    // Escape-root gate (ADR-0109): a `read`/`edit`/`write` path or `bash`/`call`
-    // `workdir` that resolves *outside* the project root requires explicit
-    // approval — even when the profile would `Allow` — unless the user already
-    // durably granted this exact `(tool, path)`. A `Deny` floor still wins (the
-    // profile forbade the tool outright), so escaping never *lowers* the bar.
-    // `None` (no escape policy wired) is the pre-ADR-0109 strict-containment path.
-    let escape = escape_root
-        .filter(|_| perm != Permission::Deny)
-        .and_then(|er| er.escaping(&tool, &input).map(|abs| (er, abs)))
-        .filter(|(er, abs)| !er.store.is_durably_allowed(&tool, abs));
-
-    match perm {
-        Permission::Allow if escape.is_none() => {
-            run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
-        }
-        Permission::Deny => {
-            // ADR-0207 §4: a mode `deny` is absolute — no prompt — and the
-            // message names the mode and the way out, so the model (or the
-            // user reading the transcript) knows this isn't a bug to retry
-            // but a posture to switch out of.
-            let output = format!("tool `{tool}` denied by mode `{mode}` — use /mode to switch");
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // ADR-0207 §11: an unattended mode (a finite `question_timeout`) has
-        // no one to prompt, so a bare `Ask` grade collapses to an immediate
-        // denial rather than parking — *unless* this exact `(tool, arg)` was
-        // already denied once this turn, in which case a model insisting
-        // twice may genuinely need it, so the repeat falls through to the
-        // ordinary park below (still bounded by the same timeout). The guard
-        // records the denial as a side effect, so it never double-charges: a
-        // first call denies-and-records, a second sees the record and falls
-        // to `_`.
-        Permission::Ask
-            if run_limits::collapses_ask(&limits)
-                && !denials.record_repeat(&session, &tool, arg.as_deref()) =>
-        {
-            let output = format!(
-                "tool `{tool}` denied — mode `{mode}` is unattended (question_timeout \
-                 {}s, no one to prompt); call it again to request a one-time approval",
-                limits.question_timeout
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // Either the mode said `Ask` (an attended mode, or a collapsed
-        // mode's second identical call), or an out-of-root access forced one.
-        _ => {
-            // Register the waiter *before* prompting (#156) so the inbound router
-            // can never process the approval before this park exists — the
-            // lag-proof successor to the old "subscribe before prompting"
-            // discipline. The prompt mints a **fresh** per-session seq (#157) from
-            // the parked session's shared counter, so `(session, seq)` stays unique
-            // instead of reusing the `ToolExec` seq.
-            let rx = pending.register(&session, &request_id, "tool", tool.clone());
-            let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
-            holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
-                session: session.clone(),
-                seq,
-                request_id: request_id.clone(),
-                tool: tool.clone(),
-                input: escape_grant
-                    .as_ref()
-                    .map(|(_, abs)| {
-                        format!(
-                            "{input}\n\n⚠ accesses a path OUTSIDE the project root: {}",
-                            abs.display()
-                        )
-                    })
-                    .unwrap_or_else(|| input.clone()),
-            });
-            holly.emit_status(&session, AgentState::WaitingApproval);
-            await_decision(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                grants,
-                hooks,
-                advertising,
-                validation,
-                rx,
-                escape_grant,
-                session,
-                request_id,
-                tool,
-                input,
-                arg,
-                mode,
-                run_limits::timeout(&limits),
-            )
-            .await;
-        }
-    }
-}
-
-/// Park until the head answers the pending approval, then run-or-refuse. A
-/// `Stop` (Esc-in-approval) unwinds silently: core's `wait_tool_result` sees the
-/// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed
-/// (the shared park/filter is [`crate::seam::await_decision`]). `arg` is the
-/// grading-time argument `dispatch` already computed (#485, ADR-0125) — taken
-/// as a parameter rather than recomputed here, so the grant this records on
-/// approval provably uses the exact same key `apply_grant` looked up before
-/// the prompt was ever shown. `mode` is likewise threaded through so the
-/// recorded grant is tagged with the mode it was actually approved under
-/// (ADR-0207 §8). `question_timeout` (ADR-0207 §11, stage 5c) bounds the
-/// park: `None` waits forever (every attended mode); `Some(d)` is the mode's
-/// own `question_timeout`, and an elapsed wait expires as a denial —
-/// silence is never consent for a privileged action.
-#[allow(clippy::too_many_arguments)]
-async fn await_decision(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    rx: tokio::sync::oneshot::Receiver<seam::Decision>,
-    escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-    arg: Option<String>,
-    mode: String,
-    question_timeout: Option<std::time::Duration>,
-) {
-    let decision = match crate::pending::await_decision_timed(rx, question_timeout).await {
-        Some(decision) => decision,
-        // Elapsed with no answer: `on_timeout` for a parked approval is
-        // always `Deny` today (`crate::mode::OnTimeout`) — silence is never
-        // consent for a privileged action (ADR-0207 §11).
-        None => {
-            set_thinking(holly, &session);
-            let output = format!(
-                "tool `{tool}` denied: no response within {}s (mode `{mode}`)",
-                question_timeout.map(|d| d.as_secs()).unwrap_or_default()
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-            return;
-        }
-    };
-    match decision {
-        seam::Decision::Approve { scope } => {
-            set_thinking(holly, &session);
-            if let Some((store, abs)) = &escape_grant {
-                // The prompt was forced by an out-of-root access (ADR-0109):
-                // record the approval in the escape-root store so the host tool's
-                // containment check lets *this tool* reach *this path*. Every scope
-                // is recorded (a `Once` becomes the single-use token bound to this
-                // exact `request_id`, #449, so a concurrent call to the same path
-                // can't consume it); `Session`/`Always` also relax future
-                // containment and let the executor skip re-asking. Per-tool by
-                // construction.
-                store.record(&tool, abs, scope, &request_id);
-            } else if scope != ApprovalScope::Once {
-                // Ordinary (in-root) approval: record the wider scopes (#174) so an
-                // identical later call skips this prompt — through the pluggable
-                // [`GrantStore`] (#311), tagged with the mode it was earned in
-                // (ADR-0207 §8). `Once` records nothing.
-                grants
-                    .record(&session, &tool, arg.as_deref(), scope, &mode)
-                    .await;
-            }
-            run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
-        }
-        seam::Decision::Reject { reason } => {
-            set_thinking(holly, &session);
-            let output = format!(
-                "tool `{tool}` rejected: {}",
-                reason.as_deref().unwrap_or("user")
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
-        // `Replace` never target a tool-approval request id (they are
-        // `ask_user`-only, #515).
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_and_reply(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-) {
-    // `update_tasks` carries no host resource (#231, ADR-0049): it is not in
-    // the registry. The runtime emits its `TaskList` snapshot — minting a
-    // **fresh** per-session seq (#157) so it takes an ordered place in the
-    // content stream instead of colliding with the parked `ToolExec` seq —
-    // and acks (text), instead of dispatching.
-    if crate::plan_tasks::is_state_tool(&tool) {
-        holly.emit_for_session(&session, |seq| {
-            crate::plan_tasks::state_event(&session, seq, &tool, &input)
-                .expect("is_state_tool ⇒ state_event is Some")
-        });
-        let ack = crate::plan_tasks::ack(&tool);
-        hooks
-            .run_post_tool_use(&session, &tool, &input, &ack, false, None)
-            .await;
-        seam::reply(holly, session, request_id, ack, false).await;
-        return;
-    }
-    // Pre-dispatch argument validation (#560, ADR-0196 §6): a call whose
-    // input violates the tool's advertised schema (missing/unexpected
-    // properties, a type mismatch) never reaches `Tool::run` at all — it gets
-    // a specific complaint instead of `run()`'s opaque parse-failure text.
-    // A tool absent from the registry (a runtime-owned pseudo-tool like
-    // `update_tasks`/`ask_user`/`poll`, already handled above or dispatched
-    // elsewhere) has no advertised schema here, so it's exempt by
-    // construction — nothing to validate against.
-    if let Some(spec) = tools.spec_for(&tool) {
-        if let Some(violation) = arg_validate::validate(&spec.schema, &input) {
-            tracing::warn!(
-                tool = %tool,
-                violation = ?violation.lines(),
-                "tool call failed pre-dispatch schema validation"
-            );
-            let already_delivered = advertising
-                .discovered
-                .lock()
-                .expect("discovered-tool mutex poisoned")
-                .contains(&session, &tool);
-            if !already_delivered {
-                advertising
-                    .discovered
-                    .lock()
-                    .expect("discovered-tool mutex poisoned")
-                    .mark(&session, &tool);
-            }
-            let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
-            let mut output =
-                arg_validate::decline_text_for(&spec, &violation, already_delivered, via_invoke);
-            if validation.note(&session, &tool, &input, true) {
-                output.push_str("\n\n");
-                output.push_str(arg_validate::LOOP_BREAKER_NOTE);
-            }
-            hooks
-                .run_post_tool_use(&session, &tool, &input, &output, true, None)
-                .await;
-            seam::reply(holly, session, request_id, output, true).await;
-            return;
-        }
-    }
-    // Every other tool executes against the host registry, returning multimodal
-    // content (a text result, or an image block for `read` on an image, #221)
-    // plus `is_error` (#636, ADR-0176). `edit`/`write` record their change into
-    // the capture scope (#202); the executor mints a fresh `FileChange` seq
-    // (#157) and broadcasts the audit event before replying with the
-    // `ToolResult`. `duration_ms` is measured around the whole execution —
-    // generic across every host tool, unlike `is_error` which the registry
-    // itself classifies — so a slow `bash`/`call` is visible without either
-    // parsing its `[exit N]` header or threading a bespoke timer through every
-    // `Tool` impl.
-    let started = std::time::Instant::now();
-    let execution = crate::file_change::capture_and_emit(
-        holly,
-        &session,
-        tools.execute(
-            &ToolCall {
-                id: request_id.clone(),
-                name: tool.clone(),
-                input: input.clone(),
-                provider_meta: None,
-            },
-            &session,
-        ),
-    )
-    .await;
-    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let ToolExecution {
-        mut content,
-        is_error,
-        exit_code,
-    } = execution;
-    let mut output_text = entanglement_core::content_text(&content);
-    // Loop-breaker guard (#560, ADR-0196 §6): two identical failing calls in a
-    // row — same tool, same input, both `is_error` — mean the schema was
-    // never the problem. Deliberately generic across every failure kind
-    // (unknown-tool and schema-violation return earlier, above/in `dispatch`;
-    // this covers a runtime tool error and an MCP required-param rejection
-    // alike). A non-error result never triggers the note, matching decision
-    // 3: a command failure (non-zero exit) is untouched.
-    if validation.note(&session, &tool, &input, is_error) && is_error {
-        output_text.push_str("\n\n");
-        output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
-        content.push(entanglement_core::ContentPart::text(format!(
-            "\n\n{}",
-            arg_validate::LOOP_BREAKER_NOTE
-        )));
-    }
-    // #400, ADR-0106 (posture-only since ADR-0194): a successful `load_skill`
-    // records the session's skill-active posture and tells any listening head
-    // via `OutEvent::SkillActive` — parsed from the result's `skill_id:`
-    // header (absent on a failed load: unknown/`user_only` skill, which
-    // leaves any prior posture untouched). It no longer narrows the
-    // session's tool set.
-    if tool == LOAD_SKILL_TOOL {
-        activate_skill(holly, skills, active_skill, &session, &output_text);
-    }
-    // `post_tool_use` (#199) observes the result before it is folded back — a
-    // pure side-effect (formatter/telemetry); it cannot rewrite `content`, but
-    // it now also observes `is_error` (#636) so a hook can branch on outcome
-    // without re-parsing `output`.
-    hooks
-        .run_post_tool_use(&session, &tool, &input, &output_text, is_error, exit_code)
-        .await;
-    seam::reply_content(
-        holly,
-        session,
-        request_id,
-        content,
-        is_error,
-        Some(duration_ms),
-        exit_code,
-    )
-    .await;
-}
-
-/// Record `session`'s skill-active posture (#400, ADR-0106; posture-only
-/// since ADR-0194 — skills no longer mask tools) from a `load_skill` result:
-/// parse its `skill_id:` header, look the skill up in the live registry for
-/// its (now-vestigial, wire-compat-only) `allowed_tools`, and tell any
-/// listening head via [`OutEvent::SkillActive`]. A `result` with no
-/// `skill_id:` header (a failed load) is a no-op — the session keeps
-/// whatever posture was active before.
-fn activate_skill(
-    holly: &Holly,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    session: &SessionId,
-    result: &str,
-) {
-    let Some(skill_id) = parse_skill_id(result) else {
-        return;
-    };
-    let allowed_tools = skills
-        .read()
-        .expect("skill registry lock poisoned")
-        .get(skill_id)
-        .and_then(|s| s.allowed_tools.clone());
-    active_skill
-        .lock()
-        .expect("active-skill mutex poisoned")
-        .insert(session.clone());
-    holly.emit_for_session(session, |seq| OutEvent::SkillActive {
-        session: session.clone(),
-        seq,
-        skill_id: Some(skill_id.to_string()),
-        allowed_tools,
-    });
-}
-
 /// Clear `session`'s skill-active posture (#400, ADR-0106) — the turn's
 /// `Done`, the natural end of a skill's scope. A no-op (no wire event) when
 /// no skill was active, matching [`activate_skill`]'s "only tell a head about
@@ -1657,13 +963,8 @@ fn clear_active_skill(
     }
 }
 
-fn set_thinking(holly: &Holly, session: &SessionId) {
-    holly.emit_status(session, AgentState::Thinking);
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::tool_names::{
         is_non_maskable, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
     };
@@ -1681,51 +982,5 @@ mod tests {
             "poll's mask exemption was retired by ADR-0192"
         );
         assert!(!is_non_maskable("bash"));
-    }
-
-    /// A resolver that answers a fixed grade per session id (default `Allow`),
-    /// so a test can prove the executor's ancestor clamp (#311, ADR-0024) sits
-    /// *on top of* the pluggable resolver.
-    struct PerSessionResolver(std::collections::HashMap<SessionId, Permission>);
-
-    #[async_trait::async_trait]
-    impl PermissionResolver for PerSessionResolver {
-        async fn resolve(&self, session: &SessionId, _tool: &str, _input: &str) -> Permission {
-            self.0.get(session).copied().unwrap_or(Permission::Allow)
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_effective_clamps_least_privilege_over_the_chain() {
-        let child = SessionId::new("child");
-        let parent = SessionId::new("parent");
-        // The tenant rule *widens* the child to Allow, but its parent resolves
-        // Ask — the chain min must clamp the child back to Ask, so a resolver can
-        // never widen a sub-agent beyond its ancestor.
-        let resolver = PerSessionResolver(
-            [
-                (child.clone(), Permission::Allow),
-                (parent.clone(), Permission::Ask),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        let chain = vec![child.clone(), parent.clone()];
-        assert_eq!(
-            resolve_effective(&resolver, &chain, "bash", "{}").await,
-            Permission::Ask
-        );
-        // A root (single-element chain) resolves to its own grade unchanged.
-        assert_eq!(
-            resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}").await,
-            Permission::Allow
-        );
-        // A parent `Deny` floors the child regardless of the tenant's Allow.
-        let deny_parent =
-            PerSessionResolver([(parent.clone(), Permission::Deny)].into_iter().collect());
-        assert_eq!(
-            resolve_effective(&deny_parent, &chain, "bash", "{}").await,
-            Permission::Deny
-        );
     }
 }

@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use entanglement_core::{Catalog, ProfileRegistry};
+use entanglement_core::{AgentCatalog, Catalog};
 use serde_json::{json, Value};
 
 use crate::mode::{describe as mode_describe, ModeTable};
@@ -68,7 +68,7 @@ pub fn peek_kind(input: &str) -> Option<String> {
 /// signatures grow by one parameter each rather than three.
 #[derive(Clone)]
 pub struct KindsCtx {
-    pub profiles: ProfileRegistry,
+    pub agents: AgentCatalog,
     pub skills: Arc<SkillRegistry>,
     pub catalog: Option<Arc<Catalog>>,
     pub modes: Arc<ModeTable>,
@@ -76,11 +76,11 @@ pub struct KindsCtx {
 
 /// `explore(kind: "agents")`: name + description of every registered agent —
 /// what a spawning model reads to pick an `agent`/`agent_send` target.
-/// Name-sorted, matching [`ProfileRegistry::iter`]'s own order (the same
+/// Name-sorted, matching [`AgentCatalog::iter`]'s own order (the same
 /// roster the `agent` tool's own description discloses).
 pub fn agents_index(ctx: &KindsCtx) -> String {
     let mut out = String::from("AGENTS (spawn targets for agent/agent_send):");
-    for p in ctx.profiles.iter() {
+    for p in ctx.agents.iter() {
         out.push_str(&format!("\n  {} — {}", p.name, p.description));
     }
     out
@@ -159,7 +159,7 @@ pub fn resolve_qualified(name: &str, ctx: &KindsCtx) -> Option<Value> {
     let (prefix, rest) = name.split_once(':')?;
     match prefix {
         "agent" => {
-            let p = ctx.profiles.get(rest)?;
+            let p = ctx.agents.get(rest)?;
             Some(json!({ "name": name, "description": p.description }))
         }
         "skill" => {
@@ -205,11 +205,11 @@ pub fn resolve_qualified(name: &str, ctx: &KindsCtx) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::AgentProfile;
+    use entanglement_core::Agent;
 
     fn ctx() -> KindsCtx {
-        let mut profiles = ProfileRegistry::new();
-        profiles.insert(AgentProfile {
+        let mut agents = AgentCatalog::new();
+        agents.insert(Agent {
             name: "general".to_string(),
             description: "general-purpose work".to_string(),
             system_prompt: String::new(),
@@ -227,7 +227,7 @@ mod tests {
             tools: Vec::new(),
         });
         KindsCtx {
-            profiles,
+            agents,
             skills: Arc::new(skills),
             catalog: None,
             modes: Arc::new(ModeTable::builtin().expect("built-ins parse")),

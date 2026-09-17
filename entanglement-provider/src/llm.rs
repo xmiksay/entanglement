@@ -442,7 +442,7 @@ pub type LlmStream = BoxStream<'static, anyhow::Result<LlmEvent>>;
 /// than baked in once at client construction (#550): a backend's
 /// `default_model` and a given [`LlmRequest::model`] can diverge — a
 /// profile's `model:` set without `provider:` is the documented
-/// request-level fallback (`AgentProfile::model_pin` returns `None`, so
+/// request-level fallback (`Agent::model_pin` returns `None`, so
 /// `SetAgent` doesn't rebind the client) — and resolving the cap once from
 /// the client's construction-time model would then pair the *wrong* model's
 /// cap with the *actual* request's model. `None` ⇒ no per-model cap; the
@@ -567,8 +567,8 @@ pub type ModelResolver = std::sync::Arc<
 
 /// Resolves a named agent profile's **persisted** generation override (#374,
 /// the generation-parameter analogue of the model pin ADR-0081 bakes directly
-/// into `AgentProfile.provider`/`model`). [`GenerationParams`] carries a
-/// non-`Eq` `f32` (`temperature`), so it can't join `AgentProfile`'s
+/// into `Agent.provider`/`model`). [`GenerationParams`] carries a
+/// non-`Eq` `f32` (`temperature`), so it can't join `Agent`'s
 /// `PartialEq + Eq` derive the way the pin fields do — this resolver is a
 /// separate seam instead, mirroring [`ModelResolver`]'s shape but purely local
 /// (a managed-file lookup, no network/key validation), hence `Option` rather

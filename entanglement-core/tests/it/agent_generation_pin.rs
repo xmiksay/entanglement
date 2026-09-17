@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, GenerationParams, GenerationResolver, Holly,
-    InMsg, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent, ProfileRegistry, SessionId,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, GenerationParams, GenerationResolver,
+    Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent, SessionId,
 };
 
 /// Every request's effective generation knobs, in order.
@@ -47,8 +47,8 @@ fn resolver(overrides: &[(&str, GenerationParams)]) -> GenerationResolver {
     Arc::new(move |name: &str| map.get(name).copied())
 }
 
-fn profile(name: &str) -> AgentProfile {
-    AgentProfile {
+fn profile(name: &str) -> Agent {
+    Agent {
         name: name.to_string(),
         description: String::new(),
         system_prompt: String::new(),
@@ -57,18 +57,18 @@ fn profile(name: &str) -> AgentProfile {
     }
 }
 
-fn registry(profiles: impl IntoIterator<Item = AgentProfile>) -> ProfileRegistry {
-    let mut reg = ProfileRegistry::default();
-    for p in profiles {
+fn registry(agents: impl IntoIterator<Item = Agent>) -> AgentCatalog {
+    let mut reg = AgentCatalog::default();
+    for p in agents {
         reg.insert(p);
     }
     reg
 }
 
-fn config(seen: &Seen, profiles: ProfileRegistry, resolver: GenerationResolver) -> EngineConfig {
+fn config(seen: &Seen, agents: AgentCatalog, resolver: GenerationResolver) -> EngineConfig {
     EngineConfig {
         llm_factory: recording_factory(seen),
-        profiles,
+        agents,
         generation_resolver: Some(resolver),
         ..EngineConfig::default()
     }
@@ -116,8 +116,8 @@ fn params(temp: f32) -> GenerationParams {
 #[tokio::test]
 async fn persisted_override_applies_at_spawn() {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let profiles = registry([profile("general"), profile("plan")]);
-    let holly = Holly::spawn(config(&seen, profiles, resolver(&[("plan", params(0.9))])));
+    let agents = registry([profile("general"), profile("plan")]);
+    let holly = Holly::spawn(config(&seen, agents, resolver(&[("plan", params(0.9))])));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
@@ -129,7 +129,6 @@ async fn persisted_override_applies_at_spawn() {
             agent: "plan".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -148,8 +147,8 @@ async fn persisted_override_applies_at_spawn() {
 #[tokio::test]
 async fn profile_without_override_emits_no_generation_changed_at_spawn() {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let profiles = registry([profile("general"), profile("other")]);
-    let holly = Holly::spawn(config(&seen, profiles, resolver(&[])));
+    let agents = registry([profile("general"), profile("other")]);
+    let holly = Holly::spawn(config(&seen, agents, resolver(&[])));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
 
@@ -161,7 +160,6 @@ async fn profile_without_override_emits_no_generation_changed_at_spawn() {
             agent: "other".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -180,10 +178,10 @@ async fn profile_without_override_emits_no_generation_changed_at_spawn() {
 #[tokio::test]
 async fn session_start_applies_the_persisted_override() {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let profiles = registry([profile("general")]);
+    let agents = registry([profile("general")]);
     let holly = Holly::spawn(config(
         &seen,
-        profiles,
+        agents,
         resolver(&[("general", params(0.42))]),
     ));
     let sid = SessionId::new("s1");
@@ -200,9 +198,9 @@ async fn session_start_applies_the_persisted_override() {
 
 #[test]
 fn replay_reconstructs_generation_and_profile_generation() {
-    let profiles = registry([profile("general"), profile("plan")]);
+    let agents = registry([profile("general"), profile("plan")]);
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let cfg = config(&seen, profiles, resolver(&[]));
+    let cfg = config(&seen, agents, resolver(&[]));
     let sid = SessionId::new("s1");
 
     let records: Vec<(Option<InMsg>, OutEvent)> = vec![
@@ -212,12 +210,11 @@ fn replay_reconstructs_generation_and_profile_generation() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "general".into(),
+                agent: "general".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -239,8 +236,8 @@ fn replay_reconstructs_generation_and_profile_generation() {
     let session =
         entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
     assert_eq!(session.generation, Some(params(0.55)));
-    assert_eq!(session.profile.name, "plan");
-    assert_eq!(session.profile_generation.get("plan"), Some(&params(0.55)));
+    assert_eq!(session.agent.name, "plan");
+    assert_eq!(session.generation_by_agent.get("plan"), Some(&params(0.55)));
 }
 
 #[test]
@@ -249,9 +246,9 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
     // switch is a separate concern (no resolver wired here, so it just warns and
     // keeps the prior generation) — generation reconstruction is unaffected by
     // an interleaved model switch.
-    let profiles = registry([profile("general")]);
+    let agents = registry([profile("general")]);
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let cfg = config(&seen, profiles, resolver(&[]));
+    let cfg = config(&seen, agents, resolver(&[]));
     let sid = SessionId::new("s1");
 
     let records: Vec<(Option<InMsg>, OutEvent)> = vec![
@@ -261,12 +258,11 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "general".into(),
+                agent: "general".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -282,7 +278,7 @@ fn replay_a_later_model_changed_still_wins_generation_stays() {
         entanglement_core::session::Session::replay(&records, &cfg, &sid).expect("replay");
     assert_eq!(session.generation, Some(params(0.3)));
     assert_eq!(
-        session.profile_generation.get("general"),
+        session.generation_by_agent.get("general"),
         Some(&params(0.3))
     );
 }

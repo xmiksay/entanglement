@@ -1001,13 +1001,13 @@ mod tests {
 
     use crate::capability::Capability;
     use crate::mode::{Limits, Mode, ModeTable, Rules};
-    use crate::policy::{PermissionResolver, ProfileResolver};
+    use crate::policy::{ModeResolver, PermissionResolver};
     use crate::subagent::SpawnGuard;
     use crate::tools::{SharedRegistry, Tool};
 
     /// Test helper (ADR-0207 stage 4b): build a `BindingPolicy` graded
-    /// through a single-mode `ProfileResolver` — the successor to the old
-    /// `AgentProfile`-chain fixture every `binding_policy_*` test below used
+    /// through a single-mode `ModeResolver` — the successor to the old
+    /// `Agent`-chain fixture every `binding_policy_*` test below used
     /// before this stage. `entries` carries the same `tool`/`tool(arg)`/
     /// `tool{workdir}` rule-key grammar the retired `PermissionProfile`
     /// fixtures used (`Rules::from_lists` sorts them into the mode's
@@ -1112,7 +1112,7 @@ mod tests {
             capability: Capability::Write,
         });
         let registry: SharedRegistry = Arc::new(RwLock::new(registry));
-        Arc::new(ProfileResolver::new(
+        Arc::new(ModeResolver::new(
             modes,
             table,
             registry,
@@ -1518,7 +1518,7 @@ mod tests {
 
     /// ADR-0207 §4: `bash`/`call` are two spellings of the same `Exec`
     /// capability and share **one** rule set now — a rule written for either
-    /// grades both, superseding the pre-stage-4b `AgentProfile` world where
+    /// grades both, superseding the pre-stage-4b `Agent` world where
     /// each carried its own independent rule namespace.
     #[tokio::test]
     async fn binding_policy_grades_call_and_bash_from_one_shared_rule() {

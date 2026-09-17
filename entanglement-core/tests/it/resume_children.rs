@@ -124,7 +124,6 @@ async fn resume_cascades_over_a_live_spawned_child() {
             agent: "general".into(),
             prompt: "child task".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

@@ -81,8 +81,8 @@ pub(super) fn resolve_system_prompt(
     let base = cfg
         .system_prompt_resolver
         .as_ref()
-        .and_then(|resolve| resolve(session, &s.profile))
-        .unwrap_or_else(|| s.profile.system_prompt.clone());
+        .and_then(|resolve| resolve(session, &s.agent))
+        .unwrap_or_else(|| s.agent.system_prompt.clone());
     match cfg.modes_preamble.as_deref() {
         Some(preamble) if !preamble.is_empty() => format!("{base}\n\n{preamble}"),
         _ => base,

@@ -76,7 +76,7 @@ impl Llm for LaunchOnlyLlm {
 fn config() -> EngineConfig {
     EngineConfig {
         llm_factory: Arc::new(|| Box::new(LaunchOnlyLlm) as Box<dyn Llm>),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     }

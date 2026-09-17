@@ -1,13 +1,13 @@
 //! Integration tests for permission dispatch (#59). Core emits a `ToolExec`
 //! for every host tool; `spawn_tool_executor`/`spawn_tool_executor_with_policy`
 //! resolve `Allow | Ask | Deny` from the session's permission **mode**
-//! (ADR-0207 stage 4 — `ProfileResolver` grades from `crate::mode::Mode`, not
-//! `AgentProfile`) and drive the approval round-trip on `Ask`.
+//! (ADR-0207 stage 4 — `ModeResolver` grades from `crate::mode::Mode`, not
+//! `Agent`) and drive the approval round-trip on `Ask`.
 //!
 //! Every fixture below is a single-mode [`entanglement_runtime::mode::ModeTable`]
 //! named `"build"` — matching `entanglement_core::DEFAULT_MODE`, so a fresh
 //! session resolves against it with no `SetMode` needed, mirroring how this
-//! file used to wire a single custom `AgentProfile` and `SetAgent` to it
+//! file used to wire a single custom `Agent` and `SetAgent` to it
 //! before ADR-0207 moved permission off the agent. The curated-read-only
 //! section near the bottom is the one exception: it exercises the real
 //! built-in `research` mode via `ModeTable::builtin()` + `InMsg::SetMode`.
@@ -26,7 +26,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
@@ -83,7 +83,7 @@ impl Tool for EchoBash {
 /// Build a single-mode table named `"build"` (matching `DEFAULT_MODE`, so a
 /// fresh session resolves against it without `SetMode`) from a `default`
 /// grade plus `deny`/`allow` rule lists — the `Mode`-based analog of this
-/// file's old per-test `AgentProfile` fixtures.
+/// file's old per-test `Agent` fixtures.
 fn one_mode_table(default: Permission, deny: &[&str], allow: &[&str]) -> Arc<ModeTable> {
     let mode = Mode {
         name: "build".to_string(),
@@ -180,7 +180,7 @@ fn spawn_with_bash_call_using(input: &str, mode_table: Arc<ModeTable>) -> Holly 
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -197,7 +197,7 @@ fn spawn_with_bash_call(input: &str) -> Holly {
 }
 
 /// Shared plumbing every harness in this file uses: registers `reg` as the
-/// shared tool registry, wires a `ProfileResolver` graded from `mode_table`
+/// shared tool registry, wires a `ModeResolver` graded from `mode_table`
 /// (allow-all config ceiling), and spawns the real executor via
 /// `spawn_tool_executor_with_policy`. `root` (#485, ADR-0125) is threaded
 /// into both the resolver and (when `Some`) the executor's escape-root
@@ -205,14 +205,14 @@ fn spawn_with_bash_call(input: &str) -> Holly {
 fn spawn_with_policy_over(
     holly: &Holly,
     reg: ToolRegistry,
-    profiles: entanglement_core::ProfileRegistry,
+    agents: entanglement_core::AgentCatalog,
     mode_table: Arc<ModeTable>,
     root: Option<&Path>,
 ) {
     let shared_tools = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
@@ -230,7 +230,7 @@ fn spawn_with_policy_over(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
@@ -582,7 +582,7 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -618,7 +618,7 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -734,7 +734,7 @@ impl Tool for EchoRead {
 }
 
 /// Build a Holly whose scripted LLM calls `read` twice — `input1` (id `t1`)
-/// then `input2` (id `t2`) — wired to `mode_table` through a `ProfileResolver`
+/// then `input2` (id `t2`) — wired to `mode_table` through a `ModeResolver`
 /// with `root` set (#485, ADR-0125), mirroring `main.rs`'s production wiring.
 fn spawn_two_read_calls_rooted(
     root: &Path,
@@ -762,7 +762,7 @@ fn spawn_two_read_calls_rooted(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -925,7 +925,7 @@ impl Tool for EchoNamed {
 }
 
 /// Build a Holly wired exactly like [`spawn_two_read_calls_rooted`] (a
-/// `root`-aware `ProfileResolver` + escape-root policy + `DefaultGrantStore`),
+/// `root`-aware `ModeResolver` + escape-root policy + `DefaultGrantStore`),
 /// but scripted with an arbitrary `(id, tool, input)` call sequence, each
 /// followed by a tool-less "ok" turn. Registers `read`/`grep`/`glob`/`edit`
 /// `EchoNamed` tools — every tool the `SessionDir` tests below exercise. The
@@ -962,7 +962,7 @@ fn spawn_scripted_calls_rooted(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1138,7 +1138,7 @@ fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTabl
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1275,7 +1275,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1287,7 +1287,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
     let modes = perm_modes();
     // The ceiling from a `permissions: bash: deny` config layer.
     let ceiling = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         builtin_modes(),
         shared_tools.clone(),
@@ -1457,7 +1457,7 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1576,7 +1576,7 @@ async fn mcp_enable_and_a_namespaced_mcp_tool_run_under_an_allow_all_mode() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);

@@ -16,8 +16,8 @@ pub mod session;
 
 pub use context::Context;
 pub use holly::{
-    ConfigError, EngineConfig, Holly, ProfileRegistry, SessionModel, SystemPromptResolver,
-    ToolSpecResolver, WireError, DEFAULT_MODE, DEFAULT_PROFILE,
+    AgentCatalog, ConfigError, EngineConfig, Holly, SessionModel, SystemPromptResolver,
+    ToolSpecResolver, WireError, DEFAULT_AGENT, DEFAULT_MODE,
 };
 pub use id_gen::{DefaultIdGen, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
@@ -54,7 +54,7 @@ pub use entanglement_provider::oauth::{
 pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
-    AgentProfile, AgentState, ApprovalScope, CompactionMode, FileChangeKind, InMsg, McpAction,
+    Agent, AgentState, ApprovalScope, CompactionMode, FileChangeKind, InMsg, McpAction,
     McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo, OperationKind,
     OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile, Question,
     QuestionOption, Questions, SessionId, SessionInfo, ToolEnvelope, ToolOverlayEntry,

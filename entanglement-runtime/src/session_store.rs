@@ -326,7 +326,7 @@ const RETIRED_AGENT_REPLACEMENT: &[(&str, &str)] = &[
 pub fn retired_agent(records: &[LogRecord]) -> Option<(&'static str, &'static str)> {
     for record in records {
         let name = match &record.payload {
-            LogPayload::Out(OutEvent::SessionStarted { profile, .. }) => profile.as_str(),
+            LogPayload::Out(OutEvent::SessionStarted { agent, .. }) => agent.as_str(),
             LogPayload::Out(OutEvent::AgentChanged { agent, .. }) => agent.as_str(),
             _ => continue,
         };
@@ -397,7 +397,7 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
         for r in &records {
             match &r.payload {
                 LogPayload::Out(OutEvent::SessionStarted {
-                    profile,
+                    agent,
                     model,
                     root,
                     ts,
@@ -406,7 +406,7 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
                 }) if started.is_none() => {
                     started = Some(SessionMeta {
                         id: session_id.clone(),
-                        agent: profile.clone(),
+                        agent: agent.clone(),
                         model: model.clone(),
                         created: *ts,
                         last_active,

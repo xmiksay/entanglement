@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Frontmatter keys `AgentProfile` carried directly until ADR-0207 moved every
+/// Frontmatter keys `Agent` carried directly until ADR-0207 moved every
 /// permission fact onto the session's independent permission mode.
 const RETIRED_AGENT_KEYS: &[&str] = &[
     "tools",

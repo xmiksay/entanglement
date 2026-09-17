@@ -42,7 +42,7 @@ pub(super) async fn spawn(
         crate::permission::resolve_model(model_request.as_deref(), ctx.catalog.as_deref());
     let refusal = {
         let profiles = ctx
-            .profiles
+            .agents
             .read()
             .expect("agent-profile registry lock poisoned");
         spawn_refusal(&target, &profiles)
@@ -52,7 +52,7 @@ pub(super) async fn spawn(
     // §6: mode applies to the whole spawn sub-tree, so
     // there is no per-spawn override to consult) — an
     // unseen session or unresolvable mode name fails
-    // closed, mirroring `ProfileResolver`'s own
+    // closed, mirroring `ModeResolver`'s own
     // fail-closed default.
     let mode = refusal.is_none().then(|| {
         let mode_name = ctx
@@ -204,7 +204,7 @@ pub(super) async fn ask_user(
 
 /// Resolve `session`'s current [`crate::mode::Limits`] against `ctx`'s mode
 /// table (`None` for an unseen session or an unresolvable mode name — the
-/// same fail-closed shape `ProfileResolver` already uses elsewhere, though
+/// same fail-closed shape `ModeResolver` already uses elsewhere, though
 /// here it just means "no timeout", never a widened grade).
 fn mode_limits(ctx: &LadderCtx, session: &SessionId) -> Option<crate::mode::Limits> {
     let name = ctx
@@ -315,8 +315,8 @@ pub(super) async fn discover(
         return;
     }
     let kinds_ctx = discover::KindsCtx {
-        profiles: ctx
-            .profiles
+        agents: ctx
+            .agents
             .read()
             .expect("agent-profile registry lock poisoned")
             .clone(),

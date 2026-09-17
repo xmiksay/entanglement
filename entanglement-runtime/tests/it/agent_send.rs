@@ -3,7 +3,7 @@
 //!
 //! Mirrors `tests/propose_plan.rs`'s harness (`spawn_with_root`, a real
 //! `Holly` + tool executor). The `build` profile is used as the root — it's
-//! `DEFAULT_PROFILE` (`entanglement_core::holly`), inherit-all masked, and
+//! `DEFAULT_AGENT` (`entanglement_core::holly`), inherit-all masked, and
 //! `mode: primary` so it may spawn — the same lazy-`Prompt` path
 //! `propose_plan`'s tests rely on.
 
@@ -20,7 +20,7 @@ use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::plan_files::PlanFileRegistry;
-use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver};
+use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::{AGENT_SEND_TOOL, AGENT_TOOL};
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -160,7 +160,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -170,7 +170,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
     let shared_tools = tools.shared();
-    let resolver = Arc::new(ProfileResolver::new(
+    let resolver = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         crate::mode_support::allow_all_table(),
         shared_tools.clone(),

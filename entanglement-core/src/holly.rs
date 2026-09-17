@@ -23,8 +23,7 @@ mod config;
 mod routing;
 
 pub use config::{
-    ConfigError, EngineConfig, ProfileRegistry, SessionModel, SystemPromptResolver,
-    ToolSpecResolver,
+    AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
 
@@ -104,10 +103,10 @@ const ROUTE_ATTEMPTS: usize = 8;
 /// synthesizing its own trusted `Spawn` (the authenticated wire head,
 /// ADR-0174) names the same profile the lazy-`Prompt` path resolves, instead
 /// of a hardcoded string that could drift.
-pub const DEFAULT_PROFILE: &str = "general";
+pub const DEFAULT_AGENT: &str = "general";
 /// Permission mode a new session starts under (ADR-0207): authority is a
 /// second, independent axis from the agent, so this deliberately shares no
-/// definition with [`DEFAULT_PROFILE`] — it only happens to share a spelling
+/// definition with [`DEFAULT_AGENT`] — it only happens to share a spelling
 /// with the *former* default agent name because `skutter`'s four-mode table
 /// names its ordinary interactive posture `build` too. Core carries this name
 /// opaquely; it validates against nothing, since the mode table lives in the
@@ -741,7 +740,6 @@ async fn supervisor(
             agent,
             prompt,
             user,
-            sponsored,
         } = &msg
         {
             // A duplicate spawn for a live child is a no-op (the child already runs).
@@ -764,14 +762,14 @@ async fn supervisor(
             // supervisor error refuses instead (#119). The lazy-Prompt path
             // below still uses `resolve`, but only for a genuinely fresh id —
             // a known sub-agent child refuses the same way (issue #639).
-            let profile = match cfg.profiles.get(agent) {
+            let resolved_agent = match cfg.agents.get(agent) {
                 Some(p) => p.clone(),
                 None => {
                     emit_supervisor_error(
                         &events,
                         &seqs,
                         child,
-                        &format!("cannot spawn unknown agent profile `{agent}`"),
+                        &format!("cannot spawn unknown agent `{agent}`"),
                     );
                     continue;
                 }
@@ -814,7 +812,7 @@ async fn supervisor(
                 .unwrap_or_else(|| DEFAULT_MODE.to_string());
             modes.insert(child.clone(), initial_mode.clone());
             // Record the parent link *before* spawning so it's in place for any
-            // later lazy path, and so the child starts under the requested profile.
+            // later lazy path, and so the child starts under the requested agent.
             parent_links.insert(child.clone(), parent.clone());
             // A compaction successor (ADR-0205): remember which session it took
             // over from, so a late tool result addressed to that now-retired
@@ -827,10 +825,9 @@ async fn supervisor(
                 SessionInfo {
                     session: child.clone(),
                     parent: parent.clone(),
-                    profile: profile.name.clone(),
+                    agent: resolved_agent.name.clone(),
                     root: is_root,
                     user: effective_user.clone(),
-                    sponsored: *sponsored,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -839,7 +836,6 @@ async fn supervisor(
             let sid = child.clone();
             let predecessor = predecessor.clone();
             let parent_for_loop = parent.clone();
-            let sponsored = *sponsored;
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
             let forks = fork_tx.clone();
@@ -849,12 +845,11 @@ async fn supervisor(
                     srx,
                     ev,
                     cfg2,
-                    profile,
+                    resolved_agent,
                     None,
                     parent_for_loop,
                     predecessor,
                     effective_user,
-                    sponsored,
                     initial_mode,
                     seqs2,
                     activity2,
@@ -913,7 +908,7 @@ async fn supervisor(
             // leaves this map entry in place (unlike `session_meta`) so this
             // check can catch it (issue #639). Silently blank-respawning it
             // here would both discard its history and re-create it under
-            // `build`'s permission profile and tool mask, the exact
+            // `build`'s permission mode and tool set, the exact
             // escalation the unknown-`Spawn`-target case above refuses.
             // Refuse and point the caller at `Resume` instead.
             if parent_links.get(&session_id).cloned().flatten().is_some() {
@@ -929,16 +924,15 @@ async fn supervisor(
             // with no parent — e.g. a hibernated `/compact` successor root)
             // keeps the lazy-Prompt path's single-user convenience: an unknown
             // session id auto-creates a blank root under `build`.
-            let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
+            let agent = cfg.agents.resolve(DEFAULT_AGENT);
             session_meta.insert(
                 session_id.clone(),
                 SessionInfo {
                     session: session_id.clone(),
                     parent: None,
-                    profile: profile.name.clone(),
+                    agent: agent.name.clone(),
                     root: true,
                     user: None,
-                    sponsored: false,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -954,12 +948,11 @@ async fn supervisor(
                     srx,
                     ev,
                     cfg2,
-                    profile,
+                    agent,
                     None,
                     None,
                     None,
                     None,
-                    false,
                     DEFAULT_MODE.to_string(),
                     seqs2,
                     activity2,
@@ -1042,7 +1035,7 @@ fn spawn_resumed(
     let ev = events.clone();
     let cfg2 = cfg.clone();
     let sid = target.clone();
-    let profile = initial_session.profile.clone();
+    let profile = initial_session.agent.clone();
     let seqs2 = seqs.clone();
     let activity2 = activity.clone();
     let forks = forks.clone();
@@ -1055,13 +1048,12 @@ fn spawn_resumed(
             profile,
             Some(initial_session),
             parent,
-            // Resume reconstructs `predecessor`/`user`/`sponsored`/`mode` from
-            // the log (replay); pass `None`/`false`/`DEFAULT_MODE` for them so
+            // Resume reconstructs `predecessor`/`user`/`mode` from
+            // the log (replay); pass `None`/`DEFAULT_MODE` for them so
             // none is overwritten (session.rs's resumed-takes-precedence
-            // rule, #626 for `sponsored`, ADR-0207 §6 for `mode`).
+            // rule, ADR-0207 §6 for `mode`).
             None,
             None,
-            false,
             DEFAULT_MODE.to_string(),
             seqs2,
             activity2,

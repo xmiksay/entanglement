@@ -23,7 +23,7 @@ use crate::tool_names::BINDING_TOOLS;
 /// exact same pluggable [`PermissionResolver`] + ancestor-chain clamp
 /// (ADR-0024) a direct tool call resolves through (ADR-0207 stage 4b), so a
 /// script's `bash()` grades identically to a model-issued `bash` call
-/// instead of a second, `AgentProfile`-chain grading path that could drift
+/// instead of a second, `Agent`-chain grading path that could drift
 /// from it. Built once in the executor loop where the resolver/chain/overlay
 /// state lives, then moved into the script task so the read stays ordered
 /// with lifecycle events.
@@ -56,7 +56,7 @@ pub struct BindingPolicy {
     denied: HashSet<&'static str>,
     /// The config permission ceiling (#172) an overlay grade still clamps
     /// against — the resolver already clamps its own result against this
-    /// same ceiling (`ProfileResolver`), so this is only consulted on the
+    /// same ceiling (`ModeResolver`), so this is only consulted on the
     /// overlay path, which bypasses the resolver.
     base: PermissionProfile,
     /// The session's permission mode name, captured for the decline message

@@ -119,7 +119,7 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
                 seen: seen_factory.clone(),
             }) as Box<dyn Llm>
         }),
-        profiles,
+        agents: profiles,
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -137,7 +137,6 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
                 agent: agent.into(),
                 prompt: "task".into(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();
@@ -211,7 +210,7 @@ async fn modes_preamble_reaches_the_system_prompt_identically_across_sessions() 
                 seen: seen_factory.clone(),
             }) as Box<dyn Llm>
         }),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         modes_preamble: Some(preamble.clone()),
         ..EngineConfig::default()

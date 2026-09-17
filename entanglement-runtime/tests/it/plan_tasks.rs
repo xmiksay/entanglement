@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolCall,
+    stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor, spawn_tool_executor_with_policy};
@@ -61,7 +61,7 @@ impl Llm for ScriptedLlm {
 /// A Holly whose scripted LLM calls `tool(input)` once, wired to a runtime tool
 /// executor over the given profile registry (empty host registry — state tools
 /// never touch it).
-fn spawn_calling(tool: &str, input: &str, profiles: ProfileRegistry) -> Holly {
+fn spawn_calling(tool: &str, input: &str, agents: AgentCatalog) -> Holly {
     let scripted = Arc::new(vec![LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -75,14 +75,14 @@ fn spawn_calling(tool: &str, input: &str, profiles: ProfileRegistry) -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = spawn_tool_executor(
         &holly,
         ToolRegistry::new(),
-        profiles,
+        agents,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly
@@ -91,11 +91,11 @@ fn spawn_calling(tool: &str, input: &str, profiles: ProfileRegistry) -> Holly {
 /// Like [`spawn_calling`], but graded from a caller-supplied `mode_table`
 /// instead of `ModeTable::builtin()` — for a scenario none of the four
 /// built-in modes covers (ADR-0207 stage 4 grades from the session's mode,
-/// not its `AgentProfile`).
+/// not its `Agent`).
 fn spawn_calling_with_mode_table(
     tool: &str,
     input: &str,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     mode_table: Arc<ModeTable>,
 ) -> Holly {
     let scripted = Arc::new(vec![LlmResponse {
@@ -111,7 +111,7 @@ fn spawn_calling_with_mode_table(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -119,7 +119,7 @@ fn spawn_calling_with_mode_table(
     let shared_tools = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let perm_modes = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
@@ -133,7 +133,7 @@ fn spawn_calling_with_mode_table(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
@@ -180,7 +180,6 @@ async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>)
                 agent: a.into(),
                 prompt: "go".into(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();

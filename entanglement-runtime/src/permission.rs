@@ -14,10 +14,10 @@
 //!   [`crate::policy::PermissionResolver`] grade across exactly this chain,
 //!   and the `rhai` binding policy ([`crate::script::BindingPolicy`]) now
 //!   reuses the *same* chain + resolver (ADR-0207 stage 4b) — the old
-//!   `AgentProfile`-chain grading path (`effective_permission`/
+//!   `Agent`-chain grading path (`effective_permission`/
 //!   `permission_chain`/`permission_for`) that used to serve `rhai` alone is
 //!   retired along with it, since nothing resolves a session's mode from
-//!   `AgentProfile.permission` any more. Resolution takes the call's
+//!   `Agent.permission` any more. Resolution takes the call's
 //!   tool-specific argument (command/path, #173) so an argument-scoped rule
 //!   matches the actual input; [`permission_arg`] extracts it. A `bash`/`call`
 //!   call also carries its `workdir` (#425) so a `tool{pattern}`
@@ -26,7 +26,7 @@
 //! The **tool mask** (#116, ADR-0038: `tools`/`disallowed_tools` making a
 //! tool not *exist* for a session) is retired (ADR-0207 §8, "the mask
 //! machinery is deleted"): `tool_masked`/`tool_mask_source` are gone.
-//! `AgentProfile` carries none of `tools`/`disallowed_tools`/`permission`/
+//! `Agent` carries none of `tools`/`disallowed_tools`/`permission`/
 //! `can_spawn`/`spawnable_agents`/`sandbox`/`mode` any more (stage 4c/5b) —
 //! identity only.
 //!
@@ -35,9 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{
-    Permission, PermissionProfile, ProfileRegistry, SessionId, ToolOverlayEntry,
-};
+use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId, ToolOverlayEntry};
 
 use crate::subagent::SpawnGuard;
 
@@ -48,7 +46,7 @@ use crate::subagent::SpawnGuard;
 /// argument; this is defense in depth for a malformed/out-of-schema call).
 /// Returns `None` when the spawn is permitted, else the refusal message to
 /// relay to the parent's parked tool call.
-pub fn spawn_refusal(target: &str, registry: &ProfileRegistry) -> Option<String> {
+pub fn spawn_refusal(target: &str, registry: &AgentCatalog) -> Option<String> {
     if registry.get(target).is_some() {
         None
     } else {
@@ -336,10 +334,10 @@ fn rank(p: Permission) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::AgentProfile;
+    use entanglement_core::Agent;
 
-    fn profile(name: &str) -> AgentProfile {
-        AgentProfile {
+    fn profile(name: &str) -> Agent {
+        Agent {
             name: name.into(),
             description: String::new(),
             system_prompt: String::new(),

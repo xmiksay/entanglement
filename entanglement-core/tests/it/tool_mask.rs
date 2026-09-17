@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, SessionId, ToolOverlayEntry, ToolSpec,
 };
 
@@ -28,8 +28,8 @@ use entanglement_core::{
 /// read-only posture is a runtime permission-mode fact now (ADR-0207); the
 /// profile itself carries no mask or permission rules any more, so it's
 /// identical in shape to any other `Subagent` leaf.
-fn explore_profile() -> AgentProfile {
-    AgentProfile {
+fn explore_profile() -> Agent {
+    Agent {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
         system_prompt: "You are a read-only exploration agent.".into(),
@@ -69,7 +69,7 @@ fn recording_config(seen: Arc<Mutex<Vec<Vec<String>>>>) -> EngineConfig {
         ToolSpec::new("read", "read a file"),
         ToolSpec::new("edit", "edit a file"),
     ];
-    cfg.profiles.insert(explore_profile());
+    cfg.agents.insert(explore_profile());
     cfg
 }
 
@@ -103,7 +103,7 @@ async fn build_profile_advertises_edit() {
 async fn restrictive_profile_still_advertises_the_full_set() {
     // The rewrite of the old `explore_profile_hides_edit_via_set_agent`: a
     // read-only-named profile (`explore`, whose restriction is a runtime
-    // permission-mode fact, not anything `AgentProfile` carries, ADR-0207)
+    // permission-mode fact, not anything `Agent` carries, ADR-0207)
     // still sees `edit`'s schema — spawning under a differently-postured
     // agent leaves the advertised array (and the provider's prompt cache)
     // untouched.
@@ -118,7 +118,6 @@ async fn restrictive_profile_still_advertises_the_full_set() {
             agent: "explore".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -169,7 +168,6 @@ async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
             agent: "explore".into(),
             prompt: "before the overlay".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -272,7 +270,6 @@ async fn spawned_explore_child_advertises_the_same_set_as_its_parent() {
             agent: "explore".into(),
             prompt: "explore the tree".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

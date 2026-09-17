@@ -41,7 +41,7 @@ pub(super) async fn rhai(
     // `rhai` declares `Capability::Read|Write|Exec`
     // (`capability.rs`), so a mode denying any of
     // those denies `rhai` outright with no bespoke
-    // rule, and there is no second `AgentProfile`-
+    // rule, and there is no second `Agent`-
     // chain grading path left to drift from it. The
     // resolve can hit a DB for a pluggable multi-
     // tenant resolver, so — mirroring the `Permission`

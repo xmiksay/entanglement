@@ -14,9 +14,7 @@
 
 use std::sync::Arc;
 
-use entanglement_core::{
-    AgentProfile, Discovery, SessionId, SystemPromptResolver, ToolAdvertising,
-};
+use entanglement_core::{Agent, Discovery, SessionId, SystemPromptResolver, ToolAdvertising};
 
 use crate::env_date::refresh_env_date;
 use crate::tool_advertising::AdvertisingState;
@@ -88,7 +86,7 @@ pub fn resolver(advertising: Arc<AdvertisingState>) -> SystemPromptResolver {
 fn resolve(
     advertising: &AdvertisingState,
     session: &SessionId,
-    profile: &AgentProfile,
+    agent: &Agent,
     today: &str,
 ) -> Option<String> {
     let date = advertising
@@ -96,11 +94,11 @@ fn resolve(
         .lock()
         .expect("env-date pin mutex poisoned")
         .pin(session, today);
-    let date_fixed = refresh_env_date(&profile.system_prompt, &date);
+    let date_fixed = refresh_env_date(&agent.system_prompt, &date);
     match advertising.mode(session) {
         ToolAdvertising::Full => date_fixed,
         ToolAdvertising::ToolSearch => {
-            let base = date_fixed.as_deref().unwrap_or(&profile.system_prompt);
+            let base = date_fixed.as_deref().unwrap_or(&agent.system_prompt);
             Some(render_tool_search(base, advertising.discovery(session)))
         }
     }
@@ -156,7 +154,7 @@ mod tests {
 
     #[test]
     fn full_mode_keeps_the_skill_index_and_only_the_date_ever_changes() {
-        use entanglement_core::AgentProfile;
+        use entanglement_core::Agent;
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -166,7 +164,7 @@ mod tests {
             crate::tool_advertising::Encoding::ClientSide,
         );
         let today = crate::date::today_utc();
-        let profile = AgentProfile {
+        let profile = Agent {
             name: "build".into(),
             description: String::new(),
             system_prompt: format!(
@@ -182,7 +180,7 @@ mod tests {
 
     #[test]
     fn tool_search_mode_always_returns_the_slimmed_prompt() {
-        use entanglement_core::AgentProfile;
+        use entanglement_core::Agent;
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -192,7 +190,7 @@ mod tests {
             crate::tool_advertising::Encoding::ClientSide,
         );
         let today = crate::date::today_utc();
-        let profile = AgentProfile {
+        let profile = Agent {
             name: "build".into(),
             description: String::new(),
             system_prompt: format!(
@@ -207,8 +205,8 @@ mod tests {
         assert!(out.contains("use explore to search them"));
     }
 
-    fn full_profile(date: &str) -> AgentProfile {
-        AgentProfile {
+    fn full_profile(date: &str) -> Agent {
+        Agent {
             name: "build".into(),
             description: String::new(),
             system_prompt: format!("<env>\nDate: {date}\n</env>"),

@@ -89,12 +89,11 @@ mod tests {
             session: SessionId::new(session),
             parent: None,
             predecessor: predecessor.map(SessionId::new),
-            profile: "build".into(),
+            agent: "build".into(),
             model: None,
             root: true,
             ts: 0,
             user: None,
-            sponsored: false,
         }
     }
 

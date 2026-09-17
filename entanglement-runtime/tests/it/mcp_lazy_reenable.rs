@@ -27,14 +27,14 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use entanglement_core::{
-    stream_from_response, AgentProfile, Catalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, McpServerState, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall,
+    stream_from_response, Agent, AgentCatalog, Catalog, EngineConfig, Holly, InMsg, Llm,
+    LlmRequest, LlmResponse, LlmStream, McpServerState, OutEvent, Permission, PermissionProfile,
+    SessionId, ToolCall,
 };
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
@@ -137,7 +137,7 @@ fn done_response() -> LlmResponse {
 /// A single-mode table named `"build"` (matching `DEFAULT_MODE`) with the
 /// given `default` grade and no rules — the mode-based analog of
 /// `unmasked_profile`'s `perm` (ADR-0207 stage 4 grades from the session's
-/// mode, not its `AgentProfile`): `Ask` proves the ladder still runs after a
+/// mode, not its `Agent`): `Ask` proves the ladder still runs after a
 /// lazy enable; `Allow` keeps the other scenarios to one round-trip.
 fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mode::ModeTable> {
     let mode = entanglement_runtime::mode::Mode {
@@ -156,9 +156,9 @@ fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mod
 /// `perm` is unused here (the profile carries no permission fact any more,
 /// ADR-0207) but kept as a parameter since every call site also feeds it to
 /// [`mode_table_with_default`] to build the mode that actually grades.
-fn unmasked_profile(name: &str, _perm: Permission) -> ProfileRegistry {
-    let mut profiles = ProfileRegistry::default();
-    profiles.insert(AgentProfile {
+fn unmasked_profile(name: &str, _perm: Permission) -> AgentCatalog {
+    let mut profiles = AgentCatalog::default();
+    profiles.insert(Agent {
         name: name.into(),
         description: String::new(),
         system_prompt: String::new(),
@@ -186,14 +186,14 @@ impl Tool for EchoBash {
 /// `ActiveServers` every time — the whole point of every test here is that
 /// the called tool is *not* already registered/connected.
 fn spawn_executor(
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     scripted: Vec<LlmResponse>,
     avail: AvailableMcp,
     mode_table: Arc<entanglement_runtime::mode::ModeTable>,
 ) -> Holly {
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(scripted.clone())) as Box<dyn Llm>),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -202,7 +202,7 @@ fn spawn_executor(
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
     let shared_tools = reg.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
@@ -216,7 +216,7 @@ fn spawn_executor(
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
@@ -307,7 +307,6 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
             agent: "mcptest".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -376,7 +375,6 @@ async fn disabled_tier_gets_a_truthful_decline_not_unknown_tool() {
             agent: "mcptest".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -430,7 +428,6 @@ async fn genuinely_unknown_tool_keeps_the_unknown_tool_hint() {
             agent: "mcptest".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -485,7 +482,6 @@ async fn enable_failure_is_distinguishable_and_a_repeat_call_is_guarded() {
             agent: "mcptest".into(),
             prompt: String::new(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

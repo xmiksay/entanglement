@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, Message, OutEvent, ProfileRegistry, SessionId,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, Message, OutEvent, SessionId,
 };
 
 type Seen = Arc<Mutex<Vec<Vec<Message>>>>;
@@ -45,8 +45,8 @@ impl Llm for RecordingLlm {
 
 /// A leaf `Subagent` profile alongside the built-in `build`, mirroring the
 /// `page-writer` example from the issue.
-fn page_writer() -> AgentProfile {
-    AgentProfile {
+fn page_writer() -> Agent {
+    Agent {
         name: "page-writer".into(),
         description: "leaf sub-agent".into(),
         system_prompt: "You write pages.".into(),
@@ -59,8 +59,8 @@ fn engine() -> (Holly, Seen) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let responses: Responses = Arc::new(Mutex::new(VecDeque::new()));
     let seen2 = seen.clone();
-    let mut profiles = ProfileRegistry::new();
-    profiles.insert(page_writer());
+    let mut agents = AgentCatalog::new();
+    agents.insert(page_writer());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(RecordingLlm {
@@ -68,7 +68,7 @@ fn engine() -> (Holly, Seen) {
                 seen: seen2.clone(),
             }) as Box<dyn Llm>
         }),
-        profiles,
+        agents,
         ..EngineConfig::default()
     };
     (Holly::spawn(cfg), seen)
@@ -120,7 +120,6 @@ async fn lazy_prompt_refuses_a_known_hibernated_child() {
             agent: "page-writer".into(),
             prompt: "write a page".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -207,12 +206,12 @@ async fn lazy_prompt_still_auto_creates_a_fresh_root() {
     .await;
     match ev {
         OutEvent::SessionStarted {
-            profile,
+            agent,
             parent,
             root,
             ..
         } => {
-            assert_eq!(profile, "general");
+            assert_eq!(agent, "general");
             assert_eq!(parent, None);
             assert!(root);
         }

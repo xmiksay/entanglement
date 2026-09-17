@@ -16,7 +16,7 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 // A single-mode `ModeTable` (ADR-0207 stage 4) most test modules in this
-// harness wire in for `ProfileResolver`: they exercise something *other*
+// harness wire in for `ModeResolver`: they exercise something *other*
 // than permission grading (spawn plumbing, MCP lazy re-enable, invoke-
 // envelope unwrapping, skill posture, ...) and just want every call to run
 // unprompted, mirroring the pre-ADR-0207 `build` agent's `default: allow`.

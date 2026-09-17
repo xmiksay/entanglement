@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, IdKind, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
+    Agent, AgentCatalog, AgentState, Holly, IdKind, InMsg, OutEvent, SessionId, ToolSpec,
 };
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
@@ -156,7 +156,7 @@ impl SpawnGuard {
 /// Sub-agent profile used when the model omits `agent` (ADR-0207 stage 6a:
 /// the roster collapsed to `general`/`plan`/`debug` — read-only posture is a
 /// permission mode now, not a persona, so the default target is simply the
-/// default worker persona, same as [`entanglement_core::holly::DEFAULT_PROFILE`]).
+/// default worker persona, same as [`entanglement_core::holly::DEFAULT_AGENT`]).
 const DEFAULT_SUBAGENT: &str = "general";
 
 /// The `agent`/`agent_send` tool specs, advertised unconditionally to every
@@ -170,8 +170,8 @@ const DEFAULT_SUBAGENT: &str = "general";
 /// joins the shared `cfg.tool_specs` like `ask_user`/`poll` rather than a
 /// per-profile table — ADR-0207 §9: "the advertised tools array no longer
 /// varies by agent or by mode".
-pub fn agent_specs(registry: &ProfileRegistry) -> Vec<ToolSpec> {
-    let targets: Vec<&AgentProfile> = registry.iter().collect();
+pub fn agent_specs(registry: &AgentCatalog) -> Vec<ToolSpec> {
+    let targets: Vec<&Agent> = registry.iter().collect();
     if targets.is_empty() {
         return Vec::new();
     }
@@ -185,7 +185,7 @@ pub fn agent_specs(registry: &ProfileRegistry) -> Vec<ToolSpec> {
 /// is disclosed inline (#112): each spawnable agent's `name: description` is
 /// listed in the tool description and the `agent` argument is constrained to
 /// that set.
-pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
+pub fn agent_spec(targets: &[&Agent]) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_TOOL,
         format!(
@@ -205,7 +205,7 @@ pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
 /// The `name: description` roster line block disclosed to the spawning model —
 /// `description` is the only field of a definition a parent ever sees (#112).
 /// Scoped to the profiles this spawner may target (#119).
-fn roster(targets: &[&AgentProfile]) -> String {
+fn roster(targets: &[&Agent]) -> String {
     let mut out = String::from("Available agents:");
     for p in targets {
         out.push_str(&format!("\n- {}: {}", p.name, p.description));
@@ -217,7 +217,7 @@ fn roster(targets: &[&AgentProfile]) -> String {
 /// `agent` name is constrained to `targets` (an enum) so the model can only
 /// pick a profile it is actually allowed to spawn (#119); `background` (#606)
 /// flips the return shape from the blocking default to an immediate handle.
-fn agent_input_schema(targets: &[&AgentProfile]) -> serde_json::Value {
+fn agent_input_schema(targets: &[&Agent]) -> serde_json::Value {
     let names: Vec<&str> = targets.iter().map(|p| p.name.as_str()).collect();
     serde_json::json!({
         "type": "object",
@@ -360,7 +360,6 @@ async fn launch(
             agent: agent.clone(),
             prompt,
             user: None,
-            sponsored: false, // not a sponsored propose_plan build (#626)
         })
         .await
         .is_err()

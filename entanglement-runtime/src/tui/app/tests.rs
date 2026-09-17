@@ -1,4 +1,4 @@
-use super::{App, ProfileInfo};
+use super::{AgentInfo, App};
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::TranscriptEntry;
 use entanglement_core::{AgentState, OutEvent, SessionId};
@@ -12,15 +12,15 @@ fn app_with_three_agents(sid: SessionId) -> App {
         sid,
         Catalog::builtin(),
         vec![
-            ProfileInfo {
+            AgentInfo {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
             },
-            ProfileInfo {
+            AgentInfo {
                 name: "plan".to_string(),
                 description: "Planning agent".to_string(),
             },
-            ProfileInfo {
+            AgentInfo {
                 name: "helper".to_string(),
                 description: "Cross-vendor helper".to_string(),
             },
@@ -661,12 +661,11 @@ fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
             session: id.clone(),
             parent: None,
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: true,
             ts: 1000,
             user: None,
-            sponsored: false,
         }),
     );
     append(cwd, id, &record).expect("seed append");

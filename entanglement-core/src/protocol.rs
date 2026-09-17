@@ -74,9 +74,8 @@ pub enum AgentState {
     /// [`Thinking`][AgentState::Thinking] so a head can show "running a
     /// command" vs "LLM is generating" (ADR-0139).
     Working,
-    /// Parked on a sub-agent result — the blocking `agent` tool, or a sponsored
-    /// build child spawned by an accepted `propose_plan` (ADR-0138). A
-    /// long-running build child otherwise looks identical to the plan agent
+    /// Parked on a sub-agent result — the blocking `agent` tool. A
+    /// long-running child otherwise looks identical to the parent agent
     /// staring at the wall; this state makes the park visible (ADR-0139).
     WaitingAgent,
     /// Engine emitted a tool request and is parked waiting for approval
@@ -124,7 +123,7 @@ pub enum FileChangeKind {
 /// A live session's identity + lineage, as reported in an
 /// [`OutEvent::SessionList`] enumeration snapshot (ADR-0028). Mirrors the fields
 /// a head would otherwise have to reconstruct by folding the `SessionStarted` /
-/// `SessionEnded` broadcast itself. `profile` is the session's agent — fixed
+/// `SessionEnded` broadcast itself. `agent` is the session's agent — fixed
 /// for its whole life (ADR-0207 §9: an agent is chosen when a session starts,
 /// never switched) — as announced by [`OutEvent::AgentChanged`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +131,7 @@ pub struct SessionInfo {
     pub session: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionId>,
-    pub profile: String,
+    pub agent: String,
     pub root: bool,
     /// The session's owning user in a multi-user deployment (#522). `None` in
     /// single-user mode (the default) or for a session an embedder spawned
@@ -140,11 +139,6 @@ pub struct SessionInfo {
     /// [`InMsg::Spawn`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<UserId>,
-    /// Sponsored `propose_plan` build child (ADR-0138), vs. a plain sub-agent
-    /// spawn — see the matching field on [`InMsg::Spawn`]. `#[serde(default)]`
-    /// for the same terseness reason.
-    #[serde(default)]
-    pub sponsored: bool,
 }
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
@@ -512,7 +506,7 @@ impl ToolOverlayEntry {
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// What the engine does when the model asks to run a host tool. Driven by the
-/// session's active [`AgentProfile`] permission profile — e.g. a `plan` profile
+/// session's active [`Agent`] permission profile — e.g. a `plan` profile
 /// denies edits, a `build` profile allows everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -807,7 +801,7 @@ impl ApprovalScope {
 /// the file body. `description` drives delegation matching — it is the one
 /// field disclosed to a spawning model (via the `agent` tool description).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentProfile {
+pub struct Agent {
     pub name: String,
     /// One-line summary; disclosed to a spawning model for delegation matching.
     #[serde(default)]
@@ -827,7 +821,7 @@ pub struct AgentProfile {
     pub provider: Option<String>,
 }
 
-impl AgentProfile {
+impl Agent {
     /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
     /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
     /// set, so the runtime can re-bind the session's backend to that endpoint at
@@ -1178,7 +1172,7 @@ pub enum InMsg {
     /// head can rely on the reply to confirm the write landed. Applied once the
     /// live turn ends when one is running (stash replay), like
     /// [`SetMode`][InMsg::SetMode]/[`SetModel`][InMsg::SetModel]. The merged
-    /// result is also recorded in `Session::profile_generation`, so a resumed
+    /// result is also recorded in `Session::generation_by_agent`, so a resumed
     /// session's replay-reconstructed live override isn't clobbered by the
     /// persisted default `EngineConfig::generation_resolver` would otherwise
     /// re-apply at session start (#374, ADR-0094).
@@ -1276,18 +1270,6 @@ pub enum InMsg {
         /// re-specify it). `None` (single-user mode) is the default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
-        /// Whether this is a **sponsored** child of a `propose_plan` build
-        /// handoff (ADR-0138) rather than a plain sub-agent spawn (the
-        /// blocking/backgrounded `agent`/`agent_send` tools). Set by the
-        /// runtime's tool executor, which already runs the `SpawnGuard`
-        /// sponsor check before issuing this `Spawn`; core only relays it
-        /// through to [`SessionStarted`][OutEvent::SessionStarted] /
-        /// [`SessionInfo`] so a head can disambiguate `AgentState::WaitingAgent`'s
-        /// two callers (#626) without engine-side sponsorship bookkeeping.
-        /// `#[serde(default)]` keeps every non-sponsored spawn (the overwhelming
-        /// majority) terse on the wire.
-        #[serde(default)]
-        sponsored: bool,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
@@ -1601,7 +1583,7 @@ pub enum OutEvent {
         /// interactive session is closed once the successor starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         predecessor: Option<SessionId>,
-        profile: String,
+        agent: String,
         model: Option<String>,
         root: bool,
         ts: u64,
@@ -1612,13 +1594,6 @@ pub enum OutEvent {
         /// embedder re-supplying it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
-        /// Mirrors [`InMsg::Spawn`]'s `sponsored` (#626): a sponsored
-        /// `propose_plan` build child vs. a plain sub-agent spawn, so a head can
-        /// disambiguate `AgentState::WaitingAgent`'s two callers without engine-
-        /// side sponsorship bookkeeping. `#[serde(default)]` for the same
-        /// terseness reason.
-        #[serde(default)]
-        sponsored: bool,
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
@@ -1764,7 +1739,7 @@ pub enum OutEvent {
     /// [`GenerationParams`] — not just what changed — so a head can render the
     /// effective state directly and so replay can restore it verbatim by simply
     /// overwriting [`Session::generation`][crate::session::Session]. Also folded
-    /// into `Session::profile_generation` on replay, so a resumed session's live
+    /// into `Session::generation_by_agent` on replay, so a resumed session's live
     /// override survives the session-start default re-application.
     GenerationChanged {
         session: SessionId,
@@ -2282,7 +2257,6 @@ mod tests {
             agent: "build".into(),
             prompt: "go".into(),
             user: None,
-            sponsored: false,
         }
         .wire_allowed());
         assert!(!InMsg::Resume {
@@ -2784,18 +2758,16 @@ mod tests {
                 SessionInfo {
                     session: SessionId::new("root"),
                     parent: None,
-                    profile: "build".into(),
+                    agent: "build".into(),
                     root: true,
                     user: None,
-                    sponsored: false,
                 },
                 SessionInfo {
                     session: SessionId::new("child"),
                     parent: Some(SessionId::new("root")),
-                    profile: "explore".into(),
+                    agent: "explore".into(),
                     root: false,
                     user: None,
-                    sponsored: false,
                 },
             ],
         };
@@ -3138,39 +3110,34 @@ mod tests {
     }
 
     #[test]
-    fn session_started_carries_sponsored_and_stays_backward_compatible() {
-        // #626: a sponsored `propose_plan` build child's `SessionStarted` round-
-        // trips `sponsored: true`, disambiguating it from a plain sub-agent spawn.
+    fn session_started_round_trips_and_stays_backward_compatible() {
         let ev = OutEvent::SessionStarted {
             session: SessionId::new("child"),
             parent: Some(SessionId::new("plan")),
             predecessor: None,
-            profile: "build".into(),
+            agent: "build".into(),
             model: None,
             root: false,
             ts: 0,
             user: None,
-            sponsored: true,
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
 
-        // An older head's persisted frame (no `sponsored` key) still deserializes
-        // — the field defaults to `false`, so a pre-#626 log never misreports a
-        // plain spawn as sponsored.
-        let legacy = r#"{"kind":"session_started","session":"s","parent":null,"profile":"build","model":null,"root":true,"ts":0}"#;
+        // An older head's persisted frame (no `predecessor`/`user` keys) still
+        // deserializes — both default, so a pre-#626/#522 log still replays.
+        let legacy = r#"{"kind":"session_started","session":"s","parent":null,"agent":"build","model":null,"root":true,"ts":0}"#;
         assert_eq!(
             serde_json::from_str::<OutEvent>(legacy).unwrap(),
             OutEvent::SessionStarted {
                 session: SessionId::new("s"),
                 parent: None,
                 predecessor: None,
-                profile: "build".into(),
+                agent: "build".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             }
         );
     }

@@ -33,12 +33,12 @@ use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, EngineConfig, Holly, IdKind, InMsg, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
-use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
+use policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -90,7 +90,7 @@ use tui::tui;
 async fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
 ) -> (
@@ -117,7 +117,7 @@ async fn build_config(
         web_search_config(user_config),
     ));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
-    cfg.profiles = profiles;
+    cfg.agents = agents;
     // Thread the resolved model's context window into the engine (#178) so each
     // session budgets its history against the real window (128k for GLM-5.2, not
     // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.
@@ -145,7 +145,7 @@ async fn build_config(
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` by the tool executor — constructed here,
     // *before* `register_default_tools`, so `bash`/`call`'s sandbox resolver
-    // (below) and the executor's `ProfileResolver` (wired much later, once
+    // (below) and the executor's `ModeResolver` (wired much later, once
     // `Holly` exists) share the exact same map and mode table instead of two
     // copies that could drift. `skutter` always runs the four built-in modes
     // — code, not configuration (ADR-0207 §2).
@@ -287,7 +287,7 @@ async fn build_config(
     // shared `tool_specs` like `ask_user`/`update_tasks` below, keeping the
     // advertised array identical across `SetAgent` (the whole point of the
     // constant roster).
-    cfg.tool_specs.extend(subagent::agent_specs(&cfg.profiles));
+    cfg.tool_specs.extend(subagent::agent_specs(&cfg.agents));
     // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
     // no cross-agent authority, so it rides the shared specs (a read-only
     // session's permission mode declines the call at dispatch). The runtime
@@ -1400,7 +1400,7 @@ async fn main() -> Result<()> {
     let live_agent_models = Arc::new(Mutex::new(agent_models));
     // Per-agent generation-parameter overrides (#374, ADR-0094): unlike the model
     // pin above, this doesn't overlay onto `profiles` (`GenerationParams` isn't
-    // `Eq`, so it can't join `AgentProfile`'s derive) — instead it's wrapped in a
+    // `Eq`, so it can't join `Agent`'s derive) — instead it's wrapped in a
     // `GenerationResolver` closure threaded onto `EngineConfig` below, resolved
     // by profile name at session start / `SetAgent`. Also threaded straight into
     // the TUI (#376), the only surface that writes to it (`/set`'s
@@ -1527,7 +1527,7 @@ async fn main() -> Result<()> {
             avail: mcp_available.clone(),
             advertising: advertising_state.clone(),
             inputs: advertising_inputs.clone(),
-            agent_specs: subagent::agent_specs(&engine_config.profiles),
+            agent_specs: subagent::agent_specs(&engine_config.agents),
         },
     ));
     // Live MCP server management (#375): `ActiveServers` was seeded by
@@ -1547,8 +1547,8 @@ async fn main() -> Result<()> {
     // (#329, ADR-0084) to resolve permissions (#59) and drive the TUI picker;
     // the engine gets its own (immutable-for-the-process-lifetime) copy via
     // `engine_config`, captured here *before* it moves into `Holly::spawn`.
-    let live_profiles: Arc<RwLock<ProfileRegistry>> =
-        Arc::new(RwLock::new(engine_config.profiles.clone()));
+    let live_profiles: Arc<RwLock<AgentCatalog>> =
+        Arc::new(RwLock::new(engine_config.agents.clone()));
     let holly = Holly::spawn(engine_config);
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
@@ -1558,14 +1558,14 @@ async fn main() -> Result<()> {
     // wires the lifecycle hooks (#199) around tool dispatch and prompt ingress.
     // Built directly against `spawn_tool_executor_with_policy` (#311) rather
     // than the `_with_hooks` convenience wrapper (which owns a plain
-    // `ProfileRegistry`) because the head needs its own handles on `active` and
+    // `AgentCatalog`) because the head needs its own handles on `active` and
     // `grants` — `grants` feeds the definitions watcher's `LiveDefinitions`
     // below (#329), so a persisted "always allow" grant another skutter
     // instance recorded is visible on the next reload.
     let active = Arc::new(Mutex::new(HashMap::new()));
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
-    // `ProfileResolver` grades every call from this map, not from `active`.
+    // `ModeResolver` grades every call from this map, not from `active`.
     // `perm_modes` is the *same* map `sandbox_config` was built from in
     // `build_config` (ADR-0207 §6, stage 5b) — sandboxing must see exactly
     // the mode *names* dispatch sees, not a second copy that can drift.
@@ -1587,7 +1587,7 @@ async fn main() -> Result<()> {
         })
         .context("building the permission mode table from config.yml `modes:`")?
     });
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         mode_table.clone(),
         tools.clone(),
@@ -1699,7 +1699,7 @@ async fn main() -> Result<()> {
     // registry mutation in core is a rejected design). `reload_rx` only matters
     // to the TUI (a status line); every other head lets its messages drop.
     let live = watch::LiveDefinitions {
-        profiles: live_profiles.clone(),
+        agents: live_profiles.clone(),
         skills: live_skills.clone(),
         agent_models: live_agent_models.clone(),
         grants: grants.clone(),
@@ -1784,10 +1784,9 @@ async fn main() -> Result<()> {
                         predecessor: None,
                         agent: agent
                             .clone()
-                            .unwrap_or_else(|| entanglement_core::DEFAULT_PROFILE.to_string()),
+                            .unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string()),
                         prompt: String::new(),
                         user: None,
-                        sponsored: false,
                     })
                     .await?;
             } else if agent.is_some() {
@@ -1850,7 +1849,6 @@ async fn main() -> Result<()> {
                         agent: a,
                         prompt: String::new(),
                         user: None,
-                        sponsored: false,
                     })
                     .await?;
             }
@@ -1902,7 +1900,6 @@ async fn main() -> Result<()> {
                             agent: a.to_string(),
                             prompt: String::new(),
                             user: None,
-                            sponsored: false,
                         })
                         .await?;
                 }
@@ -1948,7 +1945,6 @@ async fn main() -> Result<()> {
                             agent: a.to_string(),
                             prompt: String::new(),
                             user: None,
-                            sponsored: false,
                         })
                         .await?;
                 }

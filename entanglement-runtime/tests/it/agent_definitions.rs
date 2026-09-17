@@ -29,7 +29,7 @@ use entanglement_runtime::ToolRegistry;
 fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
-) -> entanglement_core::ProfileRegistry {
+) -> entanglement_core::AgentCatalog {
     let _guard = crate::env_lock();
     match user {
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
@@ -428,7 +428,7 @@ async fn spawn_under_a_file_defined_profile() {
 
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(DelegateLlm) as Box<dyn Llm>),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -453,10 +453,10 @@ async fn spawn_under_a_file_defined_profile() {
         match &ev {
             OutEvent::SessionStarted {
                 parent: Some(p),
-                profile,
+                agent,
                 root: false,
                 ..
-            } if p == &parent && profile == "worker" => child_under_worker = true,
+            } if p == &parent && agent == "worker" => child_under_worker = true,
             OutEvent::ToolOutput {
                 session,
                 tool,
@@ -534,7 +534,7 @@ fn prompt_report_reports_builtin_source_and_prompt() {
         reg
     };
     assert_eq!(
-        report.profile.system_prompt,
+        report.agent.system_prompt,
         reg.get("general").unwrap().system_prompt
     );
     // A primary agent gets the env block; the body part points at the winning file.
@@ -567,10 +567,7 @@ fn prompt_report_prefers_project_definition() {
     // The project file wins over the embedded built-in (later layer).
     assert!(report.source.ends_with("general.md"));
     assert!(report.source.contains(".entanglement"));
-    assert!(report
-        .profile
-        .system_prompt
-        .contains("Project general body."));
+    assert!(report.agent.system_prompt.contains("Project general body."));
 }
 
 #[test]
@@ -623,13 +620,13 @@ fn resolve_registry_reports_builtin_layer_and_no_shadow() {
     let resolved = resolve_with_dirs(None, empty.path());
     let general = resolved
         .iter()
-        .find(|r| r.profile.name == "general")
+        .find(|r| r.agent.name == "general")
         .expect("general present");
     assert_eq!(general.layer, AgentLayer::BuiltIn);
     assert_eq!(general.source, "built-in (general.md)");
     assert!(general.shadowed.is_empty());
     // Sorted by name for a stable table.
-    let names: Vec<&str> = resolved.iter().map(|r| r.profile.name.as_str()).collect();
+    let names: Vec<&str> = resolved.iter().map(|r| r.agent.name.as_str()).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
     assert_eq!(names, sorted);
@@ -653,14 +650,14 @@ fn resolve_registry_tracks_project_over_user_over_builtin() {
     let resolved = resolve_with_dirs(Some(user.path()), project.path());
     let general = resolved
         .iter()
-        .find(|r| r.profile.name == "general")
+        .find(|r| r.agent.name == "general")
         .expect("general present");
 
     // Project wins; the resolved layer/source reflect the winner.
     assert_eq!(general.layer, AgentLayer::Project);
     assert!(general.source.ends_with("general.md"));
     assert!(general.source.contains(".entanglement"));
-    assert_eq!(general.profile.description, "project general");
+    assert_eq!(general.agent.description, "project general");
 
     // Both shadowed layers are recorded in precedence order: built-in, then user.
     let layers: Vec<AgentLayer> = general.shadowed.iter().map(|(l, _)| *l).collect();

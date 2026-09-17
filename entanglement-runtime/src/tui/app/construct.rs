@@ -13,7 +13,7 @@ use crate::tui::theme::Theme;
 use entanglement_core::SessionId;
 use ratatui::layout::Rect;
 
-use super::{App, ModalClickAreas, ProfileInfo, HISTORY_CAPACITY};
+use super::{AgentInfo, App, ModalClickAreas, HISTORY_CAPACITY};
 
 impl App {
     /// Test constructor: builds an `App` over the embedded default catalog with a
@@ -24,11 +24,11 @@ impl App {
             initial_session,
             Catalog::builtin(),
             vec![
-                ProfileInfo {
+                AgentInfo {
                     name: "build".to_string(),
                     description: "Coding agent".to_string(),
                 },
-                ProfileInfo {
+                AgentInfo {
                     name: "plan".to_string(),
                     description: "Planning agent".to_string(),
                 },
@@ -47,19 +47,19 @@ impl App {
     /// `entry_profiles` are every registered agent (ADR-0207 §4 retires the
     /// old `mode ∈ {primary, all}` filter — any agent may be a session root)
     /// the (read-only, ADR-0207 §9) `/agent` picker lists, in the order the
-    /// caller (the runtime head) loaded them from the `ProfileRegistry`.
+    /// caller (the runtime head) loaded them from the `AgentCatalog`.
     /// `tool_roster` is the full advertised tool-name roster (#330) `/tools`
     /// and the bare `/enable` checklist offer.
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
-        entry_profiles: Vec<ProfileInfo>,
+        entry_profiles: Vec<AgentInfo>,
         tool_roster: Vec<String>,
     ) -> Self {
         // Fall back to `general` if a custom registry somehow exposed no entry
         // agent, so the picker is never empty (it indexes unconditionally).
         let available_profiles = if entry_profiles.is_empty() {
-            vec![ProfileInfo {
+            vec![AgentInfo {
                 name: "general".to_string(),
                 description: "Coding agent".to_string(),
             }]
@@ -109,9 +109,9 @@ impl App {
         // fixed roster, unlike `available_profiles`/`available_models`,
         // since `skutter` compiles them in rather than reading them from a
         // registry (ADR-0207 §2: "the table is code, not configuration").
-        let available_modes: Vec<ProfileInfo> = crate::mode::describe::MODE_SUMMARIES
+        let available_modes: Vec<AgentInfo> = crate::mode::describe::MODE_SUMMARIES
             .iter()
-            .map(|(name, summary)| ProfileInfo {
+            .map(|(name, summary)| AgentInfo {
                 name: name.to_string(),
                 description: summary.to_string(),
             })

@@ -3,8 +3,8 @@
 //! ADR-0038) before ADR-0207 retired it ("the mask machinery is deleted").
 //!
 //! Grading now comes entirely from the session's permission **mode**
-//! (`crate::mode::Mode`, resolved by `crate::policy::ProfileResolver`), never
-//! from `AgentProfile`. A mode `deny` is **absolute**: a flat decline with no
+//! (`crate::mode::Mode`, resolved by `crate::policy::ModeResolver`), never
+//! from `Agent`. A mode `deny` is **absolute**: a flat decline with no
 //! prompt, naming the mode and the way out — there is no approval-offer
 //! softening left to test (ADR-0198, which this ADR supersedes). The
 //! remaining coverage here: a class-denied capability flat-declines, an
@@ -20,9 +20,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolCall,
-    ToolOverlayEntry,
+    stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -95,7 +94,7 @@ fn spawn_with_edit_call() -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -113,7 +112,7 @@ fn spawn_with_edit_call() -> Holly {
 
 /// [`spawn_with_edit_call`] generalized: a scripted LLM that calls `tool` once,
 /// over a caller-supplied profile registry, with only `EchoEdit` registered.
-fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
+fn spawn_calling(tool: &str, agents: AgentCatalog) -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
@@ -133,7 +132,7 @@ fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -142,7 +141,7 @@ fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        profiles,
+        agents,
         PermissionProfile::new(Permission::Allow),
     );
     holly
@@ -278,7 +277,6 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
             agent: "general".into(),
             prompt: "edit something".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

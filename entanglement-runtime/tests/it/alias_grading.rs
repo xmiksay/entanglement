@@ -8,7 +8,7 @@
 //! alias's own name were graded instead of `bash`'s — let a
 //! `skill__x__alias_bash` call straight through. It must not. Since ADR-0207
 //! stage 4, grading comes from the session's permission mode, not its agent
-//! profile, so the fixture is a `Mode`, not an `AgentProfile`.
+//! profile, so the fixture is a `Mode`, not an `Agent`.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::tools::{register_skill_tools, SkillToolDef};
 use entanglement_runtime::skills::{SkillMeta, SkillRegistry};
@@ -157,14 +157,14 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let shared_reg = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let perm_modes = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         denies_bash_but_defaults_allow(),
         shared_reg.clone(),

@@ -53,7 +53,7 @@
 //!   explicit CLI flag or environment variable wins over the file (env >
 //!   config > embedded default) — `mode`'s precedence is `--mode` > this >
 //!   the engine's `DEFAULT_MODE` (ADR-0207 §12), mirroring `agent`'s own
-//!   `--agent` > this > `DEFAULT_PROFILE`. `idle_ttl_secs` (#401, ADR-0090)
+//!   `--agent` > this > `DEFAULT_AGENT`. `idle_ttl_secs` (#401, ADR-0090)
 //!   maps onto `EngineConfig::idle_ttl`; `None` (the default) leaves
 //!   auto-hibernation off, exactly as before this setting existed.
 //!   `auto_compact` (ADR-0103) maps onto `EngineConfig::auto_compact` the

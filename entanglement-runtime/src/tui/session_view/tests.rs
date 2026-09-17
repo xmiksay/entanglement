@@ -601,12 +601,11 @@ fn elapsed_tracks_running_then_freezes_on_end() {
         session: sid(),
         parent: Some(SessionId::new("root")),
         predecessor: None,
-        profile: "explore".into(),
+        agent: "explore".into(),
         model: None,
         root: false,
         ts: 1_000,
         user: None,
-        sponsored: false,
     });
     // Running: measured against the current wall clock.
     assert_eq!(v.elapsed_secs(4_000), Some(3));

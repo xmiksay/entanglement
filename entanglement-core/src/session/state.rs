@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::TurnState;
 use crate::context::Context;
 use crate::holly::DEFAULT_MODE;
-use crate::protocol::{AgentProfile, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{Agent, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
@@ -19,7 +19,7 @@ use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 /// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
 /// resilience state it references is keyed per endpoint in the provider, not per
 /// session, so there is no session-scoped handle to wrap it, #195/ADR-0062), the
-/// active profile,
+/// active agent,
 /// and the emit sequence — nothing pointing at the filesystem or a fixed tool
 /// set. Plan/task snapshots are the runtime's display state, not engine state
 /// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
@@ -28,10 +28,10 @@ use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 pub struct Session {
     pub ctx: Context,
     pub llm: Box<dyn Llm>,
-    pub profile: AgentProfile,
+    pub agent: Agent,
     /// The session's permission **mode** (ADR-0207) — an opaque name core
     /// carries and replays but never evaluates; the runtime owns the table it
-    /// resolves against. Independent of [`profile`][Self::profile]: switching
+    /// resolves against. Independent of [`agent`][Self::agent]: switching
     /// one never changes the other. Defaults to
     /// [`DEFAULT_MODE`][crate::holly::DEFAULT_MODE], set by
     /// [`SetMode`][super::SessionCmd::SetMode] and reconstructed on replay from
@@ -39,8 +39,8 @@ pub struct Session {
     /// (last write wins).
     pub mode: String,
     /// Effective model id when the user switched model/provider mid-session
-    /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
-    /// request and in pricing. `None` keeps the profile's model (the startup
+    /// (#218), overriding the agent's pinned [`Agent::model`] on every
+    /// request and in pricing. `None` keeps the agent's model (the startup
     /// default). Set by [`SessionCmd::SetModel`][super::SessionCmd]; reset only by
     /// another switch.
     pub model: Option<String>,
@@ -54,18 +54,18 @@ pub struct Session {
     pub generation: Option<GenerationParams>,
     /// This session's live [`SetGeneration`][super::SessionCmd::SetGeneration]
     /// choice, if any (#374, ADR-0094): keyed by the (fixed-for-life, ADR-0207
-    /// §9) active profile name, holding the **full** merged effective params
+    /// §9) active agent name, holding the **full** merged effective params
     /// (not a partial override). Consulted only at session start, to keep a
     /// resumed session's replay-reconstructed live override from being
     /// silently re-clobbered by `EngineConfig::generation_resolver`'s
     /// persisted default. Reconstructed on replay from
     /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
     /// records.
-    pub profile_generation: HashMap<String, GenerationParams>,
+    pub generation_by_agent: HashMap<String, GenerationParams>,
     /// The session's live tool overlay (#539, ADR-0149): patterns a trusted
     /// head injected via [`SetToolOverlay`][super::SessionCmd::SetToolOverlay]
     /// whose matching tools are advertised **in addition to** (and regardless
-    /// of) the active profile's #116 mask. Reconstructed on replay from
+    /// of) the active agent's #116 mask. Reconstructed on replay from
     /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
     /// records. Empty by default (no overlay).
     pub tool_overlay: Vec<ToolOverlayEntry>,
@@ -102,14 +102,6 @@ pub struct Session {
     /// API key instead of the process-global one. Reconstructed on replay from
     /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
     pub user: Option<UserId>,
-    /// Sponsored `propose_plan` build child (ADR-0138) vs. a plain sub-agent
-    /// spawn (#626) — mirrors [`InMsg::Spawn`][crate::protocol::InMsg::Spawn]'s
-    /// `sponsored`. Set once at spawn, never mutated, like
-    /// [`parent`][Self::parent]. Reconstructed on replay from
-    /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted] so a head
-    /// resuming a hibernated plan/build pair can still disambiguate
-    /// `AgentState::WaitingAgent`'s two callers.
-    pub sponsored: bool,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
     /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
@@ -162,26 +154,25 @@ pub struct SessionUsage {
 }
 
 impl Session {
-    /// Creates a new empty session with the given configuration and profile.
-    pub fn new_empty(cfg: &EngineConfig, profile: AgentProfile) -> Self {
+    /// Creates a new empty session with the given configuration and agent.
+    pub fn new_empty(cfg: &EngineConfig, agent: Agent) -> Self {
         Self {
             // Budget the history against the active model's real context window
             // (#178), not a fixed Anthropic-shaped ceiling.
             ctx: Context::with_window(cfg.context_window),
             llm: (cfg.llm_factory)(),
-            profile,
+            agent,
             mode: DEFAULT_MODE.to_string(),
             model: None,
             provider: None,
             generation: cfg.generation,
-            profile_generation: HashMap::new(),
+            generation_by_agent: HashMap::new(),
             tool_overlay: Vec::new(),
             seq: Arc::new(AtomicU64::new(0)),
             parent: None,
             children: Vec::new(),
             predecessor: None,
             user: None,
-            sponsored: false,
             usage: SessionUsage::default(),
             turn: None,
             name: None,

@@ -20,7 +20,7 @@ pub enum UiEffect {
 }
 
 #[derive(Clone)]
-pub struct ProfileInfo {
+pub struct AgentInfo {
     pub name: String,
     pub description: String,
 }

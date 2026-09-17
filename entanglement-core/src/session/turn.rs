@@ -219,7 +219,7 @@ async fn try_summary_fork(
     // Model resolution mirrors the request field: a live switch (#218)
     // overrides the profile's pinned model; `None` falls back to the backend's
     // own default.
-    let model = s.model.as_deref().or(s.profile.model.as_deref());
+    let model = s.model.as_deref().or(s.agent.model.as_deref());
     // Same `summarize` aux-model pin as the manual `/compact` path (Issue 5):
     // an overflow recovery is a side transformation too, so it runs on the
     // pinned backend when one is set.

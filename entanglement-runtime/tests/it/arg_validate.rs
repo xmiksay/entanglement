@@ -136,7 +136,7 @@ async fn run_calls(calls: Vec<(&str, &str, &str)>) -> Vec<(String, bool)> {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -256,7 +256,7 @@ async fn valid_call_is_unaffected_by_validation() {
 async fn user_denial_carries_only_the_reason_no_schema() {
     // A single mode named `"build"` (matching `DEFAULT_MODE`, so no `SetMode`
     // call is needed) with `default: Ask` — the mode-based analog of the old
-    // `askgreet` `AgentProfile` fixture (ADR-0207 stage 4 grades from the
+    // `askgreet` `Agent` fixture (ADR-0207 stage 4 grades from the
     // session's mode, not its agent).
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
@@ -289,7 +289,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -299,7 +299,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
-        Arc::new(entanglement_runtime::policy::ProfileResolver::new(
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
             perm_modes.clone(),
             mode_table.clone(),
             shared_tools.clone(),

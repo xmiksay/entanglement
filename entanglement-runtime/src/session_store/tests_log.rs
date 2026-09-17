@@ -278,7 +278,7 @@ fn integrity_gap_none_for_clean_log() {
     assert_eq!(integrity_gap(&records), None);
 }
 
-/// A `SessionStarted.profile` naming a retired agent (ADR-0207 stage 6a) is
+/// A `SessionStarted.agent` naming a retired agent (ADR-0207 stage 6a) is
 /// caught, named, and pointed at its replacement.
 #[test]
 fn retired_agent_finds_a_retired_session_started_profile() {
@@ -289,12 +289,11 @@ fn retired_agent_finds_a_retired_session_started_profile() {
             session: sid.clone(),
             parent: None,
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: true,
             ts: 0,
             user: None,
-            sponsored: false,
         }),
     )];
     let (retired, replacement) = retired_agent(&records).expect("build is retired");
@@ -304,7 +303,7 @@ fn retired_agent_finds_a_retired_session_started_profile() {
 
 /// A retired name can also arrive via a legacy log's `AgentChanged` record
 /// (a genuine pre-ADR-0207 `SetAgent` switch) — not just the session's own
-/// starting `SessionStarted.profile`.
+/// starting `SessionStarted.agent`.
 #[test]
 fn retired_agent_finds_a_retired_agent_changed_record() {
     let sid = SessionId::new("s");
@@ -315,12 +314,11 @@ fn retired_agent_finds_a_retired_agent_changed_record() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "general".to_string(),
+                agent: "general".to_string(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             }),
         ),
         LogRecord::new(
@@ -345,12 +343,11 @@ fn retired_agent_none_for_a_current_roster_name() {
             session: sid.clone(),
             parent: None,
             predecessor: None,
-            profile: "general".to_string(),
+            agent: "general".to_string(),
             model: None,
             root: true,
             ts: 0,
             user: None,
-            sponsored: false,
         }),
     )];
     assert_eq!(retired_agent(&records), None);

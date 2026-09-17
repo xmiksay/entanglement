@@ -45,7 +45,7 @@ mod ui;
 mod wrap;
 
 use anyhow::Result;
-use entanglement_core::{Holly, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, Holly, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -77,7 +77,7 @@ pub async fn tui(
     model_info: ModelInfo,
     provider_name: String,
     catalog: Catalog,
-    profiles: std::sync::Arc<std::sync::RwLock<ProfileRegistry>>,
+    agents: std::sync::Arc<std::sync::RwLock<AgentCatalog>>,
     agent_models: std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>,
     agent_generation: std::sync::Arc<
         std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
@@ -142,7 +142,7 @@ pub async fn tui(
     // a spawn target, never a manual entry agent. The mode is carried through so
     // the Tab cycle can narrow to `primary` only (#322). Ordered by the
     // registry's stable `iter` (name-sorted).
-    let entry_profiles = entry_profiles_from(&profiles.read().unwrap());
+    let entry_profiles = entry_profiles_from(&agents.read().unwrap());
     let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
     app.set_active_provider(provider_name);
@@ -207,7 +207,7 @@ pub async fn tui(
             // status line, matching the `/key`/`/model` status pattern.
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
-                    let fresh = entry_profiles_from(&profiles.read().unwrap());
+                    let fresh = entry_profiles_from(&agents.read().unwrap());
                     app.refresh_profiles(fresh);
                     app.record_reload_status(notice);
                     app.mark_dirty();
@@ -246,16 +246,16 @@ pub async fn tui(
     Ok(())
 }
 
-/// The `/agent` picker + Tab-cycle roster derived from a [`ProfileRegistry`]
+/// The `/agent` picker + Tab-cycle roster derived from a [`AgentCatalog`]
 /// snapshot: every registered agent (ADR-0207 §4 retires the primary/
 /// subagent/all `mode` distinction — any agent may be a session root, so
 /// there is no more leaf-only profile to exclude here). Shared by the
 /// startup build and the definitions-watcher reload arm (#329) so both derive
 /// the roster identically.
-fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
+fn entry_profiles_from(registry: &AgentCatalog) -> Vec<app::AgentInfo> {
     registry
         .iter()
-        .map(|p| app::ProfileInfo {
+        .map(|p| app::AgentInfo {
             name: p.name.clone(),
             description: p.description.clone(),
         })
@@ -421,10 +421,10 @@ mod tests {
     /// sleeping past the window the bug lived in before ever draining.
     #[tokio::test]
     async fn early_subscribe_survives_the_bootstrap_spawn_race() {
-        use entanglement_core::{AgentProfile, InMsg};
+        use entanglement_core::{Agent, InMsg};
 
         let mut cfg = EngineConfig::default();
-        cfg.profiles.insert(AgentProfile {
+        cfg.agents.insert(Agent {
             name: "plan".into(),
             description: String::new(),
             system_prompt: "Plan only.".into(),
@@ -443,7 +443,6 @@ mod tests {
                 agent: "plan".into(),
                 prompt: String::new(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();

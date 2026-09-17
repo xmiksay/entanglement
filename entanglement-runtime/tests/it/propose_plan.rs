@@ -31,7 +31,7 @@ use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::plan_files::PlanFileRegistry;
-use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver};
+use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -139,7 +139,7 @@ fn spawn_with_root_and_table(
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -149,7 +149,7 @@ fn spawn_with_root_and_table(
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
     let shared_tools = tools.shared();
-    let resolver = Arc::new(ProfileResolver::new(
+    let resolver = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         table,
         shared_tools.clone(),

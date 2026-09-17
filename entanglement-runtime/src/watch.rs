@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use entanglement_core::ProfileRegistry;
+use entanglement_core::AgentCatalog;
 use notify_debouncer_mini::DebounceEventResult;
 use sha2::{Digest, Sha256};
 
@@ -51,10 +51,10 @@ const MANAGED_FILE_ENVS: &[&str] = &[
 ];
 
 /// The runtime-held mirrors a reload swaps. See the module doc for why this is
-/// deliberately *not* core's `EngineConfig.profiles`.
+/// deliberately *not* core's `EngineConfig.agents`.
 #[derive(Clone)]
 pub struct LiveDefinitions {
-    pub profiles: Arc<RwLock<ProfileRegistry>>,
+    pub agents: Arc<RwLock<AgentCatalog>>,
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
     pub grants: Arc<DefaultGrantStore>,
@@ -352,7 +352,7 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let agent_count = new_profiles.iter().count();
     let skill_count = new_skills.disclosures().len();
     *live.skills.write().unwrap() = Arc::new(new_skills);
-    *live.profiles.write().unwrap() = new_profiles;
+    *live.agents.write().unwrap() = new_profiles;
 
     Ok(format!(
         "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) — \

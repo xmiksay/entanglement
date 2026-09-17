@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, SessionId, SessionModel, ToolSpec,
 };
 
@@ -56,8 +56,8 @@ impl Llm for RecordingLlm {
 /// longer carries it (#201), so the mask test registers it directly. Its
 /// read-only posture is a runtime permission-mode fact now (ADR-0207) — the
 /// profile itself carries no mask.
-fn explore_profile() -> AgentProfile {
-    AgentProfile {
+fn explore_profile() -> Agent {
+    Agent {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
         system_prompt: "You are a read-only exploration agent.".into(),
@@ -205,7 +205,7 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             ToolSpec::new("edit", "edit a file"),
         ]
     }));
-    cfg.profiles.insert(explore_profile());
+    cfg.agents.insert(explore_profile());
 
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s");
@@ -217,7 +217,6 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             agent: "explore".into(),
             prompt: "look".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -265,10 +264,10 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             ToolSpec::new("poll", "join background jobs and sub-agents"),
         ]
     }));
-    // A named-restrictive profile: it carries no mask of its own any more
+    // A named-restrictive agent: it carries no mask of its own any more
     // (ADR-0207 moved that onto the session's permission mode), so `poll` and
     // `edit` are advertised exactly as any other profile would see them.
-    cfg.profiles.insert(AgentProfile {
+    cfg.agents.insert(Agent {
         name: "locked".into(),
         description: "read-only".into(),
         system_prompt: String::new(),
@@ -286,7 +285,6 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             agent: "locked".into(),
             prompt: "look".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -332,13 +330,13 @@ async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
         })
     }));
     let mut pinned = cfg
-        .profiles
+        .agents
         .get("general")
         .cloned()
         .expect("default registry has general");
     pinned.provider = Some("p".into());
     pinned.model = Some("m".into());
-    cfg.profiles.insert(pinned);
+    cfg.agents.insert(pinned);
     let specs_order = order.clone();
     cfg.tool_spec_resolver = Some(Arc::new(move |_sid: &SessionId, m: SessionModel<'_>| {
         specs_order
@@ -348,7 +346,7 @@ async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
         vec![]
     }));
     let prompt_order = order.clone();
-    cfg.system_prompt_resolver = Some(Arc::new(move |_sid: &SessionId, _p: &AgentProfile| {
+    cfg.system_prompt_resolver = Some(Arc::new(move |_sid: &SessionId, _p: &Agent| {
         prompt_order.lock().unwrap().push("prompt".into());
         None
     }));
