@@ -115,6 +115,18 @@ pub struct EngineConfig {
     /// `None` (the default) keeps the profile's static prompt for every turn. See
     /// [`SystemPromptResolver`] for the snapshot-cache pattern.
     pub system_prompt_resolver: Option<SystemPromptResolver>,
+    /// Static system-prompt text describing what permission modes exist
+    /// (ADR-0207 §9), supplied by the runtime — core owns no mode table, so it
+    /// authors no such text itself. Appended to the resolved system prompt on
+    /// every turn ([`resolve_system_prompt`][crate::session::round_inputs::resolve_system_prompt]).
+    /// Deliberately **not** per-session/per-turn like
+    /// [`system_prompt_resolver`][Self::system_prompt_resolver]: it is
+    /// identical for every session, so it stays in the provider's cached
+    /// prefix — the *current* mode is a separate message appended fresh to
+    /// every request instead ([`InMsg::SetMode`][crate::protocol::InMsg::SetMode],
+    /// see `session::mode::mode_notice`), which is what keeps a mode switch
+    /// cache-free. `None` (the default) appends nothing.
+    pub modes_preamble: Option<String>,
     /// The backend's resolved default model id — what a profile with
     /// `model: None` actually runs under (#192). Lets the engine price a turn
     /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
@@ -258,6 +270,7 @@ impl Default for EngineConfig {
             profile_tool_specs: HashMap::new(),
             tool_spec_resolver: None,
             system_prompt_resolver: None,
+            modes_preamble: None,
             default_model: None,
             context_window: None,
             generation: None,

@@ -175,6 +175,24 @@ async fn forged_wire_spawn_is_refused() {
     assert!(matches!(err, WireError::Privileged("spawn")));
 }
 
+/// `SetMode` carries real authority (ADR-0207), unlike `SetAgent` (identity
+/// only, wire-allowed): a forged one would let an unauthenticated wire head
+/// widen its own permission posture directly, bypassing the graded
+/// `request_mode` tool.
+#[tokio::test]
+async fn forged_wire_set_mode_is_refused() {
+    let holly = engine(vec![]);
+    let sid = SessionId::new("s1");
+    let err = holly
+        .send_from_wire(InMsg::SetMode {
+            session: sid,
+            mode: "build".into(),
+        })
+        .await
+        .expect_err("SetMode must be refused from the wire");
+    assert!(matches!(err, WireError::Privileged("set_mode")));
+}
+
 /// `McpAuth` is trusted-only (ADR-0153), sharpening the `McpAdd`/`McpRemove`
 /// rationale (#472/ADR-0124): a forged `Connect` would open a browser window on
 /// the user's desktop and mint a durable OAuth credential on their behalf, and a

@@ -1300,6 +1300,22 @@ pub enum InMsg {
     HibernateSession { session: SessionId },
     /// Switch the session to a different agent profile by name (e.g. `plan`).
     SetAgent { session: SessionId, agent: String },
+    /// Switch the session's permission **mode** by name (ADR-0207). Authority
+    /// is a second axis, independent of the agent: core carries `mode` as an
+    /// **opaque name it never evaluates** — the runtime owns the mode table
+    /// (`research`/`plan`/`build`/`auto` for `skutter`) and every rule that
+    /// name resolves to, exactly as core already carries
+    /// [`AgentProfile::permission`] without evaluating it. Applied once the
+    /// live turn ends when one is running (stash replay), like
+    /// [`SetAgent`][InMsg::SetAgent]. Always succeeds and confirms with
+    /// [`OutEvent::ModeChanged`] — core has no table to validate `mode`
+    /// against, so (unlike `SetAgent`'s unknown-agent case) there is nothing
+    /// to fail here; an unresolvable name is the runtime's problem to reject
+    /// at the point it is evaluated. **Trusted-only**: unlike `SetAgent`
+    /// (identity, wire-allowed), a mode carries real authority, so it is
+    /// refused from an untrusted wire head (see
+    /// [`wire_allowed`][InMsg::wire_allowed]).
+    SetMode { session: SessionId, mode: String },
     /// Switch the session's live model/provider without restarting the engine
     /// (#218). The runtime re-resolves `(provider, model)` against the catalog +
     /// user config (via [`EngineConfig::model_resolver`][crate::EngineConfig]),
@@ -1532,6 +1548,7 @@ impl InMsg {
             | InMsg::CloseSession { session }
             | InMsg::HibernateSession { session }
             | InMsg::SetAgent { session, .. }
+            | InMsg::SetMode { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
             | InMsg::SetSessionMeta { session, .. }
@@ -1582,6 +1599,13 @@ impl InMsg {
     ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
     ///   by ADR-0177). An empty `entries` list (clearing back to the profile
     ///   default) is vacuously deny-only and also wire-allowed.
+    /// - [`SetMode`][InMsg::SetMode] (ADR-0207): unlike `SetAgent` — which only
+    ///   swaps identity/persona and stays wire-allowed — a mode *is* the
+    ///   session's authority. A wire-forged `SetMode` would let an
+    ///   unauthenticated head widen its own permission posture (e.g.
+    ///   `research` → `build`), so it is trusted-only; the analogous widening
+    ///   the model itself may request is the graded `request_mode` tool, not
+    ///   this frame.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1636,7 +1660,8 @@ impl InMsg {
             | InMsg::HibernateSession { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
-            | InMsg::McpAuth { .. } => false,
+            | InMsg::McpAuth { .. }
+            | InMsg::SetMode { .. } => false,
         }
     }
 
@@ -1665,6 +1690,7 @@ impl InMsg {
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
             InMsg::SetAgent { .. } => "set_agent",
+            InMsg::SetMode { .. } => "set_mode",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
             InMsg::SetSessionMeta { .. } => "set_session_meta",
@@ -1883,6 +1909,17 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile_detail: Option<ProfileDetail>,
     },
+    /// The session switched permission mode (point-in-time, no `seq`), in reply
+    /// to [`InMsg::SetMode`] (ADR-0207) — and once more at session start so the
+    /// log records the mode a session began in (needed by replay and by the
+    /// appended in-conversation notice, see [`Session::mode`][crate::session::Session]).
+    /// Carries only the opaque `mode` name; core carries no rule table to
+    /// resolve it against, mirroring [`AgentChanged`][OutEvent::AgentChanged]'s
+    /// `agent` field but without a `profile_detail` counterpart — the runtime
+    /// owns what a mode means. Folded on replay by overwrite (last write wins),
+    /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged]/
+    /// [`ToolOverlayChanged`][OutEvent::ToolOverlayChanged].
+    ModeChanged { session: SessionId, mode: String },
     /// The session switched to a different model/provider mid-run (point-in-time,
     /// no `seq`), in reply to [`InMsg::SetModel`] (#218). Carries the resolved
     /// `provider`/`model` and the new `context_window` (tokens) so a head can
@@ -2292,6 +2329,7 @@ impl OutEvent {
             | OutEvent::History { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
+            | OutEvent::ModeChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
             | OutEvent::SessionMetaChanged { session, .. }
@@ -2330,7 +2368,7 @@ impl OutEvent {
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
     /// `OperationList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
-    /// `GenerationChanged`, `SessionMetaChanged`). Returning `Option`
+    /// `GenerationChanged`, `SessionMetaChanged`, `ModeChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
@@ -2350,6 +2388,7 @@ impl OutEvent {
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
+            | OutEvent::ModeChanged { .. }
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
             | OutEvent::SessionMetaChanged { .. }
@@ -2478,6 +2517,14 @@ mod tests {
         assert!(InMsg::SetToolOverlay {
             session: s.clone(),
             entries: vec![],
+        }
+        .wire_allowed());
+        // Mode carries real authority (ADR-0207), unlike `SetAgent` (identity
+        // only, wire-allowed) — a wire head must not be able to widen its own
+        // permission posture by naming a mode directly.
+        assert!(!InMsg::SetMode {
+            session: s.clone(),
+            mode: "build".into(),
         }
         .wire_allowed());
         // Every head-authored frame stays acceptable off the wire.

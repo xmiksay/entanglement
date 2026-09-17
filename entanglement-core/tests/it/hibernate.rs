@@ -169,8 +169,9 @@ async fn hibernate_then_resume_preserves_context_like_a_control() {
     );
     assert_eq!(
         resumed_two_call.len(),
-        3,
-        "context is [user one, assistant reply, user two]; got {resumed_two_call:?}"
+        4,
+        "context is [user one, assistant reply, user two, mode notice (ADR-0207 §9)]; \
+         got {resumed_two_call:?}"
     );
 }
 

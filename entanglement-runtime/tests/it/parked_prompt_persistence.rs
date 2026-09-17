@@ -156,8 +156,18 @@ async fn prompt_sent_while_parked_survives_the_log_round_trip() {
     );
     let messages: Vec<Message> = serde_json::from_str(&live_history).unwrap();
     let texts: Vec<String> = messages.iter().map(Message::text).collect();
+    // Trailing entry is the mode notice (ADR-0207 §9) — appended fresh to
+    // every request from `Session::mode`, never persisted.
     assert_eq!(
         texts,
-        ["go", "", "contents", "also check y", "done", "probe"]
+        [
+            "go",
+            "",
+            "contents",
+            "also check y",
+            "done",
+            "probe",
+            "[mode: build]"
+        ]
     );
 }

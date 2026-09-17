@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::TurnState;
 use crate::context::Context;
+use crate::holly::DEFAULT_MODE;
 use crate::protocol::{AgentProfile, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
@@ -28,6 +29,16 @@ pub struct Session {
     pub ctx: Context,
     pub llm: Box<dyn Llm>,
     pub profile: AgentProfile,
+    /// The session's permission **mode** (ADR-0207) — an opaque name core
+    /// carries and replays but never evaluates; the runtime owns the table it
+    /// resolves against. Independent of [`profile`][Self::profile]: switching
+    /// one never changes the other. Defaults to
+    /// [`DEFAULT_MODE`][crate::holly::DEFAULT_MODE], set by
+    /// [`SetMode`][super::SessionCmd::SetMode] and reconstructed on replay from
+    /// [`ModeChanged`][crate::protocol::OutEvent::ModeChanged] records (last
+    /// write wins, mirroring [`profile_models`][Self::profile_models]'s
+    /// sibling fields).
+    pub mode: String,
     /// Effective model id when the user switched model/provider mid-session
     /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
     /// request and in pricing. `None` keeps the profile's model (the startup
@@ -175,6 +186,7 @@ impl Session {
             ctx: Context::with_window(cfg.context_window),
             llm: (cfg.llm_factory)(),
             profile,
+            mode: DEFAULT_MODE.to_string(),
             model: None,
             provider: None,
             profile_models: HashMap::new(),

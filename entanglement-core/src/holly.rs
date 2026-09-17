@@ -103,6 +103,13 @@ const ROUTE_ATTEMPTS: usize = 8;
 /// wire head, ADR-0174) names the same profile the lazy-`Prompt` path
 /// resolves, instead of a hardcoded string that could drift.
 pub const DEFAULT_PROFILE: &str = "build";
+/// Permission mode a new session starts under (ADR-0207): authority is a
+/// second, independent axis from the agent, so this deliberately shares no
+/// definition with [`DEFAULT_PROFILE`] — it only happens to be the same
+/// string today because `skutter`'s four-mode table names its ordinary
+/// interactive posture `build` too. Core carries this name opaquely; it
+/// validates against nothing, since the mode table lives in the runtime.
+pub const DEFAULT_MODE: &str = "build";
 
 /// Handle to the running engine. Cheap to clone; the actor task lives until all
 /// clones drop (the inbox closes) or every session stops.

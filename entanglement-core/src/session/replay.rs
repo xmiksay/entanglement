@@ -189,6 +189,17 @@ impl Session {
                         session.profile = profile.clone();
                     }
                 }
+                // Reconstruct the mode axis (ADR-0207): overwrite — last write
+                // wins, same as every other lifecycle fold in this match.
+                // State only, no `ctx` push: the model-visible notice is
+                // rebuilt fresh from `session.mode` every round (`stream.rs`),
+                // never persisted — see `mode::mode_notice`'s doc for why a
+                // persisted push would desync from the live session's history
+                // (the pairing-order hazard around a session's very first
+                // `Prompt`).
+                OutEvent::ModeChanged { mode, .. } => {
+                    session.mode = mode.clone();
+                }
                 // Re-bind a resumed session to the model it was switched to
                 // (#218) so the continued turn runs under the same provider/model
                 // + generation + context budget the user picked. Best-effort: an

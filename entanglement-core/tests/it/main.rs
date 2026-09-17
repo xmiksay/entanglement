@@ -39,6 +39,7 @@ mod search_result_persistence;
 mod seq_uniqueness;
 mod session_lifecycle;
 mod set_generation;
+mod set_mode;
 mod set_session_meta;
 mod spawn_sponsored;
 mod stop_semantics;

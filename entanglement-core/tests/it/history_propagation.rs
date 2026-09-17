@@ -76,9 +76,11 @@ async fn prompt_done_prompt_echoes_full_history() {
             _ => None,
         })
         .collect();
+    // 1 real message + the trailing mode notice every request carries
+    // (ADR-0207 §9, never part of persisted history — see `set_mode.rs`).
     assert!(
-        reply1.contains("messages=1"),
-        "turn 1 should echo 1 message; got: {reply1}"
+        reply1.contains("messages=2"),
+        "turn 1 should echo 1 message + the mode notice; got: {reply1}"
     );
     assert!(
         reply1.contains("alpha"),
@@ -99,9 +101,10 @@ async fn prompt_done_prompt_echoes_full_history() {
             _ => None,
         })
         .collect();
+    // 3 real messages (user, assistant, user) + the trailing mode notice.
     assert!(
-        reply2.contains("messages=3"),
-        "turn 2 should echo 3 messages (user, assistant, user); got: {reply2}"
+        reply2.contains("messages=4"),
+        "turn 2 should echo 3 messages (user, assistant, user) + the mode notice; got: {reply2}"
     );
     assert!(
         reply2.contains("alpha"),
@@ -154,8 +157,9 @@ async fn overlapping_prompt_echoes_prior_history() {
         last.contains("alpha"),
         "last reply should still echo 'alpha' from history; got: {last}"
     );
+    // 3 real messages + the trailing mode notice (ADR-0207 §9).
     assert!(
-        last.contains("messages=3"),
-        "last reply should show 3 messages after stashed replay; got: {last}"
+        last.contains("messages=4"),
+        "last reply should show 3 messages + the mode notice after stashed replay; got: {last}"
     );
 }

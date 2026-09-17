@@ -308,7 +308,22 @@ pub async fn assert_resume_from(mut live: Run, log: Log) -> Vec<Message> {
         resumed_history, live_history,
         "a resumed session must send the live session's history byte for byte"
     );
-    serde_json::from_str(&live_history).unwrap()
+    let mut history: Vec<Message> = serde_json::from_str(&live_history).unwrap();
+    // Every request carries a trailing mode notice (ADR-0207 §9), rebuilt
+    // fresh from `Session::mode` per round — never part of persisted `ctx`,
+    // so it plays no part in *this* harness's job (conversation-content
+    // replay fidelity, which the byte-identical assert above already covers,
+    // notice included). Dropped here so callers' shape assertions stay about
+    // the conversation, not this orthogonal, separately-tested addition (see
+    // `set_mode.rs`).
+    let notice = history.pop();
+    assert!(
+        notice
+            .as_ref()
+            .is_some_and(|m| m.text().starts_with("[mode: ")),
+        "every probed request ends with the mode notice, got {notice:?}"
+    );
+    history
 }
 
 /// The history `id`'s own log replays to — how a **retired** session (a

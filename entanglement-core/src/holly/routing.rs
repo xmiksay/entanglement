@@ -141,6 +141,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         InMsg::PauseSession { .. } => SessionCmd::Pause,
         InMsg::ResumeSession { .. } => SessionCmd::Unpause,
         InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
+        InMsg::SetMode { mode, .. } => SessionCmd::SetMode(mode),
         InMsg::SetModel {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),

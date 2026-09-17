@@ -284,8 +284,11 @@ async fn mid_turn_head_over_the_limit_but_within_the_window_goes_structured() {
         "the head is over ctx.limit(): {}",
         estimate(head)
     );
-    // Strict prefix of the live history: round 2 sent exactly head[..3].
-    assert_eq!(&head[..3], &log[1].messages[..]);
+    // Strict prefix of the live history: round 2 sent exactly head[..3] (plus
+    // its own trailing mode notice, ADR-0207 §9, orthogonal to this shape
+    // check — never part of `Context`/the compaction request, so `req`/`head`
+    // above never carry it; only `log[1]`'s raw capture does).
+    assert_eq!(&head[..3], &log[1].messages[..3]);
 }
 
 /// (d) A head over the real-window budget falls back to the rendered

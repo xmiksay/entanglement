@@ -70,13 +70,26 @@ pub(super) fn resolve_specs(cfg: &EngineConfig, session: &SessionId, s: &Session
 /// the caller borrows nothing extra off `s` while streaming. A resolver may
 /// be a remote fetch, so a round calls this exactly once — compaction reuses
 /// the round's value rather than resolving again.
+///
+/// [`EngineConfig::modes_preamble`] (ADR-0207 §9), when set, is appended
+/// after the resolved base prompt. It describes what modes exist — the
+/// runtime's mode table, never core's to author — and stays **static** across
+/// every session/turn, so appending it here never costs the cache: it sits in
+/// the same prefix a session's very first request already hits. The *current*
+/// mode is a different animal entirely and never touches this function — see
+/// `mode::mode_notice`.
 pub(super) fn resolve_system_prompt(
     cfg: &EngineConfig,
     session: &SessionId,
     s: &Session,
 ) -> String {
-    cfg.system_prompt_resolver
+    let base = cfg
+        .system_prompt_resolver
         .as_ref()
         .and_then(|resolve| resolve(session, &s.profile))
-        .unwrap_or_else(|| s.profile.system_prompt.clone())
+        .unwrap_or_else(|| s.profile.system_prompt.clone());
+    match cfg.modes_preamble.as_deref() {
+        Some(preamble) if !preamble.is_empty() => format!("{base}\n\n{preamble}"),
+        _ => base,
+    }
 }

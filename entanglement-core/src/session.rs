@@ -27,6 +27,7 @@ mod compaction_request;
 mod emit;
 mod fork;
 mod invoke_envelope;
+mod mode;
 mod ops;
 mod replay;
 mod replay_pending;
@@ -124,6 +125,13 @@ pub(crate) enum SessionCmd {
     /// runtime tool executor owns it (#59) and never reaches the session loop.
     ToolResult(String, Vec<ContentPart>, bool, Option<u64>, Option<i32>),
     SetAgent(String),
+    /// Switch the live permission mode by name (ADR-0207) — carried opaquely,
+    /// like the field it sets ([`Session::mode`]). Unlike `SetAgent`, core
+    /// holds no table to validate the name against, so this always succeeds:
+    /// see the handler for the always-succeed / stash-deferred shape it
+    /// borrows from [`SetGeneration`][SessionCmd::SetGeneration] and
+    /// [`SetAgent`][SessionCmd::SetAgent] respectively.
+    SetMode(String),
     /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
     /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
     /// `Session::llm` without restarting the engine.
@@ -272,6 +280,16 @@ pub(crate) async fn session_loop(
         session: session.clone(),
         agent: s.profile.name.clone(),
         profile_detail: Some(s.profile.detail()),
+    });
+    // Announce the starting mode unconditionally, mirroring `AgentChanged`
+    // above — a head that (re)connects learns the live posture without
+    // re-reading history. State only: the mode *notice* the model sees is
+    // built fresh every round from `s.mode` (see `stream.rs`), never pushed
+    // into `ctx` here — see `mode::mode_notice`'s doc for why a persisted
+    // push would desync live vs. replayed history.
+    let _ = events.send(OutEvent::ModeChanged {
+        session: session.clone(),
+        mode: s.mode.clone(),
     });
 
     // Session-start model pin (#323, ADR-0081): bind the starting profile's pin
@@ -528,6 +546,32 @@ pub(crate) async fn session_loop(
                         });
                     }
                 }
+            }
+            // Live mode switch (ADR-0207): deferred while a turn is live, same
+            // as `SetAgent` — but unlike `SetAgent` there is no registry to
+            // fail against (core carries no mode table), so this always
+            // succeeds, the `SetGeneration`/`SetToolOverlay` shape. Pure state:
+            // the model-visible notice is rebuilt from `s.mode` fresh every
+            // round (`stream.rs`), never pushed into `ctx` here — see
+            // `mode::mode_notice`'s doc for why, and how that keeps a switch
+            // free of the provider prompt-cache miss a mid-session tools/system
+            // edit would cost (ADR-0202).
+            Some(SessionCmd::SetMode(mode)) => {
+                if s.turn.is_some() || s.paused {
+                    stash_or_reject(
+                        &mut stash,
+                        SessionCmd::SetMode(mode),
+                        &session,
+                        &events,
+                        &s.seq,
+                    );
+                    continue;
+                }
+                s.mode = mode.clone();
+                let _ = events.send(OutEvent::ModeChanged {
+                    session: session.clone(),
+                    mode,
+                });
             }
             // Live model/provider switch (#218): re-resolve against the runtime's
             // catalog-backed resolver, rebuild the backend, and retarget the

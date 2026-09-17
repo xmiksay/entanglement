@@ -406,7 +406,11 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
     req.messages
         .iter()
         .rev()
-        .find(|m| m.role == MessageRole::User)
+        // Skip the trailing mode notice (ADR-0207 §9) — appended fresh to
+        // every request from `Session::mode`, never part of the real
+        // conversation, so it must never be mistaken for what the user
+        // actually said.
+        .find(|m| m.role == MessageRole::User && !m.text().starts_with("[mode: "))
         .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
         .unwrap_or("")
 }

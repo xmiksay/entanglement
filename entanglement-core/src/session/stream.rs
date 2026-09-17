@@ -10,10 +10,11 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
+use super::mode::mode_notice;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
-    ContentPart, LlmEvent, LlmRequest, StopReason, ToolCall, ToolSpec, Usage,
+    ContentPart, LlmEvent, LlmRequest, Message, StopReason, ToolCall, ToolSpec, Usage,
 };
 
 /// Outcome of one streamed round-trip.
@@ -64,13 +65,25 @@ pub(super) async fn stream_round(
     let mut shown = false;
     let stream_err: Option<String>;
     loop {
+        // The mode notice (ADR-0207 §9) rides as the *last* message of every
+        // request — after the real conversation, right before the model
+        // replies — rebuilt fresh from `s.mode` every round rather than ever
+        // pushed into `s.ctx`. See `mode::mode_notice`'s doc for why a
+        // persisted push would desync live vs. replayed history.
+        let messages_with_mode: Vec<Message> = s
+            .ctx
+            .messages()
+            .iter()
+            .cloned()
+            .chain(std::iter::once(Message::user(mode_notice(&s.mode))))
+            .collect();
         let req = LlmRequest {
             // The profile's prompt, or a per-turn `system_prompt_resolver`
             // override, resolved once by the caller (#310, ADR-0078).
             system,
             // A live model switch (#218) overrides the profile's pinned model.
             model: s.model.as_deref().or(s.profile.model.as_deref()),
-            messages: s.ctx.messages(),
+            messages: &messages_with_mode,
             tools: specs,
             generation,
             // Session-stable implicit-cache routing hint (#673): the same key

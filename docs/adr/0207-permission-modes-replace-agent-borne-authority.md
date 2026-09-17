@@ -235,14 +235,27 @@ ladder.
 
 The assembled system prompt carries a short **static** section describing what
 modes exist and what each forbids — identical for every session, so it sits in
-the cached prefix. The *current* mode arrives as an appended message at
-session start and on every switch. Because history only appends, a mode change
-invalidates nothing.
+the cached prefix. Core does not author that text (it does not own the mode
+table); the runtime supplies it as `EngineConfig::modes_preamble` and core
+folds it in once.
 
-Combined with a constant spawn roster and an always-advertised
-`propose_plan`, the advertised tools array no longer varies by agent or by
-mode: **`SetAgent` and `SetMode` are both free of prompt-cache invalidation**,
-which `SetAgent` is not today.
+The **current** mode rides as the last message of **every request**, rebuilt
+from the session's mode at request time — not at session start and on switch
+only, which needs special-casing, but uniformly every round, which does not.
+
+It is **never pushed into `Context`**. A persisted push desyncs live from
+replayed history: the log's pairing step queues only `Prompt`/`Stop` for the
+next persisted `Out` record, so a session's first prompt always folds into the
+context before any later record — a start-time notice would land *before* the
+prompt live and *after* it on replay. Deriving the notice at request time
+removes the hazard entirely, leaving replay only the session's mode to
+reconstruct, which is a plain overwrite fold.
+
+Because the notice is last and nothing before it moves, the cached prefix is
+untouched and a mode switch invalidates nothing. Combined with a constant
+spawn roster and an always-advertised `propose_plan`, the advertised tools
+array no longer varies by agent or by mode: **`SetAgent` and `SetMode` are both
+free of prompt-cache invalidation**, which `SetAgent` is not today.
 
 ### 10. `request_mode`
 

@@ -121,6 +121,10 @@ impl SessionView {
                 self.agent = agent;
                 true
             }
+            // Permission mode (ADR-0207, stage 3): protocol/session plumbing
+            // only — no view state to fold yet, and nothing enforces the mode
+            // this stage. A later stage wires TUI display/`/mode`.
+            OutEvent::ModeChanged { .. } => false,
             // The model switch (#218) shows in the app-global context bar, not the
             // per-session transcript; the ledger only notes which model the
             // next `Usage` rounds bill to (#560 `/cost` by-model split).
