@@ -72,6 +72,10 @@ impl SettingsEffects for LiveEffects<'_> {
                 })
                 .await
             }
+            ApplyStep::PermMode { mode } => {
+                let mode = mode.clone();
+                self.send(InMsg::SetMode { session, mode }).await
+            }
             ApplyStep::Generation {
                 overrides,
                 persist_for,

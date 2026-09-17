@@ -19,12 +19,16 @@
 
 mod describe;
 mod explore;
+mod kinds;
+mod pending;
 mod sections;
 mod tool_search;
 
 pub use describe::run_describe;
 pub(crate) use describe::spec_to_json;
 pub use explore::run_explore;
+pub use kinds::{peek_kind, KindsCtx};
+pub use pending::{build_pending_report, PendingSources};
 pub use sections::{index_rows, IndexRow};
 pub use tool_search::run_tool_search;
 
@@ -51,7 +55,13 @@ pub fn explore_spec(discovery: Discovery) -> ToolSpec {
              not describable). Always live — never stale, no need to re-check \
              after an mcp_enable. Results are grouped under a section header per \
              kind. Call describe on a name from the results to get its full \
-             schema{callable}."
+             schema{callable}. Pass kind: agents/skills/models/modes for those \
+             rosters instead (name+description each; a model's context window \
+             and pricing; what each permission mode permits), or kind: pending \
+             for everything still in flight in your whole spawn sub-tree — \
+             running sub-agents, background jobs/scripts, retained outputs, \
+             open questions, and parked approvals — the recovery path when a \
+             handle fell out of a compacted or resumed context."
         ),
         serde_json::json!({
             "type": "object",
@@ -59,14 +69,21 @@ pub fn explore_spec(discovery: Discovery) -> ToolSpec {
                 "filter": {
                     "type": "string",
                     "description": "Case-insensitive substring matched against \
-                        each entry's name and description. Omit to list \
-                        everything."
+                        each entry's name and description. Only applies to the \
+                        default tool catalog (ignored for agents/skills/models/\
+                        modes/pending). Omit to list everything."
                 },
                 "kind": {
                     "type": "string",
-                    "enum": ["tool", "mcp", "skill", "endpoint"],
-                    "description": "Restrict the results to one section. \
-                        Omit to list every kind."
+                    "enum": [
+                        "tool", "mcp", "skill", "endpoint", "tools",
+                        "agents", "skills", "models", "modes", "pending"
+                    ],
+                    "description": "tool/mcp/skill/endpoint restrict the \
+                        default tool catalog to one section (tools, or \
+                        omitting kind, shows every section). agents/skills/\
+                        models/modes list those rosters instead. pending lists \
+                        everything in flight for your spawn sub-tree."
                 }
             },
         }),
@@ -89,7 +106,11 @@ pub fn describe_spec(discovery: Discovery) -> ToolSpec {
             "Get the full schema for one or more tools found with explore — \
              byte-identical to how a natively-advertised tool's schema looks{then}. \
              Unknown names get a closest-match hint instead of a schema. Skills \
-             aren't describable (load them with load_skill instead)."
+             aren't describable (load them with load_skill instead). Also \
+             accepts qualified names from explore's agents/skills/models/modes \
+             kinds — agent:<name>, skill:<name>, model:<provider>/<id>, \
+             mode:<name> — each answering with its own description instead of \
+             a tool schema."
         ),
         serde_json::json!({
             "type": "object",
@@ -179,7 +200,7 @@ mod tests {
             .contains("looks, so you can call it immediately by its real name afterward. Unknown"));
         assert!(explore_spec(Discovery::Append)
             .description
-            .ends_with("full schema and make it directly callable."));
+            .contains("full schema and make it directly callable."));
         assert!(describe_spec(Discovery::NativeFirst)
             .description
             .contains("directly by its real name, or through invoke if you cannot."));
@@ -188,7 +209,28 @@ mod tests {
             .contains("call it through invoke."));
         assert!(explore_spec(Discovery::Invoke)
             .description
-            .ends_with("get its full schema."));
+            .contains("get its full schema."));
+    }
+
+    #[test]
+    fn explore_schema_advertises_every_kind_value() {
+        let schema = explore_spec(Discovery::Append).schema;
+        let values: Vec<&str> = schema["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("kind is an enum")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for expected in ["tools", "agents", "skills", "models", "modes", "pending"] {
+            assert!(values.contains(&expected), "{values:?} missing {expected}");
+        }
+    }
+
+    #[test]
+    fn describe_schema_documents_qualified_names() {
+        assert!(describe_spec(Discovery::Append)
+            .description
+            .contains("agent:<name>"));
     }
 
     #[test]

@@ -31,6 +31,12 @@ pub enum ApplyStep {
         model: String,
         persist_for: Option<String>,
     },
+    /// Permission mode (#560 P12, ADR-0207 §12) — session-only, no persist
+    /// flag: unlike a model pin, a mode has nothing to save per agent (it
+    /// isn't a profile fact any more, ADR-0207 §9).
+    PermMode {
+        mode: String,
+    },
     /// Persisted on the confirming `GenerationChanged` (ADR-0095).
     Generation {
         overrides: GenerationParams,
@@ -73,6 +79,7 @@ impl ApplyStep {
                 model,
                 persist_for,
             } => format!("model → {provider}/{model}{}", saved(persist_for, "pin")),
+            ApplyStep::PermMode { mode } => format!("mode → {mode}"),
             ApplyStep::Generation {
                 overrides: g,
                 persist_for,

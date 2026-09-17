@@ -1461,6 +1461,11 @@ async fn main() -> Result<()> {
     // session since the mode never changes mid-session).
     engine_config.system_prompt_resolver =
         Some(system_prompt_mode::resolver(advertising_state.clone()));
+    // The static "what modes exist" preamble (ADR-0207 §9/§12): the runtime
+    // owns the mode table, so it supplies this text; core folds it once into
+    // the cached system prompt. Must stay static across every session — see
+    // `mode::describe::modes_preamble`'s own doc for why.
+    engine_config.modes_preamble = Some(mode::describe::modes_preamble());
     // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
     // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
     // transformation (session-title generation today; compaction summary once

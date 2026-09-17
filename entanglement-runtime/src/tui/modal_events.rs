@@ -162,6 +162,24 @@ async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
         }
         return;
     }
+    if app.showing_mode_picker() {
+        let area = app.mode_picker_rect();
+        let len = app.available_modes().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            app.mode_picker_state().select(Some(idx));
+            if let Some(mode) = app.select_mode_picker() {
+                let _ = holly
+                    .send(InMsg::SetMode {
+                        session: app.active_session_id().clone(),
+                        mode,
+                    })
+                    .await;
+            }
+        } else if !rect_contains(area, column, row) {
+            app.close_mode_picker();
+        }
+        return;
+    }
     if app.showing_model_picker() {
         let area = app.model_picker_rect();
         let total: usize = app.available_models().iter().map(|(_, m)| m.len()).sum();
@@ -339,6 +357,7 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_sessions_modal()
         || app.showing_profile_picker()
         || app.showing_model_picker()
+        || app.showing_mode_picker()
         || app.showing_key_dialog()
         || app.showing_command_palette()
         || app.showing_resume_modal()
@@ -358,6 +377,8 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.profile_picker_next();
     } else if app.showing_model_picker() {
         app.model_picker_next();
+    } else if app.showing_mode_picker() {
+        app.mode_picker_next();
     } else if app.showing_key_dialog() {
         app.key_dialog_next();
     } else if app.showing_command_palette() {
@@ -389,6 +410,8 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.profile_picker_prev();
     } else if app.showing_model_picker() {
         app.model_picker_prev();
+    } else if app.showing_mode_picker() {
+        app.mode_picker_prev();
     } else if app.showing_key_dialog() {
         app.key_dialog_prev();
     } else if app.showing_command_palette() {
@@ -472,6 +495,48 @@ pub(super) async fn handle_model_picker_event(
         }
         KeyCode::PageUp => {
             app.model_picker_page_up(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Drive the `/mode` picker (#560 P12, ADR-0207 §12): `Enter` sends a live
+/// `InMsg::SetMode` for the active session — core cascades the switch over
+/// the session's whole spawn sub-tree (ADR-0207 §6).
+pub(super) async fn handle_mode_picker_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_mode_picker();
+        }
+        KeyCode::Enter => {
+            if let Some(mode) = app.select_mode_picker() {
+                let _ = holly
+                    .send(InMsg::SetMode {
+                        session: app.active_session_id().clone(),
+                        mode,
+                    })
+                    .await;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.mode_picker_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.mode_picker_prev();
+        }
+        KeyCode::PageDown => {
+            app.mode_picker_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.mode_picker_page_up(DIALOG_PAGE_SIZE);
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);

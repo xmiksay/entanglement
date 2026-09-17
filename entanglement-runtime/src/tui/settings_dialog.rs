@@ -20,7 +20,7 @@ mod tests;
 pub use apply::{run_plan, ApplyStep, SettingsEffects, ToolsChange};
 pub use aux::AuxTab;
 pub use generation::GenField;
-pub use session::{model_options, SessionTab};
+pub use session::{mode_names, model_options, SessionTab};
 pub use tools::{discovery_label, server_of, AdvertisingRows, ToolsTab};
 
 use entanglement_provider::GenerationParams;
@@ -65,6 +65,10 @@ pub enum Stage {
 pub enum RowId {
     Persist,
     Model,
+    /// Permission mode (#560 P12, ADR-0207 §12), Session tab. Distinct from
+    /// `Mode` below (the Tools tab's *tool-advertising* mode, full/tool_search
+    /// — an unrelated axis that happens to share the English word).
+    PermMode,
     Gen(GenField),
     Tool(usize),
     Mode,
@@ -212,6 +216,14 @@ impl SettingsDialog {
                     ..row(RowId::Model, "model", self.session.model_label())
                 },
                 note("PgUp/PgDn: jump provider"),
+                RowView {
+                    changed: self.session.mode_change().is_some(),
+                    ..row(
+                        RowId::PermMode,
+                        "mode",
+                        self.session.final_mode().to_string(),
+                    )
+                },
             ],
             Tab::Generation => self.generation_rows(agent),
             Tab::Tools => self.tools_rows(),
@@ -384,6 +396,7 @@ impl SettingsDialog {
                 self.session.cycle_model(forward);
                 self.refresh_caps();
             }
+            RowId::PermMode => self.session.cycle_mode(forward),
             RowId::Gen(f) => self.generation.cycle(f, forward),
             RowId::Tool(i) => self.tools.toggle(i),
             RowId::Mode => self.tools.adv.cycle_mode(),
@@ -468,6 +481,9 @@ impl SettingsDialog {
                 model,
                 persist_for: keep(0),
             });
+        }
+        if let Some(mode) = self.session.mode_change() {
+            plan.push(ApplyStep::PermMode { mode });
         }
         let (overrides, _) = self.generation.overrides();
         if overrides != GenerationParams::default() {

@@ -15,6 +15,16 @@ pub struct ModelOption {
     pub caps: ModelCaps,
 }
 
+/// The four built-in permission-mode names, in `Mode::describe::MODE_SUMMARIES`
+/// order (#560 P12, ADR-0207 §12) — the Session tab's mode row roster,
+/// mirroring [`model_options`]'s catalog-derived roster for the model row.
+pub fn mode_names() -> Vec<String> {
+    crate::mode::describe::MODE_SUMMARIES
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
 /// Every catalog model, in catalog order (the `/model` picker's order).
 pub fn model_options(catalog: &Catalog) -> Vec<ModelOption> {
     catalog
@@ -38,6 +48,13 @@ pub struct SessionTab {
     models: Vec<ModelOption>,
     model: usize,
     initial_model: usize,
+    // Permission mode (#560 P12, ADR-0207 §12): live, unlike the agent row —
+    // the natural slot ADR-0207 §9 left once `SetAgent` (and this tab's old
+    // agent-cycling) was retired. `modes` is the fixed four-name roster, not
+    // re-read from a catalog.
+    modes: Vec<String>,
+    mode: usize,
+    initial_mode: usize,
 }
 
 fn step(i: usize, len: usize, forward: bool) -> usize {
@@ -51,7 +68,13 @@ fn step(i: usize, len: usize, forward: bool) -> usize {
 }
 
 impl SessionTab {
-    pub fn new(agent: String, mut models: Vec<ModelOption>, current_model: (&str, &str)) -> Self {
+    pub fn new(
+        agent: String,
+        mut models: Vec<ModelOption>,
+        current_model: (&str, &str),
+        modes: Vec<String>,
+        current_mode: &str,
+    ) -> Self {
         let (provider, id) = current_model;
         let model = match models
             .iter()
@@ -67,16 +90,28 @@ impl SessionTab {
                 models.len() - 1
             }
         };
+        // An unrecognized current mode (a custom embedder table this dialog
+        // doesn't know) falls back to index 0 rather than pushing a synthetic
+        // entry the way an unknown model does — the roster is the fixed
+        // four-name list, not a catalog this dialog can extend.
+        let mode = modes.iter().position(|m| m == current_mode).unwrap_or(0);
         Self {
             agent,
             models,
             model,
             initial_model: model,
+            modes,
+            mode,
+            initial_mode: mode,
         }
     }
 
     pub fn cycle_model(&mut self, forward: bool) {
         self.model = step(self.model, self.models.len(), forward);
+    }
+
+    pub fn cycle_mode(&mut self, forward: bool) {
+        self.mode = step(self.mode, self.modes.len(), forward);
     }
 
     /// Jump to the first model of the next/previous provider — a long flat
@@ -121,10 +156,23 @@ impl SessionTab {
         format!("{}/{}", m.provider, m.model)
     }
 
+    pub fn mode_change(&self) -> Option<String> {
+        (self.mode != self.initial_mode).then(|| self.modes[self.mode].clone())
+    }
+
+    /// The mode the session ends up on: the picked mode, or the current one
+    /// if untouched.
+    pub fn final_mode(&self) -> &str {
+        &self.modes[self.mode]
+    }
+
     pub fn pending(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((p, m)) = self.model_change() {
             out.push(format!("model → {p}/{m}"));
+        }
+        if let Some(m) = self.mode_change() {
+            out.push(format!("mode → {m}"));
         }
         out
     }

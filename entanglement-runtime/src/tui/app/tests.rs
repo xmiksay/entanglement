@@ -540,6 +540,36 @@ fn select_model_picker_maps_flat_index_to_provider_and_model() {
     }
 }
 
+/// #560 P12, ADR-0207 §12: `/mode`'s picker pre-selects the session's
+/// current mode, cycles over the fixed four-name roster, and — unlike the
+/// now-read-only `/agent` picker — resolving a selection closes it and hands
+/// back the picked name for the caller to send as `InMsg::SetMode`.
+#[test]
+fn mode_picker_preselects_current_mode_and_cycles_the_fixed_roster() {
+    let mut app = App::new_for_test(SessionId::new("test"));
+    // `App::new_for_test`'s session starts in "build" (session_view.rs's own
+    // default before any real `ModeChanged` is folded in).
+    let modes: Vec<String> = app
+        .available_modes()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(modes, vec!["research", "plan", "build", "auto"]);
+
+    app.toggle_mode_picker();
+    assert!(app.showing_mode_picker());
+    assert_eq!(
+        app.mode_picker_state().selected(),
+        Some(2),
+        "preselects build"
+    );
+
+    app.mode_picker_next();
+    assert_eq!(app.mode_picker_state().selected(), Some(3));
+    assert_eq!(app.select_mode_picker(), Some("auto".to_string()));
+    assert!(!app.showing_mode_picker(), "selecting closes the picker");
+}
+
 #[test]
 fn model_changed_event_updates_the_context_bar() {
     // A live switch (#218) surfaces `ModelChanged`; the head updates its global

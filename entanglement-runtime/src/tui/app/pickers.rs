@@ -372,6 +372,97 @@ impl App {
         }
     }
 
+    pub fn showing_mode_picker(&self) -> bool {
+        self.showing_mode_picker
+    }
+
+    pub fn mode_picker_state(&mut self) -> &mut ListState {
+        &mut self.mode_picker_state
+    }
+
+    pub fn available_modes(&self) -> &[ProfileInfo] {
+        &self.available_modes
+    }
+
+    /// Open the picker with the session's current mode highlighted, or
+    /// close it — `/mode`'s own toggle (#560 P12, ADR-0207 §12).
+    pub fn toggle_mode_picker(&mut self) {
+        self.showing_mode_picker = !self.showing_mode_picker;
+        if self.showing_mode_picker {
+            let mode = self.mode().to_string();
+            let current_index = self
+                .available_modes
+                .iter()
+                .position(|m| m.name == mode)
+                .unwrap_or(0);
+            self.mode_picker_state.select(Some(current_index));
+        }
+        self.mark_dirty();
+    }
+
+    pub fn close_mode_picker(&mut self) {
+        self.showing_mode_picker = false;
+        self.mark_dirty();
+    }
+
+    pub fn mode_picker_next(&mut self) {
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let next = (selected + 1) % self.available_modes.len();
+            self.mode_picker_state.select(Some(next));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_prev(&mut self) {
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let prev = if selected == 0 {
+                self.available_modes.len() - 1
+            } else {
+                selected - 1
+            };
+            self.mode_picker_state.select(Some(prev));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_page_down(&mut self, n: usize) {
+        if self.available_modes.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let last = self.available_modes.len() - 1;
+            self.mode_picker_state
+                .select(Some((selected + n).min(last)));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_page_up(&mut self, n: usize) {
+        if self.available_modes.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.mode_picker_state.selected() {
+            self.mode_picker_state
+                .select(Some(selected.saturating_sub(n)));
+            self.mark_dirty();
+        }
+    }
+
+    /// Resolve the highlighted row to its mode name and close the picker.
+    /// `None` when nothing is selected (an empty roster, which never
+    /// happens for the fixed four-mode list but mirrors every other
+    /// picker's defensive shape).
+    pub fn select_mode_picker(&mut self) -> Option<String> {
+        let name = self
+            .mode_picker_state
+            .selected()
+            .and_then(|i| self.available_modes.get(i))
+            .map(|m| m.name.clone())?;
+        self.showing_mode_picker = false;
+        self.mark_dirty();
+        Some(name)
+    }
+
     pub fn showing_resume_modal(&self) -> bool {
         self.showing_resume_modal
     }

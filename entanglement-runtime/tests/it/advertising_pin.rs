@@ -347,3 +347,28 @@ async fn full_array_survives_a_removed_tool_whose_call_declines() {
     });
     assert_eq!(is_error, Some(true), "{events:#?}");
 }
+
+/// #560 P12, ADR-0207 §12: verified against the **rendered** request, not
+/// the source — `explore`'s new `kind` enum values and `describe`'s
+/// qualified-name note must actually reach round 1 of a real
+/// `tool_search`-mode session, since both are kernel members
+/// (`TOOL_SEARCH_KERNEL`) advertised unconditionally. (`agent`'s `model`
+/// parameter is covered the same way in `agent_model.rs`'s harness, which
+/// wires `cfg.tool_specs` with the real agent roster — this harness doesn't.)
+#[tokio::test]
+async fn explore_kind_additions_reach_round_one_of_the_rendered_request() {
+    let h = harness("tail", "t", vec![text()]);
+    h.turn("one").await;
+    let rec = h.requests();
+    let tools = &rec[0].tools;
+    for kind in ["agents", "skills", "models", "modes", "pending"] {
+        assert!(
+            tools.contains(kind),
+            "explore kind enum missing {kind}: {tools}"
+        );
+    }
+    assert!(
+        tools.contains("agent:<name>"),
+        "describe's qualified-name note missing: {tools}"
+    );
+}

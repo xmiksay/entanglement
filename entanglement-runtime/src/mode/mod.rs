@@ -19,6 +19,7 @@
 //! by adding a longer, more specific one rather than by removing it.
 
 mod builtin;
+pub mod describe;
 mod limits;
 mod rules;
 mod tune;

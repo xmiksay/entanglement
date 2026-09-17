@@ -25,7 +25,7 @@ mod orchestration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{Holly, PermissionProfile, ProfileRegistry, SessionId};
+use entanglement_core::{Catalog, Holly, PermissionProfile, ProfileRegistry, SessionId};
 
 use crate::agent_registry::AgentRegistry;
 use crate::cancel::CancelRegistry;
@@ -175,6 +175,12 @@ pub(super) struct LadderCtx {
     pub hooks: Arc<Hooks>,
     pub validation: Arc<crate::arg_validate::LoopBreaker>,
     pub denials: Arc<crate::run_limits::DenialTracker>,
+    /// The active provider/model catalog (#560 P12, ADR-0207 §12): read by
+    /// `explore`/`describe`'s `models` kind and by `agent`'s `model`
+    /// parameter validation. `None` — every lean/test wrapper with no
+    /// catalog wired — degrades both to "no catalog configured" rather than
+    /// panicking.
+    pub catalog: Option<Arc<Catalog>>,
 }
 
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and

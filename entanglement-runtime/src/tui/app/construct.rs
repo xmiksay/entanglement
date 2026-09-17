@@ -105,6 +105,20 @@ impl App {
         resume_state.select(Some(0));
         let available_sessions = Vec::new();
 
+        // The four built-in permission modes (#560 P12, ADR-0207 §12) — a
+        // fixed roster, unlike `available_profiles`/`available_models`,
+        // since `skutter` compiles them in rather than reading them from a
+        // registry (ADR-0207 §2: "the table is code, not configuration").
+        let available_modes: Vec<ProfileInfo> = crate::mode::describe::MODE_SUMMARIES
+            .iter()
+            .map(|(name, summary)| ProfileInfo {
+                name: name.to_string(),
+                description: summary.to_string(),
+            })
+            .collect();
+        let mut mode_picker_state = ListState::default();
+        mode_picker_state.select(Some(0));
+
         Self {
             sessions: SessionRegistry::new(initial_session),
             dirty: true,
@@ -141,6 +155,9 @@ impl App {
                 context_window: None,
             },
             active_provider: String::new(),
+            showing_mode_picker: false,
+            mode_picker_state,
+            available_modes,
             leader_handler: LeaderKeyHandler::new(),
             showing_help: false,
             help_scroll: 0,

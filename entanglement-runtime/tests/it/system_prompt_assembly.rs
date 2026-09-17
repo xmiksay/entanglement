@@ -194,3 +194,53 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
         "no parent-prompt inheritance"
     );
 }
+
+/// ADR-0207 §9/§12: `EngineConfig::modes_preamble` (the runtime's static
+/// "what modes exist" text, `mode::describe::modes_preamble`) is folded into
+/// the cached system prompt once and is byte-identical across two entirely
+/// independent sessions — it must never vary per session/turn, since it sits
+/// in the provider's cached prefix.
+#[tokio::test]
+async fn modes_preamble_reaches_the_system_prompt_identically_across_sessions() {
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_factory = seen.clone();
+    let preamble = entanglement_runtime::mode::describe::modes_preamble();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(RecordingLlm {
+                seen: seen_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        modes_preamble: Some(preamble.clone()),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut sub = holly.subscribe();
+
+    for id in ["s1", "s2"] {
+        holly
+            .send(InMsg::prompt(SessionId::new(id), "task"))
+            .await
+            .unwrap();
+    }
+    let mut done = 0;
+    while done < 2 {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+            Ok(Ok(OutEvent::Done { .. })) => done += 1,
+            Ok(Ok(_)) => {}
+            other => panic!("turn did not finish: {other:?}"),
+        }
+    }
+
+    let systems = seen.lock().unwrap().clone();
+    assert_eq!(systems.len(), 2);
+    for system in &systems {
+        assert!(system.contains(&preamble), "{system}");
+    }
+    // Not just "both contain it" — the trailing preamble text itself must be
+    // byte-identical between the two sessions.
+    let suffix = |s: &str| s[s.rfind(&preamble).expect("preamble present")..].to_string();
+    assert_eq!(suffix(&systems[0]), suffix(&systems[1]));
+}

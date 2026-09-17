@@ -29,7 +29,13 @@ fn tool(name: &str, profile_default: bool) -> SessionToolRow {
 }
 
 fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialog {
-    let session = SessionTab::new("general".to_string(), options(), (provider, model));
+    let session = SessionTab::new(
+        "general".to_string(),
+        options(),
+        (provider, model),
+        mode_names(),
+        entanglement_core::DEFAULT_MODE,
+    );
     let tools = ToolsTab::new(
         vec![
             tool("read", true),
@@ -495,6 +501,7 @@ fn everything_changed() -> SettingsDialog {
 fn kind(step: &ApplyStep) -> &'static str {
     match step {
         ApplyStep::Model { .. } => "model",
+        ApplyStep::PermMode { .. } => "perm-mode",
         ApplyStep::Generation { .. } => "generation",
         ApplyStep::Tools(_) => "tools",
         ApplyStep::Repin { .. } => "repin",

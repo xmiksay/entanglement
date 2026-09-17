@@ -176,7 +176,7 @@ pub async fn run_propose_plan(
 
     // Register before emitting so the inbound router can never resolve the
     // decision ahead of this waiter (#156).
-    let rx = pending.register(&session, &request_id);
+    let rx = pending.register(&session, &request_id, "plan", resolution.rel_path.clone());
 
     // A standard `ToolRequest` — the head renders the usual approve/reject
     // prompt. `input` carries the *resolved* content (not the model's raw

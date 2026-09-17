@@ -590,7 +590,7 @@ async fn await_approval(
 ) -> Approval {
     // Register before emitting so the inbound router can never resolve the
     // decision ahead of this waiter (#156).
-    let rx = pending.register(session, request_id);
+    let rx = pending.register(session, request_id, "rhai", tool.to_string());
     // Mint a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
     holly.emit_for_session(session, |seq| OutEvent::ToolRequest {
         session: session.clone(),

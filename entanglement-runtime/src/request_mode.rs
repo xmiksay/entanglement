@@ -159,7 +159,7 @@ pub async fn run_request_mode(
 
     // Past every refusal: force-park, always — approval is this tool's own
     // semantics, exactly like `propose_plan`.
-    let rx = pending.register(&session, &request_id);
+    let rx = pending.register(&session, &request_id, "mode", requested.clone());
     holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
         seq,

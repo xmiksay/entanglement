@@ -14,7 +14,8 @@ pub use popups::{
     draw_slash_autocomplete, draw_which_key_popup,
 };
 pub use sessions::{
-    draw_model_picker, draw_profile_picker, draw_resume_modal, draw_sessions_modal,
+    draw_mode_picker, draw_model_picker, draw_profile_picker, draw_resume_modal,
+    draw_sessions_modal,
 };
 pub use settings::{draw_settings_dialog, settings_tab_at};
 pub use tool_popups::{draw_mcp_panel, draw_session_tools_dialog, draw_tools_view};

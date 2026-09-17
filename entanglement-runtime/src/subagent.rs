@@ -237,6 +237,14 @@ fn agent_input_schema(targets: &[&AgentProfile]) -> serde_json::Value {
                     waiting for the sub-agent's answer. Poll the handle with \
                     `poll` to collect it once it's done. Default false (blocks \
                     until the sub-agent finishes)."
+            },
+            "model": {
+                "type": "string",
+                "description": "Catalog model id to run the sub-agent on \
+                    (see explore kind: models for the active roster). Omit \
+                    to inherit the parent's model. An unknown id refuses the \
+                    spawn and names the valid ids instead of silently \
+                    falling back."
             }
         },
         "required": ["agent", "prompt"]
@@ -262,6 +270,7 @@ enum LaunchMode {
 /// `events` must be a receiver subscribed *before* the [`InMsg::Spawn`] is sent
 /// (the caller subscribes synchronously), so the child's events — including its
 /// terminal `Done` — cannot race ahead of the watcher.
+#[allow(clippy::too_many_arguments)]
 pub async fn launch_subagent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -270,6 +279,11 @@ pub async fn launch_subagent(
     parent: SessionId,
     request_id: String,
     input: String,
+    // The child's model pin (#560 P12, ADR-0207 §12): resolved + validated
+    // against the catalog by the caller (`orchestration::spawn`) before this
+    // task was even spawned, so a refusal never mints a child — see
+    // `permission::resolve_model`. `None` inherits, exactly as before.
+    model_pin: Option<(String, String)>,
 ) {
     launch(
         holly,
@@ -280,6 +294,7 @@ pub async fn launch_subagent(
         request_id,
         input,
         LaunchMode::Detached,
+        model_pin,
     )
     .await;
 }
@@ -289,6 +304,7 @@ pub async fn launch_subagent(
 /// ([`collect_child_answer`]) and fold its answer + elapsed straight into the
 /// `ToolOutput`. Still records into `registry`, so a parent `Stop` while parked
 /// leaves the child collectable via `poll`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -297,6 +313,7 @@ pub async fn run_agent(
     parent: SessionId,
     request_id: String,
     input: String,
+    model_pin: Option<(String, String)>,
 ) {
     launch(
         holly,
@@ -307,6 +324,7 @@ pub async fn run_agent(
         request_id,
         input,
         LaunchMode::AwaitAnswer,
+        model_pin,
     )
     .await;
 }
@@ -326,8 +344,9 @@ async fn launch(
     request_id: String,
     input: String,
     mode: LaunchMode,
+    model_pin: Option<(String, String)>,
 ) {
-    let (agent, prompt, _background) = parse_input(&input);
+    let (agent, prompt, _background, _model) = parse_input(&input);
     let child = SessionId::new(holly.next_id(IdKind::Session));
     // Register *before* sending Spawn so a poll can never precede the handle
     // (the parent only learns the id from the reply below, which comes after).
@@ -356,6 +375,21 @@ async fn launch(
         )
         .await;
         return;
+    }
+    // The child's model pin (#560 P12, ADR-0207 §12): sent right after
+    // `Spawn` so it lands before the child's first turn. Already validated
+    // against the catalog by the caller — a `SetModel` failure here (e.g. a
+    // key that vanished between validation and this send) surfaces as the
+    // child's own `OutEvent::Error`, same as any live `SetModel`; it does
+    // not unwind the spawn, since the child session now genuinely exists.
+    if let Some((provider, model)) = model_pin {
+        let _ = holly
+            .send(InMsg::SetModel {
+                session: child.clone(),
+                provider,
+                model,
+            })
+            .await;
     }
 
     // Non-blocking: hand the handle back now — the parent turn continues instead
@@ -561,11 +595,19 @@ pub fn is_background(input: &str) -> bool {
     parse_input(input).2
 }
 
+/// The requested `model` (#560 P12, ADR-0207 §12), if any — read by the tool
+/// executor to validate/resolve it against the catalog before a child is
+/// minted, mirroring [`target_agent`]. `None` means inherit, exactly as
+/// before this parameter existed.
+pub fn target_model(input: &str) -> Option<String> {
+    parse_input(input).3
+}
+
 /// Parse the `agent` tool input. Providers send a JSON object `{"agent": …,
-/// "prompt": …, "background": …}`; scripted/raw backends may send a bare
-/// string, which is treated as the prompt under the default sub-agent profile
-/// with `background` defaulting to `false`.
-fn parse_input(input: &str) -> (String, String, bool) {
+/// "prompt": …, "background": …, "model": …}`; scripted/raw backends may send
+/// a bare string, which is treated as the prompt under the default sub-agent
+/// profile with `background` defaulting to `false` and no `model` override.
+fn parse_input(input: &str) -> (String, String, bool, Option<String>) {
     match serde_json::from_str::<serde_json::Value>(input) {
         Ok(v) => {
             let agent = v
@@ -583,9 +625,14 @@ fn parse_input(input: &str) -> (String, String, bool) {
                 .get("background")
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false);
-            (agent, prompt, background)
+            let model = v
+                .get("model")
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+                .map(str::to_string);
+            (agent, prompt, background, model)
         }
-        Err(_) => (DEFAULT_SUBAGENT.to_string(), input.to_string(), false),
+        Err(_) => (DEFAULT_SUBAGENT.to_string(), input.to_string(), false, None),
     }
 }
 
@@ -842,32 +889,43 @@ mod tests {
 
     #[test]
     fn parse_input_reads_json_object() {
-        let (agent, prompt, background) = parse_input(r#"{"agent":"build","prompt":"do it"}"#);
+        let (agent, prompt, background, model) =
+            parse_input(r#"{"agent":"build","prompt":"do it"}"#);
         assert_eq!(agent, "build");
         assert_eq!(prompt, "do it");
         assert!(!background);
+        assert_eq!(model, None);
     }
 
     #[test]
     fn parse_input_reads_background_flag() {
-        let (_, _, background) =
+        let (_, _, background, _) =
             parse_input(r#"{"agent":"build","prompt":"do it","background":true}"#);
         assert!(background);
     }
 
     #[test]
+    fn parse_input_reads_model_override() {
+        let (_, _, _, model) =
+            parse_input(r#"{"agent":"build","prompt":"do it","model":"glm-5.3"}"#);
+        assert_eq!(model, Some("glm-5.3".to_string()));
+        assert_eq!(target_model(r#"{"prompt":"x"}"#), None);
+    }
+
+    #[test]
     fn parse_input_defaults_agent_to_general() {
-        let (agent, prompt, _) = parse_input(r#"{"prompt":"look around"}"#);
+        let (agent, prompt, _, _) = parse_input(r#"{"prompt":"look around"}"#);
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "look around");
     }
 
     #[test]
     fn parse_input_falls_back_to_raw_string() {
-        let (agent, prompt, background) = parse_input("just a prompt");
+        let (agent, prompt, background, model) = parse_input("just a prompt");
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "just a prompt");
         assert!(!background);
+        assert_eq!(model, None);
     }
 
     #[test]
@@ -885,6 +943,15 @@ mod tests {
         assert!(enum_names.iter().any(|n| n == "general"));
         assert!(enum_names.iter().any(|n| n == "debug"));
         assert!(enum_names.iter().any(|n| n == "plan"));
+        // #560 P12, ADR-0207 §12: `model` rides the same spec every session
+        // advertises unconditionally (`agent` is a `TOOL_SEARCH_KERNEL`
+        // member) — verified here against the exact schema a session
+        // receives, not a separate description.
+        assert!(
+            specs[0].schema["properties"]["model"].is_object(),
+            "{:?}",
+            specs[0].schema
+        );
     }
 
     #[test]

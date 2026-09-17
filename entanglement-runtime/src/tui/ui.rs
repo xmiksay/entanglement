@@ -9,7 +9,7 @@ use ratatui::{
 use crate::tui::app::App;
 use crate::tui::input_panel;
 use crate::tui::keybindings::LeaderState;
-use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
+use crate::tui::modals::{self, draw_mode_picker, draw_model_picker, draw_profile_picker};
 
 pub(crate) mod alerts;
 mod sidebar;
@@ -114,6 +114,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.showing_model_picker() {
         draw_model_picker(f, app);
+    }
+
+    if app.showing_mode_picker() {
+        draw_mode_picker(f, app);
     }
 
     if app.showing_key_dialog() {

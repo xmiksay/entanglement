@@ -14,6 +14,7 @@ use crate::seam;
 use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
 
+use super::kinds::{self, KindsCtx, TopKind};
 use super::runtime_owned_specs;
 use super::sections::{kind_of, render_sections, Kind};
 
@@ -52,18 +53,22 @@ fn one_line(description: &str) -> String {
 
 /// Parse the optional `{"filter": "...", "kind": "..."}` input, tolerating an
 /// empty body (no filter, no kind) — `explore` is read-only and low-stakes,
-/// so a malformed filter or an unrecognized `kind` value both degrade to
-/// "show everything" rather than a hard error.
-fn parse_input(input: &str) -> (Option<String>, Option<Kind>) {
+/// so a malformed filter degrades to "show everything" rather than a hard
+/// error. `kind` always resolves to *some* [`TopKind`] — an unrecognized
+/// string falls through to [`TopKind::Tools`]`(None)`, the same "show
+/// everything" degrade the tool-index sub-filter has always had (ADR-0207
+/// §12: `agents`/`skills`/`models`/`modes` are new top-level values; the
+/// existing `tool`/`mcp`/`skill`/`endpoint` sub-filters are unchanged).
+fn parse_input(input: &str) -> (Option<String>, TopKind) {
     if input.trim().is_empty() {
-        return (None, None);
+        return (None, TopKind::Tools(None));
     }
     let Ok(parsed) = serde_json::from_str::<Input>(input) else {
-        return (None, None);
+        return (None, TopKind::Tools(None));
     };
     let filter = parsed.filter.map(|f| f.to_ascii_lowercase());
-    let kind = parsed.kind.as_deref().and_then(Kind::parse);
-    (filter, kind)
+    let top = TopKind::parse(parsed.kind.as_deref());
+    (filter, top)
 }
 
 /// Build every row, apply the filter, sort by name — the pure core of
@@ -125,6 +130,9 @@ pub(super) fn build_rows(
 
 /// Dispatch `explore`: parse, build, reply. Always-`Allow`/non-maskable per
 /// ADR-0196 §4 (enforced by the executor's dispatch ladder, not here).
+/// `kinds_ctx` answers the four non-tool `kind`s (ADR-0207 §12); `pending` is
+/// handled earlier, at the ladder (see [`super::kinds::peek_kind`]), since it
+/// needs state this function's signature doesn't carry.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_explore(
     holly: &Holly,
@@ -132,21 +140,30 @@ pub async fn run_explore(
     avail: &AvailableMcp,
     active: &ActiveServers,
     skills: &SkillRegistry,
+    kinds_ctx: &KindsCtx,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    let (filter, kind) = parse_input(&input);
-    let rows = build_rows(
-        registry,
-        avail,
-        active,
-        skills,
-        &session,
-        filter.as_deref(),
-        kind,
-    );
-    let output = render_sections(rows);
+    let (filter, top) = parse_input(&input);
+    let output = match top {
+        TopKind::Agents => kinds::agents_index(kinds_ctx),
+        TopKind::Skills => kinds::skills_index(kinds_ctx),
+        TopKind::Models => kinds::models_index(kinds_ctx),
+        TopKind::Modes => kinds::modes_index(kinds_ctx),
+        TopKind::Tools(kind) => {
+            let rows = build_rows(
+                registry,
+                avail,
+                active,
+                skills,
+                &session,
+                filter.as_deref(),
+                kind,
+            );
+            render_sections(rows)
+        }
+    };
     seam::reply(holly, session, request_id, output, false).await;
 }
 
@@ -385,25 +402,39 @@ mod tests {
 
     #[test]
     fn parse_input_is_lenient_and_case_folds() {
-        assert_eq!(parse_input(""), (None, None));
-        assert_eq!(parse_input("{}"), (None, None));
+        assert_eq!(parse_input(""), (None, TopKind::Tools(None)));
+        assert_eq!(parse_input("{}"), (None, TopKind::Tools(None)));
         assert_eq!(
             parse_input(r#"{"filter":"Git"}"#),
-            (Some("git".to_string()), None)
+            (Some("git".to_string()), TopKind::Tools(None))
         );
-        assert_eq!(parse_input("not json"), (None, None));
+        assert_eq!(parse_input("not json"), (None, TopKind::Tools(None)));
     }
 
     #[test]
     fn parse_input_reads_kind_case_insensitively_and_ignores_garbage() {
-        assert_eq!(parse_input(r#"{"kind":"MCP"}"#), (None, Some(Kind::Mcp)));
+        assert_eq!(
+            parse_input(r#"{"kind":"MCP"}"#),
+            (None, TopKind::Tools(Some(Kind::Mcp)))
+        );
         assert_eq!(
             parse_input(r#"{"filter":"search","kind":"tool"}"#),
-            (Some("search".to_string()), Some(Kind::Tool))
+            (Some("search".to_string()), TopKind::Tools(Some(Kind::Tool)))
         );
         // An unrecognized kind degrades to "show everything", same lenient
         // posture as a malformed filter.
-        assert_eq!(parse_input(r#"{"kind":"bogus"}"#), (None, None));
+        assert_eq!(
+            parse_input(r#"{"kind":"bogus"}"#),
+            (None, TopKind::Tools(None))
+        );
+    }
+
+    #[test]
+    fn parse_input_recognizes_the_new_top_level_kinds() {
+        assert_eq!(parse_input(r#"{"kind":"agents"}"#), (None, TopKind::Agents));
+        assert_eq!(parse_input(r#"{"kind":"Skills"}"#), (None, TopKind::Skills));
+        assert_eq!(parse_input(r#"{"kind":"models"}"#), (None, TopKind::Models));
+        assert_eq!(parse_input(r#"{"kind":"modes"}"#), (None, TopKind::Modes));
     }
 
     #[test]

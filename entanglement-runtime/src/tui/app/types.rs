@@ -43,6 +43,8 @@ pub struct ModalClickAreas {
     pub profile_picker: Rect,
     /// `/model` picker.
     pub model_picker: Rect,
+    /// `/mode` picker (#560 P12, ADR-0207 §12).
+    pub mode_picker: Rect,
     /// `/key` dialog — the provider list on the `PickProvider` stage only.
     pub key_dialog: Rect,
     /// Bare `/enable` session-tools checklist (#539).

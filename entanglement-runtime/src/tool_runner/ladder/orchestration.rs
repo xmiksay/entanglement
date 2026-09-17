@@ -33,13 +33,21 @@ pub(super) async fn spawn(
     // `Done` can't race ahead of the watcher.
     let blocking = !crate::subagent::is_background(&input);
     let target = crate::subagent::target_agent(&input);
+    // The child's optional model override (#560 P12, ADR-0207 §12): resolved
+    // + validated against the catalog *before* any child is minted, exactly
+    // like the agent-target check below — an unknown id refuses the whole
+    // spawn rather than silently falling back to inherit.
+    let model_request = crate::subagent::target_model(&input);
+    let model_result =
+        crate::permission::resolve_model(model_request.as_deref(), ctx.catalog.as_deref());
     let refusal = {
         let profiles = ctx
             .profiles
             .read()
             .expect("agent-profile registry lock poisoned");
         spawn_refusal(&target, &profiles)
-    };
+    }
+    .or_else(|| model_result.as_ref().err().cloned());
     // The session's own mode bounds its spawn (ADR-0207
     // §6: mode applies to the whole spawn sub-tree, so
     // there is no per-spawn override to consult) — an
@@ -64,6 +72,10 @@ pub(super) async fn spawn(
     };
     match spawn_result {
         Ok(()) => {
+            // `refusal` was `None` here, so `model_result` is `Ok` too — the
+            // two checks above refuse together (`refusal`'s `or_else` folds
+            // a model error in), never independently.
+            let model_pin = model_result.ok().flatten();
             let child_events = ctx.holly.subscribe();
             let registry = ctx.registry.clone();
             let retained = ctx.retained.clone();
@@ -82,6 +94,7 @@ pub(super) async fn spawn(
                         session,
                         request_id,
                         input,
+                        model_pin,
                     )
                     .await;
                 } else {
@@ -93,6 +106,7 @@ pub(super) async fn spawn(
                         session,
                         request_id,
                         input,
+                        model_pin,
                     )
                     .await;
                 }
@@ -273,6 +287,43 @@ pub(super) async fn discover(
     let mcp_scopes = ctx.mcp_scopes.clone();
     let advertising = ctx.advertising.clone();
     let holly = ctx.holly.clone();
+    // `explore(kind: "pending")` (#560 P12, ADR-0207 §12) forks here, before
+    // either the tool-index path or `KindsCtx` build below: it needs the
+    // engine-wide job/script/retained/approval/question registries this
+    // ladder already holds, which neither `run_explore`'s nor
+    // `KindsCtx`'s shape carries — those cover only the *static* non-tool
+    // kinds (agents/skills/models/modes).
+    if tool == EXPLORE_TOOL && discover::peek_kind(&input).as_deref() == Some("pending") {
+        let src_agents = ctx.registry.clone();
+        let src_jobs = ctx.jobs.clone();
+        let src_scripts = ctx.scripts.clone();
+        let src_retained = ctx.retained.clone();
+        let src_pending = ctx.pending.clone();
+        let src_questions = ctx.open_questions.clone();
+        tokio::spawn(async move {
+            let src = discover::PendingSources {
+                agents: &src_agents,
+                jobs: &src_jobs,
+                scripts: &src_scripts,
+                retained: &src_retained,
+                pending: &src_pending,
+                questions: &src_questions,
+            };
+            let output = discover::build_pending_report(&src, &session);
+            seam::reply(&holly, session, request_id, output, false).await;
+        });
+        return;
+    }
+    let kinds_ctx = discover::KindsCtx {
+        profiles: ctx
+            .profiles
+            .read()
+            .expect("agent-profile registry lock poisoned")
+            .clone(),
+        skills: skills_snapshot.clone(),
+        catalog: ctx.catalog.clone(),
+        modes: ctx.mode_table.clone(),
+    };
     if tool == EXPLORE_TOOL {
         tokio::spawn(async move {
             discover::run_explore(
@@ -281,6 +332,7 @@ pub(super) async fn discover(
                 &mcp_avail,
                 &mcp_active,
                 skills_snapshot.as_ref(),
+                &kinds_ctx,
                 session,
                 request_id,
                 input,
@@ -295,6 +347,7 @@ pub(super) async fn discover(
                 skills_snapshot.as_ref(),
                 mcp_scopes.as_deref(),
                 &advertising,
+                Some(&kinds_ctx),
                 session,
                 request_id,
                 input,

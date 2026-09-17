@@ -58,6 +58,47 @@ pub fn spawn_refusal(target: &str, registry: &ProfileRegistry) -> Option<String>
     }
 }
 
+/// Resolve an `agent` call's optional `model` parameter against the active
+/// catalog (#560 P12, ADR-0207 §12): a spawning model may pick the child's
+/// model, free-string since it doesn't know provider prefixes — the first
+/// catalog entry whose model id matches wins. `Ok(None)` means "omitted,
+/// inherit exactly as before"; `Ok(Some((provider, model)))` is what the
+/// caller sends as `InMsg::SetModel` right after `InMsg::Spawn`. `Err`
+/// refuses the whole spawn (mirroring [`spawn_refusal`]'s "no silent
+/// substitution" posture) rather than silently falling back to inherit,
+/// naming every valid id so the model can retry correctly.
+pub fn resolve_model(
+    requested: Option<&str>,
+    catalog: Option<&entanglement_core::Catalog>,
+) -> Result<Option<(String, String)>, String> {
+    let Some(model) = requested else {
+        return Ok(None);
+    };
+    let Some(catalog) = catalog else {
+        return Err(format!(
+            "sub-agent spawn refused: model `{model}` requested but no catalog is configured"
+        ));
+    };
+    if let Some(provider) = catalog
+        .providers
+        .iter()
+        .find(|p| p.models.iter().any(|m| m.id == model))
+    {
+        return Ok(Some((provider.name.clone(), model.to_string())));
+    }
+    let mut ids: Vec<&str> = catalog
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Err(format!(
+        "sub-agent spawn refused: unknown model `{model}` — valid ids: {}",
+        ids.join(", ")
+    ))
+}
+
 /// Clamp an already-resolved permission by the global config base (#172,
 /// ADR-0047). The effective grade is the least-privileged of the agent-chain
 /// result and the config's rule for the `tool` call — so the user/repo config
@@ -314,6 +355,48 @@ mod tests {
         let mut reg = crate::agents::built_in_registry().expect("built-in agents must parse");
         reg.insert(profile("worker"));
         assert!(spawn_refusal("worker", &reg).is_none());
+    }
+
+    fn test_catalog() -> entanglement_core::Catalog {
+        serde_yaml::from_str(
+            "providers:\n\
+             \x20\x20- name: zai\n\
+             \x20\x20\x20\x20default_model: glm-5.3\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.3\n\
+             \x20\x20- name: openai\n\
+             \x20\x20\x20\x20default_model: gpt-4o\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: gpt-4o\n",
+        )
+        .expect("test catalog must parse")
+    }
+
+    #[test]
+    fn resolve_model_omitted_means_inherit() {
+        assert_eq!(resolve_model(None, Some(&test_catalog())), Ok(None));
+    }
+
+    #[test]
+    fn resolve_model_finds_the_owning_provider() {
+        assert_eq!(
+            resolve_model(Some("gpt-4o"), Some(&test_catalog())),
+            Ok(Some(("openai".to_string(), "gpt-4o".to_string())))
+        );
+    }
+
+    #[test]
+    fn resolve_model_unknown_id_names_every_valid_id_instead_of_falling_back() {
+        let err = resolve_model(Some("bogus"), Some(&test_catalog()))
+            .expect_err("unknown id must refuse, not silently inherit");
+        assert!(err.contains("unknown model `bogus`"), "{err}");
+        assert!(err.contains("glm-5.3"), "{err}");
+        assert!(err.contains("gpt-4o"), "{err}");
+    }
+
+    #[test]
+    fn resolve_model_with_no_catalog_refuses_rather_than_guessing() {
+        assert!(resolve_model(Some("glm-5.3"), None).is_err());
     }
 
     /// #628: `overlay_grade_entry` walks the same ancestor chain the mask

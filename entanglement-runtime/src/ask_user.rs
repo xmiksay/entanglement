@@ -224,7 +224,7 @@ pub async fn run_ask_user(
 
         // Register before emitting so the inbound router can never resolve the
         // decision ahead of this waiter (#156).
-        let rx = pending.register(&session, &request_id);
+        let rx = pending.register(&session, &request_id, "ask_user", request_id.clone());
 
         // Mint a fresh per-session seq (#157) so the questions take an ordered
         // place in the content stream rather than reusing the parked `ToolExec`

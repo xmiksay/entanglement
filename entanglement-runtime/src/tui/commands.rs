@@ -14,6 +14,7 @@ pub enum Command {
     Exit,
     Agent,
     Model,
+    Mode,
     Key,
     Plan,
     Tasks,
@@ -46,6 +47,7 @@ impl Command {
             Command::Exit => "exit",
             Command::Agent => "agent",
             Command::Model => "model",
+            Command::Mode => "mode",
             Command::Key => "key",
             Command::Plan => "plan",
             Command::Tasks => "tasks",
@@ -76,6 +78,7 @@ impl Command {
             Command::Exit => "Quit the application",
             Command::Agent => "Pick agent profile",
             Command::Model => "Pick model",
+            Command::Mode => "Switch permission mode",
             Command::Key => "Set a provider API key",
             Command::Plan => "Open the bound plan file in $EDITOR",
             Command::Tasks => "Show the task list in the sidebar",
@@ -131,6 +134,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Exit,
         Command::Agent,
         Command::Model,
+        Command::Mode,
         Command::Key,
         Command::Plan,
         Command::Tasks,
@@ -279,6 +283,7 @@ mod tests {
         assert_eq!(parse_command("/exit"), Some(Command::Exit));
         assert_eq!(parse_command("/agent"), Some(Command::Agent));
         assert_eq!(parse_command("/model"), Some(Command::Model));
+        assert_eq!(parse_command("/mode"), Some(Command::Mode));
         assert_eq!(parse_command("/key"), Some(Command::Key));
         assert_eq!(parse_command("/plan"), Some(Command::Plan));
         assert_eq!(parse_command("/tasks"), Some(Command::Tasks));

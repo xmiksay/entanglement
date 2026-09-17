@@ -11,7 +11,8 @@ use super::App;
 use crate::config::aux_models::Purpose;
 use crate::tool_advertising::Encoding;
 use crate::tui::settings_dialog::{
-    model_options, run_plan, AdvertisingRows, AuxTab, Confirm, SessionTab, SettingsDialog, ToolsTab,
+    mode_names, model_options, run_plan, AdvertisingRows, AuxTab, Confirm, SessionTab,
+    SettingsDialog, ToolsTab,
 };
 
 /// The dialog (`None` = closed, so cancelling discards by construction), the
@@ -78,6 +79,8 @@ impl App {
             agent.clone(),
             models,
             (&self.active_provider, &self.model_info.id),
+            mode_names(),
+            self.mode(),
         );
         let current = self
             .sessions
@@ -211,6 +214,9 @@ mod tests {
         );
         let value = |id| rows.iter().find(|r| r.id == id).map(|r| r.value.clone());
         assert_eq!(value(RowId::Model).as_deref(), Some("zai/glm-5.3"));
+        // #560 P12, ADR-0207 §12: the mode row seeds from the session's
+        // current mode ("build", `App::new_for_test`'s default).
+        assert_eq!(value(RowId::PermMode).as_deref(), Some("build"));
         assert!(d.pending().is_empty());
     }
 
@@ -249,6 +255,37 @@ mod tests {
             .transcript()
             .iter()
             .filter(|e| format!("{e:?}").contains("applied: model → "))
+            .count();
+        assert_eq!(summaries, 1);
+    }
+
+    /// #560 P12, ADR-0207 §12: cycling the Session tab's mode row and
+    /// confirming sends a live `InMsg::SetMode` for the active session —
+    /// the natural slot the read-only agent row's retirement (ADR-0207 §9)
+    /// left, unlike the Tools tab's unrelated tool-advertising `RowId::Mode`.
+    #[tokio::test]
+    async fn confirm_sends_the_mode_switch_and_records_one_summary() {
+        let holly = Holly::spawn(EngineConfig::default());
+        let mut inbound = holly.subscribe_inbound();
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.open_settings_dialog();
+        focus(&mut app, RowId::PermMode);
+        app.settings_dialog_mut().unwrap().activate(true);
+        let pending = app.settings_dialog().unwrap().pending();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(pending[0].starts_with("mode → "), "{pending:?}");
+        app.confirm_settings_dialog(&holly).await;
+
+        assert!(!app.showing_settings_dialog());
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(500), inbound.recv())
+            .await
+            .expect("an inbound message")
+            .expect("channel open");
+        assert!(matches!(msg, InMsg::SetMode { .. }), "{msg:?}");
+        let summaries = app
+            .transcript()
+            .iter()
+            .filter(|e| format!("{e:?}").contains("applied: mode → "))
             .count();
         assert_eq!(summaries, 1);
     }

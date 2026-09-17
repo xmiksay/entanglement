@@ -24,6 +24,10 @@ impl App {
                 self.toggle_model_picker();
                 false
             }
+            Command::Mode => {
+                self.toggle_mode_picker();
+                false
+            }
             Command::Key => {
                 self.open_key_dialog();
                 false

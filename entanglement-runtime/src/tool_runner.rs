@@ -689,6 +689,11 @@ pub fn spawn_tool_executor_with_policy(
             hooks: hooks.clone(),
             validation: validation.clone(),
             denials: denials.clone(),
+            // #560 P12, ADR-0207 §12: read off the same `advertising_inputs`
+            // every session-start resolution already consults.
+            catalog: advertising_inputs
+                .as_ref()
+                .and_then(|i| i.catalog().cloned()),
         };
         loop {
             match sub.recv().await {
@@ -1295,7 +1300,7 @@ async fn dispatch(
             // discipline. The prompt mints a **fresh** per-session seq (#157) from
             // the parked session's shared counter, so `(session, seq)` stays unique
             // instead of reusing the `ToolExec` seq.
-            let rx = pending.register(&session, &request_id);
+            let rx = pending.register(&session, &request_id, "tool", tool.clone());
             let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
             holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
                 session: session.clone(),
