@@ -67,7 +67,13 @@ struct NoGrants;
 
 #[async_trait]
 impl GrantStore for NoGrants {
-    fn is_granted(&self, _session: &SessionId, _tool: &str, _arg: Option<&str>) -> bool {
+    fn is_granted(
+        &self,
+        _session: &SessionId,
+        _tool: &str,
+        _arg: Option<&str>,
+        _mode: &str,
+    ) -> bool {
         false
     }
 
@@ -77,6 +83,7 @@ impl GrantStore for NoGrants {
         _tool: &str,
         _arg: Option<&str>,
         _scope: ApprovalScope,
+        _mode: &str,
     ) {
     }
 
@@ -140,6 +147,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(RwLock::new(profiles)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
+        Arc::new(Mutex::new(HashMap::new())),
+        // `TenantResolver` above grades from its own per-tenant table, not
+        // from a session's permission mode (ADR-0207) — this map only
+        // matters to the default `ProfileResolver`, which this example
+        // doesn't use, so an always-empty one is correct here.
         Arc::new(Mutex::new(HashMap::new())),
         resolver,
         grants,

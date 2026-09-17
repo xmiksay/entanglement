@@ -1,25 +1,35 @@
-//! Integration tests for permission dispatch, relocated from core to the
-//! runtime tool executor (#59). Core emits a `ToolExec` for every host tool;
-//! `spawn_tool_executor` resolves `Allow | Ask | Deny` against the active
-//! `AgentProfile` and drives the approval round-trip on `Ask`.
+//! Integration tests for permission dispatch (#59). Core emits a `ToolExec`
+//! for every host tool; `spawn_tool_executor`/`spawn_tool_executor_with_policy`
+//! resolve `Allow | Ask | Deny` from the session's permission **mode**
+//! (ADR-0207 stage 4 — `ProfileResolver` grades from `crate::mode::Mode`, not
+//! `AgentProfile`) and drive the approval round-trip on `Ask`.
+//!
+//! Every fixture below is a single-mode [`entanglement_runtime::mode::ModeTable`]
+//! named `"build"` — matching `entanglement_core::DEFAULT_MODE`, so a fresh
+//! session resolves against it with no `SetMode` needed, mirroring how this
+//! file used to wire a single custom `AgentProfile` and `SetAgent` to it
+//! before ADR-0207 moved permission off the agent. The curated-read-only
+//! section near the bottom is the one exception: it exercises the real
+//! built-in `research` mode via `ModeTable::builtin()` + `InMsg::SetMode`.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, ToolCall,
+    stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
+use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
 };
 use entanglement_runtime::skills::SkillRegistry;
-use entanglement_runtime::tool_runner::{spawn_tool_executor, spawn_tool_executor_with_policy};
+use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// An LLM that replays scripted responses in order, then plain text (so a turn
@@ -51,8 +61,11 @@ impl Llm for ScriptedLlm {
     }
 }
 
-/// A trivial host tool named `bash` so it slots into the built-in profiles
-/// (build: Allow, plan: Ask, explore: Deny).
+/// A trivial host tool named `bash`. Declares `Capability::Exec` explicitly
+/// — the `Tool::capabilities` default is `Write` (fail-closed for an
+/// un-annotated tool, ADR-0207 §3), which would silently mis-grade every
+/// bare-`exec`/`write`-class mode rule this file's `research`-mode tests
+/// exercise.
 struct EchoBash;
 #[async_trait]
 impl Tool for EchoBash {
@@ -62,76 +75,66 @@ impl Tool for EchoBash {
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        &[entanglement_runtime::capability::Capability::Exec]
+    }
 }
 
-/// Build a Holly whose scripted LLM calls `bash` once, plus a registry with the
-/// `EchoBash` tool and the runtime tool executor wired to `profiles`.
-fn spawn_with_bash_call_using(input: &str, profiles: ProfileRegistry) -> Holly {
-    let scripted = Arc::new(vec![
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![ToolCall {
-                id: "t1".into(),
-                name: "bash".into(),
-                input: input.into(),
-                provider_meta: None,
-            }],
-        },
-        LlmResponse {
-            text: "ok".into(),
-            tool_calls: vec![],
-        },
-    ]);
-    let cfg = EngineConfig {
-        llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
-        }),
-        profiles: profiles.clone(),
-        ..EngineConfig::default()
-    };
-    let holly = Holly::spawn(cfg);
-    let mut reg = ToolRegistry::new();
-    reg.register(EchoBash);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
-    holly
-}
-
-/// Wire the built-in profiles (build/plan/explore).
-fn spawn_with_bash_call(input: &str) -> Holly {
-    spawn_with_bash_call_using(
-        input,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-    )
-}
-
-/// Built-ins plus an `askbash` profile that *advertises* bash (no tool mask) but
-/// grades it `Ask` — none of the built-ins default to `Ask` on bash (build is
-/// `Allow`-by-default, explore/plan grade it explicitly but `plan` is normally
-/// masked to it via `agent` delegation rather than calling it directly),
-/// so the Ask dispatch path needs a dedicated profile.
-fn ask_bash_registry() -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "askbash".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+/// Build a single-mode table named `"build"` (matching `DEFAULT_MODE`, so a
+/// fresh session resolves against it without `SetMode`) from a `default`
+/// grade plus `deny`/`allow` rule lists — the `Mode`-based analog of this
+/// file's old per-test `AgentProfile` fixtures.
+fn one_mode_table(default: Permission, deny: &[&str], allow: &[&str]) -> Arc<ModeTable> {
+    let mode = Mode {
+        name: "build".to_string(),
+        default,
+        rules: Rules::from_lists(
+            &deny.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &allow.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &[],
+        ),
+        limits: Limits::default(),
         sandbox: None,
-    });
-    profiles
+    };
+    Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
+}
+
+fn allow_all_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Allow, &[], &[])
+}
+
+/// A mode with no allow/deny rules and `default: Ask` — none of the built-in
+/// four modes default to `Ask` on every tool (research/plan/build default to
+/// `prompt` but carry rules, auto defaults to `deny`), so the plain-`Ask`
+/// dispatch path needs a dedicated fixture.
+fn ask_mode_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Ask, &[], &[])
+}
+
+fn deny_mode_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Deny, &[], &[])
+}
+
+/// A mode that grades `bash` by its command (#173): `git *` runs outright,
+/// `rm *` is denied, anything else asks.
+fn scoped_bash_mode_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Ask, &["bash(rm *)"], &["bash(git *)"])
+}
+
+/// A mode that grades `bash` by its `workdir` (#425): `/tmp/*` runs outright,
+/// `/etc/*` is denied, anything else asks.
+fn scoped_workdir_mode_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Ask, &["bash{/etc/*}"], &["bash{/tmp/*}"])
+}
+
+/// A mode that grades `read` by an arg-scoped rule authored root-relative
+/// (#173): `src/*` runs outright, anything else asks.
+fn scoped_read_mode_table() -> Arc<ModeTable> {
+    one_mode_table(Permission::Ask, &[], &["read(src/*)"])
+}
+
+fn perm_modes() -> Arc<Mutex<HashMap<SessionId, String>>> {
+    Arc::new(Mutex::new(HashMap::new()))
 }
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -152,9 +155,102 @@ async fn collect(
     out
 }
 
+/// Build a Holly whose scripted LLM calls `bash` once, plus a registry with the
+/// `EchoBash` tool and the runtime tool executor graded from `mode_table`.
+fn spawn_with_bash_call_using(input: &str, mode_table: Arc<ModeTable>) -> Holly {
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: input.into(),
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        profiles: profiles.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    spawn_with_policy_over(&holly, reg, profiles, mode_table, None);
+    holly
+}
+
+/// Wire the built-in `build` profile, allow-all mode (mirrors the old
+/// `build` agent's `default: allow`).
+fn spawn_with_bash_call(input: &str) -> Holly {
+    spawn_with_bash_call_using(input, allow_all_table())
+}
+
+/// Shared plumbing every harness in this file uses: registers `reg` as the
+/// shared tool registry, wires a `ProfileResolver` graded from `mode_table`
+/// (allow-all config ceiling), and spawns the real executor via
+/// `spawn_tool_executor_with_policy`. `root` (#485, ADR-0125) is threaded
+/// into both the resolver and (when `Some`) the executor's escape-root
+/// policy, matching `main.rs`'s production wiring.
+fn spawn_with_policy_over(
+    holly: &Holly,
+    reg: ToolRegistry,
+    profiles: entanglement_core::ProfileRegistry,
+    mode_table: Arc<ModeTable>,
+    root: Option<&Path>,
+) {
+    let shared_tools = reg.shared();
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let modes = perm_modes();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        modes.clone(),
+        mode_table,
+        shared_tools.clone(),
+        PermissionProfile::new(Permission::Allow),
+        root.map(Path::to_path_buf),
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let escape_root = root.map(|root| entanglement_runtime::tool_runner::EscapeRoot {
+        root: root.to_path_buf(),
+        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
+    });
+    let _executor = spawn_tool_executor_with_policy(
+        holly,
+        shared_tools,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        modes,
+        resolver,
+        grants,
+        Default::default(),
+        escape_root,
+        SandboxConfig::none(),
+        Arc::new(PlanFileRegistry::new()),
+        // No per-user MCP scopes (#684) — single-user.
+        None,
+        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
+        None,
+        None,
+    );
+}
+
 #[tokio::test]
 async fn allow_runs_without_approval() {
-    // build profile (default Allow): bash runs directly, no ToolRequest.
+    // Allow-all mode: bash runs directly, no ToolRequest.
     let holly = spawn_with_bash_call("echo hi");
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -194,35 +290,9 @@ async fn allow_runs_without_approval() {
 
 #[tokio::test]
 async fn deny_refuses_without_request() {
-    // A profile that *advertises* bash (no tool mask) but denies it via the
-    // permission profile — so this exercises the `Deny` dispatch path, distinct
-    // from the physical tool mask (#116), which would refuse bash before
-    // permission even resolves (see the `tool_mask` integration test).
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "denybash".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    let holly = spawn_with_bash_call_using("rm -rf", profiles);
+    // A `default: deny` mode exercises the `Deny` dispatch path.
+    let holly = spawn_with_bash_call_using("rm -rf", deny_mode_table());
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "denybash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "rm")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -262,16 +332,9 @@ async fn deny_refuses_without_request() {
 
 #[tokio::test]
 async fn ask_emits_request_then_runs_on_approve() {
-    // askbash profile: bash → Ask. Approve after the request; the tool then runs.
-    let holly = spawn_with_bash_call_using("ls", ask_bash_registry());
+    // `Ask`-default mode: approve after the request; the tool then runs.
+    let holly = spawn_with_bash_call_using("ls", ask_mode_table());
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
@@ -283,7 +346,7 @@ async fn ask_emits_request_then_runs_on_approve() {
             break;
         }
     }
-    assert!(got_request, "expected a ToolRequest under askbash profile");
+    assert!(got_request, "expected a ToolRequest under the Ask mode");
 
     holly
         .send(InMsg::Approve {
@@ -301,45 +364,14 @@ async fn ask_emits_request_then_runs_on_approve() {
     assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
 }
 
-/// A profile that grades `bash` by its command (#173): `git *` runs outright,
-/// `rm *` is denied, anything else asks.
-fn scoped_bash_registry() -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "scopedbash".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask)
-            .with("bash(git *)", Permission::Allow)
-            .with("bash(rm *)", Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    profiles
-}
-
 #[tokio::test]
 async fn argument_scoped_allow_runs_matching_command_without_approval() {
     // `git status` matches `bash(git *): allow` → runs directly, no ToolRequest.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "git status" }).to_string(),
-        scoped_bash_registry(),
+        scoped_bash_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -363,16 +395,9 @@ async fn argument_scoped_deny_blocks_matching_command() {
     // `rm -rf /` matches `bash(rm *): deny` → refused, never runs.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "rm -rf /" }).to_string(),
-        scoped_bash_registry(),
+        scoped_bash_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "rm")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -396,16 +421,9 @@ async fn argument_scoped_falls_through_to_coarse_ask() {
     // `ls` matches neither refined rule → the coarse `bash: ask` grade applies.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "ls -la" }).to_string(),
-        scoped_bash_registry(),
+        scoped_bash_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedbash".into(),
-        })
-        .await
-        .unwrap();
     let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "list"))
@@ -425,45 +443,14 @@ async fn argument_scoped_falls_through_to_coarse_ask() {
     );
 }
 
-/// A profile that grades `bash` by its `workdir` (#425): `/tmp/*` runs
-/// outright, `/etc/*` is denied, anything else asks.
-fn scoped_workdir_bash_registry() -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "scopedworkdir".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask)
-            .with("bash{/tmp/*}", Permission::Allow)
-            .with("bash{/etc/*}", Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    profiles
-}
-
 #[tokio::test]
 async fn workdir_scoped_allow_runs_matching_workdir_without_approval() {
     // A `bash` call under `/tmp` matches `bash{/tmp/*}: allow` → runs directly.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "ls", "workdir": "/tmp/scratch" }).to_string(),
-        scoped_workdir_bash_registry(),
+        scoped_workdir_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedworkdir".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -487,16 +474,9 @@ async fn workdir_scoped_deny_blocks_matching_workdir() {
     // A `bash` call under `/etc` matches `bash{/etc/*}: deny` → refused.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "ls", "workdir": "/etc/cron.d" }).to_string(),
-        scoped_workdir_bash_registry(),
+        scoped_workdir_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedworkdir".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -520,16 +500,9 @@ async fn workdir_scoped_falls_through_to_coarse_ask_outside_every_pattern() {
     // A `bash` call under neither scoped workdir falls to the coarse `ask`.
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "ls", "workdir": "/home/x" }).to_string(),
-        scoped_workdir_bash_registry(),
+        scoped_workdir_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedworkdir".into(),
-        })
-        .await
-        .unwrap();
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
@@ -548,16 +521,9 @@ async fn workdir_scoped_falls_through_to_coarse_ask_outside_every_pattern() {
 
 #[tokio::test]
 async fn ask_rejected_reports_rejection() {
-    // askbash profile: bash → Ask. Reject the request; the tool never runs.
-    let holly = spawn_with_bash_call_using("ls", ask_bash_registry());
+    // `Ask`-default mode: reject the request; the tool never runs.
+    let holly = spawn_with_bash_call_using("ls", ask_mode_table());
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
@@ -593,7 +559,7 @@ async fn ask_rejected_reports_rejection() {
 
 /// Spawn a Holly whose scripted LLM calls `bash` once per turn (ids `t1`, `t2`)
 /// with the given `command`, so two prompts drive two identical calls. Wired to
-/// the `askbash` profile (bash → Ask) so both calls would prompt absent a grant.
+/// an `Ask`-default mode so both calls would prompt absent a grant.
 fn spawn_two_ask_bash_calls(command: &str) -> Holly {
     let call = |id: &str| LlmResponse {
         text: "".into(),
@@ -609,7 +575,8 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call("t1"), ok(), call("t2"), ok()]);
-    let profiles = ask_bash_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -620,19 +587,14 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        PermissionProfile::new(Permission::Allow),
-    );
+    spawn_with_policy_over(&holly, reg, profiles, ask_mode_table(), None);
     holly
 }
 
 /// A hallucinated tool name must never reach the `Ask` approval ladder (#437):
 /// the registry miss is now discovered *before* permission resolution, so an
 /// unknown-tool call gets an immediate `ToolOutput` — no `ToolRequest`, no wait
-/// for a human — even under a profile that would otherwise ask for `bash`.
+/// for a human — even under a mode that would otherwise ask for `bash`.
 #[tokio::test]
 async fn unknown_tool_is_rejected_before_the_permission_ladder() {
     let call = LlmResponse {
@@ -649,7 +611,8 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call, ok]);
-    let profiles = ask_bash_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -660,21 +623,9 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        PermissionProfile::new(Permission::Allow),
-    );
+    spawn_with_policy_over(&holly, reg, profiles, ask_mode_table(), None);
 
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "run")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -712,13 +663,6 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
 async fn session_grant_skips_the_second_prompt() {
     let holly = spawn_two_ask_bash_calls("ls");
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
 
     // Turn 1: the Ask prompts; approve it for the session.
     let sub1 = holly.subscribe();
@@ -783,40 +727,19 @@ impl Tool for EchoRead {
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }
-}
-
-/// A profile that grades `read` by an arg-scoped rule authored root-relative
-/// (#173): `src/*` runs outright, anything else asks.
-fn scoped_read_registry() -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "scopedread".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask).with("read(src/*)", Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    profiles
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        &[entanglement_runtime::capability::Capability::Read]
+    }
 }
 
 /// Build a Holly whose scripted LLM calls `read` twice — `input1` (id `t1`)
-/// then `input2` (id `t2`) — wired to `profiles` through a [`ProfileResolver`]
-/// with `root` set (#485, ADR-0125), mirroring `main.rs`'s production wiring
-/// rather than the no-root `spawn_tool_executor` convenience wrapper the rest
-/// of this file uses.
+/// then `input2` (id `t2`) — wired to `mode_table` through a `ProfileResolver`
+/// with `root` set (#485, ADR-0125), mirroring `main.rs`'s production wiring.
 fn spawn_two_read_calls_rooted(
     root: &Path,
     input1: &str,
     input2: &str,
-    profiles: ProfileRegistry,
+    mode_table: Arc<ModeTable>,
 ) -> Holly {
     let call = |id: &str, input: &str| LlmResponse {
         text: "".into(),
@@ -832,6 +755,8 @@ fn spawn_two_read_calls_rooted(
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call("t1", input1), ok(), call("t2", input2), ok()]);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -842,43 +767,7 @@ fn spawn_two_read_calls_rooted(
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoRead);
-    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
-        PermissionProfile::new(Permission::Allow),
-        Some(root.to_path_buf()),
-    ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
-    // Wire the same `root` into the executor's escape-root policy too (#485,
-    // ADR-0125) — `dispatch` derives its grading-arg root from this param, so
-    // it must match the `ProfileResolver`'s, mirroring `main.rs`'s production
-    // wiring where both come from the same canonicalized `root`.
-    let escape_root = entanglement_runtime::tool_runner::EscapeRoot {
-        root: root.to_path_buf(),
-        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
-    };
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        reg.shared(),
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        resolver,
-        grants,
-        Default::default(),
-        Some(escape_root),
-        SandboxConfig::none(),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+    spawn_with_policy_over(&holly, reg, profiles, mode_table, Some(root));
     holly
 }
 
@@ -894,16 +783,9 @@ async fn absolute_inside_root_read_matches_the_relative_scoped_rule() {
         root,
         &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
         &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
-        scoped_read_registry(),
+        scoped_read_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedread".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -929,24 +811,16 @@ async fn absolute_inside_root_read_matches_the_relative_scoped_rule() {
 #[tokio::test]
 async fn session_grant_on_relative_spelling_covers_the_absolute_spelling() {
     let root = Path::new("/home/user/project");
-    // `askbash` (this file's default-Ask, no-mask profile, reused here for
-    // `read`) — coarse `ask` with no arg-scoped rule, so both calls would
-    // prompt absent a grant, isolating this test from the arg-scoped-rule
-    // behavior covered above.
+    // An `Ask`-default mode with no arg-scoped rule, so both calls would
+    // prompt absent a grant, isolating this test from arg-scoped-rule
+    // behavior.
     let holly = spawn_two_read_calls_rooted(
         root,
         &serde_json::json!({ "path": "src/main.rs" }).to_string(),
         &serde_json::json!({ "path": "/home/user/project/src/main.rs" }).to_string(),
-        ask_bash_registry(),
+        ask_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
 
     // Turn 1: the relative spelling prompts; approve it for the session.
     let sub1 = holly.subscribe();
@@ -1007,16 +881,9 @@ async fn absolute_outside_root_still_prompts() {
         root,
         &serde_json::json!({ "path": "/etc/passwd" }).to_string(),
         &serde_json::json!({ "path": "/etc/passwd" }).to_string(),
-        scoped_read_registry(),
+        scoped_read_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedread".into(),
-        })
-        .await
-        .unwrap();
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
@@ -1047,6 +914,13 @@ impl Tool for EchoNamed {
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran {}: {input}", self.0))
     }
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        use entanglement_runtime::capability::Capability;
+        match self.0 {
+            "read" | "grep" | "glob" => &[Capability::Read],
+            _ => &[Capability::Write],
+        }
+    }
 }
 
 /// Build a Holly wired exactly like [`spawn_two_read_calls_rooted`] (a
@@ -1062,7 +936,7 @@ impl Tool for EchoNamed {
 fn spawn_scripted_calls_rooted(
     root: &Path,
     calls: &[(&str, &str, String)],
-    profiles: ProfileRegistry,
+    mode_table: Arc<ModeTable>,
 ) -> Holly {
     let mut responses = Vec::new();
     for (id, tool, input) in calls {
@@ -1081,6 +955,8 @@ fn spawn_scripted_calls_rooted(
         });
     }
     let scripted = Arc::new(responses);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1094,39 +970,7 @@ fn spawn_scripted_calls_rooted(
     reg.register(EchoNamed("grep"));
     reg.register(EchoNamed("glob"));
     reg.register(EchoNamed("edit"));
-    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
-        PermissionProfile::new(Permission::Allow),
-        Some(root.to_path_buf()),
-    ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
-    let escape_root = entanglement_runtime::tool_runner::EscapeRoot {
-        root: root.to_path_buf(),
-        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
-    };
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        reg.shared(),
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        resolver,
-        grants,
-        Default::default(),
-        Some(escape_root),
-        SandboxConfig::none(),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+    spawn_with_policy_over(&holly, reg, profiles, mode_table, Some(root));
     holly
 }
 
@@ -1160,15 +1004,8 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
             serde_json::json!({ "path": "src/a.rs" }).to_string(),
         ),
     ];
-    let holly = spawn_scripted_calls_rooted(root, &calls, ask_bash_registry());
+    let holly = spawn_scripted_calls_rooted(root, &calls, ask_mode_table());
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
 
     // Turn 1: `read src/a.rs` prompts; approve it with SessionDir scope.
     let sub1 = holly.subscribe();
@@ -1240,13 +1077,6 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
     // src/a.rs`, per `spawn_scripted_calls_rooted`'s doc) and must still be
     // asked — a directory grant never crosses sessions.
     let sid2 = SessionId::new("s2");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid2.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
     let mut watch2 = holly.subscribe();
     holly.send(InMsg::prompt(sid2.clone(), "go")).await.unwrap();
     let mut other_session_asked = false;
@@ -1263,7 +1093,8 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
     );
 }
 
-// --- ADR-0195 §3: curated read-only Allow rules in the embedded profiles ------
+// --- ADR-0195 §3 / ADR-0207: curated read-only Allow rules in the built-in
+// `research` mode --------------------------------------------------------
 
 /// A trivial `call` host tool, mirroring `EchoBash` — the curated set reaches
 /// both exec tools, so the dispatch path must be exercised for each.
@@ -1276,17 +1107,21 @@ impl Tool for EchoCall {
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        &[entanglement_runtime::capability::Capability::Exec]
+    }
 }
 
-/// `spawn_with_bash_call_using` plus the `call` tool registered, so a scripted
-/// LLM can exercise either exec tool under a caller-chosen profile registry.
-fn spawn_with_exec_tools_using(input: &str, profiles: ProfileRegistry) -> Holly {
+/// `bash`/`call` scripted once, wired to `mode_table` — used by the curated
+/// read-only tests below with `ModeTable::builtin()`, so they exercise the
+/// real `research` mode's allowlist rather than a fabricated fixture.
+fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTable>) -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
             tool_calls: vec![ToolCall {
                 id: "t1".into(),
-                name: "bash".into(),
+                name: tool.into(),
                 input: input.into(),
                 provider_meta: None,
             }],
@@ -1296,6 +1131,8 @@ fn spawn_with_exec_tools_using(input: &str, profiles: ProfileRegistry) -> Holly 
             tool_calls: vec![],
         },
     ]);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1307,35 +1144,37 @@ fn spawn_with_exec_tools_using(input: &str, profiles: ProfileRegistry) -> Holly 
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
     reg.register(EchoCall);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    spawn_with_policy_over(&holly, reg, profiles, mode_table, None);
     holly
 }
 
-/// ADR-0195: the least-privileged read-only tiers pre-approve the curated
-/// read-only command set (`bash find .`, `call rg …`), so inspection no longer
-/// costs an approval round-trip — while a non-curated command under the same
-/// profile still escalates.
-#[tokio::test]
-async fn curated_read_only_bash_find_runs_without_approval_under_explore() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let holly = spawn_with_exec_tools_using(
-        &serde_json::json!({ "command": "find ." }).to_string(),
-        profiles,
-    );
-    let sid = SessionId::new("s1");
+fn builtin_modes() -> Arc<ModeTable> {
+    Arc::new(ModeTable::builtin().expect("built-in modes must parse"))
+}
+
+async fn set_research_mode(holly: &Holly, session: &SessionId) {
     holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
+        .send(InMsg::SetMode {
+            session: session.clone(),
+            mode: "research".into(),
         })
         .await
         .unwrap();
+}
+
+/// ADR-0195/ADR-0207: `research` mode's curated read-only allowlist pre-
+/// approves `bash find .`, so inspection no longer costs an approval
+/// round-trip — while a non-curated command under the same mode still
+/// escalates (the following tests).
+#[tokio::test]
+async fn curated_read_only_bash_find_runs_without_approval_under_research_mode() {
+    let holly = spawn_with_exec_tools_using(
+        "bash",
+        &serde_json::json!({ "command": "find ." }).to_string(),
+        builtin_modes(),
+    );
+    let sid = SessionId::new("s1");
+    set_research_mode(&holly, &sid).await;
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -1355,51 +1194,14 @@ async fn curated_read_only_bash_find_runs_without_approval_under_explore() {
 }
 
 #[tokio::test]
-async fn curated_read_only_call_rg_runs_without_approval_under_research() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let scripted = Arc::new(vec![
-        LlmResponse {
-            text: "".into(),
-            tool_calls: vec![ToolCall {
-                id: "t1".into(),
-                name: "call".into(),
-                input: serde_json::json!({ "command": "rg", "args": ["pattern", "src"] })
-                    .to_string(),
-                provider_meta: None,
-            }],
-        },
-        LlmResponse {
-            text: "ok".into(),
-            tool_calls: vec![],
-        },
-    ]);
-    let cfg = EngineConfig {
-        llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
-        }),
-        profiles: profiles.clone(),
-        ..EngineConfig::default()
-    };
-    let holly = Holly::spawn(cfg);
-    let mut reg = ToolRegistry::new();
-    reg.register(EchoBash);
-    reg.register(EchoCall);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+async fn curated_read_only_call_rg_runs_without_approval_under_research_mode() {
+    let holly = spawn_with_exec_tools_using(
+        "call",
+        &serde_json::json!({ "command": "rg", "args": ["pattern", "src"] }).to_string(),
+        builtin_modes(),
     );
-
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "research".into(),
-        })
-        .await
-        .unwrap();
+    set_research_mode(&holly, &sid).await;
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -1418,25 +1220,18 @@ async fn curated_read_only_call_rg_runs_without_approval_under_research() {
     );
 }
 
-/// A non-curated command under the same profile still escalates — the curated
+/// A non-curated command under the same mode still escalates — the curated
 /// set is exact-prefix, so `git status` (a read-only *operation* but not on
 /// the list) keeps its `Ask`.
 #[tokio::test]
-async fn a_non_curated_command_still_escalates_under_explore() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+async fn a_non_curated_command_still_escalates_under_research_mode() {
     let holly = spawn_with_exec_tools_using(
+        "bash",
         &serde_json::json!({ "command": "git status" }).to_string(),
-        profiles,
+        builtin_modes(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
-        })
-        .await
-        .unwrap();
+    set_research_mode(&holly, &sid).await;
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
@@ -1449,17 +1244,15 @@ async fn a_non_curated_command_still_escalates_under_explore() {
     }
     assert!(
         got_request,
-        "`git status` is not in the curated set — explore must still ask"
+        "`git status` is not in the curated set — research mode must still ask"
     );
 }
 
 /// The config ceiling still clamps the curated rules down (#172): a `bash:
 /// deny` ceiling turns a curated `bash find .` Allow into a refusal, exactly
-/// as it clamps any profile grade.
+/// as it clamps any mode's grade.
 #[tokio::test]
 async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
@@ -1475,6 +1268,8 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
             tool_calls: vec![],
         },
     ]);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1486,14 +1281,21 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
     reg.register(EchoCall);
-    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let shared_tools = reg.shared();
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let modes = perm_modes();
     // The ceiling from a `permissions: bash: deny` config layer.
     let ceiling = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), ceiling.clone(), None));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        modes.clone(),
+        builtin_modes(),
+        shared_tools.clone(),
+        ceiling.clone(),
+        None,
+    ));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -1501,27 +1303,20 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         ceiling,
         active,
+        modes,
         resolver,
         Arc::new(DefaultGrantStore::load()),
         Default::default(),
         None,
         SandboxConfig::none(),
         Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
         None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
         None,
         None,
     );
 
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
-        })
-        .await
-        .unwrap();
+    set_research_mode(&holly, &sid).await;
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -1549,24 +1344,17 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
 // --- ADR-0197: compound bash commands grade per segment ---------------------
 
 /// A compound pipeline built entirely from curated read-only verbs runs with
-/// no approval round-trip — the curated Allow rules now grade each top-level
+/// no approval round-trip — the curated Allow rules grade each top-level
 /// segment instead of only the whole raw string.
 #[tokio::test]
 async fn compound_pipeline_of_curated_verbs_runs_without_approval() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = spawn_with_exec_tools_using(
+        "bash",
         &serde_json::json!({ "command": "find . | grep x | wc -l" }).to_string(),
-        profiles,
+        builtin_modes(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
-        })
-        .await
-        .unwrap();
+    set_research_mode(&holly, &sid).await;
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -1590,20 +1378,13 @@ async fn compound_pipeline_of_curated_verbs_runs_without_approval() {
 /// cover.
 #[tokio::test]
 async fn compound_over_match_regression_still_escalates() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = spawn_with_exec_tools_using(
+        "bash",
         &serde_json::json!({ "command": "find . && rm -rf /tmp/x" }).to_string(),
-        profiles,
+        builtin_modes(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
-        })
-        .await
-        .unwrap();
+    set_research_mode(&holly, &sid).await;
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 
@@ -1626,16 +1407,9 @@ async fn compound_over_match_regression_still_escalates() {
 async fn compound_command_deny_on_trailing_segment_denies_via_dispatch() {
     let holly = spawn_with_bash_call_using(
         &serde_json::json!({ "command": "git status && rm x" }).to_string(),
-        scoped_bash_registry(),
+        scoped_bash_mode_table(),
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "scopedbash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;
@@ -1676,7 +1450,8 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
         tool_calls: vec![],
     };
     let scripted = Arc::new(vec![call("t1", "ls"), ok(), call("t2", "ls && pwd"), ok()]);
-    let profiles = ask_bash_registry();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1687,21 +1462,9 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        PermissionProfile::new(Permission::Allow),
-    );
+    spawn_with_policy_over(&holly, reg, profiles, ask_mode_table(), None);
 
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askbash".into(),
-        })
-        .await
-        .unwrap();
 
     // Turn 1: approve the exact standalone command `ls` for the session.
     let sub1 = holly.subscribe();
@@ -1747,8 +1510,7 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
 
 /// A trivial host tool named `mcp_enable`, echoing its input — stands in for
 /// the real `McpEnableTool` (`entanglement_runtime::mcp::McpEnableTool`,
-/// covered end-to-end by `mcp::available_tests`) so this test exercises only
-/// the mask/permission ladder, not a real server connection.
+/// covered end-to-end by `mcp::available_tests`).
 struct EchoMcpEnable;
 #[async_trait]
 impl Tool for EchoMcpEnable {
@@ -1761,9 +1523,7 @@ impl Tool for EchoMcpEnable {
 }
 
 /// A trivial host tool named like a namespaced MCP tool, standing in for a
-/// server's real tool once connected — this test's `McpCapabilityIndex`
-/// hints it `read` exactly as a bundled server's config-side `capabilities:`
-/// would (#426).
+/// server's real tool once connected.
 struct EchoMcpSearch;
 #[async_trait]
 impl Tool for EchoMcpSearch {
@@ -1775,31 +1535,16 @@ impl Tool for EchoMcpSearch {
     }
 }
 
-/// The explore/research provider-bundled-MCP fix, exercised through the real
-/// permission ladder (unit coverage for the mask/capability-index plumbing
-/// itself lives in `entanglement_runtime::agents::mod::tests` and
-/// `entanglement_runtime::mcp::mod::tests`): under `explore`, `mcp_enable`
-/// runs with no approval prompt — ADR-0152's `allowed`/`enabled`/`disabled`
-/// tier is the real consent boundary, not this profile's grade — and a
-/// namespaced MCP tool the capability index hints `read` also runs with no
-/// approval, riding the same `read: allow` fan-out that already covers
-/// `read`/`glob`/`grep`.
+/// `mcp_enable` and a namespaced MCP tool both dispatch cleanly end to end
+/// under an allow-all mode — a plain regression pin for the dispatch path
+/// itself (unit coverage for `McpCapabilityIndex`/tier plumbing lives in
+/// `entanglement_runtime::agents::mod::tests` and
+/// `entanglement_runtime::mcp::mod::tests`). Retired since ADR-0207: this
+/// used to also prove the old per-profile tool *mask* never blocked
+/// `mcp_enable` even under the narrow `explore` profile — there is no mask
+/// left to prove that about.
 #[tokio::test]
-async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() {
-    let empty_dir = tempfile::tempdir().unwrap();
-    let mut mcp = entanglement_runtime::mcp::McpCapabilityIndex::new();
-    mcp.insert(
-        "read".to_string(),
-        vec!["mcp__testserver__search".to_string()],
-    );
-    let profiles = entanglement_runtime::agents::load_registry(
-        empty_dir.path(),
-        &entanglement_runtime::system_prompt::PromptContext::default(),
-        &SkillRegistry::default(),
-        &mcp,
-    )
-    .expect("load_registry");
-
+async fn mcp_enable_and_a_namespaced_mcp_tool_run_under_an_allow_all_mode() {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
@@ -1824,6 +1569,8 @@ async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() 
             tool_calls: vec![],
         },
     ]);
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1835,21 +1582,9 @@ async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() 
     let mut reg = ToolRegistry::new();
     reg.register(EchoMcpEnable);
     reg.register(EchoMcpSearch);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    spawn_with_policy_over(&holly, reg, profiles, allow_all_table(), None);
 
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "explore".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "search the web"))
@@ -1861,7 +1596,7 @@ async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() 
         !events
             .iter()
             .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "neither call should need approval under explore; got {events:?}"
+        "neither call should need approval under an allow-all mode; got {events:?}"
     );
     let outs: Vec<String> = events
         .iter()
@@ -1872,10 +1607,10 @@ async fn explore_calls_mcp_enable_and_a_read_hinted_mcp_tool_without_approval() 
         .collect();
     assert!(
         outs.iter().any(|o| o.starts_with("enabled:")),
-        "mcp_enable must run, not be mask-declined; got {outs:?}"
+        "mcp_enable must run; got {outs:?}"
     );
     assert!(
         outs.iter().any(|o| o.starts_with("searched:")),
-        "the read-hinted MCP tool must run under `read: allow`; got {outs:?}"
+        "the namespaced MCP tool must run; got {outs:?}"
     );
 }

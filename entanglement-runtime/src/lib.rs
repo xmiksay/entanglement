@@ -38,14 +38,12 @@ pub mod arg_validate;
 pub mod ask_user;
 pub mod aux_llm;
 pub mod cancel;
-// The capability vocabulary tools declare (#560, ADR-0207 §3) — stage 1,
-// vocabulary only; nothing consumes it yet.
+// The capability vocabulary tools declare (#560, ADR-0207 §3), consumed by
+// `crate::policy::ProfileResolver` (stage 4) to grade a call by its tool's
+// declared capabilities under the session's permission mode.
 pub mod capability;
 pub mod config;
 mod date;
-// Attributed autodecline wording for a call the dispatch gate refuses — the
-// one table both the executor ladder and the mask walk render from.
-pub mod decline;
 // `explore`/`describe` — the ADR-0196 §4 discovery pair (#560): always-on,
 // non-maskable internal tools that let a `ToolSearch`-mode session reach the
 // rest of the registry. Ungated — pure state/logic over core + the lean
@@ -62,19 +60,15 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
-// Out-of-mask tool calls as an approval round-trip (ADR-0198): the dispatch
-// loop's replacement for an unconditional mask decline, sharing `decline`'s
-// wording table and `tool_runner`'s own `dispatch` ladder.
-pub mod mask_request;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any
 // CLI/TUI/transport dep; the streamable-HTTP transport rides the `mcp-http`
 // feature (reqwest), keeping the lean build transport-free (ADR-0025).
 pub mod mcp;
-// Permission modes (#560, ADR-0207 stage 2 of 6): the mode table and its
-// grade-resolution engine, built on `capability`'s vocabulary. Nothing on
-// the dispatch path consults this yet — stage 4's job. Ungated — pure logic
+// Permission modes (#560, ADR-0207): the mode table and its grade-resolution
+// engine, built on `capability`'s vocabulary. Wired into the dispatch ladder
+// (`crate::policy::ProfileResolver`) as of stage 4. Ungated — pure logic
 // over core types + capability + serde_yaml, needed by the lean build too.
 pub mod mode;
 // Live action narrator (#635): asks the aux `narrate` LLM what the agent is

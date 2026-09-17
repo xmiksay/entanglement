@@ -10,12 +10,19 @@
 //! that decision.
 //!
 //! A grant only ever upgrades a resolved `Ask` to `Allow`; it never touches a
-//! `Deny`, so a hard policy floor (agent profile or config ceiling, #172) stands
-//! regardless of what the user once approved. Matching is **exact** for
-//! `Session`/`Always`: a grant for `bash(git status)` re-allows only that
-//! command, never `git status -s` — the issue is repeated prompts for the
-//! *same* call, not a pattern grant. [`SessionDir`][ApprovalScope::SessionDir]
-//! (#486, ADR-0126) is the one deliberate exception — see below.
+//! `Deny`, so a hard policy floor (the session's permission mode or the config
+//! ceiling, #172) stands regardless of what the user once approved. Matching
+//! is **exact** for `Session`/`Always`: a grant for `bash(git status)`
+//! re-allows only that command, never `git status -s` — the issue is repeated
+//! prompts for the *same* call, not a pattern grant. Since ADR-0207 §8, a
+//! `Session`/`Always` grant also carries the **mode** it was earned in and
+//! matches only that mode exactly — a grant from `build` must not fire in
+//! `research` — so [`GrantKey`] gained a `mode` field; a pre-ADR-0207 grants
+//! file has no mode on its entries, loaded as `mode: None`, which by
+//! construction never equals a live call's `Some(mode)` (never matches, the
+//! safe direction). [`SessionDir`][ApprovalScope::SessionDir]
+//! (#486, ADR-0126) is a deliberate exception to both the exact-match and the
+//! mode-scoping rule — see below.
 //!
 //! # Scopes
 //!
@@ -38,7 +45,14 @@
 //!   `Session` grant rather than widening it. Never persisted (no
 //!   `Always`-directory scope) — the TUI `/allow <path>` command
 //!   (`grant_session_dir`) is the other way to add one, beside approving a
-//!   prompted call with `[d]`.
+//!   prompted call with `[d]`. Deliberately **not** mode-scoped (ADR-0207
+//!   §8 names `GrantKey`, not this store): every mode with a human present
+//!   to approve it allows the read-only triad by `default` or `allow`
+//!   (`auto`'s unattended `default: deny` never reaches an approval prompt
+//!   to widen in the first place, per §11's question-timeout-as-denial), so
+//!   the cross-mode leak this ADR closes for `write`-capable grants doesn't
+//!   apply here. Revisit if a custom mode ever wants its own read-only
+//!   posture.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -49,21 +63,27 @@ use serde::{Deserialize, Serialize};
 /// Env var overriding the managed grants file path (tests + non-XDG setups).
 const GRANTS_FILE_ENV: &str = "ENTANGLEMENT_GRANTS_FILE";
 
-/// A single granted tool call: the tool name plus the optional argument
-/// (command/path, #173) the grant was recorded against. `arg == None` grants
-/// every call to a tool that carries no permission argument (e.g. `grep`).
-/// Matched by exact equality — see the module docs.
+/// A single granted tool call: the tool name, the optional argument
+/// (command/path, #173) the grant was recorded against, and the permission
+/// **mode** it was earned in (ADR-0207 §8) — `None` only for a legacy entry
+/// loaded from a pre-ADR-0207 grants file, which never matches a live call
+/// (every real call carries `Some(mode)`), so an old grant is treated as
+/// non-matching rather than silently re-honored across modes. `arg == None`
+/// grants every call to a tool that carries no permission argument (e.g.
+/// `grep`). Matched by exact equality — see the module docs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GrantKey {
     pub tool: String,
     pub arg: Option<String>,
+    pub mode: Option<String>,
 }
 
 impl GrantKey {
-    fn new(tool: &str, arg: Option<&str>) -> Self {
+    fn new(tool: &str, arg: Option<&str>, mode: &str) -> Self {
         Self {
             tool: tool.to_string(),
             arg: arg.map(str::to_string),
+            mode: Some(mode.to_string()),
         }
     }
 
@@ -76,32 +96,41 @@ impl GrantKey {
         }
     }
 
-    /// Parse a grants-file rule key back into a [`GrantKey`]: `bash(git status)`
-    /// ⇒ `{ bash, Some("git status") }`, `grep` ⇒ `{ grep, None }`. A key with a
-    /// `(` but no closing `)` is treated as a bare tool name (no argument).
-    fn from_rule(key: &str) -> Self {
-        if let Some(open) = key.find('(') {
-            if key.ends_with(')') {
-                return Self {
-                    tool: key[..open].to_string(),
-                    arg: Some(key[open + 1..key.len() - 1].to_string()),
-                };
-            }
-        }
-        Self {
-            tool: key.to_string(),
-            arg: None,
-        }
+    /// Parse a grants-file rule key into a [`GrantKey`] at `mode`:
+    /// `bash(git status)` ⇒ `{ bash, Some("git status"), mode }`, `grep` ⇒
+    /// `{ grep, None, mode }`. A key with a `(` but no closing `)` is treated
+    /// as a bare tool name (no argument).
+    fn from_rule(key: &str, mode: Option<String>) -> Self {
+        let (tool, arg) = match key.find('(') {
+            Some(open) if key.ends_with(')') => (
+                key[..open].to_string(),
+                Some(key[open + 1..key.len() - 1].to_string()),
+            ),
+            _ => (key.to_string(), None),
+        };
+        Self { tool, arg, mode }
     }
 }
 
-/// On-disk shape of the managed grants file. A top-level `grants:` list of rule
-/// keys keeps room for future keys and lets `deny_unknown_fields` flag typos.
+/// On-disk shape of the managed grants file. A top-level `grants:` list keeps
+/// room for future keys and lets `deny_unknown_fields` flag typos.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrantsFile {
     #[serde(default)]
-    grants: Vec<String>,
+    grants: Vec<GrantEntry>,
+}
+
+/// One line of the grants file: a **scoped** entry (mode + rule, written by
+/// every grant this stage records) or a bare rule **string** — a pre-ADR-0207
+/// file, kept parseable so an existing user's file doesn't error out, but
+/// loaded with `mode: None` so it never matches a live call (ADR-0207 §8:
+/// "existing grants.yml entries have no mode; treat them as non-matching").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum GrantEntry {
+    Scoped { mode: String, rule: String },
+    Legacy(String),
 }
 
 /// The runtime's grant set: per-session (in-memory) plus persisted "always"
@@ -137,13 +166,21 @@ impl FileGrantStore {
         }
     }
 
-    /// Whether a call `(tool, arg)` from `session` is already granted — an
-    /// active session grant, a persisted `Always` grant, or (for the read-only
-    /// triad) a [`ApprovalScope::SessionDir`] directory grant covering `arg`
-    /// (#486). The executor consults this only when a call resolves to `Ask`,
-    /// upgrading it to `Allow`.
-    pub fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool {
-        let key = GrantKey::new(tool, arg);
+    /// Whether a call `(tool, arg)` from `session` under `mode` is already
+    /// granted — an active session grant, a persisted `Always` grant, or (for
+    /// the read-only triad, unscoped by mode — see the module docs) a
+    /// [`ApprovalScope::SessionDir`] directory grant covering `arg` (#486).
+    /// The executor consults this only when a call resolves to `Ask`,
+    /// upgrading it to `Allow`. `mode` is matched exactly (ADR-0207 §8): a
+    /// grant earned in one mode never fires in another.
+    pub fn is_granted(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        arg: Option<&str>,
+        mode: &str,
+    ) -> bool {
+        let key = GrantKey::new(tool, arg, mode);
         if self.always.contains(&key)
             || self
                 .session
@@ -160,29 +197,32 @@ impl FileGrantStore {
         false
     }
 
-    /// Record an approval per its [`ApprovalScope`]. `Once` records nothing;
-    /// `Session` adds an in-memory grant for `session`; `Always` adds a persisted
-    /// grant and re-writes the managed file (best-effort); `SessionDir` (#486)
-    /// derives the directory `(tool, arg)` implies (see [`dir_for`]) and widens
-    /// the read-only triad under it for the rest of the session — on any other
-    /// tool, or a call `dir_for` can't derive a directory from, it degrades to
-    /// an exact `Session` grant instead of widening. Returns whether a new
-    /// grant was stored (an already-known grant is a no-op).
+    /// Record an approval per its [`ApprovalScope`], tagged with the mode it
+    /// was earned in (ADR-0207 §8). `Once` records nothing; `Session` adds an
+    /// in-memory grant for `session`; `Always` adds a persisted grant and
+    /// re-writes the managed file (best-effort); `SessionDir` (#486) derives
+    /// the directory `(tool, arg)` implies (see [`dir_for`]) and widens the
+    /// read-only triad under it for the rest of the session, unscoped by mode
+    /// (see the module docs) — on any other tool, or a call `dir_for` can't
+    /// derive a directory from, it degrades to an exact `Session` grant
+    /// instead of widening. Returns whether a new grant was stored (an
+    /// already-known grant is a no-op).
     pub fn record(
         &mut self,
         session: &SessionId,
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     ) -> bool {
         match scope {
             ApprovalScope::Once => false,
             ApprovalScope::Session => {
-                let key = GrantKey::new(tool, arg);
+                let key = GrantKey::new(tool, arg, mode);
                 self.session.entry(session.clone()).or_default().insert(key)
             }
             ApprovalScope::Always => {
-                let key = GrantKey::new(tool, arg);
+                let key = GrantKey::new(tool, arg, mode);
                 let inserted = self.always.insert(key.clone());
                 if inserted {
                     self.persist(&key);
@@ -199,7 +239,7 @@ impl FileGrantStore {
                             .insert(dir);
                     }
                 }
-                let key = GrantKey::new(tool, arg);
+                let key = GrantKey::new(tool, arg, mode);
                 self.session.entry(session.clone()).or_default().insert(key)
             }
         }
@@ -282,7 +322,16 @@ fn read_grants(path: &Path) -> HashSet<GrantKey> {
         .map_err(|e| format!("{e}"))
         .and_then(|t| serde_yaml::from_str::<GrantsFile>(&t).map_err(|e| format!("{e}")));
     match parsed {
-        Ok(file) => file.grants.iter().map(|k| GrantKey::from_rule(k)).collect(),
+        Ok(file) => file
+            .grants
+            .iter()
+            .map(|entry| match entry {
+                GrantEntry::Scoped { mode, rule } => GrantKey::from_rule(rule, Some(mode.clone())),
+                // Pre-ADR-0207: no mode was ever recorded — `mode: None`
+                // never matches a live call (module docs).
+                GrantEntry::Legacy(rule) => GrantKey::from_rule(rule, None),
+            })
+            .collect(),
         Err(e) => {
             tracing::warn!("ignoring malformed grants file {}: {e}", path.display());
             HashSet::new()
@@ -292,14 +341,31 @@ fn read_grants(path: &Path) -> HashSet<GrantKey> {
 
 /// Write `grants` to `path` as the managed YAML file, creating the config dir if
 /// needed. Keys are sorted so the file is stable across writes (readable diffs,
-/// no churn).
+/// no churn). A key with `mode: None` (a pre-ADR-0207 entry this process never
+/// re-earned) round-trips as its original bare-string spelling rather than
+/// being force-upgraded to a fabricated mode.
 fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut keys: Vec<String> = grants.iter().map(GrantKey::to_rule).collect();
-    keys.sort();
-    let doc = GrantsFile { grants: keys };
+    let mut keys: Vec<(String, GrantEntry)> = grants
+        .iter()
+        .map(|key| {
+            let rule = key.to_rule();
+            let entry = match &key.mode {
+                Some(mode) => GrantEntry::Scoped {
+                    mode: mode.clone(),
+                    rule: rule.clone(),
+                },
+                None => GrantEntry::Legacy(rule.clone()),
+            };
+            (rule, entry)
+        })
+        .collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    let doc = GrantsFile {
+        grants: keys.into_iter().map(|(_, e)| e).collect(),
+    };
     let body = serde_yaml::to_string(&doc)?;
     let header = "# entanglement — persisted \"always allow\" tool grants (#174).\n\
                   # Managed by skutter: a line is appended when you approve a tool with the\n\
@@ -308,61 +374,11 @@ fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::Result<()> {
     crate::config::atomic::atomic_write(path, &format!("{header}{body}"))
 }
 
-/// Derive the directory a `(tool, arg)` call implies, for recording an
-/// [`ApprovalScope::SessionDir`] grant (#486): `read`/`edit`/`write`/
-/// `apply_patch` → the argument's parent directory (a root-level file's
-/// parent is the project root itself, `"."`); `grep` → the path filter value
-/// verbatim (already directory-shaped — a specific file or a directory);
-/// `glob` → the pattern's literal prefix up to its first wildcard, truncated
-/// to the last path separator ([`glob_literal_prefix`]). Any other tool
-/// (`bash`/`call`, or a call with no argument) has no directory concept and
-/// yields `None` — `record`'s caller degrades to an exact `Session` grant in
-/// that case. Head-agnostic and reusable beyond the read-only triad `record`
-/// currently restricts this to (mirrors #485's `PATH_ARG_TOOLS` table).
-fn dir_for(tool: &str, arg: Option<&str>) -> Option<String> {
-    let arg = arg?;
-    match tool {
-        "read" | "edit" | "write" | "apply_patch" => {
-            let parent = Path::new(arg).parent()?.to_string_lossy().into_owned();
-            Some(if parent.is_empty() {
-                ".".to_string()
-            } else {
-                parent
-            })
-        }
-        "grep" => Some(arg.to_string()),
-        "glob" => Some(glob_literal_prefix(arg)),
-        _ => None,
-    }
-}
-
-/// The literal (non-wildcard) directory prefix of a glob pattern: everything
-/// before the first `*`/`?`, truncated at the last `/` — `"src/*.rs"` → `"src"`,
-/// `"src/foo.rs"` (no wildcard) → `"src"`, `"*.rs"` → `"."` (no directory
-/// component at all).
-fn glob_literal_prefix(pattern: &str) -> String {
-    let end = pattern.find(['*', '?']).unwrap_or(pattern.len());
-    match pattern[..end].rfind('/') {
-        Some(idx) => pattern[..idx].to_string(),
-        None => ".".to_string(),
-    }
-}
-
-/// Whether a granted directory `dir` covers a later call's grading argument
-/// `arg` (#486): exact match, path-component-prefix nesting
-/// (`arg.starts_with("{dir}/")`), or `dir == "."` covering every relative
-/// argument. Operates directly on the already-#485-normalized root-relative
-/// argument — a glob pattern's wildcard tail is just a string suffix once its
-/// literal root matches, so no separate glob-specific comparison is needed.
-///
-/// A `"."` grant also string-covers an *absolute* out-of-root argument (an
-/// absolute path never gets the #485 root-prefix strip). That is safe only
-/// because the escape-root gate (ADR-0109) independently forces its own
-/// approval for any out-of-root target *before* grant matching can allow the
-/// call — this function is a permission upgrade, not the containment check.
-fn dir_covers(dir: &str, arg: &str) -> bool {
-    dir == "." || arg == dir || arg.starts_with(&format!("{dir}/"))
-}
+// SessionDir directory derivation/coverage (#486, ADR-0126) — split out of
+// this (previously grandfathered-over-cap) file into its own module: a
+// self-contained unit with no dependency on `GrantKey`/mode-scoping.
+mod session_dir;
+use session_dir::{dir_covers, dir_for};
 
 #[cfg(test)]
 mod tests {
@@ -377,31 +393,18 @@ mod tests {
     }
 
     #[test]
-    fn dot_dir_grant_string_covers_absolute_paths_by_design() {
-        // Pins the ADR-0109 coupling documented on `dir_covers`: a `.` grant
-        // covers absolute out-of-root arguments at the string level. If this
-        // ever changes, re-check that the escape-root gate is still the layer
-        // refusing out-of-root access — and if `dir_covers` is instead meant
-        // to reject absolute args itself, update the doc comment with it.
-        assert!(dir_covers(".", "/etc/passwd"));
-        assert!(dir_covers(".", "src/main.rs"));
-        assert!(!dir_covers("src", "/etc/passwd"));
-        assert!(!dir_covers("src", "src2/main.rs"));
-    }
-
-    #[test]
     fn grant_key_rule_roundtrips() {
         for key in [
-            GrantKey::new("bash", Some("git status")),
-            GrantKey::new("edit", Some("src/main.rs")),
-            GrantKey::new("grep", None),
+            GrantKey::new("bash", Some("git status"), "build"),
+            GrantKey::new("edit", Some("src/main.rs"), "build"),
+            GrantKey::new("grep", None, "build"),
         ] {
-            assert_eq!(GrantKey::from_rule(&key.to_rule()), key);
+            assert_eq!(GrantKey::from_rule(&key.to_rule(), key.mode.clone()), key);
         }
         // A malformed key (no closing paren) degrades to a bare tool name.
         assert_eq!(
-            GrantKey::from_rule("bash(oops"),
-            GrantKey::new("bash(oops", None)
+            GrantKey::from_rule("bash(oops", Some("build".to_string())),
+            GrantKey::new("bash(oops", None, "build")
         );
     }
 
@@ -409,8 +412,8 @@ mod tests {
     fn once_records_nothing() {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
-        assert!(!store.record(&s, "bash", Some("ls"), ApprovalScope::Once));
-        assert!(!store.is_granted(&s, "bash", Some("ls")));
+        assert!(!store.record(&s, "bash", Some("ls"), ApprovalScope::Once, "build"));
+        assert!(!store.is_granted(&s, "bash", Some("ls"), "build"));
     }
 
     #[test]
@@ -418,72 +421,98 @@ mod tests {
         let mut store = FileGrantStore::default();
         let a = SessionId::new("a");
         let b = SessionId::new("b");
-        assert!(store.record(&a, "bash", Some("git status"), ApprovalScope::Session));
-        // The granting session skips the prompt for the identical call…
-        assert!(store.is_granted(&a, "bash", Some("git status")));
-        // …a different command still asks, and a different session never inherits.
-        assert!(!store.is_granted(&a, "bash", Some("git log")));
-        assert!(!store.is_granted(&b, "bash", Some("git status")));
+        assert!(store.record(
+            &a,
+            "bash",
+            Some("git status"),
+            ApprovalScope::Session,
+            "build"
+        ));
+        // The granting session skips the prompt for the identical call...
+        assert!(store.is_granted(&a, "bash", Some("git status"), "build"));
+        // ...a different command still asks, and a different session never inherits.
+        assert!(!store.is_granted(&a, "bash", Some("git log"), "build"));
+        assert!(!store.is_granted(&b, "bash", Some("git status"), "build"));
         // Re-recording the same grant is a no-op.
-        assert!(!store.record(&a, "bash", Some("git status"), ApprovalScope::Session));
+        assert!(!store.record(
+            &a,
+            "bash",
+            Some("git status"),
+            ApprovalScope::Session,
+            "build"
+        ));
         store.forget_session(&a);
-        assert!(!store.is_granted(&a, "bash", Some("git status")));
+        assert!(!store.is_granted(&a, "bash", Some("git status"), "build"));
+    }
+
+    /// ADR-0207 §8: a grant earned in one mode never fires in another, even
+    /// for the same session/tool/argument.
+    #[test]
+    fn session_grant_is_scoped_to_its_mode() {
+        let mut store = FileGrantStore::default();
+        let s = SessionId::new("s");
+        assert!(store.record(
+            &s,
+            "bash",
+            Some("git status"),
+            ApprovalScope::Session,
+            "build"
+        ));
+        assert!(store.is_granted(&s, "bash", Some("git status"), "build"));
+        assert!(
+            !store.is_granted(&s, "bash", Some("git status"), "research"),
+            "a grant earned in build must not fire in research"
+        );
     }
 
     #[test]
     fn argless_grant_covers_the_whole_tool() {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
-        store.record(&s, "grep", None, ApprovalScope::Session);
-        assert!(store.is_granted(&s, "grep", None));
+        store.record(&s, "grep", None, ApprovalScope::Session, "build");
+        assert!(store.is_granted(&s, "grep", None, "build"));
     }
 
-    // --- #486, ADR-0126: SessionDir directory grants -----------------------
-
-    #[test]
-    fn dir_for_derivation_table() {
-        assert_eq!(dir_for("read", Some("src/a.rs")), Some("src".to_string()));
-        assert_eq!(dir_for("read", Some("main.rs")), Some(".".to_string()));
-        assert_eq!(dir_for("edit", Some("src/a.rs")), Some("src".to_string()));
-        assert_eq!(dir_for("write", Some("src/a.rs")), Some("src".to_string()));
-        assert_eq!(
-            dir_for("apply_patch", Some("src/a.rs")),
-            Some("src".to_string())
-        );
-        assert_eq!(dir_for("grep", Some("src")), Some("src".to_string()));
-        assert_eq!(
-            dir_for("grep", Some("src/a.rs")),
-            Some("src/a.rs".to_string())
-        );
-        assert_eq!(dir_for("glob", Some("src/*.rs")), Some("src".to_string()));
-        assert_eq!(dir_for("glob", Some("*.rs")), Some(".".to_string()));
-        assert_eq!(dir_for("glob", Some("src/a.rs")), Some("src".to_string()));
-        assert_eq!(dir_for("bash", Some("git status")), None);
-        assert_eq!(dir_for("read", None), None);
-    }
+    // --- #486, ADR-0126: SessionDir directory grants ------------------------
+    // Deliberately unscoped by mode (module docs) -- a `SessionDir` grant
+    // covers the read-only triad under any mode.
 
     #[test]
     fn session_dir_grant_covers_repeated_reads_under_one_directory() {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
-        assert!(store.record(&s, "read", Some("src/a.rs"), ApprovalScope::SessionDir));
+        assert!(store.record(
+            &s,
+            "read",
+            Some("src/a.rs"),
+            ApprovalScope::SessionDir,
+            "build"
+        ));
         // The approved file itself, a sibling, and a nested subdirectory all
         // fall under the granted "src" directory.
-        assert!(store.is_granted(&s, "read", Some("src/a.rs")));
-        assert!(store.is_granted(&s, "read", Some("src/b.rs")));
-        assert!(store.is_granted(&s, "read", Some("src/b/c.rs")));
+        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "build"));
+        assert!(store.is_granted(&s, "read", Some("src/b.rs"), "build"));
+        assert!(store.is_granted(&s, "read", Some("src/b/c.rs"), "build"));
         // grep/glob under the same directory are covered too (the triad).
-        assert!(store.is_granted(&s, "grep", Some("src")));
-        assert!(store.is_granted(&s, "grep", Some("src/sub")));
-        assert!(store.is_granted(&s, "glob", Some("src/*.rs")));
+        assert!(store.is_granted(&s, "grep", Some("src"), "build"));
+        assert!(store.is_granted(&s, "grep", Some("src/sub"), "build"));
+        assert!(store.is_granted(&s, "glob", Some("src/*.rs"), "build"));
+        // Unscoped by mode: the same grant covers a different mode too.
+        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "research"));
     }
 
     #[test]
     fn session_dir_grant_does_not_cover_a_sibling_directory() {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
-        store.record(&s, "read", Some("src/a.rs"), ApprovalScope::SessionDir);
-        assert!(!store.is_granted(&s, "read", Some("src2/x")));
+        store.record(
+            &s,
+            "read",
+            Some("src/a.rs"),
+            ApprovalScope::SessionDir,
+            "build",
+        );
+        assert!(!store.is_granted(&s, "read", Some("src2/x"), "build"));
     }
 
     #[test]
@@ -491,10 +520,16 @@ mod tests {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
         // `edit` is not in the read-only triad, so this degrades to an exact
-        // `Session` grant — the identical call is covered, a sibling isn't.
-        assert!(store.record(&s, "edit", Some("src/a.rs"), ApprovalScope::SessionDir));
-        assert!(store.is_granted(&s, "edit", Some("src/a.rs")));
-        assert!(!store.is_granted(&s, "edit", Some("src/b.rs")));
+        // `Session` grant -- the identical call is covered, a sibling isn't.
+        assert!(store.record(
+            &s,
+            "edit",
+            Some("src/a.rs"),
+            ApprovalScope::SessionDir,
+            "build"
+        ));
+        assert!(store.is_granted(&s, "edit", Some("src/a.rs"), "build"));
+        assert!(!store.is_granted(&s, "edit", Some("src/b.rs"), "build"));
     }
 
     #[test]
@@ -503,9 +538,15 @@ mod tests {
         let s = SessionId::new("s");
         // `bash` has no directory concept (`dir_for` returns `None`), so this
         // also degrades to an exact `Session` grant on the literal command.
-        store.record(&s, "bash", Some("git status"), ApprovalScope::SessionDir);
-        assert!(store.is_granted(&s, "bash", Some("git status")));
-        assert!(!store.is_granted(&s, "bash", Some("git log")));
+        store.record(
+            &s,
+            "bash",
+            Some("git status"),
+            ApprovalScope::SessionDir,
+            "build",
+        );
+        assert!(store.is_granted(&s, "bash", Some("git status"), "build"));
+        assert!(!store.is_granted(&s, "bash", Some("git log"), "build"));
     }
 
     #[test]
@@ -513,19 +554,31 @@ mod tests {
         let mut store = FileGrantStore::default();
         let a = SessionId::new("a");
         let b = SessionId::new("b");
-        store.record(&a, "read", Some("src/a.rs"), ApprovalScope::SessionDir);
-        assert!(store.is_granted(&a, "read", Some("src/b.rs")));
-        assert!(!store.is_granted(&b, "read", Some("src/b.rs")));
+        store.record(
+            &a,
+            "read",
+            Some("src/a.rs"),
+            ApprovalScope::SessionDir,
+            "build",
+        );
+        assert!(store.is_granted(&a, "read", Some("src/b.rs"), "build"));
+        assert!(!store.is_granted(&b, "read", Some("src/b.rs"), "build"));
     }
 
     #[test]
     fn forget_session_clears_dir_grants() {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
-        store.record(&s, "read", Some("src/a.rs"), ApprovalScope::SessionDir);
-        assert!(store.is_granted(&s, "read", Some("src/b.rs")));
+        store.record(
+            &s,
+            "read",
+            Some("src/a.rs"),
+            ApprovalScope::SessionDir,
+            "build",
+        );
+        assert!(store.is_granted(&s, "read", Some("src/b.rs"), "build"));
         store.forget_session(&s);
-        assert!(!store.is_granted(&s, "read", Some("src/b.rs")));
+        assert!(!store.is_granted(&s, "read", Some("src/b.rs"), "build"));
     }
 
     #[test]
@@ -533,10 +586,10 @@ mod tests {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
         assert_eq!(store.grant_session_dir(&s, "./src/"), "src".to_string());
-        assert!(store.is_granted(&s, "read", Some("src/a.rs")));
-        assert!(store.is_granted(&s, "grep", Some("src/a.rs")));
-        assert!(store.is_granted(&s, "glob", Some("src/*.rs")));
-        assert!(!store.is_granted(&s, "edit", Some("src/a.rs")));
+        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "build"));
+        assert!(store.is_granted(&s, "grep", Some("src/a.rs"), "build"));
+        assert!(store.is_granted(&s, "glob", Some("src/*.rs"), "build"));
+        assert!(!store.is_granted(&s, "edit", Some("src/a.rs"), "build"));
     }
 
     #[test]
@@ -544,8 +597,8 @@ mod tests {
         let mut store = FileGrantStore::default();
         let s = SessionId::new("s");
         store.grant_session_dir(&s, ".");
-        assert!(store.is_granted(&s, "read", Some("anything/at/all.rs")));
-        assert!(store.is_granted(&s, "read", Some("top_level.rs")));
+        assert!(store.is_granted(&s, "read", Some("anything/at/all.rs"), "build"));
+        assert!(store.is_granted(&s, "read", Some("top_level.rs"), "build"));
     }
 
     #[test]
@@ -553,18 +606,37 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let path = tmp_path("persist");
         let _ = std::fs::remove_file(&path);
-        // SAFETY: single-threaded test guarded by ENV_LOCK; scopes this store's path.
+        // SAFETY: the var is only read by the *default* file store, which this test
+        // does not construct; the guard above serializes against sibling modules.
         unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
 
         let s = SessionId::new("s");
         let mut store = FileGrantStore::load();
-        assert!(store.record(&s, "bash", Some("git status"), ApprovalScope::Always));
+        assert!(store.record(
+            &s,
+            "bash",
+            Some("git status"),
+            ApprovalScope::Always,
+            "build"
+        ));
 
         // A freshly loaded store (new process) sees the persisted grant, and it is
-        // global — any session skips the prompt.
+        // global -- any session under the same mode skips the prompt.
         let reloaded = FileGrantStore::load();
-        assert!(reloaded.is_granted(&SessionId::new("other"), "bash", Some("git status")));
-        assert!(!reloaded.is_granted(&SessionId::new("other"), "bash", Some("git log")));
+        assert!(reloaded.is_granted(
+            &SessionId::new("other"),
+            "bash",
+            Some("git status"),
+            "build"
+        ));
+        assert!(!reloaded.is_granted(&SessionId::new("other"), "bash", Some("git log"), "build"));
+        // A different mode never inherits it (ADR-0207 §8).
+        assert!(!reloaded.is_granted(
+            &SessionId::new("other"),
+            "bash",
+            Some("git status"),
+            "research"
+        ));
 
         unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
         let _ = std::fs::remove_file(&path);
@@ -576,7 +648,7 @@ mod tests {
         // race to record *different* `Always` grants against the same on-disk
         // file (#329). Without the lock's read-current-then-merge, the second
         // writer's `std::fs::write` of its own stale `self.always` would clobber
-        // the first writer's grant — a lost update. A freshly loaded third store
+        // the first writer's grant -- a lost update. A freshly loaded third store
         // must see both.
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let path = tmp_path("concurrent");
@@ -590,6 +662,7 @@ mod tests {
                 "bash",
                 Some("git status"),
                 ApprovalScope::Always,
+                "build",
             );
         });
         let b = std::thread::spawn(|| {
@@ -599,6 +672,7 @@ mod tests {
                 "bash",
                 Some("git log"),
                 ApprovalScope::Always,
+                "build",
             );
         });
         a.join().unwrap();
@@ -607,11 +681,11 @@ mod tests {
         let reloaded = FileGrantStore::load();
         let any = SessionId::new("other");
         assert!(
-            reloaded.is_granted(&any, "bash", Some("git status")),
+            reloaded.is_granted(&any, "bash", Some("git status"), "build"),
             "grant recorded by the first store must survive a concurrent write"
         );
         assert!(
-            reloaded.is_granted(&any, "bash", Some("git log")),
+            reloaded.is_granted(&any, "bash", Some("git log"), "build"),
             "grant recorded by the second store must survive a concurrent write"
         );
 
@@ -628,7 +702,13 @@ mod tests {
 
         let mut store = FileGrantStore::load();
         let session = SessionId::new("s");
-        store.record(&session, "bash", Some("echo hi"), ApprovalScope::Session);
+        store.record(
+            &session,
+            "bash",
+            Some("echo hi"),
+            ApprovalScope::Session,
+            "build",
+        );
 
         // Another instance persists an `Always` grant directly on disk.
         let mut other = FileGrantStore::load();
@@ -637,19 +717,20 @@ mod tests {
             "grep",
             None,
             ApprovalScope::Always,
+            "build",
         );
 
         assert!(
-            !store.is_granted(&session, "grep", None),
+            !store.is_granted(&session, "grep", None, "build"),
             "stale before reload"
         );
         store.reload();
         assert!(
-            store.is_granted(&session, "grep", None),
+            store.is_granted(&session, "grep", None, "build"),
             "reload must pick up the new Always grant"
         );
         // The session-scoped grant recorded before reload is untouched.
-        assert!(store.is_granted(&session, "bash", Some("echo hi")));
+        assert!(store.is_granted(&session, "bash", Some("echo hi"), "build"));
 
         unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
         let _ = std::fs::remove_file(&path);
@@ -663,7 +744,60 @@ mod tests {
         // SAFETY: single-threaded test guarded by ENV_LOCK.
         unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
         let store = FileGrantStore::load();
-        assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("x")));
+        assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("x"), "build"));
+        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-0207 §8: a grants file written before this stage has no `mode` on
+    /// its entries -- loaded as `mode: None`, which never matches a live
+    /// call's `Some(mode)`, so a legacy `Always` grant is silently inert
+    /// rather than re-honored under whatever mode a call happens to run in.
+    #[test]
+    fn legacy_mode_less_grant_never_matches_a_live_call() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let path = tmp_path("legacy");
+        std::fs::write(&path, "grants:\n  - bash(git status)\n").unwrap();
+        // SAFETY: single-threaded test guarded by ENV_LOCK.
+        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+        let store = FileGrantStore::load();
+        assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("git status"), "build"));
+        assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("git status"), "research"));
+        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A grant recorded by this stage round-trips through the on-disk
+    /// `{mode, rule}` shape and is readable back by a fresh store.
+    #[test]
+    fn scoped_grant_round_trips_through_the_file() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let path = tmp_path("scoped-roundtrip");
+        let _ = std::fs::remove_file(&path);
+        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+
+        let mut store = FileGrantStore::load();
+        store.record(
+            &SessionId::new("s"),
+            "bash",
+            Some("git status"),
+            ApprovalScope::Always,
+            "research",
+        );
+        let reloaded = FileGrantStore::load();
+        assert!(reloaded.is_granted(
+            &SessionId::new("other"),
+            "bash",
+            Some("git status"),
+            "research"
+        ));
+        assert!(!reloaded.is_granted(
+            &SessionId::new("other"),
+            "bash",
+            Some("git status"),
+            "build"
+        ));
+
         unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
         let _ = std::fs::remove_file(&path);
     }

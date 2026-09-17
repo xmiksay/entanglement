@@ -23,11 +23,12 @@ mod tui;
 use entanglement_runtime::script;
 use entanglement_runtime::{
     agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
+    mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
     propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
     system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
     SharedRegistry, ToolRegistry,
 };
+use mode::ModeTable;
 use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
@@ -1523,8 +1524,17 @@ async fn main() -> Result<()> {
     // below (#329), so a persisted "always allow" grant another skutter
     // instance recorded is visible on the next reload.
     let active = Arc::new(Mutex::new(HashMap::new()));
+    // Per-session permission mode (ADR-0207 stage 4), folded from
+    // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
+    // `ProfileResolver` grades every call from this map, not from `active`.
+    let perm_modes = Arc::new(Mutex::new(HashMap::new()));
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+        perm_modes.clone(),
+        // `skutter` always runs the four built-in modes — code, not
+        // configuration (ADR-0207 §2). Config `modes:` tuning is a later
+        // stage's wiring, not this resolver's concern.
+        Arc::new(ModeTable::builtin().context("built-in permission modes must parse")?),
+        tools.clone(),
         user_config.permissions.clone(),
         // Root-relative arg normalization (#485, ADR-0125): cloned before
         // `escape_root` moves into `spawn_tool_executor_with_policy` below.
@@ -1550,6 +1560,7 @@ async fn main() -> Result<()> {
         live_skills.clone(),
         user_config.permissions.clone(),
         active,
+        perm_modes,
         resolver,
         grants.clone(),
         user_config.hooks.clone(),

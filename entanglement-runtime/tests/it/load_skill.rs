@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
@@ -184,8 +184,29 @@ async fn load_skill_then_read_a_substituted_ref() {
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "use the demo skill"))
+        .await
+        .unwrap();
+
+    // `load_skill` carries `Capability::Control` (ADR-0207 §3) but has no
+    // dedicated `Intercept` route, so it grades through `build` mode's
+    // `default: prompt` — no built-in mode writes an explicit `control`
+    // rule. Approve it so the turn continues into the `read` of the
+    // substituted ref (which build mode's `allow: [read, ...]` clears
+    // unprompted).
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "load_skill") {
+            break;
+        }
+    }
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "l1".into(),
+            scope: entanglement_core::ApprovalScope::Once,
+        })
         .await
         .unwrap();
 
@@ -257,26 +278,23 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
         registry,
     ))));
-    // A profile that *advertises* `load_skill` (no tool mask) but denies it via
-    // permission (default Deny): `load_skill` is gated exactly like `read`, no
-    // exemption (ADR-0037). Using a non-masked profile keeps this focused on the
-    // permission path, distinct from the #116 tool mask.
-    let mut profiles =
+    // A mode that denies `load_skill` by its literal name: `load_skill` is
+    // gated exactly like `read`, no exemption (ADR-0037). Named `"build"` so
+    // a fresh session picks it up as `DEFAULT_MODE` with no `SetMode` call
+    // (ADR-0207 stage 4 grades from the session's mode, not its
+    // `AgentProfile`).
+    let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "denyskill".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default: Permission::Allow,
+        rules: entanglement_runtime::mode::Rules::from_lists(&["load_skill".to_string()], &[], &[]),
+        limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
-    });
+    };
+    let mode_table = Arc::new(
+        entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
+    );
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -286,20 +304,43 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
+    let shared_tools = tools.shared();
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
+        Arc::new(entanglement_runtime::policy::ProfileResolver::new(
+            perm_modes.clone(),
+            mode_table,
+            shared_tools.clone(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        ));
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
+        Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
+    let _executor = entanglement_runtime::tool_runner::spawn_tool_executor_with_policy(
         &holly,
-        tools,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+        shared_tools,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(std::sync::RwLock::new(profiles)),
+        Arc::new(std::sync::RwLock::new(Arc::new(
+            entanglement_runtime::skills::SkillRegistry::default(),
+        ))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        perm_modes,
+        resolver,
+        grants,
+        Default::default(),
+        None,
+        entanglement_runtime::policy::SandboxConfig::none(),
+        Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
+        None,
+        None,
+        None,
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "denyskill".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "try the demo skill"))

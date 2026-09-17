@@ -162,8 +162,14 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
 
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let perm_modes = crate::mode_support::perm_modes();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let executor = spawn_tool_executor_with_policy(
         &holly,
@@ -175,6 +181,7 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),

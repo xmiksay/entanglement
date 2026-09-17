@@ -11,29 +11,24 @@
 //!   valid target, so `build`/`plan` are unreachable via spawn); and the target
 //!   is on the spawner's `spawnable_agents` allowlist. Checked against the
 //!   spawner's *own* profile, so the allowlist is not transitive.
-//! - **Privilege ceiling** — [`effective_permission`]: a child sub-agent is never
-//!   more privileged than its ancestors. Its effective permission for a tool call
-//!   is the least-privileged `resolve` across the session and every ancestor
-//!   (`Deny < Ask < Allow`), so a child cannot touch the shared working tree in
-//!   ways the parent couldn't. Resolution takes the call's tool-specific argument
-//!   (command/path, #173) so an argument-scoped rule matches the actual input;
-//!   [`permission_arg`] extracts it. A `bash`/`call` call also carries its
-//!   `workdir` (#425) so a `tool{pattern}` workdir-scoped rule matches too;
-//!   [`permission_workdir`] extracts it.
-//! - **Tool mask** — [`tool_masked`] (#116, ADR-0038): a tool omitted from a
-//!   profile's allowlist (or listed in its denylist) does not *exist* for that
-//!   session — a call is refused before permission is even resolved. Like the
-//!   ceiling it clamps down the ancestor chain (a child never gains a tool an
-//!   ancestor lacked). This is now the **only** half of the physical
-//!   restriction: core advertises every spec it is given, so a masked tool's
-//!   schema does reach the model and the refusal here is what the model sees.
-//!   [`tool_mask_source`] (#597) is the same walk, naming which link did the
-//!   masking and whether it was that link's profile or its session tool
-//!   overlay, so [`crate::decline::mask_decline`] can attribute the refusal.
+//! - **Privilege ceiling** — [`effective_permission`]/[`permission_chain`]:
+//!   a child sub-agent is never more privileged than its ancestors. Since
+//!   ADR-0207 (permission modes), the main dispatch ladder grades every call
+//!   from the session's permission **mode** (`crate::mode`/
+//!   `crate::policy::ProfileResolver`) instead — these `AgentProfile`-chain
+//!   functions now serve only the `rhai` binding policy
+//!   ([`crate::script::BindingPolicy`]), which still resolves its bindings
+//!   against the profile chain. Resolution takes the call's tool-specific
+//!   argument (command/path, #173) so an argument-scoped rule matches the
+//!   actual input; [`permission_arg`] extracts it. A `bash`/`call` call also
+//!   carries its `workdir` (#425) so a `tool{pattern}` workdir-scoped rule
+//!   matches too; [`permission_workdir`] extracts it.
 //!
-//! Skills no longer mask tools (ADR-0194 retired ADR-0106's `ActiveSkill`/
-//! `skill_masked`): a skill is purely additive, never a restriction on the
-//! session's tool set.
+//! The **tool mask** (#116, ADR-0038: `tools`/`disallowed_tools` making a
+//! tool not *exist* for a session) is retired (ADR-0207 §8, "the mask
+//! machinery is deleted"): `tool_masked`/`tool_mask_source` are gone.
+//! `AgentProfile` still carries the `tools`/`disallowed_tools` fields for now
+//! (ADR-0207 stage 4b removes them), but nothing reads them any more.
 //!
 //! Both live in the runtime tool executor's single-threaded loop, folded
 //! from the same lifecycle events as permission dispatch — zero core surface.
@@ -44,7 +39,6 @@ use entanglement_core::{
     AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolOverlayEntry,
 };
 
-use crate::decline::MaskSource;
 use crate::subagent::SpawnGuard;
 
 /// Per-profile spawn gate for `spawner` launching `target` (#119, ADR-0040),
@@ -187,104 +181,6 @@ fn resolve_with_source(
     (perm, source)
 }
 
-/// Whether `tool` is masked out for `session` — refused because it is not in
-/// the effective tool set (#116, ADR-0038). A tool is usable only if the
-/// session's own profile *and* every ancestor's profile admit it: the mask
-/// intersects down the chain, so a child never gains a tool an ancestor lacked
-/// (mirrors [`effective_permission`]'s privilege ceiling). An unseen session in
-/// the chain masks **everything** — **fail-closed** (#156): under broadcast
-/// overload a dropped `SessionStarted`/`AgentChanged` must not silently un-mask a
-/// restricted session. The executor self-heals the leaf from `ToolExec.agent`, so
-/// this fires only for a genuinely-unknown session (matching the [`permission_for`]
-/// `Deny` fallback).
-///
-/// A **sponsored child** (ADR-0138) is exempt from the ancestor mask walk — its
-/// usable set is its own profile's (plus any sponsored ancestor's, since a
-/// sponsored sub-tree is itself a permission root). This is what lets a `build`
-/// child of a read-only `plan` session run `edit`/`write`/`bash` — without the
-/// exemption, the plan ancestor's read-only mask would erase them.
-///
-/// Orthogonal to permission: this decides a tool's *existence*, the `resolve`
-/// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
-pub fn tool_masked(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    session: &SessionId,
-    tool: &str,
-) -> bool {
-    tool_mask_source(active, guard, overlays, session, tool).is_some()
-}
-
-/// Like [`tool_masked`], but names *which* link in the chain masked the tool
-/// **and on whose authority** (#597): `None` ⇒ not masked; `Some(source)` ⇒
-/// `source.session`'s profile, its overlay, or its being unseen is what erased
-/// the tool — `source.session == session` means the session's own, any other id
-/// an ancestor that clamped it. Lets a caller build the attributed refusal
-/// ([`crate::decline::mask_decline`]) instead of a blanket "restricted by
-/// profile" that blames an agent definition an overlay deny actually withdrew.
-pub fn tool_mask_source(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    session: &SessionId,
-    tool: &str,
-) -> Option<MaskSource> {
-    // A link's own live tool overlay (#539, ADR-0149) overrides its profile
-    // mask in both directions — a deny entry withdraws a profile-advertised
-    // tool, an enable entry injects a masked one; no opinion falls back to
-    // the profile. Because the check is per link, a parent's overlay also
-    // covers its spawn sub-tree (each descendant's own link permitting).
-    // `None` ⇒ admitted; `Some(source)` ⇒ withheld, with the authority.
-    let refusal = |s: &SessionId, profile: &AgentProfile| match overlays
-        .get(s)
-        .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
-    {
-        Some(true) => None,
-        Some(false) => Some(MaskSource::overlay(s.clone())),
-        None => (!profile.advertises_tool(tool)).then(|| MaskSource::profile(s.clone())),
-    };
-    let mut current = session.clone();
-    // A sponsored session is a permission root (ADR-0138): only its own (and
-    // any sponsored ancestor's) mask applies, not the chain above.
-    if guard.is_sponsored(&current) {
-        return match active.get(&current) {
-            Some(profile) => refusal(&current, profile),
-            // Unseen sponsored session ⇒ fail-closed (#156).
-            None => Some(MaskSource::unseen(current)),
-        };
-    }
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        match active.get(&current) {
-            Some(profile) => {
-                if let Some(source) = refusal(&current, profile) {
-                    return Some(source);
-                }
-            }
-            // Unseen session in the chain ⇒ fail-closed (#156).
-            None => return Some(MaskSource::unseen(current)),
-        }
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor (ADR-0138): check its mask too (it
-                // clamps this sub-tree) but stop the walk above it.
-                if guard.is_sponsored(&parent) {
-                    return match active.get(&parent) {
-                        Some(profile) => refusal(&parent, profile),
-                        // Unseen sponsored ancestor ⇒ fail-closed.
-                        None => Some(MaskSource::unseen(parent)),
-                    };
-                }
-                current = parent;
-            }
-            None => break,
-        }
-    }
-    None
-}
-
 /// The ordered permission profiles the effective grade folds over (#173): the
 /// session's own profile followed by each ancestor, walking `guard`'s parent
 /// links. The rhai binding policy captures this once per run and resolves each
@@ -371,8 +267,13 @@ pub fn clamp_to_base(
 /// every tool it matches. `arg_pattern` is ignored when `allow` is `false`:
 /// the entry's own grammar (`--allow [<pattern>]`) never produces that
 /// combination, and narrowing an `Ask` down from itself has no meaning. A
-/// deny entry is never passed here — `tool_masked`/`tool_mask_source`
-/// withdraw it before a grade decision is even reached.
+/// deny entry is never passed here — [`overlay_grade_entry`]'s
+/// `ToolOverlayEntry::find` lookup is enable-only, so a deny entry never
+/// reaches this function. This override deliberately replaces the mode
+/// resolution outright rather than merely widening it — an explicit
+/// `/enable tool X --allow` is the user's own voice and overrides even a
+/// mode `deny` for that session (ADR-0207 §8); the model can't reach this
+/// path, since an enable entry is trusted-frame-only (ADR-0177).
 pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionProfile {
     match (entry.allow, entry.arg_pattern.as_deref()) {
         (true, Some(pattern)) => PermissionProfile::new(Permission::Ask)
@@ -384,16 +285,14 @@ pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionPr
 
 /// The overlay entry that decides `tool`'s **grade** for a call resolved
 /// through `chain` (nearest session first, the same ordering
-/// [`ancestor_chain`] produces) — the grade-side counterpart to
-/// `tool_mask_source`'s per-link existence walk (#628, closing the ADR-0149
-/// "child sessions" deferral). The first link, walking outward from the
-/// call's own session, whose overlay carries an enable entry for `tool`
-/// wins: a session's own overlay beats an ancestor's, and a parent's overlay
-/// grade now reaches its spawn sub-tree exactly as its mask already does.
-/// `None` ⇒ no link in the chain has an opinion — the ordinary profile-chain
-/// resolution stands. A deny entry never reaches this lookup: `tool_masked`/
-/// `tool_mask_source` withdraw the tool before a grade decision is reached,
-/// so `ToolOverlayEntry::find` (enable-only) is the right primitive here.
+/// [`ancestor_chain`] produces, #628 closing the ADR-0149 "child sessions"
+/// deferral). The first link, walking outward from the call's own session,
+/// whose overlay carries an enable entry for `tool` wins: a session's own
+/// overlay beats an ancestor's, and a parent's overlay grade reaches its
+/// whole spawn sub-tree. `None` ⇒ no link in the chain has an opinion — the
+/// ordinary mode resolution stands. A deny entry never reaches this lookup:
+/// `ToolOverlayEntry::find` is enable-only, so a session's own `/disable
+/// tool` never resolves through this path.
 pub fn overlay_grade_entry(
     overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     chain: &[SessionId],
@@ -730,44 +629,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_mask_refuses_tool_absent_from_allowlist() {
-        // A read-only leaf: only read/glob/grep advertised.
-        let explore = masked_profile(
-            "explore",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Deny),
-            Some(vec!["read", "glob", "grep"]),
-            Vec::new(),
-        );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), explore);
-        let guard = SpawnGuard::new();
-        assert!(!tool_masked(&active, &guard, &HashMap::new(), &s, "read"));
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "edit"));
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "agent"));
-        // An unseen session masks everything — fail-closed (#156). Even a tool a
-        // seen profile would advertise (`read`) is refused until the session's
-        // profile is known, so a dropped `SessionStarted` cannot un-mask a
-        // restricted session under overload.
-        let other = SessionId::new("other");
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &other,
-            "edit"
-        ));
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &other,
-            "read"
-        ));
-    }
-
-    #[test]
     fn unseen_session_resolves_to_deny() {
         // #156: a session whose lifecycle events were dropped under broadcast
         // overload is unseen — its effective permission must be `Deny`
@@ -825,158 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_mask_clamps_down_the_ancestor_chain() {
-        // Parent restricted to [read]; child would advertise [read, edit] on its
-        // own, but the intersection down the chain drops `edit`.
-        let parent = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        let child = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "edit"]),
-            Vec::new(),
-        );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), parent);
-        active.insert(c.clone(), child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        // `read` survives both → available on the child.
-        assert!(!tool_masked(&active, &guard, &HashMap::new(), &c, "read"));
-        // `edit` is on the child alone but masked by the parent → refused.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-        // The parent (a root) keeps its own mask unchanged.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &p, "edit"));
-    }
-
-    #[test]
-    fn tool_mask_source_names_the_clamping_ancestor_vs_own_profile() {
-        // #597: the source distinguishes "own profile lacks it" from "an
-        // ancestor's mask erased it" — the refusal message needs to tell
-        // them apart instead of a blanket "restricted by profile".
-        let parent = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        let child = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "edit"]),
-            Vec::new(),
-        );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), parent);
-        active.insert(c.clone(), child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        // `edit` is masked by the parent's narrower allowlist, not the child's own.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "edit"),
-            Some(MaskSource::profile(p.clone()))
-        );
-        // `agent` is absent from the child's own allowlist too — the walk
-        // stops at the child itself.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent"),
-            Some(MaskSource::profile(c.clone()))
-        );
-        // `read` survives the whole chain → not masked.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "read"),
-            None
-        );
-    }
-
-    #[test]
-    fn tool_mask_source_attributes_an_overlay_deny_to_the_overlay() {
-        // The refusal must name the session tool overlay, not the agent
-        // definition — the profile happily admits `edit` here, a live
-        // per-session deny is what withdrew it.
-        let build = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            None,
-            Vec::new(),
-        );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), build);
-        let guard = SpawnGuard::new();
-        let mut overlays = HashMap::new();
-        overlays.insert(s.clone(), vec![ToolOverlayEntry::deny("edit")]);
-        assert_eq!(
-            tool_mask_source(&active, &guard, &overlays, &s, "edit"),
-            Some(MaskSource::overlay(s.clone()))
-        );
-        assert_eq!(
-            tool_mask_source(&active, &guard, &overlays, &s, "read"),
-            None
-        );
-    }
-
-    #[test]
-    fn tool_mask_source_reports_an_unseen_session_as_unseen() {
-        // Fail-closed (#156) is attributed as such, so the refusal says the
-        // profile is unknown rather than naming an innocent agent.
-        let guard = SpawnGuard::new();
-        let s = SessionId::new("ghost");
-        assert_eq!(
-            tool_mask_source(&HashMap::new(), &guard, &HashMap::new(), &s, "read"),
-            Some(MaskSource::unseen(s))
-        );
-    }
-
-    #[test]
-    fn plan_mask_no_longer_erases_call_bash_from_an_explore_child() {
-        // #597: `plan`'s own mask used to lack `call`/`bash`, so the ancestor
-        // clamp erased them from any `explore` child it spawned even though
-        // `explore.md` itself grants both (ask-graded). `plan.md` now carries
-        // both on its own mask so the intersection stops erasing them.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let plan = reg.get("plan").unwrap().clone();
-        let explore = reg.get("explore").unwrap().clone();
-
-        let p = SessionId::new("plan");
-        let c = SessionId::new("explore-child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), plan);
-        active.insert(c.clone(), explore);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        assert!(
-            !tool_masked(&active, &guard, &HashMap::new(), &c, "call"),
-            "an explore child of plan must keep its own `call` access"
-        );
-        assert!(
-            !tool_masked(&active, &guard, &HashMap::new(), &c, "bash"),
-            "an explore child of plan must keep its own `bash` access"
-        );
-        // `edit` stays masked: plan's own mask still lacks it for children.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-    }
-
-    #[test]
     fn plan_child_explore_reaches_ask_on_a_real_call_dispatch() {
         // #597 end-to-end: the mask fix alone isn't enough — the ancestor
         // *permission* ceiling (`effective_permission`) also has to clear
@@ -1004,146 +713,6 @@ mod tests {
             Permission::Ask,
             "a real `call` dispatch under an explore child of plan must reach Ask, not Deny"
         );
-    }
-
-    #[test]
-    fn tool_mask_glob_admits_mcp_down_the_ancestor_chain() {
-        // #537: a glob entry in an ancestor's allowlist admits a child's MCP
-        // call through the chain intersection, evaluated per profile per link.
-        let mcp_parent = masked_profile(
-            "mcp-parent",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "mcp__*"]),
-            Vec::new(),
-        );
-        let unmasked_child = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), mcp_parent);
-        active.insert(c.clone(), unmasked_child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &c,
-            "mcp__docs__search"
-        ));
-        // A non-matching tool is still clamped by the same ancestor.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-
-        // Without the glob the identical MCP call is masked by the ancestor.
-        let plain_parent = masked_profile(
-            "plain-parent",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        active.insert(p.clone(), plain_parent);
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &c,
-            "mcp__docs__search"
-        ));
-    }
-
-    #[test]
-    fn tool_overlay_admits_past_mask_per_link() {
-        // #539, ADR-0149: a session's live overlay beats its own profile's
-        // allowlist *and* denylist, and — because admission is per link — a
-        // parent's overlay admits the tool for an unmasked child too.
-        let restricted = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            vec!["mcp__jira__*"],
-        );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), restricted);
-        let guard = SpawnGuard::new();
-        let mut overlays = HashMap::new();
-        overlays.insert(
-            s.clone(),
-            vec![
-                ToolOverlayEntry::ask("mcp__docs__*"),
-                ToolOverlayEntry::ask("mcp__jira__create"),
-            ],
-        );
-        // Not in the allowlist, admitted by the overlay.
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &s,
-            "mcp__docs__search"
-        ));
-        // Explicitly denylisted by the profile — the overlay still wins.
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &s,
-            "mcp__jira__create"
-        ));
-        // A non-matching tool stays masked.
-        assert!(tool_masked(&active, &guard, &overlays, &s, "edit"));
-
-        // A deny entry withdraws a profile-advertised tool (#539 deny half).
-        overlays
-            .get_mut(&s)
-            .unwrap()
-            .push(ToolOverlayEntry::deny("read"));
-        assert!(tool_masked(&active, &guard, &overlays, &s, "read"));
-        overlays.get_mut(&s).unwrap().pop();
-
-        // Parent overlay admits down the chain for an unmasked child.
-        let child_profile = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let c = SessionId::new("c");
-        active.insert(c.clone(), child_profile);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(s.clone(), None);
-        guard.record_start(c.clone(), Some(s.clone()));
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &c,
-            "mcp__docs__search"
-        ));
-        // A child with its own restrictive mask still refuses (no overlay on
-        // its own link).
-        let masked_child = masked_profile(
-            "leaf",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        active.insert(c.clone(), masked_child);
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &c,
-            "mcp__docs__search"
-        ));
     }
 
     /// #628: `overlay_grade_entry` walks the same ancestor chain the mask

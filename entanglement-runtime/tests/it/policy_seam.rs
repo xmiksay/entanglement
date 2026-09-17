@@ -76,8 +76,8 @@ impl PermissionResolver for FixedResolver {
     }
 }
 
-/// One recorded `GrantStore::record` call: `(session, tool, arg, scope)`.
-type Recorded = (SessionId, String, Option<String>, ApprovalScope);
+/// One recorded `GrantStore::record` call: `(session, tool, arg, scope, mode)`.
+type Recorded = (SessionId, String, Option<String>, ApprovalScope, String);
 
 /// A grant store that records `record` calls in memory and NEVER touches a file —
 /// the multi-tenant embedder's DB write, stubbed. `is_granted` always says no (a
@@ -88,7 +88,13 @@ struct RecordingGrants {
 }
 #[async_trait]
 impl GrantStore for RecordingGrants {
-    fn is_granted(&self, _session: &SessionId, _tool: &str, _arg: Option<&str>) -> bool {
+    fn is_granted(
+        &self,
+        _session: &SessionId,
+        _tool: &str,
+        _arg: Option<&str>,
+        _mode: &str,
+    ) -> bool {
         false
     }
     async fn record(
@@ -97,21 +103,24 @@ impl GrantStore for RecordingGrants {
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     ) {
         self.recorded.lock().unwrap().push((
             session.clone(),
             tool.to_string(),
             arg.map(str::to_string),
             scope,
+            mode.to_string(),
         ));
     }
     fn forget_session(&self, _session: &SessionId) {}
 }
 
 /// Spawn a Holly whose scripted LLM calls `bash` once, wired to the given custom
-/// resolver + grant store via [`spawn_tool_executor_with_policy`]. The session
-/// runs under the built-in `build` profile (advertises `bash`, so the tool mask
-/// never fires — the grade is entirely the resolver's).
+/// resolver + grant store via [`spawn_tool_executor_with_policy`]. The tool
+/// mask is retired (ADR-0207 §8) — every advertised tool dispatches — so the
+/// grade is entirely the resolver's, whatever mode the session happens to run
+/// in.
 fn spawn_with_policy(
     input: &str,
     resolver: Arc<dyn PermissionResolver>,
@@ -144,9 +153,12 @@ fn spawn_with_policy(
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    // `active` is folded by the executor (masking/spawn); the custom resolver
-    // ignores it. Base ceiling is allow-all, so it never clamps the resolver.
+    // `active` is folded by the executor (spawn gating/sandbox); the custom
+    // resolver ignores it, as it does `perm_modes` (the session's permission
+    // mode) — a custom resolver decides the grade its own way. Base ceiling
+    // is allow-all, so it never clamps the resolver.
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = crate::mode_support::perm_modes();
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         reg.shared(),
@@ -157,6 +169,7 @@ fn spawn_with_policy(
         Arc::new(std::sync::RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
@@ -313,13 +326,16 @@ async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
         "approved tool should run; got {events:?}"
     );
 
-    // The `Always` grant landed in the custom store…
+    // The `Always` grant landed in the custom store, tagged with the
+    // session's mode (ADR-0207 §8) — the default `DEFAULT_MODE`, "build",
+    // since this harness never sends `SetMode`.
     let recorded = recorded.lock().unwrap();
     assert!(
-        recorded.iter().any(|(s, t, arg, scope)| s == &sid
+        recorded.iter().any(|(s, t, arg, scope, mode)| s == &sid
             && t == "bash"
             && arg.as_deref() == Some("ls")
-            && *scope == ApprovalScope::Always),
+            && *scope == ApprovalScope::Always
+            && mode == "build"),
         "Always approval should route through the custom GrantStore; saw {recorded:?}"
     );
     // …and NOT to the managed file.

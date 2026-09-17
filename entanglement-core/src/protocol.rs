@@ -906,13 +906,14 @@ impl AgentProfile {
     /// restriction of #116 — orthogonal to [`PermissionProfile::for_tool`],
     /// which grades `Allow`/`Ask`/`Deny` among the tools the mask admits.
     ///
-    /// **Advertisement no longer consults this predicate.** Core's turn loop
-    /// advertises every spec the config provides; the mask is enforced solely
-    /// at dispatch, by the runtime's `permission::tool_masked` /
-    /// `tool_mask_source` gate (which also intersects it down the ancestor
-    /// chain) — a masked call is declined there with an attributed refusal.
-    /// The name is kept for compatibility with heads and the runtime that
-    /// already spell it; read it as "the mask admits this tool".
+    /// **Advertisement no longer consults this predicate, and neither does
+    /// dispatch.** ADR-0207 (permission modes) retired the runtime-side mask
+    /// gate this predicate used to feed (`permission::tool_masked`/
+    /// `tool_mask_source`, deleted) — the runtime now grades every call from
+    /// the session's permission mode instead. This method (and the
+    /// `tools`/`disallowed_tools` fields it reads) survives only for the
+    /// runtime's own UI-facing tooling (`tool_state`, `inspect agents`, the
+    /// TUI's mask editor) until ADR-0207's later stage removes them too.
     ///
     /// Plan authorship still keys off the mask *data* (#231, ADR-0049): the
     /// runtime advertises `propose_plan` only to a profile that *explicitly*

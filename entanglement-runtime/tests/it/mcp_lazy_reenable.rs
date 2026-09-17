@@ -134,11 +134,24 @@ fn done_response() -> LlmResponse {
     }
 }
 
-/// A profile with no tool mask (`tools: None`) so every call — including a
-/// namespaced MCP one never seen before — is in-mask and reaches
-/// `tool_runner::dispatch` directly, never `mask_request`. `permission`
-/// grades every call `perm` (`Ask` proves the ladder still runs after a
-/// lazy enable; `Allow` keeps the other scenarios to one round-trip).
+/// A single-mode table named `"build"` (matching `DEFAULT_MODE`) with the
+/// given `default` grade and no rules — the mode-based analog of
+/// `unmasked_profile`'s `perm` (ADR-0207 stage 4 grades from the session's
+/// mode, not its `AgentProfile`): `Ask` proves the ladder still runs after a
+/// lazy enable; `Allow` keeps the other scenarios to one round-trip.
+fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mode::ModeTable> {
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default,
+        rules: entanglement_runtime::mode::Rules::default(),
+        limits: entanglement_runtime::mode::Limits::default(),
+        sandbox: None,
+    };
+    Arc::new(
+        entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
+    )
+}
+
 fn unmasked_profile(name: &str, perm: Permission) -> ProfileRegistry {
     let mut profiles = ProfileRegistry::default();
     profiles.insert(AgentProfile {
@@ -179,6 +192,7 @@ fn spawn_executor(
     profiles: ProfileRegistry,
     scripted: Vec<LlmResponse>,
     avail: AvailableMcp,
+    mode_table: Arc<entanglement_runtime::mode::ModeTable>,
 ) -> Holly {
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(scripted.clone())) as Box<dyn Llm>),
@@ -189,15 +203,19 @@ fn spawn_executor(
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = reg.shared();
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+        perm_modes.clone(),
+        mode_table,
+        shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -205,6 +223,7 @@ fn spawn_executor(
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
@@ -276,7 +295,12 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
         tool_call_response("t1", "mcp__testsrv__ping"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Ask),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
@@ -335,7 +359,12 @@ async fn disabled_tier_gets_a_truthful_decline_not_unknown_tool() {
         tool_call_response("t1", "mcp__offsrv__anything"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
@@ -379,7 +408,12 @@ async fn genuinely_unknown_tool_keeps_the_unknown_tool_hint() {
         tool_call_response("t1", "totally_bogus_tool_zzz"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {
@@ -424,7 +458,12 @@ async fn enable_failure_is_distinguishable_and_a_repeat_call_is_guarded() {
         tool_call_response("t2", "mcp__brokensrv__y"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetAgent {

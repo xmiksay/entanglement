@@ -79,7 +79,7 @@ use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
 use crate::permission::{
     ancestor_chain, min_permission, overlay_entry_grade, overlay_grade_entry, permission_chain,
-    permission_workdir, tool_masked,
+    permission_workdir,
 };
 use crate::permission_bash::resolve_scoped_bash_aware;
 use crate::permission_path::grading_arg;
@@ -131,24 +131,17 @@ pub fn is_background(input: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Permission decision for one binding, precomputed once per script run.
-#[derive(Clone)]
-enum Decision {
-    /// Tool masked out of the session's effective set (#116) — does not exist.
-    Masked,
-    /// Tool available; run it under this permission.
-    Perm(Permission),
-}
-
-/// The per-run binding policy: which host functions are masked out (#116), plus
-/// the least-privilege permission chain — the session's own profile, each
-/// ancestor (#77), then the config ceiling (#172) — resolved *per call* so an
-/// argument-scoped rule (#173) sees the binding's actual input. Built once in the
-/// executor loop where the profile state lives, then moved into the script task
-/// so the read stays ordered with lifecycle events. The mask is argument-
-/// independent so it stays a precomputed set; only the grade is resolved live.
+/// The per-run binding policy: the least-privilege permission chain — the
+/// session's own profile, each ancestor (#77), then the config ceiling
+/// (#172) — resolved *per call* so an argument-scoped rule (#173) sees the
+/// binding's actual input. Built once in the executor loop where the
+/// profile state lives, then moved into the script task so the read stays
+/// ordered with lifecycle events.
+///
+/// The `tools`/`disallowed_tools` mask this policy used to also filter
+/// bindings through is retired (ADR-0207 §8, "the mask machinery is
+/// deleted") — every binding is graded, never withheld by name.
 pub struct BindingPolicy {
-    masked: HashSet<&'static str>,
     /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
     chain: Vec<PermissionProfile>,
     /// The overlay entry that overrides a binding's grade, keyed by binding
@@ -171,11 +164,10 @@ pub struct BindingPolicy {
 }
 
 impl BindingPolicy {
-    /// Snapshot each binding's agent mask, overlay grade, and the effective
-    /// permission chain for `session`, appending the user config's global
-    /// ceiling (#172) so the quintet bindings honor the same `permissions`
-    /// floor — including its argument-scoped rules (#173) — as a direct tool
-    /// call.
+    /// Snapshot each binding's overlay grade and the effective permission
+    /// chain for `session`, appending the user config's global ceiling
+    /// (#172) so the quintet bindings honor the same `permissions` floor —
+    /// including its argument-scoped rules (#173) — as a direct tool call.
     pub fn capture(
         active: &HashMap<SessionId, AgentProfile>,
         guard: &SpawnGuard,
@@ -184,19 +176,13 @@ impl BindingPolicy {
         base: &PermissionProfile,
         root: Option<&Path>,
     ) -> Self {
-        // The session's live tool overlay (#539, ADR-0149) reaches the binding
-        // *mask* through `tool_masked` below (an overlay-admitted `bash` binding
-        // exists), and now its Ask/Allow grade override too (#628) via `overlay`
-        // below — mirroring `tool_runner::dispatch`'s per-link chain walk
-        // instead of resolving only through the profile chain.
-        let masked: HashSet<&'static str> = BINDING_TOOLS
-            .into_iter()
-            .filter(|tool| tool_masked(active, guard, overlays, session, tool))
-            .collect();
+        // The session's live tool overlay (#539, ADR-0149) reaches every
+        // binding's Ask/Allow grade override (#628) via `overlay` below,
+        // mirroring `tool_runner::dispatch`'s per-link chain walk instead of
+        // resolving only through the profile chain.
         let session_chain = ancestor_chain(guard, session);
         let overlay: HashMap<&'static str, ToolOverlayEntry> = BINDING_TOOLS
             .into_iter()
-            .filter(|tool| !masked.contains(tool))
             .filter_map(|tool| {
                 overlay_grade_entry(overlays, &session_chain, tool).map(|entry| (tool, entry))
             })
@@ -204,7 +190,6 @@ impl BindingPolicy {
         let mut chain = permission_chain(active, guard, session);
         chain.push(base.clone());
         BindingPolicy {
-            masked,
             chain,
             overlay,
             base: base.clone(),
@@ -212,28 +197,24 @@ impl BindingPolicy {
         }
     }
 
-    /// Resolve one binding call: masked tools do not exist; a tool with an
-    /// overlay grade (#628) resolves that entry clamped to the config
-    /// ceiling, replacing the profile chain exactly as
-    /// `tool_runner::dispatch` does for a direct call; otherwise the grade is
-    /// the least-privileged across the whole chain for this tool + argument
-    /// (+ `workdir` for `exec`/`bash`, #480). `read_raw` is graded and masked
-    /// as an alias of `read` — it is not in `BINDING_TOOLS`/a profile's
-    /// `tools`/`disallowed_tools` at all (never advertised, see
-    /// [`crate::host::ReadRawTool`]), so without this alias a profile that
-    /// restricts `read` would be silently bypassed by a script reaching for
-    /// the unlabeled raw path instead. The same alias applies to the overlay
-    /// lookup, for the same reason. `glob_json`/`grep_json` alias `glob`/
-    /// `grep` identically (ADR-0206) — a structured-output escape hatch must
-    /// not be a permission escape hatch.
-    fn decide(&self, tool: &'static str, input: &str) -> Decision {
+    /// Resolve one binding call's grade: a tool with an overlay grade (#628)
+    /// resolves that entry clamped to the config ceiling, replacing the
+    /// profile chain exactly as `tool_runner::dispatch` does for a direct
+    /// call; otherwise the grade is the least-privileged across the whole
+    /// chain for this tool + argument (+ `workdir` for `exec`/`bash`, #480).
+    /// `read_raw` is graded as an alias of `read` — it is not in
+    /// `BINDING_TOOLS` at all (never advertised, see
+    /// [`crate::host::ReadRawTool`]), so without this alias a profile
+    /// restricting `read` would be silently bypassed by a script reaching
+    /// for the unlabeled raw path instead. The same alias applies to the
+    /// overlay lookup, for the same reason. `glob_json`/`grep_json` alias
+    /// `glob`/`grep` identically (ADR-0206) — a structured-output escape
+    /// hatch must not be a permission escape hatch.
+    fn decide(&self, tool: &'static str, input: &str) -> Permission {
         let tool = graded_name(tool);
-        if self.masked.contains(tool) {
-            return Decision::Masked;
-        }
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
-        let perm = match self.overlay.get(tool) {
+        match self.overlay.get(tool) {
             Some(entry) => {
                 let overlay_profile = overlay_entry_grade(tool, entry);
                 let grade = resolve_scoped_bash_aware(
@@ -253,8 +234,7 @@ impl BindingPolicy {
                     resolve_scoped_bash_aware(p, tool, arg.as_deref(), workdir.as_deref()),
                 )
             }),
-        };
-        Decision::Perm(perm)
+        }
     }
 }
 
@@ -573,22 +553,13 @@ async fn service_binding(
     let bind_rid = format!("{request_id}:rhai:{}", call.tool);
 
     let perm = match policy.decide(call.tool, &call.input) {
-        Decision::Masked => {
-            return (
-                Err(format!(
-                    "tool `{}` is not available to this agent (restricted by profile)",
-                    call.tool
-                )),
-                false,
-            )
-        }
-        Decision::Perm(Permission::Deny) => {
+        Permission::Deny => {
             return (
                 Err(format!("tool `{}` denied by permission profile", call.tool)),
                 false,
             )
         }
-        Decision::Perm(perm) => perm,
+        perm => perm,
     };
 
     let escape = escape_root
@@ -1338,8 +1309,12 @@ mod tests {
         assert!(is_error);
     }
 
+    /// ADR-0207 §8 ("the mask machinery is deleted"): the retired `tools`
+    /// allowlist no longer withholds a binding — `edit` (never named by the
+    /// profile's own rules) now falls through to the profile's `default`
+    /// grade like any other tool, instead of not existing.
     #[test]
-    fn binding_policy_masks_and_grades() {
+    fn binding_policy_grades_every_binding_from_the_permission_chain_only() {
         use entanglement_core::{AgentMode, PermissionProfile};
 
         let profile = AgentProfile {
@@ -1365,26 +1340,20 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        // `edit` is not in the allowlist → masked.
-        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
-        // `read` survives the mask and is Allow.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `glob` survives the mask but only its default Ask grade.
-        assert!(matches!(
-            policy.decide("glob", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
+        // `edit` is absent from the retired `tools` field — no longer
+        // withheld, it just falls through to the profile's `default: Ask`.
+        assert_eq!(policy.decide("edit", "{}"), Permission::Ask);
+        // `read` has its own explicit rule.
+        assert_eq!(policy.decide("read", "{}"), Permission::Allow);
+        // `glob` has no rule of its own either — same default Ask grade.
+        assert_eq!(policy.decide("glob", "{}"), Permission::Ask);
     }
 
-    /// #628: a live tool overlay's grade override now reaches a `rhai`
-    /// binding, not just the generic dispatch route — a `bash()` binding
-    /// under a session's own `Allow` overlay entry runs without the
-    /// profile's own `Ask` default, and a spawned child with no overlay of
-    /// its own inherits the grade from its parent's, mirroring the mask's
-    /// existing per-link reach (`tool_overlay_admits_past_mask_per_link`).
+    /// #628: a live tool overlay's grade override reaches a `rhai` binding,
+    /// not just the generic dispatch route — a `bash()` binding under a
+    /// session's own `Allow` overlay entry runs without the profile's own
+    /// `Ask` default, and a spawned child with no overlay of its own
+    /// inherits the grade from its parent's.
     #[test]
     fn binding_policy_honors_the_overlay_grade_and_reaches_a_child() {
         use entanglement_core::{AgentMode, PermissionProfile, ToolOverlayEntry};
@@ -1429,32 +1398,22 @@ mod tests {
         // profile's Ask default.
         let parent_policy =
             BindingPolicy::capture(&active, &guard, &overlays, &parent, &base, None);
-        assert!(matches!(
-            parent_policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(parent_policy.decide("bash", "{}"), Permission::Allow);
 
         // The child has no overlay of its own, but inherits the parent's
         // grade for the same binding.
         let child_policy = BindingPolicy::capture(&active, &guard, &overlays, &child, &base, None);
-        assert!(matches!(
-            child_policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(child_policy.decide("bash", "{}"), Permission::Allow);
         // An unrelated binding is untouched by the overlay and still asks.
-        assert!(matches!(
-            child_policy.decide("edit", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
+        assert_eq!(child_policy.decide("edit", "{}"), Permission::Ask);
     }
 
-    /// ADR-0194: skills no longer mask tools, so a `BindingPolicy` reflects
-    /// only the agent mask — `write` (in the agent's own `tools` allowlist)
-    /// grades normally with no skill layer able to refuse it, `read_raw`
-    /// stays graded/masked as an alias of `read` for the agent mask, and a
-    /// tool outside the agent's own allowlist (`edit`) is still `Masked`.
+    /// ADR-0194: skills no longer mask tools; ADR-0207 §8 retires the agent
+    /// mask too — a `BindingPolicy` reflects only the permission chain, so
+    /// `write`/`read`/`read_raw`/`edit` all grade identically off the
+    /// profile's own allow-all default, whether or not `tools` names them.
     #[test]
-    fn binding_policy_reflects_only_the_agent_mask_skills_do_not_narrow_it() {
+    fn binding_policy_reflects_only_the_permission_chain() {
         use entanglement_core::{AgentMode, PermissionProfile};
 
         let profile = AgentProfile {
@@ -1480,23 +1439,13 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        // `write` is in the agent's own allowlist — no skill layer to exclude it.
-        assert!(matches!(
-            policy.decide("write", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `read` grades normally too.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `read_raw` is graded/masked as an alias of `read` for the agent mask.
-        assert!(matches!(
-            policy.decide("read_raw", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `edit` is outside the agent's own `tools` allowlist — still masked.
-        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
+        assert_eq!(policy.decide("write", "{}"), Permission::Allow);
+        assert_eq!(policy.decide("read", "{}"), Permission::Allow);
+        // `read_raw` is graded as an alias of `read`.
+        assert_eq!(policy.decide("read_raw", "{}"), Permission::Allow);
+        // `edit` is absent from `tools`, but that field is no longer
+        // consulted — it grades the same allow-all default as the rest.
+        assert_eq!(policy.decide("edit", "{}"), Permission::Allow);
     }
 
     #[test]
@@ -1528,14 +1477,8 @@ mod tests {
 
         // The base ceiling clamps the `read` binding to Ask despite the agent's
         // allow-all; `write` (base-silent) stays Allow.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
-        assert!(matches!(
-            policy.decide("write", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(policy.decide("read", "{}"), Permission::Ask);
+        assert_eq!(policy.decide("write", "{}"), Permission::Allow);
     }
 
     #[test]
@@ -1567,14 +1510,14 @@ mod tests {
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
         // Same tool, two inputs, two grades — resolved live against the path.
-        assert!(matches!(
+        assert_eq!(
             policy.decide("edit", r#"{"path":"src/main.rs"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
+            Permission::Allow
+        );
+        assert_eq!(
             policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+            Permission::Ask
+        );
     }
 
     /// ADR-0197: a rhai `bash()` binding grades a compound pipeline
@@ -1609,16 +1552,16 @@ mod tests {
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
         // Every segment matches an Allow rule — the whole pipeline is allowed.
-        assert!(matches!(
+        assert_eq!(
             policy.decide("bash", r#"{"command":"find . | grep x"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+            Permission::Allow
+        );
         // `rm` has no rule — the compound falls through to `Ask`, not the
         // over-match a full-string `bash(find *)` glob would have produced.
-        assert!(matches!(
+        assert_eq!(
             policy.decide("bash", r#"{"command":"find . && rm -rf /tmp/x"}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+            Permission::Ask
+        );
     }
 
     /// #419: `call`/`bash` are graded through the same Allow/Ask/Deny chain as
@@ -1651,20 +1594,15 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        assert!(matches!(
-            policy.decide("call", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
-            policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Deny)
-        ));
+        assert_eq!(policy.decide("call", "{}"), Permission::Allow);
+        assert_eq!(policy.decide("bash", "{}"), Permission::Deny);
     }
 
-    /// #419: a profile whose `tools` allowlist omits `call` (and `bash`) masks
-    /// both bindings out, same as any other tool the #116 mask governs.
+    /// ADR-0207 §8: the retired `tools` allowlist omitting `call`/`bash` no
+    /// longer withholds either binding — both still grade through the
+    /// profile's own (here, allow-all) permission chain.
     #[test]
-    fn binding_policy_masks_call_and_bash_when_omitted_from_tools() {
+    fn binding_policy_no_longer_masks_call_and_bash_when_omitted_from_tools() {
         use entanglement_core::{AgentMode, PermissionProfile};
 
         let profile = AgentProfile {
@@ -1689,8 +1627,8 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
-        assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
+        assert_eq!(policy.decide("call", "{}"), Permission::Allow);
+        assert_eq!(policy.decide("bash", "{}"), Permission::Allow);
     }
 
     /// #419: an arg-scoped `call(git *): allow` rule under a `default: ask`
@@ -1723,14 +1661,14 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        assert!(matches!(
+        assert_eq!(
             policy.decide("call", r#"{"command":"git","args":["status"]}"#),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
+            Permission::Allow
+        );
+        assert_eq!(
             policy.decide("call", r#"{"command":"rm","args":["-rf","/"]}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+            Permission::Ask
+        );
     }
 
     /// #419 fix A: the `approved` cache key scopes `call`/`bash` to the
@@ -1809,20 +1747,20 @@ mod tests {
         let policy =
             BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
 
-        assert!(matches!(
+        assert_eq!(
             policy.decide("bash", r#"{"command":"ls","workdir":"/tmp/scratch"}"#),
-            Decision::Perm(Permission::Deny)
-        ));
-        assert!(matches!(
+            Permission::Deny
+        );
+        assert_eq!(
             policy.decide("bash", r#"{"command":"ls","workdir":"/home/x"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+            Permission::Allow
+        );
         // No `workdir` marshalled at all: the rule never matches, same as
         // today's behavior before this call carried the field.
-        assert!(matches!(
+        assert_eq!(
             policy.decide("bash", r#"{"command":"ls"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+            Permission::Allow
+        );
     }
 
     /// #480: `exec`/`bash`'s new three/two-arg overloads marshal `workdir`

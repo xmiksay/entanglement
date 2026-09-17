@@ -92,12 +92,19 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
     reg.register(EchoRead);
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = reg.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        shared_tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -105,6 +112,7 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),

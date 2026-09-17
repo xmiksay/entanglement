@@ -15,6 +15,15 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+// A single-mode `ModeTable` (ADR-0207 stage 4) most test modules in this
+// harness wire in for `ProfileResolver`: they exercise something *other*
+// than permission grading (spawn plumbing, MCP lazy re-enable, invoke-
+// envelope unwrapping, skill posture, ...) and just want every call to run
+// unprompted, mirroring the pre-ADR-0207 `build` agent's `default: allow`.
+// Tests that exercise mode grading itself (`tool_mask`, `permission_dispatch`,
+// `policy_seam`) build their own table instead.
+mod mode_support;
+
 mod advertising_pin;
 mod agent_definitions;
 mod agent_generation;
@@ -33,8 +42,6 @@ mod host_tools;
 mod invoke_envelope;
 mod list_operations;
 mod load_skill;
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
-mod mask_request;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]

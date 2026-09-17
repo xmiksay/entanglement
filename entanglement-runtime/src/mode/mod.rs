@@ -1,8 +1,8 @@
-//! Permission modes (#560, ADR-0207 stage 2 of 6): the mode table and its
-//! rule engine, built on the capability vocabulary stage 1 added
-//! ([`crate::capability`]). **Self-contained** — nothing on the dispatch
-//! path calls into this module yet; wiring `Session`/`InMsg::SetMode`/the
-//! dispatch gate to consult it is a later stage.
+//! Permission modes (#560, ADR-0207): the mode table and its rule engine,
+//! built on the capability vocabulary ([`crate::capability`]). Wired into
+//! the dispatch ladder via `crate::policy::ProfileResolver` (stage 4): a
+//! session's mode, folded from `OutEvent::ModeChanged`, resolves every
+//! call's grade here instead of through `AgentProfile`.
 //!
 //! A [`Mode`] is a resolved grade table: a `default` grade, [`Rules`], run
 //! [`Limits`], and an optional sandbox posture. [`ModeTable`] holds a named

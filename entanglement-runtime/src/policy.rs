@@ -4,37 +4,38 @@
 //! hard-codes nothing about *where* an allow/deny/ask decision or an "always
 //! allow" grant comes from: it drives two trait objects, a [`PermissionResolver`]
 //! and a [`GrantStore`]. The single-user CLI plugs in the defaults below — the
-//! agent-profile chain clamped by the config ceiling ([`ProfileResolver`]) and
-//! the managed grants file ([`DefaultGrantStore`]) — so its behavior is
-//! byte-identical. A multi-tenant embedder that stores rules per user in its own
-//! DB swaps both without forking the ~350-line executor, keeping the shared
-//! interception ladder, spawn/mask gating, hooks, rhai, and plan/tasks tools.
+//! session's permission **mode** clamped by the config ceiling
+//! ([`ProfileResolver`], ADR-0207 stage 4) and the managed grants file
+//! ([`DefaultGrantStore`]). A multi-tenant embedder that stores rules per user
+//! in its own DB swaps both without forking the executor, keeping the shared
+//! interception ladder, spawn gating, hooks, rhai, and plan/tasks tools.
 //!
 //! ## Where the seams sit in the ladder
 //!
-//! The executor asks the resolver for the grade of a *single* session, then takes
-//! the least-privileged grade across the session's ancestor chain
-//! ([`ancestor_chain`][crate::permission::ancestor_chain]) — so the sub-agent
-//! privilege ceiling (ADR-0024) and spawn/mask gating stay in the ladder **on top
-//! of** the resolver result. A tenant rule can widen or narrow a session's own
-//! grade, but can never widen a child beyond its parent. The `GrantStore` only
-//! ever upgrades a resolved `Ask` to `Allow`; a multi-tenant store's "always
-//! allow" write lands in its own DB and surfaces on the *next* call through its
-//! resolver, so the trait's read side is deliberately the resolver's job — the
-//! store's own [`is_granted`][GrantStore::is_granted] covers only the default
-//! file/session grants the CLI needs.
+//! The executor asks the resolver for the grade of a *single* session, then
+//! takes the least-privileged grade across the session's ancestor chain
+//! ([`ancestor_chain`][crate::permission::ancestor_chain]) — the sub-agent
+//! privilege ceiling (ADR-0024) stays in the ladder on top of the resolver
+//! result. The `GrantStore` only ever upgrades a resolved `Ask` to `Allow`,
+//! and only within the mode it was earned in (ADR-0207 §8) — a multi-tenant
+//! store's "always allow" write lands in its own DB and surfaces on the
+//! *next* call through its resolver, so [`is_granted`][GrantStore::is_granted]
+//! covers only the default file/session grants the CLI needs.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use entanglement_core::{AgentProfile, ApprovalScope, Permission, PermissionProfile, SessionId};
+use entanglement_core::{ApprovalScope, Permission, PermissionProfile, SessionId};
 
+use crate::capability;
 use crate::grants::FileGrantStore;
 use crate::host::SandboxPolicy;
-use crate::permission::{clamp_to_base, permission_for, permission_workdir};
+use crate::mode::ModeTable;
+use crate::permission::{clamp_to_base, permission_workdir};
 use crate::permission_path::grading_arg;
+use crate::tools::SharedRegistry;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
@@ -48,26 +49,30 @@ pub trait PermissionResolver: Send + Sync {
 }
 
 /// Persist and read "always allow" grants (#174). A grant only ever upgrades a
-/// resolved `Ask` to `Allow`. The write side ([`record`][GrantStore::record])
-/// is async because an [`ApprovalScope::Always`] grant may hit a DB; the read
-/// side ([`is_granted`][GrantStore::is_granted]) is a fast in-memory/cached check
+/// resolved `Ask` to `Allow`, and only within the **mode** it was earned in
+/// (ADR-0207 §8: a grant from `build` must not fire in `research`) — `mode` is
+/// matched exactly, so the caller passes the session's *current* mode on every
+/// call. The write side ([`record`][GrantStore::record]) is async because an
+/// [`ApprovalScope::Always`] grant may hit a DB; the read side
+/// ([`is_granted`][GrantStore::is_granted]) is a fast in-memory/cached check
 /// the executor consults synchronously before prompting. A multi-tenant store
 /// writes an "always" rule to its DB and resolves later reads through its
 /// [`PermissionResolver`] instead, so its `is_granted` can simply return `false`.
 #[async_trait]
 pub trait GrantStore: Send + Sync {
-    /// Whether `(tool, arg)` from `session` is already granted (session or
-    /// always), upgrading a resolved `Ask` to `Allow`.
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool;
-    /// Record an approval per its scope. `Once` records nothing; `Session` is
-    /// in-memory; `Always` persists (a file for the default, a DB row for a
-    /// multi-tenant store).
+    /// Whether `(tool, arg)` from `session`, earned under `mode`, is already
+    /// granted (session or always), upgrading a resolved `Ask` to `Allow`.
+    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool;
+    /// Record an approval per its scope, tagged with the mode it was earned
+    /// in. `Once` records nothing; `Session` is in-memory; `Always` persists
+    /// (a file for the default, a DB row for a multi-tenant store).
     async fn record(
         &self,
         session: &SessionId,
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     );
     /// Release a session's in-memory grants when it ends.
     fn forget_session(&self, session: &SessionId);
@@ -86,35 +91,47 @@ pub trait GrantStore: Send + Sync {
     }
 }
 
-/// The single-user CLI resolver: the executor's live active-profile map plus the
-/// config permission ceiling (#172). Resolves a session's *own* profile grade
-/// clamped by the base ceiling; the executor mins this across the ancestor chain
-/// for the sub-agent clamp, so the pair reproduces `effective_permission` +
-/// `clamp_to_base` exactly (the clamp is monotonic, so min-of-clamped equals
-/// clamp-of-min). Shares the same `Arc<Mutex<..>>` the executor folds lifecycle
-/// events into, so it always reads the current profile view. `root` (#485,
-/// ADR-0125) is the project root a path-arg tool's argument is normalized
-/// relative to before matching an arg-scoped rule — `None` (the test-only
-/// executor wrappers) keeps the pre-#485 verbatim match.
+/// The single-user CLI resolver (ADR-0207 stage 4): grades a call from the
+/// session's **mode**, not its agent profile — `AgentProfile` no longer
+/// carries any permission fact. Looks up the mode name in the folded `modes`
+/// map (mirrors `OutEvent::ModeChanged` the way `active` mirrors
+/// `AgentChanged`), resolves it against `table`, reads the tool's declared
+/// [`capability::Capability`] set from the live registry, and calls
+/// [`Mode::resolve`][crate::mode::Mode::resolve] with the call's
+/// argument/workdir — then clamps to the config permission ceiling (#172),
+/// unchanged from before this stage. `table` is always
+/// [`ModeTable::builtin`] for `skutter`; an embedder supplies its own via
+/// [`ModeTable::new`]. Config `modes:` tuning is a later stage's wiring.
 ///
-/// Live bash enablement no longer special-cases `bash` here (ADR-0163,
-/// #611): a live grade — including a narrowed `arg_pattern` — is expressed as
-/// a session [`ToolOverlayEntry`][entanglement_core::ToolOverlayEntry] and
-/// consulted by `tool_runner`'s `overlay_grade`, ahead of this resolver, for
-/// every tool alike.
+/// An **unseen session fails closed** (`Permission::Deny`, #156): a session
+/// whose `ModeChanged` broadcast was dropped under overload must never
+/// resolve to allow-all. `root` (#485, ADR-0125) is the project root a
+/// path-arg tool's argument is normalized relative to before matching an
+/// arg-scoped rule — `None` (the test-only executor wrappers) keeps the
+/// pre-#485 verbatim match.
 pub struct ProfileResolver {
-    active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+    modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    table: Arc<ModeTable>,
+    registry: SharedRegistry,
     base: PermissionProfile,
     root: Option<PathBuf>,
 }
 
 impl ProfileResolver {
     pub fn new(
-        active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<ModeTable>,
+        registry: SharedRegistry,
         base: PermissionProfile,
         root: Option<PathBuf>,
     ) -> Self {
-        Self { active, base, root }
+        Self {
+            modes,
+            table,
+            registry,
+            base,
+            root,
+        }
     }
 }
 
@@ -123,13 +140,28 @@ impl PermissionResolver for ProfileResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
-        // Read the folded profile view without holding the lock across an await
-        // (there is none here) — the executor's single-threaded loop is the sole
-        // writer, so this brief lock never contends.
-        let own = {
-            let active = self.active.lock().expect("active-profile mutex poisoned");
-            permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
+        // Fail-closed (#156, carried into ADR-0207): a session whose
+        // `ModeChanged` broadcast was dropped is unseen here, and an unseen
+        // session must never resolve to allow-all.
+        let mode_name = {
+            let modes = self.modes.lock().expect("mode mutex poisoned");
+            modes.get(session).cloned()
         };
+        let Some(mode_name) = mode_name else {
+            return Permission::Deny;
+        };
+        let Some(mode) = self.table.get(&mode_name) else {
+            // Defense in depth, not a reachable path for a built-in table:
+            // `InMsg::SetMode` is the only writer of a session's mode, and a
+            // real head validates it against the same table before sending.
+            tracing::warn!(%session, mode = %mode_name, "unknown permission mode; denying");
+            return Permission::Deny;
+        };
+        let capabilities = {
+            let registry = self.registry.read().expect("tool registry lock poisoned");
+            capability::capability_of(tool, &registry).unwrap_or(&[])
+        };
+        let own = mode.resolve(tool, capabilities, arg.as_deref(), workdir.as_deref());
         clamp_to_base(own, &self.base, tool, arg.as_deref(), workdir.as_deref())
     }
 }
@@ -341,8 +373,8 @@ impl DefaultGrantStore {
 
 #[async_trait]
 impl GrantStore for DefaultGrantStore {
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool {
-        self.grants().is_granted(session, tool, arg)
+    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool {
+        self.grants().is_granted(session, tool, arg, mode)
     }
 
     async fn record(
@@ -351,8 +383,9 @@ impl GrantStore for DefaultGrantStore {
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     ) {
-        self.grants().record(session, tool, arg, scope);
+        self.grants().record(session, tool, arg, scope, mode);
     }
 
     fn forget_session(&self, session: &SessionId) {
@@ -367,24 +400,34 @@ impl GrantStore for DefaultGrantStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::AgentMode;
+    use crate::mode::{Limits, Mode, Rules};
+    use crate::tools::ToolRegistry;
+    use std::sync::RwLock;
 
-    fn build_profile_with_scoped_read() -> AgentProfile {
-        AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("read(src/*)", Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
+    /// A single-mode table carrying a `read(src/*)` scoped rule, the mode
+    /// resolver's counterpart of the old `build_profile_with_scoped_read`
+    /// `AgentProfile` fixture — `ProfileResolver` grades from the session's
+    /// mode now, so the fixture is a `Mode`, not a profile.
+    fn table_with_scoped_read() -> Arc<ModeTable> {
+        let mode = Mode {
+            name: "test".to_string(),
+            default: Permission::Ask,
+            rules: Rules::from_lists(&[], &["read(src/*)".to_string()], &[]),
+            limits: Limits::default(),
             sandbox: None,
-        }
+        };
+        Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
+    }
+
+    fn modes_map(session: &SessionId) -> Arc<Mutex<HashMap<SessionId, String>>> {
+        Arc::new(Mutex::new(HashMap::from([(
+            session.clone(),
+            "test".to_string(),
+        )])))
+    }
+
+    fn empty_registry() -> SharedRegistry {
+        Arc::new(RwLock::new(ToolRegistry::new()))
     }
 
     /// #485, ADR-0125: an absolute path resolving inside a wired `root` must
@@ -394,12 +437,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_matches_an_absolute_in_root_path_when_root_is_wired() {
         let session = SessionId::new("s1");
-        let active = Arc::new(Mutex::new(HashMap::from([(
-            session.clone(),
-            build_profile_with_scoped_read(),
-        )])));
         let resolver = ProfileResolver::new(
-            active,
+            modes_map(&session),
+            table_with_scoped_read(),
+            empty_registry(),
             PermissionProfile::new(Permission::Allow),
             Some(PathBuf::from("/r")),
         );
@@ -424,17 +465,37 @@ mod tests {
     #[tokio::test]
     async fn resolve_does_not_relativize_without_a_wired_root() {
         let session = SessionId::new("s1");
-        let active = Arc::new(Mutex::new(HashMap::from([(
-            session.clone(),
-            build_profile_with_scoped_read(),
-        )])));
-        let resolver =
-            ProfileResolver::new(active, PermissionProfile::new(Permission::Allow), None);
+        let resolver = ProfileResolver::new(
+            modes_map(&session),
+            table_with_scoped_read(),
+            empty_registry(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        );
         assert_eq!(
             resolver
                 .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
             Permission::Ask
+        );
+    }
+
+    /// ADR-0207 stage 4: a session whose mode was never folded (a dropped
+    /// `ModeChanged`) fails closed — mirroring the pre-stage-4 unseen-profile
+    /// behavior, never allow-all.
+    #[tokio::test]
+    async fn resolve_denies_an_unseen_session() {
+        let session = SessionId::new("s1");
+        let resolver = ProfileResolver::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            table_with_scoped_read(),
+            empty_registry(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        );
+        assert_eq!(
+            resolver.resolve(&session, "read", r#"{"path":"x"}"#).await,
+            Permission::Deny
         );
     }
 

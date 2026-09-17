@@ -133,8 +133,12 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = tools.shared();
     let resolver = Arc::new(ProfileResolver::new(
-        active.clone(),
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        shared_tools.clone(),
         base.clone(),
         Some(root.to_path_buf()),
     ));
@@ -145,7 +149,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     };
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -153,6 +157,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Hooks::default(),
