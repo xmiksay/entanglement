@@ -1,6 +1,6 @@
 # 0207. Permission modes replace agent-borne authority
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-16
 - Issue: #560 (pre-release audit umbrella)
 - Relates to: [ADR-0003](0003-agent-and-permission-profiles.md)
@@ -27,7 +27,9 @@
   [ADR-0024](0024-subagent-permission-gating.md) (**amended**: depth and
   fan-out are mode facts; the ancestor clamp loses its only hole),
   [ADR-0083](0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)
-  (**amended**: in-app editing targets the config `modes:` block),
+  (**superseded**: it edited a per-agent `tools:` allowlist that no longer
+  exists; the `config.yml` `modes:` block is hand-edited, with no in-app
+  writer),
   [ADR-0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)
   (**amended**: approval switches mode instead of spawning a build child),
   [ADR-0147](0147-multi-user-mode-embedder-api.md) /
@@ -114,8 +116,10 @@ in the runtime, and this is where it stays.
 
 `entanglement-core` carries an opaque `mode: String` on the session, persists
 it, replays it and emits `OutEvent::ModeChanged` — and never evaluates it.
-`Permission`, `PermissionProfile` and the new `Capability` move out of the
-protocol into `entanglement-runtime`.
+`Capability` is a runtime type and never enters the protocol. `Permission` and
+`PermissionProfile` stay in core, no longer as an agent's authority but as the
+wire shape of the `config.yml` `permissions:` ceiling, reinterpreted into the
+same longest-match engine a mode uses.
 
 ### 3. Tools declare their capability
 

@@ -22,13 +22,13 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Stop{session}
          | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0144)
          | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0144)
-         | SetAgent{session,agent}   // switch profile; may be followed by ModelChanged/Error if the profile pins a model (#323, ADR-0081)
+         | SetMode{session,mode}   // trusted-only: switch the session's permission mode → ModeChanged, cascades over the whole live spawn sub-tree; deferred-until-safe mid-turn like SetModel (#560, ADR-0207 §12). SetAgent is gone (ADR-0207 §9) — an agent is chosen once, at session start or spawn, and is fixed for that session's life
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the agent mask (graded Ask|Allow, optionally arg_pattern-narrowed), deny entries withdraw even profile-advertised tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the session's mode grade (graded Ask|Allow, optionally arg_pattern-narrowed, overriding even a mode Deny), deny entries withdraw even mode-allowed tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); now mode-scoped — dropped wholesale on a live SetMode (#560, ADR-0207 §8); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
-         | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,sponsored}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); sponsored = true only for a propose_plan build handoff (ADR-0138), disambiguating WaitingAgent's two callers (#626, ADR-0172), #[serde(default)] false
+         | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,sponsored}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); sponsored is VESTIGIAL since ADR-0207 §7 retired the propose_plan sponsored-build-child handoff (ADR-0138) it disambiguated — nothing sets it true any more, but the field stays on the wire for old-log replay, #[serde(default)] false
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
          | ListOperations{correlation_id,session?}   // supervisor-global query; every pending job/script/sub-agent, or one session's when session is set → OperationList reply (#607, ADR-0161 §6); wire-allowed — reads the caller's own outstanding work, mutates nothing
@@ -41,10 +41,10 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
-OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,user?,sponsored}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522); sponsored mirrors Spawn's (#626, ADR-0172)
+OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,user?,sponsored}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522); sponsored is VESTIGIAL, mirroring Spawn's own — see that field's note
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
-         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,profile,root,profile_detail?,user?,sponsored}
+         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,profile,root,user?,sponsored(vestigial)} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
@@ -53,9 +53,10 @@ OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,us
          | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
-         | AgentChanged{session,agent,profile_detail?}   // point-in-time, no seq; detail = posture (#189)
-         | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a SetAgent model pin (#218, ADR-0063; #323, ADR-0081)
-         | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration (incl. "/show") or a SetAgent generation overlay (#374/#376, ADR-0094/0095)
+         | ModeChanged{session,mode}   // point-in-time, no seq; reply to SetMode and, unconditionally, once at session start mirroring AgentChanged — core carries mode as an opaque String and never evaluates it (#560, ADR-0207 §2/§9)
+         | AgentChanged{session,agent}   // point-in-time, no seq; identity/provenance only now — the profile_detail posture field (#189) is deleted (ADR-0207): ModeChanged carries posture instead
+         | ModelChanged{session,provider,model,context_window?}   // point-in-time, no seq; reply to SetModel, or a session-start model pin (#218, ADR-0063; #323, ADR-0081, narrowed by ADR-0207 §9 — the pin now applies only at session start, since SetAgent is gone)
+         | GenerationChanged{session,generation:GenerationParams}   // point-in-time, no seq; full effective params, reply to SetGeneration (incl. "/show") or a session-start generation overlay (#374/#376, ADR-0094/0095, narrowed by ADR-0207 §9 the same way as ModelChanged's pin)
          | SessionMetaChanged{session,name?,action?}   // point-in-time, no seq; full merged display metadata, reply to SetSessionMeta; persisted + replay-folded by overwrite, head-folded — not mirrored into SessionInfo (ADR-0151)
          | ToolOverlayChanged{session,entries:[ToolOverlayEntry]}   // point-in-time, no seq; full effective overlay, reply to SetToolOverlay; persisted + replay-folded by overwrite (#539, ADR-0149)
          | Plan{session,seq,content,path}          // markdown prose snapshot, runtime-emitted (#231)
@@ -166,7 +167,7 @@ the TUI `/mcp` path is unaffected since it sends over the privileged
 unlike the read-only `McpList`, none of the three actions is wire-allowed),
 and, for an **enable** entry, `SetToolOverlay` (#539,
 [ADR-0149](../adr/0149-per-session-tool-overlay.md), the `McpAdd` rationale
-again: it injects tools past the agent mask, optionally graded `allow` with no
+again: it grades a tool `allow` past the session's own mode grade, with no
 approval prompt (ADR-0163's lazily-registering-a-closed-table-built-in clause
 — #611, folding in the bespoke `BashEnable`/`BashDisable` pair of #498/
 [ADR-0133](../adr/0133-live-bash-enablement-graded-by-permission.md), now
@@ -199,21 +200,22 @@ a remote attacker; the WS head routes every inbound frame through
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
-`SessionInfo{session,parent?,profile,root,profile_detail?,user?}` set — a reconnecting
+`SessionInfo{session,parent?,profile,root,user?,sponsored}` set — a reconnecting
 head enumerates in one round-trip instead of folding the whole broadcast. Both
 the query and the reply carry an opaque **`correlation_id`** the head mints and
 the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)),
 so `InMsg::session()`/`OutEvent::session()` return `Option<&SessionId>` and are
 `None` for these session-less queries (a head's event router drops a `None`
-rather than keying a phantom per-session view). `profile_detail`
-(**#189**, optional) carries the active profile's resolved posture — `mode`, the
-#116 tool mask (`tools`/`disallowed_tools`), and the `PermissionProfile` rules —
-so a head renders the permission posture without re-reading the agent `.md`
-layers. It rides `AgentChanged` on every switch and each live `SessionInfo`;
-`None` only on the resume path's fallback, where the replay log preserves the
-profile *name* alone. Pair it with the runtime's per-resolution `debug!`
-(`tool=… rule=Allow|Ask|Deny source=own|ancestor <id>`) when tracing *why* a
-sub-agent's tool was clamped. `CloseSession` drops the session's command
+rather than keying a phantom per-session view). The **`profile_detail`** field
+this paragraph used to describe (**#189**, on `AgentChanged`/`SessionInfo`) is
+**deleted entirely** — [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+retired the `mode`/tool-mask/`PermissionProfile` posture it carried along
+with `AgentProfile`'s authority fields, so there is nothing left to resolve
+into it. A head wanting a session's permission posture reads `ModeChanged`
+(the opaque `mode: String`, fired once at session start and again on every
+live `SetMode`) and, for the mode's actual rules, `skutter inspect modes
+<name>` — there is no wire query for the resolved rule table itself yet.
+`CloseSession` drops the session's command
 channel so its task exits and emits `SessionEnded` — the explicit destroy `Stop`
 (cancel-semantics, ADR-0017) does not perform. It **cascades** over the spawn
 sub-tree (**#180**): the supervisor walks the child→parent links and closes every
@@ -263,7 +265,7 @@ session's next piece of work without losing it or evicting it."
 trust tier as `Stop`) drive a `Session.paused: bool` that is **not**
 persisted/replayed (like `Stop`'s cancel — a hibernate/resume cycle always
 comes back unpaused). Two holds depending on what the session was doing when
-paused: an **idle** session defers its next `Prompt`/`SetAgent`/`SetModel`/
+paused: an **idle** session defers its next `Prompt`/`SetMode`/`SetModel`/
 `SetGeneration`/`Oneshot` onto the existing turn-stash queue; a **parked**
 batch keeps folding arriving `ToolResult`s into `Context` as normal (stashing
 them would deadlock — the stash only drains once the turn goes idle, which
@@ -272,7 +274,7 @@ once the batch drains, so the same round resumes with no new prompt once
 `ResumeSession` arrives. A session **mid-stream** when paused is unaffected
 until the round reaches its next safe point (turn end or park) — `Pause`/
 `Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival rides the exact
-generic stash-and-replay mechanism `SetAgent`/`SetModel` already use
+generic stash-and-replay mechanism `SetMode`/`SetModel` already use
 (`session/stream.rs` needed no change). `Stop`/`HibernateSession` always take
 priority over a pause and neither clears it: a `Stop`'d-but-still-paused
 session reports `AgentState::Paused`, not `Done`, until an explicit
@@ -328,7 +330,7 @@ variant/`wire_allowed`/`SessionCmd`, just a new `match` arm in
 `session::ops::run_oneshot`. `"compact"` (session compaction via LLM
 summarization) is the first and only op today; an unknown `op` is a
 recoverable `Error`. Wire-allowed (mutates only the caller's own session) and
-deferred while a turn is live via the same stash gate as `SetAgent`/`SetModel`
+deferred while a turn is live via the same stash gate as `SetMode`/`SetModel`
 — a oneshot never runs concurrently with a turn, which is what lets it reuse
 the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
@@ -383,9 +385,12 @@ result — even when nothing actually changed — so a head can rely on the repl
 alone to confirm the write landed. The merged result is also recorded into
 `Session.profile_generation` keyed by the active profile (the
 generation-parameter analogue of `Session.profile_models`, #323/ADR-0081), so a
-later `SetAgent` switch back to that profile re-applies it. Deferred (stashed)
-while a turn is live, like `SetAgent`/`SetModel`. See the engine doc for the
-`SetAgent`/session-start overlay precedence and the runtime doc for the
+later session spawned under that same profile re-applies it at start —
+`SetAgent` is gone
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§9), so session start is the only re-application locus left. Deferred
+(stashed) while a turn is live, like `SetMode`/`SetModel`. See the engine doc
+for the session-start overlay precedence and the runtime doc for the
 per-profile persisted store.
 
 **Settable session display metadata — `InMsg::SetSessionMeta`**
@@ -428,47 +433,51 @@ grades folded in, #611, [ADR-0163](../adr/0163-live-bash-enablement-is-a-tool-ov
 — its registration half retired by
 [ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)).
 `SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}`
-**replaces** the session's live tool overlay: `*`/`?` patterns (the ADR-0148
-mask semantics) that override the active profile's
-`tools:`/`disallowed_tools:` mask in both directions — an enable entry makes
-matching tools *exist* regardless of the mask (`mcp__chessbase__*` for a
-server, a literal name for one tool), a `deny: true` entry *withdraws* them
-even when the profile advertises them (deny > enable > profile,
+**replaces** the session's live tool overlay: `*`/`?` patterns (unchanged
+ADR-0148 glob semantics) that override the session's own **permission mode**
+grade in both directions — an enable entry makes matching tools grade
+`Allow` (or, `arg_pattern`-narrowed, an argument-scoped
+`tool(arg_pattern): allow` rule) even past a mode `Deny` (`mcp__chessbase__*`
+for a server, a literal name for one tool), a `deny: true` entry *withdraws*
+them even when the mode would otherwise allow them (deny > enable > mode,
 `ToolOverlayEntry::disposition`). Full replacement, not a merge (an empty
 list clears); like
 `SetGeneration` there is nothing to fail against, so it always succeeds and
 always emits `OutEvent::ToolOverlayChanged` with the full effective list —
 which is also what persistence logs and `Session::replay` folds back (by
-overwrite), so a resumed session keeps its overlay. Session-scoped by design:
-it survives `SetAgent` (overriding the profile is its point) and dies with
-the session. `allow: false` (default) grades matching calls `Ask`; `allow:
-true` grades them `Allow`, optionally narrowed by `arg_pattern` (ADR-0163) to
-an argument-scoped `tool(arg_pattern): allow` rule instead of a blanket grant
-— the grade replaces the profile chain's resolution
-on the runtime's generic dispatch route, still clamped by the config
-permission ceiling (a deny entry has no grade; it removes the tool ahead of
-any permission decision). Don't confuse `pattern` (a tool-name glob) with
-`arg_pattern` (a command-argument glob) — the two mean different things
-despite the near-identical name. Mask disposition is per ancestor-chain link,
-so a parent's overlay also covers its spawn sub-tree. (The closed
-lazily-registrable-built-in table this section used to describe —
-`/enable tool bash` registering an unregistered built-in — is retired by
-[ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md):
-`bash` registers at startup like every other built-in, so an enable entry is
-now a pure grade override and a deny entry still withdraws at dispatch. The
-overlay remains mask-level — it reveals tools the registry already holds.)
+overwrite), so a resumed session keeps its overlay. Session-scoped, but now
+**mode-scoped too**
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§8): it is dropped wholesale on any live `SetMode` — an entry enabled under
+one mode carries no meaning in another — where it used to simply survive
+`SetAgent` unconditionally. `allow: false` (default) grades matching calls
+`Ask`; `allow: true` grades them `Allow`, optionally narrowed by
+`arg_pattern` (ADR-0163) to an argument-scoped `tool(arg_pattern): allow`
+rule instead of a blanket grant — the grade override replaces the mode's own
+resolution on the runtime's generic dispatch route, still clamped by the
+config permission ceiling (a deny entry has no grade; it removes the tool
+ahead of any permission decision). Don't confuse `pattern` (a tool-name
+glob) with `arg_pattern` (a command-argument glob) — the two mean different
+things despite the near-identical name. Disposition is resolved per
+ancestor-chain link (`permission::ancestor_chain`), so a parent's overlay
+also covers its spawn sub-tree — even though every session in that sub-tree
+already shares the identical mode (§6), this walk still matters because the
+overlay itself is per-session state, not part of the mode.
+`bash` registers at startup like every other built-in (ADR-0195), so an
+enable entry naming it is a pure grade override; there is no more closed
+lazily-registrable-built-in table to describe.
 Trusted-only for an **enable** entry
 (wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
 `deny: true`, including the empty list) is wire-allowed instead (#634,
 [ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending this
-ADR) — it can only withdraw tools the profile already advertises, so a
+ADR) — it can only withdraw tools the session already advertises, so a
 `serve`/`pipe` client can now self-restrict a session's tool surface without
 an in-process head, though it still cannot grant one. The TUI drives the full
 surface via `/enable`/`/disable` (a bare
 `/enable` being the session-tools checklist dialog (the
-overlay as a diff against the profile mask)), and the `/mcp` panel's `e`/`d`
+overlay as a diff against the mode's own grade)), and the `/mcp` panel's `e`/`d`
 server keys.
-Stash-deferred while a turn is live, like `SetAgent`/`SetModel`.
+Stash-deferred while a turn is live, like `SetMode`/`SetModel`.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 
@@ -493,21 +502,27 @@ exactly one of the two — file-backed, not an in-memory snapshot; see the
 engine doc's "Plan acceptance" section) and `update_tasks { content }`
 (markdown, ✅ #231,
 [ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)). Neither is
-an engine built-in: `update_tasks` round-trips via `ToolExec`/`ToolResult`
-like any host tool, resolving through the ordinary `Allow`/`Ask`/`Deny` path +
-#116 mask, and the runtime executor emits its `OutEvent::TaskList` snapshot
-after handling the result (the engine holds no task state) — `propose_plan`
-additionally force-parks on `Ask` unconditionally (see the engine doc), since
-its `OutEvent::Plan` snapshot is only one part of a larger approval +
-sponsored-build-child flow. Plan authorship is default-closed via explicit
-tool-mask allowlist membership: `propose_plan` is advertised only to a
-profile that names it (an inherit-all profile never gets it); `update_tasks`
-rides the shared specs. A read-only agent can mutate neither (mask +
-permission), which is the #175 fix.
+an engine built-in: `update_tasks` carries `Capability::Control`
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§3), so it is **never graded** — it runs (and the runtime executor emits its
+`OutEvent::TaskList` snapshot) unconditionally in every mode, since it
+touches only session bookkeeping, not the host (the engine holds no task
+state either way) — `propose_plan` carries `Capability::Plan` instead and
+additionally force-parks on `Ask` unconditionally (see the engine doc's
+"Plan acceptance" section), since its `OutEvent::Plan` snapshot is only one
+part of a larger approval + mode-switch flow (no sponsored build child any
+more, ADR-0207 §7 retires that mechanism wholesale). Plan authorship is
+graded via the `plan` mode class instead of tool-mask allowlist membership
+now: `propose_plan` is advertised **unconditionally** to every session, but
+usable only where the session's mode allows `Capability::Plan` (`plan` mode
+alone, in the built-in table) — a mode denying it declines the call flat,
+before any file is touched. A read-only mode (`research`) denies both the
+`write` class `update_tasks` never needed and the `plan` class
+`propose_plan` does, which is the #175 fix's current shape.
 
-This is why `entanglement` has *both* the opencode agent-profile axis *and* structured
-events: profiles control **what the agent is instructed/permitted to do**;
-structured events give every head a native plan/task panel to render.
+This is why `entanglement` has *both* an agent-identity axis *and* structured
+events: the permission **mode** controls **what the session is permitted to
+do**; structured events give every head a native plan/task panel to render.
 
 **Usage & cost** (✅ #192, [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)).
 The provider normalizes each round-trip's terminal `LlmEvent::Finish` to
