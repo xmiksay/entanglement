@@ -1030,15 +1030,22 @@ struct Cli {
     /// it may follow the subcommand: `skutter run … --verbose`.
     #[arg(long, global = true)]
     verbose: bool,
-    /// Auto-approve every tool approval request instead of auto-rejecting it
-    /// (#554). Only affects `run` heads (explicit `run` and the implicit
-    /// one-shot form): there is no interactive user to answer a `ToolRequest`
-    /// there (e.g. the escape-root gate on an out-of-root path, which fires
-    /// even under a profile's `Allow`), and without this flag such a request
-    /// is rejected immediately with a reason rather than parking the run.
-    /// Global so it may follow the subcommand: `skutter run … --yes`.
+    /// Retired (#554, ADR-0207 §11): auto-approving every `ToolRequest` was
+    /// head-level, all-or-nothing, and invisible to core/the TUI — precisely
+    /// what a permission mode is not. Parsed only so `skutter … --yes` fails
+    /// loudly with a pointer to its replacement instead of clap's unknown-flag
+    /// error; see the startup check in `main`.
     #[arg(long, global = true)]
     yes: bool,
+    /// Run the session under this permission mode (`research`/`plan`/`build`/
+    /// `auto`, ADR-0207) instead of the engine's default (`build`). Only
+    /// affects `run` heads (explicit `run` and the implicit one-shot form) —
+    /// `auto` is the unattended posture `--yes` used to approximate, now with
+    /// a real deny-by-default posture, run/turn/duration budgets, and no
+    /// silent widening. Global so it may follow the subcommand:
+    /// `skutter run … --mode auto`.
+    #[arg(long, global = true)]
+    mode: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1193,6 +1200,17 @@ fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // `--yes` is retired (#554, ADR-0207 §11) — exit the same clean way
+    // `select_provider`'s other user-facing CLI errors do (`eprintln!` +
+    // code 2), not a panic and not clap's own unknown-flag error, since the
+    // flag itself still parses.
+    if cli.yes {
+        eprintln!(
+            "skutter: --yes is retired — use `--mode auto` for an unattended \
+             run instead (ADR-0207 §11)"
+        );
+        std::process::exit(2);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Load the layered user config (#172, ADR-0047) up front: embedded defaults <
@@ -1671,7 +1689,6 @@ async fn main() -> Result<()> {
     let plans_watcher_handle =
         plan_watch::spawn_plans_watcher(&holly, plan_root, plan_files.clone());
 
-    let auto_approve = cli.yes;
     let result = match cli.cmd {
         Some(Cmd::Run {
             prompt,
@@ -1715,16 +1732,19 @@ async fn main() -> Result<()> {
                     })
                     .await?;
             }
+            // `--mode` (ADR-0207 §11): `SetMode` is trusted-only (a mode *is*
+            // the session's authority), so this direct `Holly::send` — not
+            // the wire — is exactly the surface it's meant for.
+            if let Some(ref m) = cli.mode {
+                holly
+                    .send(InMsg::SetMode {
+                        session: session_id.clone(),
+                        mode: m.to_string(),
+                    })
+                    .await?;
+            }
             let prompt = prompt.join(" ");
-            run_one(
-                &holly,
-                &session_id,
-                agent.as_deref(),
-                &prompt,
-                &format,
-                auto_approve,
-            )
-            .await
+            run_one(&holly, &session_id, agent.as_deref(), &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => {
             let session_id =
@@ -1840,16 +1860,17 @@ async fn main() -> Result<()> {
                         })
                         .await?;
                 }
+                // `--mode` (ADR-0207 §11) — see the explicit `Run` arm above.
+                if let Some(ref m) = cli.mode {
+                    holly
+                        .send(InMsg::SetMode {
+                            session: session_id.clone(),
+                            mode: m.to_string(),
+                        })
+                        .await?;
+                }
                 let prompt = cli.prompt.join(" ");
-                run_one(
-                    &holly,
-                    &session_id,
-                    agent.as_deref(),
-                    &prompt,
-                    "text",
-                    auto_approve,
-                )
-                .await
+                run_one(&holly, &session_id, agent.as_deref(), &prompt, "text").await
             }
         }
     };

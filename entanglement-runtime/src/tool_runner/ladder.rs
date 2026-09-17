@@ -174,6 +174,7 @@ pub(super) struct LadderCtx {
     pub active_skill: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub hooks: Arc<Hooks>,
     pub validation: Arc<crate::arg_validate::LoopBreaker>,
+    pub denials: Arc<crate::run_limits::DenialTracker>,
 }
 
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and

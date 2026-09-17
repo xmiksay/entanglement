@@ -21,20 +21,21 @@ pub(crate) mod summary;
 /// keep listening there instead of waiting out the timeout on a session that
 /// will never speak again.
 ///
-/// `auto_approve` (`--yes`, #554) controls how a generic (non-`propose_plan`)
-/// `ToolRequest` is settled: there is no interactive user to answer it, and
-/// left unhandled it parks until the 60s `recv` timeout below kills the whole
-/// run — reachable on stock defaults because the escape-root gate forces an
-/// approval prompt even under a profile's `Allow` (ADR-0109). `false` (the
-/// default) auto-rejects with a reason the model can act on instead of
-/// silently dying; `true` auto-approves so a trusted unattended run proceeds.
+/// A generic (non-`propose_plan`) `ToolRequest` reaching this head (e.g. the
+/// escape-root gate forcing an approval prompt even under a profile's
+/// `Allow`, ADR-0109) is auto-rejected with a reason the model can act on:
+/// there is no interactive user here to answer it, and left unhandled it
+/// would park until the 60s `recv` timeout below kills the whole run.
+/// `--yes` (#554) used to offer an auto-approve escape hatch for this; it is
+/// retired (ADR-0207 §11) — `--mode auto` is the real unattended posture now
+/// (deny-by-default, run/turn/duration budgets, no silent widening), so this
+/// head no longer takes a flag to override its default.
 pub async fn run_one(
     holly: &Holly,
     session: &SessionId,
     agent: Option<&str>,
     prompt: &str,
     format: &str,
-    auto_approve: bool,
 ) -> Result<()> {
     let json = format == "json";
     let mut sub = holly.subscribe();
@@ -128,44 +129,26 @@ pub async fn run_one(
         // Any other `ToolRequest` (#554) — most commonly the escape-root gate
         // forcing a prompt for an out-of-root path even under an `Allow` profile —
         // has no such special handling and would otherwise park until this loop's
-        // 60s `recv` timeout kills the whole run. Settle it immediately instead:
-        // `--yes` approves once, the default rejects with a reason the model can
-        // act on (retry inside the root, or ask the user to rerun interactively).
+        // 60s `recv` timeout kills the whole run. Settle it immediately with a
+        // reason the model can act on (retry inside the root, run `--mode auto`
+        // for an unattended posture, or rerun interactively via `tui`) instead.
         if let OutEvent::ToolRequest {
             request_id, tool, ..
         } = &ev
         {
-            if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
-                holly
-                    .send(InMsg::Reject {
-                        session: session.clone(),
-                        request_id: request_id.clone(),
-                        reason: Some(
-                            "non-interactive head cannot accept a plan; run interactively (tui) to accept".to_string(),
-                        ),
-                    })
-                    .await?;
-            } else if auto_approve {
-                holly
-                    .send(InMsg::Approve {
-                        session: session.clone(),
-                        request_id: request_id.clone(),
-                        scope: Default::default(),
-                    })
-                    .await?;
+            let reason = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
+                "non-interactive head cannot accept a plan; run interactively (tui) to accept"
             } else {
-                holly
-                    .send(InMsg::Reject {
-                        session: session.clone(),
-                        request_id: request_id.clone(),
-                        reason: Some(
-                            "non-interactive head auto-rejects tool approval requests by default; \
-                             rerun with --yes to auto-approve, or interactively (tui) to decide"
-                                .to_string(),
-                        ),
-                    })
-                    .await?;
-            }
+                "non-interactive head auto-rejects tool approval requests; \
+                 rerun with --mode auto for an unattended run, or interactively (tui) to decide"
+            };
+            holly
+                .send(InMsg::Reject {
+                    session: session.clone(),
+                    request_id: request_id.clone(),
+                    reason: Some(reason.to_string()),
+                })
+                .await?;
         }
         if matches!(ev, OutEvent::Done { .. }) {
             break;

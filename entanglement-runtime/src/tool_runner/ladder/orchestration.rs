@@ -169,10 +169,37 @@ pub(super) async fn ask_user(
     let pending = ctx.pending.clone();
     let open_questions = ctx.open_questions.clone();
     let holly = ctx.holly.clone();
+    // The session's mode bounds how long a question waits
+    // for an answer (ADR-0207 §11, stage 5c) — resolved the
+    // same way `graded::permission` resolves `call_mode`,
+    // just for `Limits` instead of a grade.
+    let timeout = mode_limits(ctx, &session).and_then(|l| crate::run_limits::timeout(&l));
     tokio::spawn(async move {
-        crate::ask_user::run_ask_user(holly, pending, open_questions, session, request_id, input)
-            .await;
+        crate::ask_user::run_ask_user(
+            holly,
+            pending,
+            open_questions,
+            session,
+            request_id,
+            input,
+            timeout,
+        )
+        .await;
     });
+}
+
+/// Resolve `session`'s current [`crate::mode::Limits`] against `ctx`'s mode
+/// table (`None` for an unseen session or an unresolvable mode name — the
+/// same fail-closed shape `ProfileResolver` already uses elsewhere, though
+/// here it just means "no timeout", never a widened grade).
+fn mode_limits(ctx: &LadderCtx, session: &SessionId) -> Option<crate::mode::Limits> {
+    let name = ctx
+        .perm_modes
+        .lock()
+        .expect("permission-mode mutex poisoned")
+        .get(session)
+        .cloned()?;
+    ctx.mode_table.get(&name).map(|m| m.limits)
 }
 
 pub(super) async fn propose_plan(

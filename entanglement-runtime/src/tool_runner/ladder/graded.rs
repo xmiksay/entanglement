@@ -201,6 +201,16 @@ pub(super) async fn permission(
         .get(&session)
         .cloned()
         .unwrap_or_default();
+    // `call_mode`'s resolved `Limits` (ADR-0207 §11, stage 5c) — an unseen/
+    // unresolvable mode falls back to `Limits::default()` (`question_timeout:
+    // 0`, i.e. "wait forever"), the safe direction: it never invents an
+    // unattended posture nobody configured.
+    let limits = ctx
+        .mode_table
+        .get(&call_mode)
+        .map(|m| m.limits)
+        .unwrap_or_default();
+    let denials = ctx.denials.clone();
     // The live registry, cloned (cheap `Arc`) *before*
     // the snapshot shadow below — ADR-0201's dispatch-
     // time lazy MCP re-enable needs the live handle to
@@ -278,6 +288,8 @@ pub(super) async fn permission(
             tool,
             input,
             call_mode,
+            limits,
+            &denials,
         )
         .await;
     });

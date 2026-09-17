@@ -77,4 +77,5 @@ mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
 mod system_prompt_assembly;
 mod tool_mask;
+mod unattended_mode;
 mod user_config;

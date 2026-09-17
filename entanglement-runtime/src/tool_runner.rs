@@ -63,6 +63,7 @@ use crate::permission::{clamp_to_base, min_permission};
 use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
+use crate::run_limits;
 use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
@@ -413,6 +414,12 @@ pub fn spawn_tool_executor_with_policy(
     // race ahead of the watcher's subscription (the `user_prompt_submit` hook,
     // #199, depends on catching that first prompt).
     let inbound = holly.subscribe_inbound();
+    // Same discipline for the budget watcher's own subscription (ADR-0207
+    // §11, stage 5c): it's handed off to a task scheduled inside the
+    // `tokio::spawn` below, so subscribing there (instead of here) could
+    // race a `SessionStarted`/`Usage` broadcast sent right after this
+    // function returns and silently miss it.
+    let budget_sub = holly.subscribe();
     let holly = holly.clone();
     tokio::spawn(async move {
         // Background tasks this executor spawns that must not outlive it (#545):
@@ -468,6 +475,12 @@ pub fn spawn_tool_executor_with_policy(
         // tasks), which set it after a successful `load_skill`; this loop is
         // the sole writer of the clear path.
         let active_skill: Arc<Mutex<HashSet<SessionId>>> = Arc::new(Mutex::new(HashSet::new()));
+        // Per-session, per-turn repeat-denial tracker (ADR-0207 §11, stage
+        // 5c): a collapsed-`Ask` denial's second identical `(tool, arg)`
+        // this turn parks an approval instead of refusing silently again.
+        // Scoped exactly like `active_skill` above — cleared on `Done` and
+        // on session end/hibernate.
+        let denials = Arc::new(run_limits::DenialTracker::new());
         // The project root `propose_plan` materializes/resolves plan files
         // against (#513): the same canonical root `escape_root` carries when
         // wired (every full head). A wrapper with no escape-root policy (test
@@ -632,6 +645,15 @@ pub fn spawn_tool_executor_with_policy(
                 }
             });
         }
+        // `max_turns`/`max_duration` enforcement (ADR-0207 §11, stage 5c):
+        // its own subscriber, parked in the same `JoinSet` as every other
+        // background task here so it's aborted alongside them rather than
+        // leaking a `Holly` clone past shutdown.
+        {
+            let holly = holly.clone();
+            let mode_table = mode_table.clone();
+            background.spawn(crate::run_budget::watch(holly, budget_sub, mode_table));
+        }
         // The ladder's long-lived shared state (issue #451), cloned once
         // here rather than built by moving the loop-locals above: every
         // field is `Arc`-cheap to clone, and cloning (instead of moving)
@@ -666,6 +688,7 @@ pub fn spawn_tool_executor_with_policy(
             active_skill: active_skill.clone(),
             hooks: hooks.clone(),
             validation: validation.clone(),
+            denials: denials.clone(),
         };
         loop {
             match sub.recv().await {
@@ -813,14 +836,20 @@ pub fn spawn_tool_executor_with_policy(
                     // §6) is equally session-scoped — nothing to break a
                     // loop against once the session is gone.
                     validation.forget(&session);
+                    // The repeat-denial tracker (ADR-0207 §11) is per-turn
+                    // scoped, so it's moot once the session itself is gone.
+                    denials.clear(&session);
                 }
                 // A skill's "active" posture scopes one model turn (#400,
                 // ADR-0106; posture-only since ADR-0194): clear it here so a
                 // later turn can `load_skill` a different one (or none)
                 // cleanly, and tell any listening head via
-                // `OutEvent::SkillActive { skill_id: None, .. }`.
+                // `OutEvent::SkillActive { skill_id: None, .. }`. The
+                // repeat-denial tracker (ADR-0207 §11) shares this same
+                // per-turn scope.
                 Ok(OutEvent::Done { session, .. }) => {
                     clear_active_skill(&holly, &active_skill, &session);
+                    denials.clear(&session);
                 }
                 // A `Stop` that lands while a batch is parked unwinds with no
                 // `ToolResult`/`ToolOutput` for its still-running calls (#448):
@@ -1014,6 +1043,15 @@ async fn dispatch(
     // threaded through to the grant lookup/record so a grant is matched
     // and recorded against the mode it was actually earned under (§8).
     mode: String,
+    // `mode`'s resolved `Limits` (ADR-0207 §11, stage 5c), resolved by the
+    // caller alongside `mode` itself — governs whether a bare `Ask` collapses
+    // to a denial (`run_limits::collapses_ask`) and how long a parked
+    // approval waits (`run_limits::timeout`).
+    limits: crate::mode::Limits,
+    // Per-session, per-turn repeat-denial tracker (ADR-0207 §11): a second
+    // identical collapsed-`Ask` denial parks an approval instead of refusing
+    // silently again.
+    denials: &crate::run_limits::DenialTracker,
 ) {
     // A hallucinated tool name can never execute, so reject it *before* the
     // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
@@ -1228,7 +1266,28 @@ async fn dispatch(
             let output = format!("tool `{tool}` denied by mode `{mode}` — use /mode to switch");
             seam::reply(holly, session, request_id, output, true).await;
         }
-        // Either the mode said `Ask`, or an out-of-root access forced one.
+        // ADR-0207 §11: an unattended mode (a finite `question_timeout`) has
+        // no one to prompt, so a bare `Ask` grade collapses to an immediate
+        // denial rather than parking — *unless* this exact `(tool, arg)` was
+        // already denied once this turn, in which case a model insisting
+        // twice may genuinely need it, so the repeat falls through to the
+        // ordinary park below (still bounded by the same timeout). The guard
+        // records the denial as a side effect, so it never double-charges: a
+        // first call denies-and-records, a second sees the record and falls
+        // to `_`.
+        Permission::Ask
+            if run_limits::collapses_ask(&limits)
+                && !denials.record_repeat(&session, &tool, arg.as_deref()) =>
+        {
+            let output = format!(
+                "tool `{tool}` denied — mode `{mode}` is unattended (question_timeout \
+                 {}s, no one to prompt); call it again to request a one-time approval",
+                limits.question_timeout
+            );
+            seam::reply(holly, session, request_id, output, true).await;
+        }
+        // Either the mode said `Ask` (an attended mode, or a collapsed
+        // mode's second identical call), or an out-of-root access forced one.
         _ => {
             // Register the waiter *before* prompting (#156) so the inbound router
             // can never process the approval before this park exists — the
@@ -1271,6 +1330,7 @@ async fn dispatch(
                 input,
                 arg,
                 mode,
+                run_limits::timeout(&limits),
             )
             .await;
         }
@@ -1286,7 +1346,10 @@ async fn dispatch(
 /// approval provably uses the exact same key `apply_grant` looked up before
 /// the prompt was ever shown. `mode` is likewise threaded through so the
 /// recorded grant is tagged with the mode it was actually approved under
-/// (ADR-0207 §8).
+/// (ADR-0207 §8). `question_timeout` (ADR-0207 §11, stage 5c) bounds the
+/// park: `None` waits forever (every attended mode); `Some(d)` is the mode's
+/// own `question_timeout`, and an elapsed wait expires as a denial —
+/// silence is never consent for a privileged action.
 #[allow(clippy::too_many_arguments)]
 async fn await_decision(
     holly: &Holly,
@@ -1305,8 +1368,24 @@ async fn await_decision(
     input: String,
     arg: Option<String>,
     mode: String,
+    question_timeout: Option<std::time::Duration>,
 ) {
-    match crate::pending::await_decision(rx).await {
+    let decision = match crate::pending::await_decision_timed(rx, question_timeout).await {
+        Some(decision) => decision,
+        // Elapsed with no answer: `on_timeout` for a parked approval is
+        // always `Deny` today (`crate::mode::OnTimeout`) — silence is never
+        // consent for a privileged action (ADR-0207 §11).
+        None => {
+            set_thinking(holly, &session);
+            let output = format!(
+                "tool `{tool}` denied: no response within {}s (mode `{mode}`)",
+                question_timeout.map(|d| d.as_secs()).unwrap_or_default()
+            );
+            seam::reply(holly, session, request_id, output, true).await;
+            return;
+        }
+    };
+    match decision {
         seam::Decision::Approve { scope } => {
             set_thinking(holly, &session);
             if let Some((store, abs)) = &escape_grant {

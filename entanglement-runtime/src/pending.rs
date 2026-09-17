@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use entanglement_core::SessionId;
 use tokio::sync::oneshot;
@@ -97,6 +98,28 @@ pub async fn await_decision(rx: oneshot::Receiver<Decision>) -> Decision {
     rx.await.unwrap_or(Decision::Stop)
 }
 
+/// Like [`await_decision`], bounded by an optional `timeout` (ADR-0207 §11,
+/// stage 5c: a mode's `question_timeout` governs both `ask_user` questions
+/// and parked tool approvals). `None` waits forever, identical to
+/// [`await_decision`] — this module knows nothing about modes, only
+/// durations, so the `0` = infinite translation happens in the caller
+/// (`crate::run_limits::timeout`). `None` in the *return* means the timeout
+/// elapsed with no decision delivered; the receiver is then dropped, so a
+/// decision landing after the deadline (a slow head, a stale approval)
+/// resolves to nothing rather than being silently applied late.
+pub async fn await_decision_timed(
+    rx: oneshot::Receiver<Decision>,
+    timeout: Option<Duration>,
+) -> Option<Decision> {
+    match timeout {
+        None => Some(await_decision(rx).await),
+        Some(d) => tokio::time::timeout(d, rx)
+            .await
+            .ok()
+            .map(|res| res.unwrap_or(Decision::Stop)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +184,44 @@ mod tests {
             await_decision(rx_b).await,
             Decision::Answer { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn await_decision_timed_none_waits_forever() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let rx = pending.register(&s, "req-1");
+        pending.resolve(
+            &s,
+            "req-1",
+            Decision::Approve {
+                scope: ApprovalScope::Once,
+            },
+        );
+        assert!(matches!(
+            await_decision_timed(rx, None).await,
+            Some(Decision::Approve { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn await_decision_timed_returns_the_decision_within_the_deadline() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let rx = pending.register(&s, "req-1");
+        pending.resolve(&s, "req-1", Decision::Reject { reason: None });
+        let decision = await_decision_timed(rx, Some(std::time::Duration::from_secs(5))).await;
+        assert!(matches!(decision, Some(Decision::Reject { .. })));
+    }
+
+    #[tokio::test]
+    async fn await_decision_timed_elapses_to_none_when_nobody_answers() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let rx = pending.register(&s, "req-1");
+        // Nobody ever resolves req-1 — the short deadline must still return,
+        // not hang, and must report "no decision" rather than fabricating one.
+        let decision = await_decision_timed(rx, Some(std::time::Duration::from_millis(20))).await;
+        assert!(decision.is_none());
     }
 }
