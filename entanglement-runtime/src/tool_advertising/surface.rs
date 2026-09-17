@@ -25,6 +25,19 @@ pub struct SurfaceSources {
     pub advertising: SharedAdvertisingState,
     /// What a session is pinned from at its first resolution.
     pub inputs: Arc<AdvertisingInputs>,
+    /// The `agent`/`agent_send` specs, snapshotted once at startup.
+    ///
+    /// Deliberately a snapshot and not a live registry read: the advertised
+    /// array must not vary between rounds or between agents (ADR-0207 §9), and
+    /// a roster read per round would let a newly discovered agent file change
+    /// it mid-session and invalidate the prompt-cache prefix. Snapshotting
+    /// makes that impossible rather than merely discouraged.
+    ///
+    /// These ride here rather than `EngineConfig::tool_specs` because this
+    /// resolver *replaces* that field — a spec pushed there never reaches the
+    /// model when a resolver is installed, which is exactly how `propose_plan`
+    /// and then `agent`/`agent_send` each went missing once.
+    pub agent_specs: Vec<ToolSpec>,
 }
 
 /// Wrap [`resolve_surface`] as the engine's resolver.
@@ -55,6 +68,7 @@ pub fn resolve_surface(
     let advertising = &src.advertising;
     let discovery = advertising.discovery(session);
     let mut runtime_specs = discover::runtime_owned_specs();
+    runtime_specs.extend(src.agent_specs.iter().cloned());
     runtime_specs.push(discover::explore_spec(discovery));
     runtime_specs.push(discover::describe_spec(discovery));
 

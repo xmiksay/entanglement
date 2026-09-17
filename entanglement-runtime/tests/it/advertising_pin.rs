@@ -155,6 +155,11 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
             avail: Arc::new(AvailableMcp::default()),
             advertising: advertising.clone(),
             inputs: inputs.clone(),
+            // Mirror `main.rs`: the spawn roster reaches the model through the
+            // resolver, never `cfg.tool_specs`, which the resolver replaces.
+            // This harness used to omit it, so the array it asserted on was
+            // not the array the binary renders.
+            agent_specs: entanglement_runtime::subagent::agent_specs(&profiles),
         })),
         system_prompt_resolver: Some(system_prompt_mode::resolver(advertising.clone())),
         ..EngineConfig::default()

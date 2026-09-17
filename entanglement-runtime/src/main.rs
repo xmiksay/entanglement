@@ -1527,6 +1527,7 @@ async fn main() -> Result<()> {
             avail: mcp_available.clone(),
             advertising: advertising_state.clone(),
             inputs: advertising_inputs.clone(),
+            agent_specs: subagent::agent_specs(&engine_config.profiles),
         },
     ));
     // Live MCP server management (#375): `ActiveServers` was seeded by
