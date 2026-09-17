@@ -36,6 +36,12 @@ pub(super) struct RawMode {
     pub prompt: Vec<String>,
     #[serde(default)]
     pub sandbox: Option<String>,
+    /// Share the host network namespace with a confined `bash`/`call`
+    /// (ADR-0207 §6, stage 5b) — ignored when `sandbox` is unset. None of
+    /// the four built-ins opt in, matching the ADR-0104 default-closed
+    /// egress policy.
+    #[serde(default)]
+    pub sandbox_network: bool,
     #[serde(flatten)]
     pub limits: Limits,
 }
@@ -49,6 +55,7 @@ fn parse(name: &str, yaml: &str) -> Result<Mode> {
         rules: Rules::from_lists(&raw.deny, &raw.allow, &raw.prompt),
         limits: raw.limits,
         sandbox: raw.sandbox,
+        sandbox_network: raw.sandbox_network,
     })
 }
 

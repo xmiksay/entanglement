@@ -114,10 +114,10 @@ pub fn is_non_maskable(tool: &str) -> bool {
 /// high-frequency host tools plus the runtime-owned roster plus the
 /// discovery pair. `propose_plan`/`request_mode` join it too (ADR-0207 §7/
 /// §9/§10): both must be advertised unconditionally and their schema never
-/// varies by profile, so — unlike `agent`/`agent_send`, which genuinely do
-/// vary per profile and stay in `cfg.profile_tool_specs` (core-side,
-/// ADR-0192's carve-out), appended after this kernel — there is no reason
-/// left to hold either out of it. Keeping both here (not just in
+/// varies by profile. `agent`/`agent_send` are unconditional too now (stage
+/// 5b retires the old per-profile spawn roster, ADR-0040) — they ride the
+/// plain shared `cfg.tool_specs` alongside everything else here, not a
+/// separate per-profile table. Keeping the kernel set here (not just in
 /// [`crate::discover::runtime_owned_specs`]) is what keeps them visible from
 /// round one under the default `client_side` `tool_search` encoding, which
 /// filters its pool down to exactly this list
@@ -136,6 +136,16 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     DESCRIBE_TOOL,
     PROPOSE_PLAN_TOOL,
     REQUEST_MODE_TOOL,
+    // `agent`/`agent_send` (stage 5b, ADR-0207 §6/§9): previously appended
+    // unconditionally *after* this kernel filter from the now-retired
+    // per-profile `profile_tool_specs` table, so they were always visible
+    // regardless of discovery state. Now that they ride the plain
+    // `cfg.tool_specs` pool like everything else, they must be named here
+    // too or `client_side_surface`'s kernel filter would silently drop them
+    // until an explicit `describe` — a functional regression, not just a
+    // representational one, for the default `tool_search` mode.
+    AGENT_TOOL,
+    AGENT_SEND_TOOL,
 ];
 
 /// Capability-level permission keys (#418, ADR-0114) and the tools each fans

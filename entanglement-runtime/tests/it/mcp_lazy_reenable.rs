@@ -27,14 +27,14 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, Catalog, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, McpServerState, OutEvent, Permission, PermissionProfile,
+    stream_from_response, AgentProfile, Catalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, McpServerState, OutEvent, Permission, PermissionProfile,
     ProfileRegistry, SessionId, ToolCall,
 };
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
@@ -146,6 +146,7 @@ fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mod
         rules: entanglement_runtime::mode::Rules::default(),
         limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(
         entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
@@ -160,13 +161,9 @@ fn unmasked_profile(name: &str, _perm: Permission) -> ProfileRegistry {
     profiles.insert(AgentProfile {
         name: name.into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     profiles
 }
@@ -207,7 +204,7 @@ fn spawn_executor(
     let shared_tools = reg.shared();
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         perm_modes.clone(),
-        mode_table,
+        mode_table.clone(),
         shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
@@ -228,7 +225,7 @@ fn spawn_executor(
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        mode_table,
         Arc::new(PlanFileRegistry::new()),
         None,
         None,

@@ -134,12 +134,6 @@ pub struct SessionInfo {
     pub parent: Option<SessionId>,
     pub profile: String,
     pub root: bool,
-    /// Resolved posture of the session's active profile (#189): mode, tool mask,
-    /// and permission rules, so a reconnecting head can render the permission
-    /// posture without re-reading the agent `.md` layers. `None` on the resume
-    /// path, where only the profile *name* survives in the replay log.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_detail: Option<ProfileDetail>,
     /// The session's owning user in a multi-user deployment (#522). `None` in
     /// single-user mode (the default) or for a session an embedder spawned
     /// without a `user`. Set once at spawn, inherited by every child — see
@@ -791,48 +785,30 @@ impl ApprovalScope {
     }
 }
 
-/// Whether an agent is directly user-facing, invoked by other agents, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMode {
-    /// User-facing entry agent; may spawn sub-agents. Never a valid spawn
-    /// *target* itself — the target-side mode gate (#119, ADR-0040) refuses it,
-    /// so `build`/`plan` are unreachable via spawn (see
-    /// [`AgentProfile::spawnable_as_subagent`]).
-    Primary,
-    /// Reachable only via spawn; a read-only leaf that defaults to not spawning
-    /// further (the `may_spawn` derivation, #119; spawner-side gate, ADR-0024).
-    Subagent,
-    /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
-    /// like a `Primary`. Lets one file-defined agent serve both roles
-    /// (ADR-0034).
-    All,
-}
-
-/// A bundle of identity — system prompt, model/provider pin, spawn posture —
-/// that defines who a session is. A session runs under exactly one profile at a
-/// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
-/// agent concept. The `name` is the switch key in [`InMsg::SetAgent`].
+/// A bundle of identity — system prompt, model/provider pin — that defines who
+/// a session is. A session runs under exactly one profile at a time; switching
+/// (e.g. `plan` ↔ `debug`) changes the profile. Mirrors opencode's agent
+/// concept. The `name` is the switch key in [`InMsg::SetAgent`].
 ///
 /// **Authority is not here.** ADR-0207 moved every permission fact — the tool
-/// mask (`tools`/`disallowed_tools`) and the `permission` rules — out of the
-/// profile and onto the session's independent permission **mode** axis; a
-/// profile no longer says what a session may do, only who it is. (`sandbox`/
-/// `can_spawn`/`spawnable_agents`/`mode` are still here — a later ADR-0207
-/// stage folds those into mode facts too.)
+/// mask (`tools`/`disallowed_tools`), the `permission` rules, spawn control
+/// (`can_spawn`/`spawnable_agents`), sandbox confinement, and the
+/// primary/subagent/all `mode` distinction — off the profile and onto the
+/// session's independent permission **mode** axis (or, for spawn bounds, the
+/// mode's `max_depth`/`max_agents`). A profile no longer says what a session
+/// may do or where it may run — only who it is. Any agent may be a session
+/// root or a spawn target (ADR-0207 §4/§6).
 ///
 /// Profiles are **file-defined** in the runtime (markdown + YAML frontmatter,
-/// ADR-0034): `name`/`mode`/`model` come from the frontmatter and
-/// `system_prompt` is the file body. `description` drives delegation matching —
-/// it is the one field disclosed to a spawning model (via the `agent` tool
-/// description).
+/// ADR-0034): `name`/`model` come from the frontmatter and `system_prompt` is
+/// the file body. `description` drives delegation matching — it is the one
+/// field disclosed to a spawning model (via the `agent` tool description).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub name: String,
     /// One-line summary; disclosed to a spawning model for delegation matching.
     #[serde(default)]
     pub description: String,
-    pub mode: AgentMode,
     pub system_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -846,30 +822,6 @@ pub struct AgentProfile {
     /// logs/frames written before #323 deserialize with `provider: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
-    /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
-    /// every other mode open. When it (or the derived default) is `false`, the
-    /// `agent` tool is withheld from the model and refused at dispatch — the
-    /// physical principle of #116 applied to spawn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub can_spawn: Option<bool>,
-    /// Allowlist of agent names this profile may spawn (#119, ADR-0040). `None` ⇒
-    /// any registered profile whose `mode` permits sub-agent use. A target
-    /// outside the list is refused before a child session is minted. Checked per
-    /// spawning session against *its own* profile, so the allowlist is not
-    /// transitive (profile A allowed to spawn B does not imply A can spawn what B
-    /// can).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawnable_agents: Option<Vec<String>>,
-    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
-    /// ADR-0104 amendment): `Some("bwrap" | "bubblewrap")` confines every exec
-    /// call this profile makes, `Some("none")` forces them unconfined, `None`
-    /// inherits the process-global `ENTANGLEMENT_SANDBOX` default. Opaque to
-    /// core — validated and interpreted entirely by the runtime
-    /// (`host::sandbox`), which owns the `bwrap` mechanism; core only carries
-    /// and serializes it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<String>,
 }
 
 impl AgentProfile {
@@ -884,55 +836,6 @@ impl AgentProfile {
             _ => None,
         }
     }
-
-    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040).
-    /// [`can_spawn`][Self::can_spawn] overrides the mode-derived default: a
-    /// `Subagent` leaf defaults closed, every other mode open. When this is
-    /// `false` the runtime withholds the `agent` tool and refuses a stale
-    /// call.
-    pub fn may_spawn(&self) -> bool {
-        self.can_spawn.unwrap_or(self.mode != AgentMode::Subagent)
-    }
-
-    /// Whether this profile may spawn the named target (#119, ADR-0040). A `None`
-    /// [`spawnable_agents`][Self::spawnable_agents] allowlist is open to any
-    /// spawnable target; otherwise the name must be listed. Orthogonal to
-    /// [`spawnable_as_subagent`][Self::spawnable_as_subagent], which gates the
-    /// *target's* mode.
-    pub fn spawn_target_allowed(&self, name: &str) -> bool {
-        match &self.spawnable_agents {
-            Some(list) => list.iter().any(|n| n == name),
-            None => true,
-        }
-    }
-
-    /// Whether this profile is a valid spawn *target* (#119, ADR-0040): only
-    /// `subagent`/`all` modes are reachable via spawn; a `primary` entry agent
-    /// never is, so `build`/`plan` fall out of the hierarchy from mode defaults
-    /// with zero frontmatter changes.
-    pub fn spawnable_as_subagent(&self) -> bool {
-        matches!(self.mode, AgentMode::Subagent | AgentMode::All)
-    }
-
-    /// The wire-facing posture of this profile (#189): just `mode` now that
-    /// ADR-0207 moved the tool mask and permission rules off the profile and
-    /// onto the session's independent permission mode axis. Carried on
-    /// [`OutEvent::AgentChanged`] and [`SessionInfo`] so a reconnecting head — or
-    /// a sub-agent debugger — can see the profile's mode without folding the
-    /// broadcast or re-reading the agent `.md` layers.
-    pub fn detail(&self) -> ProfileDetail {
-        ProfileDetail { mode: self.mode }
-    }
-}
-
-/// Resolved wire-facing posture of an [`AgentProfile`] (#189). Since ADR-0207
-/// moved every permission fact off the profile and onto the session's mode
-/// axis, this is now just `mode` — kept as its own type (rather than inlining
-/// `mode` onto the events that carry it) so a later ADR-0207 stage can widen
-/// it with mode facts without another wire shape change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProfileDetail {
-    pub mode: AgentMode,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1831,24 +1734,18 @@ pub enum OutEvent {
         session: SessionId,
         state: AgentState,
     },
-    /// The session switched agent profiles (point-in-time, no `seq`). Carries the
-    /// resolved [`ProfileDetail`] (#189) so a head can render the new permission
-    /// posture without re-reading the agent `.md` layers; `None` only if the
-    /// emitter has no profile handle.
-    AgentChanged {
-        session: SessionId,
-        agent: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        profile_detail: Option<ProfileDetail>,
-    },
+    /// The session switched agent profiles (point-in-time, no `seq`). ADR-0207
+    /// moved every permission fact off the profile and onto the session's
+    /// independent permission mode axis (see [`ModeChanged`][OutEvent::ModeChanged]),
+    /// so this carries only the new profile's name.
+    AgentChanged { session: SessionId, agent: String },
     /// The session switched permission mode (point-in-time, no `seq`), in reply
     /// to [`InMsg::SetMode`] (ADR-0207) — and once more at session start so the
     /// log records the mode a session began in (needed by replay and by the
     /// appended in-conversation notice, see [`Session::mode`][crate::session::Session]).
     /// Carries only the opaque `mode` name; core carries no rule table to
-    /// resolve it against, mirroring [`AgentChanged`][OutEvent::AgentChanged]'s
-    /// `agent` field but without a `profile_detail` counterpart — the runtime
-    /// owns what a mode means. Folded on replay by overwrite (last write wins),
+    /// resolve it against — the runtime owns what a mode means. Folded on
+    /// replay by overwrite (last write wins),
     /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged]/
     /// [`ToolOverlayChanged`][OutEvent::ToolOverlayChanged].
     ModeChanged { session: SessionId, mode: String },
@@ -2896,7 +2793,6 @@ mod tests {
                     parent: None,
                     profile: "build".into(),
                     root: true,
-                    profile_detail: None,
                     user: None,
                     sponsored: false,
                 },
@@ -2907,9 +2803,6 @@ mod tests {
                     root: false,
                     user: None,
                     sponsored: false,
-                    profile_detail: Some(ProfileDetail {
-                        mode: AgentMode::Subagent,
-                    }),
                 },
             ],
         };
@@ -3242,45 +3135,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_profile_detail_projects_the_wire_posture() {
-        let profile = AgentProfile {
-            name: "explore".into(),
-            description: String::new(),
-            mode: AgentMode::Subagent,
-            system_prompt: "secret prompt body".into(),
-            model: Some("glm-5.2".into()),
-            provider: None,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
-        let detail = profile.detail();
-        assert_eq!(detail.mode, AgentMode::Subagent);
-    }
-
-    #[test]
-    fn agent_changed_carries_profile_detail_and_stays_backward_compatible() {
+    fn agent_changed_roundtrips() {
         let ev = OutEvent::AgentChanged {
             session: SessionId::new("s"),
             agent: "plan".into(),
-            profile_detail: Some(ProfileDetail {
-                mode: AgentMode::Primary,
-            }),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
-
-        // An older head's frame (no `profile_detail`) still deserializes — the
-        // field defaults to `None`, so the enrichment is additive on the wire.
-        let legacy = r#"{"kind":"agent_changed","session":"s","agent":"plan"}"#;
-        assert_eq!(
-            serde_json::from_str::<OutEvent>(legacy).unwrap(),
-            OutEvent::AgentChanged {
-                session: SessionId::new("s"),
-                agent: "plan".into(),
-                profile_detail: None,
-            }
-        );
     }
 
     #[test]
@@ -3507,57 +3368,6 @@ mod tests {
             Some(true)
         );
         assert!(ToolOverlayEntry::find(&[entry], "edit").is_some());
-    }
-
-    fn spawn_profile(
-        mode: AgentMode,
-        can_spawn: Option<bool>,
-        spawnable_agents: Option<Vec<&str>>,
-    ) -> AgentProfile {
-        AgentProfile {
-            name: "s".into(),
-            description: String::new(),
-            mode,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            can_spawn,
-            spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
-            sandbox: None,
-        }
-    }
-
-    #[test]
-    fn may_spawn_defaults_from_mode() {
-        // Primary/all default open; a subagent leaf defaults closed.
-        assert!(spawn_profile(AgentMode::Primary, None, None).may_spawn());
-        assert!(spawn_profile(AgentMode::All, None, None).may_spawn());
-        assert!(!spawn_profile(AgentMode::Subagent, None, None).may_spawn());
-    }
-
-    #[test]
-    fn can_spawn_overrides_the_mode_default() {
-        // An explicit `can_spawn` wins over the mode-derived default either way.
-        assert!(!spawn_profile(AgentMode::Primary, Some(false), None).may_spawn());
-        assert!(spawn_profile(AgentMode::Subagent, Some(true), None).may_spawn());
-    }
-
-    #[test]
-    fn spawn_target_allowlist_gates_by_name() {
-        // `None` ⇒ open to any target; a list restricts to its entries.
-        let open = spawn_profile(AgentMode::Primary, None, None);
-        assert!(open.spawn_target_allowed("explore"));
-        let scoped = spawn_profile(AgentMode::Primary, None, Some(vec!["explore"]));
-        assert!(scoped.spawn_target_allowed("explore"));
-        assert!(!scoped.spawn_target_allowed("build"));
-    }
-
-    #[test]
-    fn spawnable_as_subagent_only_for_subagent_and_all() {
-        assert!(spawn_profile(AgentMode::Subagent, None, None).spawnable_as_subagent());
-        assert!(spawn_profile(AgentMode::All, None, None).spawnable_as_subagent());
-        // A primary entry agent is never a valid spawn target.
-        assert!(!spawn_profile(AgentMode::Primary, None, None).spawnable_as_subagent());
     }
 
     #[test]

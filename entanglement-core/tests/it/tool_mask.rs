@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, SessionId, ToolOverlayEntry, ToolSpec,
+    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, SessionId, ToolOverlayEntry, ToolSpec,
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
@@ -31,13 +31,9 @@ fn explore_profile() -> AgentProfile {
     AgentProfile {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
-        mode: AgentMode::Subagent,
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 

@@ -291,6 +291,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
         rules: entanglement_runtime::mode::Rules::from_lists(&["load_skill".to_string()], &[], &[]),
         limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     let mode_table = Arc::new(
         entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
@@ -310,7 +311,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
         Arc::new(entanglement_runtime::policy::ProfileResolver::new(
             perm_modes.clone(),
-            mode_table,
+            mode_table.clone(),
             shared_tools.clone(),
             PermissionProfile::new(Permission::Allow),
             None,
@@ -334,7 +335,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
         grants,
         Default::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        mode_table,
         Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
         None,
         None,

@@ -176,7 +176,6 @@ mod tests {
                 OutEvent::AgentChanged {
                     session: target.clone(),
                     agent: "plan".to_string(),
-                    profile_detail: None,
                 },
             ),
             out(

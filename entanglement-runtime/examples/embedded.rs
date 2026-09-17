@@ -157,7 +157,17 @@ async fn main() -> anyhow::Result<()> {
         grants,
         Hooks::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        // `TenantResolver` also grades spawn bounds independent of the
+        // default `ProfileResolver`'s mode table — an embedder that skips
+        // `ModeTable` entirely still needs *some* table wired here so
+        // `SpawnGuard` has depth/fan-out limits to read; the built-in four
+        // are a reasonable default even though this example's sessions
+        // never actually set a mode (an unseen session's spawn simply fails
+        // closed, mirroring `ProfileResolver`'s own fail-closed default).
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // The per-user MCP scope seam (#684) wired above.
         Some(scopes),

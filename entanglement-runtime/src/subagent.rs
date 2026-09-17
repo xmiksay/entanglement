@@ -46,22 +46,12 @@ use crate::retained_output::RetainedOutputRegistry;
 use crate::seam::reply;
 use crate::tool_names::AGENT_TOOL;
 
-/// Maximum spawn nesting: the root (user-initiated) session is depth 0, so this
-/// lets the root spawn a child (depth 1), that child spawn (depth 2), and so on
-/// up to and including depth `MAX_SPAWN_DEPTH`. A spawn that would exceed it is
-/// refused. Bounds unbounded recursion — a sub-agent that keeps calling
-/// `agent` (#76, follow-up to ADR-0022).
-const MAX_SPAWN_DEPTH: usize = 3;
-
-/// Maximum sub-agents spawned beneath a single root, summed across the whole
-/// tree. Cumulative and never decremented — sequential spawns count too, so a
-/// session cannot dodge the cap by letting each child finish before the next.
-const MAX_SPAWNS_PER_ROOT: usize = 16;
-
 /// Tracks the live session tree so the runtime can bound sub-agent spawning
-/// (#76). Fed each `SessionStarted` (for the parent link) and consulted on every
-/// `agent` call before a child is started. Lives in the tool executor's
-/// single-threaded event loop, so it needs no synchronization.
+/// (#76, ADR-0023; sourced from the session's **mode** since ADR-0207 §6 —
+/// depth/fan-out are `Mode::limits.max_depth`/`max_agents`, not fixed
+/// constants). Fed each `SessionStarted` (for the parent link) and consulted
+/// on every `agent` call before a child is started. Lives in the tool
+/// executor's single-threaded event loop, so it needs no synchronization.
 ///
 /// ADR-0207 §7 retires the sponsored-child concept (ADR-0138): approving a
 /// `propose_plan` now switches the session's mode instead of spawning a
@@ -91,25 +81,41 @@ impl SpawnGuard {
         self.parents.get(session).cloned().flatten()
     }
 
-    /// Decide whether `parent` may spawn another sub-agent. On approval, charges
-    /// the spawn against the root's budget and returns `Ok`. On refusal, returns
-    /// the message to relay to the parent as the `agent` tool output.
-    pub fn try_spawn(&mut self, parent: &SessionId) -> Result<(), String> {
+    /// Decide whether `parent` may spawn another sub-agent under `mode`
+    /// (ADR-0207 §6: mode applies to the whole spawn sub-tree, so the
+    /// spawning session's own mode is always the right one to bound by — no
+    /// per-spawn override exists). On approval, charges the spawn against the
+    /// root's budget and returns `Ok`. On refusal, returns the message to
+    /// relay to the parent as the `agent` tool output, naming the limit and
+    /// the mode. `None` in either `Limits` field means unlimited (ADR-0207
+    /// §6: "undefined means unlimited").
+    pub fn try_spawn(
+        &mut self,
+        parent: &SessionId,
+        mode: &crate::mode::Mode,
+    ) -> Result<(), String> {
         let child_depth = self.depth(parent) + 1;
-        if child_depth > MAX_SPAWN_DEPTH {
-            return Err(format!(
-                "sub-agent spawn refused: max spawn depth ({MAX_SPAWN_DEPTH}) reached — \
-                 this sub-agent is too deeply nested to spawn another. Do the work directly."
-            ));
+        if let Some(max_depth) = mode.limits.max_depth {
+            if child_depth as u32 > max_depth {
+                return Err(format!(
+                    "sub-agent spawn refused: max spawn depth ({max_depth}) reached for mode \
+                     '{}' — this sub-agent is too deeply nested to spawn another. Do the work \
+                     directly.",
+                    mode.name
+                ));
+            }
         }
         let root = self.root_of(parent);
         let count = self.spawns_per_root.entry(root).or_insert(0);
-        if *count >= MAX_SPAWNS_PER_ROOT {
-            return Err(format!(
-                "sub-agent spawn refused: per-root spawn budget ({MAX_SPAWNS_PER_ROOT}) \
-                 exhausted — too many sub-agents already spawned in this session tree. \
-                 Do the work directly."
-            ));
+        if let Some(max_agents) = mode.limits.max_agents {
+            if *count as u32 >= max_agents {
+                return Err(format!(
+                    "sub-agent spawn refused: per-root spawn budget ({max_agents}) exhausted \
+                     for mode '{}' — too many sub-agents already spawned in this session tree. \
+                     Do the work directly.",
+                    mode.name
+                ));
+            }
         }
         *count += 1;
         Ok(())
@@ -151,35 +157,19 @@ impl SpawnGuard {
 /// the safe default.
 const DEFAULT_SUBAGENT: &str = "explore";
 
-/// The per-profile spawn tool spec (#119, ADR-0040; #606, ADR-0161): the single
-/// `agent` tool advertised to a session running under `profile`, with the
-/// roster + `agent` enum scoped to exactly the profiles `profile` may spawn
-/// (its `spawnable_agents` allowlist ∩ the target-side mode gate). Empty when
-/// the profile may not spawn or has no valid targets — so the tool is
-/// **withheld** from that session's model (the structural half of the gate;
-/// the runtime executor refuses a stale call regardless). `poll` (#605) is
-/// *not* part of this spec — it rides the shared `cfg.tool_specs` instead
-/// (like `ask_user`), since it also joins non-spawn job handles and so isn't
-/// conditioned on spawn capability alone; a profile still masks it via its own
-/// `tools:` list. Stored in
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] and
-/// appended by core's `run_turn` for the active profile.
-///
-/// `agent_send` (#609, ADR-0162) rides alongside `agent` here rather than the
-/// shared `cfg.tool_specs` `poll` uses: it is only ever useful against a
-/// handle `agent`/a sponsored `propose_plan` build already produced, so a
-/// profile that can't spawn has no legitimate use for it either.
-pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Vec<ToolSpec> {
-    if !profile.may_spawn() {
-        return Vec::new();
-    }
-    // A valid target is spawnable-mode (subagent/all) *and* on this profile's
-    // allowlist — checked against `profile`'s own list, so the roster is not
-    // transitive down the tree (each hop re-checks the spawner).
-    let targets: Vec<&AgentProfile> = registry
-        .iter()
-        .filter(|t| t.spawnable_as_subagent() && profile.spawn_target_allowed(&t.name))
-        .collect();
+/// The `agent`/`agent_send` tool specs, advertised unconditionally to every
+/// session (ADR-0207 §4/§6): spawning is never *graded* — `agent`/
+/// `agent_send` are `Capability::Control` — and any registered agent may be a
+/// session root or a spawn target, so the roster is a **constant**: every
+/// profile in `registry`, not a per-spawner subset (the old `can_spawn`/
+/// `spawnable_agents` gates are retired, ADR-0040 superseded). Spawning is
+/// bounded instead by the session's mode `max_depth`/`max_agents`
+/// ([`SpawnGuard::try_spawn`]). Because this no longer varies by profile, it
+/// joins the shared `cfg.tool_specs` like `ask_user`/`poll` rather than a
+/// per-profile table — ADR-0207 §9: "the advertised tools array no longer
+/// varies by agent or by mode".
+pub fn agent_specs(registry: &ProfileRegistry) -> Vec<ToolSpec> {
+    let targets: Vec<&AgentProfile> = registry.iter().collect();
     if targets.is_empty() {
         return Vec::new();
     }
@@ -879,14 +869,12 @@ mod tests {
     }
 
     #[test]
-    fn spawn_specs_scope_the_enum_to_valid_targets() {
-        // The default registry: build/plan (Primary, not targets), explore +
-        // debug (Subagent, targets). `build` may spawn, so it gets the `agent`
-        // spec — and both spawnable leaves are valid targets, so the enum
-        // lists them.
+    fn agent_specs_list_every_registered_agent() {
+        // ADR-0207 §6: spawning is unconditional and the roster is constant —
+        // every registered agent is a valid target, `build`/`plan` included
+        // (the old primary/subagent target-mode gate is retired).
         let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let build = reg.get("build").unwrap();
-        let specs = spawn_specs_for(build, &reg);
+        let specs = agent_specs(&reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec![AGENT_TOOL, crate::tool_names::AGENT_SEND_TOOL]);
         let enum_names = specs[0].schema["properties"]["agent"]["enum"]
@@ -894,16 +882,29 @@ mod tests {
             .unwrap();
         assert!(enum_names.iter().any(|n| n == "explore"));
         assert!(enum_names.iter().any(|n| n == "debug"));
-        assert!(!enum_names.iter().any(|n| n == "build"));
-        assert!(!enum_names.iter().any(|n| n == "plan"));
+        assert!(enum_names.iter().any(|n| n == "build"));
+        assert!(enum_names.iter().any(|n| n == "plan"));
     }
 
     #[test]
-    fn spawn_specs_empty_for_a_non_spawning_profile() {
-        // `explore` is a Subagent leaf — it may not spawn, so it gets no family.
+    fn agent_specs_are_identical_regardless_of_which_profile_asks() {
+        // The whole point of the constant roster (ADR-0207 §9): the array
+        // must not depend on the caller's own profile, since `SetAgent` must
+        // stay free of prompt-cache invalidation. `agent_specs` takes no
+        // spawner argument at all now, so calling it twice against the same
+        // registry is the only meaningful "regardless of who asks" check —
+        // compare by (name, description, schema) since `ToolSpec` has no
+        // `PartialEq`.
         let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let explore = reg.get("explore").unwrap();
-        assert!(spawn_specs_for(explore, &reg).is_empty());
+        let a = agent_specs(&reg);
+        let b = agent_specs(&reg);
+        let project = |specs: &[ToolSpec]| -> Vec<(String, String, serde_json::Value)> {
+            specs
+                .iter()
+                .map(|s| (s.name.clone(), s.description.clone(), s.schema.clone()))
+                .collect()
+        };
+        assert_eq!(project(&a), project(&b));
     }
 
     /// Build a guard with a linear ancestry chain `root → a → b → …` recorded.
@@ -917,41 +918,75 @@ mod tests {
         (guard, ids)
     }
 
+    /// A mode with the given depth/fan-out limits (`None` = unlimited),
+    /// otherwise a bare pass-through — `try_spawn` only ever reads `name`
+    /// and `limits`.
+    fn mode_with_limits(max_depth: Option<u32>, max_agents: Option<u32>) -> crate::mode::Mode {
+        crate::mode::Mode {
+            name: "test".to_string(),
+            default: entanglement_core::Permission::Allow,
+            rules: crate::mode::Rules::default(),
+            limits: crate::mode::Limits {
+                max_depth,
+                max_agents,
+                ..Default::default()
+            },
+            sandbox: None,
+            sandbox_network: false,
+        }
+    }
+
     #[test]
     fn root_may_spawn_and_charges_the_budget() {
         let (mut guard, ids) = guard_with_chain(&["root"]);
-        assert!(guard.try_spawn(&ids[0]).is_ok());
+        let mode = mode_with_limits(Some(3), Some(16));
+        assert!(guard.try_spawn(&ids[0], &mode).is_ok());
         assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(1));
     }
 
     #[test]
     fn spawn_refused_past_max_depth() {
-        // root(0) → a(1) → b(2) → c(3): c is at MAX_SPAWN_DEPTH, so its spawn
-        // (which would be depth 4) is refused.
+        // root(0) → a(1) → b(2) → c(3): c is at the mode's max_depth (3), so
+        // its spawn (which would be depth 4) is refused.
         let (mut guard, ids) = guard_with_chain(&["root", "a", "b", "c"]);
+        let mode = mode_with_limits(Some(3), Some(16));
         let deepest = ids.last().unwrap();
-        let err = guard.try_spawn(deepest).unwrap_err();
+        let err = guard.try_spawn(deepest, &mode).unwrap_err();
         assert!(err.contains("max spawn depth"), "got: {err}");
+        assert!(err.contains("test"), "names the mode: {err}");
         // A shallower ancestor (depth 2 → child depth 3) is still allowed.
-        assert!(guard.try_spawn(&ids[2]).is_ok());
+        assert!(guard.try_spawn(&ids[2], &mode).is_ok());
     }
 
     #[test]
     fn spawn_refused_past_per_root_budget() {
         let (mut guard, ids) = guard_with_chain(&["root"]);
-        for _ in 0..MAX_SPAWNS_PER_ROOT {
-            assert!(guard.try_spawn(&ids[0]).is_ok());
+        let mode = mode_with_limits(Some(3), Some(16));
+        for _ in 0..16 {
+            assert!(guard.try_spawn(&ids[0], &mode).is_ok());
         }
-        let err = guard.try_spawn(&ids[0]).unwrap_err();
+        let err = guard.try_spawn(&ids[0], &mode).unwrap_err();
         assert!(err.contains("per-root spawn budget"), "got: {err}");
+        assert!(err.contains("test"), "names the mode: {err}");
+    }
+
+    #[test]
+    fn undefined_limits_mean_unlimited() {
+        // ADR-0207 §6: `None` in either field never refuses.
+        let (mut guard, ids) = guard_with_chain(&["root", "a", "b", "c", "d", "e"]);
+        let mode = mode_with_limits(None, None);
+        for id in &ids {
+            assert!(guard.try_spawn(id, &mode).is_ok());
+        }
     }
 
     #[test]
     fn budget_is_shared_across_the_whole_tree() {
         // A grandchild's spawns count against the same root budget as the root's.
         let (mut guard, ids) = guard_with_chain(&["root", "child"]);
-        guard.try_spawn(&ids[0]).unwrap();
-        guard.try_spawn(&ids[1]).unwrap();
+        let mode = mode_with_limits(Some(3), Some(16));
+        guard.try_spawn(&ids[0], &mode).unwrap();
+        guard.try_spawn(&ids[1], &mode).unwrap();
         assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(2));
         assert!(!guard.spawns_per_root.contains_key(&ids[1]));
     }
@@ -960,7 +995,8 @@ mod tests {
     fn unknown_session_treated_as_root() {
         let mut guard = SpawnGuard::new();
         let orphan = SessionId::new("orphan");
+        let mode = mode_with_limits(Some(3), Some(16));
         // No `record_start`: depth 0, its own root — the spawn is allowed.
-        assert!(guard.try_spawn(&orphan).is_ok());
+        assert!(guard.try_spawn(&orphan, &mode).is_ok());
     }
 }

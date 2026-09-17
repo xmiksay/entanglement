@@ -24,7 +24,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor, spawn_tool_executor_with_policy};
@@ -121,7 +121,7 @@ fn spawn_calling_with_mode_table(
     let perm_modes = Arc::new(Mutex::new(HashMap::new()));
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         perm_modes.clone(),
-        mode_table,
+        mode_table.clone(),
         shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
@@ -142,7 +142,7 @@ fn spawn_calling_with_mode_table(
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        mode_table,
         Arc::new(PlanFileRegistry::new()),
         None,
         None,
@@ -162,6 +162,7 @@ fn deny_update_tasks_mode_table() -> Arc<ModeTable> {
         rules: Rules::from_lists(&["update_tasks".to_string()], &[], &[]),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }

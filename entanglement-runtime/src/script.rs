@@ -1093,6 +1093,7 @@ mod tests {
             rules: Rules::from_lists(&deny, &allow, &prompt),
             limits: Limits::default(),
             sandbox: None,
+            sandbox_network: false,
         };
         let modes = Arc::new(Mutex::new(
             sessions

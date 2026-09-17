@@ -299,7 +299,6 @@ pub(crate) async fn session_loop(
     let _ = events.send(OutEvent::AgentChanged {
         session: session.clone(),
         agent: s.profile.name.clone(),
-        profile_detail: Some(s.profile.detail()),
     });
     // Announce the starting mode unconditionally, mirroring `AgentChanged`
     // above — a head that (re)connects learns the live posture without
@@ -506,7 +505,6 @@ pub(crate) async fn session_loop(
                         let _ = events.send(OutEvent::AgentChanged {
                             session: session.clone(),
                             agent: p.name.clone(),
-                            profile_detail: Some(p.detail()),
                         });
                         // Per-profile model pin (#323, ADR-0081): re-bind the
                         // backend to this profile's model. Precedence: session

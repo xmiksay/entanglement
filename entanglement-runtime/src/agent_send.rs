@@ -32,10 +32,12 @@ use crate::subagent::{collect_child_answer, format_agent_answer};
 use crate::tool_names::AGENT_SEND_TOOL;
 
 /// The `agent_send` tool schema advertised to the model, alongside `agent`
-/// (#609, ADR-0162) — appended by [`crate::subagent::spawn_specs_for`], so
-/// only a profile that may spawn ever sees it: `agent_send` is only useful
-/// against a handle `agent` already produced (ADR-0207 §7 retires the
-/// `propose_plan` sponsored build handoff this once also re-engaged).
+/// (#609, ADR-0162) — appended by [`crate::subagent::agent_specs`], now
+/// unconditionally advertised like `agent` itself (ADR-0207 §4/§6/§9): it is
+/// only useful against a handle `agent` already produced (ADR-0207 §7
+/// retires the `propose_plan` sponsored build handoff this once also
+/// re-engaged), but withholding it per profile is exactly the kind of
+/// agent-dependent advertisement ADR-0207 §9 retires.
 pub fn agent_send_spec() -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_SEND_TOOL,

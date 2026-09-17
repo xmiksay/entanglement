@@ -266,6 +266,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
         rules: entanglement_runtime::mode::Rules::default(),
         limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     let mode_table = Arc::new(
         entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
@@ -300,7 +301,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
         Arc::new(entanglement_runtime::policy::ProfileResolver::new(
             perm_modes.clone(),
-            mode_table,
+            mode_table.clone(),
             shared_tools.clone(),
             PermissionProfile::new(Permission::Allow),
             None,
@@ -324,7 +325,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
         grants,
         Default::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        mode_table,
         Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
         None,
         None,

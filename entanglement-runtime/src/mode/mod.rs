@@ -58,8 +58,14 @@ where
 
 /// One resolved permission mode (ADR-0207 §2/§4): a name, the grade used
 /// when nothing else matches, its rule table, its run limits, and its
-/// sandbox posture (`Some("bwrap")`/`Some("bubblewrap")`, mirroring
-/// `AgentProfile::sandbox`'s existing convention — `None` = unsandboxed).
+/// sandbox posture — `sandbox`: `Some("bwrap")`/`Some("bubblewrap")` confines
+/// every `bash`/`call` the whole spawn sub-tree makes, `None` leaves it
+/// unsandboxed; `sandbox_network` shares the host network namespace with a
+/// confined command (ignored when `sandbox` is `None`). Stage 5b moved
+/// confinement here from the old per-profile `AgentProfile::sandbox` — a
+/// mode applies to its whole spawn sub-tree (ADR-0207 §6), so there is no
+/// more per-session ancestor floor to freeze at spawn: every session under
+/// one mode gets the identical policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mode {
     pub name: String,
@@ -67,6 +73,28 @@ pub struct Mode {
     pub rules: Rules,
     pub limits: Limits,
     pub sandbox: Option<String>,
+    pub sandbox_network: bool,
+}
+
+impl Mode {
+    /// This mode's confinement policy for `bash`/`call` (ADR-0207 §6, stage
+    /// 5b): `sandbox`/`sandbox_network` translated into a
+    /// [`crate::host::SandboxPolicy`]. `ENTANGLEMENT_SANDBOX`/
+    /// `ENTANGLEMENT_SANDBOX_NETWORK` are then layered on top via
+    /// [`SandboxPolicy::most_confined`] — env may only tighten what the mode
+    /// declares, never loosen it, which `most_confined` gives for free since
+    /// it always picks the more-confined of the two.
+    pub fn sandbox_policy(&self) -> crate::host::SandboxPolicy {
+        use crate::host::{SandboxBackend, SandboxPolicy};
+        let backend = match self.sandbox.as_deref() {
+            Some("bwrap") | Some("bubblewrap") => SandboxBackend::Bubblewrap,
+            _ => SandboxBackend::None,
+        };
+        SandboxPolicy {
+            backend,
+            network: self.sandbox_network,
+        }
+    }
 }
 
 impl Mode {
@@ -184,6 +212,7 @@ mod tests {
             rules: Rules::default(),
             limits: Limits::default(),
             sandbox: None,
+            sandbox_network: false,
         };
         let table = ModeTable::new(vec![custom]).expect("single-mode table is valid");
         assert!(table.get("custom").is_some());

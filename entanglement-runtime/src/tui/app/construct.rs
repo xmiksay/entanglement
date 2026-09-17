@@ -10,7 +10,7 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::sessions::SessionRegistry;
 use crate::tui::theme::Theme;
-use entanglement_core::{AgentMode, SessionId};
+use entanglement_core::SessionId;
 use ratatui::layout::Rect;
 
 use super::{App, ModalClickAreas, ProfileInfo, HISTORY_CAPACITY};
@@ -27,12 +27,10 @@ impl App {
                 ProfileInfo {
                     name: "build".to_string(),
                     description: "Coding agent".to_string(),
-                    mode: AgentMode::Primary,
                 },
                 ProfileInfo {
                     name: "plan".to_string(),
                     description: "Planning agent".to_string(),
-                    mode: AgentMode::Primary,
                 },
             ],
             vec![
@@ -46,12 +44,12 @@ impl App {
         )
     }
 
-    /// `entry_profiles` are the registry-driven entry agents (`mode ∈
-    /// {primary, all}`, #119) the `/agent` picker and Tab-cycle offer — a
-    /// `subagent` leaf like `explore` is never a manual entry agent. The caller
-    /// (the runtime head) filters and orders them from the loaded
-    /// `ProfileRegistry`. `tool_roster` is the full advertised tool-name roster
-    /// (#330) `/tools` and the bare `/enable` checklist offer.
+    /// `entry_profiles` are every registered agent (ADR-0207 §4 retires the
+    /// old `mode ∈ {primary, all}` filter — any agent may be a session root)
+    /// the `/agent` picker and Tab-cycle offer, in the order the caller (the
+    /// runtime head) loaded them from the `ProfileRegistry`. `tool_roster` is
+    /// the full advertised tool-name roster (#330) `/tools` and the bare
+    /// `/enable` checklist offer.
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
@@ -64,17 +62,13 @@ impl App {
             vec![ProfileInfo {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
-                mode: AgentMode::Primary,
             }]
         } else {
             entry_profiles
         };
 
-        // The implicit Tab cycle ring is `mode: primary` only (#322) so
-        // cross-vendor `all`-mode agents (ADR-0074) don't flood it; they stay
-        // reachable via the `/agent` picker. Fall back to the whole entry list if
-        // no primaries exist so Tab never cycles an empty ring. Shared with the
-        // definitions-watcher reload path (#329, `App::refresh_profiles`).
+        // The Tab cycle ring is every agent now (ADR-0207 §4) — shared with
+        // the definitions-watcher reload path (#329, `App::refresh_profiles`).
         let primary_profile_order = super::pickers::primary_order(&available_profiles);
 
         let mut profile_picker_state = ListState::default();
@@ -186,7 +180,6 @@ impl App {
             quit_pending: false,
             quit_pending_at: None,
             toast: None,
-            pending_stop_confirm: None,
             settings: super::settings::SettingsState::new(catalog),
         }
     }

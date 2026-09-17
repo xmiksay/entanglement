@@ -23,7 +23,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::tools::{register_skill_tools, SkillToolDef};
 use entanglement_runtime::skills::{SkillMeta, SkillRegistry};
@@ -99,6 +99,7 @@ fn denies_bash_but_defaults_allow() -> Arc<ModeTable> {
         rules: Rules::from_lists(&["bash".to_string()], &[], &[]),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
@@ -186,7 +187,10 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         None,

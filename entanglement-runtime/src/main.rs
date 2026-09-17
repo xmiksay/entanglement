@@ -142,12 +142,22 @@ async fn build_config(
         .and_then(|p| p.canonicalize())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
-    // Optional bubblewrap confinement for bash/call (#399, ADR-0104; #479 adds
-    // the per-profile `sandbox:` frontmatter override on top of this
-    // process-global default). Off by default — an unset `ENTANGLEMENT_SANDBOX`
-    // means unsandboxed, full-privilege execution, matching every release
-    // before this.
-    let sandbox_config = policy::SandboxConfig::from_env();
+    // Per-session permission mode (ADR-0207 stage 4), folded from
+    // `OutEvent::ModeChanged` by the tool executor — constructed here,
+    // *before* `register_default_tools`, so `bash`/`call`'s sandbox resolver
+    // (below) and the executor's `ProfileResolver` (wired much later, once
+    // `Holly` exists) share the exact same map and mode table instead of two
+    // copies that could drift. `skutter` always runs the four built-in modes
+    // — code, not configuration (ADR-0207 §2).
+    let perm_modes = Arc::new(Mutex::new(HashMap::new()));
+    let mode_table = Arc::new(ModeTable::builtin().expect("built-in permission modes must parse"));
+    // Sandbox confinement is a **mode** fact now (ADR-0207 §6, stage 5b):
+    // `SandboxConfig` reads `perm_modes` directly and layers
+    // `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK` on top as a
+    // tighten-only env override (`SandboxPolicy::most_confined`). Off by
+    // default — an unset `ENTANGLEMENT_SANDBOX` and a mode with no
+    // `sandbox:` key mean unsandboxed, full-privilege execution.
+    let sandbox_config = policy::SandboxConfig::new(perm_modes.clone(), mode_table.clone());
     // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
     // block). `call`'s own default-output artifact used to live here too;
@@ -272,20 +282,12 @@ async fn build_config(
         .register(GrepJsonTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
-    // the model. Per-profile spawn control (#119, ADR-0040) makes the family
-    // *per-profile* — each profile's roster + target enum is scoped to who it may
-    // spawn, and a non-spawning profile gets nothing — so it lives in
-    // `profile_tool_specs` (appended by core for the active profile), not the
-    // shared `tool_specs`. Empty entries are simply omitted.
-    let profile_tool_specs = cfg
-        .profiles
-        .iter()
-        .filter_map(|p| {
-            let specs = subagent::spawn_specs_for(p, &cfg.profiles);
-            (!specs.is_empty()).then(|| (p.name.clone(), specs))
-        })
-        .collect();
-    cfg.profile_tool_specs = profile_tool_specs;
+    // the model. Spawning is unconditional now (ADR-0207 §6/§9) — the roster
+    // is a constant, not scoped per spawning profile — so it joins the
+    // shared `tool_specs` like `ask_user`/`update_tasks` below, keeping the
+    // advertised array identical across `SetAgent` (the whole point of the
+    // constant roster).
+    cfg.tool_specs.extend(subagent::agent_specs(&cfg.profiles));
     // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
     // no cross-agent authority, so it rides the shared specs (a read-only
     // session's permission mode declines the call at dispatch). The runtime
@@ -1530,13 +1532,14 @@ async fn main() -> Result<()> {
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
     // `ProfileResolver` grades every call from this map, not from `active`.
-    let perm_modes = Arc::new(Mutex::new(HashMap::new()));
+    // The *same* map/table `sandbox_config` was built from in `build_config`
+    // (ADR-0207 §6, stage 5b) — sandboxing must see exactly the mode
+    // permission dispatch sees, not a second copy that can drift.
+    let perm_modes = sandbox_config.modes.clone();
+    let mode_table = sandbox_config.table.clone();
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         perm_modes.clone(),
-        // `skutter` always runs the four built-in modes — code, not
-        // configuration (ADR-0207 §2). Config `modes:` tuning is a later
-        // stage's wiring, not this resolver's concern.
-        Arc::new(ModeTable::builtin().context("built-in permission modes must parse")?),
+        mode_table.clone(),
         tools.clone(),
         user_config.permissions.clone(),
         // Root-relative arg normalization (#485, ADR-0125): cloned before
@@ -1569,10 +1572,11 @@ async fn main() -> Result<()> {
         user_config.hooks.clone(),
         // Escape-root approval (ADR-0109): the same store the host tools read.
         Some(escape_root),
-        // Per-profile sandbox confinement (#479): the same `own`/`floor` maps
-        // `register_default_tools`'s resolver reads, so the dispatch loop's
-        // fold below is what `bash`/`call` actually see.
-        sandbox_config,
+        // The mode table `perm_modes` resolves against (ADR-0207 §6, stage
+        // 5b) — used only to source a spawn's `max_depth`/`max_agents`
+        // bound; sandboxing itself reads `perm_modes` directly, independent
+        // of this executor (`register_default_tools`'s resolver above).
+        mode_table,
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,

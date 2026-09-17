@@ -826,7 +826,6 @@ async fn supervisor(
                     parent: parent.clone(),
                     profile: profile.name.clone(),
                     root: is_root,
-                    profile_detail: Some(profile.detail()),
                     user: effective_user.clone(),
                     sponsored: *sponsored,
                 },
@@ -935,7 +934,6 @@ async fn supervisor(
                     parent: None,
                     profile: profile.name.clone(),
                     root: true,
-                    profile_detail: Some(profile.detail()),
                     user: None,
                     sponsored: false,
                 },
@@ -1023,11 +1021,7 @@ fn spawn_resumed(
             return None;
         }
     };
-    // Enrich the replay-derived meta with the resolved posture (#189): the log
-    // preserves only the profile name, but the replayed session holds the full
-    // profile, so a reconnecting head sees the live posture.
-    let mut meta = resume_meta(target, records);
-    meta.profile_detail = Some(initial_session.profile.detail());
+    let meta = resume_meta(target, records);
     session_meta.insert(target.clone(), meta);
     let parent = initial_session.parent.clone();
     if let Some(p) = parent.as_ref() {

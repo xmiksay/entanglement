@@ -45,7 +45,7 @@ mod ui;
 mod wrap;
 
 use anyhow::Result;
-use entanglement_core::{AgentMode, Holly, ProfileRegistry, SessionId};
+use entanglement_core::{Holly, ProfileRegistry, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -247,18 +247,17 @@ pub async fn tui(
 }
 
 /// The `/agent` picker + Tab-cycle roster derived from a [`ProfileRegistry`]
-/// snapshot: every entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf
-/// like `explore` is a spawn target, never a manual entry agent. Shared by the
+/// snapshot: every registered agent (ADR-0207 §4 retires the primary/
+/// subagent/all `mode` distinction — any agent may be a session root, so
+/// there is no more leaf-only profile to exclude here). Shared by the
 /// startup build and the definitions-watcher reload arm (#329) so both derive
 /// the roster identically.
 fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
     registry
         .iter()
-        .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
         .map(|p| app::ProfileInfo {
             name: p.name.clone(),
             description: p.description.clone(),
-            mode: p.mode,
         })
         .collect()
 }
@@ -421,19 +420,15 @@ mod tests {
     /// sleeping past the window the bug lived in before ever draining.
     #[tokio::test]
     async fn early_subscribe_survives_the_bootstrap_setagent_race() {
-        use entanglement_core::{AgentMode, AgentProfile, InMsg};
+        use entanglement_core::{AgentProfile, InMsg};
 
         let mut cfg = EngineConfig::default();
         cfg.profiles.insert(AgentProfile {
             name: "plan".into(),
             description: String::new(),
-            mode: AgentMode::Primary,
             system_prompt: "Plan only.".into(),
             model: None,
             provider: None,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         });
         let holly = Holly::spawn(cfg);
         let sid = SessionId::new("s1");

@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, ToolCall,
+    stream_from_response, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
@@ -25,7 +25,7 @@ use entanglement_runtime::host::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -49,6 +49,7 @@ fn allow_all_table() -> Arc<ModeTable> {
         rules: Rules::default(),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
@@ -286,7 +287,7 @@ fn spawn_with_rhai_escape(
         grants,
         Hooks::default(),
         Some(escape_root),
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -309,13 +310,9 @@ fn one_profile(name: &str, _permission: PermissionProfile) -> ProfileRegistry {
     profiles.insert(AgentProfile {
         name: name.into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     profiles
 }
@@ -363,6 +360,7 @@ fn mode_table_for(permission: &PermissionProfile) -> Arc<ModeTable> {
         rules: Rules::from_lists(&deny, &allow, &prompt),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
@@ -480,7 +478,7 @@ fn spawn_with_policy_over(
     let shared_tools = tools.shared();
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         modes.clone(),
-        mode_table,
+        mode_table.clone(),
         shared_tools.clone(),
         base.clone(),
         None,
@@ -501,7 +499,7 @@ fn spawn_with_policy_over(
         grants,
         Hooks::default(),
         None,
-        SandboxConfig::none(),
+        mode_table,
         Arc::new(PlanFileRegistry::new()),
         None,
         None,
@@ -1474,7 +1472,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         grants,
         Hooks::default(),
         None,
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -1582,7 +1580,7 @@ fn spawn_with_rhai_background(
         grants,
         Hooks::default(),
         None,
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

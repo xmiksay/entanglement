@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, MessageRole, OutEvent, SessionId, ToolCall,
+    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, MessageRole, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
@@ -129,8 +129,6 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
 
 #[tokio::test]
 async fn spawn_launches_child_and_poll_collects_its_answer() {
-    // Spawns `explore` (a valid Subagent-mode target). A `primary` like `build`
-    // is no longer a spawnable target (#119): the target-mode gate refuses it.
     let cfg = config(|| SpawnPollLlm {
         target: "explore",
         child_answer: "child-answer",
@@ -337,13 +335,15 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
 #[tokio::test]
 async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     // Every level spawns then polls, so the whole chain forms and unwinds before
-    // the root finishes — even though each spawn returns without blocking. Uses an
-    // `all`-mode `worker` (both a valid spawn *target* and able to spawn further,
-    // #119), so the chain can recurse until the depth cap — not the mode gate —
-    // refuses it.
+    // the root finishes — even though each spawn returns without blocking.
+    // Any registered agent is a valid spawn target now (ADR-0207 §6), so the
+    // `worker` profile just needs to exist; the chain recurses until the
+    // session's mode `max_depth` refuses it. `spawn_tool_executor`'s default
+    // `ProfileResolver` puts every session under `DEFAULT_MODE` ("build"),
+    // whose built-in `max_depth` is 4.
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(all_mode_worker());
+    profiles.insert(worker_profile());
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(RecursiveLlm) as Box<dyn Llm>),
         profiles,
@@ -382,27 +382,23 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
         saw_depth_refusal,
         "the deepest sub-agent's spawn should be refused with a max-depth message"
     );
-    // root(0) + children at depth 1, 2, 3 = 4 sessions; the depth-3 spawn is refused.
+    // root(0) + children at depth 1..=4 = 5 sessions; the `build` mode's
+    // max_depth (4) refuses the depth-5 spawn.
     assert_eq!(
-        sessions_started, 4,
-        "the spawn tree should be capped at MAX_SPAWN_DEPTH below the root"
+        sessions_started, 5,
+        "the spawn tree should be capped at the mode's max_depth below the root"
     );
 }
 
-/// An `all`-mode `worker`: a valid spawn *target* (subagent/all modes) that may
-/// itself spawn (mode ≠ subagent), so a chain of workers can recurse until the
-/// depth cap refuses it (#119).
-fn all_mode_worker() -> AgentProfile {
+/// Any registered agent is a valid spawn target now (ADR-0207 §6) — `worker`
+/// just needs to exist so `RecursiveLlm` can keep naming it as it recurses.
+fn worker_profile() -> AgentProfile {
     AgentProfile {
         name: "worker".into(),
         description: "recursive worker".into(),
-        mode: AgentMode::All,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -432,44 +428,51 @@ impl Llm for RecursiveLlm {
     }
 }
 
-#[tokio::test]
-async fn read_only_subagent_cannot_spawn() {
-    // A Subagent-mode `explore` leaf is refused the spawn *capability* (#77),
-    // whether the call is non-blocking (`background: true`) …
-    assert_leaf_spawn_refused(true).await;
+/// Every registered agent is a valid spawn target now (ADR-0207 §6) — spawn
+/// control is bounded only by the session's mode `max_depth`/`max_agents`,
+/// never by the target's own profile. This drives the fan-out (`max_agents`)
+/// limit test below: the root repeatedly delegates a trivial blocking
+/// `agent` call to `explore`, which always answers immediately (never
+/// recurses), so the *fan-out* budget — not depth — is what eventually
+/// refuses it.
+struct SequentialFanOutLlm;
+
+#[async_trait]
+impl Llm for SequentialFanOutLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        // The child's own transcript: answer at once, never recurse.
+        if last_user(&req) == "child-task" {
+            return Ok(finish("child-answer"));
+        }
+        // The root: one blocking `agent` call per round, counted by how many
+        // tool results have folded back in so far (a success or a refusal
+        // both fold as one `Tool`-role message).
+        let rounds = req
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .count();
+        if rounds >= 9 {
+            return Ok(finish("root done"));
+        }
+        Ok(call(
+            &format!("spawn{rounds}"),
+            "agent",
+            r#"{"agent":"explore","prompt":"child-task"}"#.into(),
+        ))
+    }
 }
 
 #[tokio::test]
-async fn read_only_subagent_cannot_use_blocking_agent() {
-    // … or the default blocking call (#120) — one guard path, so both flag
-    // values are refused identically.
-    assert_leaf_spawn_refused(false).await;
-}
-
-/// Drive a root that spawns a read-only `explore` child; the child (a
-/// Subagent-mode leaf) tries to spawn again — with `background` either flag
-/// value — and must be refused the capability. Asserts exactly one child
-/// starts and the refusal is relayed.
-async fn assert_leaf_spawn_refused(background: bool) {
-    // No mask to isolate from any more (ADR-0207 retired it): `agent` is
-    // advertised to every profile regardless, so the refusal comes purely
-    // from the ADR-0024 Subagent-mode capability gate ("cannot spawn").
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "explore".into(),
-        description: "read-only leaf".into(),
-        mode: AgentMode::Subagent,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
+async fn spawn_fan_out_is_bounded_and_refusal_is_relayed() {
+    // `spawn_tool_executor`'s default `ProfileResolver` puts every session
+    // under `DEFAULT_MODE` ("build"), whose built-in `max_agents` is 8: the
+    // 9th sequential blocking spawn beneath the same root must be refused,
+    // naming the limit and the mode (ADR-0207 §6).
     let cfg = EngineConfig {
-        llm_factory: Arc::new(move || Box::new(ExploreThenSpawnLlm { background }) as Box<dyn Llm>),
-        profiles: profiles.clone(),
+        llm_factory: Arc::new(|| Box::new(SequentialFanOutLlm) as Box<dyn Llm>),
+        profiles: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let profiles = cfg.profiles.clone();
@@ -489,61 +492,27 @@ async fn assert_leaf_spawn_refused(background: bool) {
         .unwrap();
 
     let mut sessions_started = 0usize;
-    let mut saw_capability_refusal = false;
+    let mut refusal: Option<String> = None;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
         match &ev {
             OutEvent::SessionStarted { .. } => sessions_started += 1,
-            OutEvent::ToolOutput { output, .. } if output.contains("cannot spawn") => {
-                saw_capability_refusal = true;
+            OutEvent::ToolOutput { output, .. } if output.contains("per-root spawn budget") => {
+                refusal = Some(output.clone());
             }
             OutEvent::Done { session, .. } if session == &root => break,
             _ => {}
         }
     }
 
-    assert!(
-        saw_capability_refusal,
-        "the explore child's `agent` call (background={background}) should be \
-         refused as a capability"
-    );
-    // root(0) + one explore child = 2 sessions; the child's spawn never starts a grandchild.
+    let refusal = refusal.expect("the 9th sequential spawn should be refused by fan-out");
+    assert!(refusal.contains('8'), "names the limit: {refusal}");
+    assert!(refusal.contains("build"), "names the mode: {refusal}");
+    // root(0) + 8 successful explore children = 9 sessions; the 9th spawn
+    // attempt is refused before a child starts.
     assert_eq!(
-        sessions_started, 2,
-        "a read-only sub-agent must not start a grandchild via `agent` (background={background})"
+        sessions_started, 9,
+        "only the mode's max_agents (8) children should actually start"
     );
-}
-
-/// The root spawns an `explore` sub-agent (non-blocking `background: true`)
-/// and polls it; the child (same factory) tries to spawn again — with
-/// `background` either flag value — and is refused, so the chain stops at one
-/// child. Parametrized so both the non-blocking and blocking paths hit the
-/// same guard.
-struct ExploreThenSpawnLlm {
-    background: bool,
-}
-
-#[async_trait]
-impl Llm for ExploreThenSpawnLlm {
-    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        match last_tool(&req) {
-            Some(t) => match extract_agent_id(t) {
-                Some(id) => Ok(call(
-                    "poll",
-                    "poll",
-                    format!(r#"{{"handle":"{id}","timeout_secs":5}}"#),
-                )),
-                None => Ok(finish("done")),
-            },
-            None => Ok(call(
-                "spawn",
-                "agent",
-                format!(
-                    r#"{{"agent":"explore","prompt":"look","background":{}}}"#,
-                    self.background
-                ),
-            )),
-        }
-    }
 }
 
 /// Parent delegates once with the blocking `agent` tool; the child answers
@@ -920,22 +889,6 @@ async fn poll_zero_timeout_blocks_until_completion() {
     );
 }
 
-/// A second Subagent-mode target, used to exercise the `spawnable_agents`
-/// allowlist (a valid target that is nonetheless off a scoped spawner's list).
-fn subagent_helper() -> AgentProfile {
-    AgentProfile {
-        name: "helper".into(),
-        description: "a second subagent".into(),
-        mode: AgentMode::Subagent,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    }
-}
-
 /// Drive a root (default `build` profile) whose model spawns once, and assert the
 /// spawn is refused with `expected` in the `ToolOutput` and that **no** child
 /// session starts (the refusal lands before a child is minted, #119).
@@ -973,11 +926,13 @@ async fn assert_root_spawn_refused(holly: &Holly, expected: &str) {
 }
 
 #[tokio::test]
-async fn spawn_of_a_primary_target_is_refused() {
-    // `build` tries to spawn `plan`, a primary entry agent — the target-mode gate
-    // refuses it before a child is minted (#119).
+async fn spawn_of_an_unknown_agent_name_is_refused() {
+    // The only check `permission::spawn_refusal` still performs (ADR-0207
+    // §6): the named target must resolve to a real, registered profile —
+    // defense in depth for a malformed/out-of-schema call, since the `agent`
+    // tool's own enum already constrains the model's legitimate choices.
     let cfg = config(|| SpawnPollLlm {
-        target: "plan",
+        target: "ghost",
         child_answer: "unused",
     });
     let profiles = cfg.profiles.clone();
@@ -988,29 +943,20 @@ async fn spawn_of_a_primary_target_is_refused() {
         profiles,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
-    assert_root_spawn_refused(&holly, "primary entry agent").await;
+    assert_root_spawn_refused(&holly, "unknown agent profile").await;
 }
 
 #[tokio::test]
-async fn spawn_outside_the_allowlist_is_refused() {
-    // A `build` scoped to spawn only `explore` tries to spawn `helper` (a valid
-    // Subagent target, but off-list) → refused with the reason in the output.
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let mut build = profiles.get("build").unwrap().clone();
-    build.spawnable_agents = Some(vec!["explore".into()]);
-    profiles.insert(build);
-    profiles.insert(subagent_helper());
-    let cfg = EngineConfig {
-        llm_factory: Arc::new(|| {
-            Box::new(SpawnPollLlm {
-                target: "helper",
-                child_answer: "unused",
-            }) as Box<dyn Llm>
-        }),
-        profiles: profiles.clone(),
-        ..EngineConfig::default()
-    };
+async fn every_registered_agent_is_a_valid_spawn_target() {
+    // ADR-0207 §6: any agent may be a session root or a spawn target — the
+    // old per-profile `can_spawn`/`spawnable_agents`/target-mode gates
+    // (ADR-0040) are retired, so `build` spawning the formerly-`primary`
+    // `plan` (previously refused as "a primary entry agent, not a spawnable
+    // sub-agent") now succeeds like any other target.
+    let cfg = config(|| SpawnPollLlm {
+        target: "plan",
+        child_answer: "child-answer",
+    });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
     spawn_tool_executor(
@@ -1019,37 +965,37 @@ async fn spawn_outside_the_allowlist_is_refused() {
         profiles,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
-    assert_root_spawn_refused(&holly, "not allowed to spawn").await;
-}
 
-#[tokio::test]
-async fn primary_with_can_spawn_false_cannot_spawn() {
-    // `can_spawn: false` on a primary withholds the whole family and refuses a
-    // stale call — even for an otherwise-valid target like `explore` (#119).
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let mut build = profiles.get("build").unwrap().clone();
-    build.can_spawn = Some(false);
-    profiles.insert(build);
-    let cfg = EngineConfig {
-        llm_factory: Arc::new(|| {
-            Box::new(SpawnPollLlm {
-                target: "explore",
-                child_answer: "unused",
-            }) as Box<dyn Llm>
-        }),
-        profiles: profiles.clone(),
-        ..EngineConfig::default()
-    };
-    let profiles = cfg.profiles.clone();
-    let holly = Holly::spawn(cfg);
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+    let parent = SessionId::new("parent");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(parent.clone(), "parent-task"))
+        .await
+        .unwrap();
+
+    let mut child_started = false;
+    let mut saw_child_answer = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted {
+                parent: Some(p), ..
+            } if p == &parent => child_started = true,
+            OutEvent::ToolOutput { output, .. } if output.contains("child-answer") => {
+                saw_child_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &parent => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        child_started,
+        "spawning `plan` should start a child session"
     );
-    assert_root_spawn_refused(&holly, "cannot spawn").await;
+    assert!(
+        saw_child_answer,
+        "the `plan` child's answer should reach the parent"
+    );
 }
 
 /// Switch `session` to `agent` (auto-creating the session actor) and wait for
@@ -1230,13 +1176,15 @@ async fn research_re_engages_its_explore_child_with_agent_send() {
 }
 
 #[tokio::test]
-async fn research_spawn_of_non_explore_is_refused() {
-    // `debug` is a perfectly valid Subagent-mode target, but it is off
-    // research's explore-only allowlist — refused before a child is minted,
-    // so the research subtree can never widen into a write-capable profile.
+async fn research_can_spawn_debug() {
+    // ADR-0207 §6: spawning is never graded and any agent is a valid target
+    // — `research` spawning `debug` (previously refused as off its
+    // explore-only allowlist, ADR-0040) now succeeds like any other pair.
+    // Write authority is bounded by the session's *mode*, not by who may
+    // spawn whom.
     let cfg = config(|| SpawnPollLlm {
         target: "debug",
-        child_answer: "unused",
+        child_answer: "debug-child-answer",
     });
     let profiles = cfg.profiles.clone();
     let holly = Holly::spawn(cfg);
@@ -1249,7 +1197,35 @@ async fn research_spawn_of_non_explore_is_refused() {
 
     let root = SessionId::new("root");
     set_agent(&holly, &root, "research").await;
-    assert_root_spawn_refused(&holly, "not allowed to spawn").await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(root.clone(), "start"))
+        .await
+        .unwrap();
+
+    let mut child_started = false;
+    let mut saw_child_answer = false;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+        match &ev {
+            OutEvent::SessionStarted {
+                parent: Some(p), ..
+            } if p == &root => child_started = true,
+            OutEvent::ToolOutput { output, .. } if output.contains("debug-child-answer") => {
+                saw_child_answer = true;
+            }
+            OutEvent::Done { session, .. } if session == &root => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        child_started,
+        "spawning `debug` from `research` should start a child session"
+    );
+    assert!(
+        saw_child_answer,
+        "the `debug` child's answer should reach `research`"
+    );
 }
 
 #[tokio::test]
@@ -1312,23 +1288,20 @@ async fn research_spawn_without_agent_falls_to_default_explore() {
 #[test]
 fn specs_advertise_the_agent_tool_with_a_background_flag() {
     // #606, ADR-0161 §1: `agent_spawn` is retired — one `agent` tool carries a
-    // `background` flag instead. The family is per-profile (#119):
-    // `spawn_specs_for` scopes the roster + enum to who the spawning profile
-    // may target.
+    // `background` flag instead. The roster is a **constant** now (ADR-0207
+    // §6/§9): `agent_specs` takes only the registry, not a spawning profile.
     let reg =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let build = reg.get("build").unwrap();
-    let specs = entanglement_runtime::subagent::spawn_specs_for(build, &reg);
+    let specs = entanglement_runtime::subagent::agent_specs(&reg);
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-    // `poll` (#605) is no longer part of the per-profile spawn family — it
-    // rides the shared specs like `ask_user`, since it also joins non-spawn
-    // job handles. `agent_send` (#609, ADR-0162) rides alongside `agent`
-    // here instead, since it's equally only useful to a spawn-capable
-    // profile.
+    // `poll` (#605) is no longer part of the spawn family — it rides the
+    // shared specs like `ask_user`, since it also joins non-spawn job
+    // handles. `agent_send` (#609, ADR-0162) rides alongside `agent` here
+    // instead.
     assert_eq!(names, vec!["agent", "agent_send"]);
     let agent = &specs[0];
-    // The scoped roster is disclosed in both the description and the enum: only
-    // spawnable targets (explore), never the primaries (build/plan).
+    // Every registered agent is disclosed in both the description and the
+    // enum now — `build`/`plan` included, not just the old subagent leaves.
     assert!(
         agent.description.contains("explore:"),
         "roster in description"
@@ -1337,7 +1310,7 @@ fn specs_advertise_the_agent_tool_with_a_background_flag() {
         .as_array()
         .unwrap();
     assert!(enum_names.iter().any(|n| n == "explore"));
-    assert!(!enum_names.iter().any(|n| n == "build"));
+    assert!(enum_names.iter().any(|n| n == "build"));
     assert_eq!(
         agent.schema["properties"]["background"]["type"],
         serde_json::json!("boolean"),

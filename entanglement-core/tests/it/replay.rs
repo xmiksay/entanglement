@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, CompactionMode, EngineConfig, Holly, InMsg, Llm,
+    stream_from_response, AgentProfile, CompactionMode, EngineConfig, Holly, InMsg, Llm,
     LlmRequest, LlmResponse, LlmStream, OutEvent, SessionId,
 };
 
@@ -403,7 +403,6 @@ async fn profile_changes_during_replay() {
             OutEvent::AgentChanged {
                 session: sid.clone(),
                 agent: "reviewer".to_string(),
-                profile_detail: None,
             },
         ),
         (
@@ -429,13 +428,9 @@ async fn profile_changes_during_replay() {
     cfg.profiles.insert(AgentProfile {
         name: "reviewer".into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: "Review the changes.".into(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 

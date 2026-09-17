@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
+    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, SessionId, ToolCall,
 };
 
 use crate::common::{spawn_tool_executor, unknown_tool};
@@ -371,13 +371,9 @@ async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
     cfg.profiles.insert(AgentProfile {
         name: "reviewer".into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: "Review the changes.".into(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     let holly = Holly::spawn(cfg);
     // The tool call is an unknown tool; execution is now a runtime round-trip

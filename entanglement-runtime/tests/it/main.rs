@@ -27,6 +27,7 @@ mod mode_support;
 mod advertising_pin;
 mod agent_definitions;
 mod agent_generation;
+mod agent_invariant_tools;
 mod agent_models;
 mod agent_send;
 mod alias_grading;

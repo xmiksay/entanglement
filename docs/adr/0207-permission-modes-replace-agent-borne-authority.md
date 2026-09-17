@@ -252,10 +252,47 @@ removes the hazard entirely, leaving replay only the session's mode to
 reconstruct, which is a plain overwrite fold.
 
 Because the notice is last and nothing before it moves, the cached prefix is
-untouched and a mode switch invalidates nothing. Combined with a constant
-spawn roster and an always-advertised `propose_plan`, the advertised tools
-array no longer varies by agent or by mode: **`SetAgent` and `SetMode` are both
-free of prompt-cache invalidation**, which `SetAgent` is not today.
+untouched and **`SetMode` invalidates nothing**. Combined with a constant spawn
+roster and an always-advertised `propose_plan`, the advertised tools array
+stops varying by agent or by mode as well.
+
+**The system message is session-invariant: no agent, no skill, no tool text.**
+It carries only the preamble, the project brief, and the mode vocabulary —
+none of which change while a session runs. The agent's own body and its
+preloaded `skills:` move out of it and ride an appended message, refreshed on
+`SetAgent` exactly as the mode notice is refreshed on `SetMode`.
+
+WHY, and it is the rule the whole design answers to: **never invalidate the
+cache unless the change actually requires it.** Switching persona does not
+require re-reading the conversation. It only did because the persona sat in
+the system block, and the render order is tools → system → messages — so
+rewriting system invalidated system *and every message after it*, leaving only
+the tools block cached. Appending instead costs one block and keeps the entire
+prefix. A dynamically loaded skill already works this way (`load_skill`
+returns its body as a tool result), which is the precedent: with this change
+every axis a session can switch — agent, mode, skill — is append-only, and
+nothing a user does mid-session invalidates a prefix.
+
+**`InMsg::SetAgent` is deleted.** An agent is chosen when a session starts —
+`--agent`, `config.yml`'s `agent:`, or the `agent` tool's own argument for a
+spawned child — and is fixed for that session's life.
+
+Switching persona mid-session never made sense once authority left the agent:
+mode is state consulted at dispatch, but a persona is *text already sent*, so
+"switching" would append a second persona while the first still sits in the
+transcript. And it is unnecessary — **a spawned sub-agent is a new session with
+its own system prompt**, so delegating to a different persona costs no
+invalidation at all, because there is no prefix yet to invalidate. `SetAgent`
+was solving a problem `agent()` already solves for free.
+
+With it gone the system message is session-invariant **by construction**: the
+agent body and preloaded `skills:` can stay exactly where they are, because
+nothing can change them while the session runs. `SetAgent` was the only thing
+that made that block unsafe.
+
+`SetModel` and `SetGeneration` stay (ADR-0063): a model switch invalidates by
+necessity — it is a different model with a different cache — and generation
+params never touch the prefix.
 
 ### 10. `request_mode`
 

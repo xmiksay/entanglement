@@ -31,7 +31,7 @@ use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::plan_files::PlanFileRegistry;
-use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver, SandboxConfig};
+use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -176,7 +176,10 @@ fn spawn_with_root_and_table(
         grants,
         Hooks::default(),
         Some(escape_root),
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

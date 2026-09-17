@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn full_mode_keeps_the_skill_index_and_only_the_date_ever_changes() {
-        use entanglement_core::{AgentMode, AgentProfile};
+        use entanglement_core::AgentProfile;
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -169,15 +169,11 @@ mod tests {
         let profile = AgentProfile {
             name: "build".into(),
             description: String::new(),
-            mode: AgentMode::Primary,
             system_prompt: format!(
                 "<env>\nDate: {today}\n</env>\n\n{SKILL_INDEX_HEADER}\n- git: x"
             ),
             model: None,
             provider: None,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         };
         let resolve = resolver(advertising);
         // Same date, Full mode ⇒ falls back to the unmodified baked prompt.
@@ -186,7 +182,7 @@ mod tests {
 
     #[test]
     fn tool_search_mode_always_returns_the_slimmed_prompt() {
-        use entanglement_core::{AgentMode, AgentProfile};
+        use entanglement_core::AgentProfile;
 
         let advertising = Arc::new(AdvertisingState::new());
         let session = SessionId::new("s");
@@ -199,15 +195,11 @@ mod tests {
         let profile = AgentProfile {
             name: "build".into(),
             description: String::new(),
-            mode: AgentMode::Primary,
             system_prompt: format!(
                 "<env>\nDate: {today}\n</env>\n\n{SKILL_INDEX_HEADER}\n- git: x"
             ),
             model: None,
             provider: None,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         };
         let resolve = resolver(advertising);
         let out = resolve(&session, &profile).expect("ToolSearch mode always returns Some");
@@ -216,17 +208,12 @@ mod tests {
     }
 
     fn full_profile(date: &str) -> AgentProfile {
-        use entanglement_core::AgentMode;
         AgentProfile {
             name: "build".into(),
             description: String::new(),
-            mode: AgentMode::Primary,
             system_prompt: format!("<env>\nDate: {date}\n</env>"),
             model: None,
             provider: None,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         }
     }
 

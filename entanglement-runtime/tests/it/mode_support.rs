@@ -20,6 +20,7 @@ pub fn allow_all_table() -> Arc<ModeTable> {
         rules: Rules::default(),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }

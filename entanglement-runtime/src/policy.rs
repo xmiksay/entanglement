@@ -168,11 +168,12 @@ impl PermissionResolver for ProfileResolver {
 }
 
 /// Resolve the confinement policy `bash`/`call` run a session's commands under
-/// (#479, ADR-0104 amendment). Sync and infallible — unlike permission there is
-/// no `Ask` round-trip and no DB lookup a real embedder would need to await; a
-/// tenant that wants per-tenant sandboxing swaps this the same way it would
-/// [`PermissionResolver`]. `session: None` is the plain [`crate::tools::Tool::run`]
-/// path (no live session to resolve against — standalone use, most unit tests).
+/// (ADR-0207 §6, stage 5b amendment of ADR-0104). Sync and infallible —
+/// unlike permission there is no `Ask` round-trip and no DB lookup a real
+/// embedder would need to await; a tenant that wants per-tenant sandboxing
+/// swaps this the same way it would [`PermissionResolver`]. `session: None`
+/// is the plain [`crate::tools::Tool::run`] path (no live session to resolve
+/// against — standalone use, most unit tests).
 pub trait SandboxResolver: Send + Sync {
     fn resolve(&self, session: Option<&SessionId>) -> SandboxPolicy;
 }
@@ -186,160 +187,99 @@ impl SandboxResolver for SandboxPolicy {
     }
 }
 
-/// The single-user CLI resolver: reads the executor's live per-session
-/// confinement cache, folded from lifecycle events exactly like
-/// [`ProfileResolver`] folds `active` (`tool_runner`'s dispatch loop is the
-/// sole writer of both `own`/`floor` below). `own` is a session's own profile
-/// resolved against `default_policy` (the process-global `ENTANGLEMENT_SANDBOX`
-/// default); `floor` is the ancestor clamp (#479, ADR-0104 amendment) — the
-/// most-confined effective policy across the session's ancestor chain at the
-/// moment it was spawned, mirroring ADR-0024's privilege ceiling for
-/// confinement instead of permission grade. Kept as two maps rather than one
-/// pre-combined value so a later `AgentChanged`/`SetAgent` on this exact
-/// session can recompute `own` without losing the frozen ancestor floor (#479).
-/// An unseen session (never folded — e.g. a direct `.run()` call with no live
-/// session) falls back to `default_policy` alone: sandboxing is defense in
-/// depth on top of the permission gate, not the gate itself, so this does not
-/// fail-closed to maximum confinement the way [`ProfileResolver::resolve`]
+/// The single-user CLI resolver (ADR-0207 §6, stage 5b): sandboxing is a
+/// **mode** fact now, not a per-profile one, and a mode applies to its whole
+/// spawn sub-tree — so there is no more per-session ancestor floor to freeze
+/// at spawn (ADR-0104's amendment retired ADR-0134's scoping entirely).
+/// Reads the same session→mode map [`ProfileResolver`] grades permission
+/// from, resolves it against `table` exactly like `ProfileResolver` does, and
+/// derives the mode's [`SandboxPolicy`][crate::host::SandboxPolicy] via
+/// [`crate::mode::Mode::sandbox_policy`] — then layers `base` (the
+/// process-global `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK`
+/// env default) on top via `most_confined`, so the env may only **tighten**
+/// what the mode declares, never loosen it. An unseen session (never folded,
+/// or an unknown mode name) falls back to `base` alone: sandboxing is defense
+/// in depth on top of the permission gate, not the gate itself, so this does
+/// not fail-closed to maximum confinement the way [`ProfileResolver::resolve`]
 /// fails closed to `Deny`.
-pub struct ProfileSandboxResolver {
-    own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    default_policy: SandboxPolicy,
+pub struct ModeSandboxResolver {
+    modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    table: Arc<crate::mode::ModeTable>,
+    base: SandboxPolicy,
 }
 
-impl ProfileSandboxResolver {
+impl ModeSandboxResolver {
     pub fn new(
-        own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-        floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-        default_policy: SandboxPolicy,
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<crate::mode::ModeTable>,
+        base: SandboxPolicy,
     ) -> Self {
-        Self {
-            own,
-            floor,
-            default_policy,
-        }
+        Self { modes, table, base }
     }
 }
 
-impl SandboxResolver for ProfileSandboxResolver {
+impl SandboxResolver for ModeSandboxResolver {
     fn resolve(&self, session: Option<&SessionId>) -> SandboxPolicy {
-        match session {
-            Some(session) => resolve_sandbox(&self.own, &self.floor, session, self.default_policy),
-            None => self.default_policy,
-        }
+        let Some(session) = session else {
+            return self.base;
+        };
+        let mode_name = {
+            let modes = self.modes.lock().expect("mode mutex poisoned");
+            modes.get(session).cloned()
+        };
+        let Some(mode) = mode_name.as_deref().and_then(|n| self.table.get(n)) else {
+            return self.base;
+        };
+        mode.sandbox_policy().most_confined(self.base)
     }
 }
 
-/// A session's effective confinement: its own resolved policy clamped by the
-/// frozen ancestor floor (#479, ADR-0104 amendment). Shared by
-/// [`ProfileSandboxResolver::resolve`] and `tool_runner`'s dispatch loop (which
-/// computes a *new* session's floor from its parent's already-folded effective
-/// value at `SessionStarted`) so the two never drift.
-pub(crate) fn resolve_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    default_policy: SandboxPolicy,
-) -> SandboxPolicy {
-    let own = own
-        .lock()
-        .expect("sandbox-own mutex poisoned")
-        .get(session)
-        .copied()
-        .unwrap_or(default_policy);
-    let floor = floor
-        .lock()
-        .expect("sandbox-floor mutex poisoned")
-        .get(session)
-        .copied()
-        .unwrap_or_else(SandboxPolicy::none);
-    own.most_confined(floor)
-}
-
-/// Resolve `session`'s own policy from its (possibly just-switched) profile and
-/// record it in `own` (#479). Used at `SessionStarted`, `AgentChanged`, and the
-/// `ToolExec` self-heal — every point `tool_runner` (re)resolves a session's
-/// active profile. Never touches `floor`: the ancestor clamp is frozen once at
-/// spawn ([`record_session_sandbox`]), not re-derived on a later profile
-/// switch, so a mid-session `SetAgent` can relax/tighten its own confinement
-/// without losing the floor its parent imposed.
-pub(crate) fn record_own_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    profile_sandbox: Option<&str>,
-    default_policy: SandboxPolicy,
-) {
-    own.lock().expect("sandbox-own mutex poisoned").insert(
-        session.clone(),
-        default_policy.resolve_profile_override(profile_sandbox),
-    );
-}
-
-/// Fold a newly-started session's own policy plus its frozen ancestor floor
-/// into the shared maps (#479, ADR-0104 amendment): the floor is the parent's
-/// *already-resolved* effective confinement (its own policy clamped by its own
-/// floor), so the clamp composes down an arbitrarily deep spawn chain exactly
-/// like ADR-0024's permission ceiling. A root session (`parent: None`) gets the
-/// unconfined identity element (`SandboxPolicy::none()`, the lowest
-/// confinement rank), so `own.most_confined(floor)` reduces to `own` alone.
-pub(crate) fn record_session_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    parent: Option<&SessionId>,
-    profile_sandbox: Option<&str>,
-    default_policy: SandboxPolicy,
-) {
-    record_own_sandbox(own, session, profile_sandbox, default_policy);
-    let parent_floor = parent
-        .map(|p| resolve_sandbox(own, floor, p, default_policy))
-        .unwrap_or_else(SandboxPolicy::none);
-    floor
-        .lock()
-        .expect("sandbox-floor mutex poisoned")
-        .insert(session.clone(), parent_floor);
-}
-
-/// Bundled per-process sandbox state (#479, ADR-0104 amendment): the shared
-/// maps `tool_runner`'s dispatch loop folds lifecycle events into (mirroring
-/// `active`'s sharing with [`ProfileResolver`]) plus the process-global
-/// default an unseen session falls back to. Grouped into one value so a
-/// caller that doesn't care about per-profile sandboxing — every test helper,
-/// the `embedded` example — passes a single [`SandboxConfig::none`] instead of
-/// three positional args.
+/// Bundled per-process sandbox state (ADR-0207 §6, stage 5b): the same
+/// session→mode map and [`crate::mode::ModeTable`] the executor's
+/// `ProfileResolver` grades permission from, plus the process-global default
+/// an unseen session falls back to. Grouped into one value so a caller that
+/// doesn't care about mode-scoped sandboxing — every test helper, the
+/// `embedded` example — passes a single [`SandboxConfig::none`].
 #[derive(Clone)]
 pub struct SandboxConfig {
     pub base: SandboxPolicy,
-    pub own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    pub floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
+    pub modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    pub table: Arc<crate::mode::ModeTable>,
 }
 
 impl SandboxConfig {
-    /// Every call unsandboxed, no per-profile overrides — byte-identical to
-    /// pre-#479 behavior.
+    /// Every call unsandboxed, no per-mode overrides — an empty mode table
+    /// means every lookup falls back to `base` (unconfined).
     pub fn none() -> Self {
         Self {
             base: SandboxPolicy::none(),
-            own: Arc::new(Mutex::new(HashMap::new())),
-            floor: Arc::new(Mutex::new(HashMap::new())),
+            modes: Arc::new(Mutex::new(HashMap::new())),
+            table: Arc::new(crate::mode::ModeTable::new(Vec::new()).expect("empty table is valid")),
         }
     }
 
-    /// Read from the process-global `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK`
-    /// env vars, with fresh empty per-session maps.
-    pub fn from_env() -> Self {
+    /// The real single-user wiring: `base` from `ENTANGLEMENT_SANDBOX`/
+    /// `ENTANGLEMENT_SANDBOX_NETWORK`, sharing the *same* `modes` map and
+    /// mode `table` the caller's `ProfileResolver` uses — sandboxing must see
+    /// exactly the mode permission dispatch sees, not a second copy that can
+    /// drift.
+    pub fn new(
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<crate::mode::ModeTable>,
+    ) -> Self {
         Self {
             base: SandboxPolicy::from_env(),
-            ..Self::none()
+            modes,
+            table,
         }
     }
 
-    /// The resolver `BashTool`/`CallTool` consult per call (#479).
+    /// The resolver `BashTool`/`CallTool` consult per call (#479, ADR-0207
+    /// §6).
     pub fn resolver(&self) -> Arc<dyn SandboxResolver> {
-        Arc::new(ProfileSandboxResolver::new(
-            self.own.clone(),
-            self.floor.clone(),
+        Arc::new(ModeSandboxResolver::new(
+            self.modes.clone(),
+            self.table.clone(),
             self.base,
         ))
     }
@@ -416,6 +356,7 @@ mod tests {
             rules: Rules::from_lists(&[], &["read(src/*)".to_string()], &[]),
             limits: Limits::default(),
             sandbox: None,
+            sandbox_network: false,
         };
         Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
     }
@@ -500,124 +441,94 @@ mod tests {
         );
     }
 
-    /// #479: an unseen session (never folded from a lifecycle event) falls back
-    /// to the process-global default — unlike permission's fail-closed `Deny`,
-    /// sandboxing is defense in depth, not the gate itself.
+    /// A `Mode` fixture with a given sandbox posture, otherwise a bare
+    /// pass-through — the sandbox tests below only ever read `sandbox`/
+    /// `sandbox_network` through `Mode::sandbox_policy`.
+    fn mode_with_sandbox(sandbox: Option<&str>, sandbox_network: bool) -> Mode {
+        Mode {
+            name: "test".to_string(),
+            default: Permission::Allow,
+            rules: Rules::default(),
+            limits: Limits::default(),
+            sandbox: sandbox.map(str::to_string),
+            sandbox_network,
+        }
+    }
+
+    fn sandbox_cfg(mode: Mode, base: SandboxPolicy, session: &SessionId) -> SandboxConfig {
+        SandboxConfig {
+            base,
+            modes: modes_map(session),
+            table: Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid")),
+        }
+    }
+
+    const CONFINED: SandboxPolicy = SandboxPolicy {
+        backend: crate::host::SandboxBackend::Bubblewrap,
+        network: false,
+    };
+
+    /// #479: an unseen session (never folded from a lifecycle event, or an
+    /// unknown mode name) falls back to the process-global default — unlike
+    /// permission's fail-closed `Deny`, sandboxing is defense in depth, not
+    /// the gate itself.
     #[test]
-    fn sandbox_resolver_falls_back_to_default_for_an_unseen_session() {
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
+    fn sandbox_resolver_falls_back_to_base_for_an_unseen_session() {
         let cfg = SandboxConfig {
-            base: confined,
+            base: CONFINED,
             ..SandboxConfig::none()
         };
         let resolver = cfg.resolver();
-        assert_eq!(resolver.resolve(Some(&SessionId::new("ghost"))), confined);
+        assert_eq!(resolver.resolve(Some(&SessionId::new("ghost"))), CONFINED);
     }
 
-    /// #479: a profile's own override wins when no ancestor floor clamps it.
+    /// ADR-0207 §6, stage 5b: the session's mode declares the sandbox
+    /// posture — a `bwrap` mode confines even when `ENTANGLEMENT_SANDBOX` is
+    /// unset (`base` unconfined).
     #[test]
-    fn sandbox_resolver_reads_the_session_own_override() {
-        let cfg = SandboxConfig::none();
+    fn sandbox_resolver_reads_the_session_mode() {
         let session = SessionId::new("s1");
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        cfg.own.lock().unwrap().insert(session.clone(), confined);
-        assert_eq!(cfg.resolver().resolve(Some(&session)), confined);
+        let cfg = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), false),
+            SandboxPolicy::none(),
+            &session,
+        );
+        assert_eq!(cfg.resolver().resolve(Some(&session)), CONFINED);
     }
 
-    /// #479, ADR-0104 amendment: a confined parent's floor clamps a child whose
-    /// own profile would otherwise run unsandboxed.
+    /// ADR-0207 §6, stage 5b: env may only *tighten* what the mode declares,
+    /// never loosen it — a `bwrap` mode stays confined even if
+    /// `ENTANGLEMENT_SANDBOX` is unset, and an unconfined mode picks up a
+    /// confined env base (env tightening an otherwise-open mode).
     #[test]
-    fn sandbox_resolver_clamps_to_the_ancestor_floor() {
-        let cfg = SandboxConfig::none();
-        let child = SessionId::new("child");
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        // Child's own profile is unsandboxed, but its recorded floor (the
-        // parent's effective policy at spawn time) is confined.
-        cfg.own
-            .lock()
-            .unwrap()
-            .insert(child.clone(), SandboxPolicy::none());
-        cfg.floor.lock().unwrap().insert(child.clone(), confined);
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
+    fn env_base_only_tightens_never_loosens_the_mode() {
+        let session = SessionId::new("s1");
+        // Mode confines, env base is unconfined: still confined.
+        let confining_mode = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), false),
+            SandboxPolicy::none(),
+            &session,
+        );
+        assert_eq!(confining_mode.resolver().resolve(Some(&session)), CONFINED);
+
+        // Mode is unconfined, env base confines: still confined (env tightens).
+        let open_mode = sandbox_cfg(mode_with_sandbox(None, false), CONFINED, &session);
+        assert_eq!(open_mode.resolver().resolve(Some(&session)), CONFINED);
     }
 
-    /// #479, ADR-0104 amendment: `record_session_sandbox` is the exact
-    /// computation `tool_runner`'s `SessionStarted` handler performs — this
-    /// pins the spawn-chain clamp end to end (population, not just resolution)
-    /// without spinning up the full engine: a confined parent's child inherits
-    /// its confinement as a floor even though the child's own profile is
-    /// unsandboxed, and a grandchild inherits the same floor transitively.
+    /// ADR-0207 §6, stage 5b: a mode's own `sandbox_network: true` shares the
+    /// host network namespace under confinement — the network-sharing rank
+    /// sits strictly between unconfined and network-cut confinement.
     #[test]
-    fn record_session_sandbox_clamps_a_multi_level_spawn_chain() {
-        let cfg = SandboxConfig::none();
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let grandchild = SessionId::new("grandchild");
-
-        // Root: confined by its own profile, no ancestor.
-        record_session_sandbox(&cfg.own, &cfg.floor, &parent, None, Some("bwrap"), cfg.base);
-        assert_eq!(cfg.resolver().resolve(Some(&parent)), confined);
-
-        // Child: unsandboxed profile (`sandbox: none`), but spawned under the
-        // confined parent — the floor clamps it confined anyway.
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &child,
-            Some(&parent),
-            Some("none"),
-            cfg.base,
+    fn mode_sandbox_network_shares_the_host_namespace() {
+        let session = SessionId::new("s1");
+        let cfg = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), true),
+            SandboxPolicy::none(),
+            &session,
         );
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
-
-        // Grandchild: no override at all (inherits the process default, which
-        // is unsandboxed here) — still clamps to the same confined floor,
-        // proving the clamp composes transitively down the chain.
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &grandchild,
-            Some(&child),
-            None,
-            cfg.base,
-        );
-        assert_eq!(cfg.resolver().resolve(Some(&grandchild)), confined);
-    }
-
-    /// #479: an unsandboxed parent imposes no floor, so a confined child's own
-    /// (stricter) override still wins — the clamp only ever tightens, never
-    /// loosens a child below what its own profile already asked for.
-    #[test]
-    fn record_session_sandbox_never_loosens_a_childs_own_stricter_choice() {
-        let cfg = SandboxConfig::none();
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        record_session_sandbox(&cfg.own, &cfg.floor, &parent, None, None, cfg.base);
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &child,
-            Some(&parent),
-            Some("bwrap"),
-            cfg.base,
-        );
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
+        let resolved = cfg.resolver().resolve(Some(&session));
+        assert_eq!(resolved.backend, crate::host::SandboxBackend::Bubblewrap);
+        assert!(resolved.network, "sandbox_network: true shares the network");
     }
 }

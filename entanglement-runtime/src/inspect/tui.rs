@@ -232,9 +232,7 @@ mod tests {
         assert!(
             agent
                 .as_ref()
-                .is_some_and(|s| s.contains("name:        build")
-                    && s.contains("mode:")
-                    && s.contains("layer:")),
+                .is_some_and(|s| s.contains("name:        build") && s.contains("layer:")),
             "agent_detail should render the built-in `build` profile, got: {agent:?}"
         );
 

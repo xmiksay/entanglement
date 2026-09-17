@@ -37,19 +37,14 @@ use entanglement_provider::ToolSpec;
 /// resolution; callers resolve specs before [`resolve_system_prompt`] in
 /// every round, which a prompt resolver reading those pins relies on.
 ///
-/// Per-profile specs (#119, ADR-0040) ride after it: the active profile's
-/// spawnable roster (the `agent_*` family with a target enum scoped to who
-/// *this* profile may spawn) lives outside the shared `tool_specs` because
-/// its *schema* differs per profile. That per-profile split is orthogonal to
-/// the mask: it varies across profiles, never within a session's turn
-/// sequence, so it survives the advertisement/enforcement decoupling
-/// untouched. The runtime leaves the entry empty for a profile that may not
-/// spawn. Plan authorship (`propose_plan`) is *not* here any more (ADR-0207
-/// §7): its schema never varied by profile even under the old per-profile
-/// scheme, so it rides the plain shared surface like every other
-/// runtime-owned tool, graded by capability instead of advertisement.
+/// The old per-profile spawn-roster split (#119, ADR-0040) is retired
+/// (ADR-0207 §6/§9): spawning is unconditional now, so the `agent_*` family
+/// is a constant roster the runtime folds into the plain shared
+/// `cfg.tool_specs` like every other runtime-owned tool — there is no more
+/// per-profile table to append here. That is the whole point: the advertised
+/// array no longer varies by profile, so `SetAgent` costs no cache.
 pub(super) fn resolve_specs(cfg: &EngineConfig, session: &SessionId, s: &Session) -> Vec<ToolSpec> {
-    let mut specs: Vec<ToolSpec> = match &cfg.tool_spec_resolver {
+    match &cfg.tool_spec_resolver {
         Some(resolve) => resolve(
             session,
             SessionModel {
@@ -58,11 +53,7 @@ pub(super) fn resolve_specs(cfg: &EngineConfig, session: &SessionId, s: &Session
             },
         ),
         None => cfg.tool_specs.clone(),
-    };
-    if let Some(profile_specs) = cfg.profile_tool_specs.get(&s.profile.name) {
-        specs.extend(profile_specs.iter().cloned());
     }
-    specs
 }
 
 /// System prompt: the active profile's own, unless a per-turn

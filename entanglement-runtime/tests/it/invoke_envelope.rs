@@ -15,7 +15,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::{AdvertisingState, Encoding};
@@ -117,7 +117,10 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         // No advertising inputs: nothing re-pins over the state set above.

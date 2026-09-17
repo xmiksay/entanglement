@@ -21,7 +21,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::REQUEST_MODE_TOOL;
@@ -112,7 +112,10 @@ fn spawn_with_builtin_modes(llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + S
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         None,

@@ -1,7 +1,7 @@
 //! File-based agent definitions (#112, ADR-0034).
 //!
 //! An agent is a markdown file with YAML frontmatter: the frontmatter is the
-//! identity bundle (`name`/`description`/`mode`/`model`/…), the body below the
+//! identity bundle (`name`/`description`/`model`/…), the body below the
 //! closing `---` is the agent's system-prompt body. Definitions are discovered
 //! at startup and folded into a core [`ProfileRegistry`].
 //!
@@ -30,28 +30,23 @@
 //! infallible. Foreign (cross-vendor) dirs are parsed leniently per ADR-0074:
 //! only `name` + `description` are read (unknown keys like Claude Code's
 //! `tools: Read, Grep` string, `model`, `color` are ignored) and a malformed
-//! file is warned and skipped — it must not abort the load. A foreign agent
-//! defaults to `mode: all` so it is spawnable as a delegation target.
+//! file is warned and skipped — it must not abort the load.
 //!
 //! # Authority left the agent (ADR-0207)
 //!
-//! `tools`/`disallowed_tools` (the tool mask, #116/ADR-0038) and `permission`
-//! (#59) are no longer agent frontmatter keys: authority is a second,
-//! independent session axis now — the permission **mode** — not anything an
-//! `AgentProfile` carries. A definition naming `tools:`/`disallowed_tools:`/
-//! `permission:` fails to parse (`deny_unknown_fields`), same as any other
-//! unrecognized key.
-//!
-//! `can_spawn`/`spawnable_agents` (fine-grained spawn control) now reach the core
-//! [`AgentProfile`] and are **enforced** (#119, ADR-0040): `can_spawn` gates the
-//! whole `agent_*` family (withheld from the model + refused at dispatch when a
-//! profile may not spawn) and `spawnable_agents` scopes which profiles it may
-//! spawn — both layered in front of the ADR-0023 budget and the ADR-0024 clamp.
+//! `tools`/`disallowed_tools` (the tool mask, #116/ADR-0038), `permission`
+//! (#59), `can_spawn`/`spawnable_agents` (#119, ADR-0040), `sandbox`
+//! (ADR-0134) and `mode` (primary/subagent/all, ADR-0034) are no longer
+//! agent frontmatter keys: authority is a second, independent session axis
+//! now — the permission **mode** — not anything an `AgentProfile` carries,
+//! and any agent may be a session root or a spawn target (ADR-0207 §4/§6).
+//! A definition naming any of those fails to parse (`deny_unknown_fields`),
+//! same as any other unrecognized key.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
+use entanglement_core::{AgentProfile, Permission, PermissionProfile, ProfileRegistry};
 use serde::Deserialize;
 
 use crate::layers::Strictness;
@@ -83,9 +78,6 @@ struct AgentDefinition {
     name: String,
     /// One-line summary; the only field disclosed to a spawning model.
     description: String,
-    /// `primary` / `subagent` / `all`. Defaults to `primary`.
-    #[serde(default = "default_mode")]
-    mode: AgentMode,
     /// Provider model override, or `inherit` / omitted for the session default.
     #[serde(default)]
     model: Option<String>,
@@ -100,31 +92,12 @@ struct AgentDefinition {
     /// omitted ⇒ the brief is not included even when a brief file exists.
     #[serde(default)]
     include_brief: bool,
-    /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
-    /// derive from `mode` (`subagent` closed, otherwise open).
-    #[serde(default)]
-    can_spawn: Option<bool>,
-    /// Which agents this profile may spawn, by name (#119, ADR-0040). Omitted ⇒
-    /// any registered profile whose `mode` permits sub-agent use.
-    #[serde(default)]
-    spawnable_agents: Option<Vec<String>>,
-    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
-    /// ADR-0104 amendment): `bwrap`/`bubblewrap` confines, `none` forces
-    /// unconfined, `inherit`/omitted defers to the process-global
-    /// `ENTANGLEMENT_SANDBOX` default. Any other value is a loud load error
-    /// (`build_profile`), matching every other frontmatter key's strictness.
-    #[serde(default)]
-    sandbox: Option<String>,
     /// Skills to **preload** into this agent's system prompt (#117): the listed
     /// skills' full bodies are injected at load (paths substituted, same pipeline
     /// as `load_skill`). Preload only — *not* an allowlist: runtime `load_skill`
     /// access is governed by the session's permission mode, not the profile.
     #[serde(default)]
     skills: Option<Vec<String>>,
-}
-
-fn default_mode() -> AgentMode {
-    AgentMode::Primary
 }
 
 /// Lenient frontmatter for cross-vendor agents (ADR-0074): only the identity
@@ -138,23 +111,18 @@ struct ForeignAgentFrontmatter {
 }
 
 impl ForeignAgentFrontmatter {
-    /// Map onto the native definition: `mode: all` (a Claude agent is a
-    /// delegation target, so it must be spawnable; `all` keeps it selectable as
-    /// a primary too — shadow with a native definition to restrict), no
-    /// brief/preload. No authority to drop any more (ADR-0207) — a foreign
-    /// agent's posture is whatever session mode it runs under, same as any
-    /// native one.
+    /// Map onto the native definition: no brief/preload, no model/provider
+    /// pin. No authority to drop any more (ADR-0207) — a foreign agent's
+    /// posture is whatever session mode it runs under, same as any native
+    /// one, and it is a spawn target like any other agent (ADR-0207 §6) with
+    /// zero mapping needed.
     fn into_definition(self) -> AgentDefinition {
         AgentDefinition {
             name: self.name,
             description: self.description,
-            mode: AgentMode::All,
             model: None,
             provider: None,
             include_brief: false,
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
             skills: None,
         }
     }
@@ -392,9 +360,8 @@ pub fn prompt_report(
     };
 
     let include_brief = def.include_brief;
-    let mode = def.mode;
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
-    let mut parts = assemble_parts(&body, include_brief, mode, ctx, &preloaded);
+    let mut parts = assemble_parts(&body, include_brief, ctx, &preloaded);
     // `assemble_parts` labels the body with a generic source; here we know the
     // actual winning file, so point the body part at it.
     for p in parts.iter_mut().filter(|p| p.label == "agent body") {
@@ -479,8 +446,8 @@ fn read_dir_raws(
 /// Split frontmatter from body, parse the frontmatter as YAML, and build a core
 /// [`AgentProfile`]. The body is composed with `ctx` into the final
 /// `system_prompt` via [`assemble`]: shared preamble + body + brief (if
-/// `include_brief`) + env + skills, with subagents getting the reduced form
-/// (#113).
+/// `include_brief`) + env + skills — unconditional for every agent now
+/// (ADR-0207 §4 retires the old `Subagent`-mode reduced form, #113).
 fn parse_definition(
     content: &str,
     ctx: &PromptContext,
@@ -515,7 +482,6 @@ fn build_profile(
     }
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
     let include_brief = def.include_brief;
-    let mode = def.mode;
     // `inherit` is the "no pin" sentinel on both model and provider (matching
     // `model`'s existing filter); drop it before it reaches the profile.
     let model = def.model.filter(|m| m != "inherit");
@@ -528,36 +494,16 @@ fn build_profile(
             def.name
         );
     }
-    // `inherit` is the same "defer to the process default" sentinel `model`/
-    // `provider` use; any other value must be one `host::sandbox` actually
-    // understands, checked here (not in the runtime) so a typo is a loud load
-    // error like every other frontmatter key, not a silently-ignored override
-    // (#479, ADR-0104 amendment).
-    let sandbox = def.sandbox.filter(|s| s != "inherit");
-    if let Some(s) = &sandbox {
-        if !matches!(s.as_str(), "bwrap" | "bubblewrap" | "none") {
-            bail!(
-                "agent `{}` sets invalid `sandbox` value `{s}`: expected `bwrap`, \
-                 `bubblewrap`, `none`, or `inherit`",
-                def.name
-            );
-        }
-    }
     let profile = AgentProfile {
         name: def.name,
         description: def.description,
-        mode,
-        system_prompt: assemble(body, include_brief, mode, ctx, &preloaded),
+        system_prompt: assemble(body, include_brief, ctx, &preloaded),
         model,
         provider,
-        can_spawn: def.can_spawn,
-        spawnable_agents: def.spawnable_agents,
-        sandbox,
     };
     // The one observability point at load (#184): the assembled prompt is
     // otherwise invisible. `brief`/`skills` report what actually reached this
-    // prompt — `brief` is `none` unless the agent opts in *and* a brief exists;
-    // `skills` is 0 for a subagent (the tier-1 index is withheld for it).
+    // prompt — `brief` is `none` unless the agent opts in *and* a brief exists.
     let brief = if include_brief {
         ctx.brief_path
             .as_ref()
@@ -566,11 +512,7 @@ fn build_profile(
     } else {
         "none".to_string()
     };
-    let skills_in_prompt = if mode != AgentMode::Subagent {
-        ctx.skills.len()
-    } else {
-        0
-    };
+    let skills_in_prompt = ctx.skills.len();
     tracing::debug!(
         agent = %profile.name,
         prompt_len = profile.system_prompt.len(),
@@ -1146,11 +1088,13 @@ mod tests {
     }
 
     #[test]
-    fn built_ins_parse_with_expected_identity_and_spawn_shape() {
+    fn built_ins_parse_with_expected_identity() {
         // The embedded built-ins must parse — this is what lets `load_registry`
         // treat their parse as infallible. ADR-0207 left each built-in with no
-        // permission posture of its own (mode/model/spawn only); the actual
-        // read-only/read-write behavior is a runtime permission-mode fact now.
+        // permission or spawn posture of its own (identity only: name,
+        // description, system prompt, model/provider pin); read-only/
+        // read-write behavior and spawn bounds are both runtime permission-
+        // mode facts now, and any agent is a valid spawn target.
         let mut reg = ProfileRegistry::default();
         for (file, contents) in BUILT_INS {
             let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
@@ -1158,29 +1102,12 @@ mod tests {
         }
 
         let build = reg.get("build").expect("build built-in");
-        assert_eq!(build.mode, AgentMode::Primary);
         assert!(build.system_prompt.starts_with("You are a coding agent"));
 
-        let plan = reg.get("plan").expect("plan built-in");
-        assert_eq!(plan.mode, AgentMode::Primary);
-
-        let explore = reg.get("explore").expect("explore built-in");
-        assert_eq!(explore.mode, AgentMode::Subagent);
-
-        let debug = reg.get("debug").expect("debug built-in");
-        assert_eq!(debug.mode, AgentMode::Subagent);
-        assert!(debug.spawnable_as_subagent());
-
-        // `research` (ADR-0167): a `primary` agent that may only delegate to
-        // the read-only `explore` leaf — the one spawn-control fact ADR-0207
-        // left on a profile.
-        let research = reg.get("research").expect("research built-in");
-        assert_eq!(research.mode, AgentMode::Primary);
-        assert!(research.may_spawn());
-        assert!(!research.spawnable_as_subagent());
-        assert!(research.spawn_target_allowed("explore"));
-        assert!(!research.spawn_target_allowed("build"));
-        assert!(!research.spawn_target_allowed("research"));
+        assert!(reg.get("plan").is_some());
+        assert!(reg.get("explore").is_some());
+        assert!(reg.get("debug").is_some());
+        assert!(reg.get("research").is_some());
     }
 
     #[test]
@@ -1208,7 +1135,6 @@ mod tests {
         );
         let (def, body) = parse_raw(&raw).unwrap().expect("foreign agent parses");
         assert_eq!(def.name, "helper");
-        assert_eq!(def.mode, AgentMode::All, "delegation target ⇒ mode all");
         assert_eq!(body, "body");
     }
 
@@ -1270,14 +1196,20 @@ mod tests {
     }
 
     #[test]
-    fn tools_disallowed_tools_and_permission_frontmatter_keys_are_rejected() {
-        // ADR-0207: authority left the agent entirely. A definition naming any
-        // of the three retired keys is now a plain unknown-field load error,
-        // same as any other typo — not a silently-ignored or warned-about key.
+    fn retired_authority_frontmatter_keys_are_rejected() {
+        // ADR-0207: authority left the agent entirely, in two stages — the
+        // tool mask/`permission` first, then (stage 5b) spawn control,
+        // sandbox, and the primary/subagent/all `mode` distinction. A
+        // definition naming any of them is now a plain unknown-field load
+        // error, same as any other typo — never silently ignored or warned.
         for frontmatter in [
             "---\nname: x\ndescription: d\ntools: [read]\n---\nbody",
             "---\nname: x\ndescription: d\ndisallowed_tools: [bash]\n---\nbody",
             "---\nname: x\ndescription: d\npermission:\n  default: ask\n---\nbody",
+            "---\nname: x\ndescription: d\nmode: primary\n---\nbody",
+            "---\nname: x\ndescription: d\ncan_spawn: true\n---\nbody",
+            "---\nname: x\ndescription: d\nspawnable_agents: [explore]\n---\nbody",
+            "---\nname: x\ndescription: d\nsandbox: bwrap\n---\nbody",
         ] {
             let err = parse(frontmatter).unwrap_err();
             let msg = format!("{err:#}");
@@ -1289,21 +1221,6 @@ mod tests {
     fn explicit_model_is_kept() {
         let p = parse("---\nname: x\ndescription: d\nmodel: glm-4.7\n---\nbody").unwrap();
         assert_eq!(p.model.as_deref(), Some("glm-4.7"));
-    }
-
-    #[test]
-    fn mode_all_and_spawn_control_reach_the_profile() {
-        let p = parse(
-            "---\nname: x\ndescription: d\nmode: all\ncan_spawn: true\n\
-             spawnable_agents: [explore]\n---\nbody",
-        )
-        .unwrap();
-        assert_eq!(p.mode, AgentMode::All);
-        // `can_spawn`/`spawnable_agents` reach the core profile (#119) — the
-        // only per-profile posture fields ADR-0207 left in place.
-        assert!(p.may_spawn());
-        assert!(p.spawn_target_allowed("explore"));
-        assert!(!p.spawn_target_allowed("build"));
     }
 
     #[test]
@@ -1360,16 +1277,5 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("nope"), "got: {msg}");
-    }
-
-    #[test]
-    fn spawn_fields_default_from_mode_when_omitted() {
-        // A subagent leaf with no `can_spawn` defaults closed; a primary opens.
-        let leaf = parse("---\nname: x\ndescription: d\nmode: subagent\n---\nbody").unwrap();
-        assert!(!leaf.may_spawn());
-        let primary = parse("---\nname: y\ndescription: d\n---\nbody").unwrap();
-        assert!(primary.may_spawn());
-        // An omitted allowlist is open to any target.
-        assert!(primary.spawn_target_allowed("anything"));
     }
 }

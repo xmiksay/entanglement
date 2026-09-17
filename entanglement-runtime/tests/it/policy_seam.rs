@@ -14,7 +14,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
-use entanglement_runtime::policy::{GrantStore, PermissionResolver, SandboxConfig};
+use entanglement_runtime::policy::{GrantStore, PermissionResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -174,7 +174,10 @@ fn spawn_with_policy(
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

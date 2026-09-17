@@ -5,7 +5,6 @@ mod inspect;
 mod popups;
 mod sessions;
 mod settings;
-mod stop_confirm;
 mod tool_popups;
 
 pub use approval_pager::draw_approval_pager;
@@ -18,7 +17,6 @@ pub use sessions::{
     draw_model_picker, draw_profile_picker, draw_resume_modal, draw_sessions_modal,
 };
 pub use settings::{draw_settings_dialog, settings_tab_at};
-pub use stop_confirm::draw_stop_confirm_modal;
 pub use tool_popups::{draw_mcp_panel, draw_session_tools_dialog, draw_tools_view};
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

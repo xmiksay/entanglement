@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, SessionId, SessionModel, ToolSpec,
+    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, SessionId, SessionModel, ToolSpec,
 };
 
 /// Per-session log of the advertised tool-name lists, one inner `Vec` per
@@ -60,13 +60,9 @@ fn explore_profile() -> AgentProfile {
     AgentProfile {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
-        mode: AgentMode::Subagent,
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -271,13 +267,9 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
     cfg.profiles.insert(AgentProfile {
         name: "locked".into(),
         description: "read-only".into(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
 
     let holly = Holly::spawn(cfg);

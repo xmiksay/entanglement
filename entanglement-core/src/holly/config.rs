@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::id_gen::{DefaultIdGen, IdGen};
-use crate::protocol::{AgentMode, AgentProfile, SessionId};
+use crate::protocol::{AgentProfile, SessionId};
 use entanglement_provider::{
     AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
     ModelResolver, ToolSpec,
@@ -17,9 +17,8 @@ use super::DEFAULT_PROFILE;
 
 /// Resolves the base tool schemas advertised to the model for a specific
 /// session (#308). Its output **replaces** the engine-global
-/// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session (the
-/// per-profile [`profile_tool_specs`][EngineConfig::profile_tool_specs] are
-/// still appended). Nothing downstream filters the result — the profile mask
+/// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session.
+/// Nothing downstream filters the result — the profile mask
 /// and session overlay are dispatch-only — so this resolver is the single seam
 /// that shapes a session's base advertised surface. Consulted
 /// fresh at every turn build, so an embedder that mutates its backing store —
@@ -79,21 +78,10 @@ pub struct EngineConfig {
     pub llm_factory: LlmFactory,
     pub tool_specs: Vec<ToolSpec>,
     pub profiles: ProfileRegistry,
-    /// Per-profile tool specs appended to [`tool_specs`][Self::tool_specs] for
-    /// the active profile only (#119, ADR-0040). At turn time `run_round` looks
-    /// the running session's profile name up here and appends its entry
-    /// verbatim. These are the *profile-defining* specs — a spawn-target enum
-    /// scoped to who this profile may spawn, plan authorship — whose schema
-    /// genuinely differs per profile, which is why they stay per-profile even
-    /// though the mask no longer narrows advertisement. A generic table keyed
-    /// by profile name; the embedder fills it (an entry is absent/empty when a
-    /// profile advertises no profile-scoped tools).
-    pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
     /// Per-session override for the advertised base tool schemas (#308,
     /// ADR-0076). When set, it is consulted at every turn build and its output
     /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
-    /// session; [`profile_tool_specs`][Self::profile_tool_specs] are still
-    /// appended. Its output is advertised as-is (the profile mask and session
+    /// session. Its output is advertised as-is (the profile mask and session
     /// overlay enforce at dispatch, never here), so a resolver that must keep
     /// a tool off one tenant's wire has to omit it — masking it will not.
     /// This is the seam a multi-tenant embedder needs: one `Holly`
@@ -267,7 +255,6 @@ impl Default for EngineConfig {
             llm_factory: Arc::new(|| Box::new(EchoLlm) as Box<dyn Llm>),
             tool_specs: Vec::new(),
             profiles: ProfileRegistry::new(),
-            profile_tool_specs: HashMap::new(),
             tool_spec_resolver: None,
             system_prompt_resolver: None,
             modes_preamble: None,
@@ -375,17 +362,10 @@ fn default_profile() -> AgentProfile {
     AgentProfile {
         name: "build".into(),
         description: "Coding agent — implements changes using the available tools.".into(),
-        mode: AgentMode::Primary,
         system_prompt:
             "You are a coding agent. Implement the requested changes using the available tools."
                 .into(),
         model: None,
         provider: None,
-        // `build` spawns everything except primaries (the target-side mode gate,
-        // #119) — no `spawnable_agents` list, so user-defined exploration agents
-        // stay spawnable without editing this built-in.
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }

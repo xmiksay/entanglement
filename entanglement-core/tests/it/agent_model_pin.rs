@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, ModelResolver, OutEvent, ProfileRegistry, ResolvedModel, SessionId,
+    stream_from_response, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, ModelResolver, OutEvent, ProfileRegistry, ResolvedModel, SessionId,
 };
 
 /// Every request's effective model id (`req.model`), in order.
@@ -74,13 +74,9 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
     AgentProfile {
         name: name.to_string(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: pin.map(|(_, m)| m.to_string()),
         provider: pin.map(|(p, _)| p.to_string()),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -484,7 +480,6 @@ fn replay_rebinds_and_reconstructs_memory() {
             OutEvent::AgentChanged {
                 session: sid.clone(),
                 agent: "plan".into(),
-                profile_detail: None,
             },
         ),
         (

@@ -197,7 +197,10 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
         grants,
         Default::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

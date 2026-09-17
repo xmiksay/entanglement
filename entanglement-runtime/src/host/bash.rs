@@ -781,12 +781,13 @@ mod tests {
         assert!(out.contains("killed") && out.contains("timed out"), "{out}");
     }
 
-    /// #479, ADR-0104 amendment: one `BashTool` instance backed by a
-    /// [`crate::policy::SandboxResolver`] confines only the session whose
-    /// resolved policy is confined — proving per-profile scoping in one
-    /// process, not the previous all-or-nothing global switch.
+    /// #479, ADR-0104 amendment; ADR-0207 §6 stage 5b: one `BashTool` instance
+    /// backed by a [`crate::policy::SandboxResolver`] confines only the
+    /// session whose **mode** confines — proving mode-scoped confinement in
+    /// one process, not the previous all-or-nothing global switch. Two
+    /// sessions, two modes, one shared table.
     #[tokio::test]
-    async fn sandbox_resolver_confines_only_the_session_it_resolves_confined() {
+    async fn sandbox_resolver_confines_only_the_session_whose_mode_confines() {
         if !sandbox::bwrap_available() {
             eprintln!("skipping: bwrap not installed");
             return;
@@ -797,17 +798,35 @@ mod tests {
             .tempdir_in("/var/tmp")
             .unwrap();
 
-        let cfg = crate::policy::SandboxConfig::none();
-        let confined = SessionId::new("confined-profile");
-        let unconfined = SessionId::new("unconfined-profile");
-        cfg.own
-            .lock()
-            .unwrap()
-            .insert(confined.clone(), bwrap_policy(false));
-        cfg.own
-            .lock()
-            .unwrap()
-            .insert(unconfined.clone(), SandboxPolicy::none());
+        let confined_mode = crate::mode::Mode {
+            name: "confined".to_string(),
+            default: entanglement_core::Permission::Allow,
+            rules: crate::mode::Rules::default(),
+            limits: crate::mode::Limits::default(),
+            sandbox: Some("bwrap".to_string()),
+            sandbox_network: false,
+        };
+        let unconfined_mode = crate::mode::Mode {
+            name: "unconfined".to_string(),
+            default: entanglement_core::Permission::Allow,
+            rules: crate::mode::Rules::default(),
+            limits: crate::mode::Limits::default(),
+            sandbox: None,
+            sandbox_network: false,
+        };
+        let confined = SessionId::new("confined-session");
+        let unconfined = SessionId::new("unconfined-session");
+        let cfg = crate::policy::SandboxConfig {
+            base: SandboxPolicy::none(),
+            modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (confined.clone(), "confined".to_string()),
+                (unconfined.clone(), "unconfined".to_string()),
+            ]))),
+            table: Arc::new(
+                crate::mode::ModeTable::new(vec![confined_mode, unconfined_mode])
+                    .expect("two-mode table is valid"),
+            ),
+        };
         let tool = BashTool::new(dir.path().to_path_buf()).with_sandbox_resolver(cfg.resolver());
 
         let leak_path = outside.path().join("leak.txt");

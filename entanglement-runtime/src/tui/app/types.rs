@@ -1,4 +1,3 @@
-use entanglement_core::AgentMode;
 use ratatui::layout::Rect;
 
 /// A deferred, terminal-owning side effect a command/action requests but cannot
@@ -24,9 +23,6 @@ pub enum UiEffect {
 pub struct ProfileInfo {
     pub name: String,
     pub description: String,
-    /// Governs the *implicit* Tab cycle ring (`Primary` only, #322); the
-    /// `/agent` picker still lists every entry agent (`primary | all`).
-    pub mode: AgentMode,
 }
 
 /// The list `Rect` each open modal captured at draw time, so a left-click can

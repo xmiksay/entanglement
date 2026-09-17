@@ -6,23 +6,14 @@ use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 
 use super::{App, ProfileInfo};
 
-/// The implicit Tab-cycle ring (`mode: primary` only, #322) derived from an
-/// entry-agent roster: cross-vendor `all`-mode agents (ADR-0074) stay reachable
-/// via the `/agent` picker but don't flood the ring. Falls back to the whole
-/// roster if no primaries exist, so Tab never cycles an empty ring. Shared by
-/// [`App::new`][super::construct] and [`App::refresh_profiles`] (#329) so a
-/// definitions-watcher reload derives the ring identically to startup.
+/// The Tab-cycle ring: every registered agent (ADR-0207 §4 retires the
+/// primary/subagent/all `mode` distinction, so there is no more leaf-only
+/// profile to exclude — any agent may be a session root, hence cyclable).
+/// Shared by [`App::new`][super::construct] and [`App::refresh_profiles`]
+/// (#329) so a definitions-watcher reload derives the ring identically to
+/// startup.
 pub(super) fn primary_order(available_profiles: &[ProfileInfo]) -> Vec<String> {
-    let primaries: Vec<String> = available_profiles
-        .iter()
-        .filter(|p| p.mode == entanglement_core::AgentMode::Primary)
-        .map(|p| p.name.clone())
-        .collect();
-    if primaries.is_empty() {
-        available_profiles.iter().map(|p| p.name.clone()).collect()
-    } else {
-        primaries
-    }
+    available_profiles.iter().map(|p| p.name.clone()).collect()
 }
 
 impl App {
@@ -117,9 +108,7 @@ impl App {
     }
 
     /// Advance the active session to the next agent in the Tab cycle ring
-    /// (`mode: primary` only, #322). When the current agent is off-ring — an
-    /// `all`-mode agent picked via the Ctrl+A picker — land on the first ring
-    /// entry rather than the one after it.
+    /// (#322) — every registered agent is on-ring now (ADR-0207 §4).
     pub fn cycle_primary_profile(&mut self) -> Option<String> {
         let current = self.sessions.active_view().agent().to_string();
         let next_index = match self
@@ -137,7 +126,7 @@ impl App {
     }
 
     /// Reverse of [`cycle_primary_profile`][Self::cycle_primary_profile]
-    /// (Shift+Tab, #322). Off-ring current agent → the last ring entry.
+    /// (Shift+Tab, #322).
     pub fn cycle_primary_profile_back(&mut self) -> Option<String> {
         let current = self.sessions.active_view().agent().to_string();
         let len = self.primary_profile_order.len();

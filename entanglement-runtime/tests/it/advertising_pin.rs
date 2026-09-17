@@ -22,7 +22,7 @@ use entanglement_runtime::config::Config;
 use entanglement_runtime::mcp::AvailableMcp;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
@@ -186,7 +186,10 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         Some(inputs),

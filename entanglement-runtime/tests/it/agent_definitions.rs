@@ -72,20 +72,16 @@ fn user_layer_shadows_built_in_research() {
     write_agent(
         user.path(),
         "research.md",
-        "---\nname: research\ndescription: user research\nmode: all\n---\nuser research prompt",
+        "---\nname: research\ndescription: user research\n---\nuser research prompt",
     );
 
     let reg = load_with_dirs(Some(user.path()), project.path());
     let research = reg.get("research").unwrap();
     assert_eq!(research.description, "user research");
     assert_eq!(research.system_prompt, "user research prompt");
-    assert_eq!(research.mode, entanglement_core::AgentMode::All);
     // And without the file, the embedded definition is what loads.
     let reg = load_with_dirs(None, project.path());
-    assert_eq!(
-        reg.get("research").unwrap().mode,
-        entanglement_core::AgentMode::Primary
-    );
+    assert!(reg.get("research").is_some());
 }
 
 #[test]
@@ -237,8 +233,6 @@ fn foreign_claude_agents_load_leniently_and_native_wins() {
     let backend = reg.get("backend").expect("foreign agent discovered");
     assert_eq!(backend.description, "claude backend");
     assert_eq!(backend.system_prompt, "backend prompt");
-    // Foreign agents are spawnable delegation targets.
-    assert_eq!(backend.mode, entanglement_core::AgentMode::All);
     assert!(reg.get("broken").is_none(), "malformed foreign skipped");
     assert_eq!(reg.get("dup").unwrap().description, "native dup");
 }
@@ -425,7 +419,7 @@ async fn spawn_under_a_file_defined_profile() {
     write_agent(
         &project.path().join(".entanglement").join("agents"),
         "worker.md",
-        "---\nname: worker\ndescription: file-defined worker\nmode: subagent\n---\nYou are the worker.",
+        "---\nname: worker\ndescription: file-defined worker\n---\nYou are the worker.",
     );
     let profiles = load_with_dirs(None, project.path());
     assert!(profiles.get("worker").is_some(), "worker loaded from disk");
@@ -575,17 +569,20 @@ fn prompt_report_prefers_project_definition() {
 }
 
 #[test]
-fn prompt_report_subagent_omits_env_and_skill_index() {
+fn prompt_report_includes_env_and_skill_index_for_every_agent() {
+    // ADR-0207 §4 retires the old `Subagent`-mode reduced form: any agent
+    // may be a session root or a spawn target, so composition no longer
+    // varies — `explore` (the old reference "leaf") gets the env block and
+    // tier-1 skill index too now.
     let empty = tempfile::tempdir().unwrap();
     let mut ctx = PromptContext::load(empty.path());
     ctx.skills = vec![entanglement_runtime::system_prompt::SkillDisclosure {
         name: "git".into(),
         description: "commit helpers".into(),
     }];
-    // `explore` is the reference subagent: no env block, no tier-1 skill index.
     let report = report_for(empty.path(), "explore", &ctx).expect("explore resolves");
-    assert!(!report.parts.iter().any(|p| p.label == "environment"));
-    assert!(!report.parts.iter().any(|p| p.label == "skill index"));
+    assert!(report.parts.iter().any(|p| p.label == "environment"));
+    assert!(report.parts.iter().any(|p| p.label == "skill index"));
 }
 
 // ---------------------------------------------------------------------------

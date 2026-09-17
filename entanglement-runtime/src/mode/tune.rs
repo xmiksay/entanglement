@@ -86,6 +86,7 @@ pub fn apply(
         rules,
         limits: mode.limits,
         sandbox: mode.sandbox.clone(),
+        sandbox_network: mode.sandbox_network,
     })
 }
 

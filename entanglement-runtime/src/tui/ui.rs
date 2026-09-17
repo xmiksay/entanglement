@@ -136,10 +136,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_sessions_modal(f, app);
     }
 
-    if app.showing_stop_confirm() {
-        modals::draw_stop_confirm_modal(f, app);
-    }
-
     if app.showing_help() {
         modals::draw_help_dialog(f, app);
     }

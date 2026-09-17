@@ -49,7 +49,6 @@ pub(super) fn render_prompt_parts(
     let mut out = String::new();
     let _ = writeln!(out, "agent:  {agent}");
     let _ = writeln!(out, "source: {}", report.source);
-    let _ = writeln!(out, "mode:   {:?}", report.profile.mode);
     let _ = writeln!(
         out,
         "assembled: {} chars across {} part(s)\n",

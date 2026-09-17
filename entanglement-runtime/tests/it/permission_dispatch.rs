@@ -26,7 +26,7 @@ use entanglement_core::{
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
@@ -95,6 +95,7 @@ fn one_mode_table(default: Permission, deny: &[&str], allow: &[&str]) -> Arc<Mod
         ),
         limits: Limits::default(),
         sandbox: None,
+        sandbox_network: false,
     };
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
@@ -213,7 +214,7 @@ fn spawn_with_policy_over(
     let modes = perm_modes();
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
         modes.clone(),
-        mode_table,
+        mode_table.clone(),
         shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         root.map(Path::to_path_buf),
@@ -238,7 +239,7 @@ fn spawn_with_policy_over(
         grants,
         Default::default(),
         escape_root,
-        SandboxConfig::none(),
+        mode_table,
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -1308,7 +1309,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         Arc::new(DefaultGrantStore::load()),
         Default::default(),
         None,
-        SandboxConfig::none(),
+        builtin_modes(),
         Arc::new(PlanFileRegistry::new()),
         None,
         None,

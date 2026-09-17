@@ -632,11 +632,6 @@ impl SessionView {
         self.parent.as_ref()
     }
 
-    /// Whether this session is a sponsored `propose_plan` build child (#626).
-    pub fn sponsored(&self) -> bool {
-        self.sponsored
-    }
-
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,
     /// ms since epoch): the span from `SessionStarted` to `SessionEnded`, or to
     /// `now_ms` while still running. `None` until the session's start is known.
