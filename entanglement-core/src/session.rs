@@ -153,12 +153,12 @@ pub(crate) enum SessionCmd {
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     Stop,
-    /// Hold the session at `AgentState::Paused` (#516, ADR-0144) — never
+    /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the
     /// existing generic mechanism in `stream.rs` and applied at the next round
     /// boundary, exactly like a mid-stream `SetMode`). Idempotent.
     Pause,
-    /// Lift a hold placed by `Pause` (#516, ADR-0144). A no-op if not paused.
+    /// Lift a hold placed by `Pause` (#516, ADR-0208). A no-op if not paused.
     Unpause,
     /// Evict this session from memory without tombstoning its id (#318,
     /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
@@ -413,7 +413,7 @@ pub(crate) async fn session_loop(
                 s.turn.is_none().then(tokio::time::Instant::now),
             );
 
-        // Pop the stash only when idle *and not paused* (#516, ADR-0144): a
+        // Pop the stash only when idle *and not paused* (#516, ADR-0208): a
         // command stashed during a live turn replays after the turn ends
         // (ADR-0018). While parked, or while paused, popping a stashed command
         // here would only re-stash it below — a busy loop.
@@ -456,7 +456,7 @@ pub(crate) async fn session_loop(
             Some(SessionCmd::Prompt(content)) => {
                 if s.turn.is_some() || s.paused {
                     // Mid-turn steering (#182, ADR-0058) or a paused idle
-                    // session (#516, ADR-0144): stash it — the next round, or
+                    // session (#516, ADR-0208): stash it — the next round, or
                     // `Unpause`'s resulting idle pop, folds a stashed prompt
                     // into the live context before the model request.
                     stash_or_reject(
@@ -642,7 +642,7 @@ pub(crate) async fn session_loop(
             // fold — and continue the turn once the batch drains. No match:
             // stale (late result after a cancel), duplicate, or unknown id —
             // drop it rather than corrupt context. While paused (#516,
-            // ADR-0144) the fold still happens — a resolver isn't blocked by a
+            // ADR-0208) the fold still happens — a resolver isn't blocked by a
             // hold, and stashing this would deadlock (the batch could never
             // drain if its own resolution waited on `s.turn` going idle) — but
             // the drained batch does *not* re-enter `drive_turn`: the next
@@ -698,7 +698,7 @@ pub(crate) async fn session_loop(
                     // is the resting state, not `Idle` (which stays reserved for
                     // the genuinely-never-run-yet case at session start,
                     // ADR-0139). `Stop` always cancels regardless of a pause
-                    // (#516, ADR-0144) — but doesn't lift one: pause and cancel
+                    // (#516, ADR-0208) — but doesn't lift one: pause and cancel
                     // are orthogonal holds, so a still-paused session reports
                     // `Paused`, not `Done`, until an explicit `ResumeSession`.
                     let state = if s.paused {
@@ -712,7 +712,7 @@ pub(crate) async fn session_loop(
                     });
                 }
             }
-            // Hold the session at `Paused` (#516, ADR-0144) — see
+            // Hold the session at `Paused` (#516, ADR-0208) — see
             // `SessionCmd::Pause`'s doc for what this defers. Idempotent: no
             // duplicate `Status` for an already-paused session.
             Some(SessionCmd::Pause) => {
@@ -724,7 +724,7 @@ pub(crate) async fn session_loop(
                     });
                 }
             }
-            // Lift a hold placed by `Pause` (#516, ADR-0144). A drained-but-
+            // Lift a hold placed by `Pause` (#516, ADR-0208). A drained-but-
             // undriven parked batch (every `ToolResult` already folded while
             // paused) continues the turn immediately — no new prompt needed;
             // otherwise report the state the session is actually resting in

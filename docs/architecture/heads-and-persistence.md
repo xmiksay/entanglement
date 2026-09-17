@@ -325,7 +325,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   out to every live one), and `Ctrl+Space` toggles pause/resume on the active
   session (safe because the engine treats `PauseSession` on an idle session
   and `ResumeSession` on a non-paused one as idempotent no-ops,
-  [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+  [ADR-0208](../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
   The sessions modal adds lifecycle **quick keys** on the highlighted row
   (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
   modal staying open so several sessions can be acted on in a row, plus

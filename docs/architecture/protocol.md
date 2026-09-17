@@ -20,8 +20,8 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | RetractQuestion{session,request_id}   // withdraw an open ask_user question without cancelling the turn (#515, ADR-0146) — the orchestrator still replies (withdrawal note), unlike Stop's silent unwind
          | ReplaceQuestion{session,request_id,questions:[Question]}   // swap an open ask_user question's content in place; re-parks under the same request_id, not terminal (#515, ADR-0146)
          | Stop{session}
-         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0144)
-         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0144)
+         | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0208)
+         | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0208)
          | SetMode{session,mode}   // trusted-only: switch the session's permission mode → ModeChanged, cascades over the whole live spawn sub-tree; deferred-until-safe mid-turn like SetModel (#560, ADR-0207 §12). SetAgent is gone (ADR-0207 §9) — an agent is chosen once, at session start or spawn, and is fixed for that session's life
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
@@ -257,7 +257,7 @@ An **optional idle-TTL sweep** now drives `HibernateSession` automatically
 supervisor-level poll that auto-hibernates a **settled** root (and its whole
 spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism.
 
-**Session pause** (#516, [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md))
+**Session pause** (#516, [ADR-0208](../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md))
 is a hold `Stop` and `HibernateSession` don't cover: `Stop` destroys the
 in-flight round, `HibernateSession` evicts memory — neither is "hold this
 session's next piece of work without losing it or evicting it."

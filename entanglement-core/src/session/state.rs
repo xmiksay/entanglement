@@ -140,7 +140,7 @@ pub struct Session {
     /// `new_empty`/`replay` in a test); such a session simply cannot fork.
     pub(crate) engine: Option<mpsc::Sender<InMsg>>,
     /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
-    /// ADR-0144). Deliberately **not** persisted/replayed — like `Stop`'s
+    /// ADR-0208). Deliberately **not** persisted/replayed — like `Stop`'s
     /// cancel, a pause is ephemeral engine-loop state, not committed
     /// conversation content, so `Session::replay` always reconstructs `false`
     /// (a hibernate-then-resume cycle drops a pending pause, same as it drops

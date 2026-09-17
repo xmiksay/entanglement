@@ -619,7 +619,7 @@ task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
 uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
 
-**Pause is a hold, not a cancel** (#516, [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+**Pause is a hold, not a cancel** (#516, [ADR-0208](../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
 `Session.paused: bool` (never persisted/replayed) is set by
 `SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
 existing gates rather than adding a new code path: every command that already

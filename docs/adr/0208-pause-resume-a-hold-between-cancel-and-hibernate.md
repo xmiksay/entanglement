@@ -1,4 +1,4 @@
-# 0144. `PauseSession`/`ResumeSession` — a hold between cancel and hibernate
+# 0208. `PauseSession`/`ResumeSession` — a hold between cancel and hibernate
 
 - Status: Accepted
 - Date: 2026-07-31

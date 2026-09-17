@@ -87,7 +87,7 @@ pub enum AgentState {
     /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
     /// a permission decision, and heads render the two differently.
     WaitingAnswer,
-    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0144) — distinct from
+    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0208) — distinct from
     /// every wait state above, which are all waiting on *something specific*
     /// ([`WaitingApproval`][AgentState::WaitingApproval]/
     /// [`WaitingAnswer`][AgentState::WaitingAnswer]/
@@ -991,7 +991,7 @@ pub enum InMsg {
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
-    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0144) without
+    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0208) without
     /// cancelling anything or evicting memory — the middle ground `Stop`
     /// (destroys the in-flight round) and `HibernateSession` (evicts memory)
     /// don't cover. An idle session defers its next `Prompt` (and
@@ -1009,7 +1009,7 @@ pub enum InMsg {
     /// Idempotent; wire-allowed like `Stop` (no elevated capability).
     PauseSession { session: SessionId },
     /// Lift a hold placed by [`PauseSession`][InMsg::PauseSession] (#516,
-    /// ADR-0144). A deferred idle `Prompt`/`SetModel`/
+    /// ADR-0208). A deferred idle `Prompt`/`SetModel`/
     /// `SetGeneration`/`Oneshot` now applies; a parked turn whose batch already
     /// drained while paused continues immediately with no new model request
     /// needed to re-enter it. A no-op on a session that isn't paused.

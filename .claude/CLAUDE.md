@@ -316,7 +316,7 @@ never here**; each bullet is the claim + where to read it:
   live, with an auto session-title generator on first prompt.
   [engine](../docs/architecture/engine.md),
   [heads & persistence](../docs/architecture/heads-and-persistence.md),
-  [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0090](../docs/adr/0090-idle-ttl-auto-hibernation.md)/[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)/[ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)/[ADR-0144](../docs/adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0151](../docs/adr/0151-settable-session-metadata.md).
+  [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0090](../docs/adr/0090-idle-ttl-auto-hibernation.md)/[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)/[ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0151](../docs/adr/0151-settable-session-metadata.md).
 - **MCP**: external tool servers over stdio or streamable HTTP, registered as
   `mcp__<server>__<tool>` and graded under the same session permission mode; live add/remove/
   list via engine-global messages answered by a runtime responder;
