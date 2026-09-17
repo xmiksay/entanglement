@@ -2,12 +2,15 @@
 //! ADR-0049). `propose_plan` — the sole plan-authorship tool since #513,
 //! ADR-0145 — has its own coverage in `tests/propose_plan.rs`.
 //!
-//! `update_tasks` round-trips via `ToolExec`/`ToolResult` like every host tool:
-//! the runtime executor resolves the ordinary `Allow`/`Ask`/`Deny` permission
-//! from the session's mode (ADR-0207 stage 4), emits the `TaskList` snapshot
-//! on success, and acks the model. A read-only mode cannot mutate task state
-//! (#175) — refused (or gated behind an approval) before any snapshot is
-//! emitted.
+//! `update_tasks` carries no host resource (#231) and declares
+//! `Capability::Control` (ADR-0207 §3): unlike an ordinary host tool it is
+//! never graded, so it runs and emits its `TaskList` snapshot + ack
+//! unconditionally, under every mode and regardless of an explicit rule
+//! naming it (gap 1 of ADR-0207 stage 4b — it used to fall through to the
+//! generic `Allow`/`Ask`/`Deny` ladder like a normal tool, which the #175
+//! read-only-mutation concern originally relied on; that concern is now
+//! closed structurally instead, since a display-only task outline is not a
+//! host mutation).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -192,47 +195,26 @@ async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>)
 }
 
 #[tokio::test]
-async fn update_tasks_allow_emits_tasklist_and_acks() {
-    // `update_tasks` carries `Capability::Control` (ADR-0207 §3) but has no
-    // dedicated `Intercept` route, so it grades through `build` mode's
-    // `default: prompt` (ADR-0207 §4 — a deliberate change from the old
-    // `build` agent's `default: allow`, since no built-in mode writes an
-    // explicit `control` rule): approving the parked request is what runs it,
-    // after which the runtime emits the `TaskList` snapshot + a "tasks
-    // updated" ack.
+async fn update_tasks_runs_and_acks_unconditionally() {
+    // `update_tasks` carries `Capability::Control` (ADR-0207 §3, gap 1 of
+    // stage 4b): it is never graded, so it runs the moment the model calls
+    // it — no approval round-trip, `build` mode's own `default: prompt`
+    // never applies to it — after which the runtime emits the `TaskList`
+    // snapshot + a "tasks updated" ack.
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [x] a\n- [ ] b"}"#,
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
     );
     let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "update_tasks") {
-            break;
-        }
-    }
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id: "c1".into(),
-            scope: entanglement_core::ApprovalScope::Once,
-        })
-        .await
-        .unwrap();
-    let mut events = Vec::new();
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != Some(&sid) {
-            continue;
-        }
-        let done = matches!(ev, OutEvent::Done { .. });
-        events.push(ev);
-        if done {
-            break;
-        }
-    }
+    let events = collect_until_done(&holly, &sid, None).await;
 
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a Control tool must never park an approval; got {events:?}"
+    );
     assert!(
         events.iter().any(|e| matches!(
             e,
@@ -251,23 +233,20 @@ async fn update_tasks_allow_emits_tasklist_and_acks() {
 }
 
 #[tokio::test]
-async fn read_only_research_mode_gates_update_tasks_behind_approval() {
-    // #175, ADR-0207: the tool mask `explore`'s allowlist used to enforce is
-    // retired. `update_tasks` carries `Capability::Control` (ADR-0207 §3),
-    // but has no dedicated `Intercept` route of its own, so it still falls
-    // through to the generic mode-graded dispatch path; none of the
-    // built-in modes write an explicit `control` rule, so it resolves to
-    // `research`'s coarse `default: prompt`. Rejecting the resulting
-    // approval is what proves the read-only mode never mutates tasks
-    // unasked — the security property this test used to prove via a masked-
-    // then-denied round-trip.
+async fn read_only_research_mode_does_not_gate_update_tasks() {
+    // #175's old concern — a read-only mode must not let the model mutate
+    // task state unasked — is superseded, not violated, by ADR-0207 §3:
+    // `update_tasks` is `Capability::Control` (session bookkeeping, not a
+    // host mutation) and so is never graded, running the same way under
+    // `research` as under any other mode. This is the flip side of
+    // `permission_deny_closes_task_mutation` below: neither a mode's
+    // `default` nor an explicit rule naming it reaches a Control tool.
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [ ] sneaky"}"#,
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
     );
     let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
     holly
         .send(InMsg::SetMode {
             session: sid.clone(),
@@ -275,64 +254,30 @@ async fn read_only_research_mode_gates_update_tasks_behind_approval() {
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-
-    let mut got_request = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if let OutEvent::ToolRequest { tool, .. } = &ev {
-            if tool == "update_tasks" {
-                got_request = true;
-                break;
-            }
-        }
-    }
-    assert!(
-        got_request,
-        "update_tasks under research mode's default must park an approval, not run unasked"
-    );
-
-    holly
-        .send(InMsg::Reject {
-            session: sid.clone(),
-            request_id: "c1".into(),
-            reason: None,
-        })
-        .await
-        .unwrap();
-    let mut events = Vec::new();
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != Some(&sid) {
-            continue;
-        }
-        let done = matches!(ev, OutEvent::Done { .. });
-        events.push(ev);
-        if done {
-            break;
-        }
-    }
+    let events = collect_until_done(&holly, &sid, None).await;
 
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, OutEvent::TaskList { .. })),
-        "a rejected update_tasks must never emit a TaskList; got {events:?}"
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "research mode must not gate a Control tool behind approval; got {events:?}"
     );
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { tool, output, .. }
-                if tool == "update_tasks" && output.contains("rejected")
+            OutEvent::TaskList { content, .. } if content == "- [ ] sneaky"
         )),
-        "the rejection must surface as the tool's result; got {events:?}"
+        "update_tasks must run and emit a TaskList under research mode too; got {events:?}"
     );
 }
 
 #[tokio::test]
 async fn permission_deny_closes_task_mutation() {
-    // The ordinary permission path also gates it: a mode that *denies*
-    // `update_tasks` by name refuses the call — the #175 fix as a mode rule
-    // (ADR-0207 stage 4 grades from the session's mode, not its
-    // `AgentProfile`).
+    // A mode rule naming `update_tasks` by name is inert — `Capability::Control`
+    // is never graded (ADR-0207 §3, gap 1 of stage 4b), so the #175 concern
+    // this test used to close as a mode-rule deny is now closed structurally
+    // instead: there is no host mutation here to gate at all, only the
+    // session's own display task outline.
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = spawn_calling_with_mode_table(
@@ -347,15 +292,14 @@ async fn permission_deny_closes_task_mutation() {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, OutEvent::TaskList { .. })),
-        "denied update_tasks must not emit a TaskList; got {events:?}"
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a Control tool must never park an approval either; got {events:?}"
     );
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { tool, output, .. }
-                if tool == "update_tasks" && output.contains("denied by mode")
+            OutEvent::TaskList { content, .. } if content == "- [ ] x"
         )),
-        "denied update_tasks must surface a mode refusal; got {events:?}"
+        "a mode rule naming update_tasks must not deny it; got {events:?}"
     );
 }

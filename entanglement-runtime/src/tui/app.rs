@@ -314,6 +314,13 @@ impl App {
         self.sessions.active_view().agent()
     }
 
+    /// The active session's live permission mode (ADR-0207) — `/allow`
+    /// (#634) reads this to scope a `SessionDir` grant to the mode it's
+    /// earned under.
+    pub fn mode(&self) -> &str {
+        self.sessions.active_view().mode()
+    }
+
     pub fn state(&self) -> AgentState {
         self.sessions.active_view().state()
     }

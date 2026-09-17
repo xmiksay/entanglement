@@ -872,13 +872,17 @@ hooks, rhai, and plan/tasks tools.
   can hit a DB; `is_granted` is a sync fast check. A multi-tenant store writes its
   "always" rule to the DB and resolves later reads through its own resolver, so its
   `is_granted` can return `false`.
-- **Defaults (byte-identical CLI):** `ProfileResolver` reads the same
-  `Arc<Mutex<active-profile map>>` the executor folds lifecycle events into and
-  returns own-profile-clamped-by-base — since `clamp_to_base` is monotonic,
-  min-of-clamped over the chain equals the pre-seam `effective_permission` +
-  `clamp_to_base`. `DefaultGrantStore` wraps the managed file store
-  (`grants::FileGrantStore`). `rhai` keeps the profile/base path (its inner
-  bindings are a separate sync mechanism) and is not routed through the resolver.
+- **Defaults (byte-identical CLI):** `ProfileResolver` grades from the session's
+  permission **mode** (ADR-0207 stage 4), not its `AgentProfile` — it reads the
+  `Arc<Mutex<session→mode map>>` the executor folds `OutEvent::ModeChanged`
+  into, resolves the tool's declared `Capability` against the mode's rules, and
+  clamps the result to the config ceiling internally, so `resolve_effective`'s
+  outer chain-fold needs no separate `clamp_to_base` call. `DefaultGrantStore`
+  wraps the managed file store (`grants::FileGrantStore`). `rhai`'s
+  `BindingPolicy` (ADR-0207 stage 4b) reuses this *same* resolver + ancestor
+  chain for every binding call — the earlier `AgentProfile`-chain grading path
+  that used to serve `rhai` alone (`permission::effective_permission`) is
+  retired along with it.
 
 ### Dynamic `ToolRegistry` — `SharedRegistry` — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) (#372)
 

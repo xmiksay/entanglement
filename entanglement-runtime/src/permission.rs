@@ -11,24 +11,27 @@
 //!   valid target, so `build`/`plan` are unreachable via spawn); and the target
 //!   is on the spawner's `spawnable_agents` allowlist. Checked against the
 //!   spawner's *own* profile, so the allowlist is not transitive.
-//! - **Privilege ceiling** — [`effective_permission`]/[`permission_chain`]:
-//!   a child sub-agent is never more privileged than its ancestors. Since
-//!   ADR-0207 (permission modes), the main dispatch ladder grades every call
-//!   from the session's permission **mode** (`crate::mode`/
-//!   `crate::policy::ProfileResolver`) instead — these `AgentProfile`-chain
-//!   functions now serve only the `rhai` binding policy
-//!   ([`crate::script::BindingPolicy`]), which still resolves its bindings
-//!   against the profile chain. Resolution takes the call's tool-specific
-//!   argument (command/path, #173) so an argument-scoped rule matches the
-//!   actual input; [`permission_arg`] extracts it. A `bash`/`call` call also
-//!   carries its `workdir` (#425) so a `tool{pattern}` workdir-scoped rule
-//!   matches too; [`permission_workdir`] extracts it.
+//! - **Privilege ceiling** — [`ancestor_chain`]: a child sub-agent is never
+//!   more privileged than its ancestors. The main dispatch ladder
+//!   (`tool_runner::resolve_effective`) takes the least-privileged
+//!   [`crate::policy::PermissionResolver`] grade across exactly this chain,
+//!   and the `rhai` binding policy ([`crate::script::BindingPolicy`]) now
+//!   reuses the *same* chain + resolver (ADR-0207 stage 4b) — the old
+//!   `AgentProfile`-chain grading path (`effective_permission`/
+//!   `permission_chain`/`permission_for`) that used to serve `rhai` alone is
+//!   retired along with it, since nothing resolves a session's mode from
+//!   `AgentProfile.permission` any more. Resolution takes the call's
+//!   tool-specific argument (command/path, #173) so an argument-scoped rule
+//!   matches the actual input; [`permission_arg`] extracts it. A `bash`/`call`
+//!   call also carries its `workdir` (#425) so a `tool{pattern}`
+//!   workdir-scoped rule matches too; [`permission_workdir`] extracts it.
 //!
 //! The **tool mask** (#116, ADR-0038: `tools`/`disallowed_tools` making a
 //! tool not *exist* for a session) is retired (ADR-0207 §8, "the mask
 //! machinery is deleted"): `tool_masked`/`tool_mask_source` are gone.
-//! `AgentProfile` still carries the `tools`/`disallowed_tools` fields for now
-//! (ADR-0207 stage 4b removes them), but nothing reads them any more.
+//! `AgentProfile` still carries the `tools`/`disallowed_tools`/`permission`
+//! fields for now (a later ADR-0207 stage removes them), but nothing reads
+//! them any more.
 //!
 //! Both live in the runtime tool executor's single-threaded loop, folded
 //! from the same lifecycle events as permission dispatch — zero core surface.
@@ -89,145 +92,6 @@ pub fn spawn_refusal(
         ));
     }
     None
-}
-
-/// Effective permission for a `tool` call in `session`, clamped so a child
-/// sub-agent is never more privileged than its ancestors. Walks the parent chain
-/// in `guard`, taking the least-privileged `resolve` across the session and every
-/// ancestor. `arg` is the tool-specific argument (command/path, #173) and
-/// `workdir` the `bash`/`call` working directory (#425) so argument-/workdir-
-/// scoped rules resolve against the actual call; pass `None` for a name-only
-/// decision. A root has no ancestors, so this reduces to its own profile —
-/// single-session behavior is unchanged.
-pub fn effective_permission(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Permission {
-    let (perm, source) = resolve_with_source(active, guard, session, tool, arg, workdir);
-    // Per-resolution trace (#189) so sub-agent debugging ("why was this child's
-    // edit denied?") reads off logs instead of three `.md` layers by hand.
-    tracing::debug!(
-        %session,
-        tool,
-        rule = ?perm,
-        source = match &source {
-            Some(id) => format!("ancestor {id}"),
-            None => "own".to_string(),
-        },
-        "permission resolved",
-    );
-    perm
-}
-
-/// The clamped permission plus *which* link decided it (#189): `None` ⇒ the
-/// session's own profile stands; `Some(id)` ⇒ that ancestor clamped it down.
-/// Split from [`effective_permission`] so the deciding source is unit-testable
-/// without capturing the trace it feeds.
-///
-/// A **sponsored child** (ADR-0138) is a permission root despite having a
-/// parent link: its authorization is user plan approval, not the ancestor
-/// chain, so the walk stops at the child and its own profile stands. This is
-/// what lets a `build` child of a read-only `plan` session run write tools.
-fn resolve_with_source(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> (Permission, Option<SessionId>) {
-    let mut perm = permission_for(active, session, tool, arg, workdir);
-    // A sponsored child (ADR-0138) is a permission root: no ancestor walk, no
-    // clamp. Authorization came from user plan approval, not inheritance.
-    if guard.is_sponsored(session) {
-        return (perm, None);
-    }
-    let mut source: Option<SessionId> = None;
-    let mut current = session.clone();
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor is itself a permission root — its own
-                // ancestors don't clamp this sub-tree either. Stop the walk at
-                // it, the same way a plain root's `None` parent does.
-                if guard.is_sponsored(&parent) {
-                    let clamped =
-                        min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
-                    if clamped != perm {
-                        source = Some(parent.clone());
-                    }
-                    perm = clamped;
-                    break;
-                }
-                let clamped =
-                    min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
-                // Only a *strictly* lower ancestor changes the outcome (ties keep
-                // the nearer link), so record it as the deciding source.
-                if clamped != perm {
-                    source = Some(parent.clone());
-                }
-                perm = clamped;
-                current = parent;
-            }
-            None => break,
-        }
-    }
-    (perm, source)
-}
-
-/// The ordered permission profiles the effective grade folds over (#173): the
-/// session's own profile followed by each ancestor, walking `guard`'s parent
-/// links. The rhai binding policy captures this once per run and resolves each
-/// binding call against it with the call's argument, matching
-/// [`effective_permission`]'s least-privilege clamp while letting argument-scoped
-/// rules see the actual input. An unseen session contributes nothing.
-// Only called by `crate::script` (feature-gated) outside this module's own
-// unit test below, which is why a lean, rhai-less build sees it as dead.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-pub(crate) fn permission_chain(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-) -> Vec<PermissionProfile> {
-    let mut chain = Vec::new();
-    let mut current = session.clone();
-    // A sponsored child (ADR-0138) is a permission root — its own profile
-    // stands, no ancestor walk.
-    if guard.is_sponsored(&current) {
-        if let Some(profile) = active.get(&current) {
-            chain.push(profile.permission.clone());
-        }
-        return chain;
-    }
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        if let Some(profile) = active.get(&current) {
-            chain.push(profile.permission.clone());
-        }
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor (ADR-0138) is a permission root: include
-                // its own profile (it clamps this sub-tree) but stop the walk
-                // above it.
-                if guard.is_sponsored(&parent) {
-                    if let Some(profile) = active.get(&parent) {
-                        chain.push(profile.permission.clone());
-                    }
-                    break;
-                }
-                current = parent;
-            }
-            None => break,
-        }
-    }
-    chain
 }
 
 /// Clamp an already-resolved permission by the global config base (#172,
@@ -306,28 +170,26 @@ pub fn overlay_grade_entry(
     })
 }
 
-/// A session's own permission for a `tool` call; an unseen session defaults to
-/// `Deny` — **fail-closed** (#156). The executor folds its per-session profile
-/// map from the lossy `SessionStarted`/`AgentChanged` broadcast, so under burst a
-/// dropped lifecycle event would otherwise leave a restricted session unseen and
-/// silently allow-all. The executor self-heals the leaf from `ToolExec.agent`
-/// before resolving, so this floor fires only for a genuinely-unknown session (an
-/// unresolved agent name, or an ancestor whose spawn was itself dropped). `arg`
-/// carries the tool-specific argument (#173) and `workdir` the `bash`/`call`
-/// working directory (#425) so argument-/workdir-scoped rules resolve.
-pub(crate) fn permission_for(
-    active: &HashMap<SessionId, AgentProfile>,
-    session: &SessionId,
+/// Whether the nearest chain link with an overlay **opinion** — deny or
+/// enable — about `tool` is a deny (#634, ADR-0207 §8 restore): the missing
+/// half of [`overlay_grade_entry`] above, which only ever looks for an
+/// enable entry and silently skips a link that carries only a deny, walking
+/// past it to a farther ancestor's enable instead. Consulting *this*
+/// function first (`tool_runner::dispatch` does, before `overlay_entry` is
+/// even materialized) closes that hole: the nearest opinionated link always
+/// wins, deny or enable, mirroring [`ToolOverlayEntry::disposition`]'s
+/// deny-beats-enable rule within one session's own list, extended down the
+/// spawn sub-tree the same way #628 extended the enable lookup.
+pub fn overlay_denies(
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    chain: &[SessionId],
     tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Permission {
-    active
-        .get(session)
-        .map(|p| {
-            crate::permission_bash::resolve_scoped_bash_aware(&p.permission, tool, arg, workdir)
-        })
-        .unwrap_or(Permission::Deny)
+) -> bool {
+    chain.iter().find_map(|session| {
+        overlays
+            .get(session)
+            .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
+    }) == Some(false)
 }
 
 /// The session + its ancestor chain (nearest first), walking `guard`'s parent
@@ -335,9 +197,10 @@ pub(crate) fn permission_for(
 /// permission by taking the least-privileged [`PermissionResolver`][crate::policy::PermissionResolver]
 /// grade across exactly these sessions — the sub-agent privilege ceiling
 /// (ADR-0024) applied *on top of* whatever grade the resolver returns, so a
-/// pluggable tenant rule can never widen a child beyond its parent. The set
-/// matches the sessions [`effective_permission`] folds over, so the default
-/// profile resolver stays byte-identical.
+/// pluggable tenant rule can never widen a child beyond its parent. Shared by
+/// `tool_runner`'s dispatch ladder and [`crate::script::BindingPolicy`]
+/// (ADR-0207 stage 4b) — a `rhai` binding resolves across the identical chain
+/// a direct tool call does.
 ///
 /// A **sponsored child** (ADR-0138) is a permission root: the chain stops at
 /// it (no ancestors), and stops at any sponsored ancestor mid-walk — the
@@ -540,181 +403,6 @@ mod tests {
         assert!(r.contains("not allowed to spawn"), "got: {r}");
     }
 
-    #[test]
-    fn child_permission_is_clamped_to_parent() {
-        // Parent `plan`: read allowed, everything else Ask. Child `build`: allow-all.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // `edit` is Allow on the child alone, but Ask on the parent → clamped to Ask.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Ask
-        );
-        // `read` is Allow on both → stays Allow.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "read", None, None),
-            Permission::Allow
-        );
-        // The parent (a root) is never loosened or clamped — its own profile stands.
-        assert_eq!(
-            effective_permission(&active, &guard, &parent, "edit", None, None),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn resolution_source_names_own_vs_the_clamping_ancestor() {
-        // grandparent `plan`: edit Ask. parent `build`: edit Allow. child `build`:
-        // edit Allow. The chain's least-privileged edit rule comes from the
-        // grandparent, two hops up.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let allow_all = |name: &str| {
-            profile(
-                name,
-                AgentMode::Primary,
-                PermissionProfile::new(Permission::Allow),
-            )
-        };
-        let gp = SessionId::new("gp");
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(gp.clone(), plan);
-        active.insert(parent.clone(), allow_all("build"));
-        active.insert(child.clone(), allow_all("build"));
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(gp.clone(), None);
-        guard.record_start(parent.clone(), Some(gp.clone()));
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // `edit`: own+parent Allow, grandparent Ask → clamped to Ask, sourced to gp.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "edit", None, None),
-            (Permission::Ask, Some(gp.clone()))
-        );
-        // `read`: Allow the whole way → own profile stands, no ancestor source.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "read", None, None),
-            (Permission::Allow, None)
-        );
-        // A root resolves to its own profile — never an ancestor.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &gp, "edit", None, None),
-            (Permission::Ask, None)
-        );
-    }
-
-    #[test]
-    fn unseen_session_resolves_to_deny() {
-        // #156: a session whose lifecycle events were dropped under broadcast
-        // overload is unseen — its effective permission must be `Deny`
-        // (fail-closed), not the pre-#156 allow-all default that inverted the
-        // security posture. An allow-all *seen* session resolves normally.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let seen = SessionId::new("seen");
-        let mut active = HashMap::new();
-        active.insert(seen.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &seen, "edit", None, None),
-            Permission::Allow
-        );
-        // An unseen session (never inserted) fails closed.
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &SessionId::new("ghost"),
-                "edit",
-                None,
-                None
-            ),
-            Permission::Deny
-        );
-    }
-
-    #[test]
-    fn unseen_ancestor_clamps_child_to_deny() {
-        // #156: if a parent's `SessionStarted` was dropped, the parent is unseen.
-        // The child's effective permission must clamp to `Deny` down the chain
-        // rather than fall through to the child's own (allow-all) grade.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        // Only the child is seen; the parent's lifecycle event was lost.
-        active.insert(child.clone(), build);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Deny
-        );
-    }
-
-    #[test]
-    fn plan_child_explore_reaches_ask_on_a_real_call_dispatch() {
-        // #597 end-to-end: the mask fix alone isn't enough — the ancestor
-        // *permission* ceiling (`effective_permission`) also has to clear
-        // `call` for an actual dispatch, not just the mask. `plan`'s own
-        // coarse (no-arg) `call` grade is `Deny` (ADR-0114's `MULTI_GROUP`
-        // floor, tightened by `write: deny`), but a real invocation always
-        // carries its command as the argument, and `plan.md`'s `call(*): ask`
-        // arg-scoped rule refines exactly that case — reproducing the
-        // issue's `gh issue view 594` via `call`.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let plan = reg.get("plan").unwrap().clone();
-        let explore = reg.get("explore").unwrap().clone();
-
-        let p = SessionId::new("plan");
-        let c = SessionId::new("explore-child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), plan);
-        active.insert(c.clone(), explore);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        assert_eq!(
-            effective_permission(&active, &guard, &c, "call", Some("gh issue view 594"), None),
-            Permission::Ask,
-            "a real `call` dispatch under an explore child of plan must reach Ask, not Deny"
-        );
-    }
-
     /// #628: `overlay_grade_entry` walks the same ancestor chain the mask
     /// already does — a parent's overlay grade now reaches a child that has
     /// none of its own, and the child's own overlay (nearer in the chain)
@@ -761,6 +449,55 @@ mod tests {
         );
     }
 
+    /// #634: a matching overlay `deny` entry — inert since ADR-0207 stage 4a
+    /// deleted `tool_mask_source` — must decline the call again. Also pins
+    /// that `overlay_denies` and `overlay_grade_entry` agree: when the
+    /// nearest opinionated link is a deny, the grade lookup is never reached
+    /// (the caller checks `overlay_denies` first), so a farther ancestor's
+    /// enable never wrongly wins.
+    #[test]
+    fn overlay_denies_restores_the_flat_decline() {
+        let session = SessionId::new("s");
+        let guard = SpawnGuard::new();
+        let chain = ancestor_chain(&guard, &session);
+
+        let mut overlays = HashMap::new();
+        assert!(!overlay_denies(&overlays, &chain, "bash"), "no opinion yet");
+
+        overlays.insert(session.clone(), vec![ToolOverlayEntry::deny("bash")]);
+        assert!(overlay_denies(&overlays, &chain, "bash"));
+        // An unrelated tool is untouched.
+        assert!(!overlay_denies(&overlays, &chain, "read"));
+    }
+
+    /// The nearest chain link with *any* opinion wins for deny too — a
+    /// child's own deny is not shadowed by a parent's enable, and a parent's
+    /// deny reaches a child with no overlay of its own (mirroring
+    /// `overlay_grade_entry_reaches_down_the_ancestor_chain` for the enable
+    /// case).
+    #[test]
+    fn overlay_denies_reaches_down_the_ancestor_chain() {
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+        let chain_from_child = ancestor_chain(&guard, &child);
+
+        let mut overlays = HashMap::new();
+        overlays.insert(parent.clone(), vec![ToolOverlayEntry::deny("bash")]);
+        // No overlay of its own — the child inherits the parent's deny.
+        assert!(overlay_denies(&overlays, &chain_from_child, "bash"));
+
+        // The child's own enable is nearer, so it wins over the parent's deny.
+        overlays.insert(child.clone(), vec![ToolOverlayEntry::allow("bash")]);
+        assert!(!overlay_denies(&overlays, &chain_from_child, "bash"));
+        assert_eq!(
+            overlay_grade_entry(&overlays, &chain_from_child, "bash"),
+            Some(overlays[&child][0].clone())
+        );
+    }
+
     #[test]
     fn clamp_to_base_is_a_least_privilege_ceiling() {
         // Allow-all base (the embedded default) never changes the agent's grade.
@@ -787,102 +524,6 @@ mod tests {
         // The base never loosens: base Allow over an agent Ask stays Ask.
         assert_eq!(
             clamp_to_base(Permission::Ask, &base, "read", None, None),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn root_with_no_ancestors_uses_own_profile() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "edit", None, None),
-            Permission::Allow
-        );
-    }
-
-    #[test]
-    fn sponsored_child_resolves_own_perms_ignoring_readonly_ancestor() {
-        // ADR-0138: a sponsored `build` child of a read-only `plan` session
-        // runs with its own profile's permissions — the ancestor clamp does
-        // not apply, since authorization is user plan approval, not
-        // inheritance. `edit` is Allow on the child and Ask on the parent; a
-        // plain child would clamp to Ask, a sponsored child stays Allow.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("plan");
-        let child = SessionId::new("build");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_sponsored_start(child.clone(), parent.clone());
-
-        // Sponsored: own profile stands, no ancestor clamp.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Allow
-        );
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "edit", None, None),
-            (Permission::Allow, None)
-        );
-        // `read` is Allow on both → stays Allow.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "read", None, None),
-            Permission::Allow
-        );
-        // The plan parent itself is unchanged (a root).
-        assert_eq!(
-            effective_permission(&active, &guard, &parent, "edit", None, None),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn non_sponsored_child_still_clamped_regression() {
-        // ADR-0024 regression: a plain (non-sponsored) child under a read-only
-        // parent is still clamped. Sponsorship is the *only* exemption.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("plan");
-        let child = SessionId::new("build");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // Plain child: ancestor clamp applies → edit clamps to Ask.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
             Permission::Ask
         );
     }
@@ -979,34 +620,14 @@ mod tests {
         assert_eq!(permission_workdir("bash", "not json"), None);
     }
 
+    /// The config ceiling's own workdir-scoped rule (#425) — the one
+    /// coverage-preserving fragment kept from the retired
+    /// `workdir_scoped_rule_resolves_through_the_agent_chain` (deleted with
+    /// `effective_permission`/`permission_for`, ADR-0207 stage 4b): `clamp_to_base`
+    /// itself is still very much alive, on the overlay-grade path in both
+    /// `tool_runner::dispatch` and `BindingPolicy::decide`.
     #[test]
-    fn workdir_scoped_rule_resolves_through_the_agent_chain() {
-        // A root whose profile pre-approves anything run under `/tmp` but asks
-        // for `bash` elsewhere (#425).
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow)
-                .with("bash", Permission::Ask)
-                .with("bash{/tmp/*}", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            permission_for(&active, &root, "bash", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
-        assert_eq!(
-            permission_for(&active, &root, "bash", None, Some("/home/x")),
-            Permission::Ask
-        );
-        // `effective_permission`/`clamp_to_base` see the same `workdir` slot.
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
+    fn clamp_to_base_honors_workdir_scoped_ceiling() {
         let deny_etc =
             PermissionProfile::new(Permission::Allow).with("bash{/etc/*}", Permission::Deny);
         assert_eq!(
@@ -1018,224 +639,6 @@ mod tests {
                 Some("/etc/cron.d")
             ),
             Permission::Deny
-        );
-    }
-
-    #[test]
-    fn argument_scoped_rule_resolves_through_the_agent_chain() {
-        // A root whose profile pre-approves `git *` but asks for every other bash.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow)
-                .with("bash", Permission::Ask)
-                .with("bash(git *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("git status"), None),
-            Permission::Allow
-        );
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("rm -rf /"), None),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a compound command built entirely of allowed verbs grades
-    /// `Allow` through the ancestor-chain fold, without needing the whole raw
-    /// string to match a single rule.
-    #[test]
-    fn compound_command_allowed_when_every_segment_matches() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("bash(find *)", Permission::Allow)
-                .with("bash(grep *)", Permission::Allow)
-                .with("bash(wc *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . | grep x | wc -l"),
-                None
-            ),
-            Permission::Allow
-        );
-    }
-
-    /// ADR-0197 regression: the over-match hole a trailing `*` used to open —
-    /// `bash(find *): allow` must never authorize an appended `rm -rf /` via
-    /// `&&`.
-    #[test]
-    fn compound_command_over_match_regression_asks() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . && rm -rf /tmp/x"),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a compound whose leading verb has no rule at all (not just an
-    /// unmatched allow) still resolves through the segment fold to `Ask`.
-    #[test]
-    fn compound_command_with_unmatched_leading_verb_asks() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("git status && find ."),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a deny rule matching only a *later* segment still denies the
-    /// whole compound — the deny doesn't need to be the leading verb.
-    #[test]
-    fn compound_command_deny_on_trailing_segment_denies_the_whole_command() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("bash(find *)", Permission::Allow)
-                .with("bash(rm *)", Permission::Deny),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("find . && rm x"), None),
-            Permission::Deny
-        );
-    }
-
-    /// ADR-0197: output redirection is opaque to the splitter, so an
-    /// arg-scoped Allow must not fire — `find . > out.txt` still asks despite
-    /// `bash(find *): allow`.
-    #[test]
-    fn compound_command_redirect_still_asks_despite_curated_allow() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . > out.txt"),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn argument_scoped_rule_resolves_for_search_tools() {
-        // #417: grep/glob now yield a path-shaped arg, so a `read`-style
-        // arg-scoped rule can restrict them to a subtree.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("grep(src/*)", Permission::Allow)
-                .with("glob(src/*)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Allow
-        );
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "glob",
-                permission_arg("glob", r#"{"pattern":"src/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Allow
-        );
-        // Outside the scoped path, or with no file filter at all, falls back
-        // to the tool's name-only rule (`Ask` here).
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"docs/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Ask
-        );
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo"}"#).as_deref(),
-                None
-            ),
-            Permission::Ask
         );
     }
 
@@ -1282,35 +685,5 @@ mod tests {
             ),
             Permission::Allow
         );
-    }
-
-    #[test]
-    fn permission_chain_folds_own_then_ancestors() {
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // Chain is [child's own, parent's] — the least-privileged across it is Ask.
-        let chain = permission_chain(&active, &guard, &child);
-        assert_eq!(chain.len(), 2);
-        let perm = chain.iter().fold(Permission::Allow, |acc, p| {
-            min_permission(acc, p.resolve("bash", None))
-        });
-        assert_eq!(perm, Permission::Ask);
     }
 }

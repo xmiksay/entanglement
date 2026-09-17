@@ -78,15 +78,16 @@ pub trait GrantStore: Send + Sync {
     fn forget_session(&self, session: &SessionId);
 
     /// Grant an explicit directory to `session`, covering the read-only triad
-    /// (`read`/`grep`/`glob`) for the rest of the session (#486, ADR-0126) —
-    /// the TUI `/allow <path>` command's entry point. Synchronous and never
-    /// persisted (unlike `Always` scope above), so no DB round-trip is
-    /// needed. Default no-op that just echoes `dir` back unnormalized, so an
-    /// embedder's custom `GrantStore` (`tests/policy_seam.rs`) keeps
-    /// compiling without wiring directory grants; only `DefaultGrantStore`
-    /// (the TUI's store) overrides it for real.
-    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
-        let _ = session;
+    /// (`read`/`grep`/`glob`) for the rest of the session under `mode` only
+    /// (#486, ADR-0126; mode-scoped by #634) — the TUI `/allow <path>`
+    /// command's entry point. Synchronous and never persisted (unlike
+    /// `Always` scope above), so no DB round-trip is needed. Default no-op
+    /// that just echoes `dir` back unnormalized, so an embedder's custom
+    /// `GrantStore` (`tests/policy_seam.rs`) keeps compiling without wiring
+    /// directory grants; only `DefaultGrantStore` (the TUI's store) overrides
+    /// it for real.
+    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String {
+        let _ = (session, mode);
         dir.to_string()
     }
 }
@@ -199,8 +200,8 @@ impl SandboxResolver for SandboxPolicy {
 /// An unseen session (never folded — e.g. a direct `.run()` call with no live
 /// session) falls back to `default_policy` alone: sandboxing is defense in
 /// depth on top of the permission gate, not the gate itself, so this does not
-/// fail-closed to maximum confinement the way `permission_for` fails closed to
-/// `Deny`.
+/// fail-closed to maximum confinement the way [`ProfileResolver::resolve`]
+/// fails closed to `Deny`.
 pub struct ProfileSandboxResolver {
     own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
     floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
@@ -392,8 +393,8 @@ impl GrantStore for DefaultGrantStore {
         self.grants().forget_session(session);
     }
 
-    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
-        self.grants().grant_session_dir(session, dir)
+    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String {
+        self.grants().grant_session_dir(session, dir, mode)
     }
 }
 

@@ -4,11 +4,11 @@
 //! project skill; the handler substitutes the body's relative `references/…`
 //! ref to an absolute path. Turn 2 feeds that exact absolute path back into the
 //! `read` tool, proving the model can open a substituted ref without guessing a
-//! base directory (the bug class ADR-0037 closes). A third case checks that a
-//! profile denying `load_skill` via *permission* refuses it like any other host
-//! tool — no special exemption (ADR-0037). It uses a profile that still
-//! advertises `load_skill` (no tool mask), so the denial comes from permission,
-//! not the #116 physical mask (which the `tool_mask` tests cover).
+//! base directory (the bug class ADR-0037 closes). A third case pins the
+//! opposite of ADR-0037's old "no special exemption" contract: `load_skill`
+//! declares `Capability::Control` (ADR-0207 §3), so a mode rule naming it is
+//! inert — it is never graded, unlike ADR-0037's original per-profile
+//! `permission` gate (superseded, gap 1 of ADR-0207 stage 4b).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -239,7 +239,7 @@ async fn load_skill_then_read_a_substituted_ref() {
 }
 
 #[tokio::test]
-async fn load_skill_denied_via_permission_has_no_exemption() {
+async fn load_skill_ignores_a_mode_rule_naming_it() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-loadskill-deny-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -278,11 +278,11 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
         registry,
     ))));
-    // A mode that denies `load_skill` by its literal name: `load_skill` is
-    // gated exactly like `read`, no exemption (ADR-0037). Named `"build"` so
-    // a fresh session picks it up as `DEFAULT_MODE` with no `SetMode` call
-    // (ADR-0207 stage 4 grades from the session's mode, not its
-    // `AgentProfile`).
+    // A mode that denies `load_skill` by its literal name — inert, since
+    // `load_skill` declares `Capability::Control` (ADR-0207 §3, gap 1 of
+    // stage 4b): a Control tool is never graded, so this rule never even
+    // runs. Named `"build"` so a fresh session picks it up as
+    // `DEFAULT_MODE` with no `SetMode` call.
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let mode = entanglement_runtime::mode::Mode {
@@ -351,15 +351,15 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { output, .. } if output.contains("denied")
-        )),
-        "permission Deny should refuse load_skill (no exemption); got {events:?}"
-    );
-    assert!(
-        !events.iter().any(|e| matches!(
-            e,
             OutEvent::ToolOutput { output, .. } if output.contains("skill_id")
         )),
-        "denied load_skill must not return a body; got {events:?}"
+        "load_skill is Capability::Control — a mode rule naming it must not \
+         deny it; got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a Control tool must never park an approval either; got {events:?}"
     );
 }

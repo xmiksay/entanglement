@@ -49,12 +49,11 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::arg_validate;
 use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
+use crate::capability::{self, Capability};
 use crate::discover;
 use crate::hooks::Hooks;
 use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::mode::ModeTable;
-#[cfg(feature = "rhai")]
-use crate::permission::effective_permission;
 use crate::permission::{ancestor_chain, clamp_to_base, min_permission, spawn_refusal};
 use crate::permission_path::grading_arg;
 use crate::plan_files::PlanFileRegistry;
@@ -94,11 +93,18 @@ fn apply_grant(
 /// Least-privileged resolver grade across a call's ancestor chain — the sub-agent
 /// privilege ceiling (ADR-0024) applied *on top of* whatever the pluggable
 /// [`PermissionResolver`] returns, so a tenant rule can never widen a child
-/// beyond its parent. For the default [`ProfileResolver`] this reproduces
-/// `effective_permission` + `clamp_to_base` (the clamp is monotonic, so
-/// min-of-clamped equals clamp-of-min). An empty chain is impossible — the leaf
-/// session is always present — but defaults to `Deny` if one ever arrives.
-async fn resolve_effective(
+/// beyond its parent. For the default [`ProfileResolver`] each per-session
+/// resolve already clamps to the config ceiling internally, so folding them
+/// least-privilege here is the whole of it — no separate outer `clamp_to_base`
+/// needed. An empty chain is impossible — the leaf session is always present —
+/// but defaults to `Deny` if one ever arrives.
+///
+/// `pub(crate)`: also the grading primitive [`crate::script::BindingPolicy`]
+/// reuses (ADR-0207 stage 4b) so a `rhai` binding — and `rhai`'s own
+/// dispatch, `Intercept::Rhai` above — resolve through the *exact* same
+/// pluggable resolver + chain walk a direct tool call does, instead of a
+/// second `AgentProfile`-chain path.
+pub(crate) async fn resolve_effective(
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     tool: &str,
@@ -1258,18 +1264,22 @@ pub fn spawn_tool_executor_with_policy(
                         }
                         #[cfg(feature = "rhai")]
                         Intercept::Rhai => {
-                            // The bindings resolve permission live against this
-                            // loop's profile state — captured here as a per-run
-                            // snapshot and moved into the script task. The tool's
-                            // *own* Allow/Ask/Deny is resolved the same way. `rhai`
-                            // keeps the profile/base path (its inner bindings are a
-                            // separate sync mechanism), so it is not routed through
-                            // the pluggable resolver (#311); the sync grant read
-                            // still upgrades its own `Ask`. The escape-root policy
-                            // (ADR-0109) is cloned through too (#446): a file/exec
-                            // binding targeting an out-of-root path is gated by the
-                            // same forced-`Ask` + `ExtraRootStore` grant as a direct
-                            // tool call, not silently hard-refused.
+                            // `rhai`'s own grade (whether the model may invoke
+                            // it at all this call) and every binding call
+                            // inside the script (`BindingPolicy::decide`, in
+                            // `crate::script`) now resolve through the *same*
+                            // pluggable resolver + ancestor-chain clamp a
+                            // direct tool call uses (ADR-0207 stage 4b) —
+                            // `rhai` declares `Capability::Read|Write|Exec`
+                            // (`capability.rs`), so a mode denying any of
+                            // those denies `rhai` outright with no bespoke
+                            // rule, and there is no second `AgentProfile`-
+                            // chain grading path left to drift from it. The
+                            // resolve can hit a DB for a pluggable multi-
+                            // tenant resolver, so — mirroring the `Permission`
+                            // route above — it runs inside the detached task,
+                            // never this loop; only the cheap, synchronous
+                            // chain/overlay snapshots are taken here.
                             // Root-relative arg normalization (#485, ADR-0125):
                             // computed from the escape-root policy before it's
                             // cloned/shadowed below, so an in-root absolute path
@@ -1280,52 +1290,27 @@ pub fn spawn_tool_executor_with_policy(
                                 escape_root.as_ref().map(|er| er.root.as_path()),
                             );
                             let escape_root = escape_root.clone();
-                            let workdir = crate::permission::permission_workdir(&tool, &input);
-                            let (base_self, policy) = {
-                                let active = active.lock().expect("active-profile mutex poisoned");
-                                let base_self = clamp_to_base(
-                                    effective_permission(
-                                        &active,
-                                        &spawn_guard,
-                                        &session,
-                                        &tool,
-                                        arg.as_deref(),
-                                        workdir.as_deref(),
-                                    ),
-                                    &base,
-                                    &tool,
-                                    arg.as_deref(),
-                                    workdir.as_deref(),
-                                );
-                                let policy = crate::script::BindingPolicy::capture(
-                                    &active,
-                                    &spawn_guard,
-                                    &overlays,
-                                    &session,
-                                    &base,
-                                    escape_root.as_ref().map(|er| er.root.as_path()),
-                                );
-                                (base_self, policy)
-                            };
-                            // The grant lookup is mode-scoped (ADR-0207 §8)
-                            // even though `rhai`'s own grade above still
-                            // resolves through the profile chain, not the
-                            // mode table — an approval earned in one mode
-                            // must not silently apply in another.
+                            let chain = ancestor_chain(&spawn_guard, &session);
+                            // The grant lookup/record is mode-scoped (ADR-0207
+                            // §8): an approval earned in one mode must not
+                            // silently apply in another.
                             let call_mode = perm_modes
                                 .lock()
                                 .expect("permission-mode mutex poisoned")
                                 .get(&session)
                                 .cloned()
                                 .unwrap_or_default();
-                            let self_perm = apply_grant(
-                                &*grants,
+                            let policy = crate::script::BindingPolicy::capture(
+                                &spawn_guard,
+                                &overlays,
                                 &session,
-                                &tool,
-                                arg.as_deref(),
-                                base_self,
-                                &call_mode,
+                                &base,
+                                resolver.clone(),
+                                call_mode.clone(),
+                                escape_root.as_ref().map(|er| er.root.as_path()),
                             );
+                            let resolver = resolver.clone();
+                            let grants = grants.clone();
                             let pending = pending.clone();
                             // Snapshot the registry *before* spawning (#372): a brief
                             // read lock, never held across the script's `.await`, so a
@@ -1355,6 +1340,14 @@ pub fn spawn_tool_executor_with_policy(
                             // same `stop` flag via the script registry.
                             let background = crate::script::is_background(&input);
                             let handle = tokio::spawn(async move {
+                                let self_perm = apply_grant(
+                                    &*grants,
+                                    &session,
+                                    &tool,
+                                    arg.as_deref(),
+                                    resolve_effective(&*resolver, &chain, &tool, &input).await,
+                                    &call_mode,
+                                );
                                 crate::script::run_rhai(
                                     holly,
                                     tools,
@@ -1403,6 +1396,14 @@ pub fn spawn_tool_executor_with_policy(
                             // its own.
                             let overlay_entry =
                                 crate::permission::overlay_grade_entry(&overlays, &chain, &tool);
+                            // The same chain walk, but for a **deny** opinion
+                            // (#634, gap 2 of ADR-0207 stage 4b): the nearest
+                            // link with *any* overlay opinion about this tool
+                            // wins, and if that opinion is deny the call is
+                            // declined flat in `dispatch`, ahead of even
+                            // `overlay_entry`'s enable materialization.
+                            let overlay_denied =
+                                crate::permission::overlay_denies(&overlays, &chain, &tool);
                             let ceiling = base.clone();
                             // The session's current permission mode (ADR-0207
                             // stage 4), threaded into `dispatch` for the
@@ -1478,6 +1479,7 @@ pub fn spawn_tool_executor_with_policy(
                                     &pending,
                                     escape_root.as_ref(),
                                     overlay_entry,
+                                    overlay_denied,
                                     &ceiling,
                                     &advertising,
                                     &validation,
@@ -1544,6 +1546,14 @@ async fn dispatch(
     // clamped against `ceiling` below so the config permission ceiling (#172)
     // still wins.
     overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
+    // Whether the nearest ancestor-chain link with an overlay *opinion* about
+    // this tool is a **deny** (#634, ADR-0207 §8 restore — gap 2 of stage
+    // 4b): resolved by the caller alongside `overlay_entry` above, from the
+    // same `overlays`/`chain` the loop already holds. Checked before the
+    // mode grade even runs, and before `overlay_entry`'s enable materializes
+    // a grade — a deny withdraws the tool from the session outright, the way
+    // the retired `tool_mask_source` used to.
+    overlay_denied: bool,
     ceiling: &PermissionProfile,
     // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
     // delivered-schema dedup (shares `advertising.discovered` with `describe`,
@@ -1657,6 +1667,49 @@ async fn dispatch(
         Some(rewritten) => rewritten,
         None => (tool, input),
     };
+    // ADR-0207 §3: a `Capability::Control`-only tool reads/orchestrates
+    // session state and cannot itself read, write or execute anything on the
+    // host, so it is never graded — checked by *capability*, not by adding
+    // another `Intercept` route to remember, so it automatically covers
+    // `update_tasks`/`load_skill`/`mcp_enable` today and any future Control
+    // tool (e.g. stage 5's `request_mode`) with nothing to update here.
+    // `mcp_enable` is the one that looks like it should escalate: enabling a
+    // server only makes its tools *dispatchable*, and every one of those is
+    // still graded on its own merits at its own call, so this can't widen
+    // anything. Bypasses the overlay too (`overlay_denied` below never
+    // reached) — Control is "never graded" outright, the same posture
+    // `Intercept::Discover`'s sibling routes already take.
+    if capability::capability_of(&tool, tools) == Some([Capability::Control].as_slice()) {
+        run_and_reply(
+            holly,
+            tools,
+            skills,
+            active_skill,
+            hooks,
+            advertising,
+            validation,
+            session,
+            request_id,
+            tool,
+            input,
+        )
+        .await;
+        return;
+    }
+    // A matching overlay **deny** entry withdraws the tool from the session
+    // outright (#634, ADR-0207 §8's restore of the retired `tool_mask_source`
+    // behavior) — checked before the mode grade runs, and before hooks, since
+    // the tool doesn't "exist" for this session at all right now. An overlay
+    // **enable** still overrides even a mode `deny` (`overlay_entry` below,
+    // materialized further down) — that asymmetry is deliberate: the user's
+    // own `/enable`/`/disable` is trusted-frame-only (ADR-0177), so the model
+    // can reach neither directly.
+    if overlay_denied {
+        let output =
+            format!("tool `{tool}` withdrawn for this session by /disable — /enable to restore");
+        seam::reply(holly, session, request_id, output, true).await;
+        return;
+    }
     // Resolve + apply grants first (matching the pre-seam order where `perm` was
     // computed before the hook ran), so a grant upgrade and the veto compose the
     // same way. The tool-specific argument (command/path, #173) lets an

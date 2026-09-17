@@ -203,6 +203,13 @@ impl PendingQuestion {
 /// sessions when the user switches the active one.
 pub struct SessionView {
     agent: String,
+    /// The session's live permission mode (ADR-0207), folded from
+    /// `OutEvent::ModeChanged` the same way `agent` folds `AgentChanged` —
+    /// every session gets one unconditionally at start (`session.rs` sends it
+    /// right after `AgentChanged`). Needed by `/allow` (#634): a `SessionDir`
+    /// grant is mode-scoped, so recording one has to know the mode it's
+    /// earned under.
+    mode: String,
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
     plan: Option<String>,
@@ -278,6 +285,11 @@ impl SessionView {
     pub fn new() -> Self {
         Self {
             agent: "build".to_string(),
+            // Mirrors `entanglement_core::holly::DEFAULT_MODE` — overwritten
+            // by the real `ModeChanged` every session emits unconditionally
+            // at start; this is only ever observed by a view that hasn't
+            // folded its first event yet.
+            mode: "build".to_string(),
             state: AgentState::Idle,
             transcript: Vec::new(),
             plan: None,
@@ -352,6 +364,10 @@ impl SessionView {
 
     pub fn set_agent(&mut self, agent: String) {
         self.agent = agent;
+    }
+
+    pub fn mode(&self) -> &str {
+        &self.mode
     }
 
     pub fn state(&self) -> AgentState {

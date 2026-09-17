@@ -77,7 +77,7 @@ pub struct SpawnGuard {
     spawns_per_root: HashMap<SessionId, usize>,
     /// Sessions spawned as **sponsored** (ADR-0138) — permission roots despite
     /// having a parent link. Authorization is user plan approval, not the
-    /// ancestor chain, so [`crate::permission::effective_permission`] skips the
+    /// ancestor chain, so [`crate::permission::ancestor_chain`] skips the
     /// ancestor walk for these. Exempt from `MAX_SPAWNS_PER_ROOT` but not from
     /// `MAX_SPAWN_DEPTH`.
     sponsored: HashSet<SessionId>,
@@ -100,8 +100,8 @@ impl SpawnGuard {
     }
 
     /// Record a sponsored spawn (ADR-0138): establishes the parent link and
-    /// marks `child` as a permission root, so [`effective_permission`][crate::permission::effective_permission]
-    /// resolves its own profile without walking ancestors. Called *before* the
+    /// marks `child` as a permission root, so [`crate::permission::ancestor_chain`]
+    /// resolves its own grade without walking ancestors. Called *before* the
     /// `InMsg::Spawn` is sent so the link is in place by the time the child's
     /// first `ToolExec` arrives.
     pub fn record_sponsored_start(&mut self, child: SessionId, parent: SessionId) {
