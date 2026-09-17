@@ -1,10 +1,14 @@
-# auto: unattended run (ADR-0207 §11). `default: deny` — there is no one to
-# ask, so an unlisted tool is refused outright rather than parking a prompt
-# nobody will answer; a 60s `question_timeout` bounds the two things that can
-# still park (a repeated identical denial, a genuine question) instead of
-# hanging forever. The allow/deny split mirrors `build`'s but denies `git
-# push` outright rather than just `--force`/`-f` — an unattended run should
-# not push at all without a human confirming it first.
+# auto: unattended run (ADR-0207 §11). `default: deny` is load-bearing here,
+# not decoration: nobody is watching, so anything not explicitly listed is
+# refused and the turn continues rather than parking a prompt that will never
+# be answered. That is why exec is an explicit command list instead of the
+# `exec` capability class — a class allow would mean `default: deny` never
+# fires and the deny list below became the only guard, leaving anything
+# harmful nobody thought to enumerate permitted. `bash` and `call` share
+# these rules (ADR-0207 §4), so one spelling covers both.
+#
+# The deny entries stay even though exec is not class-allowed: they cost
+# nothing and keep holding if a user tunes `exec` on via `config.yml`.
 default: deny
 deny:
   - plan
@@ -14,12 +18,14 @@ deny:
   - "bash(git reset --hard*)"
   - "bash(git clean -f*)"
   - "bash(git branch -D*)"
-  - "call(rm -rf /*)"
-  - "call(rm -rf ~*)"
 allow:
   - read
   - write
-  - exec
+  - "bash(cargo *)"
+  - "bash(make *)"
+  - "bash(git status)"
+  - "bash(git diff *)"
+  - "bash(git log *)"
 max_depth: 2
 max_agents: 4
 question_timeout: 60

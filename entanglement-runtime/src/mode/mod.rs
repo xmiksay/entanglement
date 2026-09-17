@@ -13,7 +13,10 @@
 //! The table is **code, not configuration**: `skutter` compiles in
 //! `research`/`plan`/`build`/`auto` and reads no `modes/` directory, ever. A
 //! `config.yml` `modes:` block only *tunes* one of them ([`tune::apply`]) —
-//! it can never define, add, or remove a mode.
+//! it can never define, add, or remove a mode, and it can only ever **add**
+//! rules: [`Rules`] resolves by longest matching key (ADR-0207 §4, revised
+//! from an earlier tier-based precedence), so a shipped rule is overridden
+//! by adding a longer, more specific one rather than by removing it.
 
 mod builtin;
 mod limits;
@@ -26,8 +29,32 @@ pub use tune::{apply as apply_tuning, ModeTuning};
 
 use anyhow::{bail, Result};
 use entanglement_core::Permission;
+use serde::Deserialize;
 
 use crate::capability::Capability;
+
+/// Deserialize the config-surface spelling of a grade: `allow`/`deny`/
+/// `prompt`. `prompt` is the YAML word for core's `Permission::Ask`
+/// (ADR-0207 §4: "the config surface uses the word a user thinks in, the
+/// enum keeps core's name") — used for the `default:` field in both a
+/// built-in mode's YAML ([`builtin::RawMode`]) and nowhere else, since
+/// `deny`/`allow`/`prompt` are list *names*, not scalar values, everywhere
+/// else they appear. Any other spelling (including the enum's own `ask`) is
+/// a config error, not a silent fallback.
+pub(crate) fn deserialize_grade<'de, D>(deserializer: D) -> Result<Permission, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    match raw.as_str() {
+        "allow" => Ok(Permission::Allow),
+        "deny" => Ok(Permission::Deny),
+        "prompt" => Ok(Permission::Ask),
+        other => Err(serde::de::Error::custom(format!(
+            "invalid grade '{other}': expected 'allow', 'deny', or 'prompt'"
+        ))),
+    }
+}
 
 /// One resolved permission mode (ADR-0207 §2/§4): a name, the grade used
 /// when nothing else matches, its rule table, its run limits, and its

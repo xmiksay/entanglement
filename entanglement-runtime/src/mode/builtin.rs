@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::limits::Limits;
 use super::rules::Rules;
-use super::Mode;
+use super::{deserialize_grade, Mode};
 
 const RESEARCH_YML: &str = include_str!("builtin/research.yml");
 const PLAN_YML: &str = include_str!("builtin/plan.yml");
@@ -26,11 +26,14 @@ const AUTO_YML: &str = include_str!("builtin/auto.yml");
 /// the parse tests, not user input.
 #[derive(Debug, Deserialize)]
 pub(super) struct RawMode {
+    #[serde(deserialize_with = "deserialize_grade")]
     pub default: Permission,
     #[serde(default)]
     pub deny: Vec<String>,
     #[serde(default)]
     pub allow: Vec<String>,
+    #[serde(default)]
+    pub prompt: Vec<String>,
     #[serde(default)]
     pub sandbox: Option<String>,
     #[serde(flatten)]
@@ -43,7 +46,7 @@ fn parse(name: &str, yaml: &str) -> Result<Mode> {
     Ok(Mode {
         name: name.to_string(),
         default: raw.default,
-        rules: Rules::from_lists(&raw.deny, &raw.allow),
+        rules: Rules::from_lists(&raw.deny, &raw.allow, &raw.prompt),
         limits: raw.limits,
         sandbox: raw.sandbox,
     })
@@ -75,37 +78,85 @@ mod tests {
     }
 
     #[test]
-    fn research_denies_write_and_plan_allows_read_and_curated_exec() {
+    fn research_denies_write_and_allows_read_and_curated_exec() {
         let research = parse("research", RESEARCH_YML).expect("parses");
         assert_eq!(research.default, Permission::Ask);
-        assert!(research.rules.deny_classes.contains(&Capability::Write));
-        assert!(research.rules.deny_classes.contains(&Capability::Plan));
-        assert!(research.rules.allow_classes.contains(&Capability::Read));
-        assert!(research
-            .rules
-            .allow_tools
-            .iter()
-            .any(|k| k == "bash(find *)"));
+        assert_eq!(
+            research.resolve("edit", &[Capability::Write], None, None),
+            Permission::Deny
+        );
+        assert_eq!(
+            research.resolve("propose_plan", &[Capability::Plan], None, None),
+            Permission::Deny
+        );
+        assert_eq!(
+            research.resolve("read", &[Capability::Read], None, None),
+            Permission::Allow
+        );
+        for verb in ["find", "grep", "rg", "ls", "cat", "head", "tail", "wc"] {
+            assert_eq!(
+                research.resolve(
+                    "bash",
+                    &[Capability::Exec],
+                    Some(&format!("{verb} x")),
+                    None
+                ),
+                Permission::Allow,
+                "bash {verb} must be curated-allowed"
+            );
+            assert_eq!(
+                research.resolve(
+                    "call",
+                    &[Capability::Exec],
+                    Some(&format!("{verb} x")),
+                    None
+                ),
+                Permission::Allow,
+                "call {verb} must be allowed too — bash/call share one rule set"
+            );
+        }
     }
 
     #[test]
     fn plan_allows_plan_class_and_the_plans_folder_carve_out() {
         let plan = parse("plan", PLAN_YML).expect("parses");
-        assert!(plan.rules.allow_classes.contains(&Capability::Plan));
-        assert!(plan.rules.deny_classes.contains(&Capability::Write));
-        assert!(plan
-            .rules
-            .allow_tools
-            .iter()
-            .any(|k| k == "write(.entanglement/plans/*.md)"));
+        assert_eq!(
+            plan.resolve("propose_plan", &[Capability::Plan], None, None),
+            Permission::Allow
+        );
+        assert_eq!(
+            plan.resolve(
+                "write",
+                &[Capability::Write],
+                Some(".entanglement/plans/phase1.md"),
+                None
+            ),
+            Permission::Allow
+        );
+        assert_eq!(
+            plan.resolve("write", &[Capability::Write], Some("README.md"), None),
+            Permission::Deny
+        );
     }
 
     #[test]
-    fn build_defaults_to_ask_unlike_the_old_build_agent() {
+    fn build_defaults_to_prompt_unlike_the_old_build_agent() {
         let build = parse("build", BUILD_YML).expect("parses");
         assert_eq!(build.default, Permission::Ask);
-        assert!(build.rules.allow_classes.contains(&Capability::Write));
-        assert!(build.rules.deny_classes.contains(&Capability::Plan));
+        assert_eq!(
+            build.resolve("edit", &[Capability::Write], None, None),
+            Permission::Allow
+        );
+        assert_eq!(
+            build.resolve("propose_plan", &[Capability::Plan], None, None),
+            Permission::Deny
+        );
+        // bash and call share the destructive deny list even though the
+        // YAML only spells it as `bash(...)` (ADR-0207 §4).
+        assert_eq!(
+            build.resolve("call", &[Capability::Exec], Some("rm -rf /"), None),
+            Permission::Deny
+        );
     }
 
     #[test]
@@ -113,5 +164,12 @@ mod tests {
         let auto = parse("auto", AUTO_YML).expect("parses");
         assert_eq!(auto.default, Permission::Deny);
         assert_eq!(auto.limits.question_timeout, 60);
+    }
+
+    #[test]
+    fn ask_is_no_longer_a_valid_default_spelling() {
+        let err = serde_yaml::from_str::<RawMode>("default: ask\n")
+            .expect_err("the config surface spells Permission::Ask as 'prompt', not 'ask'");
+        assert!(err.to_string().contains("prompt"));
     }
 }

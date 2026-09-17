@@ -1,71 +1,104 @@
-//! Grade-keyed rule resolution (ADR-0207 §4).
+//! Grade-keyed rule resolution (ADR-0207 §4, revised): **longest match
+//! wins**. Not a tier order, not first-or-last-declared — among every rule
+//! that matches a call, the one with the longest key (measured in
+//! characters) decides the grade, so `write(docs/*)` (13 chars) out-ranks
+//! bare `write` (5 chars) with no notion of "scoped beats bare" needed as a
+//! separate rule. Capability-class entries (`read`/`write`/`exec`/`plan`/
+//! `control`) compete on the same footing as tool rules — that's the whole
+//! point: a reader can determine the outcome by inspection without knowing
+//! an evaluation order.
 //!
-//! A mode's rule list mixes two kinds of entry: a bare capability-class name
-//! (`read`/`write`/`exec`/`plan`/`control`, matching every tool that
-//! declares that [`Capability`]) and a tool rule (a bare tool name, or the
-//! `tool(pattern)`/`tool{pattern}` argument-/workdir-scoped grammar,
-//! ADR-0051/ADR-0116). [`Rules::from_lists`] classifies each raw string once
-//! at construction so [`resolve`] never re-parses a key on the hot path.
+//! **Tie-break** (equal key length): the more restrictive grade wins —
+//! `deny` > `prompt` (core's `Permission::Ask`) > `allow`. The task this
+//! module implements didn't pin a tiebreak; this file does, deliberately,
+//! so two rules of equal specificity never depend on declaration order.
+//!
+//! **`bash`/`call` share one rule set** — they're two spellings of the same
+//! `Exec` capability, so a rule written for either grades both
+//! ([`canonicalize_key`]/[`canonical_tool`]). Compound commands
+//! (`&&`/`||`/`;`/`|`/`&`, ADR-0197) are split and graded per segment for
+//! both tools; a command the splitter can't fully account for
+//! ([`crate::shell_split::SplitOutcome::Opaque`]) grades at the mode's
+//! `default` outright — no whole-string fallback guess, unlike the
+//! `bash`-only legacy resolver in `permission_bash.rs`.
 //!
 //! The `tool(pattern)`/`tool{pattern}` glob grammar itself is
-//! `entanglement_core::protocol`'s (`split_rule_key`/`glob_match`), but both
-//! are private to that module — a separate crate can't call them directly.
-//! Reimplementing the `*`/`?` wildcard semantics here would be exactly the
-//! second matcher ADR-0207 exists to remove, so [`tool_rule_matches`]
-//! borrows the tested matcher through the one door core does expose it
-//! behind: a single-rule [`PermissionProfile`], whose public
-//! `resolve_scoped` already *is* that matcher. Only the trivial "does this
-//! key carry a `(...)`/`{...}` suffix" classification (needed to rank scoped
-//! rules above bare ones, tier 1 below) is duplicated locally — it decides
-//! nothing about *whether* a pattern matches, only which tier a key
-//! competes in.
+//! `entanglement_core::protocol`'s (`split_rule_key`/`glob_match`), private
+//! to that module — a separate crate can't call it directly. Reimplementing
+//! the `*`/`?` wildcard semantics here would be exactly the second matcher
+//! ADR-0207 exists to remove, so [`tool_rule_matches`] borrows the tested
+//! matcher through the one door core does expose it behind: a single-rule
+//! [`PermissionProfile`], whose public `resolve_scoped` already *is* that
+//! matcher.
 
 use entanglement_core::{Permission, PermissionProfile};
 
 use crate::capability::Capability;
+use crate::permission::min_permission;
+use crate::shell_split::{self, SplitOutcome};
 
-/// One mode's rule table, already split into the four buckets a call
-/// resolves against (ADR-0207 §4): capability-class allow/deny (bare
-/// `read`/`write`/`exec`/`plan`/`control` entries) and tool-rule allow/deny
-/// (a bare tool name, `tool(pattern)`, or `tool{pattern}`).
+/// One graded entry: the raw key exactly as written (its character count is
+/// its specificity), the grade it carries, and — for a bare capability-class
+/// key — which class it names, so [`resolve_single`] can test it against a
+/// call's capability slice instead of its tool name.
+#[derive(Debug, Clone, PartialEq)]
+struct Entry {
+    key: String,
+    grade: Permission,
+    class: Option<Capability>,
+}
+
+/// One mode's rule table: every `deny`/`allow`/`prompt` entry from the YAML,
+/// in one flat list ranked at resolution time by key length (ADR-0207 §4).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Rules {
-    pub deny_classes: Vec<Capability>,
-    pub allow_classes: Vec<Capability>,
-    pub deny_tools: Vec<String>,
-    pub allow_tools: Vec<String>,
+    entries: Vec<Entry>,
 }
 
 impl Rules {
-    /// Build from the raw YAML `deny`/`allow` lists (ADR-0207 §4's flat
-    /// grade-keyed shape), classifying each entry once: a bare key spelled
-    /// exactly like one of the five capability classes is the class, never
-    /// the same-named literal tool.
-    pub fn from_lists(deny: &[String], allow: &[String]) -> Self {
+    /// Build from the raw YAML `deny`/`allow`/`prompt` lists (ADR-0207 §4's
+    /// three grade-keyed lists).
+    pub fn from_lists(deny: &[String], allow: &[String], prompt: &[String]) -> Self {
         let mut rules = Rules::default();
         for key in deny {
-            match capability_class(key) {
-                Some(class) => rules.deny_classes.push(class),
-                None => rules.deny_tools.push(key.clone()),
-            }
+            rules.push(key, Permission::Deny);
         }
         for key in allow {
-            match capability_class(key) {
-                Some(class) => rules.allow_classes.push(class),
-                None => rules.allow_tools.push(key.clone()),
-            }
+            rules.push(key, Permission::Allow);
+        }
+        for key in prompt {
+            rules.push(key, Permission::Ask);
         }
         rules
+    }
+
+    /// Add one rule. Tuning only ever calls this — there is no removal
+    /// syntax (ADR-0207 §5): longest-match already makes a shipped rule
+    /// overridable by adding a longer, more specific one.
+    pub(super) fn push(&mut self, key: &str, grade: Permission) {
+        self.entries.push(Entry {
+            key: key.to_string(),
+            grade,
+            class: capability_class(key),
+        });
+    }
+
+    /// Whether `class` carries an exact (unscoped) `deny` entry — the
+    /// tuning guard's question (ADR-0207 §5): is this mode's class-deny
+    /// still standing, not what the longest match currently resolves to.
+    pub(super) fn class_is_denied(&self, class: Capability) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.class == Some(class) && e.grade == Permission::Deny)
     }
 }
 
 /// A bare (unscoped) key spelled exactly like one of the five capability
 /// classes always names the class, never the same-named literal tool
 /// (`read`, `write` are both class names *and* real registered tools) —
-/// mirroring the old ADR-0114 capability-key fan-out convention, so a
-/// class-wide rule doesn't need to be spelled once per tool it covers. A
-/// *scoped* key (`write(pattern)`) always names the literal tool instead,
-/// since scoping is only defined for tools here (ADR-0207 §4 lists no
+/// mirroring the old ADR-0114 capability-key fan-out convention. A *scoped*
+/// key (`write(pattern)`) always names the literal tool instead, since
+/// scoping is only defined for tools here (ADR-0207 §4 lists no
 /// class-scoped grammar) — that's the one way to write a rule for the
 /// literal `write`/`read`/`exec`/`plan`/`control`-named tool, and it's what
 /// the built-in `plan` mode uses for its plans-folder carve-out.
@@ -80,18 +113,34 @@ pub(super) fn capability_class(key: &str) -> Option<Capability> {
     }
 }
 
-/// Whether `key` carries an argument or workdir scope
-/// (`tool(pattern)`/`tool{pattern}`) rather than matching bare/`*`. Mirrors
-/// only the classification half of core's private `split_rule_key` — see
-/// the module doc for why the matching half stays delegated.
-fn is_scoped(key: &str) -> bool {
-    if key.find('(').is_some() && key.ends_with(')') {
-        return true;
+/// The tool name a rule key names: everything before an argument (`(`) or
+/// workdir (`{`) scope, or the whole key if unscoped. Used by the tuning
+/// guard (`tune.rs`) to resolve a scoped key like `write(*)` back to the
+/// literal tool it grants.
+pub(super) fn rule_tool_name(key: &str) -> &str {
+    let cut = key.find(['(', '{']).unwrap_or(key.len());
+    &key[..cut]
+}
+
+/// `bash` and `call` are two spellings of the same `Exec` capability
+/// (ADR-0207 §4) — canonicalize `call` to `bash` in both a rule key's tool
+/// part and the incoming tool name so a rule written for either grades a
+/// call to both.
+fn canonical_tool(name: &str) -> &str {
+    if name == "call" {
+        "bash"
+    } else {
+        name
     }
-    if key.find('{').is_some() && key.ends_with('}') {
-        return true;
+}
+
+fn canonicalize_key(key: &str) -> String {
+    let tool = rule_tool_name(key);
+    if tool == "call" {
+        format!("bash{}", &key[tool.len()..])
+    } else {
+        key.to_string()
     }
-    false
 }
 
 /// Does tool-rule key `key` match this call? Delegates to a single-rule
@@ -99,21 +148,100 @@ fn is_scoped(key: &str) -> bool {
 /// runs unmodified: a profile whose only rule is `key => Allow` under a
 /// `Deny` default resolves to `Allow` iff `key` matches.
 fn tool_rule_matches(key: &str, name: &str, arg: Option<&str>, workdir: Option<&str>) -> bool {
+    let key = canonicalize_key(key);
+    let name = canonical_tool(name);
     PermissionProfile::new(Permission::Deny)
-        .with(key, Permission::Allow)
+        .with(&key, Permission::Allow)
         .resolve_scoped(name, arg, workdir)
         == Permission::Allow
 }
 
-/// Resolve the grade for one call under a mode's `default` + [`Rules`]
-/// (ADR-0207 §4). Order:
+/// Most restrictive of two grades — the equal-length tiebreak (module doc):
+/// `deny` beats everything, `prompt`/`Ask` beats `allow`.
+fn most_restrictive(a: Permission, b: Permission) -> Permission {
+    match (a, b) {
+        (Permission::Deny, _) | (_, Permission::Deny) => Permission::Deny,
+        (Permission::Ask, _) | (_, Permission::Ask) => Permission::Ask,
+        _ => Permission::Allow,
+    }
+}
+
+/// Resolve one call (no compound-command splitting) against `rules` +
+/// `default`: the longest matching key wins, ties break to the more
+/// restrictive grade, no match falls through to `default`.
+fn resolve_single(
+    rules: &Rules,
+    default: Permission,
+    tool_name: &str,
+    capabilities: &[Capability],
+    arg: Option<&str>,
+    workdir: Option<&str>,
+) -> Permission {
+    let mut best: Option<(usize, Permission)> = None;
+    for entry in &rules.entries {
+        let matches = match entry.class {
+            Some(class) => capabilities.contains(&class),
+            None => tool_rule_matches(&entry.key, tool_name, arg, workdir),
+        };
+        if !matches {
+            continue;
+        }
+        let len = entry.key.chars().count();
+        best = Some(match best {
+            None => (len, entry.grade),
+            Some((best_len, _)) if len > best_len => (len, entry.grade),
+            Some((best_len, best_grade)) if len == best_len => {
+                (best_len, most_restrictive(best_grade, entry.grade))
+            }
+            Some(existing) => existing,
+        });
+    }
+    best.map_or(default, |(_, grade)| grade)
+}
+
+/// Per-segment grading for `bash`/`call` (ADR-0197, extended to `call` by
+/// ADR-0207 §4): split on top-level `&&`/`||`/`;`/`|`/`&`, grade each
+/// segment independently and fold to the most restrictive result — any
+/// segment `Deny` denies the whole command, all-`Allow` is `Allow`,
+/// otherwise the fold lands on the most restrictive non-deny grade among
+/// the segments. A simple command splits into exactly one segment equal to
+/// the whole string, so this reduces to a single [`resolve_single`] call
+/// for every non-compound call.
 ///
-/// 1. an explicit tool rule naming the tool wins — scoped
-///    (`tool(...)`/`tool{...}`) before bare, and at equal specificity `deny`
-///    before `allow` (`deny` is absolute, ADR-0207 §4);
-/// 2. else a capability-class `deny`;
-/// 3. else a capability-class `allow`;
-/// 4. else the mode's `default`.
+/// [`SplitOutcome::Opaque`] grades at `default` directly — a construct the
+/// splitter can't fully account for is never graded on a guess (ADR-0207
+/// §4), so unlike the bash-only legacy resolver in `permission_bash.rs`
+/// (which re-resolved with the argument dropped, still consulting bare/
+/// workdir rules), a mode's `default` already *is* the safe fallback here.
+fn resolve_compound(
+    rules: &Rules,
+    default: Permission,
+    tool_name: &str,
+    capabilities: &[Capability],
+    command: &str,
+    workdir: Option<&str>,
+) -> Permission {
+    match shell_split::split(command) {
+        SplitOutcome::Opaque => default,
+        SplitOutcome::Segments(segments) => segments
+            .iter()
+            .try_fold(Permission::Allow, |acc, seg| {
+                let grade =
+                    resolve_single(rules, default, tool_name, capabilities, Some(seg), workdir);
+                if grade == Permission::Deny {
+                    None
+                } else {
+                    Some(min_permission(acc, grade))
+                }
+            })
+            .unwrap_or(Permission::Deny),
+    }
+}
+
+/// Resolve the grade for one call under a mode's `default` + [`Rules`]
+/// (ADR-0207 §4). `bash`/`call` calls with a command argument grade per
+/// compound segment ([`resolve_compound`]); everything else resolves in one
+/// shot ([`resolve_single`]).
 pub fn resolve(
     rules: &Rules,
     default: Permission,
@@ -122,31 +250,12 @@ pub fn resolve(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    // Tier 1: explicit tool rules, scoped tier first, deny before allow.
-    for scoped_tier in [true, false] {
-        let deny_hit = rules.deny_tools.iter().any(|key| {
-            is_scoped(key) == scoped_tier && tool_rule_matches(key, tool_name, arg, workdir)
-        });
-        if deny_hit {
-            return Permission::Deny;
-        }
-        let allow_hit = rules.allow_tools.iter().any(|key| {
-            is_scoped(key) == scoped_tier && tool_rule_matches(key, tool_name, arg, workdir)
-        });
-        if allow_hit {
-            return Permission::Allow;
+    if matches!(tool_name, "bash" | "call") {
+        if let Some(command) = arg {
+            return resolve_compound(rules, default, tool_name, capabilities, command, workdir);
         }
     }
-
-    // Tier 2/3: capability class, deny absolute over allow.
-    if capabilities.iter().any(|c| rules.deny_classes.contains(c)) {
-        return Permission::Deny;
-    }
-    if capabilities.iter().any(|c| rules.allow_classes.contains(c)) {
-        return Permission::Allow;
-    }
-
-    default
+    resolve_single(rules, default, tool_name, capabilities, arg, workdir)
 }
 
 #[cfg(test)]
@@ -154,10 +263,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_scoped_tool_rule_beats_bare_class_deny() {
+    fn longer_scoped_tool_rule_beats_shorter_class_deny() {
         let rules = Rules::from_lists(
             &["write".to_string()],
             &["write(.entanglement/plans/*.md)".to_string()],
+            &[],
         );
         assert_eq!(
             resolve(
@@ -169,10 +279,10 @@ mod tests {
                 None
             ),
             Permission::Allow,
-            "the scoped allow must win over the class deny"
+            "the longer scoped allow must win over the shorter class deny"
         );
-        // Same tool, an arg the scoped rule doesn't cover: falls through to
-        // the bare class deny.
+        // Same tool, an arg the scoped rule doesn't cover: only the class
+        // deny matches, so it applies.
         assert_eq!(
             resolve(
                 &rules,
@@ -187,10 +297,8 @@ mod tests {
     }
 
     #[test]
-    fn scoped_beats_bare_at_the_explicit_tool_tier() {
-        let rules = Rules::from_lists(&["bash(rm *)".to_string()], &["bash".to_string()]);
-        // `bash` alone is bare-allowed, but `bash(rm *)` is scoped-denied —
-        // scoped must win regardless of declaration order.
+    fn longer_scoped_deny_beats_shorter_bare_allow() {
+        let rules = Rules::from_lists(&["bash(rm *)".to_string()], &["bash".to_string()], &[]);
         assert_eq!(
             resolve(
                 &rules,
@@ -216,8 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn class_deny_beats_class_allow() {
-        let rules = Rules::from_lists(&["write".to_string()], &["write".to_string()]);
+    fn equal_length_tie_deny_beats_allow() {
+        let rules = Rules::from_lists(&["write".to_string()], &["write".to_string()], &[]);
         assert_eq!(
             resolve(
                 &rules,
@@ -228,6 +336,38 @@ mod tests {
                 None
             ),
             Permission::Deny
+        );
+    }
+
+    #[test]
+    fn equal_length_tie_deny_beats_prompt() {
+        let rules = Rules::from_lists(&["write".to_string()], &[], &["write".to_string()]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Allow,
+                "edit",
+                &[Capability::Write],
+                None,
+                None
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn equal_length_tie_prompt_beats_allow() {
+        let rules = Rules::from_lists(&[], &["write".to_string()], &["write".to_string()]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Deny,
+                "edit",
+                &[Capability::Write],
+                None,
+                None
+            ),
+            Permission::Ask
         );
     }
 
@@ -248,11 +388,135 @@ mod tests {
     }
 
     #[test]
-    fn bare_class_key_never_matches_the_same_named_literal_tool_as_a_tool_rule() {
-        // "write" in a deny list is the class, not a scoped-vs-bare tool
-        // rule — so it must show up in deny_classes, not deny_tools.
-        let rules = Rules::from_lists(&["write".to_string()], &[]);
-        assert_eq!(rules.deny_classes, vec![Capability::Write]);
-        assert!(rules.deny_tools.is_empty());
+    fn bare_class_key_denies_every_tool_with_that_capability_not_just_the_literal_name() {
+        // "write" in a deny list must be the class, matching any tool that
+        // declares Capability::Write (here: "edit"), not a tool-rule keyed
+        // to a literal tool named "write".
+        let rules = Rules::from_lists(&["write".to_string()], &[], &[]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Allow,
+                "edit",
+                &[Capability::Write],
+                None,
+                None
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn call_is_graded_by_a_bash_written_rule() {
+        let rules = Rules::from_lists(&[], &["bash(rg *)".to_string()], &[]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "call",
+                &[Capability::Exec],
+                Some("rg foo"),
+                None
+            ),
+            Permission::Allow,
+            "bash and call are one rule set (ADR-0207 §4)"
+        );
+    }
+
+    #[test]
+    fn bash_is_denied_by_a_call_written_rule() {
+        let rules = Rules::from_lists(&["call(rm *)".to_string()], &[], &[]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "bash",
+                &[Capability::Exec],
+                Some("rm -rf x"),
+                None
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn compound_command_grades_per_segment_for_call_too() {
+        let rules = Rules::from_lists(
+            &[],
+            &["bash(find *)".to_string(), "bash(grep *)".to_string()],
+            &[],
+        );
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "call",
+                &[Capability::Exec],
+                Some("find . | grep x"),
+                None
+            ),
+            Permission::Allow
+        );
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "call",
+                &[Capability::Exec],
+                Some("find . && curl x"),
+                None
+            ),
+            Permission::Ask,
+            "the unmatched segment must not ride the find rule through"
+        );
+    }
+
+    #[test]
+    fn deny_on_any_segment_denies_the_whole_compound_command() {
+        let rules = Rules::from_lists(
+            &["bash(rm *)".to_string()],
+            &["bash(find *)".to_string()],
+            &[],
+        );
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "bash",
+                &[Capability::Exec],
+                Some("find . && rm x"),
+                None
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn unparseable_compound_command_grades_at_default_not_a_guess() {
+        let rules = Rules::from_lists(&[], &["bash(find *)".to_string()], &[]);
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Ask,
+                "bash",
+                &[Capability::Exec],
+                Some("find . > out.txt"),
+                None
+            ),
+            Permission::Ask,
+            "output redirection is Opaque to the splitter; must not ride the find allow"
+        );
+        assert_eq!(
+            resolve(
+                &rules,
+                Permission::Deny,
+                "bash",
+                &[Capability::Exec],
+                Some("find . > out.txt"),
+                None
+            ),
+            Permission::Deny,
+            "Opaque grades at whatever `default` the mode has, not a fixed fallback"
+        );
     }
 }

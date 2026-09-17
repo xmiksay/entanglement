@@ -1,79 +1,84 @@
 //! Apply a `config.yml` `modes:` tuning entry over a built-in mode
-//! (ADR-0207 §5): it may add or remove individual tool and argument-scoped
-//! rules, but may never change the mode's `default` grade and may never
-//! weaken a capability-class `deny`. That second guard is what makes
-//! "research cannot write" a fact about the binary rather than a fact about
-//! whatever a machine's `config.yml` happens to say today.
+//! (ADR-0207 §5). Tuning only ever **adds** rules — there is deliberately no
+//! removal syntax: longest-match ([`super::rules`]) already makes one
+//! unnecessary, since a longer, more specific rule simply out-ranks a
+//! shorter shipped one. To stop `bash(wc *)` being pre-allowed, add a longer
+//! `deny` that covers the case you care about — the shipped rule stays
+//! visible and the override reads as an override.
 //!
-//! Scope note: the guard below is a literal reading of ADR-0207 §5's two
-//! examples — it rejects a bare capability-class name (`write`) landing in
-//! `allow` (or being pulled out of `deny`) when that class is already
-//! class-denied. It does **not** trace a *scoped* tool rule
-//! (`write(pattern)`) back to the literal tool's own capabilities — doing
-//! that needs the [`crate::tools::ToolRegistry`], which this self-contained
-//! module doesn't have. The built-in `plan` mode relies on exactly this
-//! shape (`deny: [write]` + `allow: ["write(.entanglement/plans/*.md)"]`),
-//! so closing the gap for user tuning too is left to whichever later stage
-//! wires config loading through the registry — flagged here rather than
-//! silently assumed closed.
+//! Tuning may never change `default`, and may never weaken a
+//! capability-class `deny`. Because longest-match lets a long scoped rule
+//! out-rank a short class name, that guard can't be a string comparison:
+//! `research: allow: ["write(*)"]` names no class, yet grants exactly what
+//! `deny: [write]` forbids, and under longest-match that 13-character rule
+//! would out-rank the 5-character class deny. [`apply`] closes this by
+//! taking a capability resolver and rejecting any rule whose named tool
+//! carries a capability that's already class-denied in this mode — which
+//! keeps this module free of a `ToolRegistry` dependency; the caller
+//! supplies the resolver, and stage 4 will pass one backed by the real
+//! registry.
 
 use anyhow::{bail, Result};
-use entanglement_core::Permission;
 use serde::Deserialize;
 
-use super::rules::{capability_class, Rules};
+use super::rules::{capability_class, rule_tool_name};
 use super::Mode;
+use crate::capability::Capability;
+use entanglement_core::Permission;
 
 /// One mode's tuning entry from `config.yml`'s `modes:` block — the same
-/// `deny`/`allow` list shape as [`super::builtin::RawMode`], plus the
-/// remove-lists a tuning entry alone needs, minus `default`'s being
-/// mandatory (kept optional here purely so [`apply`] can name-and-reject an
-/// attempt to set it, instead of serde silently accepting and ignoring the
-/// key).
+/// `deny`/`allow`/`prompt` list shape as [`super::builtin::RawMode`]
+/// (ADR-0207 §4/§5). `default` is kept as a raw, never-parsed string purely
+/// so [`apply`] can name-and-reject an attempt to set it, instead of serde
+/// silently accepting and ignoring the key.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModeTuning {
     #[serde(default)]
-    pub default: Option<Permission>,
+    pub default: Option<String>,
     /// Rules to add to the mode's allow list.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Rules to remove from the mode's allow list, by exact key.
-    #[serde(default)]
-    pub allow_remove: Vec<String>,
     /// Rules to add to the mode's deny list.
     #[serde(default)]
     pub deny: Vec<String>,
-    /// Rules to remove from the mode's deny list, by exact key.
+    /// Rules to add to the mode's prompt list — the config spelling of
+    /// `Permission::Ask` (ADR-0207 §4).
     #[serde(default)]
-    pub deny_remove: Vec<String>,
+    pub prompt: Vec<String>,
 }
 
 /// Apply `tuning` over `mode` (an already-resolved built-in), returning the
 /// tuned mode or a load error naming `mode.name` and the offending key.
-pub fn apply(mode: &Mode, tuning: &ModeTuning) -> Result<Mode> {
+/// `capability_of` resolves a tool name to its declared capabilities; a name
+/// it doesn't recognize is treated as carrying none, since an unknown tool
+/// name is a dispatch-time error, never a reason to reject a tuning rule
+/// here.
+pub fn apply(
+    mode: &Mode,
+    tuning: &ModeTuning,
+    capability_of: &dyn Fn(&str) -> Option<&'static [Capability]>,
+) -> Result<Mode> {
     if tuning.default.is_some() {
         bail!(
             "mode '{}': tuning cannot change the default grade",
             mode.name
         );
     }
-    for key in &tuning.allow {
-        reject_if_weakens_class_deny(mode, key)?;
-    }
-    for key in &tuning.deny_remove {
-        reject_if_weakens_class_deny(mode, key)?;
+    for key in tuning.allow.iter().chain(tuning.prompt.iter()) {
+        reject_if_weakens_class_deny(mode, key, capability_of)?;
     }
 
     let mut rules = mode.rules.clone();
-    for key in &tuning.allow {
-        add_rule(&mut rules, key, Permission::Allow);
-    }
     for key in &tuning.deny {
-        add_rule(&mut rules, key, Permission::Deny);
+        rules.push(key, Permission::Deny);
     }
-    remove_rules(&mut rules, &tuning.allow_remove, Permission::Allow);
-    remove_rules(&mut rules, &tuning.deny_remove, Permission::Deny);
+    for key in &tuning.allow {
+        rules.push(key, Permission::Allow);
+    }
+    for key in &tuning.prompt {
+        rules.push(key, Permission::Ask);
+    }
 
     Ok(Mode {
         name: mode.name.clone(),
@@ -84,14 +89,30 @@ pub fn apply(mode: &Mode, tuning: &ModeTuning) -> Result<Mode> {
     })
 }
 
-/// A capability-class key is a weakening attempt iff the class it names is
-/// already in `mode`'s built-in `deny_classes` — whether it arrives by
-/// widening `allow` or by shrinking `deny`.
-fn reject_if_weakens_class_deny(mode: &Mode, key: &str) -> Result<()> {
+/// A rule is a weakening attempt iff it grants (via `allow` or `prompt`) a
+/// capability the mode already class-denies: either the key names the class
+/// directly (bare `write`), or it's a tool rule whose named tool carries
+/// that capability (`write(*)` names the literal tool `write`, resolved
+/// through `capability_of` — ADR-0207 §4 has no class-scoped grammar, so a
+/// scoped key never names a class).
+fn reject_if_weakens_class_deny(
+    mode: &Mode,
+    key: &str,
+    capability_of: &dyn Fn(&str) -> Option<&'static [Capability]>,
+) -> Result<()> {
     if let Some(class) = capability_class(key) {
-        if mode.rules.deny_classes.contains(&class) {
+        if mode.rules.class_is_denied(class) {
             bail!(
                 "mode '{}': tuning cannot weaken the class-deny on '{key}'",
+                mode.name
+            );
+        }
+        return Ok(());
+    }
+    if let Some(capabilities) = capability_of(rule_tool_name(key)) {
+        if capabilities.iter().any(|c| mode.rules.class_is_denied(*c)) {
+            bail!(
+                "mode '{}': tuning rule '{key}' grants a capability class-denied in this mode",
                 mode.name
             );
         }
@@ -99,39 +120,9 @@ fn reject_if_weakens_class_deny(mode: &Mode, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn add_rule(rules: &mut Rules, key: &str, perm: Permission) {
-    let class = capability_class(key);
-    match (class, perm) {
-        (Some(class), Permission::Allow) => push_unique(&mut rules.allow_classes, class),
-        (Some(class), Permission::Deny) => push_unique(&mut rules.deny_classes, class),
-        (None, Permission::Allow) => rules.allow_tools.push(key.to_string()),
-        (None, Permission::Deny) => rules.deny_tools.push(key.to_string()),
-        (_, Permission::Ask) => unreachable!("add_rule is only ever called with Allow or Deny"),
-    }
-}
-
-fn push_unique<T: PartialEq>(list: &mut Vec<T>, item: T) {
-    if !list.contains(&item) {
-        list.push(item);
-    }
-}
-
-fn remove_rules(rules: &mut Rules, keys: &[String], perm: Permission) {
-    for key in keys {
-        match (capability_class(key), perm) {
-            (Some(class), Permission::Allow) => rules.allow_classes.retain(|c| *c != class),
-            (Some(class), Permission::Deny) => rules.deny_classes.retain(|c| *c != class),
-            (None, Permission::Allow) => rules.allow_tools.retain(|k| k != key),
-            (None, Permission::Deny) => rules.deny_tools.retain(|k| k != key),
-            (_, Permission::Ask) => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::Capability;
     use crate::mode::builtin;
 
     fn research() -> Mode {
@@ -142,94 +133,114 @@ mod tests {
             .expect("research exists")
     }
 
+    /// A minimal stand-in for stage 4's registry-backed resolver: enough to
+    /// exercise the guard without a `ToolRegistry` in this self-contained
+    /// module.
+    fn capability_of(name: &str) -> Option<&'static [Capability]> {
+        match name {
+            "write" | "edit" => Some(&[Capability::Write]),
+            "bash" | "call" => Some(&[Capability::Exec]),
+            "read" => Some(&[Capability::Read]),
+            _ => None,
+        }
+    }
+
     #[test]
     fn adding_a_scoped_exec_allow_is_accepted() {
         let tuning = ModeTuning {
             allow: vec!["bash(cargo check)".to_string()],
             ..Default::default()
         };
-        let tuned = apply(&research(), &tuning).expect("this is exactly the ADR §5 example");
-        assert!(tuned
-            .rules
-            .allow_tools
-            .iter()
-            .any(|k| k == "bash(cargo check)"));
+        let tuned = apply(&research(), &tuning, &capability_of)
+            .expect("this is exactly the ADR §5 example");
+        assert_eq!(
+            tuned.resolve("bash", &[Capability::Exec], Some("cargo check"), None),
+            Permission::Allow
+        );
     }
 
     #[test]
-    fn widening_allow_with_a_class_denied_class_is_rejected() {
+    fn widening_allow_with_a_class_denied_class_name_is_rejected() {
         let tuning = ModeTuning {
             allow: vec!["write".to_string()],
             ..Default::default()
         };
-        let err = apply(&research(), &tuning)
+        let err = apply(&research(), &tuning, &capability_of)
             .expect_err("research denies the write class; tuning must not undo that");
         assert!(err.to_string().contains("write"));
     }
 
     #[test]
-    fn removing_a_class_deny_is_rejected() {
+    fn widening_allow_with_a_scoped_rule_over_the_class_deny_is_rejected() {
+        // The hole this guard exists for: "write(*)" names no class, but
+        // resolves (via capability_of) to the same Capability::Write that
+        // research's built-in `deny: [write]` already forbids — and under
+        // longest-match a 13-character scoped rule would out-rank the
+        // 5-character class deny if this weren't rejected.
         let tuning = ModeTuning {
-            deny_remove: vec!["write".to_string()],
+            allow: vec!["write(*)".to_string()],
             ..Default::default()
         };
-        apply(&research(), &tuning).expect_err("deny_remove on a class-denied key must fail");
+        let err = apply(&research(), &tuning, &capability_of)
+            .expect_err("research: allow: [\"write(*)\"] must be rejected");
+        assert!(err.to_string().contains("write(*)"));
+    }
+
+    #[test]
+    fn widening_prompt_with_a_class_denied_capability_is_rejected() {
+        let tuning = ModeTuning {
+            prompt: vec!["write(*)".to_string()],
+            ..Default::default()
+        };
+        apply(&research(), &tuning, &capability_of)
+            .expect_err("prompt widening must be guarded exactly like allow widening");
     }
 
     #[test]
     fn changing_default_is_rejected() {
         let tuning = ModeTuning {
-            default: Some(Permission::Allow),
+            default: Some("allow".to_string()),
             ..Default::default()
         };
-        apply(&research(), &tuning).expect_err("default is not tunable");
+        apply(&research(), &tuning, &capability_of).expect_err("default is not tunable");
     }
 
     #[test]
-    fn removing_a_non_class_deny_entry_is_allowed() {
+    fn adding_a_deny_rule_is_never_guarded() {
         let tuning = ModeTuning {
-            deny_remove: vec!["bash(rm -rf /*)".to_string()],
+            deny: vec!["bash(curl *)".to_string()],
             ..Default::default()
         };
-        // research's built-in deny list has no such entry; removal of a
-        // tool-rule (not a class) must never be guarded, present or not.
-        apply(&research(), &tuning).expect("removing a non-class deny entry is always allowed");
-    }
-
-    #[test]
-    fn adding_and_removing_a_tool_allow_round_trips() {
-        let add = ModeTuning {
-            allow: vec!["bash(cargo check)".to_string()],
-            ..Default::default()
-        };
-        let tuned = apply(&research(), &add).expect("add accepted");
-        let remove = ModeTuning {
-            allow_remove: vec!["bash(cargo check)".to_string()],
-            ..Default::default()
-        };
-        let untuned = apply(&tuned, &remove).expect("remove accepted");
-        assert!(!untuned
-            .rules
-            .allow_tools
-            .iter()
-            .any(|k| k == "bash(cargo check)"));
-    }
-
-    #[test]
-    fn adding_an_already_present_class_allow_does_not_duplicate() {
-        let tuning = ModeTuning {
-            allow: vec!["read".to_string()],
-            ..Default::default()
-        };
-        let tuned = apply(&research(), &tuning).expect("read is already class-allowed");
+        let tuned = apply(&research(), &tuning, &capability_of).expect("narrowing always allowed");
         assert_eq!(
-            tuned
-                .rules
-                .allow_classes
-                .iter()
-                .filter(|c| **c == Capability::Read)
-                .count(),
-            1
+            tuned.resolve("bash", &[Capability::Exec], Some("curl x"), None),
+            Permission::Deny
+        );
+    }
+
+    #[test]
+    fn a_rule_naming_an_unrecognized_tool_is_never_guarded() {
+        let tuning = ModeTuning {
+            allow: vec!["mcp__foo__bar".to_string()],
+            ..Default::default()
+        };
+        apply(&research(), &tuning, &capability_of)
+            .expect("an unresolvable tool name carries no known capability to weaken");
+    }
+
+    #[test]
+    fn adding_two_tool_allows_round_trips_through_resolve() {
+        let tuning = ModeTuning {
+            allow: vec![
+                "bash(cargo check)".to_string(),
+                "bash(cargo test *)".to_string(),
+            ],
+            ..Default::default()
+        };
+        let tuned = apply(&research(), &tuning, &capability_of).expect("both accepted");
+        assert_eq!(
+            tuned.resolve("bash", &[Capability::Exec], Some("cargo test --lib"), None),
+            Permission::Allow
         );
     }
 }

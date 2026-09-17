@@ -253,9 +253,14 @@ unattended run cannot escalate its own authority.
 
 ### 11. Auto is an unattended posture
 
-`default: deny` with explicit allow and deny lists; an `ask` grade collapses
-to a denial, since there is no one to ask. A repeated *identical* denied call
-parks an approval on its second occurrence.
+`default: deny`, and that default is load-bearing rather than decorative:
+exec is an **explicit command list, never the `exec` capability class**. A
+class allow would mean `default: deny` never fires and the destructive deny
+list became the only guard — leaving anything harmful nobody thought to
+enumerate permitted, in the one mode where no human is present to catch it.
+A `prompt` grade likewise collapses to a denial here, since there is no one
+to ask. A repeated *identical* denied call parks an approval on its second
+occurrence.
 
 `question_timeout` (`0` = infinite, the default for every other mode; `60s`
 in `auto`) governs both questions and parked approvals: a question with
