@@ -10,7 +10,7 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
-use super::mode::mode_notice_with_transition;
+use super::mode::{apply_set_mode, mode_notice_with_transition};
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
@@ -143,6 +143,14 @@ pub(super) async fn stream_round(
                     return StreamedRound::Cancelled;
                 }
                 None => return StreamedRound::Cancelled,
+                // Applied now, never stashed — see `apply_set_mode`.
+                Some(SessionCmd::SetMode(mode)) => apply_set_mode(
+                    &mut s.mode,
+                    &mut s.mode_transition_from,
+                    mode,
+                    session,
+                    events,
+                ),
                 Some(other) => {
                     tracing::debug!(
                         cmd = ?other,
@@ -184,6 +192,16 @@ pub(super) async fn stream_round(
                         None => {
                             drop(stream);
                             return StreamedRound::Cancelled;
+                        }
+                        Some(SessionCmd::SetMode(mode)) => {
+                            apply_set_mode(
+                                &mut s.mode,
+                                &mut s.mode_transition_from,
+                                mode,
+                                session,
+                                events,
+                            );
+                            continue;
                         }
                         Some(other) => {
                             tracing::debug!(

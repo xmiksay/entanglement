@@ -1,7 +1,7 @@
 //! Permission mode as a session axis (ADR-0207, stage 3): an `InMsg::SetMode`
 //! is carried opaquely — core validates nothing about the name — always
-//! confirms with `OutEvent::ModeChanged`, and is deferred (stashed) while a
-//! turn is live just like `SetAgent`/`SetGeneration`.
+//! confirms with `OutEvent::ModeChanged`, and applies the moment it arrives —
+//! idle, parked, or mid-stream — unlike `SetGeneration`, which is stashed.
 //!
 //! The model-visible effect is a notice appended as the **last** message of
 //! every request, rebuilt fresh from `Session::mode` each round — never
@@ -283,8 +283,13 @@ impl Llm for SlowLlm {
     }
 }
 
+/// A `SetMode` landing while the model is still streaming applies at once:
+/// the runtime grades each tool call against the last announced mode, so a
+/// switch held until the turn ends would let calls already streaming run
+/// under the old authority. Fails on the old stash-until-turn-end code, where
+/// the second `ModeChanged` only arrived after `Done`.
 #[tokio::test]
-async fn set_mode_during_a_live_turn_is_deferred_until_it_ends() {
+async fn set_mode_mid_stream_applies_before_the_turn_ends() {
     let delay = Duration::from_millis(150);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(SlowLlm { delay }) as Box<dyn Llm>),
@@ -305,37 +310,26 @@ async fn set_mode_during_a_live_turn_is_deferred_until_it_ends() {
         .await
         .unwrap();
 
-    // The live turn's own Done must land before the SetMode-triggered
-    // ModeChanged — it was stashed, not applied concurrently. (The
-    // session-start ModeChanged for `build` lands first, ahead of Done too;
-    // only a *second* ModeChanged would indicate the switch landed early.)
     let mut events: VecDeque<OutEvent> = VecDeque::new();
-    let mut mode_changed_before_done = 0;
+    let mut plan_before_done = false;
     loop {
         let ev = tokio::time::timeout(Duration::from_secs(3), sub.recv())
             .await
             .expect("timed out")
             .expect("event stream closed");
         let is_done = matches!(ev, OutEvent::Done { .. });
-        if is_mode_changed(&ev) {
-            mode_changed_before_done += 1;
+        if matches!(&ev, OutEvent::ModeChanged { mode, .. } if mode == "plan") {
+            plan_before_done = true;
         }
         events.push_back(ev);
         if is_done {
             break;
         }
     }
-    assert_eq!(
-        mode_changed_before_done, 1,
-        "only the session-start ModeChanged may land before Done, not the SetMode one: {events:?}"
+    assert!(
+        plan_before_done,
+        "a mid-stream SetMode must be acknowledged before the turn's Done: {events:?}"
     );
-
-    // The stashed command applies once the turn ends.
-    let ev = recv_until(&mut sub, is_mode_changed).await;
-    let OutEvent::ModeChanged { mode, .. } = ev else {
-        unreachable!()
-    };
-    assert_eq!(mode, "plan");
 }
 
 #[tokio::test]

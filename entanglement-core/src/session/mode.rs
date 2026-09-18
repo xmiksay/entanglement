@@ -53,6 +53,10 @@
 //! replayed — a resumed session has no live "next round" to attach a
 //! transition to, so it simply shows the plain notice.
 
+use tokio::sync::broadcast;
+
+use crate::protocol::{OutEvent, SessionId};
+
 /// Text appended as the last message of every request, reflecting `mode` as
 /// of the round being built right now. Deliberately terse: it only names
 /// `mode`, trusting the cached system-prompt preamble
@@ -84,6 +88,35 @@ pub(super) fn mode_notice_with_transition(mode: &str, from: Option<String>) -> S
         Some(from) if from != mode => format!("[mode: {mode} — changed from {from}]"),
         _ => mode_notice(mode),
     }
+}
+
+/// Apply a `SetMode` **now** and ack it with `ModeChanged` — from the idle
+/// session loop and from mid-stream alike (`stream.rs`). Never deferred: the
+/// runtime grades every tool call against the mode it last saw announced, so
+/// a switch held until the turn ends would let calls already streaming under
+/// the old mode dispatch with its authority (e.g. a `/mode research` typed
+/// while `build` is mid-reply). Takes the two fields rather than `&mut
+/// Session` because the mid-stream caller holds `s.llm` borrowed.
+///
+/// `transition_from` is only written when this genuinely changes the mode
+/// and nothing is pending yet: several switches landing before the model's
+/// next round (a plan-approval cascade, a fast re-typed `/mode`) collapse
+/// into one notice naming the *original* mode, not an intermediate one.
+pub(super) fn apply_set_mode(
+    current: &mut String,
+    transition_from: &mut Option<String>,
+    mode: String,
+    session: &SessionId,
+    events: &broadcast::Sender<OutEvent>,
+) {
+    if mode != *current {
+        transition_from.get_or_insert_with(|| current.clone());
+    }
+    *current = mode.clone();
+    let _ = events.send(OutEvent::ModeChanged {
+        session: session.clone(),
+        mode,
+    });
 }
 
 #[cfg(test)]

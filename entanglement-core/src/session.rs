@@ -155,8 +155,8 @@ pub(crate) enum SessionCmd {
     Stop,
     /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the
-    /// existing generic mechanism in `stream.rs` and applied at the next round
-    /// boundary, exactly like a mid-stream `SetMode`). Idempotent.
+    /// existing generic mechanism in `stream.rs` and applied once the turn
+    /// ends — unlike `SetMode`, which applies even mid-stream). Idempotent.
     Pause,
     /// Lift a hold placed by `Pause` (#516, ADR-0208). A no-op if not paused.
     Unpause,
@@ -515,23 +515,13 @@ pub(crate) async fn session_loop(
             // nothing observable, and immediate is simpler than one more
             // deferred-command special case.
             Some(SessionCmd::SetMode(mode)) => {
-                // #560 follow-up: record the pre-switch mode for the next
-                // request's transition notice (`mode::mode_notice_with_transition`,
-                // `stream.rs`) — but only when this genuinely changes `mode`,
-                // and only if nothing is already pending. The latter is what
-                // collapses several switches landing before the model's next
-                // round (a plan-approval cascade, a fast re-typed `/mode`)
-                // into one notice naming the *original* mode, not an
-                // intermediate one: the first unconsumed switch writes this,
-                // every later one in the same window only advances `mode`.
-                if mode != s.mode {
-                    s.mode_transition_from.get_or_insert_with(|| s.mode.clone());
-                }
-                s.mode = mode.clone();
-                let _ = events.send(OutEvent::ModeChanged {
-                    session: session.clone(),
+                mode::apply_set_mode(
+                    &mut s.mode,
+                    &mut s.mode_transition_from,
                     mode,
-                });
+                    &session,
+                    &events,
+                );
             }
             // Live model/provider switch (#218): re-resolve against the runtime's
             // catalog-backed resolver, rebuild the backend, and retarget the

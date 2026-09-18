@@ -276,7 +276,7 @@ once the batch drains, so the same round resumes with no new prompt once
 `ResumeSession` arrives. A session **mid-stream** when paused is unaffected
 until the round reaches its next safe point (turn end or park) — `Pause`/
 `Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival rides the exact
-generic stash-and-replay mechanism `SetMode`/`SetModel` already use
+generic stash-and-replay mechanism `SetModel` already uses
 (`session/stream.rs` needed no change). `Stop`/`HibernateSession` always take
 priority over a pause and neither clears it: a `Stop`'d-but-still-paused
 session reports `AgentState::Paused`, not `Done`, until an explicit

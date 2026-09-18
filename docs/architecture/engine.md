@@ -271,10 +271,12 @@ half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
 same stash discipline applies inside the streaming loop and while the turn is
 parked (ADR-0018): a mid-turn `Stop` interrupts, every other queued command
 (`Prompt`, `SetModel`, …) is pushed onto the replay stash, so a follow-up sent
-while the engine is busy is never silently dropped. `SetMode` arriving inside
-the streaming loop still rides this same stash (unchanged); arriving while
-parked between tool calls it applies immediately instead (#560) — see the
-tool-round-trip section above. A stashed **`Prompt` is additionally
+while the engine is busy is never silently dropped. `SetMode` is the
+exception: it never rides the stash — inside the streaming loop (pre-stream
+wait included) and while parked alike it applies the moment it is dequeued
+(`session::mode::apply_set_mode`, #560), so a mid-stream `/mode research`
+grades the tool calls that very round is emitting — see the tool-round-trip
+section above. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`
@@ -654,8 +656,8 @@ batch drains (`TurnState::is_drained`) is skipped while paused, leaving
 `s.turn` "drained but undriven" until `Unpause` drives it. A session
 mid-stream when `Pause` arrives needs **no special handling in `stream.rs`**:
 `Pause`/`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival is
-`stash.push_back`'d by the same generic non-`Stop` branch `SetMode`/
-`SetModel` already ride, and applied once the round reaches its next safe
+`stash.push_back`'d by the same generic non-`Stop` branch `SetModel`
+already rides, and applied once the round reaches its next safe
 point. `Stop` and `Hibernate` are both unconditional regardless of `paused`
 and neither clears it — `Stop`'s resting-state emit reports `Paused` (not
 `Done`) if the session is still held.
