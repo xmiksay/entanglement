@@ -15,6 +15,7 @@ impl SessionView {
             text,
             pending: true,
         });
+        self.user_pending = true;
     }
 
     /// Clears the `pending` (dimmed) flag on the most recent user prompt. Called
@@ -22,6 +23,9 @@ impl SessionView {
     /// reasoning block or tool call rather than text, so keying this off text
     /// alone would leave the prompt greyed out for the whole turn (issue #103).
     fn clear_pending_user(&mut self) {
+        if !std::mem::take(&mut self.user_pending) {
+            return;
+        }
         for entry in self.transcript.iter_mut().rev() {
             if let TranscriptEntry::User { pending, .. } = entry {
                 *pending = false;

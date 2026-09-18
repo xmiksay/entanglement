@@ -230,8 +230,21 @@ impl SessionRegistry {
     /// user messages and `Out` events through the normal `apply_event` path — the
     /// same reducers a live session uses.
     pub fn restore_from_records(&mut self, id: SessionId, records: &[LogRecord]) {
-        let mut view = SessionView::new();
+        // A root's log interleaves its whole spawn sub-tree, so each record
+        // folds into *its own* session's view — the same routing live events
+        // get. Folding them all into the root mixed sub-agents' streams into
+        // its transcript and ran their independent `seq` counters through
+        // one view's dedupe guard, dropping events.
+        let mut views: Vec<(SessionId, SessionView)> = vec![(id.clone(), SessionView::new())];
         for record in records {
+            let slot = match views.iter().position(|(s, _)| s == &record.session) {
+                Some(i) => i,
+                None => {
+                    views.push((record.session.clone(), SessionView::new()));
+                    views.len() - 1
+                }
+            };
+            let view = &mut views[slot].1;
             match &record.payload {
                 LogPayload::In(InMsg::Prompt { content, .. }) => {
                     view.record_user_message(entanglement_core::content_text(content));
@@ -246,10 +259,12 @@ impl SessionRegistry {
             }
         }
 
-        if !self.order.contains(&id) {
-            self.order.push(id.clone());
+        for (session, view) in views {
+            if !self.order.contains(&session) {
+                self.order.push(session.clone());
+            }
+            self.views.insert(session, view);
         }
-        self.views.insert(id.clone(), view);
         self.switch_to(id);
     }
 

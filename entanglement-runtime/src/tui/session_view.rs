@@ -212,6 +212,12 @@ pub struct SessionView {
     mode: String,
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
+    /// Some `User` entry may still be `pending` (dimmed). Lets
+    /// `clear_pending_user` — called on every streamed delta — return at once
+    /// instead of scanning back to the last prompt each time: a resumed log
+    /// with a million deltas and few prompts made that scan quadratic and
+    /// froze the TUI for minutes.
+    user_pending: bool,
     plan: Option<String>,
     /// Root-relative location of the session's bound plan file (#513), from
     /// the same `OutEvent::Plan` snapshot as `plan` — empty-string logs
@@ -287,6 +293,7 @@ impl SessionView {
             mode: "build".to_string(),
             state: AgentState::Idle,
             transcript: Vec::new(),
+            user_pending: false,
             plan: None,
             plan_path: None,
             task_list: None,
