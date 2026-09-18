@@ -22,7 +22,7 @@ use entanglement_runtime::config::Config;
 use entanglement_runtime::mcp::AvailableMcp;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
@@ -121,10 +121,10 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
     };
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let mut build = profiles.get("build").cloned().expect("build profile");
-    build.provider = Some(provider.into());
-    build.model = Some(model.into());
-    profiles.insert(build);
+    let mut general = profiles.get("general").cloned().expect("general profile");
+    general.provider = Some(provider.into());
+    general.model = Some(model.into());
+    profiles.insert(general);
 
     let advertising = Arc::new(AdvertisingState::new());
     let mut reg = ToolRegistry::new();
@@ -140,7 +140,7 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
     ));
     let holly = Holly::spawn(EngineConfig {
         llm_factory: factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         model_resolver: Some(Arc::new(move |_user, provider: &str, model: &str| {
             Ok(ResolvedModel {
                 provider: provider.into(),
@@ -155,6 +155,11 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
             avail: Arc::new(AvailableMcp::default()),
             advertising: advertising.clone(),
             inputs: inputs.clone(),
+            // Mirror `main.rs`: the spawn roster reaches the model through the
+            // resolver, never `cfg.tool_specs`, which the resolver replaces.
+            // This harness used to omit it, so the array it asserted on was
+            // not the array the binary renders.
+            agent_specs: entanglement_runtime::subagent::agent_specs(&profiles),
         })),
         system_prompt_resolver: Some(system_prompt_mode::resolver(advertising.clone())),
         ..EngineConfig::default()
@@ -162,8 +167,14 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
 
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let perm_modes = crate::mode_support::perm_modes();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let executor = spawn_tool_executor_with_policy(
         &holly,
@@ -175,11 +186,15 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         Some(inputs),
@@ -336,4 +351,29 @@ async fn full_array_survives_a_removed_tool_whose_call_declines() {
         _ => None,
     });
     assert_eq!(is_error, Some(true), "{events:#?}");
+}
+
+/// #560 P12, ADR-0207 §12: verified against the **rendered** request, not
+/// the source — `explore`'s new `kind` enum values and `describe`'s
+/// qualified-name note must actually reach round 1 of a real
+/// `tool_search`-mode session, since both are kernel members
+/// (`TOOL_SEARCH_KERNEL`) advertised unconditionally. (`agent`'s `model`
+/// parameter is covered the same way in `agent_model.rs`'s harness, which
+/// wires `cfg.tool_specs` with the real agent roster — this harness doesn't.)
+#[tokio::test]
+async fn explore_kind_additions_reach_round_one_of_the_rendered_request() {
+    let h = harness("tail", "t", vec![text()]);
+    h.turn("one").await;
+    let rec = h.requests();
+    let tools = &rec[0].tools;
+    for kind in ["agents", "skills", "models", "modes", "pending"] {
+        assert!(
+            tools.contains(kind),
+            "explore kind enum missing {kind}: {tools}"
+        );
+    }
+    assert!(
+        tools.contains("agent:<name>"),
+        "describe's qualified-name note missing: {tools}"
+    );
 }

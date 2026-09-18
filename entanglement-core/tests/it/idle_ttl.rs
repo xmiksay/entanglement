@@ -302,10 +302,9 @@ async fn parked_child_pins_settled_root_live() {
             session: child.clone(),
             parent: Some(root.clone()),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "do the subtask".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

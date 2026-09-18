@@ -76,6 +76,9 @@ async fn prompt_done_prompt_echoes_full_history() {
             _ => None,
         })
         .collect();
+    // 1 real message; the mode notice (ADR-0207 §9) rides `trailing_notice`,
+    // out of band from `messages` — never part of persisted history or the
+    // count EchoLlm reports here (see `set_mode.rs`).
     assert!(
         reply1.contains("messages=1"),
         "turn 1 should echo 1 message; got: {reply1}"
@@ -99,6 +102,7 @@ async fn prompt_done_prompt_echoes_full_history() {
             _ => None,
         })
         .collect();
+    // 3 real messages (user, assistant, user); the notice is out of band.
     assert!(
         reply2.contains("messages=3"),
         "turn 2 should echo 3 messages (user, assistant, user); got: {reply2}"
@@ -154,6 +158,7 @@ async fn overlapping_prompt_echoes_prior_history() {
         last.contains("alpha"),
         "last reply should still echo 'alpha' from history; got: {last}"
     );
+    // 3 real messages; the mode notice (ADR-0207 §9) is out of band.
     assert!(
         last.contains("messages=3"),
         "last reply should show 3 messages after stashed replay; got: {last}"

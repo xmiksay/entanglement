@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -136,7 +136,7 @@ async fn run_calls(calls: Vec<(&str, &str, &str)>) -> Vec<(String, bool)> {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -254,22 +254,23 @@ async fn valid_call_is_unaffected_by_validation() {
 /// schema, even for a tool whose schema requires a parameter.
 #[tokio::test]
 async fn user_denial_carries_only_the_reason_no_schema() {
-    let mut profiles =
+    // A single mode named `"build"` (matching `DEFAULT_MODE`, so no `SetMode`
+    // call is needed) with `default: Ask` — the mode-based analog of the old
+    // `askgreet` `Agent` fixture (ADR-0207 stage 4 grades from the
+    // session's mode, not its agent).
+    let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "askgreet".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default: Permission::Ask,
+        rules: entanglement_runtime::mode::Rules::default(),
+        limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
-    });
+        sandbox_network: false,
+    };
+    let mode_table = Arc::new(
+        entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
+    );
     let call = LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -288,26 +289,49 @@ async fn user_denial_carries_only_the_reason_no_schema() {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(Greet);
-    let _executor = spawn_tool_executor(
+    let shared_tools = reg.shared();
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
+            perm_modes.clone(),
+            mode_table.clone(),
+            shared_tools.clone(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        ));
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
+        Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
+    let _executor = entanglement_runtime::tool_runner::spawn_tool_executor_with_policy(
         &holly,
-        reg,
-        profiles,
+        shared_tools,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(std::sync::RwLock::new(profiles)),
+        Arc::new(std::sync::RwLock::new(Arc::new(
+            entanglement_runtime::skills::SkillRegistry::default(),
+        ))),
         PermissionProfile::new(Permission::Allow),
+        active,
+        perm_modes,
+        resolver,
+        grants,
+        Default::default(),
+        None,
+        mode_table,
+        Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
+        None,
+        None,
+        None,
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "askgreet".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();

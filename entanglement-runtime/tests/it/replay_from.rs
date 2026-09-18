@@ -33,12 +33,11 @@ async fn replay_from_answers_with_content_after_cursor() {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "build".into(),
+                agent: "build".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         out(

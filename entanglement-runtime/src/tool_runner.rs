@@ -6,15 +6,16 @@
 //! Core emits [`OutEvent::ToolExec`] for **every** host tool and parks on
 //! [`InMsg::ToolResult`]; it no longer consults `PermissionProfile`. This task:
 //!
-//! 1. tracks each session's active [`AgentProfile`] — folded from `SessionStarted`
+//! 1. tracks each session's active [`Agent`] — folded from `SessionStarted`
 //!    / `AgentChanged` (ADR-0020) but **self-healed** on every `ToolExec` from the
-//!    profile name the event carries (#156), resolved against the
-//!    [`ProfileRegistry`] handed at startup. That fold is a *lossy* broadcast, so
+//!    agent name the event carries (#156), resolved against the
+//!    [`AgentCatalog`] handed at startup. That fold is a *lossy* broadcast, so
 //!    under burst a dropped lifecycle event would otherwise leave a restricted
-//!    session unseen; the self-heal makes the gate authoritative, and the
-//!    `permission_for`/`tool_masked` defaults fail *closed* (`Deny`/masked) for the
-//!    residual unknown case rather than the pre-#156 allow-all fallback that
-//!    inverted the security posture under overload;
+//!    session unseen; the self-heal makes the gate authoritative. The grade
+//!    itself comes from the session's permission **mode** (ADR-0207 stage 4),
+//!    folded from `OutEvent::ModeChanged` the same lossy way — an unseen
+//!    session's mode fails *closed* (`Deny`), never the pre-#156 allow-all
+//!    fallback that inverted the security posture under overload;
 //! 2. on `ToolExec`, resolves the permission for the tool:
 //!    - `Deny` → replies `ToolResult("…denied…")` without running it;
 //!    - `Allow` → runs it and replies `ToolResult`;
@@ -34,195 +35,70 @@
 //! parking the request forever.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "rhai")]
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentProfile, AgentState, ApprovalScope, Holly, IdKind, InMsg, OutEvent, Permission,
-    PermissionProfile, ProfileRegistry, SessionId, ToolCall,
+    Agent, AgentCatalog, AgentState, Holly, InMsg, OutEvent, PermissionProfile, SessionId,
 };
 
-use crate::tools::{SharedRegistry, ToolExecution, ToolRegistry};
+// The interception ladder (issue #451): `Intercept` classifies a `ToolExec`
+// by tool name and `route_tool_exec` is the `match` that dispatches each
+// route to its handler — split out so this file stays the executor loop
+// shell (lifecycle folding + `LadderCtx` construction) while the ladder
+// owns everything about which handler a tool name reaches.
+mod ladder;
+use ladder::{Intercept, LadderCtx};
+
+use crate::tools::{SharedRegistry, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::arg_validate;
-use crate::cancel::{CancelAllOnDrop, CancelRegistry, TaskCanceller};
-use crate::discover;
+use crate::cancel::{CancelAllOnDrop, CancelRegistry};
 use crate::hooks::Hooks;
-use crate::mask_request;
 use crate::mcp::{ActiveServers, AvailableMcp};
-#[cfg(feature = "rhai")]
-use crate::permission::effective_permission;
-use crate::permission::{
-    ancestor_chain, clamp_to_base, min_permission, spawn_refusal, tool_mask_source,
-};
-use crate::permission_path::grading_arg;
+use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;
-use crate::policy::{DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver};
+use crate::policy::{DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver};
+use crate::run_limits;
 use crate::seam;
-use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
 use crate::tool_advertising::{self, SharedAdvertisingState};
+
+// The generic tool-call primitives (issue #451) — `dispatch`, the parked-
+// approval tail `await_decision`, and the run-against-the-registry step
+// `run_and_reply` — split out so this file stays the executor loop shell
+// (lifecycle folding + `LadderCtx` construction); `apply_grant`/
+// `resolve_effective` live in `dispatch::grade`. Re-exported at their
+// pre-split paths (`tool_runner::dispatch`/`apply_grant`/`resolve_effective`)
+// since `ladder::graded`, `propose_plan`, and `script::binding_policy` all
+// call them by those paths.
+mod dispatch;
+pub(crate) use dispatch::dispatch;
+pub(crate) use dispatch::grade::resolve_effective;
+// `apply_grant`'s only caller outside `dispatch` is the rhai route in
+// `ladder::graded`, which is feature-gated — so an ungated re-export is an
+// unused import in the `--no-default-features` lean build (ADR-0025) and
+// `make check-lean` fails it under `-D warnings`.
 #[cfg(feature = "rhai")]
-use crate::tool_names::RHAI_TOOL;
-use crate::tool_names::{
-    is_non_maskable, AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL,
-    LOAD_SKILL_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
-};
-
-/// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
-/// granted (#174): a session-scoped or persisted "always allow" grant lets an
-/// *identical* later call skip the prompt. Only `Ask` is widened — a `Deny` (a
-/// hard policy floor) and an outright `Allow` pass through untouched.
-fn apply_grant(
-    grants: &dyn GrantStore,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    perm: Permission,
-) -> Permission {
-    if perm == Permission::Ask && grants.is_granted(session, tool, arg) {
-        Permission::Allow
-    } else {
-        perm
-    }
-}
-
-/// Least-privileged resolver grade across a call's ancestor chain — the sub-agent
-/// privilege ceiling (ADR-0024) applied *on top of* whatever the pluggable
-/// [`PermissionResolver`] returns, so a tenant rule can never widen a child
-/// beyond its parent. For the default [`ProfileResolver`] this reproduces
-/// `effective_permission` + `clamp_to_base` (the clamp is monotonic, so
-/// min-of-clamped equals clamp-of-min). An empty chain is impossible — the leaf
-/// session is always present — but defaults to `Deny` if one ever arrives.
-async fn resolve_effective(
-    resolver: &dyn PermissionResolver,
-    chain: &[SessionId],
-    tool: &str,
-    input: &str,
-) -> Permission {
-    let mut perm = Permission::Allow;
-    let mut any = false;
-    for session in chain {
-        perm = min_permission(perm, resolver.resolve(session, tool, input).await);
-        any = true;
-    }
-    if any {
-        perm
-    } else {
-        Permission::Deny
-    }
-}
-
-/// How the executor routes a `ToolExec` once the tool mask (#116) has cleared.
-///
-/// Classification is a **pure function of the tool name** ([`Intercept::classify`]),
-/// which makes the ladder's one load-bearing invariant — the mask precedes every
-/// route (#203) — structural rather than comment-enforced: the loop checks
-/// [`tool_masked`] before it ever calls `classify`, and the routes are a `match`
-/// (mutually exclusive) instead of a fall-through chain of `if tool == X { … }`
-/// branches, so a newly added route can no longer be silently mis-ordered ahead
-/// of the mask. Adding a tool means adding a variant here and its `match` arm in
-/// the dispatch loop — both checked by the compiler's exhaustiveness rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Intercept {
-    /// `agent`: session orchestration only (touches no host resource), gated by
-    /// the per-profile spawn control, not per-tool approval (#60/#119/#120;
-    /// #606, ADR-0161 §1). Blocks for the answer by default; the parsed
-    /// `background` flag picks the non-blocking launch instead — one guard
-    /// path, two return shapes.
-    Spawn,
-    /// `agent_send`: sends a follow-up prompt to a sub-agent already launched
-    /// with `agent` — steer a running child, follow up a finished one, or
-    /// re-engage a `propose_plan` sponsored build (#609, ADR-0162). Session
-    /// orchestration only, like `Spawn` — gated by
-    /// [`crate::agent_registry::AgentRegistry::begin_send`]'s ownership +
-    /// lifecycle check instead of per-tool approval.
-    AgentSend,
-    /// `poll`: joins a background `bash` job or a launched sub-agent (#605,
-    /// ADR-0161 §1-4, replacing `bash_output`/`agent_poll`) — it reads
-    /// accumulated job/spawn state, starting no session and touching no host.
-    Poll,
-    /// `ask_user`: a runtime-owned prompt tool (#90, ADR-0027) that surfaces a
-    /// question to the head instead of running against the registry.
-    AskUser,
-    /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
-    /// force-parked on the `Ask` path since user approval *is* its semantics.
-    ProposePlan,
-    /// `explore`/`describe` (#560, ADR-0196 §4) plus the reserved
-    /// `responses_tool_search` call name (P7, ADR-0196 §3 — a streamed
-    /// client-executed `tool_search_call` from the OpenAI Responses wire,
-    /// never a name the model chose from an advertised schema): the
-    /// always-on, non-maskable discovery trio — read-only catalog
-    /// introspection, starting nothing and touching no host resource. Exempt
-    /// from the #116 mask entirely (see the `is_non_maskable` short-circuit
-    /// ahead of classification, not this route), and from the
-    /// `Allow`/`Ask`/`Deny` ladder like every other runtime-owned
-    /// orchestration tool.
-    Discover,
-    /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
-    /// permission live against the loop's profile snapshot inside the script task.
-    /// Behind the `rhai` feature (#502, ADR-0135) — a lean build without it
-    /// never registers the tool, so a call named `rhai` falls through to the
-    /// generic `Permission` route below and is refused there as unknown.
-    #[cfg(feature = "rhai")]
-    Rhai,
-    /// Every other host tool: the generic `Allow | Ask | Deny` dispatch.
-    Permission,
-}
-
-impl Intercept {
-    /// Route an (already-unmasked) tool by name.
-    fn classify(tool: &str) -> Self {
-        match tool {
-            AGENT_TOOL => Self::Spawn,
-            AGENT_SEND_TOOL => Self::AgentSend,
-            POLL_TOOL => Self::Poll,
-            ASK_USER_TOOL => Self::AskUser,
-            PROPOSE_PLAN_TOOL => Self::ProposePlan,
-            EXPLORE_TOOL | DESCRIBE_TOOL | RESPONSES_TOOL_SEARCH_TOOL => Self::Discover,
-            #[cfg(feature = "rhai")]
-            RHAI_TOOL => Self::Rhai,
-            _ => Self::Permission,
-        }
-    }
-
-    /// Whether this route skips the per-tool `Allow | Ask | Deny` decision. The
-    /// spawn/poll/prompt/plan/discover routes touch no host resource, so
-    /// permission does not apply; `Rhai` resolves permission itself inside the
-    /// script task; the generic `Permission` route *is* the permission
-    /// decision.
-    fn bypasses_permission(self) -> bool {
-        matches!(
-            self,
-            Self::Spawn
-                | Self::AgentSend
-                | Self::Poll
-                | Self::AskUser
-                | Self::ProposePlan
-                | Self::Discover
-        )
-    }
-}
+pub(crate) use dispatch::grade::apply_grant;
 
 /// Spawn the per-engine tool executor. Subscribes synchronously (so no
 /// `ToolExec` emitted before the task is scheduled is missed) and runs until the
-/// engine's outbox closes. `profiles` is the runtime's copy of the engine's
-/// [`ProfileRegistry`] — the permission *shape* stays a core type; the runtime
+/// engine's outbox closes. `agents` is the runtime's copy of the engine's
+/// [`AgentCatalog`] — the permission *shape* stays a core type; the runtime
 /// only reads it (ADR-0003). `base` is the user config's global permission
 /// ceiling (#172): every resolved grade is clamped least-privilege against it.
 pub fn spawn_tool_executor(
     holly: &Holly,
     tools: ToolRegistry,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     base: PermissionProfile,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_tool_executor_with_hooks(holly, tools, profiles, base, Hooks::default())
+    spawn_tool_executor_with_hooks(holly, tools, agents, base, Hooks::default())
 }
 
 /// Wrap a caller's [`SkillRegistry`] for [`spawn_tool_executor_with_policy`]'s
-/// `skills` parameter, mirroring [`wrap_profiles`]. The convenience wrappers
+/// `skills` parameter, mirroring [`wrap_agents`]. The convenience wrappers
 /// below plug in an empty registry — no `load_skill` mask ever activates for
 /// their (~30, test-only) callers, matching their historical no-skill-mask
 /// behavior byte-for-byte.
@@ -230,13 +106,13 @@ fn wrap_skills(skills: SkillRegistry) -> Arc<RwLock<Arc<SkillRegistry>>> {
     Arc::new(RwLock::new(Arc::new(skills)))
 }
 
-/// Wrap a caller's owned [`ProfileRegistry`] for [`spawn_tool_executor_with_policy`],
+/// Wrap a caller's owned [`AgentCatalog`] for [`spawn_tool_executor_with_policy`],
 /// which reads it through an `Arc<RwLock<..>>` so a live definitions watcher
 /// (#329) can swap it for a fresher one without restarting the executor. The
 /// convenience wrappers here keep their historical owned-registry signature for
 /// existing callers (and tests) that need no live reload.
-fn wrap_profiles(profiles: ProfileRegistry) -> Arc<RwLock<ProfileRegistry>> {
-    Arc::new(RwLock::new(profiles))
+fn wrap_agents(agents: AgentCatalog) -> Arc<RwLock<AgentCatalog>> {
+    Arc::new(RwLock::new(agents))
 }
 
 /// Like [`spawn_tool_executor`] but with user-configured lifecycle hooks (#199,
@@ -247,23 +123,34 @@ fn wrap_profiles(profiles: ProfileRegistry) -> Arc<RwLock<ProfileRegistry>> {
 pub fn spawn_tool_executor_with_hooks(
     holly: &Holly,
     tools: ToolRegistry,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     base: PermissionProfile,
     hooks: Hooks,
 ) -> tokio::task::JoinHandle<()> {
-    // The default single-user policy (#311): the executor folds lifecycle events
-    // into `active`, and the default `ProfileResolver` reads that same map so its
-    // grade stays byte-identical with the pre-seam `effective_permission` path.
-    // "Always allow" grants persist to the managed file.
+    // The default single-user policy (#311, ADR-0207 stage 4): the executor
+    // folds lifecycle events into `active` (still needed for spawn gating
+    // and the `rhai` binding policy) and `modes` (the session→mode map
+    // `ModeResolver` grades from — sandboxing reads the identical map via
+    // `crate::policy::ModeSandboxResolver`, ADR-0207 §6, wired independently
+    // by a caller that wants it; these test-only wrappers don't). "Always
+    // allow" grants persist to the managed file.
     let active = Arc::new(Mutex::new(HashMap::new()));
+    let modes = Arc::new(Mutex::new(HashMap::new()));
+    let mode_table = Arc::new(ModeTable::builtin().expect("built-in permission modes must parse"));
+    let shared_tools = tools.shared();
     // No escape-root policy wired here (root: None) — the strict-containment
     // 4-arg wrapper keeps the pre-#485 verbatim arg match (ADR-0125).
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        mode_table.clone(),
+        shared_tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     spawn_tool_executor_with_policy(
         holly,
-        tools.shared(),
+        shared_tools,
         // No job registry shared with an external `BashTool` here — the
         // convenience wrappers' (~30, test-only) callers never wire one up
         // either, so a `poll` of a job id from this executor's own private
@@ -278,19 +165,18 @@ pub fn spawn_tool_executor_with_hooks(
         // reachable here — the executor's own `rhai` arm writes it and its
         // `poll` arm reads it back, both inside this one executor.
         crate::script_ops::ScriptRegistry::new(),
-        wrap_profiles(profiles),
+        wrap_agents(agents),
         wrap_skills(SkillRegistry::default()),
         base,
         active,
+        modes,
         resolver,
         grants,
         hooks,
         // The default 4-arg wrapper keeps strict root containment — escape-root
         // approval is opt-in, wired only by the full head (`main.rs`).
         None,
-        // No per-profile sandboxing wired here (#479) — every `bash`/`call` in
-        // this wrapper's callers runs unsandboxed, byte-identical to pre-#479.
-        crate::policy::SandboxConfig::none(),
+        mode_table,
         // These convenience wrappers' (~30, test-only) callers never wire up a
         // plans-folder watch either, so a private, unshared registry is fine —
         // matches their historical no-external-sharing behavior for `jobs`/
@@ -315,14 +201,16 @@ pub fn spawn_tool_executor_with_hooks(
 /// a [`PermissionResolver`] decides each call's `Allow | Ask | Deny` grade and a
 /// [`GrantStore`] persists "always allow" grants, so a multi-tenant embedder can
 /// store rules per user in its own DB without forking the executor. `active` is
-/// the shared per-session profile map the executor folds lifecycle events into —
-/// still driving tool masking (#116) and spawn gating (#119), which stay in the
-/// ladder on top of the resolver — and which the default [`ProfileResolver`]
-/// reads. The two default wrappers above plug in [`ProfileResolver`] +
-/// [`DefaultGrantStore`] for the CLI, byte-identical to the pre-seam behavior.
+/// the shared per-session agent map the executor folds lifecycle events into —
+/// still driving spawn gating (#119), the sandbox policy, and the `rhai`
+/// binding policy, which stay in the ladder on top of the resolver.
+/// `perm_modes` is the same fold for the session's permission mode
+/// (ADR-0207 stage 4), which the default [`ModeResolver`] grades every
+/// call from. The two default wrappers above plug in [`ModeResolver`] +
+/// [`DefaultGrantStore`] for the CLI.
 ///
-/// `profiles` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
-/// [`ProfileRegistry`]) so a runtime definitions watcher can swap in a
+/// `agents` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
+/// [`AgentCatalog`]) so a runtime definitions watcher can swap in a
 /// freshly-reloaded registry without restarting this executor — every lookup
 /// below takes a brief read lock and clones the hit into the (already-cloning)
 /// `active`/mask/spawn-refusal call sites, so a reload mid-flight is invisible
@@ -334,7 +222,7 @@ pub fn spawn_tool_executor_with_hooks(
 /// [`ToolRegistry`]) so a live tool-registration change — MCP add/remove (#4) —
 /// is visible to this executor without a restart: each dispatch takes a brief
 /// read lock and clones an owned snapshot *before* spawning the detached task
-/// (never held across a tool's `.await`), mirroring the `profiles` pattern
+/// (never held across a tool's `.await`), mirroring the `agents` pattern
 /// above.
 ///
 /// `skills` (#400, ADR-0106) is the same live-reloadable handle
@@ -345,7 +233,7 @@ pub fn spawn_tool_executor_with_hooks(
 ///
 /// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
 /// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
-/// jobs `bash` actually spawned; unlike `tools`/`skills`/`profiles` this isn't
+/// jobs `bash` actually spawned; unlike `tools`/`skills`/`agents` this isn't
 /// itself hot-swappable, only cheaply cloned (an `Arc` internally). `retained`
 /// (#608) is the same story for
 /// [`crate::retained_output::RetainedOutputRegistry`]: the caller's
@@ -416,18 +304,31 @@ pub fn spawn_tool_executor_with_policy(
     // as `jobs`/`retained`: the `rhai` launcher writes, `poll`'s `x-` path and
     // the `ListOperations` router read.
     scripts: crate::script_ops::ScriptRegistry,
-    profiles: Arc<RwLock<ProfileRegistry>>,
+    agents: Arc<RwLock<AgentCatalog>>,
     skills: Arc<RwLock<Arc<SkillRegistry>>>,
     base: PermissionProfile,
-    active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+    active: Arc<Mutex<HashMap<SessionId, Agent>>>,
+    // Per-session permission mode (ADR-0207 stage 4), folded from
+    // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
+    // the shared map the default `resolver` (`ModeResolver`) grades every
+    // call from. An unseen session fails closed, mirroring `active`. Named
+    // `perm_modes` (not `modes`) to stay distinct from
+    // `tool_advertising`'s unrelated session→`ToolAdvertising`-mode map.
+    perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
     hooks: Hooks,
     escape_root: Option<EscapeRoot>,
-    // Per-profile bubblewrap confinement for `bash`/`call` (#479, ADR-0104
-    // amendment): `own`/`floor` are folded from the same lifecycle events as
-    // `active` below, and read by the caller's `SandboxConfig::resolver()`.
-    sandbox: crate::policy::SandboxConfig,
+    // The mode table `perm_modes` names resolve against (ADR-0207 §6, stage
+    // 5b) — used here only to source a spawn's `max_depth`/`max_agents`
+    // bound (`SpawnGuard::try_spawn`) from the session's current mode.
+    // Sandbox confinement no longer folds through this executor at all: it
+    // reads the identical `perm_modes` map directly via
+    // `crate::policy::SandboxConfig`/`ModeSandboxResolver`, wired into
+    // `bash`/`call` at registration time, since a mode's sandbox posture
+    // needs no lifecycle-event bookkeeping the way the old per-agent
+    // ancestor floor did — the whole spawn sub-tree shares one mode.
+    mode_table: Arc<crate::mode::ModeTable>,
     // Per-session plan-file staleness tracking (#513), taken as a param
     // (rather than constructed inside, as before #627) so a caller that also
     // wants the dedicated plans-folder watch (`plan_watch::spawn_plans_watcher`)
@@ -471,6 +372,12 @@ pub fn spawn_tool_executor_with_policy(
     // race ahead of the watcher's subscription (the `user_prompt_submit` hook,
     // #199, depends on catching that first prompt).
     let inbound = holly.subscribe_inbound();
+    // Same discipline for the budget watcher's own subscription (ADR-0207
+    // §11, stage 5c): it's handed off to a task scheduled inside the
+    // `tokio::spawn` below, so subscribing there (instead of here) could
+    // race a `SessionStarted`/`Usage` broadcast sent right after this
+    // function returns and silently miss it.
+    let budget_sub = holly.subscribe();
     let holly = holly.clone();
     tokio::spawn(async move {
         // Background tasks this executor spawns that must not outlive it (#545):
@@ -482,11 +389,11 @@ pub fn spawn_tool_executor_with_policy(
         // drops, whether that's an explicit `.abort()` at shutdown or the loop
         // below breaking on the engine's outbox closing.
         let mut background: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-        // Active profile per session. Folded from lifecycle events, but the fold
+        // Active agent per session. Folded from lifecycle events, but the fold
         // is a *lossy* broadcast — so it is authoritatively self-healed on every
-        // `ToolExec` from the profile name that event carries (#156). See the
+        // `ToolExec` from the agent name that event carries (#156). See the
         // `ToolExec` arm below. Shared (`Arc<Mutex<..>>`, a param) with the
-        // default `ProfileResolver` (#311) so it reads the same folded view; this
+        // default `ModeResolver` (#311) so it reads the same folded view; this
         // loop is the sole writer, so the brief locks never contend.
         //
         // Per-session *in-flight* request_id dedupe (#274, ADR-0071): the set of
@@ -507,11 +414,12 @@ pub fn spawn_tool_executor_with_policy(
         let mut in_flight: HashMap<SessionId, HashSet<String>> = HashMap::new();
         // Per-session live tool overlay (#539, ADR-0149), folded from
         // `ToolOverlayChanged` — the dispatch-side mirror of core's
-        // `Session::tool_overlay`. Consulted by `tool_masked` (a matching entry
-        // makes the tool exist regardless of the profile mask, per link) and
-        // for the Ask/Allow grade override the generic route applies in
-        // `dispatch`. Loop-owned: the per-call overlay entry is resolved before
-        // the detached task is spawned, so no sharing is needed. Cleared on
+        // `Session::tool_overlay`. Consulted for the Ask/Allow grade override
+        // the generic route applies in `dispatch` (an enable entry can
+        // override even a mode `deny` for that session, ADR-0207 §8) and
+        // dropped wholesale on a mode change (the overlay is mode-scoped).
+        // Loop-owned: the per-call overlay entry is resolved before the
+        // detached task is spawned, so no sharing is needed. Cleared on
         // `SessionEnded`/`SessionHibernated`.
         let mut overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>> =
             HashMap::new();
@@ -525,6 +433,12 @@ pub fn spawn_tool_executor_with_policy(
         // tasks), which set it after a successful `load_skill`; this loop is
         // the sole writer of the clear path.
         let active_skill: Arc<Mutex<HashSet<SessionId>>> = Arc::new(Mutex::new(HashSet::new()));
+        // Per-session, per-turn repeat-denial tracker (ADR-0207 §11, stage
+        // 5c): a collapsed-`Ask` denial's second identical `(tool, arg)`
+        // this turn parks an approval instead of refusing silently again.
+        // Scoped exactly like `active_skill` above — cleared on `Done` and
+        // on session end/hibernate.
+        let denials = Arc::new(run_limits::DenialTracker::new());
         // The project root `propose_plan` materializes/resolves plan files
         // against (#513): the same canonical root `escape_root` carries when
         // wired (every full head). A wrapper with no escape-root policy (test
@@ -570,7 +484,7 @@ pub fn spawn_tool_executor_with_policy(
             });
         }
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
-        // and per-root spawn budgets. Lives in this single-threaded loop, so the
+        // and per-root running sub-agent counts. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
         // Per-session tool advertising (ADR-0196 §2-3): pinned at session
@@ -689,12 +603,62 @@ pub fn spawn_tool_executor_with_policy(
                 }
             });
         }
+        // `max_turns`/`max_duration` enforcement (ADR-0207 §11, stage 5c):
+        // its own subscriber, parked in the same `JoinSet` as every other
+        // background task here so it's aborted alongside them rather than
+        // leaking a `Holly` clone past shutdown.
+        {
+            let holly = holly.clone();
+            let mode_table = mode_table.clone();
+            background.spawn(crate::run_budget::watch(holly, budget_sub, mode_table));
+        }
+        // The ladder's long-lived shared state (issue #451), cloned once
+        // here rather than built by moving the loop-locals above: every
+        // field is `Arc`-cheap to clone, and cloning (instead of moving)
+        // leaves each original binding intact for the lifecycle-folding
+        // arms below, which keep reading several of them directly
+        // (`agents`, `active`, `perm_modes`, …).
+        let ctx = LadderCtx {
+            holly: holly.clone(),
+            registry: registry.clone(),
+            retained: retained.clone(),
+            jobs: jobs.clone(),
+            scripts: scripts.clone(),
+            pending: pending.clone(),
+            open_questions: open_questions.clone(),
+            resolver: resolver.clone(),
+            agents: agents.clone(),
+            perm_modes: perm_modes.clone(),
+            mode_table: mode_table.clone(),
+            plan_files: plan_files.clone(),
+            plan_root: plan_root.clone(),
+            cancels: cancels.clone(),
+            tools: tools.clone(),
+            skills: skills.clone(),
+            mcp_avail: mcp_avail.clone(),
+            mcp_active: mcp_active.clone(),
+            mcp_scopes: mcp_scopes.clone(),
+            advertising: advertising.clone(),
+            escape_root: escape_root.clone(),
+            base: base.clone(),
+            grants: grants.clone(),
+            mcp_http: mcp_http.clone(),
+            active_skill: active_skill.clone(),
+            hooks: hooks.clone(),
+            validation: validation.clone(),
+            denials: denials.clone(),
+            // #560 P12, ADR-0207 §12: read off the same `advertising_inputs`
+            // every session-start resolution already consults.
+            catalog: advertising_inputs
+                .as_ref()
+                .and_then(|i| i.catalog().cloned()),
+        };
         loop {
             match sub.recv().await {
                 Ok(OutEvent::SessionStarted {
                     session,
                     parent,
-                    profile,
+                    agent,
                     ..
                 }) => {
                     spawn_guard.record_start(session.clone(), parent.clone());
@@ -707,49 +671,51 @@ pub fn spawn_tool_executor_with_policy(
                     // no-op for any other session, since a fresh registration is
                     // already `Live` and an untracked id has no entry to update.
                     registry.mark_live(&session);
-                    let started_profile = profiles
+                    let started_agent = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
-                        .get(&profile)
+                        .expect("agent-catalog lock poisoned")
+                        .get(&agent)
                         .cloned();
-                    if let Some(p) = started_profile.clone() {
+                    if let Some(p) = started_agent.clone() {
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session.clone(), p);
                     }
-                    // Ancestor clamp frozen at spawn (#479, ADR-0104 amendment),
-                    // mirroring ADR-0024's privilege ceiling for confinement
-                    // instead of permission grade.
-                    crate::policy::record_session_sandbox(
-                        &sandbox.own,
-                        &sandbox.floor,
-                        &session,
-                        parent.as_ref(),
-                        started_profile.as_ref().and_then(|p| p.sandbox.as_deref()),
-                        sandbox.base,
-                    );
                 }
-                Ok(OutEvent::AgentChanged { session, agent, .. }) => {
-                    if let Some(p) = profiles
+                Ok(OutEvent::AgentChanged { session, agent }) => {
+                    if let Some(p) = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
+                        .expect("agent-catalog lock poisoned")
                         .get(&agent)
                         .cloned()
                     {
-                        crate::policy::record_own_sandbox(
-                            &sandbox.own,
-                            &session,
-                            p.sandbox.as_deref(),
-                            sandbox.base,
-                        );
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session, p);
                     }
                 }
-                // The session's model changed (`SetModel` / a profile pin
+                // The session's permission mode changed (ADR-0207 stage 4):
+                // fold the same way `active` folds `AgentChanged`, so
+                // `ModeResolver` reads the current mode. Fires once at
+                // session start (mirroring `AgentChanged`) and again on every
+                // `InMsg::SetMode`. The session's own tool overlay is
+                // mode-scoped (ADR-0207 §8, "the overlay becomes mode-scoped")
+                // — it is dropped on any *actual* mode change, since an entry
+                // enabled under one mode carries no meaning in another; a
+                // duplicate `ModeChanged` for the same value (replay, a
+                // no-op `SetMode`) leaves it untouched.
+                Ok(OutEvent::ModeChanged { session, mode }) => {
+                    let previous = perm_modes
+                        .lock()
+                        .expect("permission-mode mutex poisoned")
+                        .insert(session.clone(), mode.clone());
+                    if previous.as_deref() != Some(mode.as_str()) {
+                        overlays.remove(&session);
+                    }
+                }
+                // The session's model changed (`SetModel` / an agent pin
                 // re-bind, #218/#323). Tool advertising is *not* re-resolved
                 // (ADR-0196 §2): a pinned session keeps its mode — switching
                 // mid-session would bust the prompt cache the mode protects —
@@ -819,17 +785,10 @@ pub fn spawn_tool_executor_with_policy(
                         .lock()
                         .expect("active-skill mutex poisoned")
                         .remove(&session);
-                    // The sandbox cache (#479) is equally moot — drop both maps.
-                    sandbox
-                        .own
-                        .lock()
-                        .expect("sandbox-own mutex poisoned")
-                        .remove(&session);
-                    sandbox
-                        .floor
-                        .lock()
-                        .expect("sandbox-floor mutex poisoned")
-                        .remove(&session);
+                    // No sandbox cache to drop any more (ADR-0207 §6, stage
+                    // 5b): confinement reads `perm_modes` directly, and that
+                    // map's own entry is left in place like `active`'s — a
+                    // resume re-emits `ModeChanged` before anything reads it.
                     // The plan-file staleness binding (#513) is moot too.
                     plan_files.forget_session(&session);
                     // And its pinned tool advertising, discovered set, `Full`
@@ -840,14 +799,20 @@ pub fn spawn_tool_executor_with_policy(
                     // §6) is equally session-scoped — nothing to break a
                     // loop against once the session is gone.
                     validation.forget(&session);
+                    // The repeat-denial tracker (ADR-0207 §11) is per-turn
+                    // scoped, so it's moot once the session itself is gone.
+                    denials.clear(&session);
                 }
                 // A skill's "active" posture scopes one model turn (#400,
                 // ADR-0106; posture-only since ADR-0194): clear it here so a
                 // later turn can `load_skill` a different one (or none)
                 // cleanly, and tell any listening head via
-                // `OutEvent::SkillActive { skill_id: None, .. }`.
+                // `OutEvent::SkillActive { skill_id: None, .. }`. The
+                // repeat-denial tracker (ADR-0207 §11) shares this same
+                // per-turn scope.
                 Ok(OutEvent::Done { session, .. }) => {
                     clear_active_skill(&holly, &active_skill, &session);
+                    denials.clear(&session);
                 }
                 // A `Stop` that lands while a batch is parked unwinds with no
                 // `ToolResult`/`ToolOutput` for its still-running calls (#448):
@@ -892,6 +857,7 @@ pub fn spawn_tool_executor_with_policy(
                     tool,
                     input,
                     agent,
+                    envelope,
                     ..
                 }) => {
                     // Idempotence for core's re-offer timer (#274, ADR-0071):
@@ -914,223 +880,36 @@ pub fn spawn_tool_executor_with_policy(
                         continue;
                     }
                     // Authoritative self-heal (#156): the emitting session's
-                    // active profile rides on the `ToolExec` itself, so resolve it
+                    // active agent rides on the `ToolExec` itself, so resolve it
                     // from the registry and overwrite the folded entry *before*
-                    // any mask/permission decision. The lifecycle fold above is a
-                    // lossy broadcast — under burst a dropped
+                    // any permission decision (spawn gating and the `rhai`
+                    // binding policy still read `active`; sandboxing reads
+                    // `perm_modes` directly, ADR-0207 §6). The lifecycle
+                    // fold above is a lossy broadcast — under burst a dropped
                     // `SessionStarted`/`AgentChanged` would leave a restricted
                     // session unseen and (pre-#156) fail *open*. This makes the
                     // leaf's gate authoritative regardless of that drop; the
-                    // fail-closed `permission_for`/`tool_masked` defaults cover
-                    // only the residual unknown case (empty/unresolved `agent`).
-                    if let Some(p) = profiles
+                    // fail-closed `ModeResolver` default (an unseen session's
+                    // mode) covers only the residual unknown case.
+                    if let Some(p) = agents
                         .read()
-                        .expect("agent-profile registry lock poisoned")
+                        .expect("agent-catalog lock poisoned")
                         .get(&agent)
                         .cloned()
                     {
-                        crate::policy::record_own_sandbox(
-                            &sandbox.own,
-                            &session,
-                            p.sandbox.as_deref(),
-                            sandbox.base,
-                        );
                         active
                             .lock()
-                            .expect("active-profile mutex poisoned")
+                            .expect("active-agent mutex poisoned")
                             .insert(session.clone(), p);
                     }
-                    // Physical tool restriction (#116, ADR-0038): a tool outside
-                    // the session's effective tool set — its profile's
-                    // allowlist/denylist and its session tool overlay,
-                    // intersected down the ancestor chain — does not exist for
-                    // this agent. Refuse before any other handling (spawn
-                    // interception, permission), so a call to a masked
-                    // `edit`/`agent` is a hard boundary, not a persona nudge.
-                    //
-                    // This is now the *whole* restriction, not a backstop:
-                    // advertisement is decoupled from enforcement (the model
-                    // sees every schema, so the surface stays cache-stable
-                    // within a session), which makes an attributed decline
-                    // load-bearing — the model has to learn *who* refused it or
-                    // it will retry the same call. #597: name which link, and
-                    // on whose authority (its profile vs its overlay), since a
-                    // child's own definition can list the tool while an
-                    // ancestor's narrower mask erases it down the chain.
-                    //
-                    // `explore`/`describe` are the one deliberate exemption
-                    // from this whole walk (#560, ADR-0196 §4): read-only
-                    // catalog introspection, never a capability decision — no
-                    // profile mask, overlay entry, or ancestor clamp can
-                    // withdraw them, mirroring the always-on internal-tool
-                    // posture ADR-0190 established for `poll` (subsumed for
-                    // `poll` itself by ADR-0192's universal dispatch mask,
-                    // but reinstated here narrowly for these two).
-                    let masked_by = if is_non_maskable(&tool) {
-                        None
-                    } else {
-                        let active = active.lock().expect("active-profile mutex poisoned");
-                        tool_mask_source(&active, &spawn_guard, &overlays, &session, &tool).map(
-                            |source| {
-                                let name = active.get(&source.session).map(|p| p.name.clone());
-                                (source, name)
-                            },
-                        )
-                    };
-                    // ADR-0198: a mask miss is no longer a flat decline in
-                    // general — it now parks an approval, unless it hits one
-                    // of three hard limits that still refuse outright with
-                    // no prompt (`crate::mask_request`): a spawn tool
-                    // (profile-defining, ADR-0192's carve-out — unaffected
-                    // here), a name absent from the registry (its own
-                    // unknown-tool hint), or an explicit bare-name `Deny`
-                    // rule in the profile chain or the config ceiling (the
-                    // author's deliberate floor, distinct from the ambient
-                    // default every unlisted tool falls through to).
-                    if let Some((source, agent_name)) = masked_by {
-                        if mask_request::is_spawn_tool(&tool) {
-                            let holly = holly.clone();
-                            let own_session = session.clone();
-                            tokio::spawn(async move {
-                                let output = crate::decline::mask_decline(
-                                    &source,
-                                    &own_session,
-                                    agent_name.as_deref(),
-                                    &tool,
-                                );
-                                seam::reply(&holly, session, request_id, output, true).await;
-                            });
-                            continue;
-                        }
-                        let tools_snapshot =
-                            tools.read().expect("tool registry lock poisoned").clone();
-                        if !tools_snapshot.contains(&tool)
-                            && !crate::plan_tasks::is_state_tool(&tool)
-                        {
-                            // ADR-0201: a tier-eligible `mcp__<server>__*`
-                            // name isn't "unknown" merely because this
-                            // session's registry snapshot has never seen it
-                            // registered — it's tier-known, and the real
-                            // lazy connect (plus a registry re-check) happens
-                            // once (if) this out-of-mask call is approved,
-                            // inside `dispatch` itself below. Only a
-                            // `disabled` tier or a truly unknown name
-                            // hard-refuses here, before any approval offer.
-                            let tier = crate::mcp::available::server_name_of(&tool)
-                                .map(|server| (server.to_string(), mcp_avail.tier_of(server)));
-                            match tier {
-                                Some((_, crate::mcp::available::McpTier::Eligible)) => {
-                                    // Falls through: "exists", mask-park
-                                    // proceeds below.
-                                }
-                                Some((server, crate::mcp::available::McpTier::Disabled)) => {
-                                    let holly = holly.clone();
-                                    tokio::spawn(async move {
-                                        let output =
-                                            crate::mcp::available::disabled_decline(&server);
-                                        seam::reply(&holly, session, request_id, output, true)
-                                            .await;
-                                    });
-                                    continue;
-                                }
-                                _ => {
-                                    let holly = holly.clone();
-                                    let output = tool_advertising::unknown_tool_reply(
-                                        &advertising,
-                                        &session,
-                                        &tools_snapshot,
-                                        &tool,
-                                    );
-                                    tokio::spawn(async move {
-                                        seam::reply(&holly, session, request_id, output, true)
-                                            .await;
-                                    });
-                                    continue;
-                                }
-                            }
-                        }
-                        let mask_chain = ancestor_chain(&spawn_guard, &session);
-                        let deny_floor = {
-                            let active = active.lock().expect("active-profile mutex poisoned");
-                            mask_request::explicit_deny_floor(&active, &mask_chain, &base, &tool)
-                        };
-                        if deny_floor {
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                let output = format!("tool `{tool}` denied by permission profile");
-                                seam::reply(&holly, session, request_id, output, true).await;
-                            });
-                            continue;
-                        }
-                        // Not a hard limit: park a single mask-attributed
-                        // approval. `overlay_entry` is resolved now (exactly
-                        // as the ordinary `Intercept::Permission` route
-                        // resolves it below) so a `Once` approval replays
-                        // `dispatch` with the identical grade-override input
-                        // it would have had if the tool were in-mask all
-                        // along.
-                        let overlay_entry =
-                            crate::permission::overlay_grade_entry(&overlays, &mask_chain, &tool);
-                        let own_overlay = overlays.get(&session).cloned().unwrap_or_default();
-                        let resolver = resolver.clone();
-                        let grants = grants.clone();
-                        let hooks = hooks.clone();
-                        let pending = pending.clone();
-                        let escape_root = escape_root.clone();
-                        let ceiling = base.clone();
-                        let skills = skills.clone();
-                        let active_skill = active_skill.clone();
-                        let advertising = advertising.clone();
-                        let validation = validation.clone();
-                        // ADR-0201: forwarded through to `mask_request::handle`'s
-                        // own `dispatch` call, so an approved out-of-mask
-                        // `mcp__<server>__*` call self-heals exactly like the
-                        // ordinary in-mask route does.
-                        let registry = tools.clone();
-                        let mcp_avail = mcp_avail.clone();
-                        let mcp_active = mcp_active.clone();
-                        let mcp_http = mcp_http.clone();
-                        let holly = holly.clone();
-                        let reg_session = session.clone();
-                        let handle = tokio::spawn(async move {
-                            mask_request::handle(
-                                &holly,
-                                &tools_snapshot,
-                                &skills,
-                                &active_skill,
-                                &*resolver,
-                                &mask_chain,
-                                &*grants,
-                                &hooks,
-                                &pending,
-                                escape_root.as_ref(),
-                                overlay_entry,
-                                own_overlay,
-                                &ceiling,
-                                &advertising,
-                                &validation,
-                                &registry,
-                                &mcp_avail,
-                                &mcp_active,
-                                mcp_http.as_ref(),
-                                source,
-                                agent_name,
-                                session,
-                                request_id,
-                                tool,
-                                input,
-                            )
-                            .await;
-                        });
-                        cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
-                        continue;
-                    }
-                    // Route the unmasked tool through its interception. The mask
-                    // above runs *structurally before* this classifier, and the
-                    // routes are a `match` (mutually exclusive) rather than an
-                    // ordered ladder of `if tool == X` branches — so no route can
-                    // be silently mis-ordered ahead of the mask (#203). Each
-                    // handler runs on its own task; the loop only routes.
+                    // The tool mask is retired (ADR-0207 §8, "the mask
+                    // machinery is deleted"): every tool advertised is
+                    // dispatchable, graded by the session's permission mode
+                    // instead of withheld by an agent allowlist. The
+                    // routes below are a `match` (mutually exclusive), so
+                    // adding one is a compiler-checked exhaustiveness change,
+                    // not an ordering hazard. Each handler runs on its own
+                    // task; the loop only routes.
                     let route = Intercept::classify(&tool);
                     tracing::trace!(
                         %tool,
@@ -1138,476 +917,18 @@ pub fn spawn_tool_executor_with_policy(
                         bypasses_permission = route.bypasses_permission(),
                         "routing tool exec"
                     );
-                    match route {
-                        Intercept::Spawn => {
-                            // Spawn control (#119): the spawner must `may_spawn` and
-                            // the *target* must be spawnable and on its allowlist —
-                            // refused before a child is minted, in front of the
-                            // ADR-0023 budget and the ADR-0024 clamp. Subscribe
-                            // *before* handing off so the child's `Done` can't race
-                            // ahead of the watcher.
-                            let blocking = !crate::subagent::is_background(&input);
-                            let target = crate::subagent::target_agent(&input);
-                            let refusal = {
-                                let active = active.lock().expect("active-profile mutex poisoned");
-                                let profiles = profiles
-                                    .read()
-                                    .expect("agent-profile registry lock poisoned");
-                                spawn_refusal(active.get(&session), &target, &profiles)
-                            };
-                            if let Some(refusal) = refusal {
-                                let holly = holly.clone();
-                                tokio::spawn(async move {
-                                    seam::reply(&holly, session, request_id, refusal, true).await;
-                                });
-                            } else {
-                                match spawn_guard.try_spawn(&session) {
-                                    Ok(()) => {
-                                        let child_events = holly.subscribe();
-                                        let registry = registry.clone();
-                                        let retained = retained.clone();
-                                        let holly = holly.clone();
-                                        tokio::spawn(async move {
-                                            // The default blocks and parks for the
-                                            // answer; `background: true` hands the
-                                            // handle back at once — one guard path,
-                                            // two return shapes (#120, #606).
-                                            if blocking {
-                                                crate::subagent::run_agent(
-                                                    holly,
-                                                    child_events,
-                                                    registry,
-                                                    retained,
-                                                    session,
-                                                    request_id,
-                                                    input,
-                                                )
-                                                .await;
-                                            } else {
-                                                crate::subagent::launch_subagent(
-                                                    holly,
-                                                    child_events,
-                                                    registry,
-                                                    retained,
-                                                    session,
-                                                    request_id,
-                                                    input,
-                                                )
-                                                .await;
-                                            }
-                                        });
-                                    }
-                                    // Over a limit: refuse without starting a child,
-                                    // but still answer the parent's parked tool call
-                                    // so its turn continues with a clear explanation.
-                                    Err(refusal) => {
-                                        let holly = holly.clone();
-                                        tokio::spawn(async move {
-                                            seam::reply(&holly, session, request_id, refusal, true)
-                                                .await;
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        Intercept::AgentSend => {
-                            // No spawn-budget/depth gate here (#609): this is a
-                            // *reply* into an already-authorized child, not a
-                            // new spawn — `AgentRegistry::begin_send` (run
-                            // inside the task) is the whole gate: ownership
-                            // (only the launching session may send) plus the
-                            // lifecycle check (ADR-0162 §4). Subscribe *before*
-                            // handing off, mirroring `Spawn`, so the child's
-                            // events can't race ahead of the watcher.
-                            let child_events = holly.subscribe();
-                            let registry = registry.clone();
-                            let retained = retained.clone();
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                crate::agent_send::run_agent_send(
-                                    holly,
-                                    child_events,
-                                    registry,
-                                    retained,
-                                    session,
-                                    request_id,
-                                    input,
-                                )
-                                .await;
-                            });
-                        }
-                        Intercept::Poll => {
-                            let registry = registry.clone();
-                            let jobs = jobs.clone();
-                            let retained = retained.clone();
-                            let scripts = scripts.clone();
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                crate::poll::run_poll(
-                                    holly, jobs, registry, retained, scripts, session, request_id,
-                                    input,
-                                )
-                                .await;
-                            });
-                        }
-                        Intercept::AskUser => {
-                            // Registers with `pending` (and `open_questions`,
-                            // #515) before emitting the question (#156), so a
-                            // fast answer routes to the parked waiter rather
-                            // than racing a per-task broadcast park.
-                            let pending = pending.clone();
-                            let open_questions = open_questions.clone();
-                            let holly = holly.clone();
-                            tokio::spawn(async move {
-                                crate::ask_user::run_ask_user(
-                                    holly,
-                                    pending,
-                                    open_questions,
-                                    session,
-                                    request_id,
-                                    input,
-                                )
-                                .await;
-                            });
-                        }
-                        Intercept::ProposePlan => {
-                            // Approve spawns a sponsored `build` child of the
-                            // plan session (ADR-0138). The SpawnGuard mutation
-                            // (sponsor check + record) happens synchronously in
-                            // this single-threaded loop — race-free — and only
-                            // the resolved child id reaches the detached task.
-                            let child_events = holly.subscribe();
-                            let registry = registry.clone();
-                            let retained = retained.clone();
-                            let pending = pending.clone();
-                            let holly = holly.clone();
-                            let plan_files = plan_files.clone();
-                            let plan_root = plan_root.clone();
-                            // Bound the sponsored spawn (exempt from the per-root
-                            // fan-out cap, not from depth). A refusal folds back
-                            // as the tool result so the plan turn continues.
-                            let sponsored = match spawn_guard.try_sponsor_spawn(&session) {
-                                Ok(()) => {
-                                    let child = SessionId::new(holly.next_id(IdKind::Session));
-                                    spawn_guard
-                                        .record_sponsored_start(child.clone(), session.clone());
-                                    Some(child)
-                                }
-                                Err(refusal) => {
-                                    let holly = holly.clone();
-                                    let sess = session.clone();
-                                    let rid = request_id.clone();
-                                    tokio::spawn(async move {
-                                        seam::reply(&holly, sess, rid, refusal, true).await;
-                                    });
-                                    None
-                                }
-                            };
-                            if let Some(child) = sponsored {
-                                // Registered with `CancelRegistry` (#513): a
-                                // `Stop` targeting the plan session aborts this
-                                // whole task at any point — the Ask-wait *and*
-                                // the post-approval blocking build-wait — with
-                                // no reply owed (core cancels the turn on the
-                                // same `Stop`). The sponsored build child is a
-                                // separate session with its own tasks, so
-                                // aborting this one never touches it: "detach"
-                                // is simply what an unregistered Stop already
-                                // does here. A head wanting to stop the child
-                                // too sends it a second, explicit `Stop`.
-                                let reg_session = session.clone();
-                                let handle = tokio::spawn(async move {
-                                    crate::propose_plan::run_propose_plan(
-                                        holly,
-                                        pending,
-                                        registry,
-                                        retained,
-                                        child_events,
-                                        plan_files,
-                                        plan_root,
-                                        session,
-                                        request_id,
-                                        input,
-                                        child,
-                                    )
-                                    .await;
-                                });
-                                cancels.register(
-                                    &reg_session,
-                                    TaskCanceller::task(handle.abort_handle()),
-                                );
-                            }
-                        }
-                        Intercept::Discover => {
-                            // Read-only, non-maskable, always-`Allow` (#560,
-                            // ADR-0196 §4) — no permission check, no approval
-                            // round-trip, just a snapshot read and a reply.
-                            let registry_snapshot =
-                                tools.read().expect("tool registry lock poisoned").clone();
-                            let skills_snapshot =
-                                skills.read().expect("skill registry lock poisoned").clone();
-                            let mcp_avail = mcp_avail.clone();
-                            let mcp_active = mcp_active.clone();
-                            let mcp_scopes = mcp_scopes.clone();
-                            let advertising = advertising.clone();
-                            let holly = holly.clone();
-                            if tool == EXPLORE_TOOL {
-                                tokio::spawn(async move {
-                                    discover::run_explore(
-                                        &holly,
-                                        &registry_snapshot,
-                                        &mcp_avail,
-                                        &mcp_active,
-                                        skills_snapshot.as_ref(),
-                                        session,
-                                        request_id,
-                                        input,
-                                    )
-                                    .await;
-                                });
-                            } else if tool == DESCRIBE_TOOL {
-                                tokio::spawn(async move {
-                                    discover::run_describe(
-                                        &holly,
-                                        registry_snapshot,
-                                        skills_snapshot.as_ref(),
-                                        mcp_scopes.as_deref(),
-                                        &advertising,
-                                        session,
-                                        request_id,
-                                        input,
-                                    )
-                                    .await;
-                                });
-                            } else {
-                                debug_assert_eq!(tool, RESPONSES_TOOL_SEARCH_TOOL);
-                                tokio::spawn(async move {
-                                    discover::run_tool_search(
-                                        &holly,
-                                        registry_snapshot,
-                                        &mcp_avail,
-                                        &mcp_active,
-                                        skills_snapshot.as_ref(),
-                                        mcp_scopes.as_deref(),
-                                        &advertising,
-                                        session,
-                                        request_id,
-                                        input,
-                                    )
-                                    .await;
-                                });
-                            }
-                        }
-                        #[cfg(feature = "rhai")]
-                        Intercept::Rhai => {
-                            // The bindings resolve permission live against this
-                            // loop's profile state — captured here as a per-run
-                            // snapshot and moved into the script task. The tool's
-                            // *own* Allow/Ask/Deny is resolved the same way. `rhai`
-                            // keeps the profile/base path (its inner bindings are a
-                            // separate sync mechanism), so it is not routed through
-                            // the pluggable resolver (#311); the sync grant read
-                            // still upgrades its own `Ask`. The escape-root policy
-                            // (ADR-0109) is cloned through too (#446): a file/exec
-                            // binding targeting an out-of-root path is gated by the
-                            // same forced-`Ask` + `ExtraRootStore` grant as a direct
-                            // tool call, not silently hard-refused.
-                            // Root-relative arg normalization (#485, ADR-0125):
-                            // computed from the escape-root policy before it's
-                            // cloned/shadowed below, so an in-root absolute path
-                            // grades identically to its relative spelling here too.
-                            let arg = grading_arg(
-                                &tool,
-                                &input,
-                                escape_root.as_ref().map(|er| er.root.as_path()),
-                            );
-                            let escape_root = escape_root.clone();
-                            let workdir = crate::permission::permission_workdir(&tool, &input);
-                            let (base_self, policy) = {
-                                let active = active.lock().expect("active-profile mutex poisoned");
-                                let base_self = clamp_to_base(
-                                    effective_permission(
-                                        &active,
-                                        &spawn_guard,
-                                        &session,
-                                        &tool,
-                                        arg.as_deref(),
-                                        workdir.as_deref(),
-                                    ),
-                                    &base,
-                                    &tool,
-                                    arg.as_deref(),
-                                    workdir.as_deref(),
-                                );
-                                let policy = crate::script::BindingPolicy::capture(
-                                    &active,
-                                    &spawn_guard,
-                                    &overlays,
-                                    &session,
-                                    &base,
-                                    escape_root.as_ref().map(|er| er.root.as_path()),
-                                );
-                                (base_self, policy)
-                            };
-                            let self_perm =
-                                apply_grant(&*grants, &session, &tool, arg.as_deref(), base_self);
-                            let pending = pending.clone();
-                            // Snapshot the registry *before* spawning (#372): a brief
-                            // read lock, never held across the script's `.await`, so a
-                            // concurrent tool registration/removal is invisible to a
-                            // script already in flight but picked up by the next one.
-                            let tools = tools.read().expect("tool registry lock poisoned").clone();
-                            // A scoped session's script sees its scope's cached MCP
-                            // tools, never the global set (#684) — cached-only: a
-                            // script call must not block this loop on a lazy connect.
-                            let tools = match &mcp_scopes {
-                                Some(scopes) => scopes.overlay_registry_cached(&session, tools),
-                                None => tools,
-                            };
-                            let holly = holly.clone();
-                            // The blocking engine can't be aborted, so pair the
-                            // task abort with a cooperative stop flag its progress
-                            // callback polls (#167).
-                            let stop = Arc::new(AtomicBool::new(false));
-                            let reg_session = session.clone();
-                            let run_stop = stop.clone();
-                            let scripts = scripts.clone();
-                            // A `background: true` script (#637, ADR-0185)
-                            // deliberately survives a session `Stop`, exactly
-                            // as a background `bash`/`call` job does — so it is
-                            // never registered with the canceller. Its only
-                            // kill is `poll`'s `kill: true`, which trips the
-                            // same `stop` flag via the script registry.
-                            let background = crate::script::is_background(&input);
-                            let handle = tokio::spawn(async move {
-                                crate::script::run_rhai(
-                                    holly,
-                                    tools,
-                                    policy,
-                                    self_perm,
-                                    escape_root,
-                                    session,
-                                    request_id,
-                                    pending,
-                                    input,
-                                    run_stop,
-                                    scripts,
-                                )
-                                .await;
-                            });
-                            if !background {
-                                cancels.register(
-                                    &reg_session,
-                                    TaskCanceller::script(handle.abort_handle(), stop),
-                                );
-                            }
-                        }
-                        Intercept::Permission => {
-                            // Snapshot the ancestor chain *before* spawning so it
-                            // stays ordered with the lifecycle events above (and the
-                            // `ToolExec.agent` self-heal); the detached task resolves
-                            // each session's grade through the pluggable resolver
-                            // (#311) and clamps least-privilege across the chain, so
-                            // a child sub-agent can never exceed any ancestor (#77).
-                            // A root (no ancestors) resolves to its own grade; an
-                            // unseen session defaults to `Deny` (fail-closed, #156).
-                            // The DB-backed resolver runs in the task, never the loop.
-                            let chain = ancestor_chain(&spawn_guard, &session);
-                            let resolver = resolver.clone();
-                            // The nearest ancestor-chain link with a live
-                            // overlay entry for this call (#539, ADR-0149;
-                            // `arg_pattern` #611/ADR-0163; chain reach #628),
-                            // resolved before spawning like the chain
-                            // snapshot above: a matching entry replaces the
-                            // profile chain's grade — still ceiling-clamped
-                            // inside `dispatch`, which also has the
-                            // `arg`/`workdir` an `arg_pattern` rule needs to
-                            // resolve against. Walking the whole chain (not
-                            // just `session` itself) is what lets a parent's
-                            // overlay grade reach a child that has none of
-                            // its own, mirroring `tool_mask_source`'s
-                            // per-link existence walk.
-                            let overlay_entry =
-                                crate::permission::overlay_grade_entry(&overlays, &chain, &tool);
-                            let ceiling = base.clone();
-                            // The live registry, cloned (cheap `Arc`) *before*
-                            // the snapshot shadow below — ADR-0201's dispatch-
-                            // time lazy MCP re-enable needs the live handle to
-                            // register into and re-snapshot from, not the
-                            // pre-spawn owned clone `tools` becomes next.
-                            let registry = tools.clone();
-                            let mcp_avail = mcp_avail.clone();
-                            let mcp_active = mcp_active.clone();
-                            let mcp_http = mcp_http.clone();
-                            // Snapshot before spawning (#372) — see the Rhai arm above.
-                            let tools = tools.read().expect("tool registry lock poisoned").clone();
-                            let holly = holly.clone();
-                            let skills = skills.clone();
-                            let active_skill = active_skill.clone();
-                            let grants = grants.clone();
-                            let hooks = hooks.clone();
-                            let pending = pending.clone();
-                            let escape_root = escape_root.clone();
-                            let mcp_scopes = mcp_scopes.clone();
-                            let advertising = advertising.clone();
-                            let validation = validation.clone();
-                            // Register so a `Stop` aborts this task mid-execution:
-                            // aborting the future drops the exec tool's child,
-                            // firing its process-group SIGKILL guard (#167/#168).
-                            let reg_session = session.clone();
-                            let handle = tokio::spawn(async move {
-                                // A scoped session's snapshot swaps its `mcp__*`
-                                // namespace for the scope's own tools (#684),
-                                // lazily connecting the called server with the
-                                // scope's credentials — in the detached task,
-                                // never this loop. A refusal (auth-required,
-                                // connect failure) is the call's tool error.
-                                let tools = match &mcp_scopes {
-                                    Some(scopes) => {
-                                        match scopes
-                                            .overlay_registry_for_call(&session, tools, &tool)
-                                            .await
-                                        {
-                                            Ok(tools) => tools,
-                                            Err(msg) => {
-                                                seam::reply(&holly, session, request_id, msg, true)
-                                                    .await;
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    None => tools,
-                                };
-                                dispatch(
-                                    &holly,
-                                    &tools,
-                                    &skills,
-                                    &active_skill,
-                                    &*resolver,
-                                    &chain,
-                                    &*grants,
-                                    &hooks,
-                                    &pending,
-                                    escape_root.as_ref(),
-                                    overlay_entry,
-                                    &ceiling,
-                                    &advertising,
-                                    &validation,
-                                    &registry,
-                                    &mcp_avail,
-                                    &mcp_active,
-                                    mcp_http.as_ref(),
-                                    session,
-                                    request_id,
-                                    tool,
-                                    input,
-                                )
-                                .await;
-                            });
-                            cancels
-                                .register(&reg_session, TaskCanceller::task(handle.abort_handle()));
-                        }
-                    }
+                    ladder::route_tool_exec(
+                        &ctx,
+                        &mut spawn_guard,
+                        &overlays,
+                        route,
+                        envelope,
+                        session,
+                        request_id,
+                        tool,
+                        input,
+                    )
+                    .await;
                 }
                 Ok(_) => {}
                 // A lagging executor drops broadcast events; the affected turn
@@ -1619,516 +940,6 @@ pub fn spawn_tool_executor_with_policy(
             }
         }
     })
-}
-
-/// Resolve one `ToolExec` per its permission and reply with a `ToolResult`.
-///
-/// The grade comes from the pluggable [`PermissionResolver`] (#311), clamped
-/// least-privilege across the call's ancestor `chain` (the sub-agent ceiling,
-/// ADR-0024) and upgraded from `Ask` to `Allow` by an existing [`GrantStore`]
-/// grant. The DB-backed resolve runs here in the detached task, not the loop.
-///
-/// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
-/// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
-/// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
-// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) — an
-// approved out-of-mask call proceeds through this exact ladder unchanged,
-// the "rest of the ladder" the ADR's single-prompt design relies on.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn dispatch(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    resolver: &dyn PermissionResolver,
-    chain: &[SessionId],
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    pending: &crate::pending::PendingDecisions,
-    escape_root: Option<&EscapeRoot>,
-    // The nearest ancestor-chain link's live overlay entry for this call
-    // (#539, ADR-0149; `arg_pattern` #611/ADR-0163; chain reach #628):
-    // `Some` when a `ToolOverlayEntry` matched the tool at `session` or one
-    // of its ancestors — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
-    // materializes it into a profile that replaces the profile chain's grade
-    // (that override is the overlay's point; the injecting head is trusted),
-    // clamped against `ceiling` below so the config permission ceiling (#172)
-    // still wins.
-    overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
-    ceiling: &PermissionProfile,
-    // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
-    // delivered-schema dedup (shares `advertising.discovered` with `describe`,
-    // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
-    // register into, and to re-snapshot from on success — `tools` above is
-    // an already-cloned snapshot that a fresh registration is invisible to),
-    // the availability roster + connected-server map `enable_for_session`
-    // needs, and the endpoint-pool client its connect rides.
-    registry: &SharedRegistry,
-    mcp_avail: &AvailableMcp,
-    mcp_active: &ActiveServers,
-    http: Option<&entanglement_core::HttpClient>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-) {
-    // A hallucinated tool name can never execute, so reject it *before* the
-    // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
-    // a call that can only fail, `pre_tool_use` vetoes a call that was never
-    // executable, and an `Always`-scoped approval could record a grant for a
-    // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
-    // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
-    // honored exactly as execution itself would see it. `update_tasks` is a
-    // runtime state tool with no registry entry (#231, ADR-0049) —
-    // `run_and_reply` handles it separately — so it's exempt from this
-    // registry check.
-    //
-    // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
-    // hallucination — a resumed session's replay restores its tool-overlay/
-    // permission state (so the call reaches here, never masked) but MCP
-    // registration is process-lifetime, never persisted, so nothing
-    // re-registers on resume. Self-heal by consulting the same three-state
-    // tier `mcp_enable`/`/enable mcp` do before ever reporting "unknown":
-    // reserve that message strictly for a name matching no registered tool
-    // AND no configured/bundled server in any tier.
-    let mut refreshed_tools: Option<ToolRegistry> = None;
-    if !tools.contains(&tool) && !crate::plan_tasks::is_state_tool(&tool) {
-        match crate::mcp::available::server_name_of(&tool) {
-            Some(server) => {
-                match crate::mcp::available::try_lazy_reenable(
-                    mcp_avail, server, &session, registry, mcp_active, http,
-                )
-                .await
-                {
-                    crate::mcp::available::LazyReenableOutcome::Enabled => {
-                        // The enable registered into the *live* `registry`,
-                        // invisible to the already-cloned `tools` snapshot —
-                        // re-fetch it and let the rest of this function run
-                        // against the fresh view (alias rewrite, grading,
-                        // escape-root, hooks, the approval round-trip all
-                        // still apply below, exactly as if the tool had
-                        // been registered all along).
-                        let snap = registry
-                            .read()
-                            .expect("tool registry lock poisoned")
-                            .clone();
-                        if !snap.contains(&tool) {
-                            // Shouldn't happen (enable_for_session just
-                            // registered it) — fail safe, not panic.
-                            let output = snap.unknown_tool_message(&tool);
-                            seam::reply(holly, session, request_id, output, true).await;
-                            return;
-                        }
-                        refreshed_tools = Some(snap);
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Disabled => {
-                        let output = crate::mcp::available::disabled_decline(server);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Failed(msg) => {
-                        seam::reply(holly, session, request_id, msg, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Unknown => {
-                        let output = tools.unknown_tool_message(&tool);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                }
-            }
-            None => {
-                let output =
-                    tool_advertising::unknown_tool_reply(advertising, &session, tools, &tool);
-                seam::reply(holly, session, request_id, output, true).await;
-                return;
-            }
-        }
-    }
-    let tools = refreshed_tools.as_ref().unwrap_or(tools);
-    // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
-    // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
-    // tool is sugar for — must not launder permission through its own
-    // namespaced name (`Tool::alias_rewrite`'s doc). Rewriting *here*, before
-    // grading/escape-root/hooks/the approval round-trip all run, means every
-    // one of them operates on the wrapped tool's real name and merged input —
-    // exactly as if the model had called it directly — with zero special-
-    // casing anywhere else in this pipeline. A tool that never aliases
-    // (everything but `skills::alias_tool::AliasTool`) leaves `(tool, input)`
-    // untouched.
-    let (tool, input) = match tools.get(&tool).and_then(|t| t.alias_rewrite(&input)) {
-        Some(rewritten) => rewritten,
-        None => (tool, input),
-    };
-    // Resolve + apply grants first (matching the pre-seam order where `perm` was
-    // computed before the hook ran), so a grant upgrade and the veto compose the
-    // same way. The tool-specific argument (command/path, #173) lets an
-    // argument-scoped rule resolve against the call. Normalized root-relative
-    // (#485, ADR-0125) so an in-root absolute path grades identically to its
-    // relative spelling and keys the same grant — computed once here and
-    // threaded into `await_decision` below instead of recomputed there, so the
-    // grant lookup (`apply_grant`) and grant record (on approval) provably
-    // share one key.
-    let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
-    let workdir = crate::permission::permission_workdir(&tool, &input);
-    let base_perm = match overlay_entry {
-        Some(entry) => {
-            let overlay_profile = crate::permission::overlay_entry_grade(&tool, &entry);
-            let grade = crate::permission_bash::resolve_scoped_bash_aware(
-                &overlay_profile,
-                &tool,
-                arg.as_deref(),
-                workdir.as_deref(),
-            );
-            clamp_to_base(grade, ceiling, &tool, arg.as_deref(), workdir.as_deref())
-        }
-        None => resolve_effective(resolver, chain, &tool, &input).await,
-    };
-    let perm = apply_grant(grants, &session, &tool, arg.as_deref(), base_perm);
-    if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
-        seam::reply(holly, session, request_id, reason, true).await;
-        return;
-    }
-    // Escape-root gate (ADR-0109): a `read`/`edit`/`write` path or `bash`/`call`
-    // `workdir` that resolves *outside* the project root requires explicit
-    // approval — even when the profile would `Allow` — unless the user already
-    // durably granted this exact `(tool, path)`. A `Deny` floor still wins (the
-    // profile forbade the tool outright), so escaping never *lowers* the bar.
-    // `None` (no escape policy wired) is the pre-ADR-0109 strict-containment path.
-    let escape = escape_root
-        .filter(|_| perm != Permission::Deny)
-        .and_then(|er| er.escaping(&tool, &input).map(|abs| (er, abs)))
-        .filter(|(er, abs)| !er.store.is_durably_allowed(&tool, abs));
-
-    match perm {
-        Permission::Allow if escape.is_none() => {
-            run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
-        }
-        Permission::Deny => {
-            let output = format!("tool `{tool}` denied by permission profile");
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // Either the profile said `Ask`, or an out-of-root access forced one.
-        _ => {
-            // Register the waiter *before* prompting (#156) so the inbound router
-            // can never process the approval before this park exists — the
-            // lag-proof successor to the old "subscribe before prompting"
-            // discipline. The prompt mints a **fresh** per-session seq (#157) from
-            // the parked session's shared counter, so `(session, seq)` stays unique
-            // instead of reusing the `ToolExec` seq.
-            let rx = pending.register(&session, &request_id);
-            let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
-            holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
-                session: session.clone(),
-                seq,
-                request_id: request_id.clone(),
-                tool: tool.clone(),
-                input: escape_grant
-                    .as_ref()
-                    .map(|(_, abs)| {
-                        format!(
-                            "{input}\n\n⚠ accesses a path OUTSIDE the project root: {}",
-                            abs.display()
-                        )
-                    })
-                    .unwrap_or_else(|| input.clone()),
-            });
-            holly.emit_status(&session, AgentState::WaitingApproval);
-            await_decision(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                grants,
-                hooks,
-                advertising,
-                validation,
-                rx,
-                escape_grant,
-                session,
-                request_id,
-                tool,
-                input,
-                arg,
-            )
-            .await;
-        }
-    }
-}
-
-/// Park until the head answers the pending approval, then run-or-refuse. A
-/// `Stop` (Esc-in-approval) unwinds silently: core's `wait_tool_result` sees the
-/// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed
-/// (the shared park/filter is [`crate::seam::await_decision`]). `arg` is the
-/// grading-time argument `dispatch` already computed (#485, ADR-0125) — taken
-/// as a parameter rather than recomputed here, so the grant this records on
-/// approval provably uses the exact same key `apply_grant` looked up before
-/// the prompt was ever shown.
-#[allow(clippy::too_many_arguments)]
-async fn await_decision(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    rx: tokio::sync::oneshot::Receiver<seam::Decision>,
-    escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-    arg: Option<String>,
-) {
-    match crate::pending::await_decision(rx).await {
-        seam::Decision::Approve { scope } => {
-            set_thinking(holly, &session);
-            if let Some((store, abs)) = &escape_grant {
-                // The prompt was forced by an out-of-root access (ADR-0109):
-                // record the approval in the escape-root store so the host tool's
-                // containment check lets *this tool* reach *this path*. Every scope
-                // is recorded (a `Once` becomes the single-use token bound to this
-                // exact `request_id`, #449, so a concurrent call to the same path
-                // can't consume it); `Session`/`Always` also relax future
-                // containment and let the executor skip re-asking. Per-tool by
-                // construction.
-                store.record(&tool, abs, scope, &request_id);
-            } else if scope != ApprovalScope::Once {
-                // Ordinary (in-root) approval: record the wider scopes (#174) so an
-                // identical later call skips this prompt — through the pluggable
-                // [`GrantStore`] (#311). `Once` records nothing.
-                grants.record(&session, &tool, arg.as_deref(), scope).await;
-            }
-            run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
-        }
-        seam::Decision::Reject { reason } => {
-            set_thinking(holly, &session);
-            let output = format!(
-                "tool `{tool}` rejected: {}",
-                reason.as_deref().unwrap_or("user")
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
-        // `Replace` never target a tool-approval request id (they are
-        // `ask_user`-only, #515).
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_and_reply(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-) {
-    // `update_tasks` carries no host resource (#231, ADR-0049): it is not in
-    // the registry. The runtime emits its `TaskList` snapshot — minting a
-    // **fresh** per-session seq (#157) so it takes an ordered place in the
-    // content stream instead of colliding with the parked `ToolExec` seq —
-    // and acks (text), instead of dispatching.
-    if crate::plan_tasks::is_state_tool(&tool) {
-        holly.emit_for_session(&session, |seq| {
-            crate::plan_tasks::state_event(&session, seq, &tool, &input)
-                .expect("is_state_tool ⇒ state_event is Some")
-        });
-        let ack = crate::plan_tasks::ack(&tool);
-        hooks
-            .run_post_tool_use(&session, &tool, &input, &ack, false, None)
-            .await;
-        seam::reply(holly, session, request_id, ack, false).await;
-        return;
-    }
-    // Pre-dispatch argument validation (#560, ADR-0196 §6): a call whose
-    // input violates the tool's advertised schema (missing/unexpected
-    // properties, a type mismatch) never reaches `Tool::run` at all — it gets
-    // a specific complaint instead of `run()`'s opaque parse-failure text.
-    // A tool absent from the registry (a runtime-owned pseudo-tool like
-    // `update_tasks`/`ask_user`/`poll`, already handled above or dispatched
-    // elsewhere) has no advertised schema here, so it's exempt by
-    // construction — nothing to validate against.
-    if let Some(spec) = tools.spec_for(&tool) {
-        if let Some(violation) = arg_validate::validate(&spec.schema, &input) {
-            tracing::warn!(
-                tool = %tool,
-                violation = ?violation.lines(),
-                "tool call failed pre-dispatch schema validation"
-            );
-            let already_delivered = advertising
-                .discovered
-                .lock()
-                .expect("discovered-tool mutex poisoned")
-                .contains(&session, &tool);
-            if !already_delivered {
-                advertising
-                    .discovered
-                    .lock()
-                    .expect("discovered-tool mutex poisoned")
-                    .mark(&session, &tool);
-            }
-            let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
-            let mut output =
-                arg_validate::decline_text_for(&spec, &violation, already_delivered, via_invoke);
-            if validation.note(&session, &tool, &input, true) {
-                output.push_str("\n\n");
-                output.push_str(arg_validate::LOOP_BREAKER_NOTE);
-            }
-            hooks
-                .run_post_tool_use(&session, &tool, &input, &output, true, None)
-                .await;
-            seam::reply(holly, session, request_id, output, true).await;
-            return;
-        }
-    }
-    // Every other tool executes against the host registry, returning multimodal
-    // content (a text result, or an image block for `read` on an image, #221)
-    // plus `is_error` (#636, ADR-0176). `edit`/`write` record their change into
-    // the capture scope (#202); the executor mints a fresh `FileChange` seq
-    // (#157) and broadcasts the audit event before replying with the
-    // `ToolResult`. `duration_ms` is measured around the whole execution —
-    // generic across every host tool, unlike `is_error` which the registry
-    // itself classifies — so a slow `bash`/`call` is visible without either
-    // parsing its `[exit N]` header or threading a bespoke timer through every
-    // `Tool` impl.
-    let started = std::time::Instant::now();
-    let execution = crate::file_change::capture_and_emit(
-        holly,
-        &session,
-        tools.execute(
-            &ToolCall {
-                id: request_id.clone(),
-                name: tool.clone(),
-                input: input.clone(),
-                provider_meta: None,
-            },
-            &session,
-        ),
-    )
-    .await;
-    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let ToolExecution {
-        mut content,
-        is_error,
-        exit_code,
-    } = execution;
-    let mut output_text = entanglement_core::content_text(&content);
-    // Loop-breaker guard (#560, ADR-0196 §6): two identical failing calls in a
-    // row — same tool, same input, both `is_error` — mean the schema was
-    // never the problem. Deliberately generic across every failure kind
-    // (unknown-tool and schema-violation return earlier, above/in `dispatch`;
-    // this covers a runtime tool error and an MCP required-param rejection
-    // alike). A non-error result never triggers the note, matching decision
-    // 3: a command failure (non-zero exit) is untouched.
-    if validation.note(&session, &tool, &input, is_error) && is_error {
-        output_text.push_str("\n\n");
-        output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
-        content.push(entanglement_core::ContentPart::text(format!(
-            "\n\n{}",
-            arg_validate::LOOP_BREAKER_NOTE
-        )));
-    }
-    // #400, ADR-0106 (posture-only since ADR-0194): a successful `load_skill`
-    // records the session's skill-active posture and tells any listening head
-    // via `OutEvent::SkillActive` — parsed from the result's `skill_id:`
-    // header (absent on a failed load: unknown/`user_only` skill, which
-    // leaves any prior posture untouched). It no longer narrows the
-    // session's tool set.
-    if tool == LOAD_SKILL_TOOL {
-        activate_skill(holly, skills, active_skill, &session, &output_text);
-    }
-    // `post_tool_use` (#199) observes the result before it is folded back — a
-    // pure side-effect (formatter/telemetry); it cannot rewrite `content`, but
-    // it now also observes `is_error` (#636) so a hook can branch on outcome
-    // without re-parsing `output`.
-    hooks
-        .run_post_tool_use(&session, &tool, &input, &output_text, is_error, exit_code)
-        .await;
-    seam::reply_content(
-        holly,
-        session,
-        request_id,
-        content,
-        is_error,
-        Some(duration_ms),
-        exit_code,
-    )
-    .await;
-}
-
-/// Record `session`'s skill-active posture (#400, ADR-0106; posture-only
-/// since ADR-0194 — skills no longer mask tools) from a `load_skill` result:
-/// parse its `skill_id:` header, look the skill up in the live registry for
-/// its (now-vestigial, wire-compat-only) `allowed_tools`, and tell any
-/// listening head via [`OutEvent::SkillActive`]. A `result` with no
-/// `skill_id:` header (a failed load) is a no-op — the session keeps
-/// whatever posture was active before.
-fn activate_skill(
-    holly: &Holly,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    session: &SessionId,
-    result: &str,
-) {
-    let Some(skill_id) = parse_skill_id(result) else {
-        return;
-    };
-    let allowed_tools = skills
-        .read()
-        .expect("skill registry lock poisoned")
-        .get(skill_id)
-        .and_then(|s| s.allowed_tools.clone());
-    active_skill
-        .lock()
-        .expect("active-skill mutex poisoned")
-        .insert(session.clone());
-    holly.emit_for_session(session, |seq| OutEvent::SkillActive {
-        session: session.clone(),
-        seq,
-        skill_id: Some(skill_id.to_string()),
-        allowed_tools,
-    });
 }
 
 /// Clear `session`'s skill-active posture (#400, ADR-0106) — the turn's
@@ -2154,71 +965,11 @@ fn clear_active_skill(
     }
 }
 
-// `pub(crate)`: also called from `crate::mask_request` (ADR-0198) on an
-// out-of-mask approval, mirroring the same status blip `await_decision`
-// emits for an ordinary in-mask `Ask`.
-pub(crate) fn set_thinking(holly: &Holly, session: &SessionId) {
-    holly.emit_status(session, AgentState::Thinking);
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_maps_each_orchestration_tool_to_its_route() {
-        assert_eq!(Intercept::classify(AGENT_TOOL), Intercept::Spawn);
-        assert_eq!(Intercept::classify(AGENT_SEND_TOOL), Intercept::AgentSend);
-        assert_eq!(Intercept::classify(POLL_TOOL), Intercept::Poll);
-        assert_eq!(Intercept::classify(ASK_USER_TOOL), Intercept::AskUser);
-        assert_eq!(
-            Intercept::classify(PROPOSE_PLAN_TOOL),
-            Intercept::ProposePlan
-        );
-        assert_eq!(Intercept::classify(EXPLORE_TOOL), Intercept::Discover);
-        assert_eq!(Intercept::classify(DESCRIBE_TOOL), Intercept::Discover);
-        assert_eq!(
-            Intercept::classify(RESPONSES_TOOL_SEARCH_TOOL),
-            Intercept::Discover
-        );
-        #[cfg(feature = "rhai")]
-        assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
-    }
-
-    #[test]
-    fn classify_routes_every_other_tool_to_permission() {
-        // Host-registry tools and runtime state tools take the generic path.
-        for tool in [
-            "read",
-            "write",
-            "edit",
-            "bash",
-            "call",
-            crate::tool_names::UPDATE_TASKS_TOOL,
-            "",
-        ] {
-            assert_eq!(
-                Intercept::classify(tool),
-                Intercept::Permission,
-                "`{tool}` should fall through to the permission dispatch"
-            );
-        }
-    }
-
-    #[test]
-    fn only_orchestration_routes_bypass_permission() {
-        // The spawn/poll/prompt/plan routes touch no host resource; `rhai`
-        // resolves permission itself and the generic path *is* the decision.
-        assert!(Intercept::Spawn.bypasses_permission());
-        assert!(Intercept::AgentSend.bypasses_permission());
-        assert!(Intercept::Poll.bypasses_permission());
-        assert!(Intercept::AskUser.bypasses_permission());
-        assert!(Intercept::ProposePlan.bypasses_permission());
-        assert!(Intercept::Discover.bypasses_permission());
-        #[cfg(feature = "rhai")]
-        assert!(!Intercept::Rhai.bypasses_permission());
-        assert!(!Intercept::Permission.bypasses_permission());
-    }
+    use crate::tool_names::{
+        is_non_maskable, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
+    };
 
     #[test]
     fn explore_and_describe_are_non_maskable() {
@@ -2233,51 +984,5 @@ mod tests {
             "poll's mask exemption was retired by ADR-0192"
         );
         assert!(!is_non_maskable("bash"));
-    }
-
-    /// A resolver that answers a fixed grade per session id (default `Allow`),
-    /// so a test can prove the executor's ancestor clamp (#311, ADR-0024) sits
-    /// *on top of* the pluggable resolver.
-    struct PerSessionResolver(std::collections::HashMap<SessionId, Permission>);
-
-    #[async_trait::async_trait]
-    impl PermissionResolver for PerSessionResolver {
-        async fn resolve(&self, session: &SessionId, _tool: &str, _input: &str) -> Permission {
-            self.0.get(session).copied().unwrap_or(Permission::Allow)
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_effective_clamps_least_privilege_over_the_chain() {
-        let child = SessionId::new("child");
-        let parent = SessionId::new("parent");
-        // The tenant rule *widens* the child to Allow, but its parent resolves
-        // Ask — the chain min must clamp the child back to Ask, so a resolver can
-        // never widen a sub-agent beyond its ancestor.
-        let resolver = PerSessionResolver(
-            [
-                (child.clone(), Permission::Allow),
-                (parent.clone(), Permission::Ask),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        let chain = vec![child.clone(), parent.clone()];
-        assert_eq!(
-            resolve_effective(&resolver, &chain, "bash", "{}").await,
-            Permission::Ask
-        );
-        // A root (single-element chain) resolves to its own grade unchanged.
-        assert_eq!(
-            resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}").await,
-            Permission::Allow
-        );
-        // A parent `Deny` floors the child regardless of the tenant's Allow.
-        let deny_parent =
-            PerSessionResolver([(parent.clone(), Permission::Deny)].into_iter().collect());
-        assert_eq!(
-            resolve_effective(&deny_parent, &chain, "bash", "{}").await,
-            Permission::Deny
-        );
     }
 }

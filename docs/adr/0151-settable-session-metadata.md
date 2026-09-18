@@ -33,7 +33,7 @@ with one deliberate divergence (immediacy):
   tool calls or the session is paused. (A mid-*stream* arrival is still
   deferred by the generic stash-at-next-safe-point mechanism every command
   rides — the session task is single-threaded — same documented scope
-  boundary as ADR-0144's `Pause`.)
+  boundary as ADR-0208's `Pause`.)
 - `OutEvent::SessionMetaChanged { session, name, action }` — always emitted,
   carrying the **full merged** state (both fields as stored, not the delta),
   so a head folds by overwrite. Seq-less lifecycle event like

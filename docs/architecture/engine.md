@@ -19,7 +19,7 @@ state machine in `session/replay_pending.rs`).
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
 `EngineConfig::llm_factory`), the
-active `AgentProfile`, a per-session `seq`, and `turn: Option<TurnState>` — the
+active `Agent`, a per-session `seq`, and `turn: Option<TurnState>` — the
 in-flight turn as **explicit, serde-serializable state** (#270,
 [ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)): `Some`
 while a turn is live (streaming or parked on unresolved tool calls), `None`
@@ -35,15 +35,20 @@ streaming backend directly.
 
 Turn loop (`run_round`, driven by `drive_turn`): assemble `tools` — **every**
 spec `EngineConfig.tool_specs` (or the per-session `tool_spec_resolver`) yields,
-plus the active profile's `profile_tool_specs` entry, with **no filtering**: the
-profile mask, session tool overlay and (formerly) skill `allowed_tools` are enforced
-exclusively at the runtime's dispatch gate — the skill mask is now removed
-entirely ([ADR-0194](../adr/0194-skills-are-additive-only.md): skills are
-additive-only) — so the advertised surface stays
-stable within a session and the provider's prompt cache survives an overlay
-toggle, a `SetAgent`, or a skill load (see [agents &
-permissions](agents-and-permissions.md) §physical tool restriction for the
-attributed decline a masked call gets instead).
+verbatim, with **no filtering**: there is no more per-agent tool mask to
+filter with — [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+retired it along with the rest of `Agent`'s authority fields, and the
+session's permission mode grades every call at dispatch instead — and the
+skill mask is removed too ([ADR-0194](../adr/0194-skills-are-additive-only.md):
+skills are additive-only), so the advertised surface stays stable within a
+session and the provider's prompt cache survives an overlay toggle or a
+skill load. With `Agent` carrying no more authority, the array no
+longer varies by agent either — `propose_plan`/`request_mode` are pushed
+into the base `tool_specs` unconditionally and the `agent`/`agent_send` spawn
+schema is now provably identical regardless of which session asks, so the
+old per-profile `profile_tool_specs` append is retired (see [agents &
+permissions](agents-and-permissions.md) §permission modes for the mode's
+own `Deny`/`Ask` grading and the discovery pair's non-tool kinds).
 
 **Two advertising modes** (`ToolAdvertising`,
 [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
@@ -53,8 +58,12 @@ specs inline, mutating on add/remove (an accepted cache cost). **`ToolSearch`**
 mode (**the default**) advertises instead an **immutable lean kernel**: the
 high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
 `ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
-(`explore`/`describe`) plus the profile-defining specs (the ADR-0192
-carve-out — they vary across profiles, never within a session). Everything
+(`explore`/`describe`) plus `propose_plan`/`request_mode`/`agent`/
+`agent_send` — the old ADR-0192 "profile-defining specs" carve-out no longer
+applies: with `Agent` carrying no authority
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)),
+none of these vary across sessions any more either, so they are simply part
+of the kernel now, not an exception to it. Everything
 else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`, endpoints,
 skill tools) stays **registered but unadvertised** — dispatchable by name the
 moment the model calls it, discoverable via `explore`, schema-delivered via
@@ -155,8 +164,10 @@ identical across every round shape. The prune-only compaction divergence
 and runs nothing inline — the built-ins were removed in #231
 ([ADR-0049](../adr/0049-plan-task-tools-as-runtime-state-tools.md)), and the
 former plan-authority tools (`propose_plan`/`update_tasks`, #513) are now
-ordinary permission-gated runtime state/orchestration tools carried on
-`tool_specs`/`profile_tool_specs`.
+ordinary runtime state/orchestration tools carried on `tool_specs` — the
+former per-profile `profile_tool_specs` append is retired
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)),
+so both are advertised unconditionally to every session.
 Each round-trip's `Finish` is priced against
 `EngineConfig.pricing` (effective model = `session.model` (a live switch) else
 `profile.model` else `default_model`),
@@ -164,9 +175,15 @@ folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 `StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
 [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
 here — the runtime tool executor owns them (§3, §8, ✅ #59). While parked, the
-session loop stashes a `Prompt`/`SetAgent`/`SetModel` for the live turn's fold
+session loop stashes a `Prompt`/`SetModel` for the live turn's fold
 site / replay-after-turn; only the stash gate differs from idle (the stash is
-popped only between turns).
+popped only between turns). `SetMode` is the one exception (#560): it applies
+immediately even while parked — a mode is a label the runtime's tool-dispatch
+gate reads on the *next* call, not something a live round is using, so there
+is nothing to protect by waiting. This is the shape a `propose_plan` approval
+actually hits — `SetMode` then `ToolResult`, both while parked on that very
+call — and deferring it left the continuing turn's next tool call graded
+under the mode the plan was written in, not the one just approved into.
 
 **Live model/provider switch** (✅ #218,
 [ADR-0063](../adr/0063-realtime-model-provider-switch.md)): an idle `SetModel {
@@ -175,38 +192,41 @@ runtime-supplied `Fn(&str,&str) -> Result<ResolvedModel,_>` capturing the catalo
 + warm per-endpoint client, #217), rebuilds `Session::llm`, and retargets the
 per-session `model` (overrides `profile.model` on the request + in pricing) +
 `generation` + the `Context` window budget — no restart. Emits `ModelChanged`
-(unknown provider / missing key → `Error`); deferred mid-turn like `SetAgent`, and
+(unknown provider / missing key → `Error`); deferred mid-turn (rebuilding the
+backend under a live round would be incoherent — unlike `SetMode`, which
+applies immediately, #560), and
 replay re-applies it to re-bind a resumed session. That success arm is factored
-into `Session::rebind`, shared by the live switch and the pin paths below.
+into `Session::rebind`, shared by the live switch and the pin path below.
 
 **Per-profile model pinning** (✅ #323,
-[ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
-reuses that same `rebind`: a `SetAgent` to a profile carrying a **model pin**
-(`AgentProfile::model_pin()` — both `provider` and `model` set) re-binds the
-backend to it, so switching agents can switch endpoints. The rebind lives in
-core's `SetAgent` handler (one locus for Tab cycle / `/agent` / `--agent` /
-spawn / wire) and at **session start** for a pinned starting profile (guarded on
-`Session.provider`/`model` so a child already on its pinned endpoint doesn't
-rebuild). Precedence: per-session memory (`Session.profile_models`, a `/model`
-choice recorded under a profile) **>** the static pin **>** keep the current
-binding — so a pin-less profile with no memory emits no `ModelChanged`, and a
-live override survives an agent switch. `SetAgent` emits `AgentChanged` first
-regardless; a resolver failure surfaces the same `Error` as `SetModel` and keeps
-the old binding. Replay reconstructs `profile_models`/`provider` from the folded
-`ModelChanged` records.
+[ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md),
+narrowed by [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§9 — `SetAgent` itself is deleted, so this is now the *only* rebind locus)
+reuses that same `rebind`: **at session start**, a profile carrying a **model
+pin** (`Agent::model_pin()` — both `provider` and `model` set)
+re-binds the backend to it, so an agent chosen at spawn can pin its own
+endpoint (guarded on `Session.provider`/`model` so a resumed session already
+on its pinned endpoint doesn't rebuild). Precedence: per-session memory
+(`Session.profile_models`, a `/model` choice recorded under a profile) **>**
+the static pin **>** keep the current binding — so a pin-less profile with no
+memory emits no `ModelChanged`. `SessionStarted` emits `AgentChanged`
+first regardless; a resolver failure surfaces the same `Error` as `SetModel`
+and keeps the old binding. Replay reconstructs `profile_models`/`provider`
+from the folded `ModelChanged` records.
 
 **Live generation-parameter changes + per-profile persistence** (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md))
 mirrors the model pin above, but through a **separate** seam:
 `EngineConfig.generation_resolver: Option<GenerationResolver>` (a
 runtime-supplied `Fn(&str) -> Option<GenerationParams>`, keyed by profile
-*name* rather than baked into `AgentProfile` — `GenerationParams`'s
+*name* rather than baked into `Agent` — `GenerationParams`'s
 `temperature: Option<f32>` has no total `Eq`, so it can't join
-`AgentProfile`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
+`Agent`'s `PartialEq + Eq` derive the way the pin's `provider`/`model`
 fields do). `Session.generation` starts at the catalog default
 (`EngineConfig.generation`, resolved from the active model at session
-creation, unchanged from #191) and layers on top of it, at both `SetAgent` and
-session start, with the same three-tier precedence the pin uses: **session
+creation, unchanged from #191) and layers on top of it, at
+session start (the only rebind locus now, mirroring the model pin above),
+with the same three-tier precedence the pin uses: **session
 memory** (`Session.profile_generation`, populated by a live `SetGeneration`
 recorded under that profile — a **full** merged snapshot, not a diff) **>**
 **the resolver's persisted value** (also a full snapshot) **>** **the current
@@ -218,8 +238,8 @@ pin's `Session.model.is_none()` guard). Replay reconstructs
 reconstructs `profile_models` from `ModelChanged`. The runtime's persisted
 store (`AgentGenerationStore`, a managed `agent-generation.yml` sibling of
 `agent-models.yml`) is documented in the heads/persistence doc; unlike
-`AgentModelStore` it has no `apply(&mut ProfileRegistry)` — there is nothing
-on `AgentProfile` to overlay, so its `resolver(...)` builds the
+`AgentModelStore` it has no `apply(&mut AgentCatalog)` — there is nothing
+on `Agent` to overlay, so its `resolver(...)` builds the
 `GenerationResolver` closure directly instead. The TUI `/set`/`/show` surface
 and its persist-on-confirmation write to that store (#376,
 [ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md))
@@ -250,8 +270,19 @@ matches the display instead of continuing as if the model said nothing. Any
 half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
 same stash discipline applies inside the streaming loop and while the turn is
 parked (ADR-0018): a mid-turn `Stop` interrupts, every other queued command
-(`Prompt`, `SetAgent`, …) is pushed onto the replay stash, so a follow-up sent
-while the engine is busy is never silently dropped. A stashed **`Prompt` is additionally
+(`Prompt`, `SetModel`, …) is pushed onto the replay stash, so a follow-up sent
+while the engine is busy is never silently dropped. `SetMode`,
+`SetSessionMeta` and the `ChildSpawned`/`ChildClosed` lineage mirror are the
+exception: they never ride the stash — inside the streaming loop (pre-stream
+wait included) and while parked alike they apply the moment they are
+dequeued (`session::immediate`), so a mid-stream `/mode research` grades the
+tool calls that very round is emitting — see the tool-round-trip section
+above. The stash drains only when a turn ends, so letting the narrator's
+per-tool-call `SetSessionMeta` in used to fill it to its 64-command cap
+during a long turn, and the user's next `Prompt` was refused. Mid-stream the
+user-issued deferrable commands (`Prompt`/`SetModel`/`SetGeneration`/
+`SetToolOverlay`/`Oneshot`) hit the same cap as the idle loop's; lifecycle
+commands (`Hibernate`, `Pause`/`Unpause`, `ToolResult`) are never dropped. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`
@@ -494,8 +525,9 @@ recoverable warning that runs on to its normal `Done`.
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the turn loop above: `run_oneshot` never streams tool calls and
 never parks — it either completes in one round-trip or fails cleanly. Routed
-like `SetAgent`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
-while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
+like `SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
+while `s.turn.is_some()` — unlike `SetMode`, which applies immediately, #560),
+so it only ever runs with no turn in flight — the
 invariant that lets `compact_op` drive a bare `llm.stream(...)` (via
 `session/summary_attempt.rs`'s small `drain` helper that drains the stream for
 `Text` chunks + the `Finish` usage, noting any tool call) instead of going through
@@ -607,14 +639,17 @@ task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
 uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
 
-**Pause is a hold, not a cancel** (#516, [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+**Pause is a hold, not a cancel** (#516, [ADR-0208](../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
 `Session.paused: bool` (never persisted/replayed) is set by
 `SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
 existing gates rather than adding a new code path: every command that already
 checks `s.turn.is_some()` to decide "defer onto the stash" (`Prompt`,
-`SetAgent`, `SetModel`, `SetGeneration`, `Oneshot`) now checks
+`SetModel`, `SetGeneration`, `Oneshot`) now checks
 `s.turn.is_some() || s.paused` — so an *idle* paused session defers its next
-`Prompt` exactly like a live turn defers a mid-turn one. The stash-pop
+`Prompt` exactly like a live turn defers a mid-turn one. `SetMode` is the one
+command that checks neither (#560): a mode is a label, not something a paused
+session's parked batch is actively using, so it applies immediately whether
+paused or not. The stash-pop
 condition at the top of the loop gained a matching `&& !s.paused` guard, or a
 deferred command would be immediately popped back off the queue and
 re-stashed (the same busy-loop the pre-existing "pop only when idle" comment
@@ -627,8 +662,8 @@ batch drains (`TurnState::is_drained`) is skipped while paused, leaving
 `s.turn` "drained but undriven" until `Unpause` drives it. A session
 mid-stream when `Pause` arrives needs **no special handling in `stream.rs`**:
 `Pause`/`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival is
-`stash.push_back`'d by the same generic non-`Stop` branch `SetAgent`/
-`SetModel` already ride, and applied once the round reaches its next safe
+`stash.push_back`'d by the same generic non-`Stop` branch `SetModel`
+already rides, and applied once the round reaches its next safe
 point. `Stop` and `Hibernate` are both unconditional regardless of `paused`
 and neither clears it — `Stop`'s resting-state emit reports `Paused` (not
 `Done`) if the session is still held.
@@ -702,9 +737,8 @@ Refusals (depth, budget, capability) are identical regardless of `background`
 
 **Sub-agent follow-up** (✅ #609, [ADR-0162](../adr/0162-agent-send-supervising-a-sub-agent.md)).
 A child can be talked to more than once: `agent_send { agent_id, prompt,
-background? }` sends `InMsg::Prompt` at an existing child (an `agent` launch
-or a sponsored `propose_plan` build, whose reply now names its `agent_id`
-too, ADR-0162 §5) instead of minting a new `InMsg::Spawn` — the child session
+background? }` sends `InMsg::Prompt` at an existing child launched via `agent`
+instead of minting a new `InMsg::Spawn` — the child session
 task stays alive after its turn ends, so the fresh prompt starts a new turn
 on its accumulated context rather than losing it. No protocol change was
 needed: `collect_child_answer` already ends its wait on any `Done` carrying
@@ -741,40 +775,52 @@ next result — the parent is always the one investigating before it replies,
 never answering blind.
 
 Both reuse the #58 round-trip, so core's turn loop needs no notion of a
-"child session". The runtime executor bounds the spawn
-tree (✅ #76, [ADR-0023](../adr/0023-subagent-spawn-limits.md)): a `SpawnGuard`
-folds parent links from `SessionStarted` and, before each spawn, refuses past a
-depth cap (`MAX_SPAWN_DEPTH`) or a cumulative per-root budget
-(`MAX_SPAWNS_PER_ROOT`) — replying with a clear refusal `ToolOutput` instead of
-starting a child. Spawn is also **permission-gated** (✅ #77,
-[ADR-0024](../adr/0024-subagent-permission-gating.md), `runtime::permission`): every
-child's per-tool permission is clamped to the least-privileged rule across its
-whole ancestor chain (`Deny < Ask < Allow`), so a child can never touch the
-shared tree in ways a parent couldn't. Layered in front of that clamp and the
-ADR-0023 budget is **per-profile spawn control** (✅ #119,
-[ADR-0040](../adr/0040-per-profile-spawn-control.md), `spawn_refusal`): a profile
-must `may_spawn` (a `subagent` leaf like `explore` defaults closed — this absorbs
-ADR-0024's capability gate) and its *target* must be spawnable-mode
-(`subagent`/`all`) and on its `spawnable_agents` allowlist. Filesystem isolation
-(a separate child root) and bidirectional session-to-session messaging are still
-deferred (see ADR-0022/0024).
+"child session". Spawning is bounded by the session's **permission mode**
+now, not the agent
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§6, superseding [ADR-0023](../adr/0023-subagent-spawn-limits.md)/[ADR-0040](../adr/0040-per-profile-spawn-control.md)):
+the old per-profile `can_spawn`/`spawnable_agents` gates and the
+process-global `MAX_SPAWN_DEPTH`/`MAX_SPAWNS_PER_ROOT` constants are gone —
+`agent`/`agent_send` are `Capability::Control`, so spawning is never
+permission-graded at all, and **any agent may spawn any registered agent**.
+What bounds it instead is two mode facts applying to the session's whole
+spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents` (concurrent
+children per root — held from spawn until the child's answer arrives, never
+a cumulative budget), both `Option<u32>` on the mode's `Limits` — undefined
+means unlimited — enforced by `SpawnGuard::try_spawn`, which still folds
+parent links from `SessionStarted` and replies with a clear refusal
+`ToolOutput` naming the limit instead of starting a child.
+`runtime::permission::spawn_refusal(target, registry)` is reduced to the one
+check left: does `target` resolve to a real, registered agent. Spawn stays
+**mode-gated** in a different sense than before, via `ancestor_chain`: a
+pluggable, embedder-supplied `PermissionResolver` (§permission modes in
+[agents & permissions](agents-and-permissions.md)) can still vary per
+session (a per-user ceiling, say), so `tool_runner::resolve_effective` folds
+every session in the chain to the least-privileged grade
+(`Deny < Ask < Allow`) rather than trusting only the leaf — for the built-in
+`ModeResolver`, every session in one spawn tree already shares the
+identical mode (§6), so this clamp is a no-op there and matters only for a
+custom resolver. Filesystem isolation (a separate child root) and
+bidirectional session-to-session messaging are still deferred (see
+ADR-0022/0024).
 
-**Roster disclosure** (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md);
-scoped ✅ #119, [ADR-0040](../adr/0040-per-profile-spawn-control.md)).
+**Roster disclosure** (✅ #112, [ADR-0034](../adr/0034-file-based-agent-definitions.md),
+unscoped by [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§6, superseding [ADR-0040](../adr/0040-per-profile-spawn-control.md)).
 The `agent` tool description carries one `name: description` line per
-spawnable agent, and the `agent` argument's schema constrains the name to an
+registered agent, and the `agent` argument's schema constrains the name to an
 `enum` — so the model learns *who it may spawn* at the call site, and
 `description` is the one field of a definition ever exposed to a parent. The
-roster + enum are now **per-profile**: `subagent::spawn_specs_for` scopes them to
-exactly the profiles the spawning profile may target (its `spawnable_agents` ∩ the
-target-mode gate), and the single `agent` spec lives in
-`EngineConfig.profile_tool_specs` (empty when the profile may not spawn), so a
-`primary` like `build`/`plan` is never advertised as a target and an out-of-list
-spawn is a schema violation before an executor refusal. The related supervisor
-wart is fixed too: an `InMsg::Spawn` naming an unknown profile now emits a
-supervisor `Error` instead of silently resolving to the `build` default. (The
-#116 tool mask restricts each agent's *tool* set — a different axis than which
-agents it may spawn.)
+roster + enum are now **identical for every session** — `subagent::agent_specs`
+is provably the same regardless of which profile asks, since there is no
+more per-profile `spawnable_agents` to scope it by — so the `agent` spec
+rides the shared, session-stable `tool_specs` directly, with no more
+per-profile `profile_tool_specs` append: nothing about the array varies by
+agent any more. The `agent` tool also gained a `model` parameter, validated
+against the catalog, so a spawn can pin its child's model directly. The
+related supervisor wart is fixed too: an `InMsg::Spawn` naming an unknown
+profile emits a supervisor `Error` instead of silently resolving to a
+default.
 
 **Ask-user prompt** (✅ #90, [ADR-0027](../adr/0027-ask-user-interactive-prompt.md);
 v2 #488, [ADR-0127](../adr/0127-ask-user-v2-multi-question-envelope.md);
@@ -812,10 +858,11 @@ option, else a canned note) so it never parks; `pipe` forwards the questions and
 accepts the answers as-is — neither has a draft step, since both resolve the
 whole call in one shot.
 
-**Plan acceptance, file-backed with a blocking review loop — `propose_plan`**
-(✅ #141/#513, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md),
-amended by [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
-and [ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)).
+**Plan acceptance, file-backed, approval as a mode switch — `propose_plan`**
+(✅ #141/#513, [ADR-0042](../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)/[ADR-0145](../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
+[ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§7 **retires** [ADR-0138](../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+wholesale — no sponsored child, no permission root, no blocking build wait).
 The plan agent calls a runtime-owned `propose_plan(content: Option<String>,
 path: Option<String>)` — **exactly one** of the two. `content` materializes
 (or overwrites) `.entanglement/plans/<short-session-id>.md`; `path` binds an
@@ -824,10 +871,14 @@ touched it (a session-scoped content-hash staleness guard,
 `entanglement-runtime/src/plan_files.rs`, kept fresh by `propose_plan` itself
 plus a passive listener on the executor's `FileChange` audit for the
 session's own `edit`/`write`). A malformed or stale call replies immediately
-with **no** approval prompt. Otherwise the executor (`propose_plan.rs`)
-intercepts it on `ToolExec` — after the #116 mask check, same family as
-`ask_user` — and **force-parks it on the `Ask` path unconditionally, every
-phase** (a profile can never `Allow` it; user approval *is* the semantics),
+with **no** approval prompt. `propose_plan` carries `Capability::Plan`
+(ADR-0207 §3/§7): a mode denying it (`research`/`build`/`auto` in the
+built-in table) declines the call flat — naming the mode and the way out —
+**before** any file is touched or an approval is ever parked; a mode
+allowing it (`plan`'s own `Allow`) still force-parks unconditionally, since
+approval *is* the tool's semantics and no mode may `Allow` past it.
+Otherwise the executor (`propose_plan.rs`) intercepts it on `ToolExec` —
+after the capability check above, same interception family as `ask_user` —
 first emitting an `OutEvent::Plan { content, path }` snapshot for the plan
 session's own display, then a standard `OutEvent::ToolRequest` carrying the
 resolved `{content, path}` JSON regardless of which the model sent.
@@ -845,47 +896,42 @@ mismatch both self-heals the registry (so the guard doesn't also refuse the
 next resubmit) and emits a session-scoped `OutEvent::PlanChanged { path, hash
 }`, which the TUI folds into the session's transcript as a durable notice.
 
+**Approve** — the entire ADR-0138 mechanism this used to trigger is gone: no
+`SpawnGuard` sponsor mutation, no child session, no `WaitingAgent` block, no
+folded-back build report. The executor instead sends `InMsg::SetMode` on the
+**plan session itself** and replies at once, naming the plan file and the mode
+it switched to; the same turn continues, implementing the plan directly.
 
+**Which mode is the approver's choice** (#560): `InMsg::Approve` carries an
+optional `mode`. The prompt offers `[u]` accept → `auto`, `[b]` accept →
+`build`, `[n]` reject. A bare accept (no `mode`) goes to `auto`, since
+accepting a plan usually means "go do it" and `auto` is bounded by its budgets,
+its timeout and a deny list covering every network-mutating command. An
+unrecognised value fails *safe* to `build` rather than open to `auto` — a
+mistyped cautious choice must not run a plan unattended. `propose_plan` may
+*suggest* `build` or `auto` through its own optional `mode` argument; that only
+pre-selects the option and never decides.
 
-**Approve** spawns a **sponsored** `build` child of the plan session
-(ADR-0138) — a parent-child link (result return, session-tree visibility)
-whose permission resolution **stops at the child**: its own profile stands,
-no ADR-0024 ancestor clamp, no ADR-0023 fan-out budget drain (sponsored
-spawns are exempt, sequential and user-authorized). The `SpawnGuard`
-mutation (sponsor check + `record_sponsored_start`) happens in the tool
-executor's single-threaded loop before the detached task. The accepted plan
-reaches the child verbatim as its first prompt (`wrap_plan`) and as its own
-`OutEvent::Plan` snapshot; the plan session parks on `WaitingAgent`
-(ADR-0139) and the task `.await`s the child's *genuine* completion
-(`collect_child_answer`, which keeps waiting past an errored build turn with
-no usable answer instead of concluding on top of a failed build — ADR-0155,
-#562) — registered with `crate::cancel::CancelRegistry`
-(#513), so a `Stop` on the plan session aborts this wait with no reply owed
-and the child (an independent session) keeps running untouched — "detach" by
-default; a head wanting the child stopped too sends it an ordinary second
-`Stop` ("cascade", no new protocol surface). `InMsg::Spawn`/
-`OutEvent::SessionStarted`/`SessionInfo` carry a `sponsored: bool`
-(`#[serde(default)]`, set only here) so a head can disambiguate
-`WaitingAgent`'s two callers — this sponsored build wait vs. a plain blocking
-`agent`/`agent_send` sub-agent wait — before deciding whether to offer that
-choice; the TUI does, via a confirm modal on `Stop` (#626, ADR-0172). The
-build's answer folds back —
-prefixed with the plan file's location — as the `propose_plan` tool result,
-so the plan agent has the implementation outcome in context: it reviews it,
-updates the plan file's checkboxes via `write`/`edit`, and `propose_plan`s
-the next phase (`path`, reusing the same file) or stops. **Reject + reason**
-folds `tool \`propose_plan\` rejected (plan file: <path>): <reason>` back,
-still naming the file (materialized either way — rejection is about the
-*proposal*, not the file). One-shot `run`/`pipe` can't park an approval, so
-they auto-reject `propose_plan` with a "non-interactive head" reason (the
-plan agent still learns the outcome in-band and can revise).
+The switch takes effect **immediately**, not at turn end: `SetMode` is applied
+the moment it is dequeued, so the tool calls the continuing turn makes are
+graded under the new mode. (It used to be stashed while a turn was live, which
+left the post-approval turn running in `plan` mode with `write` still denied.)
+The model's next request carries `[mode: auto — changed from plan]` once, then
+the plain notice. Core cascades the `SetMode` over the session's whole live
+spawn sub-tree (§6: mode applies uniformly, no per-spawn override), so a plan
+session with running children switches them too.
 
-The build session is a sponsored **child**, not the pre-ADR-0138 disconnected
-root: the parent link is what lets the answer fold back and the plan agent
-cycle, and sponsorship (not inheritance) is what keeps it able to
-`edit`/`write` despite `plan`'s own read-only mask. The handoff is entirely
-**runtime** policy now — no head-side recipe, so pipe/WS heads get it for
-free with zero head-specific code.
+Headless `run` still **auto-rejects** every plan, even under `--mode auto`:
+accepting a plan unattended would let a bounded run revise its own plan and
+proceed, which is a different thing from executing a plan a person approved.
+
+A multi-phase plan → build → review loop is: work in `build` or `auto`, `/mode
+plan` to go back when the plan needs revising, edit the file, `propose_plan`
+again. Going back is the user's action — `request_mode` only ever *widens*, so
+it cannot move `build → plan`. **Reject + reason** folds `tool \`propose_plan\`
+rejected (plan file: <path>): <reason>` back, still naming the file
+(materialized either way — rejection is about the *proposal*, not the file);
+the model revises and re-proposes in the same turn.
 
 **Sandboxed script tool — `rhai`** (✅ #122,
 [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)). The model calls
@@ -904,16 +950,19 @@ The only capabilities bound are the root-contained quintet as script functions �
 `read`/`glob`/`grep`/`edit`/`write` (with the tools' overloads) — each
 **delegating to the registered `Tool` impl** (so root containment + bounded output
 come for free) and resolving permission **per call exactly like a `ToolExec`**:
-`Deny` or a #116 mask throws a catchable script exception; `Allow` runs; `Ask`
-parks the script on the standard `ToolRequest` → `Approve`/`Reject` round-trip,
-**resolved once per function per run** (the first `edit` asks; approval covers the
-rest). Because the bindings *are* the always-registered quintet, `rhai` is
-precisely as privileged as those tools — so it is registered by default in the
-shared `tool_specs`, and a profile gates it like any tool (a profile whose
-`tools` allowlist omits `rhai` has the call declined at dispatch; the read-only
-`explore`/`research` profiles grade it `Ask` instead). The executor intercepts `rhai`
-before the generic dispatch (it needs the per-session profile state to snapshot
-each binding's mask + clamped permission); its *own* Allow/Ask/Deny is resolved
+a `Deny` from the session's permission mode throws a catchable script
+exception; `Allow` runs; `Ask` parks the script on the standard `ToolRequest`
+→ `Approve`/`Reject` round-trip, **resolved once per function per run** (the
+first `edit` asks; approval covers the rest). Because the bindings *are* the
+always-registered quintet, `rhai` is precisely as privileged as those tools —
+so it is registered by default in the shared `tool_specs`, and it is itself a
+multi-`Capability` tool (`Read`+`Write`+`Exec`,
+[ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+§3), so a mode denying any of those classes declines it, and `research`
+mode's curated posture grades it `Ask` like the exec tools rather than
+outright denying it. The executor intercepts `rhai`
+before the generic dispatch (it needs the session's live mode + overlay state
+to snapshot each binding's grade); its *own* Allow/Ask/Deny is resolved
 the same way as any host tool. Rhai's engine is sync, so the script runs under
 `spawn_blocking` and each binding crosses a small **bridge** — `mpsc` request +
 `oneshot` reply — to the async resolver on the executor task; the timeout is

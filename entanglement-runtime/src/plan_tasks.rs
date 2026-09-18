@@ -4,14 +4,12 @@
 //! state: each call replaces the session's *display* task outline and the
 //! runtime emits the corresponding [`OutEvent::TaskList`] snapshot. It rides
 //! the ordinary `Allow`/`Ask`/`Deny` permission path with no special casing —
-//! the #175 read-only-mutation bug is closed by that gate together with the
-//! #116 tool mask (a read-only profile's allowlist omits it and its permission
-//! denies it).
+//! the #175 read-only-mutation bug is closed by that gate: a read-only
+//! session's permission mode (ADR-0207) denies the call.
 //!
 //! `update_tasks` is general bookkeeping and rides the shared `tool_specs`, so
-//! it is advertised to every profile (unlike plan authorship, which is
-//! default-closed and per-profile — see `propose_plan::specs_for`, #513,
-//! ADR-0145); a read-only profile's mask declines the call at dispatch.
+//! it is advertised to every session; a read-only mode declines the call at
+//! dispatch.
 //!
 //! Seq note (#157): the runtime emits the `TaskList` snapshot with a **fresh**
 //! per-session seq minted from the session's shared counter via
@@ -21,7 +19,7 @@
 //! [`state_event`] itself is a pure builder that stamps whatever seq the caller
 //! mints.
 
-use entanglement_core::{AgentProfile, OutEvent, SessionId, ToolSpec};
+use entanglement_core::{OutEvent, SessionId, ToolSpec};
 
 use crate::tool_names::UPDATE_TASKS_TOOL;
 
@@ -50,17 +48,6 @@ pub fn update_tasks_spec() -> ToolSpec {
             "required": ["content"]
         }),
     )
-}
-
-/// Whether `profile` *explicitly* names `tool` in its `tools` allowlist. An
-/// inherit-all (`tools: None`) profile does **not** count — the default-closed
-/// gate `propose_plan::specs_for` uses for plan authorship (#231, ADR-0049;
-/// #513, ADR-0145). Deliberately literal-exact even though mask entries are
-/// wildcard patterns since #537 — a glob (`"*"`, `"propose_*"`) widens the mask
-/// without silently granting plan authorship, exactly as `tools: None` already
-/// doesn't.
-pub fn explicitly_allowlists(profile: &AgentProfile, tool: &str) -> bool {
-    matches!(&profile.tools, Some(list) if list.iter().any(|t| t == tool))
 }
 
 /// The snapshot `OutEvent` a state-tool call emits, parsed from its `content`
@@ -98,24 +85,6 @@ pub fn parse_content(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::{AgentMode, Permission, PermissionProfile};
-
-    fn profile(tools: Option<Vec<&str>>) -> AgentProfile {
-        AgentProfile {
-            name: "x".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        }
-    }
 
     #[test]
     fn parse_content_reads_json_field_and_degrades_to_raw() {
@@ -132,32 +101,5 @@ mod tests {
         ));
         assert!(state_event(&s, 5, "read", "{}").is_none());
         assert!(state_event(&s, 5, "propose_plan", "{}").is_none());
-    }
-
-    #[test]
-    fn explicitly_allowlists_requires_exact_membership() {
-        assert!(!explicitly_allowlists(&profile(None), "propose_plan"));
-        assert!(!explicitly_allowlists(
-            &profile(Some(vec!["read"])),
-            "propose_plan"
-        ));
-        assert!(explicitly_allowlists(
-            &profile(Some(vec!["read", "propose_plan"])),
-            "propose_plan"
-        ));
-    }
-
-    #[test]
-    fn explicitly_allowlists_never_matches_a_glob() {
-        // #537: a wildcard widens the #116 mask but is not an explicit plan
-        // opt-in — plan authorship stays default-closed under `"*"`.
-        assert!(!explicitly_allowlists(
-            &profile(Some(vec!["*"])),
-            "propose_plan"
-        ));
-        assert!(!explicitly_allowlists(
-            &profile(Some(vec!["propose_*"])),
-            "propose_plan"
-        ));
     }
 }

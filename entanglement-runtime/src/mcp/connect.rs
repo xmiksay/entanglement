@@ -137,7 +137,7 @@ pub async fn connect(
         match result {
             Ok((client, defs)) => {
                 let count = defs.len();
-                let tools = register_tools(registry, &client, &name, defs);
+                let tools = register_tools(registry, &client, &name, defs, &cfg.capabilities);
                 tracing::info!("MCP server `{name}`: registered {count} tool(s)");
                 active.insert(
                     name.clone(),
@@ -245,16 +245,21 @@ pub fn needs_auth(name: &str, cfg: &McpServerConfig) -> bool {
 
 /// Register every discovered tool def into `registry`, synchronous (no
 /// `.await`) so it is safe to run under a held write lock. Returns the
-/// registered (already-namespaced) tool names.
+/// registered (already-namespaced) tool names. `capabilities` is the
+/// server's own config-side `capabilities:` annotation map (ADR-0117),
+/// forwarded straight to [`McpTool::new`] so each registered tool grades by
+/// its declared read/write/call capability instead of the old fail-safe-only
+/// `Write` (ADR-0207 §3).
 pub(crate) fn register_tools(
     registry: &mut ToolRegistry,
     client: &Arc<McpClient>,
     name: &str,
     defs: Vec<McpToolDef>,
+    capabilities: &HashMap<String, String>,
 ) -> Vec<String> {
     defs.into_iter()
         .map(|def| {
-            let tool = McpTool::new(client.clone(), name, def);
+            let tool = McpTool::new(client.clone(), name, def, capabilities);
             let tool_name = tool.name().into_owned();
             registry.register(tool);
             tool_name

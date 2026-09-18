@@ -42,7 +42,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use sse::{handle_frame, parse_frame, PendingTool};
 
-pub(crate) use request::coalesce_same_role;
+pub(crate) use request::{append_final_user_block, coalesce_same_role};
 
 /// Default base — no path — mirroring [`crate::openai::OPENAI_BASE`]/
 /// [`crate::gemini::GEMINI_BASE`]. A catalog `base_url` (a proxy/gateway
@@ -149,6 +149,7 @@ impl Llm for AnthropicLlm {
             self.web_search.as_ref(),
             self.web_search_tool_version.as_deref(),
             self.model_spec,
+            req.trailing_notice.as_deref(),
         );
         // The original conversation's wire `messages` — the base a `pause_turn`
         // continuation replays from, plus its own accumulated trailing turn.

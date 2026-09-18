@@ -153,6 +153,11 @@ impl<'a> CompactionRequest<'a> {
             generation,
             cache_key: self.cache_key,
             retry,
+            // Compaction's own trailing instruction (`NO_TOOLS`, above) is
+            // already folded into `messages` so the structured shape stays
+            // byte-identical to a turn's request up to that instruction
+            // (ADR-0202 §4) — the mode notice has no place here.
+            trailing_notice: None,
         }
     }
 }

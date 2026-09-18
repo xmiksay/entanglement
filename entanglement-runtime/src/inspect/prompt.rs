@@ -1,7 +1,7 @@
 //! `skutter inspect prompt` (#184).
 //!
 //! The prompt each agent ships (preamble + body + brief + env + skill index +
-//! preloaded skills) is baked into `AgentProfile.system_prompt` at load and was
+//! preloaded skills) is baked into `Agent.system_prompt` at load and was
 //! observable nowhere. This subcommand runs the *same* discovery
 //! ([`crate::system_prompt::PromptContext::load`] + skill/agent registries) that
 //! startup does, **without spawning the engine**, and prints the resolved prompt.
@@ -33,7 +33,7 @@ pub fn inspect_prompt(cwd: &Path, agent: &str, parts: bool) -> Result<()> {
     if parts {
         print!("{}", render_prompt_parts(agent, &ctx, &report));
     } else {
-        println!("{}", report.profile.system_prompt);
+        println!("{}", report.agent.system_prompt);
     }
     Ok(())
 }
@@ -49,11 +49,10 @@ pub(super) fn render_prompt_parts(
     let mut out = String::new();
     let _ = writeln!(out, "agent:  {agent}");
     let _ = writeln!(out, "source: {}", report.source);
-    let _ = writeln!(out, "mode:   {:?}", report.profile.mode);
     let _ = writeln!(
         out,
         "assembled: {} chars across {} part(s)\n",
-        report.profile.system_prompt.len(),
+        report.agent.system_prompt.len(),
         report.parts.len()
     );
 

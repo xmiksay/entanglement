@@ -10,7 +10,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::TurnState;
 use crate::context::Context;
-use crate::protocol::{AgentProfile, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::holly::DEFAULT_MODE;
+use crate::protocol::{Agent, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
@@ -18,7 +19,7 @@ use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 /// [`Context`], the provider LLM backend (`llm`, a plain `Box<dyn Llm>` — the
 /// resilience state it references is keyed per endpoint in the provider, not per
 /// session, so there is no session-scoped handle to wrap it, #195/ADR-0062), the
-/// active profile,
+/// active agent,
 /// and the emit sequence — nothing pointing at the filesystem or a fixed tool
 /// set. Plan/task snapshots are the runtime's display state, not engine state
 /// (#231, ADR-0049), so the session carries neither. The tool schemas advertised
@@ -27,50 +28,66 @@ use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 pub struct Session {
     pub ctx: Context,
     pub llm: Box<dyn Llm>,
-    pub profile: AgentProfile,
+    pub agent: Agent,
+    /// The session's permission **mode** (ADR-0207) — an opaque name core
+    /// carries and replays but never evaluates; the runtime owns the table it
+    /// resolves against. Independent of [`agent`][Self::agent]: switching
+    /// one never changes the other. Defaults to
+    /// [`DEFAULT_MODE`][crate::holly::DEFAULT_MODE], set by
+    /// [`SetMode`][super::SessionCmd::SetMode] and reconstructed on replay from
+    /// [`ModeChanged`][crate::protocol::OutEvent::ModeChanged] records
+    /// (last write wins).
+    pub mode: String,
+    /// Pending permission-mode **transition** marker (#560 follow-up): the
+    /// mode `mode` held immediately before its most recent unconsumed
+    /// `SetMode`, set only when that switch actually changed `mode` (a
+    /// `SetMode` to the current value leaves this untouched). `Some(prev)`
+    /// until the next request's trailing notice consumes it
+    /// (`mode::mode_notice_with_transition`, `stream.rs`) and resets it to
+    /// `None`, so the model is told about a mode change exactly once, on the
+    /// very next round, and sees the plain `[mode: X]` form every round
+    /// after. Several `SetMode`s landing before that next round (a
+    /// `propose_plan` approval cascade, a fast re-typed `/mode`) collapse
+    /// into one notice naming the *original* mode and the *final* one: only
+    /// the first unconsumed switch in a stretch ever writes this field
+    /// (`Option::get_or_insert_with`); later switches in the same window just
+    /// keep advancing `mode` itself.
+    ///
+    /// Deliberately **not persisted or replayed** — like [`mode`][Self::mode]'s
+    /// own notice (see `mode.rs`'s module doc on the pairing hazard, and its
+    /// own doc above `mode_notice_with_transition`), a resumed session has no
+    /// live "next round" to attach a transition to, so it simply shows the
+    /// plain notice; reconstructing this on replay would invent a semantics
+    /// nothing calls for.
+    pub mode_transition_from: Option<String>,
     /// Effective model id when the user switched model/provider mid-session
-    /// (#218), overriding the profile's pinned [`AgentProfile::model`] on every
-    /// request and in pricing. `None` keeps the profile's model (the startup
+    /// (#218), overriding the agent's pinned [`Agent::model`] on every
+    /// request and in pricing. `None` keeps the agent's model (the startup
     /// default). Set by [`SessionCmd::SetModel`][super::SessionCmd]; reset only by
     /// another switch.
     pub model: Option<String>,
     /// Catalog provider name the session's [`llm`][Self::llm] is currently bound
-    /// to (#323, ADR-0081). Tracked so a per-profile pin re-bind on `SetAgent`
-    /// can no-op when the target `(provider, model)` already matches the live
-    /// binding — a child spawned straight onto its pinned endpoint never
-    /// rebuilds. `None` until the first pin/switch (the startup default, whose
-    /// provider name core is not told).
+    /// to (#323, ADR-0081). `None` until the first pin/switch (the startup
+    /// default, whose provider name core is not told).
     pub provider: Option<String>,
-    /// Per-profile model choices made via
-    /// [`SetModel`][super::SessionCmd::SetModel] this session (#323, ADR-0081):
-    /// profile name → the resolved `(provider, model)`. This is the
-    /// session-memory layer that wins over a profile's static
-    /// [`model_pin`][crate::protocol::AgentProfile::model_pin] when `SetAgent`
-    /// switches back to that profile, so a live `/model` choice sticks per profile
-    /// for the life of the session. Reconstructed on replay from the
-    /// [`ModelChanged`][crate::protocol::OutEvent::ModelChanged] records.
-    pub profile_models: HashMap<String, (String, String)>,
     /// Effective generation knobs for the active model (#218). Seeded from
     /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
     /// on a model switch so temperature / max-output / thinking follow the model.
     pub generation: Option<GenerationParams>,
-    /// Per-profile generation choices made via
-    /// [`SetGeneration`][super::SessionCmd::SetGeneration] this session (#374,
-    /// ADR-0094) — the generation-parameter analogue of
-    /// [`profile_models`][Self::profile_models] (#323, ADR-0081). Keyed by
-    /// profile name, holding the **full** merged effective params (not a partial
-    /// override), so a `SetAgent` switch back to that profile re-applies it
-    /// verbatim, winning over the profile's persisted/catalog default.
-    /// Reconstructed on replay from
+    /// This session's live [`SetGeneration`][super::SessionCmd::SetGeneration]
+    /// choice, if any (#374, ADR-0094): keyed by the (fixed-for-life, ADR-0207
+    /// §9) active agent name, holding the **full** merged effective params
+    /// (not a partial override). Consulted only at session start, to keep a
+    /// resumed session's replay-reconstructed live override from being
+    /// silently re-clobbered by `EngineConfig::generation_resolver`'s
+    /// persisted default. Reconstructed on replay from
     /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
     /// records.
-    pub profile_generation: HashMap<String, GenerationParams>,
+    pub generation_by_agent: HashMap<String, GenerationParams>,
     /// The session's live tool overlay (#539, ADR-0149): patterns a trusted
     /// head injected via [`SetToolOverlay`][super::SessionCmd::SetToolOverlay]
     /// whose matching tools are advertised **in addition to** (and regardless
-    /// of) the active profile's #116 mask. Session-scoped — it survives a
-    /// `SetAgent` profile switch by design (that is its whole point) and is
-    /// reconstructed on replay from
+    /// of) the active agent's #116 mask. Reconstructed on replay from
     /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
     /// records. Empty by default (no overlay).
     pub tool_overlay: Vec<ToolOverlayEntry>,
@@ -107,14 +124,6 @@ pub struct Session {
     /// API key instead of the process-global one. Reconstructed on replay from
     /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted].
     pub user: Option<UserId>,
-    /// Sponsored `propose_plan` build child (ADR-0138) vs. a plain sub-agent
-    /// spawn (#626) — mirrors [`InMsg::Spawn`][crate::protocol::InMsg::Spawn]'s
-    /// `sponsored`. Set once at spawn, never mutated, like
-    /// [`parent`][Self::parent]. Reconstructed on replay from
-    /// [`SessionStarted`][crate::protocol::OutEvent::SessionStarted] so a head
-    /// resuming a hibernated plan/build pair can still disambiguate
-    /// `AgentState::WaitingAgent`'s two callers.
-    pub sponsored: bool,
     /// Cumulative token usage + cost across every model round-trip this session
     /// has run (#192). Each `LlmEvent::Finish` folds its normalized `Usage` in
     /// here and emits the per-round-trip delta as [`OutEvent::Usage`].
@@ -145,7 +154,7 @@ pub struct Session {
     /// `new_empty`/`replay` in a test); such a session simply cannot fork.
     pub(crate) engine: Option<mpsc::Sender<InMsg>>,
     /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
-    /// ADR-0144). Deliberately **not** persisted/replayed — like `Stop`'s
+    /// ADR-0208). Deliberately **not** persisted/replayed — like `Stop`'s
     /// cancel, a pause is ephemeral engine-loop state, not committed
     /// conversation content, so `Session::replay` always reconstructs `false`
     /// (a hibernate-then-resume cycle drops a pending pause, same as it drops
@@ -167,26 +176,26 @@ pub struct SessionUsage {
 }
 
 impl Session {
-    /// Creates a new empty session with the given configuration and profile.
-    pub fn new_empty(cfg: &EngineConfig, profile: AgentProfile) -> Self {
+    /// Creates a new empty session with the given configuration and agent.
+    pub fn new_empty(cfg: &EngineConfig, agent: Agent) -> Self {
         Self {
             // Budget the history against the active model's real context window
             // (#178), not a fixed Anthropic-shaped ceiling.
             ctx: Context::with_window(cfg.context_window),
             llm: (cfg.llm_factory)(),
-            profile,
+            agent,
+            mode: DEFAULT_MODE.to_string(),
+            mode_transition_from: None,
             model: None,
             provider: None,
-            profile_models: HashMap::new(),
             generation: cfg.generation,
-            profile_generation: HashMap::new(),
+            generation_by_agent: HashMap::new(),
             tool_overlay: Vec::new(),
             seq: Arc::new(AtomicU64::new(0)),
             parent: None,
             children: Vec::new(),
             predecessor: None,
             user: None,
-            sponsored: false,
             usage: SessionUsage::default(),
             turn: None,
             name: None,
@@ -199,9 +208,9 @@ impl Session {
     /// Apply a re-resolved model to this session and announce it (#323, ADR-0081
     /// — the factored-out `SetModel` success arm, #218). Rebuilds the backend,
     /// retargets the effective model + generation + context-window budget, tracks
-    /// the bound [`provider`][Self::provider] (for the pin no-op guard), and emits
-    /// [`OutEvent::ModelChanged`]. The single locus the live `SetModel` switch,
-    /// the per-profile pin re-bind on `SetAgent`, and the session-start pin all
+    /// the bound [`provider`][Self::provider], and emits [`OutEvent::ModelChanged`].
+    /// The single locus the live `SetModel` switch and the session-start pin
+    /// (fresh apply, plus a resumed session's corrective re-announce) both
     /// funnel through.
     pub(super) fn rebind(
         &mut self,

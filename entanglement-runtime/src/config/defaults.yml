@@ -11,8 +11,16 @@
 # Every value here is a fallback: an explicit CLI flag or environment variable
 # always wins over the config file (env > config > embedded).
 
-# Default agent profile when none is passed on the CLI (`--agent`).
-agent: build
+# Default agent profile when none is passed on the CLI (`--agent`). Must name
+# a real built-in agent (general | plan | debug) — stage 6a renamed the old
+# `build` agent to `general`; `config::tests::embedded_default_agent_resolves_
+# against_the_built_in_registry` guards this from silently rotting again.
+agent: general
+
+# Default permission mode when none is passed on the CLI (`--mode`); ADR-0207.
+# One of research | plan | build | auto — the engine's own DEFAULT_MODE
+# ("build") applies when this is unset too, so leaving it null changes nothing.
+mode: null
 
 # Provider selection, mirroring ENTANGLEMENT_PROVIDER
 # (zai | openai | ollama | anthropic | echo | any catalog name).
@@ -26,16 +34,28 @@ model: null
 # Log at `debug` by default, as `--verbose` does (RUST_LOG always wins).
 verbose: false
 
-# Permissions — the first section (#172). Tool name → allow | ask | deny; the
-# reserved `default` key sets the fallback for any unlisted tool. This is a
-# global ceiling combined least-privilege with each agent profile: a rule here
-# can only *tighten* what an agent allows, never loosen it. The embedded default
-# is allow-all, so an untouched config changes nothing. Argument/path patterns
-# (#173) build on this section. This block is a pure ceiling (it only tightens);
-# interactive "always allow" grants (#174) that raise an Ask are stored separately
-# in the managed grants.yml, not here.
+# Permissions — the first section (#172, ADR-0207 stage 6c). The same
+# default/allow/deny/prompt grammar a permission mode body uses: `default` sets
+# the fallback grade, `allow`/`deny`/`prompt` add rules (a tool name, `*`, a
+# capability class read|write|exec|plan|control, or a scoped `tool(pattern)`/
+# `tool{pattern}`), longest matching key wins. This is a global ceiling clamped
+# least-privilege against the session's own permission mode: a rule here can
+# only *tighten* what a mode allows, never loosen it. The embedded default is
+# allow-all, so an untouched config changes nothing. This block is a pure
+# ceiling (it only tightens); interactive "always allow" grants (#174) that
+# raise an Ask are stored separately in the managed grants.yml, not here.
 permissions:
   default: allow
+
+# Per-mode tuning (ADR-0207 §5) — adds allow/deny/prompt rules onto one of the
+# four built-in modes (research/plan/build/auto). There is no syntax to define
+# a fifth mode, or to remove a shipped rule (a longer, more specific rule you
+# add simply out-ranks a shorter shipped one). Empty by default (no tuning).
+# Example:
+#   modes:
+#     research:
+#       allow: ["bash(cargo check)"]
+modes: {}
 
 # Lifecycle hooks (#199, ADR-0066) — external commands run around tool execution
 # and on prompt ingress, for policy / telemetry / formatting. Three lists:

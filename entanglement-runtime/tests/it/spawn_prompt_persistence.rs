@@ -28,10 +28,9 @@ async fn spawned_child_prompt_is_persisted_and_replayable() {
             session: child.clone(),
             parent: None,
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "child task".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .expect("send spawn");

@@ -1,9 +1,10 @@
 //! The live side effects of the `/set` dialog's plan. Each step goes through
-//! the path its single-purpose command already uses: `SetAgent`/`SetModel`/
+//! the path its single-purpose command already uses: `SetModel`/
 //! `SetGeneration` with the ADR-0081/0095 persist-on-confirmation pendings,
-//! `/enable`'s lazy MCP connect + `SetToolOverlay`, the ADR-0083 allowlist
-//! materializer, the shared advertising state's live re-pin, and
-//! `/aux-model`'s store write.
+//! `/enable`'s lazy MCP connect + `SetToolOverlay`, the shared advertising
+//! state's live re-pin, and `/aux-model`'s store write. The agent row is
+//! read-only display now (ADR-0207 §9) — there is no `ApplyStep::Agent` any
+//! more.
 
 use entanglement_core::{Holly, InMsg, SessionId};
 
@@ -42,10 +43,6 @@ impl LiveEffects<'_> {
             self.send(InMsg::SetToolOverlay { session, entries })
                 .await?;
         }
-        if let Some((agent, allowlist)) = &change.persist {
-            crate::agents::save_tools_override(&self.app.root, agent, allowlist.as_deref())
-                .map_err(|e| format!("saving the allowlist for '{agent}': {e:#}"))?;
-        }
         Ok(())
     }
 }
@@ -54,17 +51,15 @@ impl SettingsEffects for LiveEffects<'_> {
     async fn apply(&mut self, step: &ApplyStep) -> Result<(), String> {
         let session = self.app.active_session_id().clone();
         match step {
-            ApplyStep::Agent(agent) => {
-                let agent = agent.clone();
-                self.send(InMsg::SetAgent { session, agent }).await
-            }
             ApplyStep::Model {
                 provider,
                 model,
                 persist_for,
             } => {
-                // Named explicitly: the view's agent still shows the old
-                // profile until the `AgentChanged` for a same-plan switch lands.
+                // Named explicitly, since `persist_for` is the *agent* the
+                // pin is saved for — the session's own agent (`self.app.agent()`)
+                // is fixed for its whole life (ADR-0207 §9) and would be a
+                // pointless roundabout way to say the same thing here.
                 if let Some(agent) = persist_for {
                     self.app.pending_model_persist =
                         Some((agent.clone(), provider.clone(), model.clone()));
@@ -76,6 +71,10 @@ impl SettingsEffects for LiveEffects<'_> {
                     model,
                 })
                 .await
+            }
+            ApplyStep::PermMode { mode } => {
+                let mode = mode.clone();
+                self.send(InMsg::SetMode { session, mode }).await
             }
             ApplyStep::Generation {
                 overrides,

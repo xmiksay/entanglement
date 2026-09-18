@@ -24,6 +24,10 @@ impl App {
                 self.toggle_model_picker();
                 false
             }
+            Command::Mode => {
+                self.toggle_mode_picker();
+                false
+            }
             Command::Key => {
                 self.open_key_dialog();
                 false
@@ -125,10 +129,6 @@ impl App {
             }
             Action::PickAgent => {
                 self.toggle_profile_picker();
-                false
-            }
-            Action::CycleAgent => {
-                self.cycle_primary_profile();
                 false
             }
             Action::PickModel => {

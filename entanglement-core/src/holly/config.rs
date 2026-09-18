@@ -1,25 +1,24 @@
-//! Engine configuration + agent-profile registry: the immutable inputs an
+//! Engine configuration + agent catalog: the immutable inputs an
 //! embedder hands [`Holly::spawn`][super::Holly::spawn]. Kept separate from the
-//! supervisor loop so the config/profile surface reads on its own.
+//! supervisor loop so the config/agent surface reads on its own.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::id_gen::{DefaultIdGen, IdGen};
-use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile, SessionId};
+use crate::protocol::{Agent, SessionId};
 use entanglement_provider::{
     AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
     ModelResolver, ToolSpec,
 };
 
-use super::DEFAULT_PROFILE;
+use super::DEFAULT_AGENT;
 
 /// Resolves the base tool schemas advertised to the model for a specific
 /// session (#308). Its output **replaces** the engine-global
-/// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session (the
-/// per-profile [`profile_tool_specs`][EngineConfig::profile_tool_specs] are
-/// still appended). Nothing downstream filters the result — the profile mask
+/// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session.
+/// Nothing downstream filters the result — the agent's tool mask
 /// and session overlay are dispatch-only — so this resolver is the single seam
 /// that shapes a session's base advertised surface. Consulted
 /// fresh at every turn build, so an embedder that mutates its backing store —
@@ -40,7 +39,7 @@ pub type ToolSpecResolver =
     Arc<dyn Fn(&SessionId, SessionModel<'_>) -> Vec<ToolSpec> + Send + Sync>;
 
 /// The model a session is bound to when a round resolves its tool specs.
-/// Both halves are `None` until something rebinds the session (a profile's
+/// Both halves are `None` until something rebinds the session (an agent's
 /// model pin at start, `SetModel`, a resumed session's replayed binding) —
 /// i.e. `None` means "the engine's startup default backend", which only the
 /// embedder knows by name.
@@ -51,23 +50,22 @@ pub struct SessionModel<'a> {
 }
 
 /// Resolves the system prompt for a specific session's turn (#310). Its output
-/// **overrides** the active profile's
-/// [`system_prompt`][AgentProfile::system_prompt] for that turn; returning
-/// `None` falls back to the profile's own prompt. Consulted fresh at every turn
+/// **overrides** the active agent's
+/// [`system_prompt`][Agent::system_prompt] for that turn; returning
+/// `None` falls back to the agent's own prompt. Consulted fresh at every turn
 /// build, so an embedder whose prompt is user-editable content — a site serving
 /// its prompt from a CMS page — picks up an edit on the *next* turn without
 /// respawning the engine (which would also tear down live sessions). The
-/// resolver receives the running session's own [`SessionId`] + resolved profile,
-/// so per-profile prompts (researcher / page-writer sub-agents) keep working and
+/// resolver receives the running session's own [`SessionId`] + resolved agent,
+/// so per-agent prompts (researcher / page-writer sub-agents) keep working and
 /// an embedder can key off the root session for tenant context. The `Fn` is
 /// intentionally sync: an embedder keeps a snapshot cache
 /// (`Arc<RwLock<HashMap<SessionId, String>>>`) hydrated from its store rather
 /// than doing I/O on the turn path — same guidance as [`ToolSpecResolver`].
-pub type SystemPromptResolver =
-    Arc<dyn Fn(&SessionId, &AgentProfile) -> Option<String> + Send + Sync>;
+pub type SystemPromptResolver = Arc<dyn Fn(&SessionId, &Agent) -> Option<String> + Send + Sync>;
 
 /// Engine configuration: how to build per-session LLMs, which host tools to
-/// advertise to the model, and the named agent profiles sessions can switch
+/// advertise to the model, and the named agents sessions can switch
 /// between.
 ///
 /// Core advertises tool *schemas* ([`tool_specs`][Self::tool_specs]) but no
@@ -78,22 +76,11 @@ pub type SystemPromptResolver =
 pub struct EngineConfig {
     pub llm_factory: LlmFactory,
     pub tool_specs: Vec<ToolSpec>,
-    pub profiles: ProfileRegistry,
-    /// Per-profile tool specs appended to [`tool_specs`][Self::tool_specs] for
-    /// the active profile only (#119, ADR-0040). At turn time `run_round` looks
-    /// the running session's profile name up here and appends its entry
-    /// verbatim. These are the *profile-defining* specs — a spawn-target enum
-    /// scoped to who this profile may spawn, plan authorship — whose schema
-    /// genuinely differs per profile, which is why they stay per-profile even
-    /// though the mask no longer narrows advertisement. A generic table keyed
-    /// by profile name; the embedder fills it (an entry is absent/empty when a
-    /// profile advertises no profile-scoped tools).
-    pub profile_tool_specs: HashMap<String, Vec<ToolSpec>>,
+    pub agents: AgentCatalog,
     /// Per-session override for the advertised base tool schemas (#308,
     /// ADR-0076). When set, it is consulted at every turn build and its output
     /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
-    /// session; [`profile_tool_specs`][Self::profile_tool_specs] are still
-    /// appended. Its output is advertised as-is (the profile mask and session
+    /// session. Its output is advertised as-is (the agent's tool mask and session
     /// overlay enforce at dispatch, never here), so a resolver that must keep
     /// a tool off one tenant's wire has to omit it — masking it will not.
     /// This is the seam a multi-tenant embedder needs: one `Holly`
@@ -102,22 +89,34 @@ pub struct EngineConfig {
     /// per user. `None` (the default) keeps the engine-global `tool_specs` for
     /// every session. See [`ToolSpecResolver`] for the snapshot-cache pattern.
     pub tool_spec_resolver: Option<ToolSpecResolver>,
-    /// Per-turn override for the active profile's system prompt (#310,
+    /// Per-turn override for the active agent's system prompt (#310,
     /// ADR-0078). When set, it is consulted at every turn build; a `Some(prompt)`
-    /// return **replaces** the profile's
-    /// [`system_prompt`][AgentProfile::system_prompt] for that turn, `None` falls
+    /// return **replaces** the agent's
+    /// [`system_prompt`][Agent::system_prompt] for that turn, `None` falls
     /// back to it. This is the seam an embedder needs when the prompt is
     /// user-editable content — a site serving its prompt from a CMS page — so an
     /// edit lands on the *next* turn without respawning the engine (which would
     /// tear down every live session). The resolver sees the running session's own
-    /// [`SessionId`] + resolved profile, so per-profile sub-agent prompts keep
+    /// [`SessionId`] + resolved agent, so per-agent sub-agent prompts keep
     /// working and an embedder can key off the root session for tenant context.
-    /// `None` (the default) keeps the profile's static prompt for every turn. See
+    /// `None` (the default) keeps the agent's static prompt for every turn. See
     /// [`SystemPromptResolver`] for the snapshot-cache pattern.
     pub system_prompt_resolver: Option<SystemPromptResolver>,
-    /// The backend's resolved default model id — what a profile with
+    /// Static system-prompt text describing what permission modes exist
+    /// (ADR-0207 §9), supplied by the runtime — core owns no mode table, so it
+    /// authors no such text itself. Appended to the resolved system prompt on
+    /// every turn ([`resolve_system_prompt`][crate::session::round_inputs::resolve_system_prompt]).
+    /// Deliberately **not** per-session/per-turn like
+    /// [`system_prompt_resolver`][Self::system_prompt_resolver]: it is
+    /// identical for every session, so it stays in the provider's cached
+    /// prefix — the *current* mode is a separate message appended fresh to
+    /// every request instead ([`InMsg::SetMode`][crate::protocol::InMsg::SetMode],
+    /// see `session::mode::mode_notice`), which is what keeps a mode switch
+    /// cache-free. `None` (the default) appends nothing.
+    pub modes_preamble: Option<String>,
+    /// The backend's resolved default model id — what an agent with
     /// `model: None` actually runs under (#192). Lets the engine price a turn
-    /// (via [`pricing`][Self::pricing]) even when the profile doesn't pin a
+    /// (via [`pricing`][Self::pricing]) even when the agent doesn't pin a
     /// model. `None` for the `EchoLlm` stub, which has no billable model.
     pub default_model: Option<String>,
     /// The active model's context window in tokens (#178), from the provider
@@ -149,15 +148,15 @@ pub struct EngineConfig {
     /// [`InMsg::SetModel`][crate::protocol::InMsg::SetModel] a no-op that surfaces
     /// an [`OutEvent::Error`][crate::protocol::OutEvent::Error].
     pub model_resolver: Option<ModelResolver>,
-    /// Resolves a named agent profile's **persisted** generation override (#374,
-    /// ADR-0094), applied at session start and on `SetAgent` with the same
+    /// Resolves a named agent's **persisted** generation override (#374,
+    /// ADR-0094), applied at session start with the same
     /// precedence as the model pin: per-session memory
-    /// ([`Session::profile_generation`][crate::session::Session]) wins, then this
-    /// resolver's persisted value, then the current binding (a profile with
+    /// ([`Session::generation_by_agent`][crate::session::Session]) wins, then this
+    /// resolver's persisted value, then the current binding (an agent with
     /// neither leaves generation untouched — no spurious
     /// [`OutEvent::GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]).
     /// Supplied by the runtime wrapping its `AgentGenerationStore`. `None` (the
-    /// default) means no profile carries a persisted override.
+    /// default) means no agent carries a persisted override.
     pub generation_resolver: Option<GenerationResolver>,
     /// Resolves a **side-transformation purpose** to the provider/model pinned
     /// for it (Issue 5), so an out-of-band call can run on a cheaper/faster
@@ -241,11 +240,11 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// Fail if the config can't back a running engine — currently, a profile
-    /// registry without the required `build` profile. Lets an embedder reject a
+    /// Fail if the config can't back a running engine — currently, the agent
+    /// catalog missing the required `general` agent. Lets an embedder reject a
     /// bad config up front instead of relying on the supervisor's fallback.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.profiles.validate()
+        self.agents.validate()
     }
 }
 
@@ -254,10 +253,10 @@ impl Default for EngineConfig {
         Self {
             llm_factory: Arc::new(|| Box::new(EchoLlm) as Box<dyn Llm>),
             tool_specs: Vec::new(),
-            profiles: ProfileRegistry::new(),
-            profile_tool_specs: HashMap::new(),
+            agents: AgentCatalog::new(),
             tool_spec_resolver: None,
             system_prompt_resolver: None,
+            modes_preamble: None,
             default_model: None,
             context_window: None,
             generation: None,
@@ -275,107 +274,99 @@ impl Default for EngineConfig {
     }
 }
 
-/// A malformed [`EngineConfig`]/[`ProfileRegistry`] the engine can't run with.
-/// Surfaced by [`EngineConfig::validate`]/[`ProfileRegistry::validate`] so an
+/// A malformed [`EngineConfig`]/[`AgentCatalog`] the engine can't run with.
+/// Surfaced by [`EngineConfig::validate`]/[`AgentCatalog::validate`] so an
 /// embedder gets a clean error instead of a panicking supervisor task.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
-    /// The registry lacks the `build` profile every new session starts under.
-    #[error("profile registry is missing the required `{DEFAULT_PROFILE}` profile")]
-    MissingDefaultProfile,
+    /// The catalog lacks the `general` agent every new session starts under.
+    #[error("agent catalog is missing the required `{DEFAULT_AGENT}` agent")]
+    MissingDefaultAgent,
 }
 
-/// Named set of [`AgentProfile`]s. Comes with only the `build` built-in — the
-/// one profile every session starts under and [`resolve`][Self::resolve] falls
+/// Named set of [`Agent`]s. Comes with only the `build` built-in — the
+/// one agent every session starts under and [`resolve`][Self::resolve] falls
 /// back to. The full `build`/`plan`/`explore`/`debug`/`research` set is
 /// defined once, as markdown, in `entanglement-runtime`'s embedded agent
 /// registry (#201): core can't parse agent frontmatter, so it carries no
 /// `plan`/`explore`/`debug`/`research` copy to drift from that source. Add
 /// your own with [`insert`][Self::insert].
 #[derive(Clone, Default)]
-pub struct ProfileRegistry {
-    profiles: HashMap<String, AgentProfile>,
+pub struct AgentCatalog {
+    agents: HashMap<String, Agent>,
 }
 
-impl ProfileRegistry {
+impl AgentCatalog {
     pub fn new() -> Self {
         let mut reg = Self::default();
-        reg.insert(default_profile());
+        reg.insert(default_agent());
         reg
     }
 
-    pub fn get(&self, name: &str) -> Option<&AgentProfile> {
-        self.profiles.get(name)
+    pub fn get(&self, name: &str) -> Option<&Agent> {
+        self.agents.get(name)
     }
 
-    /// Every registered profile, name-sorted for a stable roster (the runtime
+    /// Every registered agent, name-sorted for a stable roster (the runtime
     /// discloses this to a spawning model — see the `agent` tool
     /// descriptions). Sorting keeps the advertised order deterministic across
     /// runs regardless of `HashMap` iteration order.
-    pub fn iter(&self) -> impl Iterator<Item = &AgentProfile> {
-        let mut profiles: Vec<&AgentProfile> = self.profiles.values().collect();
-        profiles.sort_by(|a, b| a.name.cmp(&b.name));
-        profiles.into_iter()
+    pub fn iter(&self) -> impl Iterator<Item = &Agent> {
+        let mut agents: Vec<&Agent> = self.agents.values().collect();
+        agents.sort_by(|a, b| a.name.cmp(&b.name));
+        agents.into_iter()
     }
 
-    pub fn insert(&mut self, profile: AgentProfile) {
-        self.profiles.insert(profile.name.clone(), profile);
+    pub fn insert(&mut self, agent: Agent) {
+        self.agents.insert(agent.name.clone(), agent);
     }
 
-    /// Fail if the required `build` profile is absent. Embedders that assemble a
-    /// custom registry should call this before handing it to [`Holly::spawn`];
-    /// the supervisor otherwise falls back to a synthesized default (see
-    /// [`resolve`][Self::resolve]) rather than panicking.
+    /// Fail if the required [`DEFAULT_AGENT`] agent is absent. Embedders that
+    /// assemble a custom registry should call this before handing it to
+    /// [`Holly::spawn`]; the supervisor otherwise falls back to a synthesized
+    /// default (see [`resolve`][Self::resolve]) rather than panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.profiles.contains_key(DEFAULT_PROFILE) {
+        if self.agents.contains_key(DEFAULT_AGENT) {
             Ok(())
         } else {
-            Err(ConfigError::MissingDefaultProfile)
+            Err(ConfigError::MissingDefaultAgent)
         }
     }
 
-    /// Resolve a profile by name, falling back to the default `build` profile
-    /// and finally to a synthesized built-in `build`. Never panics: a registry
-    /// missing `build` (an unvalidated custom one) yields a degraded-but-safe
-    /// session instead of crashing the supervisor and taking down every session.
-    pub(super) fn resolve(&self, name: &str) -> AgentProfile {
+    /// Resolve an agent by name, falling back to the default
+    /// [`DEFAULT_AGENT`] agent and finally to a synthesized built-in one.
+    /// Never panics: a registry missing the default (an unvalidated custom
+    /// one) yields a degraded-but-safe session instead of crashing the
+    /// supervisor and taking down every session.
+    pub(super) fn resolve(&self, name: &str) -> Agent {
         self.get(name)
-            .or_else(|| self.get(DEFAULT_PROFILE))
+            .or_else(|| self.get(DEFAULT_AGENT))
             .cloned()
             .unwrap_or_else(|| {
                 tracing::warn!(
-                    "profile registry missing `{DEFAULT_PROFILE}` and `{name}`; \
-                     falling back to a synthesized default profile"
+                    "agent catalog missing `{DEFAULT_AGENT}` and `{name}`; \
+                     falling back to a synthesized default agent"
                 );
-                default_profile()
+                default_agent()
             })
     }
 }
 
-/// The built-in `build` profile — the only profile core carries. It is both the
-/// default a fresh session starts under and the synthesized fallback the
+/// The built-in `general` agent — the only agent core carries. It is both
+/// the default a fresh session starts under and the synthesized fallback the
 /// supervisor uses when a custom registry omits it (see
-/// [`ProfileRegistry::resolve`]). An inherit-all coding agent: no tool mask, no
+/// [`AgentCatalog::resolve`]). An inherit-all coding agent: no tool mask, no
 /// plan authority (default-closed, #231/ADR-0049). The runtime re-defines this
-/// same shape as `build.md` and owns the `plan`/`explore` siblings (#201).
-fn default_profile() -> AgentProfile {
-    AgentProfile {
-        name: "build".into(),
+/// same shape as `general.md` (formerly `build.md`, ADR-0207 stage 6a) and
+/// owns the `plan`/`debug` siblings (#201).
+fn default_agent() -> Agent {
+    Agent {
+        name: "general".into(),
         description: "Coding agent — implements changes using the available tools.".into(),
-        mode: AgentMode::Primary,
         system_prompt:
             "You are a coding agent. Implement the requested changes using the available tools."
                 .into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        // `build` spawns everything except primaries (the target-side mode gate,
-        // #119) — no `spawnable_agents` list, so user-defined exploration agents
-        // stay spawnable without editing this built-in.
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }

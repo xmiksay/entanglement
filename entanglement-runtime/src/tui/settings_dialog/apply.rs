@@ -1,8 +1,9 @@
 //! The `/set` dialog's apply pipeline: a plan of steps in the settled order
-//! (agent → model → generation → tools/MCP → re-pin → aux), executed through
-//! a side-effect seam so the order and stop-on-failure rule are testable
-//! without an engine. Each live effect reuses the single-purpose command's
-//! own message/store path (`app/settings.rs`).
+//! (model → generation → tools/MCP → re-pin → aux — no `agent` step, ADR-0207
+//! §9: the agent row is read-only display, there is no live switch), executed
+//! through a side-effect seam so the order and stop-on-failure rule are
+//! testable without an engine. Each live effect reuses the single-purpose
+//! command's own message/store path (`app/settings.rs`).
 
 use entanglement_core::ToolOverlayEntry;
 use entanglement_provider::{Discovery, GenerationParams, ToolAdvertising};
@@ -13,26 +14,28 @@ use crate::config::aux_models::Purpose;
 /// Section (a)/(b) of the Tools tab, as one step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolsChange {
-    /// The full-replacement overlay; `None` when only saving as default.
+    /// The full-replacement overlay.
     pub entries: Option<Vec<ToolOverlayEntry>>,
     /// Servers newly switched on (lazily connected when `allowed`, #542).
     pub enable_servers: Vec<String>,
     /// Servers newly switched off (session enablement mark withdrawn).
     pub disable_servers: Vec<String>,
-    /// `(agent, allowlist)` to materialize as a user-layer override
-    /// (ADR-0083); `None` allowlist = inherit all.
-    pub persist: Option<(String, Option<Vec<String>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplyStep {
-    Agent(String),
     /// `persist_for` = the agent whose model pin the confirming
     /// `ModelChanged` writes (ADR-0081); `None` = session only.
     Model {
         provider: String,
         model: String,
         persist_for: Option<String>,
+    },
+    /// Permission mode (#560 P12, ADR-0207 §12) — session-only, no persist
+    /// flag: unlike a model pin, a mode has nothing to save per agent (it
+    /// isn't a profile fact any more, ADR-0207 §9).
+    PermMode {
+        mode: String,
     },
     /// Persisted on the confirming `GenerationChanged` (ADR-0095).
     Generation {
@@ -71,12 +74,12 @@ fn saved(agent: &Option<String>, what: &str) -> String {
 impl ApplyStep {
     pub fn label(&self) -> String {
         match self {
-            ApplyStep::Agent(a) => format!("agent → {a}"),
             ApplyStep::Model {
                 provider,
                 model,
                 persist_for,
             } => format!("model → {provider}/{model}{}", saved(persist_for, "pin")),
+            ApplyStep::PermMode { mode } => format!("mode → {mode}"),
             ApplyStep::Generation {
                 overrides: g,
                 persist_for,
@@ -110,9 +113,6 @@ impl ApplyStep {
                 }
                 if !t.disable_servers.is_empty() {
                     parts.push(format!("mcp off: {}", t.disable_servers.join(", ")));
-                }
-                if let Some((agent, _)) = &t.persist {
-                    parts.push(format!("allowlist saved for '{agent}' (next restart)"));
                 }
                 parts.join(", ")
             }

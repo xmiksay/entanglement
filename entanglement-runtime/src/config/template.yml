@@ -12,8 +12,13 @@
 # file is a loud error, never a silent fallback.
 
 # Default agent profile when none is passed on the CLI (`--agent`).
-# One of: build | plan | explore (or any custom agent you define).
-#agent: build
+# One of: general | plan | debug (or any custom agent you define).
+#agent: general
+
+# Default permission mode when none is passed on the CLI (`--mode`), ADR-0207.
+# One of: research | plan | build | auto. Leave commented for the engine's own
+# default ("build").
+#mode: research
 
 # Provider selection, mirroring ENTANGLEMENT_PROVIDER
 # (zai | zai_paas | openai | ollama | anthropic | echo | any catalog name).
@@ -29,15 +34,25 @@
 # Log at `debug` by default, as `--verbose` does (RUST_LOG always wins).
 #verbose: false
 
-# Permissions — a global ceiling combined least-privilege with each agent
-# profile: a rule here can only *tighten* what an agent allows, never loosen it.
-# Tool name → allow | ask | deny; the reserved `default` key sets the fallback
-# for any unlisted tool. Argument/path-scoped keys work too, e.g. `bash(rm *)`.
-# The built-in default is allow-all, so an untouched block changes nothing.
+# Permissions — a global ceiling clamped least-privilege against the session's
+# own permission mode (ADR-0207 stage 6c): a rule here can only *tighten* what
+# a mode allows, never loosen it. Same grammar a mode body uses: `default` sets
+# the fallback grade, `allow`/`deny`/`prompt` add rules — a tool name, `*`, a
+# capability class (read | write | exec | plan | control), or a scoped
+# `tool(pattern)`/`tool{pattern}`. Longest matching key wins. The built-in
+# default is allow-all, so an untouched block changes nothing.
 #permissions:
 #  default: allow
-#  bash: ask
-#  bash(rm *): deny
+#  prompt: [bash]
+#  deny: ["bash(rm *)"]
+
+# Per-mode tuning (ADR-0207 §5) — adds allow/deny/prompt rules onto one of the
+# four built-in modes (research | plan | build | auto). There is no syntax to
+# define a fifth mode, or to remove a shipped rule (add a longer, more specific
+# rule instead — it out-ranks a shorter shipped one).
+#modes:
+#  research:
+#    allow: ["bash(cargo check)"]
 
 # Lifecycle hooks — external commands run around tool execution and on prompt
 # ingress (policy / telemetry / formatting). Each command runs via `sh -c` with
@@ -86,10 +101,13 @@
 #                  same-name entry here overrides them field-wise — e.g.
 #                  `zread: { state: disabled }` hides one, `state: enabled`
 #                  connects it at startup.
-#   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call` so
-#                  a bare `permissions: { read: allow }` above also covers it —
-#                  an MCP tool isn't self-describing, so without this hint it only
-#                  ever grades as its own literal `mcp__<server>__<tool>` name.
+#   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call`.
+#                  Every MCP tool currently grades as the fail-safe
+#                  Capability::Write regardless of this hint (ADR-0207 §3 left
+#                  per-server capability declarations for a later stage), so a
+#                  bare `permissions: { deny: [write] }` above already covers
+#                  every MCP tool either way; this hint has no effect on that
+#                  grading yet.
 #mcp:
 #  everything:
 #    command: npx

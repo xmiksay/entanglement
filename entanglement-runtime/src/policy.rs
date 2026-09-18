@@ -4,37 +4,38 @@
 //! hard-codes nothing about *where* an allow/deny/ask decision or an "always
 //! allow" grant comes from: it drives two trait objects, a [`PermissionResolver`]
 //! and a [`GrantStore`]. The single-user CLI plugs in the defaults below — the
-//! agent-profile chain clamped by the config ceiling ([`ProfileResolver`]) and
-//! the managed grants file ([`DefaultGrantStore`]) — so its behavior is
-//! byte-identical. A multi-tenant embedder that stores rules per user in its own
-//! DB swaps both without forking the ~350-line executor, keeping the shared
-//! interception ladder, spawn/mask gating, hooks, rhai, and plan/tasks tools.
+//! session's permission **mode** clamped by the config ceiling
+//! ([`ModeResolver`], ADR-0207 stage 4) and the managed grants file
+//! ([`DefaultGrantStore`]). A multi-tenant embedder that stores rules per user
+//! in its own DB swaps both without forking the executor, keeping the shared
+//! interception ladder, spawn gating, hooks, rhai, and plan/tasks tools.
 //!
 //! ## Where the seams sit in the ladder
 //!
-//! The executor asks the resolver for the grade of a *single* session, then takes
-//! the least-privileged grade across the session's ancestor chain
-//! ([`ancestor_chain`][crate::permission::ancestor_chain]) — so the sub-agent
-//! privilege ceiling (ADR-0024) and spawn/mask gating stay in the ladder **on top
-//! of** the resolver result. A tenant rule can widen or narrow a session's own
-//! grade, but can never widen a child beyond its parent. The `GrantStore` only
-//! ever upgrades a resolved `Ask` to `Allow`; a multi-tenant store's "always
-//! allow" write lands in its own DB and surfaces on the *next* call through its
-//! resolver, so the trait's read side is deliberately the resolver's job — the
-//! store's own [`is_granted`][GrantStore::is_granted] covers only the default
-//! file/session grants the CLI needs.
+//! The executor asks the resolver for the grade of a *single* session, then
+//! takes the least-privileged grade across the session's ancestor chain
+//! ([`ancestor_chain`][crate::permission::ancestor_chain]) — the sub-agent
+//! privilege ceiling (ADR-0024) stays in the ladder on top of the resolver
+//! result. The `GrantStore` only ever upgrades a resolved `Ask` to `Allow`,
+//! and only within the mode it was earned in (ADR-0207 §8) — a multi-tenant
+//! store's "always allow" write lands in its own DB and surfaces on the
+//! *next* call through its resolver, so [`is_granted`][GrantStore::is_granted]
+//! covers only the default file/session grants the CLI needs.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use entanglement_core::{AgentProfile, ApprovalScope, Permission, PermissionProfile, SessionId};
+use entanglement_core::{ApprovalScope, Permission, PermissionProfile, SessionId};
 
+use crate::capability;
 use crate::grants::FileGrantStore;
 use crate::host::SandboxPolicy;
-use crate::permission::{clamp_to_base, permission_for, permission_workdir};
+use crate::mode::ModeTable;
+use crate::permission::{clamp_to_base, permission_workdir};
 use crate::permission_path::grading_arg;
+use crate::tools::SharedRegistry;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
@@ -48,98 +49,138 @@ pub trait PermissionResolver: Send + Sync {
 }
 
 /// Persist and read "always allow" grants (#174). A grant only ever upgrades a
-/// resolved `Ask` to `Allow`. The write side ([`record`][GrantStore::record])
-/// is async because an [`ApprovalScope::Always`] grant may hit a DB; the read
-/// side ([`is_granted`][GrantStore::is_granted]) is a fast in-memory/cached check
+/// resolved `Ask` to `Allow`, and only within the **mode** it was earned in
+/// (ADR-0207 §8: a grant from `build` must not fire in `research`) — `mode` is
+/// matched exactly, so the caller passes the session's *current* mode on every
+/// call. The write side ([`record`][GrantStore::record]) is async because an
+/// [`ApprovalScope::Always`] grant may hit a DB; the read side
+/// ([`is_granted`][GrantStore::is_granted]) is a fast in-memory/cached check
 /// the executor consults synchronously before prompting. A multi-tenant store
 /// writes an "always" rule to its DB and resolves later reads through its
 /// [`PermissionResolver`] instead, so its `is_granted` can simply return `false`.
 #[async_trait]
 pub trait GrantStore: Send + Sync {
-    /// Whether `(tool, arg)` from `session` is already granted (session or
-    /// always), upgrading a resolved `Ask` to `Allow`.
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool;
-    /// Record an approval per its scope. `Once` records nothing; `Session` is
-    /// in-memory; `Always` persists (a file for the default, a DB row for a
-    /// multi-tenant store).
+    /// Whether `(tool, arg)` from `session`, earned under `mode`, is already
+    /// granted (session or always), upgrading a resolved `Ask` to `Allow`.
+    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool;
+    /// Record an approval per its scope, tagged with the mode it was earned
+    /// in. `Once` records nothing; `Session` is in-memory; `Always` persists
+    /// (a file for the default, a DB row for a multi-tenant store).
     async fn record(
         &self,
         session: &SessionId,
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     );
     /// Release a session's in-memory grants when it ends.
     fn forget_session(&self, session: &SessionId);
 
     /// Grant an explicit directory to `session`, covering the read-only triad
-    /// (`read`/`grep`/`glob`) for the rest of the session (#486, ADR-0126) —
-    /// the TUI `/allow <path>` command's entry point. Synchronous and never
-    /// persisted (unlike `Always` scope above), so no DB round-trip is
-    /// needed. Default no-op that just echoes `dir` back unnormalized, so an
-    /// embedder's custom `GrantStore` (`tests/policy_seam.rs`) keeps
-    /// compiling without wiring directory grants; only `DefaultGrantStore`
-    /// (the TUI's store) overrides it for real.
-    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
-        let _ = session;
+    /// (`read`/`grep`/`glob`) for the rest of the session under `mode` only
+    /// (#486, ADR-0126; mode-scoped by #634) — the TUI `/allow <path>`
+    /// command's entry point. Synchronous and never persisted (unlike
+    /// `Always` scope above), so no DB round-trip is needed. Default no-op
+    /// that just echoes `dir` back unnormalized, so an embedder's custom
+    /// `GrantStore` (`tests/policy_seam.rs`) keeps compiling without wiring
+    /// directory grants; only `DefaultGrantStore` (the TUI's store) overrides
+    /// it for real.
+    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String {
+        let _ = (session, mode);
         dir.to_string()
     }
 }
 
-/// The single-user CLI resolver: the executor's live active-profile map plus the
-/// config permission ceiling (#172). Resolves a session's *own* profile grade
-/// clamped by the base ceiling; the executor mins this across the ancestor chain
-/// for the sub-agent clamp, so the pair reproduces `effective_permission` +
-/// `clamp_to_base` exactly (the clamp is monotonic, so min-of-clamped equals
-/// clamp-of-min). Shares the same `Arc<Mutex<..>>` the executor folds lifecycle
-/// events into, so it always reads the current profile view. `root` (#485,
-/// ADR-0125) is the project root a path-arg tool's argument is normalized
-/// relative to before matching an arg-scoped rule — `None` (the test-only
-/// executor wrappers) keeps the pre-#485 verbatim match.
+/// The single-user CLI resolver (ADR-0207 stage 4): grades a call from the
+/// session's **mode**, not its agent profile — `Agent` no longer
+/// carries any permission fact. Looks up the mode name in the folded `modes`
+/// map (mirrors `OutEvent::ModeChanged` the way `active` mirrors
+/// `AgentChanged`), resolves it against `table`, reads the tool's declared
+/// [`capability::Capability`] set from the live registry, and calls
+/// [`Mode::resolve`][crate::mode::Mode::resolve] with the call's
+/// argument/workdir — then clamps to the config permission ceiling (#172),
+/// unchanged from before this stage. `table` is always
+/// [`ModeTable::builtin`] for `skutter`; an embedder supplies its own via
+/// [`ModeTable::new`]. Config `modes:` tuning is a later stage's wiring.
 ///
-/// Live bash enablement no longer special-cases `bash` here (ADR-0163,
-/// #611): a live grade — including a narrowed `arg_pattern` — is expressed as
-/// a session [`ToolOverlayEntry`][entanglement_core::ToolOverlayEntry] and
-/// consulted by `tool_runner`'s `overlay_grade`, ahead of this resolver, for
-/// every tool alike.
-pub struct ProfileResolver {
-    active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+/// An **unseen session fails closed** (`Permission::Deny`, #156): a session
+/// whose `ModeChanged` broadcast was dropped under overload must never
+/// resolve to allow-all. `root` (#485, ADR-0125) is the project root a
+/// path-arg tool's argument is normalized relative to before matching an
+/// arg-scoped rule — `None` (the test-only executor wrappers) keeps the
+/// pre-#485 verbatim match.
+pub struct ModeResolver {
+    modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    table: Arc<ModeTable>,
+    registry: SharedRegistry,
     base: PermissionProfile,
     root: Option<PathBuf>,
 }
 
-impl ProfileResolver {
+impl ModeResolver {
     pub fn new(
-        active: Arc<Mutex<HashMap<SessionId, AgentProfile>>>,
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<ModeTable>,
+        registry: SharedRegistry,
         base: PermissionProfile,
         root: Option<PathBuf>,
     ) -> Self {
-        Self { active, base, root }
+        Self {
+            modes,
+            table,
+            registry,
+            base,
+            root,
+        }
     }
 }
 
 #[async_trait]
-impl PermissionResolver for ProfileResolver {
+impl PermissionResolver for ModeResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
-        // Read the folded profile view without holding the lock across an await
-        // (there is none here) — the executor's single-threaded loop is the sole
-        // writer, so this brief lock never contends.
-        let own = {
-            let active = self.active.lock().expect("active-profile mutex poisoned");
-            permission_for(&active, session, tool, arg.as_deref(), workdir.as_deref())
+        // Fail-closed (#156, carried into ADR-0207): a session whose
+        // `ModeChanged` broadcast was dropped is unseen here, and an unseen
+        // session must never resolve to allow-all.
+        let mode_name = {
+            let modes = self.modes.lock().expect("mode mutex poisoned");
+            modes.get(session).cloned()
         };
-        clamp_to_base(own, &self.base, tool, arg.as_deref(), workdir.as_deref())
+        let Some(mode_name) = mode_name else {
+            return Permission::Deny;
+        };
+        let Some(mode) = self.table.get(&mode_name) else {
+            // Defense in depth, not a reachable path for a built-in table:
+            // `InMsg::SetMode` is the only writer of a session's mode, and a
+            // real head validates it against the same table before sending.
+            tracing::warn!(%session, mode = %mode_name, "unknown permission mode; denying");
+            return Permission::Deny;
+        };
+        let capabilities = {
+            let registry = self.registry.read().expect("tool registry lock poisoned");
+            capability::capability_of(tool, &registry).unwrap_or(&[])
+        };
+        let own = mode.resolve(tool, capabilities, arg.as_deref(), workdir.as_deref());
+        clamp_to_base(
+            own,
+            &self.base,
+            tool,
+            capabilities,
+            arg.as_deref(),
+            workdir.as_deref(),
+        )
     }
 }
 
 /// Resolve the confinement policy `bash`/`call` run a session's commands under
-/// (#479, ADR-0104 amendment). Sync and infallible — unlike permission there is
-/// no `Ask` round-trip and no DB lookup a real embedder would need to await; a
-/// tenant that wants per-tenant sandboxing swaps this the same way it would
-/// [`PermissionResolver`]. `session: None` is the plain [`crate::tools::Tool::run`]
-/// path (no live session to resolve against — standalone use, most unit tests).
+/// (ADR-0207 §6, stage 5b amendment of ADR-0104). Sync and infallible —
+/// unlike permission there is no `Ask` round-trip and no DB lookup a real
+/// embedder would need to await; a tenant that wants per-tenant sandboxing
+/// swaps this the same way it would [`PermissionResolver`]. `session: None`
+/// is the plain [`crate::tools::Tool::run`] path (no live session to resolve
+/// against — standalone use, most unit tests).
 pub trait SandboxResolver: Send + Sync {
     fn resolve(&self, session: Option<&SessionId>) -> SandboxPolicy;
 }
@@ -153,160 +194,99 @@ impl SandboxResolver for SandboxPolicy {
     }
 }
 
-/// The single-user CLI resolver: reads the executor's live per-session
-/// confinement cache, folded from lifecycle events exactly like
-/// [`ProfileResolver`] folds `active` (`tool_runner`'s dispatch loop is the
-/// sole writer of both `own`/`floor` below). `own` is a session's own profile
-/// resolved against `default_policy` (the process-global `ENTANGLEMENT_SANDBOX`
-/// default); `floor` is the ancestor clamp (#479, ADR-0104 amendment) — the
-/// most-confined effective policy across the session's ancestor chain at the
-/// moment it was spawned, mirroring ADR-0024's privilege ceiling for
-/// confinement instead of permission grade. Kept as two maps rather than one
-/// pre-combined value so a later `AgentChanged`/`SetAgent` on this exact
-/// session can recompute `own` without losing the frozen ancestor floor (#479).
-/// An unseen session (never folded — e.g. a direct `.run()` call with no live
-/// session) falls back to `default_policy` alone: sandboxing is defense in
-/// depth on top of the permission gate, not the gate itself, so this does not
-/// fail-closed to maximum confinement the way `permission_for` fails closed to
-/// `Deny`.
-pub struct ProfileSandboxResolver {
-    own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    default_policy: SandboxPolicy,
+/// The single-user CLI resolver (ADR-0207 §6, stage 5b): sandboxing is a
+/// **mode** fact now, not a per-profile one, and a mode applies to its whole
+/// spawn sub-tree — so there is no more per-session ancestor floor to freeze
+/// at spawn (ADR-0104's amendment retired ADR-0134's scoping entirely).
+/// Reads the same session→mode map [`ModeResolver`] grades permission
+/// from, resolves it against `table` exactly like `ModeResolver` does, and
+/// derives the mode's [`SandboxPolicy`][crate::host::SandboxPolicy] via
+/// [`crate::mode::Mode::sandbox_policy`] — then layers `base` (the
+/// process-global `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK`
+/// env default) on top via `most_confined`, so the env may only **tighten**
+/// what the mode declares, never loosen it. An unseen session (never folded,
+/// or an unknown mode name) falls back to `base` alone: sandboxing is defense
+/// in depth on top of the permission gate, not the gate itself, so this does
+/// not fail-closed to maximum confinement the way [`ModeResolver::resolve`]
+/// fails closed to `Deny`.
+pub struct ModeSandboxResolver {
+    modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    table: Arc<crate::mode::ModeTable>,
+    base: SandboxPolicy,
 }
 
-impl ProfileSandboxResolver {
+impl ModeSandboxResolver {
     pub fn new(
-        own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-        floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-        default_policy: SandboxPolicy,
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<crate::mode::ModeTable>,
+        base: SandboxPolicy,
     ) -> Self {
-        Self {
-            own,
-            floor,
-            default_policy,
-        }
+        Self { modes, table, base }
     }
 }
 
-impl SandboxResolver for ProfileSandboxResolver {
+impl SandboxResolver for ModeSandboxResolver {
     fn resolve(&self, session: Option<&SessionId>) -> SandboxPolicy {
-        match session {
-            Some(session) => resolve_sandbox(&self.own, &self.floor, session, self.default_policy),
-            None => self.default_policy,
-        }
+        let Some(session) = session else {
+            return self.base;
+        };
+        let mode_name = {
+            let modes = self.modes.lock().expect("mode mutex poisoned");
+            modes.get(session).cloned()
+        };
+        let Some(mode) = mode_name.as_deref().and_then(|n| self.table.get(n)) else {
+            return self.base;
+        };
+        mode.sandbox_policy().most_confined(self.base)
     }
 }
 
-/// A session's effective confinement: its own resolved policy clamped by the
-/// frozen ancestor floor (#479, ADR-0104 amendment). Shared by
-/// [`ProfileSandboxResolver::resolve`] and `tool_runner`'s dispatch loop (which
-/// computes a *new* session's floor from its parent's already-folded effective
-/// value at `SessionStarted`) so the two never drift.
-pub(crate) fn resolve_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    default_policy: SandboxPolicy,
-) -> SandboxPolicy {
-    let own = own
-        .lock()
-        .expect("sandbox-own mutex poisoned")
-        .get(session)
-        .copied()
-        .unwrap_or(default_policy);
-    let floor = floor
-        .lock()
-        .expect("sandbox-floor mutex poisoned")
-        .get(session)
-        .copied()
-        .unwrap_or_else(SandboxPolicy::none);
-    own.most_confined(floor)
-}
-
-/// Resolve `session`'s own policy from its (possibly just-switched) profile and
-/// record it in `own` (#479). Used at `SessionStarted`, `AgentChanged`, and the
-/// `ToolExec` self-heal — every point `tool_runner` (re)resolves a session's
-/// active profile. Never touches `floor`: the ancestor clamp is frozen once at
-/// spawn ([`record_session_sandbox`]), not re-derived on a later profile
-/// switch, so a mid-session `SetAgent` can relax/tighten its own confinement
-/// without losing the floor its parent imposed.
-pub(crate) fn record_own_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    profile_sandbox: Option<&str>,
-    default_policy: SandboxPolicy,
-) {
-    own.lock().expect("sandbox-own mutex poisoned").insert(
-        session.clone(),
-        default_policy.resolve_profile_override(profile_sandbox),
-    );
-}
-
-/// Fold a newly-started session's own policy plus its frozen ancestor floor
-/// into the shared maps (#479, ADR-0104 amendment): the floor is the parent's
-/// *already-resolved* effective confinement (its own policy clamped by its own
-/// floor), so the clamp composes down an arbitrarily deep spawn chain exactly
-/// like ADR-0024's permission ceiling. A root session (`parent: None`) gets the
-/// unconfined identity element (`SandboxPolicy::none()`, the lowest
-/// confinement rank), so `own.most_confined(floor)` reduces to `own` alone.
-pub(crate) fn record_session_sandbox(
-    own: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    floor: &Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    session: &SessionId,
-    parent: Option<&SessionId>,
-    profile_sandbox: Option<&str>,
-    default_policy: SandboxPolicy,
-) {
-    record_own_sandbox(own, session, profile_sandbox, default_policy);
-    let parent_floor = parent
-        .map(|p| resolve_sandbox(own, floor, p, default_policy))
-        .unwrap_or_else(SandboxPolicy::none);
-    floor
-        .lock()
-        .expect("sandbox-floor mutex poisoned")
-        .insert(session.clone(), parent_floor);
-}
-
-/// Bundled per-process sandbox state (#479, ADR-0104 amendment): the shared
-/// maps `tool_runner`'s dispatch loop folds lifecycle events into (mirroring
-/// `active`'s sharing with [`ProfileResolver`]) plus the process-global
-/// default an unseen session falls back to. Grouped into one value so a
-/// caller that doesn't care about per-profile sandboxing — every test helper,
-/// the `embedded` example — passes a single [`SandboxConfig::none`] instead of
-/// three positional args.
+/// Bundled per-process sandbox state (ADR-0207 §6, stage 5b): the same
+/// session→mode map and [`crate::mode::ModeTable`] the executor's
+/// `ModeResolver` grades permission from, plus the process-global default
+/// an unseen session falls back to. Grouped into one value so a caller that
+/// doesn't care about mode-scoped sandboxing — every test helper, the
+/// `embedded` example — passes a single [`SandboxConfig::none`].
 #[derive(Clone)]
 pub struct SandboxConfig {
     pub base: SandboxPolicy,
-    pub own: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
-    pub floor: Arc<Mutex<HashMap<SessionId, SandboxPolicy>>>,
+    pub modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    pub table: Arc<crate::mode::ModeTable>,
 }
 
 impl SandboxConfig {
-    /// Every call unsandboxed, no per-profile overrides — byte-identical to
-    /// pre-#479 behavior.
+    /// Every call unsandboxed, no per-mode overrides — an empty mode table
+    /// means every lookup falls back to `base` (unconfined).
     pub fn none() -> Self {
         Self {
             base: SandboxPolicy::none(),
-            own: Arc::new(Mutex::new(HashMap::new())),
-            floor: Arc::new(Mutex::new(HashMap::new())),
+            modes: Arc::new(Mutex::new(HashMap::new())),
+            table: Arc::new(crate::mode::ModeTable::new(Vec::new()).expect("empty table is valid")),
         }
     }
 
-    /// Read from the process-global `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK`
-    /// env vars, with fresh empty per-session maps.
-    pub fn from_env() -> Self {
+    /// The real single-user wiring: `base` from `ENTANGLEMENT_SANDBOX`/
+    /// `ENTANGLEMENT_SANDBOX_NETWORK`, sharing the *same* `modes` map and
+    /// mode `table` the caller's `ModeResolver` uses — sandboxing must see
+    /// exactly the mode permission dispatch sees, not a second copy that can
+    /// drift.
+    pub fn new(
+        modes: Arc<Mutex<HashMap<SessionId, String>>>,
+        table: Arc<crate::mode::ModeTable>,
+    ) -> Self {
         Self {
             base: SandboxPolicy::from_env(),
-            ..Self::none()
+            modes,
+            table,
         }
     }
 
-    /// The resolver `BashTool`/`CallTool` consult per call (#479).
+    /// The resolver `BashTool`/`CallTool` consult per call (#479, ADR-0207
+    /// §6).
     pub fn resolver(&self) -> Arc<dyn SandboxResolver> {
-        Arc::new(ProfileSandboxResolver::new(
-            self.own.clone(),
-            self.floor.clone(),
+        Arc::new(ModeSandboxResolver::new(
+            self.modes.clone(),
+            self.table.clone(),
             self.base,
         ))
     }
@@ -341,8 +321,8 @@ impl DefaultGrantStore {
 
 #[async_trait]
 impl GrantStore for DefaultGrantStore {
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool {
-        self.grants().is_granted(session, tool, arg)
+    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool {
+        self.grants().is_granted(session, tool, arg, mode)
     }
 
     async fn record(
@@ -351,40 +331,52 @@ impl GrantStore for DefaultGrantStore {
         tool: &str,
         arg: Option<&str>,
         scope: ApprovalScope,
+        mode: &str,
     ) {
-        self.grants().record(session, tool, arg, scope);
+        self.grants().record(session, tool, arg, scope, mode);
     }
 
     fn forget_session(&self, session: &SessionId) {
         self.grants().forget_session(session);
     }
 
-    fn grant_session_dir(&self, session: &SessionId, dir: &str) -> String {
-        self.grants().grant_session_dir(session, dir)
+    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String {
+        self.grants().grant_session_dir(session, dir, mode)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::AgentMode;
+    use crate::mode::{Limits, Mode, Rules};
+    use crate::tools::ToolRegistry;
+    use std::sync::RwLock;
 
-    fn build_profile_with_scoped_read() -> AgentProfile {
-        AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("read(src/*)", Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
+    /// A single-mode table carrying a `read(src/*)` scoped rule, the mode
+    /// resolver's counterpart of the old `build_profile_with_scoped_read`
+    /// `Agent` fixture — `ModeResolver` grades from the session's
+    /// mode now, so the fixture is a `Mode`, not a profile.
+    fn table_with_scoped_read() -> Arc<ModeTable> {
+        let mode = Mode {
+            name: "test".to_string(),
+            default: Permission::Ask,
+            rules: Rules::from_lists(&[], &["read(src/*)".to_string()], &[]),
+            limits: Limits::default(),
             sandbox: None,
-        }
+            sandbox_network: false,
+        };
+        Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
+    }
+
+    fn modes_map(session: &SessionId) -> Arc<Mutex<HashMap<SessionId, String>>> {
+        Arc::new(Mutex::new(HashMap::from([(
+            session.clone(),
+            "test".to_string(),
+        )])))
+    }
+
+    fn empty_registry() -> SharedRegistry {
+        Arc::new(RwLock::new(ToolRegistry::new()))
     }
 
     /// #485, ADR-0125: an absolute path resolving inside a wired `root` must
@@ -394,12 +386,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_matches_an_absolute_in_root_path_when_root_is_wired() {
         let session = SessionId::new("s1");
-        let active = Arc::new(Mutex::new(HashMap::from([(
-            session.clone(),
-            build_profile_with_scoped_read(),
-        )])));
-        let resolver = ProfileResolver::new(
-            active,
+        let resolver = ModeResolver::new(
+            modes_map(&session),
+            table_with_scoped_read(),
+            empty_registry(),
             PermissionProfile::new(Permission::Allow),
             Some(PathBuf::from("/r")),
         );
@@ -424,12 +414,13 @@ mod tests {
     #[tokio::test]
     async fn resolve_does_not_relativize_without_a_wired_root() {
         let session = SessionId::new("s1");
-        let active = Arc::new(Mutex::new(HashMap::from([(
-            session.clone(),
-            build_profile_with_scoped_read(),
-        )])));
-        let resolver =
-            ProfileResolver::new(active, PermissionProfile::new(Permission::Allow), None);
+        let resolver = ModeResolver::new(
+            modes_map(&session),
+            table_with_scoped_read(),
+            empty_registry(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        );
         assert_eq!(
             resolver
                 .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
@@ -438,124 +429,113 @@ mod tests {
         );
     }
 
-    /// #479: an unseen session (never folded from a lifecycle event) falls back
-    /// to the process-global default — unlike permission's fail-closed `Deny`,
-    /// sandboxing is defense in depth, not the gate itself.
+    /// ADR-0207 stage 4: a session whose mode was never folded (a dropped
+    /// `ModeChanged`) fails closed — mirroring the pre-stage-4 unseen-profile
+    /// behavior, never allow-all.
+    #[tokio::test]
+    async fn resolve_denies_an_unseen_session() {
+        let session = SessionId::new("s1");
+        let resolver = ModeResolver::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            table_with_scoped_read(),
+            empty_registry(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        );
+        assert_eq!(
+            resolver.resolve(&session, "read", r#"{"path":"x"}"#).await,
+            Permission::Deny
+        );
+    }
+
+    /// A `Mode` fixture with a given sandbox posture, otherwise a bare
+    /// pass-through — the sandbox tests below only ever read `sandbox`/
+    /// `sandbox_network` through `Mode::sandbox_policy`.
+    fn mode_with_sandbox(sandbox: Option<&str>, sandbox_network: bool) -> Mode {
+        Mode {
+            name: "test".to_string(),
+            default: Permission::Allow,
+            rules: Rules::default(),
+            limits: Limits::default(),
+            sandbox: sandbox.map(str::to_string),
+            sandbox_network,
+        }
+    }
+
+    fn sandbox_cfg(mode: Mode, base: SandboxPolicy, session: &SessionId) -> SandboxConfig {
+        SandboxConfig {
+            base,
+            modes: modes_map(session),
+            table: Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid")),
+        }
+    }
+
+    const CONFINED: SandboxPolicy = SandboxPolicy {
+        backend: crate::host::SandboxBackend::Bubblewrap,
+        network: false,
+    };
+
+    /// #479: an unseen session (never folded from a lifecycle event, or an
+    /// unknown mode name) falls back to the process-global default — unlike
+    /// permission's fail-closed `Deny`, sandboxing is defense in depth, not
+    /// the gate itself.
     #[test]
-    fn sandbox_resolver_falls_back_to_default_for_an_unseen_session() {
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
+    fn sandbox_resolver_falls_back_to_base_for_an_unseen_session() {
         let cfg = SandboxConfig {
-            base: confined,
+            base: CONFINED,
             ..SandboxConfig::none()
         };
         let resolver = cfg.resolver();
-        assert_eq!(resolver.resolve(Some(&SessionId::new("ghost"))), confined);
+        assert_eq!(resolver.resolve(Some(&SessionId::new("ghost"))), CONFINED);
     }
 
-    /// #479: a profile's own override wins when no ancestor floor clamps it.
+    /// ADR-0207 §6, stage 5b: the session's mode declares the sandbox
+    /// posture — a `bwrap` mode confines even when `ENTANGLEMENT_SANDBOX` is
+    /// unset (`base` unconfined).
     #[test]
-    fn sandbox_resolver_reads_the_session_own_override() {
-        let cfg = SandboxConfig::none();
+    fn sandbox_resolver_reads_the_session_mode() {
         let session = SessionId::new("s1");
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        cfg.own.lock().unwrap().insert(session.clone(), confined);
-        assert_eq!(cfg.resolver().resolve(Some(&session)), confined);
+        let cfg = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), false),
+            SandboxPolicy::none(),
+            &session,
+        );
+        assert_eq!(cfg.resolver().resolve(Some(&session)), CONFINED);
     }
 
-    /// #479, ADR-0104 amendment: a confined parent's floor clamps a child whose
-    /// own profile would otherwise run unsandboxed.
+    /// ADR-0207 §6, stage 5b: env may only *tighten* what the mode declares,
+    /// never loosen it — a `bwrap` mode stays confined even if
+    /// `ENTANGLEMENT_SANDBOX` is unset, and an unconfined mode picks up a
+    /// confined env base (env tightening an otherwise-open mode).
     #[test]
-    fn sandbox_resolver_clamps_to_the_ancestor_floor() {
-        let cfg = SandboxConfig::none();
-        let child = SessionId::new("child");
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        // Child's own profile is unsandboxed, but its recorded floor (the
-        // parent's effective policy at spawn time) is confined.
-        cfg.own
-            .lock()
-            .unwrap()
-            .insert(child.clone(), SandboxPolicy::none());
-        cfg.floor.lock().unwrap().insert(child.clone(), confined);
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
+    fn env_base_only_tightens_never_loosens_the_mode() {
+        let session = SessionId::new("s1");
+        // Mode confines, env base is unconfined: still confined.
+        let confining_mode = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), false),
+            SandboxPolicy::none(),
+            &session,
+        );
+        assert_eq!(confining_mode.resolver().resolve(Some(&session)), CONFINED);
+
+        // Mode is unconfined, env base confines: still confined (env tightens).
+        let open_mode = sandbox_cfg(mode_with_sandbox(None, false), CONFINED, &session);
+        assert_eq!(open_mode.resolver().resolve(Some(&session)), CONFINED);
     }
 
-    /// #479, ADR-0104 amendment: `record_session_sandbox` is the exact
-    /// computation `tool_runner`'s `SessionStarted` handler performs — this
-    /// pins the spawn-chain clamp end to end (population, not just resolution)
-    /// without spinning up the full engine: a confined parent's child inherits
-    /// its confinement as a floor even though the child's own profile is
-    /// unsandboxed, and a grandchild inherits the same floor transitively.
+    /// ADR-0207 §6, stage 5b: a mode's own `sandbox_network: true` shares the
+    /// host network namespace under confinement — the network-sharing rank
+    /// sits strictly between unconfined and network-cut confinement.
     #[test]
-    fn record_session_sandbox_clamps_a_multi_level_spawn_chain() {
-        let cfg = SandboxConfig::none();
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let grandchild = SessionId::new("grandchild");
-
-        // Root: confined by its own profile, no ancestor.
-        record_session_sandbox(&cfg.own, &cfg.floor, &parent, None, Some("bwrap"), cfg.base);
-        assert_eq!(cfg.resolver().resolve(Some(&parent)), confined);
-
-        // Child: unsandboxed profile (`sandbox: none`), but spawned under the
-        // confined parent — the floor clamps it confined anyway.
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &child,
-            Some(&parent),
-            Some("none"),
-            cfg.base,
+    fn mode_sandbox_network_shares_the_host_namespace() {
+        let session = SessionId::new("s1");
+        let cfg = sandbox_cfg(
+            mode_with_sandbox(Some("bwrap"), true),
+            SandboxPolicy::none(),
+            &session,
         );
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
-
-        // Grandchild: no override at all (inherits the process default, which
-        // is unsandboxed here) — still clamps to the same confined floor,
-        // proving the clamp composes transitively down the chain.
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &grandchild,
-            Some(&child),
-            None,
-            cfg.base,
-        );
-        assert_eq!(cfg.resolver().resolve(Some(&grandchild)), confined);
-    }
-
-    /// #479: an unsandboxed parent imposes no floor, so a confined child's own
-    /// (stricter) override still wins — the clamp only ever tightens, never
-    /// loosens a child below what its own profile already asked for.
-    #[test]
-    fn record_session_sandbox_never_loosens_a_childs_own_stricter_choice() {
-        let cfg = SandboxConfig::none();
-        let confined = SandboxPolicy {
-            backend: crate::host::SandboxBackend::Bubblewrap,
-            network: false,
-        };
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        record_session_sandbox(&cfg.own, &cfg.floor, &parent, None, None, cfg.base);
-        record_session_sandbox(
-            &cfg.own,
-            &cfg.floor,
-            &child,
-            Some(&parent),
-            Some("bwrap"),
-            cfg.base,
-        );
-        assert_eq!(cfg.resolver().resolve(Some(&child)), confined);
+        let resolved = cfg.resolver().resolve(Some(&session));
+        assert_eq!(resolved.backend, crate::host::SandboxBackend::Bubblewrap);
+        assert!(resolved.network, "sandbox_network: true shares the network");
     }
 }

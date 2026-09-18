@@ -145,7 +145,7 @@ async fn tool_exec_carries_the_active_profile_name() {
         }
     };
     assert_eq!(
-        agent, "build",
+        agent, "general",
         "ToolExec must name the session's active profile"
     );
 }

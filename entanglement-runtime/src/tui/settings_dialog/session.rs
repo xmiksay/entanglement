@@ -1,8 +1,6 @@
-//! The `/set` dialog's Session tab: agent profile + provider/model pickers
-//! over the same data `/agent` and `/model` offer, plus the "final model"
-//! the Generation tab validates against.
-
-use std::collections::HashMap;
+//! The `/set` dialog's Session tab: the (read-only, ADR-0207 §9) agent display
+//! plus the provider/model picker `/model` also offers, feeding the "final
+//! model" the Generation tab validates against.
 
 use entanglement_provider::Catalog;
 
@@ -15,6 +13,16 @@ pub struct ModelOption {
     pub provider: String,
     pub model: String,
     pub caps: ModelCaps,
+}
+
+/// The four built-in permission-mode names, in `Mode::describe::MODE_SUMMARIES`
+/// order (#560 P12, ADR-0207 §12) — the Session tab's mode row roster,
+/// mirroring [`model_options`]'s catalog-derived roster for the model row.
+pub fn mode_names() -> Vec<String> {
+    crate::mode::describe::MODE_SUMMARIES
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
 }
 
 /// Every catalog model, in catalog order (the `/model` picker's order).
@@ -34,15 +42,19 @@ pub fn model_options(catalog: &Catalog) -> Vec<ModelOption> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionTab {
-    agents: Vec<String>,
-    agent: usize,
-    initial_agent: usize,
+    /// The session's agent — fixed for its whole life (ADR-0207 §9), so this
+    /// is display-only: nothing in this tab ever changes it.
+    agent: String,
     models: Vec<ModelOption>,
     model: usize,
     initial_model: usize,
-    /// Each profile's persisted model pin: switching agent rebinds to it
-    /// (ADR-0081), so it is the "final model" unless a model is picked too.
-    agent_pins: HashMap<String, (String, String)>,
+    // Permission mode (#560 P12, ADR-0207 §12): live, unlike the agent row —
+    // the natural slot ADR-0207 §9 left once `SetAgent` (and this tab's old
+    // agent-cycling) was retired. `modes` is the fixed four-name roster, not
+    // re-read from a catalog.
+    modes: Vec<String>,
+    mode: usize,
+    initial_mode: usize,
 }
 
 fn step(i: usize, len: usize, forward: bool) -> usize {
@@ -57,19 +69,12 @@ fn step(i: usize, len: usize, forward: bool) -> usize {
 
 impl SessionTab {
     pub fn new(
-        mut agents: Vec<String>,
-        current_agent: &str,
+        agent: String,
         mut models: Vec<ModelOption>,
         current_model: (&str, &str),
-        agent_pins: HashMap<String, (String, String)>,
+        modes: Vec<String>,
+        current_mode: &str,
     ) -> Self {
-        let agent = match agents.iter().position(|a| a == current_agent) {
-            Some(i) => i,
-            None => {
-                agents.push(current_agent.to_string());
-                agents.len() - 1
-            }
-        };
         let (provider, id) = current_model;
         let model = match models
             .iter()
@@ -85,23 +90,28 @@ impl SessionTab {
                 models.len() - 1
             }
         };
+        // An unrecognized current mode (a custom embedder table this dialog
+        // doesn't know) falls back to index 0 rather than pushing a synthetic
+        // entry the way an unknown model does — the roster is the fixed
+        // four-name list, not a catalog this dialog can extend.
+        let mode = modes.iter().position(|m| m == current_mode).unwrap_or(0);
         Self {
-            agents,
             agent,
-            initial_agent: agent,
             models,
             model,
             initial_model: model,
-            agent_pins,
+            modes,
+            mode,
+            initial_mode: mode,
         }
-    }
-
-    pub fn cycle_agent(&mut self, forward: bool) {
-        self.agent = step(self.agent, self.agents.len(), forward);
     }
 
     pub fn cycle_model(&mut self, forward: bool) {
         self.model = step(self.model, self.models.len(), forward);
+    }
+
+    pub fn cycle_mode(&mut self, forward: bool) {
+        self.mode = step(self.mode, self.modes.len(), forward);
     }
 
     /// Jump to the first model of the next/previous provider — a long flat
@@ -125,11 +135,7 @@ impl SessionTab {
     }
 
     pub fn final_agent(&self) -> &str {
-        &self.agents[self.agent]
-    }
-
-    pub fn agent_change(&self) -> Option<String> {
-        (self.agent != self.initial_agent).then(|| self.final_agent().to_string())
+        &self.agent
     }
 
     pub fn model_change(&self) -> Option<(String, String)> {
@@ -139,41 +145,34 @@ impl SessionTab {
         })
     }
 
-    /// The model the session ends up on: an explicit pick, else the new
-    /// agent's pin when the agent changes, else the current model. The bool
-    /// says whether it came from an agent pin.
-    pub fn final_model(&self) -> (ModelOption, bool) {
-        if self.model == self.initial_model && self.agent != self.initial_agent {
-            if let Some((p, m)) = self.agent_pins.get(self.final_agent()) {
-                let option = self
-                    .models
-                    .iter()
-                    .find(|o| &o.provider == p && &o.model == m)
-                    .cloned()
-                    .unwrap_or_else(|| ModelOption {
-                        provider: p.clone(),
-                        model: m.clone(),
-                        caps: ModelCaps::unknown(),
-                    });
-                return (option, true);
-            }
-        }
-        (self.models[self.model].clone(), false)
+    /// The model the session ends up on: the picked model, or the current one
+    /// if untouched.
+    pub fn final_model(&self) -> ModelOption {
+        self.models[self.model].clone()
     }
 
     pub fn model_label(&self) -> String {
-        let (m, pinned) = self.final_model();
-        let suffix = if pinned { "  (agent pin)" } else { "" };
-        format!("{}/{}{suffix}", m.provider, m.model)
+        let m = self.final_model();
+        format!("{}/{}", m.provider, m.model)
+    }
+
+    pub fn mode_change(&self) -> Option<String> {
+        (self.mode != self.initial_mode).then(|| self.modes[self.mode].clone())
+    }
+
+    /// The mode the session ends up on: the picked mode, or the current one
+    /// if untouched.
+    pub fn final_mode(&self) -> &str {
+        &self.modes[self.mode]
     }
 
     pub fn pending(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if let Some(a) = self.agent_change() {
-            out.push(format!("agent → {a}"));
-        }
         if let Some((p, m)) = self.model_change() {
             out.push(format!("model → {p}/{m}"));
+        }
+        if let Some(m) = self.mode_change() {
+            out.push(format!("mode → {m}"));
         }
         out
     }

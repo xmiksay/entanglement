@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 
+use crate::capability::Capability;
 use crate::tools::{text_parts, SharedRegistry, Tool, WeakRegistry};
 
 use super::available::{enable_for_session, AvailableMcp};
@@ -69,6 +70,10 @@ impl McpEnableTool {
 impl Tool for McpEnableTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("mcp_enable")
+    }
+
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Control]
     }
 
     fn description(&self) -> &str {
@@ -150,6 +155,12 @@ mod tests {
             entanglement_core::HttpClient::new().unwrap(),
         );
         (tool, registry)
+    }
+
+    #[test]
+    fn capability_is_control() {
+        let (tool, _registry) = tool_with_empty_roster();
+        assert_eq!(tool.capabilities(), &[Capability::Control]);
     }
 
     #[test]

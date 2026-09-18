@@ -596,10 +596,9 @@ mod tests {
                 session: child.clone(),
                 parent: Some(parent.clone()),
                 predecessor: None,
-                agent: "build".into(),
+                agent: "general".into(),
                 prompt: "subtask".into(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();

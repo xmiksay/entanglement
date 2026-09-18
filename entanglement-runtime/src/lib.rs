@@ -38,11 +38,12 @@ pub mod arg_validate;
 pub mod ask_user;
 pub mod aux_llm;
 pub mod cancel;
+// The capability vocabulary tools declare (#560, ADR-0207 §3), consumed by
+// `crate::policy::ModeResolver` (stage 4) to grade a call by its tool's
+// declared capabilities under the session's permission mode.
+pub mod capability;
 pub mod config;
 mod date;
-// Attributed autodecline wording for a call the dispatch gate refuses — the
-// one table both the executor ladder and the mask walk render from.
-pub mod decline;
 // `explore`/`describe` — the ADR-0196 §4 discovery pair (#560): always-on,
 // non-maskable internal tools that let a `ToolSearch`-mode session reach the
 // rest of the registry. Ungated — pure state/logic over core + the lean
@@ -59,16 +60,17 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
-// Out-of-mask tool calls as an approval round-trip (ADR-0198): the dispatch
-// loop's replacement for an unconditional mask decline, sharing `decline`'s
-// wording table and `tool_runner`'s own `dispatch` ladder.
-pub mod mask_request;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any
 // CLI/TUI/transport dep; the streamable-HTTP transport rides the `mcp-http`
 // feature (reqwest), keeping the lean build transport-free (ADR-0025).
 pub mod mcp;
+// Permission modes (#560, ADR-0207): the mode table and its grade-resolution
+// engine, built on `capability`'s vocabulary. Wired into the dispatch ladder
+// (`crate::policy::ModeResolver`) as of stage 4. Ungated — pure logic
+// over core types + capability + serde_yaml, needed by the lean build too.
+pub mod mode;
 // Live action narrator (#635): asks the aux `narrate` LLM what the agent is
 // doing on every tool call and sets it as `Session.action`. Mirrors
 // `session_title` below, including the `provider` gate (drains a provider
@@ -97,7 +99,17 @@ pub mod policy;
 pub mod poll;
 pub mod propose_plan;
 pub mod questions;
+pub mod request_mode;
 pub mod retained_output;
+// Wall-clock/turn-count budget enforcement for a mode's `max_turns`/
+// `max_duration` (ADR-0207 §11, stage 5c) — spawned by
+// `tool_runner::spawn_tool_executor_with_policy` alongside its other
+// background tasks.
+pub mod run_budget;
+// `question_timeout`/`on_timeout` unattended-run policy (ADR-0207 §11,
+// stage 5c): the `Ask`-collapses-to-deny rule, its repeat-denial
+// escalation, and a timed-out `ask_user` call's default answers.
+pub mod run_limits;
 // Sandboxed `rhai` script tool (#122, ADR-0046). Behind the `rhai` feature
 // (default-on, #502/ADR-0135) so a lean embedder can drop the dep via
 // `--no-default-features`.

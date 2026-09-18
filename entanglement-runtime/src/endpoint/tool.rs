@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 
 use entanglement_core::HttpClient;
 
+use crate::capability::Capability;
 use crate::tools::{Tool, ToolRegistry};
 
 use super::config::{build_schema, EndpointConfig};
@@ -50,6 +51,14 @@ impl EndpointTool {
 impl Tool for EndpointTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Owned(self.name.clone())
+    }
+
+    // Every config-declared `endpoint__<name>` tool is a network call to an
+    // outside base URL, regardless of what the endpoint itself does with the
+    // request (tool_names.rs's `CAPABILITIES` comment makes the same call for
+    // the old `call` capability-key fan-out).
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Exec]
     }
 
     fn description(&self) -> &str {
@@ -200,6 +209,14 @@ pub fn register_endpoints(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_is_exec() {
+        let http = HttpClient::new().unwrap();
+        let cfg: EndpointConfig = serde_yaml::from_str("url: https://example.com/x").unwrap();
+        let tool = EndpointTool::new("weather".to_string(), &cfg, http);
+        assert_eq!(tool.capabilities(), &[Capability::Exec]);
+    }
 
     #[test]
     fn substitute_replaces_declared_tokens_and_encodes_for_url() {

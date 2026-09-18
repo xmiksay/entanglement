@@ -18,7 +18,7 @@ use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::plan_watch::spawn_plans_watcher;
-use entanglement_runtime::policy::{DefaultGrantStore, ProfileResolver, SandboxConfig};
+use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -91,7 +91,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -99,8 +99,12 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver = Arc::new(ProfileResolver::new(
-        active.clone(),
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = tools.shared();
+    let resolver = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        shared_tools.clone(),
         base.clone(),
         Some(root.to_path_buf()),
     ));
@@ -112,7 +116,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     let plan_files = Arc::new(PlanFileRegistry::new());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -120,11 +124,15 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Hooks::default(),
         Some(escape_root),
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,

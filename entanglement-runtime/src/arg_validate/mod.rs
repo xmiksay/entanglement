@@ -31,6 +31,18 @@ use serde_json::{json, Value};
 
 use crate::tools::closest_name;
 
+mod duplicate_keys;
+
+/// Duplicate JSON object keys in `input`, at any nesting depth (#560
+/// remainder). Exposed for [`crate::tool_runner::dispatch::execute`]: an
+/// `invoke`-unwrapped call's dispatched input already lost this information
+/// (core had to parse the outer envelope to extract `args`, which collapses
+/// a duplicate the same way `validate` below does) — the caller re-scans the
+/// envelope's raw, still-duplicated text instead.
+pub(crate) fn find_duplicate_keys(input: &str) -> Vec<String> {
+    duplicate_keys::duplicate_keys(input)
+}
+
 /// One schema violation found in a call's input against the tool's schema.
 /// `Default` is "no violation" — [`validate`] returns `None` rather than an
 /// empty one, but the builder assembles into this shape.
@@ -43,6 +55,13 @@ pub struct Violation {
     pub missing: Vec<String>,
     pub unexpected: Vec<UnexpectedProp>,
     pub type_errors: Vec<String>,
+    /// Keys repeated within the same JSON object, at any nesting depth
+    /// (#560 remainder): `serde_json::Value` silently keeps only the later
+    /// value, so e.g. a duplicated `path` can present as a missing
+    /// `content` with no clue that the *real* mistake was writing `path`
+    /// twice. An addition to the violation, never a replacement — the
+    /// missing/unexpected/type findings above still stand.
+    pub duplicate_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +77,7 @@ impl Violation {
             && self.missing.is_empty()
             && self.unexpected.is_empty()
             && self.type_errors.is_empty()
+            && self.duplicate_keys.is_empty()
     }
 
     /// Render "what specifically was wrong", one line per finding — the text
@@ -72,6 +92,11 @@ impl Violation {
         let mut out = Vec::new();
         if !self.missing.is_empty() {
             out.push(format!("missing required: {}", self.missing.join(", ")));
+        }
+        for key in &self.duplicate_keys {
+            out.push(format!(
+                "duplicate key \"{key}\" (the later value silently replaced the earlier one)"
+            ));
         }
         for u in &self.unexpected {
             match &u.hint {
@@ -130,7 +155,12 @@ pub fn validate(schema: &Value, input: &str) -> Option<Violation> {
         });
     };
 
-    let mut violation = Violation::default();
+    // Scanned from the raw text, not `obj` above — by the time `obj` exists
+    // the duplicate is already gone, collapsed to its last value.
+    let mut violation = Violation {
+        duplicate_keys: duplicate_keys::duplicate_keys(trimmed),
+        ..Default::default()
+    };
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for r in required.iter().filter_map(Value::as_str) {
             if !obj.contains_key(r) {

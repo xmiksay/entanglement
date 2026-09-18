@@ -18,6 +18,7 @@ use crate::skills::SkillRegistry;
 use crate::tool_advertising::{AdvertisingState, Encoding};
 use crate::tools::{closest_name, ToolRegistry};
 
+use super::kinds::{self, KindsCtx};
 use super::runtime_owned_specs;
 
 /// `ToolSpec` carries no `Serialize` impl (it's assembled straight from a
@@ -182,12 +183,21 @@ async fn build_entries(
     skills: &SkillRegistry,
     mcp_scopes: Option<&McpScopes>,
     advertising: &AdvertisingState,
+    kinds_ctx: Option<&KindsCtx>,
     session: &SessionId,
     names: &[String],
 ) -> (Vec<Value>, Vec<String>) {
     let mut entries = Vec::with_capacity(names.len());
     let mut resolved = Vec::new();
     for name in names {
+        // Qualified lookups (`agent:`/`skill:`/`model:`/`mode:`, ADR-0207
+        // §12) resolve outside the tool machinery entirely: not a
+        // `ToolSpec`, never joins the discovered/advertised set, so it's
+        // checked before the dedup and the tool-name resolver both.
+        if let Some(value) = kinds_ctx.and_then(|ctx| kinds::resolve_qualified(name, ctx)) {
+            entries.push(value);
+            continue;
+        }
         let already_delivered = advertising
             .discovered
             .lock()
@@ -227,6 +237,7 @@ pub async fn run_describe(
     skills: &SkillRegistry,
     mcp_scopes: Option<&McpScopes>,
     advertising: &AdvertisingState,
+    kinds_ctx: Option<&KindsCtx>,
     session: SessionId,
     request_id: String,
     input: String,
@@ -258,8 +269,16 @@ pub async fn run_describe(
     };
 
     let mode = advertising.mode(&session);
-    let (entries, resolved) =
-        build_entries(&registry, skills, mcp_scopes, advertising, &session, &names).await;
+    let (entries, resolved) = build_entries(
+        &registry,
+        skills,
+        mcp_scopes,
+        advertising,
+        kinds_ctx,
+        &session,
+        &names,
+    )
+    .await;
     // ADR-0196 §3 / ADR-0202 §1, `anthropic_native` encoding: the API expands
     // each `tool_reference` into the matching (already-sent, still
     // `defer_loading: true`) definition, so repeating the schema as text would
@@ -367,6 +386,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string()],
         )
@@ -401,6 +421,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["endpoint__weather".to_string()],
         )
@@ -423,6 +444,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string(), "nope".to_string()],
         )
@@ -441,6 +463,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string()],
         )
@@ -468,6 +491,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["poll".to_string()],
         )
@@ -485,6 +509,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glbo".to_string()],
         )
@@ -513,6 +538,7 @@ mod tests {
             &skills,
             None,
             &advertising,
+            None,
             &session,
             &["git".to_string()],
         )
@@ -559,6 +585,7 @@ mod tests {
             &SkillRegistry::default(),
             Some(scopes.as_ref()),
             &advertising,
+            None,
             &session,
             &["mcp__kb__search".to_string()],
         )
@@ -594,6 +621,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string()],
         )
@@ -608,6 +636,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string()],
         )
@@ -648,6 +677,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string(), "grep".to_string()],
         )
@@ -699,6 +729,7 @@ mod tests {
                 &SkillRegistry::default(),
                 None,
                 &advertising,
+                None,
                 &session,
                 &["glob".to_string()],
             )
@@ -767,6 +798,7 @@ mod tests {
                 &SkillRegistry::default(),
                 None,
                 &advertising,
+                None,
                 &session,
                 &["glob".to_string(), "grep".to_string()],
             )
@@ -804,6 +836,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &names,
         )
@@ -836,6 +869,7 @@ mod tests {
             &SkillRegistry::default(),
             None,
             &advertising,
+            None,
             &session,
             &["glob".to_string()],
         )

@@ -39,6 +39,7 @@ mod merge;
 mod pricing;
 mod thinking;
 mod tool_advertising;
+mod usable;
 
 pub use discovery::Discovery;
 pub use effort::{clamp_within, EffortTiers, ResolvedEffort};

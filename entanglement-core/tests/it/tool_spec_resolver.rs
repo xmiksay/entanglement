@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, SessionModel, ToolSpec,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, SessionId, SessionModel, ToolSpec,
 };
 
 /// Per-session log of the advertised tool-name lists, one inner `Vec` per
@@ -54,24 +54,15 @@ impl Llm for RecordingLlm {
 
 /// The read-only `explore` profile the runtime ships as `explore.md`; core no
 /// longer carries it (#201), so the mask test registers it directly. Its
-/// `read`/`glob`/`grep` allowlist masks out anything else.
-fn explore_profile() -> AgentProfile {
-    AgentProfile {
+/// read-only posture is a runtime permission-mode fact now (ADR-0207) — the
+/// profile itself carries no mask.
+fn explore_profile() -> Agent {
+    Agent {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
-        mode: AgentMode::Subagent,
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny)
-            .with("read", Permission::Allow)
-            .with("glob", Permission::Allow)
-            .with("grep", Permission::Allow),
-        tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -214,18 +205,21 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             ToolSpec::new("edit", "edit a file"),
         ]
     }));
-    cfg.profiles.insert(explore_profile());
+    cfg.agents.insert(explore_profile());
 
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: "look".into(),
+            user: None,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid, "look")).await.unwrap();
 
     let reqs = recorded_at_least(&seen, "s", 1).await;
     let names = &reqs[0];
@@ -270,34 +264,30 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             ToolSpec::new("poll", "join background jobs and sub-agents"),
         ]
     }));
-    // A profile that masks everything but `read`: neither `poll` nor `edit` is
-    // in its allowlist. Both are still advertised — the allowlist decides what
-    // may *run*, not what the model can see.
-    cfg.profiles.insert(AgentProfile {
+    // A named-restrictive agent: it carries no mask of its own any more
+    // (ADR-0207 moved that onto the session's permission mode), so `poll` and
+    // `edit` are advertised exactly as any other profile would see them.
+    cfg.agents.insert(Agent {
         name: "locked".into(),
         description: "read-only".into(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
-        tools: Some(vec!["read".into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
 
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "locked".into(),
+            prompt: "look".into(),
+            user: None,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid, "look")).await.unwrap();
 
     let reqs = recorded_at_least(&seen, "s", 1).await;
     let names = &reqs[0];
@@ -340,13 +330,13 @@ async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
         })
     }));
     let mut pinned = cfg
-        .profiles
-        .get("build")
+        .agents
+        .get("general")
         .cloned()
-        .expect("default registry has build");
+        .expect("default registry has general");
     pinned.provider = Some("p".into());
     pinned.model = Some("m".into());
-    cfg.profiles.insert(pinned);
+    cfg.agents.insert(pinned);
     let specs_order = order.clone();
     cfg.tool_spec_resolver = Some(Arc::new(move |_sid: &SessionId, m: SessionModel<'_>| {
         specs_order
@@ -356,7 +346,7 @@ async fn resolver_sees_the_bound_model_and_runs_before_the_prompt_resolver() {
         vec![]
     }));
     let prompt_order = order.clone();
-    cfg.system_prompt_resolver = Some(Arc::new(move |_sid: &SessionId, _p: &AgentProfile| {
+    cfg.system_prompt_resolver = Some(Arc::new(move |_sid: &SessionId, _p: &Agent| {
         prompt_order.lock().unwrap().push("prompt".into());
         None
     }));

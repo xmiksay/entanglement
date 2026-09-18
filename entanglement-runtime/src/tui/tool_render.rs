@@ -9,6 +9,7 @@ use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::Theme;
 
+mod body;
 mod discovery;
 mod expansion;
 mod orchestration;
@@ -26,16 +27,17 @@ pub fn render_tool_output(
     output: &str,
     theme: Theme,
     available_width: u16,
+    md: &MarkdownRenderer,
 ) -> Text<'static> {
     match tool_name {
-        Some("edit") => render_edit_output(output, theme, available_width),
-        Some("read") => render_read_output(output, theme, available_width),
+        Some("edit") => render_edit_output(output, theme, available_width, md),
+        Some("read") => render_read_output(output, theme, available_width, md),
         Some("glob") => render_glob_output(output, theme, available_width),
         Some("grep") => render_grep_output(output, theme, available_width),
         Some("explore") => Text::from(discovery::render_explore_output(output, available_width)),
         Some("describe") => Text::from(discovery::render_describe_output(output, available_width)),
         Some(_) => Text::from(readable::render_output(output, available_width)),
-        None => render_plain_output(output, theme, available_width),
+        None => render_plain_output(output, theme, available_width, md),
     }
 }
 
@@ -121,9 +123,9 @@ fn output_body(
         Some("glob") => render_glob_output(output, theme, available_width).lines,
         Some("grep") => render_grep_output(output, theme, available_width).lines,
         _ if output.trim().is_empty() => Vec::new(),
-        Some("read") => render_read_output(output, theme, available_width).lines,
-        Some("edit") => render_edit_output(output, theme, available_width).lines,
-        Some("bash" | "call") => render_plain_output(output, theme, available_width).lines,
+        Some("read") => render_read_output(output, theme, available_width, md).lines,
+        Some("edit") => render_edit_output(output, theme, available_width, md).lines,
+        Some("bash" | "call") => render_plain_output(output, theme, available_width, md).lines,
         Some("explore") => discovery::render_explore_output(output, available_width),
         Some("describe") => discovery::render_describe_output(output, available_width),
         Some("agent" | "agent_send") => {
@@ -146,7 +148,12 @@ pub(super) fn collect_line(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
-fn render_edit_output(output: &str, theme: Theme, available_width: u16) -> Text<'static> {
+fn render_edit_output(
+    output: &str,
+    theme: Theme,
+    available_width: u16,
+    md: &MarkdownRenderer,
+) -> Text<'static> {
     if output.contains("created file:") || output.contains("matches replaced") {
         let line = Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
@@ -154,35 +161,66 @@ fn render_edit_output(output: &str, theme: Theme, available_width: u16) -> Text<
         ]);
         return Text::from(vec![line]);
     }
-    render_plain_output(output, theme, available_width)
+    render_plain_output(output, theme, available_width, md)
 }
 
 /// The file body of a `read`. The filename lives in the block header (#340), so
-/// the body is just the contents — indented like other tool output.
+/// the body is just the contents — indented like other tool output, JSON
+/// pretty-printed + highlighted or word-wrapped like any other free-text body
+/// (#wrap; a `read` body is always prefixed `{lineno}: `, so it never parses
+/// as JSON as a whole and reformatting can't kick in here by accident).
 pub(super) fn render_read_output(
     output: &str,
     _theme: Theme,
-    _available_width: u16,
+    available_width: u16,
+    md: &MarkdownRenderer,
 ) -> Text<'static> {
-    Text::from(
-        output
-            .lines()
-            .map(|line| Line::from(format!("  {line}")))
-            .collect::<Vec<_>>(),
-    )
+    Text::from(indent_two(body::render_wrapped_body(
+        output,
+        available_width.saturating_sub(4),
+        md,
+    )))
 }
 
+/// A `bash`/`call` output or a head-local status notice (no tool name):
+/// pretty-printed + highlighted when the whole body is JSON, else word-wrapped
+/// to the panel — the fix for "long lines run off the right edge" and "JSON
+/// output shown as one unreadable line" (#wrap).
+///
+/// Wrapped 4 columns narrower than the panel, matching every other body
+/// renderer here (`render_text_run`, `render_command_input`,
+/// `indented_wrapped`): 2 columns for this function's own indent, 2 more for
+/// the `▌ ` bar `theme.decorate` prepends afterward — which pads short lines
+/// out to `available_width` but never truncates a long one, so a body wrapped
+/// any narrower would overflow the panel by exactly that margin.
 pub(super) fn render_plain_output(
     output: &str,
     _theme: Theme,
-    _available_width: u16,
+    available_width: u16,
+    md: &MarkdownRenderer,
 ) -> Text<'static> {
-    Text::from(
-        output
-            .lines()
-            .map(|line| Line::from(format!("  {line}")))
-            .collect::<Vec<_>>(),
-    )
+    Text::from(indent_two(body::render_wrapped_body(
+        output,
+        available_width.saturating_sub(4),
+        md,
+    )))
+}
+
+/// Prepend a 2-column indent to every line, preserving each span's style — the
+/// idiom every tool-output body uses (`"  {line}"`), applied after wrapping so
+/// the indent never counts against the wrap width twice.
+fn indent_two(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let style = line.style;
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(line.spans);
+            let mut out = Line::from(spans);
+            out.style = style;
+            out
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -193,7 +231,7 @@ mod tests {
     fn test_edit_creates_file() {
         let output = "created file: test.txt";
         let theme = Theme::default();
-        let result = render_edit_output(output, theme, 80);
+        let result = render_edit_output(output, theme, 80, &MarkdownRenderer::new());
         let text: String = result
             .lines
             .iter()
@@ -218,7 +256,7 @@ mod tests {
     #[test]
     fn test_read_renders_body() {
         let output = "1: line 1\n2: line 2\n3: line 3\n";
-        let result = render_read_output(output, Theme::default(), 80);
+        let result = render_read_output(output, Theme::default(), 80, &MarkdownRenderer::new());
         let text = flatten(&result);
         assert!(text.contains("line 1"), "read should render the file body");
         assert!(text.contains("line 3"), "read should render the file body");

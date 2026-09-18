@@ -26,6 +26,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
+use crate::capability::{runtime_owned, Capability};
 use crate::tools::Tool;
 
 pub struct AliasTool {
@@ -111,11 +112,30 @@ impl Tool for AliasTool {
     fn alias_rewrite(&self, input: &str) -> Option<(String, String)> {
         Some((self.target.clone(), merge_input(input, &self.preset)))
     }
+
+    /// The **target's** capability, never the alias's own name — `alias_rewrite`
+    /// resolves before grading, so if this returned a capability of its own it
+    /// could launder a call through a namespaced alias name (ADR-0207 §3
+    /// forbids exactly that). `runtime_owned` covers a pseudo-tool target
+    /// (`rhai`, which has no registry entry); `delegate` covers a real
+    /// registry tool. Neither reachable is the fail-safe `Write` default —
+    /// documenting, not guessing, an alias whose target genuinely can't be
+    /// resolved at construction time.
+    fn capabilities(&self) -> &'static [Capability] {
+        if let Some(bits) = runtime_owned(&self.target) {
+            return bits;
+        }
+        match &self.delegate {
+            Some(target) => target.capabilities(),
+            None => &[Capability::Write],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_names::POLL_TOOL;
     use crate::tools::ToolRegistry;
 
     struct Echo;
@@ -169,6 +189,52 @@ mod tests {
         let v: Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(v["path"], "README.md");
         assert_eq!(v["extra"], "x");
+    }
+
+    #[test]
+    fn capability_resolves_a_runtime_owned_pseudo_tool_target_with_no_delegate() {
+        let alias = AliasTool::new(
+            "skill__x__wait".to_string(),
+            "d".to_string(),
+            serde_json::json!({"type":"object"}),
+            POLL_TOOL.to_string(),
+            Map::new(),
+            None,
+        );
+        assert_eq!(alias.capabilities(), &[Capability::Control]);
+    }
+
+    #[test]
+    fn capability_resolves_a_real_registry_delegate_never_its_own() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Echo);
+        let delegate = registry.get("echo");
+        let alias = AliasTool::new(
+            "skill__x__quick_read".to_string(),
+            "d".to_string(),
+            serde_json::json!({"type":"object"}),
+            "echo".to_string(),
+            Map::new(),
+            delegate,
+        );
+        // Echo doesn't override `capabilities`, so it rides the trait's
+        // fail-safe `Write` default — asserted here so a change to Echo's
+        // own capability (or the trait default) breaks this test loudly
+        // instead of silently proving nothing.
+        assert_eq!(alias.capabilities(), &[Capability::Write]);
+    }
+
+    #[test]
+    fn capability_falls_back_to_write_for_an_unresolvable_target() {
+        let alias = AliasTool::new(
+            "skill__x__mystery".to_string(),
+            "d".to_string(),
+            serde_json::json!({"type":"object"}),
+            "not_a_real_tool".to_string(),
+            Map::new(),
+            None,
+        );
+        assert_eq!(alias.capabilities(), &[Capability::Write]);
     }
 
     #[tokio::test]

@@ -262,6 +262,9 @@ async fn generate_title(
         generation: None,
         // One-shot aux request: a distinct prefix, so no session cache key.
         cache_key: None,
+        // The mode notice is a per-round core-session concept; a one-shot
+        // aux request has neither a mode nor a place for it to matter.
+        trailing_notice: None,
         // Aux fail-fast (#560 follow-up): session-title is display-only and
         // must never retry-storm a dead endpoint — one quick retry, then
         // give up for this call, whether the purpose is pinned or fell back

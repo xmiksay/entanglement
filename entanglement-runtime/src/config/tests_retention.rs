@@ -22,7 +22,7 @@ fn session_retention_parses_from_user_file_and_keeps_siblings() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let c = merge_user("session_retention_days: 7\n");
     assert_eq!(c.session_retention_days, 7);
-    assert_eq!(c.agent.as_deref(), Some("build"));
+    assert_eq!(c.agent.as_deref(), Some("general"));
 }
 
 #[test]

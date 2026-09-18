@@ -42,7 +42,11 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
     req.messages
         .iter()
         .rev()
-        .find(|m| m.role == MessageRole::User)
+        // Skip the trailing mode notice (ADR-0207 §9) — appended fresh to
+        // every request from `Session::mode`, never part of the real
+        // conversation, so it must never be mistaken for what the user
+        // actually said.
+        .find(|m| m.role == MessageRole::User && !m.text().starts_with("[mode: "))
         .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
         .unwrap_or("")
 }
@@ -64,7 +68,7 @@ impl Llm for LaunchOnlyLlm {
         Ok(call(
             "spawn1",
             "agent",
-            r#"{"agent":"explore","prompt":"child-task","background":true}"#.into(),
+            r#"{"agent":"general","prompt":"child-task","background":true}"#.into(),
         ))
     }
 }
@@ -72,7 +76,7 @@ impl Llm for LaunchOnlyLlm {
 fn config() -> EngineConfig {
     EngineConfig {
         llm_factory: Arc::new(|| Box::new(LaunchOnlyLlm) as Box<dyn Llm>),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     }
@@ -155,7 +159,7 @@ async fn list_operations_surfaces_a_launched_but_never_polled_agent() {
             assert_eq!(operations.len(), 1, "the dangling child should be listed");
             assert_eq!(operations[0].session, parent);
             assert_eq!(operations[0].kind, OperationKind::Agent);
-            assert_eq!(operations[0].launched_by, "explore");
+            assert_eq!(operations[0].launched_by, "general");
             return;
         }
     }

@@ -15,6 +15,7 @@ impl SessionView {
             text,
             pending: true,
         });
+        self.user_pending = true;
     }
 
     /// Clears the `pending` (dimmed) flag on the most recent user prompt. Called
@@ -22,6 +23,9 @@ impl SessionView {
     /// reasoning block or tool call rather than text, so keying this off text
     /// alone would leave the prompt greyed out for the whole turn (issue #103).
     fn clear_pending_user(&mut self) {
+        if !std::mem::take(&mut self.user_pending) {
+            return;
+        }
         for entry in self.transcript.iter_mut().rev() {
             if let TranscriptEntry::User { pending, .. } = entry {
                 *pending = false;
@@ -60,14 +64,8 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
-            OutEvent::SessionStarted {
-                parent,
-                ts,
-                sponsored,
-                ..
-            } => {
+            OutEvent::SessionStarted { parent, ts, .. } => {
                 self.parent = parent;
-                self.sponsored = sponsored;
                 self.started_ms = Some(ts);
                 true
             }
@@ -119,6 +117,17 @@ impl SessionView {
             }
             OutEvent::AgentChanged { agent, .. } => {
                 self.agent = agent;
+                true
+            }
+            // Permission mode (ADR-0207): folded the same way `AgentChanged`
+            // folds `agent` — every session gets a `ModeChanged` right after
+            // its `AgentChanged` unconditionally at start (`session.rs`), so
+            // `mode()` is never stale for long. `/allow` (#634) is the first
+            // reader: a `SessionDir` grant is mode-scoped, so recording one
+            // needs to know the session's current mode. Full `/mode`
+            // display/switching is a later change.
+            OutEvent::ModeChanged { mode, .. } => {
+                self.mode = mode;
                 true
             }
             // The model switch (#218) shows in the app-global context bar, not the

@@ -278,6 +278,81 @@ fn integrity_gap_none_for_clean_log() {
     assert_eq!(integrity_gap(&records), None);
 }
 
+/// A `SessionStarted.agent` naming a retired agent (ADR-0207 stage 6a) is
+/// caught, named, and pointed at its replacement.
+#[test]
+fn retired_agent_finds_a_retired_session_started_profile() {
+    let sid = SessionId::new("s");
+    let records = vec![LogRecord::new(
+        sid.clone(),
+        LogPayload::Out(OutEvent::SessionStarted {
+            session: sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "build".to_string(),
+            model: None,
+            root: true,
+            ts: 0,
+            user: None,
+        }),
+    )];
+    let (retired, replacement) = retired_agent(&records).expect("build is retired");
+    assert_eq!(retired, "build");
+    assert!(replacement.contains("general"), "{replacement}");
+}
+
+/// A retired name can also arrive via a legacy log's `AgentChanged` record
+/// (a genuine pre-ADR-0207 `SetAgent` switch) — not just the session's own
+/// starting `SessionStarted.agent`.
+#[test]
+fn retired_agent_finds_a_retired_agent_changed_record() {
+    let sid = SessionId::new("s");
+    let records = vec![
+        LogRecord::new(
+            sid.clone(),
+            LogPayload::Out(OutEvent::SessionStarted {
+                session: sid.clone(),
+                parent: None,
+                predecessor: None,
+                agent: "general".to_string(),
+                model: None,
+                root: true,
+                ts: 0,
+                user: None,
+            }),
+        ),
+        LogRecord::new(
+            sid.clone(),
+            LogPayload::Out(OutEvent::AgentChanged {
+                session: sid.clone(),
+                agent: "explore".to_string(),
+            }),
+        ),
+    ];
+    let (retired, replacement) = retired_agent(&records).expect("explore is retired");
+    assert_eq!(retired, "explore");
+    assert!(replacement.contains("research"), "{replacement}");
+}
+
+#[test]
+fn retired_agent_none_for_a_current_roster_name() {
+    let sid = SessionId::new("s");
+    let records = vec![LogRecord::new(
+        sid.clone(),
+        LogPayload::Out(OutEvent::SessionStarted {
+            session: sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "general".to_string(),
+            model: None,
+            root: true,
+            ts: 0,
+            user: None,
+        }),
+    )];
+    assert_eq!(retired_agent(&records), None);
+}
+
 /// A prompt sent while a batch is parked lands just before the executor's
 /// `ToolResult`, both ahead of the next event: the result must not displace
 /// the prompt, and a second queued prompt pairs with the event after.

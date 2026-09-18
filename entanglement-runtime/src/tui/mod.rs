@@ -39,14 +39,13 @@ mod slash_popup;
 mod stop_command;
 mod theme;
 mod tool_render;
-mod tools_dialog;
 mod tools_view;
 mod transcript;
 mod ui;
 mod wrap;
 
 use anyhow::Result;
-use entanglement_core::{AgentMode, Holly, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, Holly, SessionId};
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -73,12 +72,12 @@ use event_loop::handle_event;
 #[allow(clippy::too_many_arguments)]
 pub async fn tui(
     holly: &Holly,
-    mut holly_sub: tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>, // subscribed pre-`SetAgent` by the caller (#598)
+    mut holly_sub: tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>, // subscribed pre-bootstrap-`Spawn` by the caller (#598)
     initial_session: SessionId,
     model_info: ModelInfo,
     provider_name: String,
     catalog: Catalog,
-    profiles: std::sync::Arc<std::sync::RwLock<ProfileRegistry>>,
+    agents: std::sync::Arc<std::sync::RwLock<AgentCatalog>>,
     agent_models: std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>,
     agent_generation: std::sync::Arc<
         std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
@@ -143,7 +142,7 @@ pub async fn tui(
     // a spawn target, never a manual entry agent. The mode is carried through so
     // the Tab cycle can narrow to `primary` only (#322). Ordered by the
     // registry's stable `iter` (name-sorted).
-    let entry_profiles = entry_profiles_from(&profiles.read().unwrap());
+    let entry_profiles = entry_profiles_from(&agents.read().unwrap());
     let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
     app.set_active_provider(provider_name);
@@ -208,7 +207,7 @@ pub async fn tui(
             // status line, matching the `/key`/`/model` status pattern.
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
-                    let fresh = entry_profiles_from(&profiles.read().unwrap());
+                    let fresh = entry_profiles_from(&agents.read().unwrap());
                     app.refresh_profiles(fresh);
                     app.record_reload_status(notice);
                     app.mark_dirty();
@@ -247,23 +246,18 @@ pub async fn tui(
     Ok(())
 }
 
-/// The `/agent` picker + Tab-cycle roster derived from a [`ProfileRegistry`]
-/// snapshot: every entry agent (`mode ∈ {primary, all}`) — a `subagent` leaf
-/// like `explore` is a spawn target, never a manual entry agent. Shared by the
+/// The `/agent` picker + Tab-cycle roster derived from a [`AgentCatalog`]
+/// snapshot: every registered agent (ADR-0207 §4 retires the primary/
+/// subagent/all `mode` distinction — any agent may be a session root, so
+/// there is no more leaf-only profile to exclude here). Shared by the
 /// startup build and the definitions-watcher reload arm (#329) so both derive
 /// the roster identically.
-fn entry_profiles_from(registry: &ProfileRegistry) -> Vec<app::ProfileInfo> {
+fn entry_profiles_from(registry: &AgentCatalog) -> Vec<app::AgentInfo> {
     registry
         .iter()
-        .filter(|p| matches!(p.mode, AgentMode::Primary | AgentMode::All))
-        .map(|p| app::ProfileInfo {
+        .map(|p| app::AgentInfo {
             name: p.name.clone(),
             description: p.description.clone(),
-            mode: p.mode,
-            tools: p.tools.clone(),
-            disallowed_tools: p.disallowed_tools.clone(),
-            permission: p.permission.clone(),
-            may_spawn: p.may_spawn(),
         })
         .collect()
 }
@@ -417,40 +411,38 @@ mod tests {
     }
 
     /// Regression for #598: a subscribe-after-send race in the TUI bootstrap
-    /// let the session task's `SessionStarted`/initial `AgentChanged` +
-    /// corrective `AgentChanged` (from a queued `SetAgent`) race ahead of
-    /// `tui()`'s `holly.subscribe()`, permanently stranding the badge on
-    /// `SessionView`'s hardcoded `"build"` default. `main.rs` now subscribes
-    /// before sending the bootstrap `SetAgent` and threads that receiver into
-    /// `tui()` — proven here by subscribing first, sending `SetAgent`, then
+    /// let the session task's `SessionStarted`/initial `AgentChanged` race
+    /// ahead of `tui()`'s `holly.subscribe()`, permanently stranding the badge
+    /// on `SessionView`'s hardcoded `"build"` default. `main.rs` now
+    /// subscribes before sending the bootstrap identity-binding `Spawn` (the
+    /// agent-switch message this used to race did the same lazy-create thing
+    /// `SetAgent` did before ADR-0207 §9 retired it) and threads that receiver
+    /// into `tui()` — proven here by subscribing first, sending `Spawn`, then
     /// sleeping past the window the bug lived in before ever draining.
     #[tokio::test]
-    async fn early_subscribe_survives_the_bootstrap_setagent_race() {
-        use entanglement_core::{AgentMode, AgentProfile, InMsg, Permission, PermissionProfile};
+    async fn early_subscribe_survives_the_bootstrap_spawn_race() {
+        use entanglement_core::{Agent, InMsg};
 
         let mut cfg = EngineConfig::default();
-        cfg.profiles.insert(AgentProfile {
+        cfg.agents.insert(Agent {
             name: "plan".into(),
             description: String::new(),
-            mode: AgentMode::Primary,
             system_prompt: "Plan only.".into(),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Ask),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         });
         let holly = Holly::spawn(cfg);
         let sid = SessionId::new("s1");
 
         let mut holly_sub = holly.subscribe();
         holly
-            .send(InMsg::SetAgent {
+            .send(InMsg::Spawn {
                 session: sid.clone(),
+                parent: None,
+                predecessor: None,
                 agent: "plan".into(),
+                prompt: String::new(),
+                user: None,
             })
             .await
             .unwrap();
@@ -467,7 +459,7 @@ mod tests {
         assert_eq!(
             app.agent(),
             "plan",
-            "an early subscription must not lose the bootstrap SetAgent's AgentChanged"
+            "an early subscription must not lose the bootstrap Spawn's AgentChanged"
         );
     }
 }

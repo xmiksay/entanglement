@@ -4,19 +4,19 @@
 //! project skill; the handler substitutes the body's relative `references/…`
 //! ref to an absolute path. Turn 2 feeds that exact absolute path back into the
 //! `read` tool, proving the model can open a substituted ref without guessing a
-//! base directory (the bug class ADR-0037 closes). A third case checks that a
-//! profile denying `load_skill` via *permission* refuses it like any other host
-//! tool — no special exemption (ADR-0037). It uses a profile that still
-//! advertises `load_skill` (no tool mask), so the denial comes from permission,
-//! not the #116 physical mask (which the `tool_mask` tests cover).
+//! base directory (the bug class ADR-0037 closes). A third case pins the
+//! opposite of ADR-0037's old "no special exemption" contract: `load_skill`
+//! declares `Capability::Control` (ADR-0207 §3), so a mode rule naming it is
+//! inert — it is never graded, unlike ADR-0037's original per-profile
+//! `permission` gate (superseded, gap 1 of ADR-0207 stage 4b).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
@@ -184,8 +184,30 @@ async fn load_skill_then_read_a_substituted_ref() {
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "use the demo skill"))
+        .await
+        .unwrap();
+
+    // `load_skill` carries `Capability::Control` (ADR-0207 §3) but has no
+    // dedicated `Intercept` route, so it grades through `build` mode's
+    // `default: prompt` — no built-in mode writes an explicit `control`
+    // rule. Approve it so the turn continues into the `read` of the
+    // substituted ref (which build mode's `allow: [read, ...]` clears
+    // unprompted).
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if matches!(&ev, OutEvent::ToolRequest { tool, .. } if tool == "load_skill") {
+            break;
+        }
+    }
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: "l1".into(),
+            scope: entanglement_core::ApprovalScope::Once,
+            mode: None,
+        })
         .await
         .unwrap();
 
@@ -218,7 +240,7 @@ async fn load_skill_then_read_a_substituted_ref() {
 }
 
 #[tokio::test]
-async fn load_skill_denied_via_permission_has_no_exemption() {
+async fn load_skill_ignores_a_mode_rule_naming_it() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-loadskill-deny-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -257,49 +279,70 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
         registry,
     ))));
-    // A profile that *advertises* `load_skill` (no tool mask) but denies it via
-    // permission (default Deny): `load_skill` is gated exactly like `read`, no
-    // exemption (ADR-0037). Using a non-masked profile keeps this focused on the
-    // permission path, distinct from the #116 tool mask.
-    let mut profiles =
+    // A mode that denies `load_skill` by its literal name — inert, since
+    // `load_skill` declares `Capability::Control` (ADR-0207 §3, gap 1 of
+    // stage 4b): a Control tool is never graded, so this rule never even
+    // runs. Named `"build"` so a fresh session picks it up as
+    // `DEFAULT_MODE` with no `SetMode` call.
+    let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "denyskill".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default: Permission::Allow,
+        rules: entanglement_runtime::mode::Rules::from_lists(&["load_skill".to_string()], &[], &[]),
+        limits: entanglement_runtime::mode::Limits::default(),
         sandbox: None,
-    });
+        sandbox_network: false,
+    };
+    let mode_table = Arc::new(
+        entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
+    );
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
+    let shared_tools = tools.shared();
+    let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
+            perm_modes.clone(),
+            mode_table.clone(),
+            shared_tools.clone(),
+            PermissionProfile::new(Permission::Allow),
+            None,
+        ));
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
+        Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
+    let _executor = entanglement_runtime::tool_runner::spawn_tool_executor_with_policy(
         &holly,
-        tools,
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
+        shared_tools,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(std::sync::RwLock::new(profiles)),
+        Arc::new(std::sync::RwLock::new(Arc::new(
+            entanglement_runtime::skills::SkillRegistry::default(),
+        ))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        perm_modes,
+        resolver,
+        grants,
+        Default::default(),
+        None,
+        mode_table,
+        Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
+        None,
+        None,
+        None,
     );
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "denyskill".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "try the demo skill"))
@@ -310,15 +353,15 @@ async fn load_skill_denied_via_permission_has_no_exemption() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { output, .. } if output.contains("denied")
-        )),
-        "permission Deny should refuse load_skill (no exemption); got {events:?}"
-    );
-    assert!(
-        !events.iter().any(|e| matches!(
-            e,
             OutEvent::ToolOutput { output, .. } if output.contains("skill_id")
         )),
-        "denied load_skill must not return a body; got {events:?}"
+        "load_skill is Capability::Control — a mode rule naming it must not \
+         deny it; got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a Control tool must never park an approval either; got {events:?}"
     );
 }

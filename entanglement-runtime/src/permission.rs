@@ -1,337 +1,126 @@
 //! Sub-agent permission gating (#77, ADR-0024; #119, ADR-0040). Runtime-only
 //! policies layered on top of the per-tool `Allow | Ask | Deny` dispatch (#59):
 //!
-//! - **Spawn control** — [`spawn_refusal`] (#119): the per-profile spawn gate,
-//!   checked *before* the SpawnGuard budget (ADR-0023) and the ancestor clamp
-//!   (ADR-0024). It layers four checks in front of them: the spawner
-//!   [`may_spawn`][entanglement_core::AgentProfile::may_spawn] at all (absorbs
-//!   the old ADR-0024 capability gate — a `Subagent` leaf or `can_spawn: false`
-//!   profile is refused the whole family); the target resolves to a real
-//!   profile; the target is spawnable-mode (a `primary` entry agent is never a
-//!   valid target, so `build`/`plan` are unreachable via spawn); and the target
-//!   is on the spawner's `spawnable_agents` allowlist. Checked against the
-//!   spawner's *own* profile, so the allowlist is not transitive.
-//! - **Privilege ceiling** — [`effective_permission`]: a child sub-agent is never
-//!   more privileged than its ancestors. Its effective permission for a tool call
-//!   is the least-privileged `resolve` across the session and every ancestor
-//!   (`Deny < Ask < Allow`), so a child cannot touch the shared working tree in
-//!   ways the parent couldn't. Resolution takes the call's tool-specific argument
-//!   (command/path, #173) so an argument-scoped rule matches the actual input;
-//!   [`permission_arg`] extracts it. A `bash`/`call` call also carries its
-//!   `workdir` (#425) so a `tool{pattern}` workdir-scoped rule matches too;
-//!   [`permission_workdir`] extracts it.
-//! - **Tool mask** — [`tool_masked`] (#116, ADR-0038): a tool omitted from a
-//!   profile's allowlist (or listed in its denylist) does not *exist* for that
-//!   session — a call is refused before permission is even resolved. Like the
-//!   ceiling it clamps down the ancestor chain (a child never gains a tool an
-//!   ancestor lacked). This is now the **only** half of the physical
-//!   restriction: core advertises every spec it is given, so a masked tool's
-//!   schema does reach the model and the refusal here is what the model sees.
-//!   [`tool_mask_source`] (#597) is the same walk, naming which link did the
-//!   masking and whether it was that link's profile or its session tool
-//!   overlay, so [`crate::decline::mask_decline`] can attribute the refusal.
+//! - **Spawn control** — [`spawn_refusal`]: per ADR-0207 §6, spawning is never
+//!   *graded* (`agent`/`agent_send` are `Capability::Control`) and any agent
+//!   may be a session root or a spawn target, so the old per-profile
+//!   `can_spawn`/`spawnable_agents`/target-mode gates (ADR-0040) are gone —
+//!   the only check left is that the named target resolves to a real,
+//!   registered profile. Spawning is bounded instead by the session's mode
+//!   `max_depth`/`max_agents` ([`SpawnGuard::try_spawn`][crate::subagent::SpawnGuard::try_spawn]).
+//! - **Privilege ceiling** — [`ancestor_chain`]: a child sub-agent is never
+//!   more privileged than its ancestors. The main dispatch ladder
+//!   (`tool_runner::resolve_effective`) takes the least-privileged
+//!   [`crate::policy::PermissionResolver`] grade across exactly this chain,
+//!   and the `rhai` binding policy ([`crate::script::BindingPolicy`]) now
+//!   reuses the *same* chain + resolver (ADR-0207 stage 4b) — the old
+//!   `Agent`-chain grading path (`effective_permission`/
+//!   `permission_chain`/`permission_for`) that used to serve `rhai` alone is
+//!   retired along with it, since nothing resolves a session's mode from
+//!   `Agent.permission` any more. Resolution takes the call's
+//!   tool-specific argument (command/path, #173) so an argument-scoped rule
+//!   matches the actual input; [`permission_arg`] extracts it. A `bash`/`call`
+//!   call also carries its `workdir` (#425) so a `tool{pattern}`
+//!   workdir-scoped rule matches too; [`permission_workdir`] extracts it.
 //!
-//! Skills no longer mask tools (ADR-0194 retired ADR-0106's `ActiveSkill`/
-//! `skill_masked`): a skill is purely additive, never a restriction on the
-//! session's tool set.
+//! The **tool mask** (#116, ADR-0038: `tools`/`disallowed_tools` making a
+//! tool not *exist* for a session) is retired (ADR-0207 §8, "the mask
+//! machinery is deleted"): `tool_masked`/`tool_mask_source` are gone.
+//! `Agent` carries none of `tools`/`disallowed_tools`/`permission`/
+//! `can_spawn`/`spawnable_agents`/`sandbox`/`mode` any more (stage 4c/5b) —
+//! identity only.
 //!
 //! Both live in the runtime tool executor's single-threaded loop, folded
 //! from the same lifecycle events as permission dispatch — zero core surface.
 
 use std::collections::{HashMap, HashSet};
 
-use entanglement_core::{
-    AgentProfile, Permission, PermissionProfile, ProfileRegistry, SessionId, ToolOverlayEntry,
-};
+use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId, ToolOverlayEntry};
 
-use crate::decline::MaskSource;
 use crate::subagent::SpawnGuard;
 
-/// Per-profile spawn gate for `spawner` launching `target` (#119, ADR-0040),
-/// checked *before* the SpawnGuard budget (ADR-0023) and the ancestor clamp
-/// (ADR-0024). Returns `None` when the spawn is permitted, else the refusal
-/// message to relay to the parent's parked tool call. Layered checks, in order:
-///
-/// 1. spawner may not spawn ([`may_spawn`][AgentProfile::may_spawn]) — a leaf or
-///    `can_spawn: false` profile is refused the whole family (this absorbs the
-///    old capability gate, same "cannot spawn" phrasing);
-/// 2. unknown target — the name resolves to no registered profile;
-/// 3. target not spawnable-mode — a `primary` entry agent is never a valid
-///    target, so `build`/`plan` are unreachable via spawn;
-/// 4. target outside the spawner's `spawnable_agents` allowlist.
-///
-/// An unknown spawner session (never started) is not gated — nothing to check.
-pub fn spawn_refusal(
-    spawner: Option<&AgentProfile>,
-    target: &str,
-    registry: &ProfileRegistry,
-) -> Option<String> {
-    let spawner = spawner?;
-    if !spawner.may_spawn() {
-        return Some(
-            "sub-agent spawn refused: this agent profile cannot spawn further \
-             sub-agents. Do the work directly."
-                .to_string(),
-        );
+/// Target-existence gate for a spawn to `target` (ADR-0207 §6): the only
+/// check left once spawning is unconditional per profile — any registered
+/// agent is a valid spawn target now (`subagent::spawn_specs_for` advertises
+/// the full roster, so the model's own schema already constrains the
+/// argument; this is defense in depth for a malformed/out-of-schema call).
+/// Returns `None` when the spawn is permitted, else the refusal message to
+/// relay to the parent's parked tool call.
+pub fn spawn_refusal(target: &str, registry: &AgentCatalog) -> Option<String> {
+    if registry.get(target).is_some() {
+        None
+    } else {
+        Some(format!(
+            "sub-agent spawn refused: unknown agent profile `{target}`."
+        ))
     }
-    let target_profile = match registry.get(target) {
-        Some(p) => p,
-        None => {
-            return Some(format!(
-                "sub-agent spawn refused: unknown agent profile `{target}`."
-            ))
-        }
+}
+
+/// Resolve an `agent` call's optional `model` parameter against the active
+/// catalog (#560 P12, ADR-0207 §12): a spawning model may pick the child's
+/// model, in either a bare `id` (the first *usable* catalog entry whose model
+/// id matches wins) or a qualified `provider/id` form that targets exactly
+/// one provider — the only way to pick between two providers that
+/// legitimately share model ids against different endpoints (`zai` /
+/// `zai_paas`, ADR-0203). Only *usable* providers are considered
+/// ([`entanglement_provider::ProviderEntry::is_usable`] — a keyless or
+/// OAuth entry, or a keyed one whose env var is actually set): a model
+/// nothing can reach is worse to offer than not listing it at all.
+///
+/// `Ok(None)` means "omitted, inherit exactly as before"; `Ok(Some((provider,
+/// model)))` is what the caller sends as `InMsg::SetModel` right after
+/// `InMsg::Spawn`. `Err` refuses the whole spawn (mirroring
+/// [`spawn_refusal`]'s "no silent substitution" posture) rather than
+/// silently falling back to inherit, naming every valid *usable* id in
+/// `provider/id` form — unambiguous and directly reusable as the qualified
+/// spelling — so the model can retry correctly. No catalog and "a catalog
+/// but nothing in it is usable" are distinguished: they are different
+/// problems with different fixes (configure a catalog vs. set a key).
+pub fn resolve_model(
+    requested: Option<&str>,
+    catalog: Option<&entanglement_core::Catalog>,
+) -> Result<Option<(String, String)>, String> {
+    let Some(model) = requested else {
+        return Ok(None);
     };
-    if !target_profile.spawnable_as_subagent() {
-        return Some(format!(
-            "sub-agent spawn refused: `{target}` is a primary entry agent, not a \
-             spawnable sub-agent. Pick a sub-agent profile."
+    let Some(catalog) = catalog else {
+        return Err(format!(
+            "sub-agent spawn refused: model `{model}` requested but no catalog is configured"
+        ));
+    };
+    let usable: Vec<_> = catalog.providers.iter().filter(|p| p.is_usable()).collect();
+    if usable.is_empty() {
+        return Err(format!(
+            "sub-agent spawn refused: model `{model}` requested but no configured provider is \
+             currently usable — set an API key (or connect one via OAuth) for at least one \
+             provider in the catalog"
         ));
     }
-    if !spawner.spawn_target_allowed(target) {
-        return Some(format!(
-            "sub-agent spawn refused: this agent profile is not allowed to spawn \
-             `{target}`. Pick one of its permitted sub-agents."
-        ));
-    }
-    None
-}
 
-/// Effective permission for a `tool` call in `session`, clamped so a child
-/// sub-agent is never more privileged than its ancestors. Walks the parent chain
-/// in `guard`, taking the least-privileged `resolve` across the session and every
-/// ancestor. `arg` is the tool-specific argument (command/path, #173) and
-/// `workdir` the `bash`/`call` working directory (#425) so argument-/workdir-
-/// scoped rules resolve against the actual call; pass `None` for a name-only
-/// decision. A root has no ancestors, so this reduces to its own profile —
-/// single-session behavior is unchanged.
-pub fn effective_permission(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Permission {
-    let (perm, source) = resolve_with_source(active, guard, session, tool, arg, workdir);
-    // Per-resolution trace (#189) so sub-agent debugging ("why was this child's
-    // edit denied?") reads off logs instead of three `.md` layers by hand.
-    tracing::debug!(
-        %session,
-        tool,
-        rule = ?perm,
-        source = match &source {
-            Some(id) => format!("ancestor {id}"),
-            None => "own".to_string(),
-        },
-        "permission resolved",
-    );
-    perm
-}
-
-/// The clamped permission plus *which* link decided it (#189): `None` ⇒ the
-/// session's own profile stands; `Some(id)` ⇒ that ancestor clamped it down.
-/// Split from [`effective_permission`] so the deciding source is unit-testable
-/// without capturing the trace it feeds.
-///
-/// A **sponsored child** (ADR-0138) is a permission root despite having a
-/// parent link: its authorization is user plan approval, not the ancestor
-/// chain, so the walk stops at the child and its own profile stands. This is
-/// what lets a `build` child of a read-only `plan` session run write tools.
-fn resolve_with_source(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> (Permission, Option<SessionId>) {
-    let mut perm = permission_for(active, session, tool, arg, workdir);
-    // A sponsored child (ADR-0138) is a permission root: no ancestor walk, no
-    // clamp. Authorization came from user plan approval, not inheritance.
-    if guard.is_sponsored(session) {
-        return (perm, None);
-    }
-    let mut source: Option<SessionId> = None;
-    let mut current = session.clone();
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor is itself a permission root — its own
-                // ancestors don't clamp this sub-tree either. Stop the walk at
-                // it, the same way a plain root's `None` parent does.
-                if guard.is_sponsored(&parent) {
-                    let clamped =
-                        min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
-                    if clamped != perm {
-                        source = Some(parent.clone());
-                    }
-                    perm = clamped;
-                    break;
-                }
-                let clamped =
-                    min_permission(perm, permission_for(active, &parent, tool, arg, workdir));
-                // Only a *strictly* lower ancestor changes the outcome (ties keep
-                // the nearer link), so record it as the deciding source.
-                if clamped != perm {
-                    source = Some(parent.clone());
-                }
-                perm = clamped;
-                current = parent;
-            }
-            None => break,
+    if let Some((provider_name, id)) = model.split_once('/') {
+        if let Some(provider) = usable
+            .iter()
+            .find(|p| p.name == provider_name && p.models.iter().any(|m| m.id == id))
+        {
+            return Ok(Some((provider.name.clone(), id.to_string())));
         }
-    }
-    (perm, source)
-}
-
-/// Whether `tool` is masked out for `session` — refused because it is not in
-/// the effective tool set (#116, ADR-0038). A tool is usable only if the
-/// session's own profile *and* every ancestor's profile admit it: the mask
-/// intersects down the chain, so a child never gains a tool an ancestor lacked
-/// (mirrors [`effective_permission`]'s privilege ceiling). An unseen session in
-/// the chain masks **everything** — **fail-closed** (#156): under broadcast
-/// overload a dropped `SessionStarted`/`AgentChanged` must not silently un-mask a
-/// restricted session. The executor self-heals the leaf from `ToolExec.agent`, so
-/// this fires only for a genuinely-unknown session (matching the [`permission_for`]
-/// `Deny` fallback).
-///
-/// A **sponsored child** (ADR-0138) is exempt from the ancestor mask walk — its
-/// usable set is its own profile's (plus any sponsored ancestor's, since a
-/// sponsored sub-tree is itself a permission root). This is what lets a `build`
-/// child of a read-only `plan` session run `edit`/`write`/`bash` — without the
-/// exemption, the plan ancestor's read-only mask would erase them.
-///
-/// Orthogonal to permission: this decides a tool's *existence*, the `resolve`
-/// grade decides `Allow`/`Ask`/`Deny` among the tools that survive here.
-pub fn tool_masked(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    session: &SessionId,
-    tool: &str,
-) -> bool {
-    tool_mask_source(active, guard, overlays, session, tool).is_some()
-}
-
-/// Like [`tool_masked`], but names *which* link in the chain masked the tool
-/// **and on whose authority** (#597): `None` ⇒ not masked; `Some(source)` ⇒
-/// `source.session`'s profile, its overlay, or its being unseen is what erased
-/// the tool — `source.session == session` means the session's own, any other id
-/// an ancestor that clamped it. Lets a caller build the attributed refusal
-/// ([`crate::decline::mask_decline`]) instead of a blanket "restricted by
-/// profile" that blames an agent definition an overlay deny actually withdrew.
-pub fn tool_mask_source(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    session: &SessionId,
-    tool: &str,
-) -> Option<MaskSource> {
-    // A link's own live tool overlay (#539, ADR-0149) overrides its profile
-    // mask in both directions — a deny entry withdraws a profile-advertised
-    // tool, an enable entry injects a masked one; no opinion falls back to
-    // the profile. Because the check is per link, a parent's overlay also
-    // covers its spawn sub-tree (each descendant's own link permitting).
-    // `None` ⇒ admitted; `Some(source)` ⇒ withheld, with the authority.
-    let refusal = |s: &SessionId, profile: &AgentProfile| match overlays
-        .get(s)
-        .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
+    } else if let Some(provider) = usable
+        .iter()
+        .find(|p| p.models.iter().any(|m| m.id == model))
     {
-        Some(true) => None,
-        Some(false) => Some(MaskSource::overlay(s.clone())),
-        None => (!profile.advertises_tool(tool)).then(|| MaskSource::profile(s.clone())),
-    };
-    let mut current = session.clone();
-    // A sponsored session is a permission root (ADR-0138): only its own (and
-    // any sponsored ancestor's) mask applies, not the chain above.
-    if guard.is_sponsored(&current) {
-        return match active.get(&current) {
-            Some(profile) => refusal(&current, profile),
-            // Unseen sponsored session ⇒ fail-closed (#156).
-            None => Some(MaskSource::unseen(current)),
-        };
+        return Ok(Some((provider.name.clone(), model.to_string())));
     }
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        match active.get(&current) {
-            Some(profile) => {
-                if let Some(source) = refusal(&current, profile) {
-                    return Some(source);
-                }
-            }
-            // Unseen session in the chain ⇒ fail-closed (#156).
-            None => return Some(MaskSource::unseen(current)),
-        }
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor (ADR-0138): check its mask too (it
-                // clamps this sub-tree) but stop the walk above it.
-                if guard.is_sponsored(&parent) {
-                    return match active.get(&parent) {
-                        Some(profile) => refusal(&parent, profile),
-                        // Unseen sponsored ancestor ⇒ fail-closed.
-                        None => Some(MaskSource::unseen(parent)),
-                    };
-                }
-                current = parent;
-            }
-            None => break,
-        }
-    }
-    None
-}
 
-/// The ordered permission profiles the effective grade folds over (#173): the
-/// session's own profile followed by each ancestor, walking `guard`'s parent
-/// links. The rhai binding policy captures this once per run and resolves each
-/// binding call against it with the call's argument, matching
-/// [`effective_permission`]'s least-privilege clamp while letting argument-scoped
-/// rules see the actual input. An unseen session contributes nothing.
-// Only called by `crate::script` (feature-gated) outside this module's own
-// unit test below, which is why a lean, rhai-less build sees it as dead.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-pub(crate) fn permission_chain(
-    active: &HashMap<SessionId, AgentProfile>,
-    guard: &SpawnGuard,
-    session: &SessionId,
-) -> Vec<PermissionProfile> {
-    let mut chain = Vec::new();
-    let mut current = session.clone();
-    // A sponsored child (ADR-0138) is a permission root — its own profile
-    // stands, no ancestor walk.
-    if guard.is_sponsored(&current) {
-        if let Some(profile) = active.get(&current) {
-            chain.push(profile.permission.clone());
-        }
-        return chain;
-    }
-    // Guard against a malformed cycle in the parent links (mirrors SpawnGuard).
-    let mut visited = HashSet::new();
-    while visited.insert(current.clone()) {
-        if let Some(profile) = active.get(&current) {
-            chain.push(profile.permission.clone());
-        }
-        match guard.parent_of(&current) {
-            Some(parent) => {
-                // A sponsored ancestor (ADR-0138) is a permission root: include
-                // its own profile (it clamps this sub-tree) but stop the walk
-                // above it.
-                if guard.is_sponsored(&parent) {
-                    if let Some(profile) = active.get(&parent) {
-                        chain.push(profile.permission.clone());
-                    }
-                    break;
-                }
-                current = parent;
-            }
-            None => break,
-        }
-    }
-    chain
+    let mut ids: Vec<String> = usable
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| format!("{}/{}", p.name, m.id)))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Err(format!(
+        "sub-agent spawn refused: unknown model `{model}` — valid ids: {}",
+        ids.join(", ")
+    ))
 }
 
 /// Clamp an already-resolved permission by the global config base (#172,
@@ -346,17 +135,28 @@ pub(crate) fn permission_chain(
 /// a pure ceiling (it only tightens); the orthogonal "always allow" grants (#174,
 /// [`crate::grants`]) that *raise* an `Ask` are applied by the executor *after*
 /// this clamp, so a `Deny` here can never be re-opened by a stale grant.
+///
+/// `base` keeps its historical [`PermissionProfile`] type — the type every
+/// call site in the executor, `BindingPolicy`, and ~30 test fixtures already
+/// threads by value — but is graded through [`crate::mode::Mode::resolve`]
+/// via [`crate::mode::Mode::from_permission_profile`] (ADR-0207 stage 6c),
+/// not `PermissionProfile`'s own matcher: `config.yml`'s `permissions:`
+/// ceiling adopts the same `default`/`allow`/`deny`/`prompt` grammar a mode
+/// body uses (§5), so `capabilities` — the call's resolved
+/// [`crate::capability::Capability`] set — lets a bare `deny: [write]`
+/// ceiling rule catch every write-capable tool, not just one named
+/// literally `write`. An allow-all `base` with no rules converts to an
+/// empty-rules `Mode` and resolves identically to before this existed.
 pub fn clamp_to_base(
     perm: Permission,
     base: &PermissionProfile,
     tool: &str,
+    capabilities: &[crate::capability::Capability],
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    min_permission(
-        perm,
-        crate::permission_bash::resolve_scoped_bash_aware(base, tool, arg, workdir),
-    )
+    let ceiling = crate::mode::Mode::from_permission_profile(base);
+    min_permission(perm, ceiling.resolve(tool, capabilities, arg, workdir))
 }
 
 /// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
@@ -371,8 +171,13 @@ pub fn clamp_to_base(
 /// every tool it matches. `arg_pattern` is ignored when `allow` is `false`:
 /// the entry's own grammar (`--allow [<pattern>]`) never produces that
 /// combination, and narrowing an `Ask` down from itself has no meaning. A
-/// deny entry is never passed here — `tool_masked`/`tool_mask_source`
-/// withdraw it before a grade decision is even reached.
+/// deny entry is never passed here — [`overlay_grade_entry`]'s
+/// `ToolOverlayEntry::find` lookup is enable-only, so a deny entry never
+/// reaches this function. This override deliberately replaces the mode
+/// resolution outright rather than merely widening it — an explicit
+/// `/enable tool X --allow` is the user's own voice and overrides even a
+/// mode `deny` for that session (ADR-0207 §8); the model can't reach this
+/// path, since an enable entry is trusted-frame-only (ADR-0177).
 pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionProfile {
     match (entry.allow, entry.arg_pattern.as_deref()) {
         (true, Some(pattern)) => PermissionProfile::new(Permission::Ask)
@@ -384,16 +189,14 @@ pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionPr
 
 /// The overlay entry that decides `tool`'s **grade** for a call resolved
 /// through `chain` (nearest session first, the same ordering
-/// [`ancestor_chain`] produces) — the grade-side counterpart to
-/// `tool_mask_source`'s per-link existence walk (#628, closing the ADR-0149
-/// "child sessions" deferral). The first link, walking outward from the
-/// call's own session, whose overlay carries an enable entry for `tool`
-/// wins: a session's own overlay beats an ancestor's, and a parent's overlay
-/// grade now reaches its spawn sub-tree exactly as its mask already does.
-/// `None` ⇒ no link in the chain has an opinion — the ordinary profile-chain
-/// resolution stands. A deny entry never reaches this lookup: `tool_masked`/
-/// `tool_mask_source` withdraw the tool before a grade decision is reached,
-/// so `ToolOverlayEntry::find` (enable-only) is the right primitive here.
+/// [`ancestor_chain`] produces, #628 closing the ADR-0149 "child sessions"
+/// deferral). The first link, walking outward from the call's own session,
+/// whose overlay carries an enable entry for `tool` wins: a session's own
+/// overlay beats an ancestor's, and a parent's overlay grade reaches its
+/// whole spawn sub-tree. `None` ⇒ no link in the chain has an opinion — the
+/// ordinary mode resolution stands. A deny entry never reaches this lookup:
+/// `ToolOverlayEntry::find` is enable-only, so a session's own `/disable
+/// tool` never resolves through this path.
 pub fn overlay_grade_entry(
     overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     chain: &[SessionId],
@@ -407,28 +210,26 @@ pub fn overlay_grade_entry(
     })
 }
 
-/// A session's own permission for a `tool` call; an unseen session defaults to
-/// `Deny` — **fail-closed** (#156). The executor folds its per-session profile
-/// map from the lossy `SessionStarted`/`AgentChanged` broadcast, so under burst a
-/// dropped lifecycle event would otherwise leave a restricted session unseen and
-/// silently allow-all. The executor self-heals the leaf from `ToolExec.agent`
-/// before resolving, so this floor fires only for a genuinely-unknown session (an
-/// unresolved agent name, or an ancestor whose spawn was itself dropped). `arg`
-/// carries the tool-specific argument (#173) and `workdir` the `bash`/`call`
-/// working directory (#425) so argument-/workdir-scoped rules resolve.
-pub(crate) fn permission_for(
-    active: &HashMap<SessionId, AgentProfile>,
-    session: &SessionId,
+/// Whether the nearest chain link with an overlay **opinion** — deny or
+/// enable — about `tool` is a deny (#634, ADR-0207 §8 restore): the missing
+/// half of [`overlay_grade_entry`] above, which only ever looks for an
+/// enable entry and silently skips a link that carries only a deny, walking
+/// past it to a farther ancestor's enable instead. Consulting *this*
+/// function first (`tool_runner::dispatch` does, before `overlay_entry` is
+/// even materialized) closes that hole: the nearest opinionated link always
+/// wins, deny or enable, mirroring [`ToolOverlayEntry::disposition`]'s
+/// deny-beats-enable rule within one session's own list, extended down the
+/// spawn sub-tree the same way #628 extended the enable lookup.
+pub fn overlay_denies(
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    chain: &[SessionId],
     tool: &str,
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Permission {
-    active
-        .get(session)
-        .map(|p| {
-            crate::permission_bash::resolve_scoped_bash_aware(&p.permission, tool, arg, workdir)
-        })
-        .unwrap_or(Permission::Deny)
+) -> bool {
+    chain.iter().find_map(|session| {
+        overlays
+            .get(session)
+            .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
+    }) == Some(false)
 }
 
 /// The session + its ancestor chain (nearest first), walking `guard`'s parent
@@ -436,20 +237,17 @@ pub(crate) fn permission_for(
 /// permission by taking the least-privileged [`PermissionResolver`][crate::policy::PermissionResolver]
 /// grade across exactly these sessions — the sub-agent privilege ceiling
 /// (ADR-0024) applied *on top of* whatever grade the resolver returns, so a
-/// pluggable tenant rule can never widen a child beyond its parent. The set
-/// matches the sessions [`effective_permission`] folds over, so the default
-/// profile resolver stays byte-identical.
+/// pluggable tenant rule can never widen a child beyond its parent. Shared by
+/// `tool_runner`'s dispatch ladder and [`crate::script::BindingPolicy`]
+/// (ADR-0207 stage 4b) — a `rhai` binding resolves across the identical chain
+/// a direct tool call does.
 ///
-/// A **sponsored child** (ADR-0138) is a permission root: the chain stops at
-/// it (no ancestors), and stops at any sponsored ancestor mid-walk — the
-/// sub-tree rooted at a sponsored session is authorized by user plan approval,
-/// not by the chain above it.
+/// ADR-0207 §7 retires the sponsored-child exemption (ADR-0138): approving a
+/// `propose_plan` now switches the session's mode instead of spawning a
+/// permission-root child, so this walk always reaches all the way to the
+/// true root — no stop-early case left, no exemption from the clamp above.
 pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<SessionId> {
     let mut chain = vec![session.clone()];
-    // A sponsored session is a permission root — no ancestors to clamp it.
-    if guard.is_sponsored(session) {
-        return chain;
-    }
     let mut visited = HashSet::new();
     visited.insert(session.clone());
     let mut current = session.clone();
@@ -457,12 +255,6 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
         match guard.parent_of(&current) {
             Some(parent) if visited.insert(parent.clone()) => {
                 chain.push(parent.clone());
-                // A sponsored ancestor is itself a permission root (ADR-0138):
-                // its own perms clamp this sub-tree, but the chain above it
-                // does not. Stop the walk at it.
-                if guard.is_sponsored(&parent) {
-                    break;
-                }
                 current = parent;
             }
             _ => break,
@@ -568,582 +360,191 @@ fn rank(p: Permission) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::{AgentMode, PermissionProfile};
+    use entanglement_core::Agent;
 
-    fn profile(name: &str, mode: AgentMode, permission: PermissionProfile) -> AgentProfile {
-        masked_profile(name, mode, permission, None, Vec::new())
-    }
-
-    fn masked_profile(
-        name: &str,
-        mode: AgentMode,
-        permission: PermissionProfile,
-        tools: Option<Vec<&str>>,
-        disallowed: Vec<&str>,
-    ) -> AgentProfile {
-        AgentProfile {
+    fn profile(name: &str) -> Agent {
+        Agent {
             name: name.into(),
             description: String::new(),
-            mode,
             system_prompt: String::new(),
             model: None,
             provider: None,
-            permission,
-            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
-            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         }
     }
 
     #[test]
-    fn spawn_refusal_layers_the_four_checks() {
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse"); // build/plan (Primary), explore (Subagent)
-        let build = reg.get("build").unwrap();
-        let explore = reg.get("explore").unwrap();
-
-        // Spawner may not spawn: an explore leaf is refused the capability.
-        let refusal = spawn_refusal(Some(explore), "explore", &reg).expect("leaf refused");
-        assert!(refusal.contains("cannot spawn"), "got: {refusal}");
-        // Unknown spawner session (never started) is not gated.
-        assert!(spawn_refusal(None, "explore", &reg).is_none());
-        // A primary may spawn a spawnable-mode target.
-        assert!(spawn_refusal(Some(build), "explore", &reg).is_none());
+    fn spawn_refusal_only_checks_target_existence() {
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        // Every registered agent is a valid spawn target now (ADR-0207 §6) —
+        // `general`, `plan`, and `debug` alike.
+        assert!(spawn_refusal("general", &reg).is_none());
+        assert!(spawn_refusal("plan", &reg).is_none());
+        assert!(spawn_refusal("debug", &reg).is_none());
         // Unknown target name is refused.
-        let r = spawn_refusal(Some(build), "ghost", &reg).expect("unknown refused");
+        let r = spawn_refusal("ghost", &reg).expect("unknown refused");
         assert!(r.contains("unknown agent profile"), "got: {r}");
-        // A primary target (`plan`) is not a valid spawn target.
-        let r = spawn_refusal(Some(build), "plan", &reg).expect("primary target refused");
-        assert!(r.contains("primary entry agent"), "got: {r}");
     }
 
     #[test]
-    fn spawn_refusal_honors_the_allowlist() {
+    fn spawn_refusal_permits_a_freshly_registered_agent() {
         let mut reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        // A worker leaf (Subagent) plus a second spawnable target.
-        reg.insert(masked_profile(
-            "worker",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Allow),
-            None,
-            Vec::new(),
-        ));
-        // A spawner scoped to only `explore`.
-        let mut scoped = profile(
-            "scoped",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        scoped.spawnable_agents = Some(vec!["explore".into()]);
-        assert!(spawn_refusal(Some(&scoped), "explore", &reg).is_none());
-        let r = spawn_refusal(Some(&scoped), "worker", &reg).expect("out-of-list refused");
-        assert!(r.contains("not allowed to spawn"), "got: {r}");
+        reg.insert(profile("worker"));
+        assert!(spawn_refusal("worker", &reg).is_none());
+    }
+
+    fn test_catalog() -> entanglement_core::Catalog {
+        serde_yaml::from_str(
+            "providers:\n\
+             \x20\x20- name: zai\n\
+             \x20\x20\x20\x20default_model: glm-5.3\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.3\n\
+             \x20\x20- name: openai\n\
+             \x20\x20\x20\x20default_model: gpt-4o\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: gpt-4o\n",
+        )
+        .expect("test catalog must parse")
     }
 
     #[test]
-    fn child_permission_is_clamped_to_parent() {
-        // Parent `plan`: read allowed, everything else Ask. Child `build`: allow-all.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
+    fn resolve_model_omitted_means_inherit() {
+        assert_eq!(resolve_model(None, Some(&test_catalog())), Ok(None));
+    }
 
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // `edit` is Allow on the child alone, but Ask on the parent → clamped to Ask.
+    #[test]
+    fn resolve_model_finds_the_owning_provider() {
         assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Ask
-        );
-        // `read` is Allow on both → stays Allow.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "read", None, None),
-            Permission::Allow
-        );
-        // The parent (a root) is never loosened or clamped — its own profile stands.
-        assert_eq!(
-            effective_permission(&active, &guard, &parent, "edit", None, None),
-            Permission::Ask
+            resolve_model(Some("gpt-4o"), Some(&test_catalog())),
+            Ok(Some(("openai".to_string(), "gpt-4o".to_string())))
         );
     }
 
     #[test]
-    fn resolution_source_names_own_vs_the_clamping_ancestor() {
-        // grandparent `plan`: edit Ask. parent `build`: edit Allow. child `build`:
-        // edit Allow. The chain's least-privileged edit rule comes from the
-        // grandparent, two hops up.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let allow_all = |name: &str| {
-            profile(
-                name,
-                AgentMode::Primary,
-                PermissionProfile::new(Permission::Allow),
-            )
-        };
-        let gp = SessionId::new("gp");
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(gp.clone(), plan);
-        active.insert(parent.clone(), allow_all("build"));
-        active.insert(child.clone(), allow_all("build"));
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(gp.clone(), None);
-        guard.record_start(parent.clone(), Some(gp.clone()));
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // `edit`: own+parent Allow, grandparent Ask → clamped to Ask, sourced to gp.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "edit", None, None),
-            (Permission::Ask, Some(gp.clone()))
-        );
-        // `read`: Allow the whole way → own profile stands, no ancestor source.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "read", None, None),
-            (Permission::Allow, None)
-        );
-        // A root resolves to its own profile — never an ancestor.
-        assert_eq!(
-            resolve_with_source(&active, &guard, &gp, "edit", None, None),
-            (Permission::Ask, None)
-        );
+    fn resolve_model_unknown_id_names_every_valid_id_instead_of_falling_back() {
+        let err = resolve_model(Some("bogus"), Some(&test_catalog()))
+            .expect_err("unknown id must refuse, not silently inherit");
+        assert!(err.contains("unknown model `bogus`"), "{err}");
+        assert!(err.contains("glm-5.3"), "{err}");
+        assert!(err.contains("gpt-4o"), "{err}");
     }
 
     #[test]
-    fn tool_mask_refuses_tool_absent_from_allowlist() {
-        // A read-only leaf: only read/glob/grep advertised.
-        let explore = masked_profile(
-            "explore",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Deny),
-            Some(vec!["read", "glob", "grep"]),
-            Vec::new(),
-        );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), explore);
-        let guard = SpawnGuard::new();
-        assert!(!tool_masked(&active, &guard, &HashMap::new(), &s, "read"));
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "edit"));
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &s, "agent"));
-        // An unseen session masks everything — fail-closed (#156). Even a tool a
-        // seen profile would advertise (`read`) is refused until the session's
-        // profile is known, so a dropped `SessionStarted` cannot un-mask a
-        // restricted session under overload.
-        let other = SessionId::new("other");
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &other,
-            "edit"
-        ));
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &other,
-            "read"
-        ));
+    fn resolve_model_with_no_catalog_refuses_rather_than_guessing() {
+        assert!(resolve_model(Some("glm-5.3"), None).is_err());
     }
 
-    #[test]
-    fn unseen_session_resolves_to_deny() {
-        // #156: a session whose lifecycle events were dropped under broadcast
-        // overload is unseen — its effective permission must be `Deny`
-        // (fail-closed), not the pre-#156 allow-all default that inverted the
-        // security posture. An allow-all *seen* session resolves normally.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let seen = SessionId::new("seen");
-        let mut active = HashMap::new();
-        active.insert(seen.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &seen, "edit", None, None),
-            Permission::Allow
-        );
-        // An unseen session (never inserted) fails closed.
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &SessionId::new("ghost"),
-                "edit",
-                None,
-                None
-            ),
-            Permission::Deny
-        );
+    /// Two providers genuinely sharing a model id against different endpoints
+    /// (`zai`/`zai_paas`, ADR-0203) — `zai_key_env`/`paas_key_env` let each
+    /// test point at its own env var name so tests never race each other's
+    /// process-global state.
+    fn collision_catalog(
+        zai_key_env: &str,
+        paas_key_env: &str,
+        openai_key_env: &str,
+    ) -> entanglement_core::Catalog {
+        serde_yaml::from_str(&format!(
+            "providers:\n\
+             \x20\x20- name: zai\n\
+             \x20\x20\x20\x20key_env: {zai_key_env}\n\
+             \x20\x20\x20\x20default_model: glm-5.1\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.1\n\
+             \x20\x20- name: zai_paas\n\
+             \x20\x20\x20\x20key_env: {paas_key_env}\n\
+             \x20\x20\x20\x20default_model: glm-5.1\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: glm-5.1\n\
+             \x20\x20- name: openai\n\
+             \x20\x20\x20\x20key_env: {openai_key_env}\n\
+             \x20\x20\x20\x20default_model: gpt-4o\n\
+             \x20\x20\x20\x20models:\n\
+             \x20\x20\x20\x20\x20\x20- id: gpt-4o\n"
+        ))
+        .expect("collision test catalog must parse")
     }
 
+    /// `zai/glm-5.1` (Bug 1): the qualified form is accepted and targets
+    /// exactly the named provider, never the sibling that shares the id.
     #[test]
-    fn unseen_ancestor_clamps_child_to_deny() {
-        // #156: if a parent's `SessionStarted` was dropped, the parent is unseen.
-        // The child's effective permission must clamp to `Deny` down the chain
-        // rather than fall through to the child's own (allow-all) grade.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
+    fn resolve_model_qualified_form_targets_exactly_one_provider() {
+        std::env::set_var("PERM_TEST_ZAI_A_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_A_560", "k");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_A_560",
+            "PERM_TEST_PAAS_A_560",
+            "PERM_TEST_OPENAI_A_560_UNSET",
         );
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        // Only the child is seen; the parent's lifecycle event was lost.
-        active.insert(child.clone(), build);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
         assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Deny
+            resolve_model(Some("zai_paas/glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai_paas".to_string(), "glm-5.1".to_string())))
         );
+        assert_eq!(
+            resolve_model(Some("zai/glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai".to_string(), "glm-5.1".to_string())))
+        );
+        std::env::remove_var("PERM_TEST_ZAI_A_560");
+        std::env::remove_var("PERM_TEST_PAAS_A_560");
     }
 
+    /// A colliding bare id resolves deterministically — the first usable
+    /// catalog entry carrying it (catalog order), not an error or a guess.
     #[test]
-    fn tool_mask_clamps_down_the_ancestor_chain() {
-        // Parent restricted to [read]; child would advertise [read, edit] on its
-        // own, but the intersection down the chain drops `edit`.
-        let parent = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
+    fn resolve_model_bare_colliding_id_picks_first_usable_provider() {
+        std::env::set_var("PERM_TEST_ZAI_B_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_B_560", "k");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_B_560",
+            "PERM_TEST_PAAS_B_560",
+            "PERM_TEST_OPENAI_B_560_UNSET",
         );
-        let child = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "edit"]),
-            Vec::new(),
+        assert_eq!(
+            resolve_model(Some("glm-5.1"), Some(&catalog)),
+            Ok(Some(("zai".to_string(), "glm-5.1".to_string())))
         );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), parent);
-        active.insert(c.clone(), child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        // `read` survives both → available on the child.
-        assert!(!tool_masked(&active, &guard, &HashMap::new(), &c, "read"));
-        // `edit` is on the child alone but masked by the parent → refused.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-        // The parent (a root) keeps its own mask unchanged.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &p, "edit"));
+        std::env::remove_var("PERM_TEST_ZAI_B_560");
+        std::env::remove_var("PERM_TEST_PAAS_B_560");
     }
 
+    /// Bug 2: a provider with no usable key contributes nothing to the
+    /// refusal's valid-id list.
     #[test]
-    fn tool_mask_source_names_the_clamping_ancestor_vs_own_profile() {
-        // #597: the source distinguishes "own profile lacks it" from "an
-        // ancestor's mask erased it" — the refusal message needs to tell
-        // them apart instead of a blanket "restricted by profile".
-        let parent = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
+    fn resolve_model_refusal_lists_only_usable_providers() {
+        std::env::set_var("PERM_TEST_ZAI_C_560", "k");
+        std::env::set_var("PERM_TEST_PAAS_C_560", "k");
+        std::env::remove_var("PERM_TEST_OPENAI_C_560_UNSET");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_C_560",
+            "PERM_TEST_PAAS_C_560",
+            "PERM_TEST_OPENAI_C_560_UNSET",
         );
-        let child = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "edit"]),
-            Vec::new(),
-        );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), parent);
-        active.insert(c.clone(), child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        // `edit` is masked by the parent's narrower allowlist, not the child's own.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "edit"),
-            Some(MaskSource::profile(p.clone()))
-        );
-        // `agent` is absent from the child's own allowlist too — the walk
-        // stops at the child itself.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "agent"),
-            Some(MaskSource::profile(c.clone()))
-        );
-        // `read` survives the whole chain → not masked.
-        assert_eq!(
-            tool_mask_source(&active, &guard, &HashMap::new(), &c, "read"),
-            None
-        );
+        let err = resolve_model(Some("bogus"), Some(&catalog)).expect_err("unknown id refuses");
+        assert!(err.contains("zai/glm-5.1"), "{err}");
+        assert!(err.contains("zai_paas/glm-5.1"), "{err}");
+        assert!(!err.contains("gpt-4o"), "{err}");
+        std::env::remove_var("PERM_TEST_ZAI_C_560");
+        std::env::remove_var("PERM_TEST_PAAS_C_560");
     }
 
+    /// Bug 2, the plain-message half: a catalog is configured but nothing in
+    /// it is usable — distinct from "no catalog configured" (different fix).
     #[test]
-    fn tool_mask_source_attributes_an_overlay_deny_to_the_overlay() {
-        // The refusal must name the session tool overlay, not the agent
-        // definition — the profile happily admits `edit` here, a live
-        // per-session deny is what withdrew it.
-        let build = masked_profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            None,
-            Vec::new(),
+    fn resolve_model_no_usable_provider_says_so_plainly() {
+        std::env::remove_var("PERM_TEST_ZAI_D_560_UNSET");
+        std::env::remove_var("PERM_TEST_PAAS_D_560_UNSET");
+        std::env::remove_var("PERM_TEST_OPENAI_D_560_UNSET");
+        let catalog = collision_catalog(
+            "PERM_TEST_ZAI_D_560_UNSET",
+            "PERM_TEST_PAAS_D_560_UNSET",
+            "PERM_TEST_OPENAI_D_560_UNSET",
         );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), build);
-        let guard = SpawnGuard::new();
-        let mut overlays = HashMap::new();
-        overlays.insert(s.clone(), vec![ToolOverlayEntry::deny("edit")]);
-        assert_eq!(
-            tool_mask_source(&active, &guard, &overlays, &s, "edit"),
-            Some(MaskSource::overlay(s.clone()))
-        );
-        assert_eq!(
-            tool_mask_source(&active, &guard, &overlays, &s, "read"),
-            None
-        );
-    }
-
-    #[test]
-    fn tool_mask_source_reports_an_unseen_session_as_unseen() {
-        // Fail-closed (#156) is attributed as such, so the refusal says the
-        // profile is unknown rather than naming an innocent agent.
-        let guard = SpawnGuard::new();
-        let s = SessionId::new("ghost");
-        assert_eq!(
-            tool_mask_source(&HashMap::new(), &guard, &HashMap::new(), &s, "read"),
-            Some(MaskSource::unseen(s))
-        );
-    }
-
-    #[test]
-    fn plan_mask_no_longer_erases_call_bash_from_an_explore_child() {
-        // #597: `plan`'s own mask used to lack `call`/`bash`, so the ancestor
-        // clamp erased them from any `explore` child it spawned even though
-        // `explore.md` itself grants both (ask-graded). `plan.md` now carries
-        // both on its own mask so the intersection stops erasing them.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let plan = reg.get("plan").unwrap().clone();
-        let explore = reg.get("explore").unwrap().clone();
-
-        let p = SessionId::new("plan");
-        let c = SessionId::new("explore-child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), plan);
-        active.insert(c.clone(), explore);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
+        let err =
+            resolve_model(Some("glm-5.1"), Some(&catalog)).expect_err("nothing usable refuses");
         assert!(
-            !tool_masked(&active, &guard, &HashMap::new(), &c, "call"),
-            "an explore child of plan must keep its own `call` access"
+            err.contains("no configured provider is currently usable"),
+            "{err}"
         );
-        assert!(
-            !tool_masked(&active, &guard, &HashMap::new(), &c, "bash"),
-            "an explore child of plan must keep its own `bash` access"
-        );
-        // `edit` stays masked: plan's own mask still lacks it for children.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-    }
-
-    #[test]
-    fn plan_child_explore_reaches_ask_on_a_real_call_dispatch() {
-        // #597 end-to-end: the mask fix alone isn't enough — the ancestor
-        // *permission* ceiling (`effective_permission`) also has to clear
-        // `call` for an actual dispatch, not just the mask. `plan`'s own
-        // coarse (no-arg) `call` grade is `Deny` (ADR-0114's `MULTI_GROUP`
-        // floor, tightened by `write: deny`), but a real invocation always
-        // carries its command as the argument, and `plan.md`'s `call(*): ask`
-        // arg-scoped rule refines exactly that case — reproducing the
-        // issue's `gh issue view 594` via `call`.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let plan = reg.get("plan").unwrap().clone();
-        let explore = reg.get("explore").unwrap().clone();
-
-        let p = SessionId::new("plan");
-        let c = SessionId::new("explore-child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), plan);
-        active.insert(c.clone(), explore);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-
-        assert_eq!(
-            effective_permission(&active, &guard, &c, "call", Some("gh issue view 594"), None),
-            Permission::Ask,
-            "a real `call` dispatch under an explore child of plan must reach Ask, not Deny"
-        );
-    }
-
-    #[test]
-    fn tool_mask_glob_admits_mcp_down_the_ancestor_chain() {
-        // #537: a glob entry in an ancestor's allowlist admits a child's MCP
-        // call through the chain intersection, evaluated per profile per link.
-        let mcp_parent = masked_profile(
-            "mcp-parent",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read", "mcp__*"]),
-            Vec::new(),
-        );
-        let unmasked_child = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let p = SessionId::new("parent");
-        let c = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(p.clone(), mcp_parent);
-        active.insert(c.clone(), unmasked_child);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(p.clone(), None);
-        guard.record_start(c.clone(), Some(p.clone()));
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &c,
-            "mcp__docs__search"
-        ));
-        // A non-matching tool is still clamped by the same ancestor.
-        assert!(tool_masked(&active, &guard, &HashMap::new(), &c, "edit"));
-
-        // Without the glob the identical MCP call is masked by the ancestor.
-        let plain_parent = masked_profile(
-            "plain-parent",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        active.insert(p.clone(), plain_parent);
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &HashMap::new(),
-            &c,
-            "mcp__docs__search"
-        ));
-    }
-
-    #[test]
-    fn tool_overlay_admits_past_mask_per_link() {
-        // #539, ADR-0149: a session's live overlay beats its own profile's
-        // allowlist *and* denylist, and — because admission is per link — a
-        // parent's overlay admits the tool for an unmasked child too.
-        let restricted = masked_profile(
-            "restricted",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            vec!["mcp__jira__*"],
-        );
-        let s = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(s.clone(), restricted);
-        let guard = SpawnGuard::new();
-        let mut overlays = HashMap::new();
-        overlays.insert(
-            s.clone(),
-            vec![
-                ToolOverlayEntry::ask("mcp__docs__*"),
-                ToolOverlayEntry::ask("mcp__jira__create"),
-            ],
-        );
-        // Not in the allowlist, admitted by the overlay.
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &s,
-            "mcp__docs__search"
-        ));
-        // Explicitly denylisted by the profile — the overlay still wins.
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &s,
-            "mcp__jira__create"
-        ));
-        // A non-matching tool stays masked.
-        assert!(tool_masked(&active, &guard, &overlays, &s, "edit"));
-
-        // A deny entry withdraws a profile-advertised tool (#539 deny half).
-        overlays
-            .get_mut(&s)
-            .unwrap()
-            .push(ToolOverlayEntry::deny("read"));
-        assert!(tool_masked(&active, &guard, &overlays, &s, "read"));
-        overlays.get_mut(&s).unwrap().pop();
-
-        // Parent overlay admits down the chain for an unmasked child.
-        let child_profile = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let c = SessionId::new("c");
-        active.insert(c.clone(), child_profile);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(s.clone(), None);
-        guard.record_start(c.clone(), Some(s.clone()));
-        assert!(!tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &c,
-            "mcp__docs__search"
-        ));
-        // A child with its own restrictive mask still refuses (no overlay on
-        // its own link).
-        let masked_child = masked_profile(
-            "leaf",
-            AgentMode::Subagent,
-            PermissionProfile::new(Permission::Allow),
-            Some(vec!["read"]),
-            Vec::new(),
-        );
-        active.insert(c.clone(), masked_child);
-        assert!(tool_masked(
-            &active,
-            &guard,
-            &overlays,
-            &c,
-            "mcp__docs__search"
-        ));
+        assert!(!err.contains("valid ids"), "{err}");
     }
 
     /// #628: `overlay_grade_entry` walks the same ancestor chain the mask
@@ -1192,129 +593,140 @@ mod tests {
         );
     }
 
+    /// ADR-0207 §7: the sponsored-child exemption (ADR-0138) is retired along
+    /// with the sponsored `propose_plan` build handoff — `SpawnGuard` no
+    /// longer has any API to mark a session a permission root, so every
+    /// child's chain walks all the way to its true root. A three-deep chain
+    /// (mirroring what a `plan` → `build` handoff used to short-circuit)
+    /// proves the clamp has no exemption left to consult.
+    #[test]
+    fn ancestor_clamp_has_no_sponsorship_exemption_left() {
+        let root = SessionId::new("root");
+        let mid = SessionId::new("mid");
+        let leaf = SessionId::new("leaf");
+        let mut guard = SpawnGuard::new();
+        guard.record_start(root.clone(), None);
+        guard.record_start(mid.clone(), Some(root.clone()));
+        guard.record_start(leaf.clone(), Some(mid.clone()));
+
+        let chain = ancestor_chain(&guard, &leaf);
+        assert_eq!(
+            chain,
+            vec![leaf.clone(), mid.clone(), root.clone()],
+            "the walk must reach every ancestor — nothing can mark itself a \
+             permission root any more"
+        );
+    }
+
+    /// #634: a matching overlay `deny` entry — inert since ADR-0207 stage 4a
+    /// deleted `tool_mask_source` — must decline the call again. Also pins
+    /// that `overlay_denies` and `overlay_grade_entry` agree: when the
+    /// nearest opinionated link is a deny, the grade lookup is never reached
+    /// (the caller checks `overlay_denies` first), so a farther ancestor's
+    /// enable never wrongly wins.
+    #[test]
+    fn overlay_denies_restores_the_flat_decline() {
+        let session = SessionId::new("s");
+        let guard = SpawnGuard::new();
+        let chain = ancestor_chain(&guard, &session);
+
+        let mut overlays = HashMap::new();
+        assert!(!overlay_denies(&overlays, &chain, "bash"), "no opinion yet");
+
+        overlays.insert(session.clone(), vec![ToolOverlayEntry::deny("bash")]);
+        assert!(overlay_denies(&overlays, &chain, "bash"));
+        // An unrelated tool is untouched.
+        assert!(!overlay_denies(&overlays, &chain, "read"));
+    }
+
+    /// The nearest chain link with *any* opinion wins for deny too — a
+    /// child's own deny is not shadowed by a parent's enable, and a parent's
+    /// deny reaches a child with no overlay of its own (mirroring
+    /// `overlay_grade_entry_reaches_down_the_ancestor_chain` for the enable
+    /// case).
+    #[test]
+    fn overlay_denies_reaches_down_the_ancestor_chain() {
+        let parent = SessionId::new("parent");
+        let child = SessionId::new("child");
+        let mut guard = SpawnGuard::new();
+        guard.record_start(parent.clone(), None);
+        guard.record_start(child.clone(), Some(parent.clone()));
+        let chain_from_child = ancestor_chain(&guard, &child);
+
+        let mut overlays = HashMap::new();
+        overlays.insert(parent.clone(), vec![ToolOverlayEntry::deny("bash")]);
+        // No overlay of its own — the child inherits the parent's deny.
+        assert!(overlay_denies(&overlays, &chain_from_child, "bash"));
+
+        // The child's own enable is nearer, so it wins over the parent's deny.
+        overlays.insert(child.clone(), vec![ToolOverlayEntry::allow("bash")]);
+        assert!(!overlay_denies(&overlays, &chain_from_child, "bash"));
+        assert_eq!(
+            overlay_grade_entry(&overlays, &chain_from_child, "bash"),
+            Some(overlays[&child][0].clone())
+        );
+    }
+
     #[test]
     fn clamp_to_base_is_a_least_privilege_ceiling() {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &open, "bash", None, None),
+            clamp_to_base(Permission::Allow, &open, "bash", &[], None, None),
             Permission::Allow
         );
         assert_eq!(
-            clamp_to_base(Permission::Ask, &open, "bash", None, None),
+            clamp_to_base(Permission::Ask, &open, "bash", &[], None, None),
             Permission::Ask
         );
         // A base `bash: ask` tightens an agent's Allow to Ask, but leaves a
         // stricter agent Deny untouched (least-privilege wins either way).
         let base = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", None, None),
+            clamp_to_base(Permission::Allow, &base, "bash", &[], None, None),
             Permission::Ask
         );
         assert_eq!(
-            clamp_to_base(Permission::Deny, &base, "bash", None, None),
+            clamp_to_base(Permission::Deny, &base, "bash", &[], None, None),
             Permission::Deny
         );
         // The base never loosens: base Allow over an agent Ask stays Ask.
         assert_eq!(
-            clamp_to_base(Permission::Ask, &base, "read", None, None),
+            clamp_to_base(Permission::Ask, &base, "read", &[], None, None),
             Permission::Ask
         );
     }
 
+    /// ADR-0207 stage 6c: `config.yml`'s `permissions: {deny: [write]}`
+    /// ceiling — a bare capability-class key spelled exactly like a mode's
+    /// own `deny: [write]` — must deny every write-capable tool (`edit`
+    /// included), not just a literal tool named `write`. This is the
+    /// ceiling's own version of the tuning guard's worked example.
     #[test]
-    fn root_with_no_ancestors_uses_own_profile() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
+    fn clamp_to_base_honors_capability_class_ceiling_rules() {
+        let base = PermissionProfile::new(Permission::Allow).with("write", Permission::Deny);
         assert_eq!(
-            effective_permission(&active, &guard, &root, "edit", None, None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "edit",
+                &[crate::capability::Capability::Write],
+                None,
+                None
+            ),
+            Permission::Deny,
+            "edit is Write-capable even though the ceiling rule literally says `write`"
+        );
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "read",
+                &[crate::capability::Capability::Read],
+                None,
+                None
+            ),
             Permission::Allow
-        );
-    }
-
-    #[test]
-    fn sponsored_child_resolves_own_perms_ignoring_readonly_ancestor() {
-        // ADR-0138: a sponsored `build` child of a read-only `plan` session
-        // runs with its own profile's permissions — the ancestor clamp does
-        // not apply, since authorization is user plan approval, not
-        // inheritance. `edit` is Allow on the child and Ask on the parent; a
-        // plain child would clamp to Ask, a sponsored child stays Allow.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("plan");
-        let child = SessionId::new("build");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_sponsored_start(child.clone(), parent.clone());
-
-        // Sponsored: own profile stands, no ancestor clamp.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Allow
-        );
-        assert_eq!(
-            resolve_with_source(&active, &guard, &child, "edit", None, None),
-            (Permission::Allow, None)
-        );
-        // `read` is Allow on both → stays Allow.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "read", None, None),
-            Permission::Allow
-        );
-        // The plan parent itself is unchanged (a root).
-        assert_eq!(
-            effective_permission(&active, &guard, &parent, "edit", None, None),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn non_sponsored_child_still_clamped_regression() {
-        // ADR-0024 regression: a plain (non-sponsored) child under a read-only
-        // parent is still clamped. Sponsorship is the *only* exemption.
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("plan");
-        let child = SessionId::new("build");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // Plain child: ancestor clamp applies → edit clamps to Ask.
-        assert_eq!(
-            effective_permission(&active, &guard, &child, "edit", None, None),
-            Permission::Ask
         );
     }
 
@@ -1410,34 +822,14 @@ mod tests {
         assert_eq!(permission_workdir("bash", "not json"), None);
     }
 
+    /// The config ceiling's own workdir-scoped rule (#425) — the one
+    /// coverage-preserving fragment kept from the retired
+    /// `workdir_scoped_rule_resolves_through_the_agent_chain` (deleted with
+    /// `effective_permission`/`permission_for`, ADR-0207 stage 4b): `clamp_to_base`
+    /// itself is still very much alive, on the overlay-grade path in both
+    /// `tool_runner::dispatch` and `BindingPolicy::decide`.
     #[test]
-    fn workdir_scoped_rule_resolves_through_the_agent_chain() {
-        // A root whose profile pre-approves anything run under `/tmp` but asks
-        // for `bash` elsewhere (#425).
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow)
-                .with("bash", Permission::Ask)
-                .with("bash{/tmp/*}", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            permission_for(&active, &root, "bash", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
-        assert_eq!(
-            permission_for(&active, &root, "bash", None, Some("/home/x")),
-            Permission::Ask
-        );
-        // `effective_permission`/`clamp_to_base` see the same `workdir` slot.
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
+    fn clamp_to_base_honors_workdir_scoped_ceiling() {
         let deny_etc =
             PermissionProfile::new(Permission::Allow).with("bash{/etc/*}", Permission::Deny);
         assert_eq!(
@@ -1445,6 +837,7 @@ mod tests {
                 Permission::Allow,
                 &deny_etc,
                 "bash",
+                &[],
                 None,
                 Some("/etc/cron.d")
             ),
@@ -1453,233 +846,29 @@ mod tests {
     }
 
     #[test]
-    fn argument_scoped_rule_resolves_through_the_agent_chain() {
-        // A root whose profile pre-approves `git *` but asks for every other bash.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow)
-                .with("bash", Permission::Ask)
-                .with("bash(git *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("git status"), None),
-            Permission::Allow
-        );
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("rm -rf /"), None),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a compound command built entirely of allowed verbs grades
-    /// `Allow` through the ancestor-chain fold, without needing the whole raw
-    /// string to match a single rule.
-    #[test]
-    fn compound_command_allowed_when_every_segment_matches() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("bash(find *)", Permission::Allow)
-                .with("bash(grep *)", Permission::Allow)
-                .with("bash(wc *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . | grep x | wc -l"),
-                None
-            ),
-            Permission::Allow
-        );
-    }
-
-    /// ADR-0197 regression: the over-match hole a trailing `*` used to open —
-    /// `bash(find *): allow` must never authorize an appended `rm -rf /` via
-    /// `&&`.
-    #[test]
-    fn compound_command_over_match_regression_asks() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . && rm -rf /tmp/x"),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a compound whose leading verb has no rule at all (not just an
-    /// unmatched allow) still resolves through the segment fold to `Ask`.
-    #[test]
-    fn compound_command_with_unmatched_leading_verb_asks() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("git status && find ."),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    /// ADR-0197: a deny rule matching only a *later* segment still denies the
-    /// whole compound — the deny doesn't need to be the leading verb.
-    #[test]
-    fn compound_command_deny_on_trailing_segment_denies_the_whole_command() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("bash(find *)", Permission::Allow)
-                .with("bash(rm *)", Permission::Deny),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(&active, &guard, &root, "bash", Some("find . && rm x"), None),
-            Permission::Deny
-        );
-    }
-
-    /// ADR-0197: output redirection is opaque to the splitter, so an
-    /// arg-scoped Allow must not fire — `find . > out.txt` still asks despite
-    /// `bash(find *): allow`.
-    #[test]
-    fn compound_command_redirect_still_asks_despite_curated_allow() {
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask).with("bash(find *)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "bash",
-                Some("find . > out.txt"),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    #[test]
-    fn argument_scoped_rule_resolves_for_search_tools() {
-        // #417: grep/glob now yield a path-shaped arg, so a `read`-style
-        // arg-scoped rule can restrict them to a subtree.
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask)
-                .with("grep(src/*)", Permission::Allow)
-                .with("glob(src/*)", Permission::Allow),
-        );
-        let root = SessionId::new("root");
-        let mut active = HashMap::new();
-        active.insert(root.clone(), build);
-        let guard = SpawnGuard::new();
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Allow
-        );
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "glob",
-                permission_arg("glob", r#"{"pattern":"src/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Allow
-        );
-        // Outside the scoped path, or with no file filter at all, falls back
-        // to the tool's name-only rule (`Ask` here).
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo","path":"docs/*"}"#).as_deref(),
-                None
-            ),
-            Permission::Ask
-        );
-        assert_eq!(
-            effective_permission(
-                &active,
-                &guard,
-                &root,
-                "grep",
-                permission_arg("grep", r#"{"pattern":"foo"}"#).as_deref(),
-                None
-            ),
-            Permission::Ask
-        );
-    }
-
-    #[test]
     fn clamp_to_base_honors_argument_scoped_ceiling() {
         // A config ceiling that hard-denies `rm *` but leaves other bash alone.
         let base = PermissionProfile::new(Permission::Allow).with("bash(rm *)", Permission::Deny);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("rm -rf /"), None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                &[],
+                Some("rm -rf /"),
+                None
+            ),
             Permission::Deny
         );
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", Some("git status"), None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                &[],
+                Some("git status"),
+                None
+            ),
             Permission::Allow
         );
     }
@@ -1696,6 +885,7 @@ mod tests {
                 Permission::Allow,
                 &base,
                 "bash",
+                &[],
                 Some("find . && rm x"),
                 None
             ),
@@ -1708,40 +898,11 @@ mod tests {
                 Permission::Allow,
                 &base,
                 "bash",
+                &[],
                 Some("find . && git status"),
                 None
             ),
             Permission::Allow
         );
-    }
-
-    #[test]
-    fn permission_chain_folds_own_then_ancestors() {
-        let plan = profile(
-            "plan",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Ask),
-        );
-        let build = profile(
-            "build",
-            AgentMode::Primary,
-            PermissionProfile::new(Permission::Allow),
-        );
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), plan);
-        active.insert(child.clone(), build);
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-
-        // Chain is [child's own, parent's] — the least-privileged across it is Ask.
-        let chain = permission_chain(&active, &guard, &child);
-        assert_eq!(chain.len(), 2);
-        let perm = chain.iter().fold(Permission::Allow, |acc, p| {
-            min_permission(acc, p.resolve("bash", None))
-        });
-        assert_eq!(perm, Permission::Ask);
     }
 }

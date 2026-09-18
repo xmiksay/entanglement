@@ -2,9 +2,10 @@
 //!
 //! Core's turn loop advertises **every** spec the config provides — the profile
 //! mask and the session tool overlay no longer filter it. WHY: a surface that
-//! changes mid-session (an overlay toggle, `SetAgent` to a differently-masked
-//! profile, a live tool enable) invalidates the provider's prompt cache from
-//! the tools block onward, i.e. the whole prompt. The mask still binds, but at
+//! changes mid-session (an overlay toggle, a live tool enable) invalidates the
+//! provider's prompt cache from the tools block onward, i.e. the whole prompt
+//! — moot for the agent axis specifically now anyway, since an agent is fixed
+//! for a session's whole life (ADR-0207 §9). The mask still binds, but at
 //! the runtime's dispatch gate: the enforcement half is
 //! `entanglement-runtime/tests/it/tool_mask.rs`, which pins the attributed
 //! decline every masked call now gets.
@@ -18,30 +19,22 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, Permission, PermissionProfile, SessionId, ToolOverlayEntry, ToolSpec,
+    stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, SessionId, ToolOverlayEntry, ToolSpec,
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
-/// longer carries it (#201), so these tests register it directly. A `Subagent`
-/// leaf whose `read`/`glob`/`grep` allowlist masks out `edit` **at dispatch**.
-fn explore_profile() -> AgentProfile {
-    AgentProfile {
+/// longer carries it (#201), so these tests register it directly. Its
+/// read-only posture is a runtime permission-mode fact now (ADR-0207); the
+/// profile itself carries no mask or permission rules any more, so it's
+/// identical in shape to any other `Subagent` leaf.
+fn explore_profile() -> Agent {
+    Agent {
         name: "explore".into(),
         description: "Read-only exploration agent.".into(),
-        mode: AgentMode::Subagent,
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Deny)
-            .with("read", Permission::Allow)
-            .with("glob", Permission::Allow)
-            .with("grep", Permission::Allow),
-        tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -76,7 +69,7 @@ fn recording_config(seen: Arc<Mutex<Vec<Vec<String>>>>) -> EngineConfig {
         ToolSpec::new("read", "read a file"),
         ToolSpec::new("edit", "edit a file"),
     ];
-    cfg.profiles.insert(explore_profile());
+    cfg.agents.insert(explore_profile());
     cfg
 }
 
@@ -108,17 +101,23 @@ async fn build_profile_advertises_edit() {
 
 #[tokio::test]
 async fn restrictive_profile_still_advertises_the_full_set() {
-    // The rewrite of the old `explore_profile_hides_edit_via_set_agent`: under
-    // a `read`/`glob`/`grep` allowlist, `edit`'s schema still reaches the model
-    // — the mask binds at dispatch, not here, so switching agents mid-session
-    // leaves the advertised array (and the provider's prompt cache) untouched.
+    // The rewrite of the old `explore_profile_hides_edit_via_set_agent`: a
+    // read-only-named profile (`explore`, whose restriction is a runtime
+    // permission-mode fact, not anything `Agent` carries, ADR-0207)
+    // still sees `edit`'s schema — spawning under a differently-postured
+    // agent leaves the advertised array (and the provider's prompt cache)
+    // untouched.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(recording_config(seen.clone()));
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();
@@ -162,14 +161,14 @@ async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
     let mut events = holly.subscribe();
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "explore".into(),
+            prompt: "before the overlay".into(),
+            user: None,
         })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::prompt(sid.clone(), "before the overlay"))
         .await
         .unwrap();
     let baseline = first_recorded(&seen).await;
@@ -271,7 +270,6 @@ async fn spawned_explore_child_advertises_the_same_set_as_its_parent() {
             agent: "explore".into(),
             prompt: "explore the tree".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

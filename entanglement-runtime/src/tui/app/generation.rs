@@ -12,8 +12,9 @@ use super::App;
 /// Does every `Some` field in `overrides` equal the corresponding field in
 /// `generation`? This is the "reflects the pending overrides" test the
 /// confirming `GenerationChanged` must pass before a pending `/set` commits —
-/// an unrelated `GenerationChanged` (e.g. a `/show` query, or a `SetAgent`
-/// reapplication racing in) must never be mistaken for it.
+/// an unrelated `GenerationChanged` (e.g. a `/show` query, or the
+/// session-start persisted-override apply racing in) must never be mistaken
+/// for it.
 fn reflects(overrides: &GenerationParams, generation: &GenerationParams) -> bool {
     (overrides.temperature.is_none() || overrides.temperature == generation.temperature)
         && (overrides.max_output_tokens.is_none()
@@ -51,7 +52,7 @@ impl App {
     /// `GenerationChanged` for the active session commits it (see
     /// [`handle_generation_changed`][Self::handle_generation_changed]); an
     /// `Error` clears it. A `/show` query sends no overrides here, so it never
-    /// records a pending write; neither does a `SetAgent` reapplication.
+    /// records a pending write.
     pub fn record_pending_generation_persist(&mut self, overrides: GenerationParams) {
         let agent = self.agent().to_string();
         self.pending_generation_persist = Some((agent, overrides));
@@ -62,8 +63,8 @@ impl App {
     /// (this is what `/show` surfaces), and — if it reflects a pending `/set`
     /// write — commit it via the store and note the persisted profile+values.
     /// A `GenerationChanged` for another session, or one that doesn't reflect
-    /// the pending overrides (an interleaved `/show`/`SetAgent`), is rendered
-    /// but never clears or commits the pending write.
+    /// the pending overrides (an interleaved `/show`), is rendered but never
+    /// clears or commits the pending write.
     pub(super) fn handle_generation_changed(
         &mut self,
         session: &SessionId,

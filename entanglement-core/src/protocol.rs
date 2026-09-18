@@ -74,9 +74,8 @@ pub enum AgentState {
     /// [`Thinking`][AgentState::Thinking] so a head can show "running a
     /// command" vs "LLM is generating" (ADR-0139).
     Working,
-    /// Parked on a sub-agent result — the blocking `agent` tool, or a sponsored
-    /// build child spawned by an accepted `propose_plan` (ADR-0138). A
-    /// long-running build child otherwise looks identical to the plan agent
+    /// Parked on a sub-agent result — the blocking `agent` tool. A
+    /// long-running child otherwise looks identical to the parent agent
     /// staring at the wall; this state makes the park visible (ADR-0139).
     WaitingAgent,
     /// Engine emitted a tool request and is parked waiting for approval
@@ -87,7 +86,7 @@ pub enum AgentState {
     /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
     /// a permission decision, and heads render the two differently.
     WaitingAnswer,
-    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0144) — distinct from
+    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0208) — distinct from
     /// every wait state above, which are all waiting on *something specific*
     /// ([`WaitingApproval`][AgentState::WaitingApproval]/
     /// [`WaitingAnswer`][AgentState::WaitingAnswer]/
@@ -98,7 +97,7 @@ pub enum AgentState {
     /// until `InMsg::ResumeSession` lifts the hold. A session mid-stream when
     /// `PauseSession` arrives is not interrupted — the pause takes effect at the
     /// next round boundary (turn end or tool-call park), the same "deferred until
-    /// safe" mechanism `SetAgent`/`SetModel` already use mid-stream — so this
+    /// safe" mechanism `SetModel` already uses mid-stream — so this
     /// state is never observed while actively streaming; send `Stop` for an
     /// immediate interrupt.
     Paused,
@@ -124,33 +123,22 @@ pub enum FileChangeKind {
 /// A live session's identity + lineage, as reported in an
 /// [`OutEvent::SessionList`] enumeration snapshot (ADR-0028). Mirrors the fields
 /// a head would otherwise have to reconstruct by folding the `SessionStarted` /
-/// `SessionEnded` broadcast itself. `profile` is the session's *starting*
-/// profile (the supervisor tracks creation, not per-turn `SetAgent` switches —
-/// a head follows those via [`OutEvent::AgentChanged`]).
+/// `SessionEnded` broadcast itself. `agent` is the session's agent — fixed
+/// for its whole life (ADR-0207 §9: an agent is chosen when a session starts,
+/// never switched) — as announced by [`OutEvent::AgentChanged`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionId>,
-    pub profile: String,
+    pub agent: String,
     pub root: bool,
-    /// Resolved posture of the session's active profile (#189): mode, tool mask,
-    /// and permission rules, so a reconnecting head can render the permission
-    /// posture without re-reading the agent `.md` layers. `None` on the resume
-    /// path, where only the profile *name* survives in the replay log.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_detail: Option<ProfileDetail>,
     /// The session's owning user in a multi-user deployment (#522). `None` in
     /// single-user mode (the default) or for a session an embedder spawned
     /// without a `user`. Set once at spawn, inherited by every child — see
     /// [`InMsg::Spawn`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<UserId>,
-    /// Sponsored `propose_plan` build child (ADR-0138), vs. a plain sub-agent
-    /// spawn — see the matching field on [`InMsg::Spawn`]. `#[serde(default)]`
-    /// for the same terseness reason.
-    #[serde(default)]
-    pub sponsored: bool,
 }
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
@@ -518,7 +506,7 @@ impl ToolOverlayEntry {
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// What the engine does when the model asks to run a host tool. Driven by the
-/// session's active [`AgentProfile`] permission profile — e.g. a `plan` profile
+/// session's active [`Agent`] permission profile — e.g. a `plan` profile
 /// denies edits, a `build` profile allows everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -714,8 +702,9 @@ fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
 }
 
 /// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173)
-/// and the agent tool mask's `tools:`/`disallowed_tools:` entries (#537,
-/// ADR-0148): `*` matches any run of characters (including `/` and the empty
+/// and the session tool overlay's [`ToolOverlayEntry::pattern`] (#537,
+/// ADR-0148 — the agent tool mask this once also served is retired,
+/// ADR-0207): `*` matches any run of characters (including `/` and the empty
 /// string), `?` matches exactly one, everything else is literal. Deliberately
 /// separator-agnostic and free of `**`/character-classes — so `bash(git *)`,
 /// `edit(src/*)` and `mcp__docs__*` all read naturally and core stays
@@ -790,109 +779,53 @@ impl ApprovalScope {
     }
 }
 
-/// Whether an agent is directly user-facing, invoked by other agents, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMode {
-    /// User-facing entry agent; may spawn sub-agents. Never a valid spawn
-    /// *target* itself — the target-side mode gate (#119, ADR-0040) refuses it,
-    /// so `build`/`plan` are unreachable via spawn (see
-    /// [`AgentProfile::spawnable_as_subagent`]).
-    Primary,
-    /// Reachable only via spawn; a read-only leaf that defaults to not spawning
-    /// further (the `may_spawn` derivation, #119; spawner-side gate, ADR-0024).
-    Subagent,
-    /// Usable as both a primary entry agent *and* a spawnable sub-agent; spawns
-    /// like a `Primary`. Lets one file-defined agent serve both roles
-    /// (ADR-0034).
-    All,
-}
-
-/// A bundle of system prompt + model + permissions that defines how a session
-/// reasons and what it may do. A session runs under exactly one profile at a
-/// time; switching (e.g. Build ↔ Plan) changes the profile. Mirrors opencode's
-/// agent concept. The `name` is the switch key in [`InMsg::SetAgent`].
+/// A bundle of identity — system prompt, model/provider pin — that defines who
+/// a session is. Chosen once, when the session starts (`--agent`, `config.yml`'s
+/// `agent:`, or the `agent` tool's own argument for a spawned child), and fixed
+/// for that session's whole life: there is no live "switch profile" message
+/// (ADR-0207 §9 retired `SetAgent` — a persona is text already sent, so
+/// delegating to a different one is a fresh spawn, not a rewrite of this
+/// session's own system prompt). Mirrors opencode's agent concept.
+///
+/// **Authority is not here.** ADR-0207 moved every permission fact — the tool
+/// mask (`tools`/`disallowed_tools`), the `permission` rules, spawn control
+/// (`can_spawn`/`spawnable_agents`), sandbox confinement, and the
+/// primary/subagent/all `mode` distinction — off the profile and onto the
+/// session's independent permission **mode** axis (or, for spawn bounds, the
+/// mode's `max_depth`/`max_agents`). A profile no longer says what a session
+/// may do or where it may run — only who it is. Any agent may be a session
+/// root or a spawn target (ADR-0207 §4/§6).
 ///
 /// Profiles are **file-defined** in the runtime (markdown + YAML frontmatter,
-/// ADR-0034): `name`/`mode`/`model`/`permission` come from the frontmatter and
-/// `system_prompt` is the file body. `description` drives delegation matching —
-/// it is the one field disclosed to a spawning model (via the `agent` tool
-/// description).
+/// ADR-0034): `name`/`model` come from the frontmatter and `system_prompt` is
+/// the file body. `description` drives delegation matching — it is the one
+/// field disclosed to a spawning model (via the `agent` tool description).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentProfile {
+pub struct Agent {
     pub name: String,
     /// One-line summary; disclosed to a spawning model for delegation matching.
     #[serde(default)]
     pub description: String,
-    pub mode: AgentMode,
     pub system_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Provider this profile pins its [`model`][Self::model] to (#323, ADR-0081).
     /// A profile with **both** `provider` and `model` set forms a *model pin*
     /// ([`model_pin`][Self::model_pin]): the runtime re-binds the session's
-    /// backend to `(provider, model)` on `SetAgent` and at session start, so a
-    /// profile carries its own endpoint, not just a model id within the startup
-    /// provider. `model` without `provider` keeps today's request-level fallback
-    /// (no rebind) — the legacy behaviour. Back-compat: `#[serde(default)]`, so
-    /// logs/frames written before #323 deserialize with `provider: None`.
+    /// backend to `(provider, model)` at session start, so a profile carries its
+    /// own endpoint, not just a model id within the startup provider. `model`
+    /// without `provider` keeps today's request-level fallback (no rebind) — the
+    /// legacy behaviour. Back-compat: `#[serde(default)]`, so logs/frames written
+    /// before #323 deserialize with `provider: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    pub permission: PermissionProfile,
-    /// Tool allowlist (#116, ADR-0038). `Some` ⇒ only tools matching an entry
-    /// are accepted **at dispatch** (the registry is intersected with this
-    /// set); `None` ⇒ inherit every tool. The mask does not narrow what is
-    /// *advertised* — the schema of a masked tool still reaches the model, and
-    /// calling it is declined by the runtime's dispatch gate with an
-    /// attributed refusal, keeping the advertised surface stable within a
-    /// session (and with it the provider's prompt cache).
-    /// Each entry is a `*`/`?` wildcard pattern (#537, ADR-0148) matched with
-    /// the same [`glob_match`] the #173 argument scopes use — a literal entry
-    /// degenerates to exact equality, so `read` behaves as before while
-    /// `"mcp__*"` admits every MCP tool and `"mcp__docs__*"` one server's,
-    /// names unknowable at profile-parse time (servers connect later).
-    /// Distinct from [`permission`][Self::permission]: this controls a tool's
-    /// *existence*, not `Allow`/`Ask`/`Deny` among tools that exist.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
-    /// Tool denylist (#116, ADR-0038), applied *after* the allowlist. A tool
-    /// matching an entry — same wildcard-pattern semantics as
-    /// [`tools`][Self::tools] (#537, ADR-0148) — is refused at dispatch, even
-    /// if the allowlist (or an inherit-all `None`) would otherwise include it.
-    /// Like the allowlist it is dispatch-only: the tool stays advertised.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040). `None`
-    /// ⇒ derive from [`mode`][Self::mode]: a `Subagent` leaf defaults closed,
-    /// every other mode open. When it (or the derived default) is `false`, the
-    /// `agent` tool is withheld from the model and refused at dispatch — the
-    /// physical principle of #116 applied to spawn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub can_spawn: Option<bool>,
-    /// Allowlist of agent names this profile may spawn (#119, ADR-0040). `None` ⇒
-    /// any registered profile whose `mode` permits sub-agent use. A target
-    /// outside the list is refused before a child session is minted. Checked per
-    /// spawning session against *its own* profile, so the allowlist is not
-    /// transitive (profile A allowed to spawn B does not imply A can spawn what B
-    /// can).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawnable_agents: Option<Vec<String>>,
-    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
-    /// ADR-0104 amendment): `Some("bwrap" | "bubblewrap")` confines every exec
-    /// call this profile makes, `Some("none")` forces them unconfined, `None`
-    /// inherits the process-global `ENTANGLEMENT_SANDBOX` default. Opaque to
-    /// core — validated and interpreted entirely by the runtime
-    /// (`host::sandbox`), which owns the `bwrap` mechanism; core only carries
-    /// and serializes it, same as `permission`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<String>,
 }
 
-impl AgentProfile {
+impl Agent {
     /// The profile's model pin (#323, ADR-0081): `Some((provider, model))` only
     /// when **both** [`provider`][Self::provider] and [`model`][Self::model] are
-    /// set, so the runtime can re-bind the session's backend to that endpoint on
-    /// `SetAgent`/session start. A `model`-only profile returns `None` — it keeps
+    /// set, so the runtime can re-bind the session's backend to that endpoint at
+    /// session start. A `model`-only profile returns `None` — it keeps
     /// the legacy request-level model fallback and triggers no rebind.
     pub fn model_pin(&self) -> Option<(&str, &str)> {
         match (self.provider.as_deref(), self.model.as_deref()) {
@@ -900,107 +833,6 @@ impl AgentProfile {
             _ => None,
         }
     }
-
-    /// Whether this profile's mask admits `tool`: present unless the denylist
-    /// removes it, or an allowlist is set and omits it. This is the *physical*
-    /// restriction of #116 — orthogonal to [`PermissionProfile::for_tool`],
-    /// which grades `Allow`/`Ask`/`Deny` among the tools the mask admits.
-    ///
-    /// **Advertisement no longer consults this predicate.** Core's turn loop
-    /// advertises every spec the config provides; the mask is enforced solely
-    /// at dispatch, by the runtime's `permission::tool_masked` /
-    /// `tool_mask_source` gate (which also intersects it down the ancestor
-    /// chain) — a masked call is declined there with an attributed refusal.
-    /// The name is kept for compatibility with heads and the runtime that
-    /// already spell it; read it as "the mask admits this tool".
-    ///
-    /// Plan authorship still keys off the mask *data* (#231, ADR-0049): the
-    /// runtime advertises `propose_plan` only to a profile that *explicitly*
-    /// allowlists it (literal name, never a pattern —
-    /// `plan_tasks::explicitly_allowlists`), so plan authority is
-    /// default-closed without a dedicated flag.
-    /// Entries are `*`/`?` wildcard patterns (#537, ADR-0148) matched by
-    /// [`glob_match`], evaluated dynamically here at dispatch time — which is
-    /// what lets a mask cover MCP tools (`mcp__<server>__<tool>`) whose names
-    /// don't exist yet when profiles are parsed.
-    pub fn advertises_tool(&self, tool: &str) -> bool {
-        Self::mask_allows(self.tools.as_deref(), &self.disallowed_tools, tool)
-    }
-
-    /// The mask predicate behind [`advertises_tool`][Self::advertises_tool],
-    /// callable on a projection of the mask (a head holding only
-    /// `tools`/`disallowed_tools`, e.g. the TUI's profile info) so no caller
-    /// re-implements the pattern semantics. Consulted at **dispatch**, not at
-    /// advertisement.
-    pub fn mask_allows(tools: Option<&[String]>, disallowed: &[String], tool: &str) -> bool {
-        if disallowed.iter().any(|t| glob_match(t, tool)) {
-            return false;
-        }
-        match tools {
-            Some(allow) => allow.iter().any(|t| glob_match(t, tool)),
-            None => true,
-        }
-    }
-
-    /// Whether this profile may spawn sub-agents at all (#119, ADR-0040).
-    /// [`can_spawn`][Self::can_spawn] overrides the mode-derived default: a
-    /// `Subagent` leaf defaults closed, every other mode open. When this is
-    /// `false` the runtime withholds the `agent` tool and refuses a stale
-    /// call.
-    pub fn may_spawn(&self) -> bool {
-        self.can_spawn.unwrap_or(self.mode != AgentMode::Subagent)
-    }
-
-    /// Whether this profile may spawn the named target (#119, ADR-0040). A `None`
-    /// [`spawnable_agents`][Self::spawnable_agents] allowlist is open to any
-    /// spawnable target; otherwise the name must be listed. Orthogonal to
-    /// [`spawnable_as_subagent`][Self::spawnable_as_subagent], which gates the
-    /// *target's* mode.
-    pub fn spawn_target_allowed(&self, name: &str) -> bool {
-        match &self.spawnable_agents {
-            Some(list) => list.iter().any(|n| n == name),
-            None => true,
-        }
-    }
-
-    /// Whether this profile is a valid spawn *target* (#119, ADR-0040): only
-    /// `subagent`/`all` modes are reachable via spawn; a `primary` entry agent
-    /// never is, so `build`/`plan` fall out of the hierarchy from mode defaults
-    /// with zero frontmatter changes.
-    pub fn spawnable_as_subagent(&self) -> bool {
-        matches!(self.mode, AgentMode::Subagent | AgentMode::All)
-    }
-
-    /// The wire-facing posture of this profile (#189): mode, the #116 tool mask
-    /// (`tools`/`disallowed_tools`), and the permission rules. Carried on
-    /// [`OutEvent::AgentChanged`] and [`SessionInfo`] so a reconnecting head — or
-    /// a sub-agent debugger — can render *why* a tool is allowed/asked/denied
-    /// without folding the broadcast or re-reading the agent `.md` layers.
-    pub fn detail(&self) -> ProfileDetail {
-        ProfileDetail {
-            mode: self.mode,
-            tools: self.tools.clone(),
-            disallowed_tools: self.disallowed_tools.clone(),
-            permission: self.permission.clone(),
-        }
-    }
-}
-
-/// Resolved permission posture of an [`AgentProfile`], carried on the wire so a
-/// head need not re-read the agent `.md` layers to render it (#189). A projection
-/// of [`AgentProfile`] — its policy-bearing fields minus the system prompt and
-/// spawn/plan flags that heads don't render for a posture panel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProfileDetail {
-    pub mode: AgentMode,
-    /// Tool allowlist (#116); `None` ⇒ inherit every advertised tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
-    /// Tool denylist (#116), applied after the allowlist.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    /// Per-tool `Allow | Ask | Deny` rules + fallback.
-    pub permission: PermissionProfile,
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1053,11 +885,26 @@ pub enum InMsg {
     /// `scope` (#174) controls how long the approval lasts — [`ApprovalScope::Once`]
     /// by default, so a head that omits it keeps the historical one-shot behavior
     /// (and the default scope is omitted on the wire, additive for older heads).
+    ///
+    /// `mode` (#560, ADR-0207 §7 extension) is meaningful only when this approves
+    /// a `propose_plan` request: it carries the mode the *approver* chose to
+    /// switch the session into (`"build"` or `"auto"`) — acceptance is a mode
+    /// switch (ADR-0207 §7), and picking which one is the human's decision, made
+    /// at the approval prompt itself. `None` (the wire default, additive for
+    /// older heads) means a bare accept with no mode named, which the
+    /// `propose_plan` orchestrator resolves to `"auto"` — the documented default
+    /// for "go implement this", not a second-guess of it. Every other approval
+    /// ignores this field. Core carries it as opaque `Option<String>`, exactly
+    /// like [`SetMode`][InMsg::SetMode]'s own `mode` — validating it against the
+    /// closed `build`/`auto` set is the runtime's job (the runtime owns the mode
+    /// table), not core's.
     Approve {
         session: SessionId,
         request_id: String,
         #[serde(default, skip_serializing_if = "ApprovalScope::is_once")]
         scope: ApprovalScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
     },
     /// Reject a pending tool request.
     Reject {
@@ -1153,25 +1000,25 @@ pub enum InMsg {
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
-    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0144) without
+    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0208) without
     /// cancelling anything or evicting memory — the middle ground `Stop`
     /// (destroys the in-flight round) and `HibernateSession` (evicts memory)
     /// don't cover. An idle session defers its next `Prompt` (and
-    /// `SetAgent`/`SetModel`/`SetGeneration`/`Oneshot`) until
+    /// `SetModel`/`SetGeneration`/`Oneshot`) until
     /// [`ResumeSession`][InMsg::ResumeSession]; a session parked on a tool-call
     /// batch keeps folding arriving `ToolResult`s into `Context` as normal, but
     /// the turn does not continue past a drained batch until resumed — so the
     /// same round picks up again with no re-prompt needed. A session actively
     /// streaming when this arrives is unaffected until the round reaches its
     /// next safe point (turn end or park) — mirroring how a mid-stream
-    /// `SetAgent`/`SetModel` is deferred, *not* raced via `tokio::select!` like
+    /// `SetModel` is deferred, *not* raced via `tokio::select!` like
     /// `Stop` — so `PauseSession` never interrupts an in-flight model
     /// round-trip; use `Stop` for that. `Stop`/`HibernateSession` always take
     /// priority: both apply regardless of `paused`, and neither clears it.
     /// Idempotent; wire-allowed like `Stop` (no elevated capability).
     PauseSession { session: SessionId },
     /// Lift a hold placed by [`PauseSession`][InMsg::PauseSession] (#516,
-    /// ADR-0144). A deferred idle `Prompt`/`SetAgent`/`SetModel`/
+    /// ADR-0208). A deferred idle `Prompt`/`SetModel`/
     /// `SetGeneration`/`Oneshot` now applies; a parked turn whose batch already
     /// drained while paused continues immediately with no new model request
     /// needed to re-enter it. A no-op on a session that isn't paused.
@@ -1298,8 +1145,28 @@ pub enum InMsg {
     /// (like [`Resume`][InMsg::Resume]): it is *not* wire-allowed — a wire head
     /// cannot evict another session's memory. Unknown ids are a no-op.
     HibernateSession { session: SessionId },
-    /// Switch the session to a different agent profile by name (e.g. `plan`).
-    SetAgent { session: SessionId, agent: String },
+    /// Switch the session's permission **mode** by name (ADR-0207). Authority
+    /// is a second axis, independent of the agent: core carries `mode` as an
+    /// **opaque name it never evaluates** — the runtime owns the mode table
+    /// (`research`/`plan`/`build`/`auto` for `skutter`) and every rule that
+    /// name resolves to. Applied **immediately**, turn live or not — unlike
+    /// [`SetModel`][InMsg::SetModel]/[`SetGeneration`][InMsg::SetGeneration]/
+    /// [`SetToolOverlay`][InMsg::SetToolOverlay], which defer because they
+    /// touch something a live round is actively using (the backend, the
+    /// in-flight request's generation knobs, the advertised tool array). A
+    /// mode is a label consulted only when the runtime next grades a tool
+    /// call, so there is nothing for a live turn to protect by waiting —
+    /// deferring it instead left a `propose_plan` approval's very next tool
+    /// call graded under the mode the plan was *written* in, not the one the
+    /// approver just switched to (#560). Always
+    /// succeeds and confirms with [`OutEvent::ModeChanged`] — core has no
+    /// table to validate `mode` against, so there is nothing to fail here; an
+    /// unresolvable name is the runtime's problem to reject at the point it is
+    /// evaluated. **Trusted-only**: a mode carries real authority (unlike the
+    /// agent, which is identity fixed at session start and never switched,
+    /// ADR-0207 §9), so it is refused from an untrusted wire head (see
+    /// [`wire_allowed`][InMsg::wire_allowed]).
+    SetMode { session: SessionId, mode: String },
     /// Switch the session's live model/provider without restarting the engine
     /// (#218). The runtime re-resolves `(provider, model)` against the catalog +
     /// user config (via [`EngineConfig::model_resolver`][crate::EngineConfig]),
@@ -1309,7 +1176,10 @@ pub enum InMsg {
     /// same-provider model change and a full provider switch uniformly. On
     /// success the session emits [`OutEvent::ModelChanged`]; an unknown
     /// provider / missing key surfaces [`OutEvent::Error`]. Applied once the live
-    /// turn ends when one is running (stash replay), like [`SetAgent`][InMsg::SetAgent].
+    /// turn ends when one is running (stash replay) — rebuilding the backend
+    /// mid-round would be incoherent. Unlike [`SetMode`][InMsg::SetMode]
+    /// (applied immediately — a mode is a label, not something a live round
+    /// is using).
     SetModel {
         session: SessionId,
         provider: String,
@@ -1326,11 +1196,12 @@ pub enum InMsg {
     /// params — even when every override happens to match the current value — so a
     /// head can rely on the reply to confirm the write landed. Applied once the
     /// live turn ends when one is running (stash replay), like
-    /// [`SetAgent`][InMsg::SetAgent]/[`SetModel`][InMsg::SetModel]. The merged
-    /// result is also recorded as this session's per-profile memory
-    /// (`Session::profile_generation`), so a later `SetAgent` switch back to the
-    /// same profile re-applies it — the generation-parameter analogue of the model
-    /// pin's session memory (#323, ADR-0081).
+    /// [`SetModel`][InMsg::SetModel] (unlike [`SetMode`][InMsg::SetMode],
+    /// which applies immediately — see its own doc for why). The merged
+    /// result is also recorded in `Session::generation_by_agent`, so a resumed
+    /// session's replay-reconstructed live override isn't clobbered by the
+    /// persisted default `EngineConfig::generation_resolver` would otherwise
+    /// re-apply at session start (#374, ADR-0094).
     SetGeneration {
         session: SessionId,
         overrides: GenerationParams,
@@ -1370,7 +1241,10 @@ pub enum InMsg {
     /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
     /// Always succeeds and always emits `ToolOverlayChanged` with the full
     /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
-    /// deferred while a turn is live (stash replay), like `SetAgent`.
+    /// deferred while a turn is live (stash replay), like `SetModel` — a
+    /// mid-round edit would change the advertised tool array under a request
+    /// already in flight. Unlike [`SetMode`][InMsg::SetMode], which applies
+    /// immediately since it changes no array and busts no cache.
     /// **Trusted-only** (not wire-allowed, #472, ADR-0124): it can hand the
     /// model tools with no restart and — with `allow: true` — no approval
     /// prompt.
@@ -1383,7 +1257,7 @@ pub enum InMsg {
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
     /// `op` (`"compact"` today; an unknown op emits a recoverable `Error`).
     /// Mutates only the caller's own `Context`, so it is wire-allowed. Deferred
-    /// while a turn is live (stash replay), like `SetAgent`/`SetModel`.
+    /// while a turn is live (stash replay), like `SetModel`.
     /// `"compact"`'s `args`: `instructions` (optional free-text steer) and
     /// `kept` (optional `u64`, default `0` — a keep-tail request, #397/
     /// ADR-0102, clamped to the nearest safe turn boundary).
@@ -1425,18 +1299,6 @@ pub enum InMsg {
         /// re-specify it). `None` (single-user mode) is the default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
-        /// Whether this is a **sponsored** child of a `propose_plan` build
-        /// handoff (ADR-0138) rather than a plain sub-agent spawn (the
-        /// blocking/backgrounded `agent`/`agent_send` tools). Set by the
-        /// runtime's tool executor, which already runs the `SpawnGuard`
-        /// sponsor check before issuing this `Spawn`; core only relays it
-        /// through to [`SessionStarted`][OutEvent::SessionStarted] /
-        /// [`SessionInfo`] so a head can disambiguate `AgentState::WaitingAgent`'s
-        /// two callers (#626) without engine-side sponsorship bookkeeping.
-        /// `#[serde(default)]` keeps every non-sponsored spawn (the overwhelming
-        /// majority) terse on the wire.
-        #[serde(default)]
-        sponsored: bool,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
@@ -1531,7 +1393,7 @@ impl InMsg {
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
             | InMsg::HibernateSession { session }
-            | InMsg::SetAgent { session, .. }
+            | InMsg::SetMode { session, .. }
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
             | InMsg::SetSessionMeta { session, .. }
@@ -1582,6 +1444,13 @@ impl InMsg {
     ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
     ///   by ADR-0177). An empty `entries` list (clearing back to the profile
     ///   default) is vacuously deny-only and also wire-allowed.
+    /// - [`SetMode`][InMsg::SetMode] (ADR-0207): a mode *is* the session's
+    ///   authority — unlike the agent, which is identity fixed at session
+    ///   start and carries no live switch message at all (ADR-0207 §9). A
+    ///   wire-forged `SetMode` would let an unauthenticated head widen its own
+    ///   permission posture (e.g. `research` → `build`), so it is
+    ///   trusted-only; the analogous widening the model itself may request is
+    ///   the graded `request_mode` tool, not this frame.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -1620,7 +1489,6 @@ impl InMsg {
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
             | InMsg::CloseSession { .. }
-            | InMsg::SetAgent { .. }
             | InMsg::SetModel { .. }
             | InMsg::SetGeneration { .. }
             | InMsg::SetSessionMeta { .. }
@@ -1636,7 +1504,8 @@ impl InMsg {
             | InMsg::HibernateSession { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
-            | InMsg::McpAuth { .. } => false,
+            | InMsg::McpAuth { .. }
+            | InMsg::SetMode { .. } => false,
         }
     }
 
@@ -1664,7 +1533,7 @@ impl InMsg {
             InMsg::ReplayFrom { .. } => "replay_from",
             InMsg::CloseSession { .. } => "close_session",
             InMsg::HibernateSession { .. } => "hibernate_session",
-            InMsg::SetAgent { .. } => "set_agent",
+            InMsg::SetMode { .. } => "set_mode",
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
             InMsg::SetSessionMeta { .. } => "set_session_meta",
@@ -1743,7 +1612,7 @@ pub enum OutEvent {
         /// interactive session is closed once the successor starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         predecessor: Option<SessionId>,
-        profile: String,
+        agent: String,
         model: Option<String>,
         root: bool,
         ts: u64,
@@ -1754,13 +1623,6 @@ pub enum OutEvent {
         /// embedder re-supplying it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
-        /// Mirrors [`InMsg::Spawn`]'s `sponsored` (#626): a sponsored
-        /// `propose_plan` build child vs. a plain sub-agent spawn, so a head can
-        /// disambiguate `AgentState::WaitingAgent`'s two callers without engine-
-        /// side sponsorship bookkeeping. `#[serde(default)]` for the same
-        /// terseness reason.
-        #[serde(default)]
-        sponsored: bool,
     },
     /// Session ended (lifecycle event, no `seq`). Emits when a session exits.
     SessionEnded { session: SessionId, ts: u64 },
@@ -1873,16 +1735,21 @@ pub enum OutEvent {
         session: SessionId,
         state: AgentState,
     },
-    /// The session switched agent profiles (point-in-time, no `seq`). Carries the
-    /// resolved [`ProfileDetail`] (#189) so a head can render the new permission
-    /// posture without re-reading the agent `.md` layers; `None` only if the
-    /// emitter has no profile handle.
-    AgentChanged {
-        session: SessionId,
-        agent: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        profile_detail: Option<ProfileDetail>,
-    },
+    /// The session switched agent profiles (point-in-time, no `seq`). ADR-0207
+    /// moved every permission fact off the profile and onto the session's
+    /// independent permission mode axis (see [`ModeChanged`][OutEvent::ModeChanged]),
+    /// so this carries only the new profile's name.
+    AgentChanged { session: SessionId, agent: String },
+    /// The session switched permission mode (point-in-time, no `seq`), in reply
+    /// to [`InMsg::SetMode`] (ADR-0207) — and once more at session start so the
+    /// log records the mode a session began in (needed by replay and by the
+    /// appended in-conversation notice, see [`Session::mode`][crate::session::Session]).
+    /// Carries only the opaque `mode` name; core carries no rule table to
+    /// resolve it against — the runtime owns what a mode means. Folded on
+    /// replay by overwrite (last write wins),
+    /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged]/
+    /// [`ToolOverlayChanged`][OutEvent::ToolOverlayChanged].
+    ModeChanged { session: SessionId, mode: String },
     /// The session switched to a different model/provider mid-run (point-in-time,
     /// no `seq`), in reply to [`InMsg::SetModel`] (#218). Carries the resolved
     /// `provider`/`model` and the new `context_window` (tokens) so a head can
@@ -1897,13 +1764,12 @@ pub enum OutEvent {
     },
     /// The session's live generation knobs changed (point-in-time, no `seq`),
     /// in reply to [`InMsg::SetGeneration`] (#374, ADR-0094) or an implicit
-    /// overlay applied on `SetAgent`/session start. Carries the **full** resolved
+    /// overlay applied at session start. Carries the **full** resolved
     /// [`GenerationParams`] — not just what changed — so a head can render the
     /// effective state directly and so replay can restore it verbatim by simply
     /// overwriting [`Session::generation`][crate::session::Session]. Also folded
-    /// into `Session::profile_generation` on replay, keyed by the active profile
-    /// at the time (mirrors [`ModelChanged`][OutEvent::ModelChanged]'s
-    /// `profile_models` reconstruction).
+    /// into `Session::generation_by_agent` on replay, so a resumed session's live
+    /// override survives the session-start default re-application.
     GenerationChanged {
         session: SessionId,
         generation: GenerationParams,
@@ -2292,6 +2158,7 @@ impl OutEvent {
             | OutEvent::History { session, .. }
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
+            | OutEvent::ModeChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
             | OutEvent::SessionMetaChanged { session, .. }
@@ -2330,7 +2197,7 @@ impl OutEvent {
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
     /// `OperationList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
-    /// `GenerationChanged`, `SessionMetaChanged`). Returning `Option`
+    /// `GenerationChanged`, `SessionMetaChanged`, `ModeChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
@@ -2350,6 +2217,7 @@ impl OutEvent {
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
+            | OutEvent::ModeChanged { .. }
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
             | OutEvent::SessionMetaChanged { .. }
@@ -2418,7 +2286,6 @@ mod tests {
             agent: "build".into(),
             prompt: "go".into(),
             user: None,
-            sponsored: false,
         }
         .wire_allowed());
         assert!(!InMsg::Resume {
@@ -2480,6 +2347,15 @@ mod tests {
             entries: vec![],
         }
         .wire_allowed());
+        // Mode carries real authority (ADR-0207), unlike the agent (identity
+        // fixed at session start, no live switch message at all) — a wire head
+        // must not be able to widen its own permission posture by naming a mode
+        // directly.
+        assert!(!InMsg::SetMode {
+            session: s.clone(),
+            mode: "build".into(),
+        }
+        .wire_allowed());
         // Every head-authored frame stays acceptable off the wire.
         for msg in [
             InMsg::prompt(s.clone(), "hi"),
@@ -2487,6 +2363,7 @@ mod tests {
                 session: s.clone(),
                 request_id: "r".into(),
                 scope: ApprovalScope::Once,
+                mode: None,
             },
             InMsg::Reject {
                 session: s.clone(),
@@ -2506,10 +2383,6 @@ mod tests {
                 after_seq: 0,
             },
             InMsg::CloseSession { session: s.clone() },
-            InMsg::SetAgent {
-                session: s.clone(),
-                agent: "plan".into(),
-            },
             InMsg::SetModel {
                 session: s.clone(),
                 provider: "zai".into(),
@@ -2652,9 +2525,11 @@ mod tests {
             session: SessionId::new("s1"),
             request_id: "r1".into(),
             scope: ApprovalScope::Once,
+            mode: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("scope"), "default scope must be omitted");
+        assert!(!json.contains("mode"), "default mode must be omitted");
         let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1"}"#;
         assert_eq!(serde_json::from_str::<InMsg>(legacy).unwrap(), msg);
     }
@@ -2670,11 +2545,39 @@ mod tests {
                 session: SessionId::new("s1"),
                 request_id: "r1".into(),
                 scope,
+                mode: None,
             };
             let json = serde_json::to_string(&msg).unwrap();
             assert!(json.contains("scope"));
             assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
         }
+    }
+
+    /// #560 (ADR-0207 §7 extension): `mode` is the approver's plan-acceptance
+    /// choice, additive and omitted by default exactly like `scope` — an older
+    /// head's frame (no `mode`) still deserializes to `None`.
+    #[test]
+    fn approve_mode_roundtrips_when_set() {
+        let msg = InMsg::Approve {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            scope: ApprovalScope::Once,
+            mode: Some("build".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"mode\":\"build\""), "{json}");
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+
+        let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1"}"#;
+        assert_eq!(
+            serde_json::from_str::<InMsg>(legacy).unwrap(),
+            InMsg::Approve {
+                session: SessionId::new("s1"),
+                request_id: "r1".into(),
+                scope: ApprovalScope::Once,
+                mode: None,
+            }
+        );
     }
 
     /// #486: `SessionDir` is an additive variant — pin its exact wire spelling
@@ -2915,26 +2818,16 @@ mod tests {
                 SessionInfo {
                     session: SessionId::new("root"),
                     parent: None,
-                    profile: "build".into(),
+                    agent: "build".into(),
                     root: true,
-                    profile_detail: None,
                     user: None,
-                    sponsored: false,
                 },
                 SessionInfo {
                     session: SessionId::new("child"),
                     parent: Some(SessionId::new("root")),
-                    profile: "explore".into(),
+                    agent: "explore".into(),
                     root: false,
                     user: None,
-                    sponsored: false,
-                    profile_detail: Some(ProfileDetail {
-                        mode: AgentMode::Subagent,
-                        tools: Some(vec!["read".into(), "glob".into()]),
-                        disallowed_tools: vec!["edit".into()],
-                        permission: PermissionProfile::new(Permission::Deny)
-                            .with("read", Permission::Allow),
-                    }),
                 },
             ],
         };
@@ -3267,91 +3160,44 @@ mod tests {
     }
 
     #[test]
-    fn agent_profile_detail_projects_the_wire_posture() {
-        let profile = AgentProfile {
-            name: "explore".into(),
-            description: String::new(),
-            mode: AgentMode::Subagent,
-            system_prompt: "secret prompt body".into(),
-            model: Some("glm-5.2".into()),
-            provider: None,
-            permission: PermissionProfile::new(Permission::Deny).with("read", Permission::Allow),
-            tools: Some(vec!["read".into(), "grep".into()]),
-            disallowed_tools: vec!["edit".into()],
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
-        let detail = profile.detail();
-        assert_eq!(detail.mode, AgentMode::Subagent);
-        assert_eq!(detail.tools, Some(vec!["read".into(), "grep".into()]));
-        assert_eq!(detail.disallowed_tools, vec!["edit".to_string()]);
-        assert_eq!(detail.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(detail.permission.for_tool("edit"), Permission::Deny);
-    }
-
-    #[test]
-    fn agent_changed_carries_profile_detail_and_stays_backward_compatible() {
+    fn agent_changed_roundtrips() {
         let ev = OutEvent::AgentChanged {
             session: SessionId::new("s"),
             agent: "plan".into(),
-            profile_detail: Some(ProfileDetail {
-                mode: AgentMode::Primary,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-            }),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
-
-        // An older head's frame (no `profile_detail`) still deserializes — the
-        // field defaults to `None`, so the enrichment is additive on the wire.
-        let legacy = r#"{"kind":"agent_changed","session":"s","agent":"plan"}"#;
-        assert_eq!(
-            serde_json::from_str::<OutEvent>(legacy).unwrap(),
-            OutEvent::AgentChanged {
-                session: SessionId::new("s"),
-                agent: "plan".into(),
-                profile_detail: None,
-            }
-        );
     }
 
     #[test]
-    fn session_started_carries_sponsored_and_stays_backward_compatible() {
-        // #626: a sponsored `propose_plan` build child's `SessionStarted` round-
-        // trips `sponsored: true`, disambiguating it from a plain sub-agent spawn.
+    fn session_started_round_trips_and_stays_backward_compatible() {
         let ev = OutEvent::SessionStarted {
             session: SessionId::new("child"),
             parent: Some(SessionId::new("plan")),
             predecessor: None,
-            profile: "build".into(),
+            agent: "build".into(),
             model: None,
             root: false,
             ts: 0,
             user: None,
-            sponsored: true,
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
 
-        // An older head's persisted frame (no `sponsored` key) still deserializes
-        // — the field defaults to `false`, so a pre-#626 log never misreports a
-        // plain spawn as sponsored.
-        let legacy = r#"{"kind":"session_started","session":"s","parent":null,"profile":"build","model":null,"root":true,"ts":0}"#;
+        // An older head's persisted frame (no `predecessor`/`user` keys) still
+        // deserializes — both default, so a pre-#626/#522 log still replays.
+        let legacy = r#"{"kind":"session_started","session":"s","parent":null,"agent":"build","model":null,"root":true,"ts":0}"#;
         assert_eq!(
             serde_json::from_str::<OutEvent>(legacy).unwrap(),
             OutEvent::SessionStarted {
                 session: SessionId::new("s"),
                 parent: None,
                 predecessor: None,
-                profile: "build".into(),
+                agent: "build".into(),
                 model: None,
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             }
         );
     }
@@ -3544,150 +3390,6 @@ mod tests {
         assert!(ToolOverlayEntry::find(&[entry], "edit").is_some());
     }
 
-    fn masked_profile(tools: Option<Vec<&str>>, disallowed: Vec<&str>) -> AgentProfile {
-        AgentProfile {
-            name: "m".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: tools.map(|v| v.into_iter().map(String::from).collect()),
-            disallowed_tools: disallowed.into_iter().map(String::from).collect(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        }
-    }
-
-    fn spawn_profile(
-        mode: AgentMode,
-        can_spawn: Option<bool>,
-        spawnable_agents: Option<Vec<&str>>,
-    ) -> AgentProfile {
-        AgentProfile {
-            name: "s".into(),
-            description: String::new(),
-            mode,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn,
-            spawnable_agents: spawnable_agents.map(|v| v.into_iter().map(String::from).collect()),
-            sandbox: None,
-        }
-    }
-
-    #[test]
-    fn may_spawn_defaults_from_mode() {
-        // Primary/all default open; a subagent leaf defaults closed.
-        assert!(spawn_profile(AgentMode::Primary, None, None).may_spawn());
-        assert!(spawn_profile(AgentMode::All, None, None).may_spawn());
-        assert!(!spawn_profile(AgentMode::Subagent, None, None).may_spawn());
-    }
-
-    #[test]
-    fn can_spawn_overrides_the_mode_default() {
-        // An explicit `can_spawn` wins over the mode-derived default either way.
-        assert!(!spawn_profile(AgentMode::Primary, Some(false), None).may_spawn());
-        assert!(spawn_profile(AgentMode::Subagent, Some(true), None).may_spawn());
-    }
-
-    #[test]
-    fn spawn_target_allowlist_gates_by_name() {
-        // `None` ⇒ open to any target; a list restricts to its entries.
-        let open = spawn_profile(AgentMode::Primary, None, None);
-        assert!(open.spawn_target_allowed("explore"));
-        let scoped = spawn_profile(AgentMode::Primary, None, Some(vec!["explore"]));
-        assert!(scoped.spawn_target_allowed("explore"));
-        assert!(!scoped.spawn_target_allowed("build"));
-    }
-
-    #[test]
-    fn spawnable_as_subagent_only_for_subagent_and_all() {
-        assert!(spawn_profile(AgentMode::Subagent, None, None).spawnable_as_subagent());
-        assert!(spawn_profile(AgentMode::All, None, None).spawnable_as_subagent());
-        // A primary entry agent is never a valid spawn target.
-        assert!(!spawn_profile(AgentMode::Primary, None, None).spawnable_as_subagent());
-    }
-
-    #[test]
-    fn advertises_tool_inherits_all_when_unmasked() {
-        let p = masked_profile(None, vec![]);
-        assert!(p.advertises_tool("edit"));
-        assert!(p.advertises_tool("anything"));
-    }
-
-    #[test]
-    fn advertises_tool_allowlist_restricts_to_listed() {
-        let p = masked_profile(Some(vec!["read", "glob", "grep"]), vec![]);
-        assert!(p.advertises_tool("read"));
-        assert!(p.advertises_tool("grep"));
-        assert!(!p.advertises_tool("edit"));
-        assert!(!p.advertises_tool("agent"));
-    }
-
-    #[test]
-    fn advertises_tool_denylist_wins_over_allowlist() {
-        // `edit` is in the allowlist yet also denied — denylist is applied last.
-        let p = masked_profile(Some(vec!["read", "edit"]), vec!["edit"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
-    fn advertises_tool_denylist_alone_subtracts_from_inherit_all() {
-        let p = masked_profile(None, vec!["bash"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("bash"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_allowlist_matches_mcp_namespace() {
-        // #537: `mcp__*` admits every MCP tool from every server, nothing else.
-        let p = masked_profile(Some(vec!["read", "mcp__*"]), vec![]);
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(p.advertises_tool("mcp__jira__create_issue"));
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_server_scoped() {
-        let p = masked_profile(Some(vec!["mcp__docs__*"]), vec![]);
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(!p.advertises_tool("mcp__jira__create_issue"));
-    }
-
-    #[test]
-    fn advertises_tool_glob_denylist_subtracts_from_inherit_all() {
-        // Strip MCP from an otherwise-unmasked profile.
-        let p = masked_profile(None, vec!["mcp__*"]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("mcp__docs__search"));
-    }
-
-    #[test]
-    fn advertises_tool_deny_glob_beats_allow_glob() {
-        // All MCP except one server: deny is applied last, patterns included.
-        let p = masked_profile(Some(vec!["mcp__*"]), vec!["mcp__docs__*"]);
-        assert!(p.advertises_tool("mcp__jira__create_issue"));
-        assert!(!p.advertises_tool("mcp__docs__search"));
-    }
-
-    #[test]
-    fn advertises_tool_star_is_inherit_all_and_empty_is_nothing() {
-        let all = masked_profile(Some(vec!["*"]), vec![]);
-        assert!(all.advertises_tool("read"));
-        assert!(all.advertises_tool("mcp__docs__search"));
-        let none = masked_profile(Some(vec![]), vec![]);
-        assert!(!none.advertises_tool("read"));
-    }
-
     #[test]
     fn overlay_disposition_deny_beats_enable_beats_none() {
         // #539: deny entries win regardless of list order; enable entries win
@@ -3713,29 +3415,6 @@ mod tests {
             ToolOverlayEntry::find(&entries, "mcp__jira__create").is_some(),
             "find returns the enable entry; existence was already refused by disposition"
         );
-    }
-
-    #[test]
-    fn advertises_tool_literal_entry_stays_exact() {
-        // No implicit prefixing: a literal never matches a longer name.
-        let p = masked_profile(Some(vec!["mcp__docs"]), vec![]);
-        assert!(!p.advertises_tool("mcp__docs__search"));
-        assert!(p.advertises_tool("mcp__docs"));
-    }
-
-    #[test]
-    fn mask_is_a_dispatch_predicate_for_every_tool_including_poll() {
-        // Advertisement no longer consults the mask, so no tool needs an
-        // advertisement-side exemption (superseding ADR-0190's
-        // `ALWAYS_ADVERTISED_TOOLS` short-circuit): this predicate answers one
-        // question only — does the mask admit the tool at dispatch — and it
-        // answers it uniformly, `poll` included.
-        let allowlist = masked_profile(Some(vec!["read"]), vec![]);
-        assert!(allowlist.advertises_tool("read"));
-        assert!(!allowlist.advertises_tool("poll"));
-        let denylist = masked_profile(None, vec!["poll"]);
-        assert!(denylist.advertises_tool("read"));
-        assert!(!denylist.advertises_tool("poll"));
     }
 
     #[test]

@@ -121,10 +121,9 @@ async fn resume_cascades_over_a_live_spawned_child() {
             session: child.clone(),
             parent: Some(parent.clone()),
             predecessor: None,
-            agent: "build".into(),
+            agent: "general".into(),
             prompt: "child task".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();

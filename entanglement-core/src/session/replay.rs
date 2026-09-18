@@ -6,6 +6,7 @@ use anyhow::Result;
 
 use super::replay_pending::TurnFold;
 use super::Session;
+use crate::holly::DEFAULT_AGENT;
 use crate::protocol::{AgentState, InMsg, OutEvent, SessionId, UsagePurpose};
 use crate::EngineConfig;
 use entanglement_provider::{ContentPart, ToolCall};
@@ -34,11 +35,11 @@ impl Session {
         cfg: &EngineConfig,
         target: &SessionId,
     ) -> Result<Self> {
-        let default_profile = cfg
-            .profiles
-            .get("build")
+        let default_agent = cfg
+            .agents
+            .get(DEFAULT_AGENT)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("default 'build' profile not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("default `{DEFAULT_AGENT}` agent not found"))?;
 
         // Fold only `target`'s own records — otherwise a sibling/child session's
         // text/tool events are misattributed to `target`'s `Context` (#275). A log
@@ -76,7 +77,7 @@ impl Session {
             }
         }
 
-        let mut session = Self::new_empty(cfg, default_profile);
+        let mut session = Self::new_empty(cfg, default_agent);
         session.children = children;
         let mut fold = TurnFold::default();
         let mut max_seq: u64 = 0;
@@ -107,24 +108,24 @@ impl Session {
                     parent,
                     predecessor,
                     user,
-                    profile,
-                    sponsored,
+                    agent,
                     ..
                 } => {
                     session.parent = parent.clone();
                     session.predecessor = predecessor.clone();
                     session.user = user.clone();
-                    session.sponsored = *sponsored;
                     // Seed from the session's own authoritative statement of what
-                    // it was spawned as (#638), rather than depending solely on a
-                    // later `AgentChanged` record surviving in the log — a hole in
+                    // it was spawned as (#638), rather than depending solely on the
+                    // startup `AgentChanged` record surviving in the log — a hole in
                     // the retained prefix that drops just that record must not
-                    // silently degrade a restricted leaf back to the base `build`
-                    // seed. An unknown profile name falls back to the base seed
-                    // (same behavior `AgentChanged` already has below); a later
-                    // in-session `/agent` switch still overrides via that fold.
-                    if let Some(p) = cfg.profiles.get(profile) {
-                        session.profile = p.clone();
+                    // silently degrade a restricted leaf back to the base default
+                    // seed. An unknown agent name falls back to the base seed
+                    // (same behavior `AgentChanged` already has below); the two
+                    // records agree by construction (ADR-0207 §9: an agent is fixed
+                    // at spawn, so there is no later switch to fold over), but the
+                    // `AgentChanged` fold stays as a defensive re-application.
+                    if let Some(p) = cfg.agents.get(agent) {
+                        session.agent = p.clone();
                     }
                 }
                 OutEvent::TextDelta { text, .. } => fold.push_text(ctx, text),
@@ -185,9 +186,20 @@ impl Session {
                 } => fold.cancelled(ctx, *state == AgentState::Paused),
                 OutEvent::SessionHibernated { .. } => fold.hibernated(ctx),
                 OutEvent::AgentChanged { agent, .. } => {
-                    if let Some(profile) = cfg.profiles.get(agent) {
-                        session.profile = profile.clone();
+                    if let Some(profile) = cfg.agents.get(agent) {
+                        session.agent = profile.clone();
                     }
+                }
+                // Reconstruct the mode axis (ADR-0207): overwrite — last write
+                // wins, same as every other lifecycle fold in this match.
+                // State only, no `ctx` push: the model-visible notice is
+                // rebuilt fresh from `session.mode` every round (`stream.rs`),
+                // never persisted — see `mode::mode_notice`'s doc for why a
+                // persisted push would desync from the live session's history
+                // (the pairing-order hazard around a session's very first
+                // `Prompt`).
+                OutEvent::ModeChanged { mode, .. } => {
+                    session.mode = mode.clone();
                 }
                 // Re-bind a resumed session to the model it was switched to
                 // (#218) so the continued turn runs under the same provider/model
@@ -197,16 +209,6 @@ impl Session {
                 OutEvent::ModelChanged {
                     provider, model, ..
                 } => {
-                    // Reconstruct the per-profile session memory (#323, ADR-0081):
-                    // the logged `(provider, model)` is the resolved canonical pair,
-                    // keyed by the active profile the preceding `AgentChanged` folds
-                    // set. So a resumed session re-applies a `/model` choice per
-                    // profile exactly like the live one, wins over a static pin on a
-                    // later `SetAgent` switch-back.
-                    session.profile_models.insert(
-                        session.profile.name.clone(),
-                        (provider.clone(), model.clone()),
-                    );
                     if let Some(resolver) = cfg.model_resolver.as_ref() {
                         match resolver(session.user.as_ref(), provider, model) {
                             Ok(resolved) => {
@@ -234,8 +236,8 @@ impl Session {
                 OutEvent::GenerationChanged { generation, .. } => {
                     session.generation = Some(*generation);
                     session
-                        .profile_generation
-                        .insert(session.profile.name.clone(), *generation);
+                        .generation_by_agent
+                        .insert(session.agent.name.clone(), *generation);
                 }
                 // Restore the live tool overlay (#539, ADR-0149): the logged
                 // value is the full effective list, so replay overwrites it —
@@ -301,47 +303,39 @@ mod tests {
     use super::*;
 
     fn started(session: &str, parent: Option<&str>, predecessor: Option<&str>) -> OutEvent {
-        started_as(session, parent, predecessor, "build")
+        started_as(session, parent, predecessor, "general")
     }
 
     fn started_as(
         session: &str,
         parent: Option<&str>,
         predecessor: Option<&str>,
-        profile: &str,
+        agent: &str,
     ) -> OutEvent {
         OutEvent::SessionStarted {
             session: SessionId::new(session),
             parent: parent.map(SessionId::new),
             predecessor: predecessor.map(SessionId::new),
-            profile: profile.into(),
+            agent: agent.into(),
             model: None,
             root: parent.is_none(),
             ts: 0,
             user: None,
-            sponsored: false,
         }
     }
 
     /// A registry carrying a restricted `Subagent` leaf alongside the built-in
     /// `build`, for the #638 profile-fold tests below.
     fn cfg_with_leaf_profile(name: &str) -> EngineConfig {
-        use crate::protocol::{AgentMode, AgentProfile, Permission, PermissionProfile};
+        use crate::protocol::Agent;
 
         let mut cfg = EngineConfig::default();
-        cfg.profiles.insert(AgentProfile {
+        cfg.agents.insert(Agent {
             name: name.into(),
             description: "restricted leaf".into(),
-            mode: AgentMode::Subagent,
             system_prompt: "leaf".into(),
             model: None,
             provider: None,
-            permission: PermissionProfile::new(Permission::Deny),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
         });
         cfg
     }
@@ -509,42 +503,40 @@ mod tests {
     }
 
     /// #638: a resumed sub-agent's profile must come back from its own
-    /// `SessionStarted.profile`, not depend on a later `AgentChanged` record
+    /// `SessionStarted.agent`, not depend on the startup `AgentChanged` record
     /// surviving in the log — a hole in the retained prefix that drops just
     /// that record must not silently degrade a restricted leaf back to the
-    /// base `build` seed (the privilege-escalating direction).
+    /// base default seed (the privilege-escalating direction).
     #[test]
     fn replay_seeds_profile_from_session_started_without_agent_changed() {
         let cfg = cfg_with_leaf_profile("page-writer");
         let records: Vec<(Option<InMsg>, OutEvent)> =
             vec![(None, started_as("child", Some("root"), None, "page-writer"))];
         let s = Session::replay(&records, &cfg, &SessionId::new("child")).unwrap();
-        assert_eq!(s.profile.name, "page-writer");
+        assert_eq!(s.agent.name, "page-writer");
     }
 
-    /// A later in-session `/agent` switch (a genuine `AgentChanged` record)
-    /// still overrides the `SessionStarted` seed — the fold order documented
-    /// at the fix site.
+    /// A startup `AgentChanged` record that disagrees with `SessionStarted`'s
+    /// own seed still wins — the fold order documented at the fix site.
     #[test]
     fn replay_agent_changed_overrides_session_started_profile() {
         let cfg = cfg_with_leaf_profile("page-writer");
         let sid = SessionId::new("child");
         let records: Vec<(Option<InMsg>, OutEvent)> = vec![
-            (None, started_as("child", Some("root"), None, "build")),
+            (None, started_as("child", Some("root"), None, "general")),
             (
                 None,
                 OutEvent::AgentChanged {
                     session: sid.clone(),
                     agent: "page-writer".into(),
-                    profile_detail: None,
                 },
             ),
         ];
         let s = Session::replay(&records, &cfg, &sid).unwrap();
-        assert_eq!(s.profile.name, "page-writer");
+        assert_eq!(s.agent.name, "page-writer");
     }
 
-    /// An unknown `SessionStarted.profile` (a name the replaying registry
+    /// An unknown `SessionStarted.agent` (a name the replaying registry
     /// doesn't carry) falls back to the base seed rather than erroring —
     /// mirroring the existing `AgentChanged` fallback below it.
     #[test]
@@ -555,6 +547,6 @@ mod tests {
             started_as("child", Some("root"), None, "no-such-profile"),
         )];
         let s = Session::replay(&records, &cfg, &SessionId::new("child")).unwrap();
-        assert_eq!(s.profile.name, "build");
+        assert_eq!(s.agent.name, "general");
     }
 }

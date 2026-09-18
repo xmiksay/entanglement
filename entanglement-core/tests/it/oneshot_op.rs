@@ -239,19 +239,19 @@ async fn compact_happy_path_emits_compacted_and_forks_a_successor() {
         other => panic!("expected Compacted, got {other:?}"),
     };
     assert!(summary.contains("summary: user said hello"));
-    // The successor runs under the source's profile, seeded with the summary —
+    // The successor runs under the source's agent, seeded with the summary —
     // and the source's own `Context` was never mutated on the way there.
     let successor = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Ok(OutEvent::SessionStarted {
                 session,
                 predecessor: Some(p),
-                profile,
+                agent,
                 ..
             }) = fork_sub.recv().await
             {
                 if p == sid {
-                    assert_eq!(profile, "build", "the successor inherits the profile");
+                    assert_eq!(agent, "general", "the successor inherits the agent");
                     return session;
                 }
             }

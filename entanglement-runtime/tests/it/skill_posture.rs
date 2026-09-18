@@ -165,14 +165,18 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = tools.shared();
     let resolver: Arc<dyn entanglement_runtime::policy::PermissionResolver> =
-        Arc::new(entanglement_runtime::policy::ProfileResolver::new(
-            active.clone(),
+        Arc::new(entanglement_runtime::policy::ModeResolver::new(
+            perm_modes.clone(),
+            crate::mode_support::allow_all_table(),
+            shared_tools.clone(),
             PermissionProfile::new(Permission::Allow),
             None,
         ));
@@ -180,7 +184,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
         Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -188,11 +192,15 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
         skills,
         PermissionProfile::new(Permission::Allow),
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, OutEvent,
-    SessionId, StopReason, ToolCall, Usage,
+    Agent, EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmStream, OutEvent, SessionId,
+    StopReason, ToolCall, Usage,
 };
 use futures::stream;
 use futures::StreamExt;
@@ -442,12 +442,10 @@ async fn system_prompt_resolver_runs_once_per_round_not_per_retry() {
             }) as Box<dyn Llm>
         }),
         max_ambiguous_stop_retries: 2,
-        system_prompt_resolver: Some(Arc::new(
-            move |_session: &SessionId, _profile: &AgentProfile| {
-                resolver_calls_for_closure.fetch_add(1, Ordering::SeqCst);
-                None
-            },
-        )),
+        system_prompt_resolver: Some(Arc::new(move |_session: &SessionId, _profile: &Agent| {
+            resolver_calls_for_closure.fetch_add(1, Ordering::SeqCst);
+            None
+        })),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);

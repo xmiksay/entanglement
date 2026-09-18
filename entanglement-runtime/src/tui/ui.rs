@@ -9,7 +9,7 @@ use ratatui::{
 use crate::tui::app::App;
 use crate::tui::input_panel;
 use crate::tui::keybindings::LeaderState;
-use crate::tui::modals::{self, draw_model_picker, draw_profile_picker};
+use crate::tui::modals::{self, draw_mode_picker, draw_model_picker, draw_profile_picker};
 
 pub(crate) mod alerts;
 mod sidebar;
@@ -90,7 +90,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let input_horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(app.agent().len() as u16 + 4),
+            Constraint::Length(app.mode().len() as u16 + 4),
             Constraint::Min(0),
         ])
         .split(chunks[4]);
@@ -116,12 +116,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_model_picker(f, app);
     }
 
-    if app.showing_key_dialog() {
-        modals::draw_key_dialog(f, app);
+    if app.showing_mode_picker() {
+        draw_mode_picker(f, app);
     }
 
-    if app.showing_tools_dialog() {
-        modals::draw_tools_dialog(f, app);
+    if app.showing_key_dialog() {
+        modals::draw_key_dialog(f, app);
     }
 
     if app.showing_session_tools_dialog() {
@@ -138,10 +138,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.showing_sessions_modal() {
         modals::draw_sessions_modal(f, app);
-    }
-
-    if app.showing_stop_confirm() {
-        modals::draw_stop_confirm_modal(f, app);
     }
 
     if app.showing_help() {

@@ -1,18 +1,18 @@
-//! Physical per-agent tool restriction — the **whole** enforcement (#116,
-//! ADR-0038), and its ADR-0198 softening.
+//! Permission-mode dispatch grading (ADR-0207 stage 4), covering the ground
+//! this file used to cover as the physical per-agent tool mask (#116,
+//! ADR-0038) before ADR-0207 retired it ("the mask machinery is deleted").
 //!
-//! Core advertises every schema it is given, so a masked tool's spec does reach
-//! the model. Since ADR-0198, the executor's dispatch gate parks a mask-
-//! attributed approval for most mask misses instead of declining outright —
-//! the **attribution** (which link, on whose authority: profile mask or
-//! session overlay) carries into the approval offer's text exactly as it did
-//! into the old flat decline, so the model (or the user reviewing the
-//! prompt) still learns *who* withheld the tool. Here the scripted LLM is
-//! forced to call `edit` under the read-only `explore` profile (allowlist
-//! `read`/`glob`/`grep`), under an overlay deny, and under an ancestor's
-//! mask — asserting each authority's wording; the remaining hard-limit and
-//! full approval-scope coverage (Once/Session/Reject, the explicit-Deny
-//! floor, spawn tools, MCP) lives in `mask_request.rs`.
+//! Grading now comes entirely from the session's permission **mode**
+//! (`crate::mode::Mode`, resolved by `crate::policy::ModeResolver`), never
+//! from `Agent`. A mode `deny` is **absolute**: a flat decline with no
+//! prompt, naming the mode and the way out — there is no approval-offer
+//! softening left to test (ADR-0198, which this ADR supersedes). The
+//! remaining coverage here: a class-denied capability flat-declines, an
+//! unmasked mode runs its tool normally, the ancestor-chain privilege clamp
+//! (kept unchanged by ADR-0207 stage 4) still clamps a child spawned under a
+//! more permissive mode down to its restrictive parent's grade, and an
+//! unregistered name still falls through to the ordinary unknown-tool reply
+//! regardless of mode.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -20,9 +20,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
-    ToolCall,
+    stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
 };
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -54,7 +53,10 @@ impl Llm for ScriptedLlm {
     }
 }
 
-/// A host tool named `edit` that records if it ever runs — the mask must stop it.
+/// A host tool named `edit` that records if it ever runs. Declares
+/// `Capability::Write` explicitly (it happens to match `Tool::capabilities`'s
+/// fail-closed default, but this file's whole point is mode-capability
+/// grading, so the tests should not lean on an implicit default).
 struct EchoEdit;
 #[async_trait]
 impl Tool for EchoEdit {
@@ -64,10 +66,14 @@ impl Tool for EchoEdit {
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        &[entanglement_runtime::capability::Capability::Write]
+    }
 }
 
 /// Build a Holly whose scripted LLM calls `edit` once, wired with the runtime
-/// executor over the built-in profiles (which include the masked `explore`).
+/// executor over the built-in profiles + built-in modes (`spawn_tool_executor`
+/// defaults to `ModeTable::builtin()`).
 fn spawn_with_edit_call() -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -88,9 +94,7 @@ fn spawn_with_edit_call() -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        // Core carries only `build` now (#201); the engine needs the full trio to
-        // resolve the `SetAgent { agent: "explore" }` below.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -108,7 +112,7 @@ fn spawn_with_edit_call() -> Holly {
 
 /// [`spawn_with_edit_call`] generalized: a scripted LLM that calls `tool` once,
 /// over a caller-supplied profile registry, with only `EchoEdit` registered.
-fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
+fn spawn_calling(tool: &str, agents: AgentCatalog) -> Holly {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
@@ -128,7 +132,7 @@ fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -137,7 +141,7 @@ fn spawn_calling(tool: &str, profiles: ProfileRegistry) -> Holly {
     let _executor = spawn_tool_executor(
         &holly,
         reg,
-        profiles,
+        agents,
         PermissionProfile::new(Permission::Allow),
     );
     holly
@@ -178,123 +182,50 @@ fn any_is_error(events: &[OutEvent]) -> bool {
         .any(|e| matches!(e, OutEvent::ToolOutput { is_error, .. } if *is_error))
 }
 
-/// Wait for a `ToolRequest` naming `tool`, returning its `input` text (ADR-0198's
-/// mask-attributed approvals append their attribution here — there is no
-/// separate reason field). Panics if none arrives within the timeout, since a
-/// caller reaching for this helper expects the call to have parked, not
-/// declined outright.
-async fn wait_for_request(
-    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
-    tool: &str,
-) -> String {
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if let OutEvent::ToolRequest { tool: t, input, .. } = &ev {
-            if t == tool {
-                return input.clone();
-            }
-        }
-    }
-    panic!("expected `{tool}` to park a ToolRequest, none arrived");
-}
-
 #[tokio::test]
-async fn masked_edit_under_explore_parks_an_approval_instead_of_declining() {
-    // ADR-0198: `edit` is outside `explore`'s mask, but `explore`'s
-    // permission rules never explicitly name `edit` — only the ambient
-    // `default: deny` reaches it, which is not a hard-limit floor (#560's
-    // `explicit_bare_deny`) — so this is no longer a flat decline. It parks
-    // a mask-attributed approval; rejecting it declines as an error, exactly
-    // as any other rejected approval would.
+async fn write_capability_class_denied_under_research_mode_declines_flat() {
+    // ADR-0207 §4: `research` mode class-denies `write`, and a mode `deny` is
+    // absolute — no approval offer, unlike the retired ADR-0198 mask-miss
+    // softening. The message names the mode and the way out.
     let holly = spawn_with_edit_call();
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "explore".into(),
+            mode: "research".into(),
         })
         .await
         .unwrap();
     let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "please edit"))
         .await
         .unwrap();
 
-    let input = wait_for_request(&mut watch, "edit").await;
-    assert!(
-        input.contains("outside agent profile `explore`'s tool mask"),
-        "the offer must name the declining profile; got {input:?}"
-    );
-
-    holly
-        .send(InMsg::Reject {
-            session: sid.clone(),
-            request_id: "t1".into(),
-            reason: None,
-        })
-        .await
-        .unwrap();
     let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a mode deny never parks an approval; got {events:?}"
+    );
     let outs = outputs(&events);
     assert!(
-        outs.iter().any(|o| o.starts_with("tool `edit` rejected")),
-        "a rejected mask approval declines like any other; got {outs:?}"
+        outs.iter()
+            .any(|o| o.contains("denied by mode `research`") && o.contains("/mode")),
+        "the denial must name the mode and the way out; got {outs:?}"
     );
     assert!(any_is_error(&events), "got {events:?}");
     assert!(
         !outs.iter().any(|o| o.starts_with("ran:")),
-        "a rejected mask approval must never run the tool"
+        "a denied call must never run"
     );
 }
 
 #[tokio::test]
-async fn overlay_deny_parks_an_approval_attributed_to_the_overlay() {
-    // #539/ADR-0149's deny half is dispatch-only. `build` advertises and
-    // permits `edit`; a per-session deny withdraws it. Since ADR-0198 that
-    // withdrawal is a mask miss like any other: it parks, attributed to the
-    // overlay rather than the (unrelated) agent definition.
-    let holly = spawn_with_edit_call();
-    let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![entanglement_core::ToolOverlayEntry::deny("edit")],
-        })
-        .await
-        .unwrap();
-    let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
-    holly
-        .send(InMsg::prompt(sid.clone(), "please edit"))
-        .await
-        .unwrap();
-
-    let input = wait_for_request(&mut watch, "edit").await;
-    assert!(
-        input.contains("withdrawn by this session's tool overlay"),
-        "an overlay deny must be attributed to the overlay; got {input:?}"
-    );
-
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id: "t1".into(),
-            scope: entanglement_core::ApprovalScope::Once,
-        })
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-    let outs = outputs(&events);
-    assert!(
-        outs.iter().any(|o| o.starts_with("ran:")),
-        "an approved mask offer must run the tool; got {outs:?}"
-    );
-}
-
-#[tokio::test]
-async fn build_profile_runs_edit_unmasked() {
-    // Control: the default `build` profile has no mask, so `edit` runs normally.
+async fn build_mode_runs_edit_unmasked() {
+    // Control: `build` mode class-allows `write`, so `edit` runs normally —
+    // no mask, no prompt.
     let holly = spawn_with_edit_call();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -307,56 +238,29 @@ async fn build_profile_runs_edit_unmasked() {
         events.iter().any(
             |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
         ),
-        "unmasked build should run edit; got {events:?}"
+        "build mode should run edit; got {events:?}"
     );
 }
 
 #[tokio::test]
-async fn an_ancestors_mask_parks_a_child_approval_naming_the_ancestor() {
-    // ADR-0038's ancestor-chain intersection still gates existence at
-    // dispatch: a read-only parent's sub-tree can't reach write capability
-    // unasked, however permissive the child's own definition is. Since
-    // ADR-0198 that gate is soft — it parks an approval rather than
-    // declining outright — but #597's attribution still applies: the offer
-    // names the *ancestor*, since a child whose own mask lists `edit` would
-    // otherwise read as an inexplicable dead end.
-    let mut profiles = ProfileRegistry::default();
-    profiles.insert(AgentProfile {
-        name: "restricted".into(),
-        description: "read-only parent".into(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: Some(vec!["read".into(), "agent".into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: Some(true),
-        spawnable_agents: Some(vec!["worker".into()]),
-        sandbox: None,
-    });
-    profiles.insert(AgentProfile {
-        name: "worker".into(),
-        description: "permissive child".into(),
-        mode: AgentMode::Subagent,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        // The child's own mask happily lists `edit` — only the parent's doesn't.
-        tools: Some(vec!["read".into(), "edit".into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: Some(false),
-        spawnable_agents: None,
-        sandbox: None,
-    });
+async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default() {
+    // The ancestor-chain privilege clamp (ADR-0024) is kept unchanged by
+    // ADR-0207 stage 4: it still mins the grade across a session and its
+    // ancestors, each resolved from its own mode. A spawned child always
+    // starts in `DEFAULT_MODE` ("build", permissive) — mode inheritance down
+    // the spawn tree is a later stage's wiring — but a `research`-mode
+    // parent's class-deny on `write` still clamps the child's `edit` call
+    // down to a flat decline via this same chain-min, exactly as it would
+    // have for any other grade.
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = spawn_calling("edit", profiles);
     let parent = SessionId::new("parent");
     let child = SessionId::new("child");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: parent.clone(),
-            agent: "restricted".into(),
+            mode: "research".into(),
         })
         .await
         .unwrap();
@@ -365,106 +269,37 @@ async fn an_ancestors_mask_parks_a_child_approval_naming_the_ancestor() {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
     holly
         .send(InMsg::Spawn {
             session: child.clone(),
             parent: Some(parent.clone()),
             predecessor: None,
-            agent: "worker".into(),
+            agent: "general".into(),
             prompt: "edit something".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
 
-    // ADR-0198: the ancestor's mask miss now parks, attributed to the
-    // clamping ancestor rather than an outright decline — `restricted`'s
-    // permission rules never explicitly name `edit`, so it is not the
-    // hard-limit floor either.
-    let input = loop {
-        match tokio::time::timeout(Duration::from_secs(2), watch.recv())
-            .await
-            .expect("timed out waiting for the child's mask offer")
-            .unwrap()
-        {
-            OutEvent::ToolRequest {
-                session,
-                tool,
-                input,
-                ..
-            } if session == child && tool == "edit" => break input,
-            _ => {}
-        }
-    };
-    assert!(
-        input.contains("outside ancestor agent `restricted`'s profile tool mask"),
-        "the offer must name the clamping ancestor; got {input:?}"
-    );
-
-    holly
-        .send(InMsg::Approve {
-            session: child.clone(),
-            request_id: "t1".into(),
-            scope: entanglement_core::ApprovalScope::Once,
-        })
-        .await
-        .unwrap();
     let events = collect(sub, &child).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "the ancestor clamp denies flat, no prompt; got {events:?}"
+    );
     let outs = outputs(&events);
     assert!(
-        outs.iter().any(|o| o.starts_with("ran:")),
-        "approving the ancestor-masked offer must run the tool; got {outs:?}"
+        outs.iter().any(|o| o.contains("denied by mode")),
+        "the child's own build-mode default must be clamped down by the \
+         research-mode parent; got {outs:?}"
     );
 }
 
-/// The explore/research/plan provider-bundled-MCP fix: `mcp_enable` must
-/// clear the tool mask under all three profiles — pinned the same way
-/// `unregistered_bash_falls_through_to_the_generic_unknown_tool_message`
-/// below pins an admitted-but-unregistered name: if the mask still declined
-/// it, dispatch would never even reach the registry lookup, so the specific
-/// wording here (an ordinary "unknown tool", not "Declined by agent
-/// profile") is itself the assertion that the mask let the call through.
-#[tokio::test]
-async fn mcp_enable_clears_the_mask_under_explore_research_and_plan() {
-    for agent in ["explore", "research", "plan"] {
-        let holly = spawn_calling(
-            "mcp_enable",
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        );
-        let sid = SessionId::new("s1");
-        holly
-            .send(InMsg::SetAgent {
-                session: sid.clone(),
-                agent: agent.into(),
-            })
-            .await
-            .unwrap();
-        let sub = holly.subscribe();
-        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-        let events = collect(sub, &sid).await;
-        let outs = outputs(&events);
-        assert!(
-            outs.iter()
-                .any(|o| o.starts_with("unknown tool: `mcp_enable`")),
-            "{agent}: mcp_enable must clear the mask (unregistered in this test registry, \
-             so it falls through to the ordinary unknown-tool message); got {outs:?}"
-        );
-        assert!(
-            !outs.iter().any(|o| o.contains("is not in its tool mask")),
-            "{agent}: mcp_enable must not be mask-declined; got {outs:?}"
-        );
-    }
-}
-
+/// A name absent from the registry is an ordinary unknown tool under every
+/// mode — nothing intercepts it earlier now that the mask is gone.
 #[tokio::test]
 async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
-    // ADR-0195 retired the lazily-registrable built-in machinery: `bash` is
-    // registered at startup like every other tool, so an *unregistered*
-    // `bash` is now possible only in a bespoke test registry like this one —
-    // and it must behave like any other unknown name (the Levenshtein-hint
-    // message), not carry a bespoke "enable with /enable tool bash" decline.
     let holly = spawn_calling(
         "bash",
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
@@ -488,5 +323,166 @@ async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
     assert!(
         any_is_error(&events),
         "the decline rides the ADR-0176 side channel as an error; got {events:?}"
+    );
+}
+
+/// An unregistered `mcp_enable` still falls through to the ordinary
+/// unknown-tool reply under every one of the four built-in modes — a
+/// regression pin that no mode-grading path accidentally intercepts it
+/// earlier (the way the retired mask used to have its own carve-out here).
+#[tokio::test]
+async fn mcp_enable_falls_through_to_unknown_tool_under_every_built_in_mode() {
+    for mode in ["research", "plan", "build", "auto"] {
+        let holly = spawn_calling(
+            "mcp_enable",
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        );
+        let sid = SessionId::new("s1");
+        holly
+            .send(InMsg::SetMode {
+                session: sid.clone(),
+                mode: mode.into(),
+            })
+            .await
+            .unwrap();
+        let sub = holly.subscribe();
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+        let events = collect(sub, &sid).await;
+        let outs = outputs(&events);
+        assert!(
+            outs.iter()
+                .any(|o| o.starts_with("unknown tool: `mcp_enable`")),
+            "{mode}: mcp_enable must fall through to the unknown-tool message \
+             (unregistered in this test registry); got {outs:?}"
+        );
+    }
+}
+
+/// #560, ADR-0207 §3 (gap 1 of stage 4b): a `Capability::Control` tool is
+/// never graded. `update_tasks` carries no registry entry (#231, ADR-0049;
+/// exempted from the unknown-tool check by `is_state_tool`) and must run
+/// unprompted under every built-in mode, including `auto`'s unattended
+/// `default: deny`. Before this fix it fell through to the generic ladder
+/// and prompted under `build`'s `default: prompt`.
+#[tokio::test]
+async fn update_tasks_runs_unprompted_under_every_built_in_mode() {
+    for mode in ["research", "plan", "build", "auto"] {
+        let holly = spawn_calling(
+            "update_tasks",
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        );
+        let sid = SessionId::new("s1");
+        holly
+            .send(InMsg::SetMode {
+                session: sid.clone(),
+                mode: mode.into(),
+            })
+            .await
+            .unwrap();
+        let sub = holly.subscribe();
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+        let events = collect(sub, &sid).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+            "{mode}: a Control tool must never park an approval; got {events:?}"
+        );
+        let outs = outputs(&events);
+        assert!(
+            outs.iter().any(|o| o == "tasks updated"),
+            "{mode}: update_tasks must run and ack; got {outs:?}"
+        );
+    }
+}
+
+/// #634 (gap 2 of stage 4b): a matching overlay **deny** entry — inert since
+/// ADR-0207 stage 4a deleted `tool_mask_source` — must decline the call flat
+/// again, checked before the mode grade even runs. `build` mode alone would
+/// allow `edit` outright, so any decline here is attributable to the overlay.
+#[tokio::test]
+async fn overlay_deny_declines_the_call_flat() {
+    let holly = spawn_with_edit_call();
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::deny("edit")],
+        })
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
+            Ok(Ok(_)) => {}
+            other => panic!("no overlay confirmation: {other:?}"),
+        }
+    }
+    holly
+        .send(InMsg::prompt(sid.clone(), "edit it"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "an overlay deny declines flat, no prompt; got {events:?}"
+    );
+    let outs = outputs(&events);
+    assert!(
+        outs.iter()
+            .any(|o| o.contains("withdrawn for this session") && o.contains("/enable")),
+        "the decline must name the withdrawal and the way out; got {outs:?}"
+    );
+    assert!(any_is_error(&events), "got {events:?}");
+    assert!(
+        !outs.iter().any(|o| o.starts_with("ran:")),
+        "a denied call must never run"
+    );
+}
+
+/// ADR-0207 §8: an overlay **enable** still overrides a mode `deny` — the
+/// user's own `/enable tool X --allow` is trusted-frame-only (ADR-0177), so
+/// only the user (never the model) can reach it. Regression pin alongside
+/// the deny restore above so neither posture regresses while fixing the
+/// other. `research` mode class-denies `write`, so `edit` running here can
+/// only be the overlay.
+#[tokio::test]
+async fn overlay_enable_beats_a_mode_deny() {
+    let holly = spawn_with_edit_call();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "research".into(),
+        })
+        .await
+        .unwrap();
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![ToolOverlayEntry::allow("edit")],
+        })
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
+            Ok(Ok(_)) => {}
+            other => panic!("no overlay confirmation: {other:?}"),
+        }
+    }
+    holly
+        .send(InMsg::prompt(sid.clone(), "edit it"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+    let outs = outputs(&events);
+    assert!(
+        outs.iter().any(|o| o.starts_with("ran:")),
+        "an overlay enable must override the mode's write deny; got {outs:?}"
     );
 }

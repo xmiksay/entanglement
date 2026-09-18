@@ -203,8 +203,21 @@ impl PendingQuestion {
 /// sessions when the user switches the active one.
 pub struct SessionView {
     agent: String,
+    /// The session's live permission mode (ADR-0207), folded from
+    /// `OutEvent::ModeChanged` the same way `agent` folds `AgentChanged` —
+    /// every session gets one unconditionally at start (`session.rs` sends it
+    /// right after `AgentChanged`). Needed by `/allow` (#634): a `SessionDir`
+    /// grant is mode-scoped, so recording one has to know the mode it's
+    /// earned under.
+    mode: String,
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
+    /// Some `User` entry may still be `pending` (dimmed). Lets
+    /// `clear_pending_user` — called on every streamed delta — return at once
+    /// instead of scanning back to the last prompt each time: a resumed log
+    /// with a million deltas and few prompts made that scan quadratic and
+    /// froze the TUI for minutes.
+    user_pending: bool,
     plan: Option<String>,
     /// Root-relative location of the session's bound plan file (#513), from
     /// the same `OutEvent::Plan` snapshot as `plan` — empty-string logs
@@ -245,11 +258,6 @@ pub struct SessionView {
     /// description line prefers it over `first_prompt` when set.
     action: Option<String>,
     parent: Option<SessionId>,
-    /// Sponsored `propose_plan` build child (ADR-0138) vs. a plain sub-agent
-    /// spawn (#626), from the same `SessionStarted` as `parent` — lets a head
-    /// disambiguate `AgentState::WaitingAgent`'s two callers before offering
-    /// the cascade-vs-detach `Stop` confirm.
-    sponsored: bool,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
     /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
@@ -278,8 +286,14 @@ impl SessionView {
     pub fn new() -> Self {
         Self {
             agent: "build".to_string(),
+            // Mirrors `entanglement_core::holly::DEFAULT_MODE` — overwritten
+            // by the real `ModeChanged` every session emits unconditionally
+            // at start; this is only ever observed by a view that hasn't
+            // folded its first event yet.
+            mode: "build".to_string(),
             state: AgentState::Idle,
             transcript: Vec::new(),
+            user_pending: false,
             plan: None,
             plan_path: None,
             task_list: None,
@@ -295,7 +309,6 @@ impl SessionView {
             name: None,
             action: None,
             parent: None,
-            sponsored: false,
             started_ms: None,
             ended_ms: None,
             expanded_blocks: HashSet::new(),
@@ -350,8 +363,8 @@ impl SessionView {
         &self.agent
     }
 
-    pub fn set_agent(&mut self, agent: String) {
-        self.agent = agent;
+    pub fn mode(&self) -> &str {
+        &self.mode
     }
 
     pub fn state(&self) -> AgentState {
@@ -614,11 +627,6 @@ impl SessionView {
 
     pub fn parent(&self) -> Option<&SessionId> {
         self.parent.as_ref()
-    }
-
-    /// Whether this session is a sponsored `propose_plan` build child (#626).
-    pub fn sponsored(&self) -> bool {
-        self.sponsored
     }
 
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,

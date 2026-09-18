@@ -26,17 +26,53 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let list =
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(
-                "Select Agent Profile (Esc to close, Enter to select, e: edit tool allowlist)",
-            ))
-            .highlight_style(Style::default().bg(Color::DarkGray));
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Agent Profile (Esc to close, Enter to select)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
 
     let area = centered_rect(60, 40, f.area());
     app.set_profile_picker_rect(area);
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.profile_picker_state());
+}
+
+/// `/mode` picker (#560 P12, ADR-0207 §12): the four built-in permission
+/// modes, current one pre-selected, `Enter` sends a live `InMsg::SetMode` —
+/// unlike the read-only `/agent` picker above.
+pub fn draw_mode_picker(f: &mut Frame, app: &mut App) {
+    let modes = app.available_modes().to_vec();
+    let current = app.mode().to_string();
+    let items: Vec<ListItem> = modes
+        .iter()
+        .map(|m| {
+            let marker = if m.name == current { "▸ " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::raw(marker),
+                Span::styled("[", Style::default().dim()),
+                Span::styled(&m.name, Style::default().bold()),
+                Span::styled("]", Style::default().dim()),
+                Span::raw(" "),
+                Span::styled(&m.description, Style::default().dim()),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Switch Permission Mode (Esc to close, Enter to switch)"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let area = centered_rect(70, 40, f.area());
+    app.set_mode_picker_rect(area);
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, app.mode_picker_state());
 }
 
 pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {

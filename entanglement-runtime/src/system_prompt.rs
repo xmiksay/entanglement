@@ -22,20 +22,21 @@
 //!    pipeline as `load_skill`. Preload only, never an allowlist; runtime skill
 //!    *access* is the orthogonal `load_skill` tool mask.
 //!
-//! A **subagent** (`AgentMode::Subagent`) gets `preamble + body (+ brief)` plus
-//! any preloaded bodies — the env block and tier-1 skill index are omitted (but
-//! preload is not, being author-requested), and it never inherits the parent's
-//! assembled prompt (each agent is composed independently from its own body and
-//! its own `include_brief`/`skills` frontmatter).
+//! Every agent gets the full composition — env block and tier-1 skill index
+//! included — and none inherits a parent's assembled prompt: each agent is
+//! composed independently from its own body and its own `include_brief`/
+//! `skills` frontmatter. Before ADR-0207 a `Subagent`-mode agent got a
+//! reduced form (env/skill index omitted); that distinction is retired along
+//! with `AgentMode` itself — any agent may be a session root or a spawn
+//! target now (ADR-0207 §4/§6), so there is no longer a "this agent is only
+//! ever a leaf" case to compose differently for.
 //!
 //! Composition is a pure function so it is unit-testable with no model in the
-//! loop. The runtime bakes the assembled prompt into each [`AgentProfile`] at
+//! loop. The runtime bakes the assembled prompt into each [`Agent`] at
 //! load time (see [`crate::agents::load_registry`]); core stays a pass-through
 //! that ships `system_prompt` verbatim as `LlmRequest.system`.
 
 use std::path::{Path, PathBuf};
-
-use entanglement_core::AgentMode;
 
 /// Env var pointing at an explicit shared-preamble file (overrides discovery).
 const PREAMBLE_FILE_ENV: &str = "ENTANGLEMENT_PREAMBLE_FILE";
@@ -169,25 +170,23 @@ impl PromptContext {
 ///
 /// Order: preamble, body, brief (only if `include_brief`), env, tier-1 skill
 /// index, preloaded skill bodies — each emitted only when present/non-empty,
-/// joined by blank lines. A `Subagent` agent gets `preamble + body (+ brief)`
-/// only for the env block and tier-1 index, which are reserved for primary/`all`
-/// sessions.
+/// joined by blank lines. Every agent gets the full composition now
+/// (ADR-0207 §4/§6 retires the old `Subagent`-mode reduced form — any agent
+/// may be a session root or a spawn target, so there is no more "leaf-only"
+/// case to compose differently for).
 ///
 /// `preloaded` (#117) are full skill bodies resolved from the agent definition's
 /// `skills:` frontmatter (same substitution pipeline as `load_skill`). Preload is
 /// a distinct mechanism from the tier-1 index and from runtime access (the
-/// `load_skill` tool mask): it is **mode-independent** — a spawned subagent that
-/// preloads a skill gets its body even though the tier-1 index is withheld — and
-/// **additive**, never an allowlist, so the index still discloses every other
-/// skill.
+/// `load_skill` tool mask) — **additive**, never an allowlist, so the index
+/// still discloses every other skill.
 pub fn assemble(
     body: &str,
     include_brief: bool,
-    mode: AgentMode,
     ctx: &PromptContext,
     preloaded: &[String],
 ) -> String {
-    assemble_parts(body, include_brief, mode, ctx, preloaded)
+    assemble_parts(body, include_brief, ctx, preloaded)
         .into_iter()
         .map(|p| p.content)
         .collect::<Vec<_>>()
@@ -205,7 +204,6 @@ pub fn assemble(
 pub fn assemble_parts(
     body: &str,
     include_brief: bool,
-    mode: AgentMode,
     ctx: &PromptContext,
     preloaded: &[String],
 ) -> Vec<PromptPart> {
@@ -244,30 +242,24 @@ pub fn assemble_parts(
             });
         }
     }
-    // Subagents are composed from their own body only (#113): no env, no skill
-    // index, and never the parent's assembled prompt.
-    if mode != AgentMode::Subagent {
-        if let Some(env) = &ctx.env {
-            parts.push(PromptPart {
-                label: "environment",
-                source: "generated".to_string(),
-                content: env.render(),
-            });
-        }
-        if !ctx.skills.is_empty() {
-            parts.push(PromptPart {
-                label: "skill index",
-                source: format!(
-                    "skill registry ({} skill{})",
-                    ctx.skills.len(),
-                    if ctx.skills.len() == 1 { "" } else { "s" }
-                ),
-                content: render_skills(&ctx.skills),
-            });
-        }
+    if let Some(env) = &ctx.env {
+        parts.push(PromptPart {
+            label: "environment",
+            source: "generated".to_string(),
+            content: env.render(),
+        });
     }
-    // Preload is author-requested (#117), so it is not gated by mode — the
-    // subagent spawn case is precisely what it is for.
+    if !ctx.skills.is_empty() {
+        parts.push(PromptPart {
+            label: "skill index",
+            source: format!(
+                "skill registry ({} skill{})",
+                ctx.skills.len(),
+                if ctx.skills.len() == 1 { "" } else { "s" }
+            ),
+            content: render_skills(&ctx.skills),
+        });
+    }
     if !preloaded.is_empty() {
         parts.push(PromptPart {
             label: "preloaded skills",
@@ -409,7 +401,7 @@ mod tests {
 
     #[test]
     fn primary_assembly_is_ordered_preamble_body_brief_env_skills() {
-        let out = assemble("BODY", true, AgentMode::Primary, &ctx_full(), &[]);
+        let out = assemble("BODY", true, &ctx_full(), &[]);
         let p = out.find("PREAMBLE").unwrap();
         let b = out.find("BODY").unwrap();
         let br = out.find("BRIEF").unwrap();
@@ -430,10 +422,10 @@ mod tests {
             preamble: None,
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("PREAMBLE"));
+        assert!(!assemble("BODY", true, &ctx, &[]).contains("PREAMBLE"));
 
         // Brief present but flag off ⇒ omitted.
-        let out = assemble("BODY", false, AgentMode::Primary, &ctx_full(), &[]);
+        let out = assemble("BODY", false, &ctx_full(), &[]);
         assert!(
             !out.contains("BRIEF"),
             "brief must be gated by include_brief:\n{out}"
@@ -444,14 +436,14 @@ mod tests {
             env: None,
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("<env>"));
+        assert!(!assemble("BODY", true, &ctx, &[]).contains("<env>"));
 
         // No skills.
         let ctx = PromptContext {
             skills: vec![],
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, AgentMode::Primary, &ctx, &[]).contains("Available skills"));
+        assert!(!assemble("BODY", true, &ctx, &[]).contains("Available skills"));
     }
 
     /// #524, ADR-0142: the env block names the scratch dir (steering the model
@@ -465,7 +457,7 @@ mod tests {
             date: "2026-07-10".into(),
             scratch: Some(PathBuf::from("/data/entanglement/sessions/work/tmp")),
         });
-        let out = assemble("BODY", true, AgentMode::Primary, &ctx, &[]);
+        let out = assemble("BODY", true, &ctx, &[]);
         assert!(
             out.contains("Scratch directory: /data/entanglement/sessions/work/tmp"),
             "got: {out}"
@@ -474,59 +466,30 @@ mod tests {
 
         // No scratch dir known (e.g. data dir unavailable) ⇒ no scratch line,
         // rest of the block unaffected.
-        let out_no_scratch = assemble("BODY", true, AgentMode::Primary, &ctx_full(), &[]);
+        let out_no_scratch = assemble("BODY", true, &ctx_full(), &[]);
         assert!(!out_no_scratch.contains("Scratch directory"));
         assert!(out_no_scratch.contains("Working directory: /work"));
     }
 
     #[test]
-    fn subagent_gets_preamble_body_brief_but_not_env_or_skills() {
-        let out = assemble("BODY", true, AgentMode::Subagent, &ctx_full(), &[]);
+    fn every_agent_gets_the_full_composition() {
+        // ADR-0207 §4/§6: the old `Subagent`-mode reduced form (env/skill
+        // index omitted) is retired — any agent may be a session root or a
+        // spawn target now, so composition no longer varies.
+        let out = assemble("BODY", true, &ctx_full(), &[]);
         assert!(out.contains("PREAMBLE"));
         assert!(out.contains("BODY"));
         assert!(out.contains("BRIEF"));
-        assert!(
-            !out.contains("<env>"),
-            "subagent must not get the env block:\n{out}"
-        );
-        assert!(
-            !out.contains("Available skills"),
-            "subagent must not get the skill index:\n{out}"
-        );
-    }
-
-    #[test]
-    fn all_mode_is_composed_like_a_primary() {
-        let out = assemble("BODY", false, AgentMode::All, &ctx_full(), &[]);
         assert!(out.contains("<env>"));
         assert!(out.contains("Available skills"));
     }
 
     #[test]
-    fn preloaded_bodies_render_after_the_skill_index_and_survive_subagent_mode() {
-        // Preload (#117) is mode-independent: a subagent (which drops env + the
-        // tier-1 index) still gets the preloaded body — the spawn case it is for.
-        let sub = assemble(
-            "BODY",
-            false,
-            AgentMode::Subagent,
-            &ctx_full(),
-            &["SKILL_BODY".into()],
-        );
-        assert!(!sub.contains("<env>"));
-        assert!(!sub.contains("Available skills"));
-        assert!(sub.contains("Preloaded skills"), "{sub}");
-        assert!(sub.contains("SKILL_BODY"), "{sub}");
-
-        // For a primary the tier-1 index still renders (preload is additive, not
-        // an allowlist) and the preloaded body comes after it.
-        let prim = assemble(
-            "BODY",
-            false,
-            AgentMode::Primary,
-            &ctx_full(),
-            &["SKILL_BODY".into()],
-        );
+    fn preloaded_bodies_render_after_the_skill_index() {
+        // Preload (#117) is additive, never an allowlist: the tier-1 index
+        // still renders and the preloaded body comes after it.
+        let prim = assemble("BODY", false, &ctx_full(), &["SKILL_BODY".into()]);
+        assert!(prim.contains("SKILL_BODY"), "{prim}");
         let idx = prim.find("Available skills").unwrap();
         let pre = prim.find("Preloaded skills").unwrap();
         assert!(
@@ -537,19 +500,13 @@ mod tests {
 
     #[test]
     fn empty_preload_adds_no_section() {
-        let out = assemble("BODY", false, AgentMode::Primary, &ctx_full(), &[]);
+        let out = assemble("BODY", false, &ctx_full(), &[]);
         assert!(!out.contains("Preloaded skills"), "{out}");
     }
 
     #[test]
     fn empty_context_is_identity_on_the_trimmed_body() {
-        let out = assemble(
-            "  BODY  ",
-            true,
-            AgentMode::Primary,
-            &PromptContext::default(),
-            &[],
-        );
+        let out = assemble("  BODY  ", true, &PromptContext::default(), &[]);
         assert_eq!(out, "BODY");
     }
 
@@ -577,17 +534,14 @@ mod tests {
             brief_path: Some(PathBuf::from("/work/CLAUDE.md")),
             ..ctx_full()
         };
-        let parts = assemble_parts("BODY", true, AgentMode::Primary, &ctx, &["PRE".into()]);
+        let parts = assemble_parts("BODY", true, &ctx, &["PRE".into()]);
         // Joining the parts reproduces `assemble` exactly (no drift).
         let joined = parts
             .iter()
             .map(|p| p.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n");
-        assert_eq!(
-            joined,
-            assemble("BODY", true, AgentMode::Primary, &ctx, &["PRE".into()])
-        );
+        assert_eq!(joined, assemble("BODY", true, &ctx, &["PRE".into()]));
         // Sources are annotated: built-in preamble, brief path, generated env.
         let src = |label| {
             parts
@@ -607,7 +561,7 @@ mod tests {
             preamble_source: Some(PathBuf::from("/etc/preamble.md")),
             ..ctx_full()
         };
-        let parts = assemble_parts("BODY", false, AgentMode::Primary, &ctx, &[]);
+        let parts = assemble_parts("BODY", false, &ctx, &[]);
         let preamble = parts.iter().find(|p| p.label == "preamble").unwrap();
         assert_eq!(preamble.source, "/etc/preamble.md");
     }

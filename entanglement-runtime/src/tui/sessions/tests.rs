@@ -282,6 +282,7 @@ fn restore_from_records_rebuilds_transcript_and_switches() {
             session: restored.clone(),
             request_id: "r1".to_string(),
             scope: Default::default(),
+            mode: None,
         }),
     );
 
@@ -460,12 +461,11 @@ fn started(id: &SessionId, parent: Option<&SessionId>) -> OutEvent {
         session: id.clone(),
         parent: parent.cloned(),
         predecessor: None,
-        profile: "build".to_string(),
+        agent: "build".to_string(),
         model: None,
         root: parent.is_none(),
         ts: 1,
         user: None,
-        sponsored: false,
     }
 }
 
@@ -543,4 +543,57 @@ fn usage_rollup_of_a_childless_session_matches_its_own_totals() {
     assert_eq!(rollup.input_tokens, 500);
     assert_eq!(rollup.output_tokens, 50);
     assert!((rollup.cost_usd.unwrap() - 0.001).abs() < 1e-9);
+}
+
+#[test]
+fn restore_routes_each_record_to_its_own_sessions_view() {
+    // A root's log interleaves its sub-agents' records. Folding them all into
+    // the root mixed a child's stream into the root transcript, and ran the
+    // child's own `seq` counter through the root's dedupe guard.
+    use crate::session_store::{LogPayload, LogRecord};
+
+    let root = SessionId::new("root");
+    let child = SessionId::new("child");
+    let mut reg = SessionRegistry::new(SessionId::new("live"));
+    let delta = |session: &SessionId, seq, text: &str| {
+        LogRecord::new(
+            session.clone(),
+            LogPayload::Out(OutEvent::TextDelta {
+                session: session.clone(),
+                seq,
+                text: text.to_string(),
+            }),
+        )
+    };
+    let records = [
+        LogRecord::new(
+            root.clone(),
+            LogPayload::In(InMsg::prompt(root.clone(), "go")),
+        ),
+        delta(&root, 5, "root says"),
+        LogRecord::new(
+            child.clone(),
+            LogPayload::In(InMsg::prompt(child.clone(), "child task")),
+        ),
+        // Lower seq than the root's: a shared dedupe guard dropped this.
+        delta(&child, 1, "child says"),
+    ];
+
+    reg.restore_from_records(root.clone(), &records);
+
+    assert_eq!(reg.active_id(), &root);
+    let text_of = |id: &SessionId| {
+        reg.view_for(id)
+            .expect("view restored")
+            .transcript()
+            .iter()
+            .filter_map(|e| match e {
+                TranscriptEntry::User { text, .. } => Some(format!("user:{text}")),
+                TranscriptEntry::TextDelta { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(text_of(&root), ["user:go", "root says"]);
+    assert_eq!(text_of(&child), ["user:child task", "child says"]);
 }

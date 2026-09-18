@@ -32,30 +32,30 @@ use crate::subagent::{collect_child_answer, format_agent_answer};
 use crate::tool_names::AGENT_SEND_TOOL;
 
 /// The `agent_send` tool schema advertised to the model, alongside `agent`
-/// (#609, ADR-0162) — appended by [`crate::subagent::spawn_specs_for`], so
-/// only a profile that may spawn ever sees it: `agent_send` is only useful
-/// against a handle `agent` (or a `propose_plan` sponsored build, ADR-0162
-/// §5) already produced.
+/// (#609, ADR-0162) — appended by [`crate::subagent::agent_specs`], now
+/// unconditionally advertised like `agent` itself (ADR-0207 §4/§6/§9): it is
+/// only useful against a handle `agent` already produced (ADR-0207 §7
+/// retires the `propose_plan` sponsored build handoff this once also
+/// re-engaged), but withholding it per profile is exactly the kind of
+/// agent-dependent advertisement ADR-0207 §9 retires.
 pub fn agent_send_spec() -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_SEND_TOOL,
         "Send a follow-up prompt to a sub-agent you already launched with \
-         agent (or the build child a propose_plan approval named). Use this \
-         to steer a child that's still working, follow up with one that \
-         already finished, or send another round of feedback to a build \
-         child instead of spawning a fresh one. Blocks until the child's next \
-         answer by default, exactly like agent; pass background: true to \
-         return immediately and collect the answer later with poll. Refused \
-         for an agent_id you didn't launch, or one whose session has closed \
-         or gone hibernated — those can't be safely reached this way.",
+         agent. Use this to steer a child that's still working, or follow \
+         up with one that already finished, instead of spawning a fresh \
+         one. Blocks until the child's next answer by default, exactly like \
+         agent; pass background: true to return immediately and collect the \
+         answer later with poll. Refused for an agent_id you didn't launch, \
+         or one whose session has closed or gone hibernated — those can't be \
+         safely reached this way.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "agent_id": {
                     "type": "string",
                     "description": "The handle of a sub-agent you launched — from \
-                        agent's reply/handle, or the agent_id a propose_plan \
-                        approval named."
+                        agent's reply/handle."
                 },
                 "prompt": {
                     "type": "string",
@@ -236,8 +236,7 @@ fn begin(
 fn unknown_message(agent_id: &str) -> String {
     format!(
         "agent_send: unknown agent_id `{agent_id}` — it was never launched by \
-         this session (use the agent_id from agent's reply, or a propose_plan \
-         approval's build agent_id)."
+         this session (use the agent_id from agent's reply)."
     )
 }
 

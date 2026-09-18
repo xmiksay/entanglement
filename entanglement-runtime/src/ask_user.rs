@@ -29,6 +29,15 @@
 //! call registers into [`OpenQuestions`] before its first emit and is removed
 //! on every terminal outcome, so [`InMsg::ListQuestions`] always sees exactly
 //! the calls still genuinely parked.
+//!
+//! `question_timeout` (ADR-0207 §11, stage 5c) bounds the park: a mode that
+//! declares one (`auto`, or another mode tuned unattended) has no guarantee
+//! anyone is watching. On elapse, [`run_limits::default_answers`] answers
+//! every option-bearing question with its first option; a free-text question
+//! has no default, so it fails the *whole* call as an `is_error` result
+//! instead — the model adapts rather than being fed an invented answer.
+
+use std::time::Duration;
 
 use entanglement_core::{
     AgentState, Holly, OutEvent, Question, QuestionOption, Questions, SessionId, ToolSpec,
@@ -36,6 +45,7 @@ use entanglement_core::{
 
 use crate::pending::{self, PendingDecisions};
 use crate::questions::OpenQuestions;
+use crate::run_limits;
 use crate::seam;
 use crate::tool_names::ASK_USER_TOOL;
 
@@ -204,6 +214,9 @@ pub async fn run_ask_user(
     session: SessionId,
     request_id: String,
     input: String,
+    // `None` waits forever (every attended mode); `Some(d)` is the mode's
+    // `question_timeout` (ADR-0207 §11, stage 5c).
+    timeout: Option<Duration>,
 ) {
     let mut questions = parse_input(&input);
     loop {
@@ -211,7 +224,7 @@ pub async fn run_ask_user(
 
         // Register before emitting so the inbound router can never resolve the
         // decision ahead of this waiter (#156).
-        let rx = pending.register(&session, &request_id);
+        let rx = pending.register(&session, &request_id, "ask_user", request_id.clone());
 
         // Mint a fresh per-session seq (#157) so the questions take an ordered
         // place in the content stream rather than reusing the parked `ToolExec`
@@ -230,8 +243,23 @@ pub async fn run_ask_user(
 
         // `Stop` (and a dropped registry) unwind silently — core cancels the
         // turn on the same `Stop`, so no `ToolResult` is owed. Approve/Reject
-        // never target an `ask_user` request id.
-        match pending::await_decision(rx).await {
+        // never target an `ask_user` request id. `None` (elapsed) is handled
+        // first and separately: it never targets `open`/`pending` again past
+        // this point, matching every other terminal arm below.
+        let decision = match pending::await_decision_timed(rx, timeout).await {
+            Some(decision) => decision,
+            None => {
+                open.remove(&session, &request_id);
+                holly.emit_status(&session, AgentState::Thinking);
+                let (output, is_error) = match run_limits::default_answers(&questions) {
+                    Ok(answers) => (fold_answers(&questions, &answers), false),
+                    Err(reason) => (reason, true),
+                };
+                seam::reply(&holly, session, request_id, output, is_error).await;
+                return;
+            }
+        };
+        match decision {
             seam::Decision::Answer { answers } => {
                 open.remove(&session, &request_id);
                 holly.emit_status(&session, AgentState::Thinking);

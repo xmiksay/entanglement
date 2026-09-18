@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry,
-    SessionId, ToolCall,
+    stream_from_response, Agent, AgentCatalog, ApprovalScope, EngineConfig, Holly, InMsg, Llm,
+    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
+    ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
@@ -22,15 +22,41 @@ use entanglement_runtime::host::{
     host_tools, host_tools_with_extra_roots, BashTool, CallTool, GlobJsonTool, GrepJsonTool,
     ReadRawTool,
 };
+use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{
     spawn_tool_executor, spawn_tool_executor_with_policy, EscapeRoot,
 };
+
+/// `rhai`'s own permission grading resolves through the same session-mode
+/// route as any other tool now (ADR-0207 stage 4b: `crate::script::
+/// BindingPolicy` reuses the ancestor chain + `PermissionResolver`, not the
+/// retired `Agent`-chain path) — `ModeResolver` (the seam
+/// `spawn_tool_executor_with_policy` takes) needs a mode table regardless of
+/// which route a given test exercises. A single `"build"`-named, `default:
+/// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
+/// every test in this file
+/// that isn't specifically about mode grading.
+fn allow_all_table() -> Arc<ModeTable> {
+    let mode = Mode {
+        name: "build".to_string(),
+        default: Permission::Allow,
+        rules: Rules::default(),
+        limits: Limits::default(),
+        sandbox: None,
+        sandbox_network: false,
+    };
+    Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
+}
+
+fn perm_modes() -> Arc<Mutex<HashMap<SessionId, String>>> {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {
@@ -84,7 +110,7 @@ impl Drop for TempDir {
 /// Spawn a Holly whose scripted LLM calls `rhai` once with `script`, wired to a
 /// real host-tool registry rooted at `root` and the given `profiles`. The `rhai`
 /// tool call id is `t1` (so nested binding approvals use `t1:rhai:<tool>`).
-fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegistry) -> Holly {
+fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -> Holly {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -105,7 +131,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -120,7 +146,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
     let _executor = spawn_tool_executor(
         &holly,
         tools,
-        profiles,
+        agents,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
     holly
@@ -135,13 +161,13 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, profiles: ProfileRegist
 fn spawn_with_rhai_exec(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     bash_registered: bool,
 ) -> Holly {
     spawn_with_rhai_exec_and_base(
         script,
         root,
-        profiles,
+        agents,
         bash_registered,
         PermissionProfile::new(Permission::Allow),
     )
@@ -154,7 +180,7 @@ fn spawn_with_rhai_exec(
 fn spawn_with_rhai_exec_and_base(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     bash_registered: bool,
     base: PermissionProfile,
 ) -> Holly {
@@ -178,7 +204,7 @@ fn spawn_with_rhai_exec_and_base(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -188,7 +214,7 @@ fn spawn_with_rhai_exec_and_base(
     if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
-    let _executor = spawn_tool_executor(&holly, tools, profiles, base);
+    let _executor = spawn_tool_executor(&holly, tools, agents, base);
     holly
 }
 
@@ -201,7 +227,7 @@ fn spawn_with_rhai_exec_and_base(
 fn spawn_with_rhai_escape(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
 ) -> (Holly, Arc<ExtraRootStore>) {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
@@ -223,7 +249,7 @@ fn spawn_with_rhai_escape(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -232,8 +258,12 @@ fn spawn_with_rhai_escape(
     tools.register(ReadRawTool::new(root.to_path_buf()));
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+    let modes = perm_modes();
+    let shared_tools = tools.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        allow_all_table(),
+        shared_tools.clone(),
         base.clone(),
         Some(root.to_path_buf()),
     ));
@@ -244,19 +274,20 @@ fn spawn_with_rhai_escape(
     };
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        modes,
         resolver,
         grants,
         Hooks::default(),
         Some(escape_root),
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -267,52 +298,213 @@ fn spawn_with_rhai_escape(
     (holly, store)
 }
 
-/// A single primary profile with a caller-shaped permission, advertising every
-/// tool (no mask) so binding behavior is decided by permission alone.
-/// [`one_profile`] with an explicit tool mask — the ADR-0206 alias test
-/// needs a profile that masks `glob` (and with it `glob_json`).
-fn one_profile_with_tools(
-    name: &str,
-    permission: PermissionProfile,
-    tools: Option<Vec<String>>,
-) -> ProfileRegistry {
+/// A single primary profile named for the caller's scenario — grading itself
+/// comes entirely from the session's permission mode now (ADR-0207), never
+/// from this `Agent`, which carries no permission/mask fact any more.
+/// `_permission` stays as a parameter only because most call sites also feed
+/// the same value to [`mode_table_for`] to build the mode that actually
+/// grades the test.
+fn one_profile(name: &str, _permission: PermissionProfile) -> AgentCatalog {
     let mut profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
+    profiles.insert(Agent {
         name: name.into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission,
-        tools,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     profiles
 }
 
-fn one_profile(name: &str, permission: PermissionProfile) -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: name.into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission,
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+/// A single `"build"`-named mode carrying `permission`'s own `default` +
+/// `rules` (ADR-0207 stage 4b): the mode-table analog of the
+/// `Agent.permission` these `rhai`-binding tests used to grade off
+/// directly, before `crate::script::BindingPolicy` moved onto the mode table.
+/// Named `"build"` — not the caller's agent name — because a session's mode
+/// is `DEFAULT_MODE` ("build") unless something sends `SetMode`, which none
+/// of these tests do; the *agent* profile name is now identity only and no
+/// longer where grading comes from. `PermissionProfile`'s "last matching rule
+/// wins" and `mode::Rules`' "longest key wins" agree for every rule set these
+/// tests build (a single rule, or two same-length rules on different tools),
+/// so the conversion is behavior-preserving for these fixtures — with one
+/// deliberate exception: a bare key spelled like one of the five capability
+/// classes (`read`/`write`/`exec`/`plan`/`control`) means the *class* under
+/// `mode::Rules` (ADR-0207 §4), not the literal tool the old flat-string
+/// `PermissionProfile` meant, and `rhai` itself declares all three of
+/// `Read`/`Write`/`Exec` — so a bare `"read": deny` would (correctly, by the
+/// new design) deny `rhai` outright rather than just its `read` binding. These
+/// fixtures mean the literal tool, so a colliding bare key is rewritten to its
+/// scoped `key(*)` spelling, which `capability_class` never treats as a class
+/// name — every literal-tool rule keeps grading exactly the same either way.
+fn mode_table_for(permission: &PermissionProfile) -> Arc<ModeTable> {
+    const CAPABILITY_CLASS_NAMES: [&str; 5] = ["read", "write", "exec", "plan", "control"];
+    let mut allow = Vec::new();
+    let mut deny = Vec::new();
+    let mut prompt = Vec::new();
+    for (key, grade) in &permission.rules {
+        let key = if CAPABILITY_CLASS_NAMES.contains(&key.as_str()) {
+            format!("{key}(*)")
+        } else {
+            key.clone()
+        };
+        match grade {
+            Permission::Allow => allow.push(key),
+            Permission::Deny => deny.push(key),
+            Permission::Ask => prompt.push(key),
+        }
+    }
+    let mode = Mode {
+        name: "build".to_string(),
+        default: permission.default,
+        rules: Rules::from_lists(&deny, &allow, &prompt),
+        limits: Limits::default(),
         sandbox: None,
-    });
-    profiles
+        sandbox_network: false,
+    };
+    Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
+}
+
+/// [`spawn_with_rhai`], graded from a caller-supplied `mode_table` instead of
+/// the real `ModeTable::builtin()` — for a test whose binding-grading
+/// scenario none of the four built-in modes' own rules happen to cover (most
+/// notably `build`'s own `allow: [read, write, exec]` class rule, which would
+/// otherwise silently allow a binding a test means to deny/ask).
+fn spawn_with_rhai_mode(
+    script: &str,
+    root: &std::path::Path,
+    agents: AgentCatalog,
+    mode_table: Arc<ModeTable>,
+) -> Holly {
+    let input = serde_json::json!({ "script": script }).to_string();
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: RHAI_TOOL.into(),
+                input,
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        agents: agents.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut tools = host_tools(root.to_path_buf());
+    tools.register(ReadRawTool::new(root.to_path_buf()));
+    tools.register(GlobJsonTool::new(root.to_path_buf()));
+    tools.register(GrepJsonTool::new(root.to_path_buf()));
+    spawn_with_policy_over(&holly, tools, agents, mode_table, None);
+    holly
+}
+
+/// [`spawn_with_rhai_exec`], graded from a caller-supplied `mode_table` (see
+/// [`spawn_with_rhai_mode`]) with an optional config-level ceiling `base`
+/// (`#172`, e.g. a `tool{pattern}` workdir-scoped rule) — `None` keeps the
+/// allow-all default `spawn_with_rhai_exec` itself uses.
+fn spawn_with_rhai_exec_mode(
+    script: &str,
+    root: &std::path::Path,
+    agents: AgentCatalog,
+    bash_registered: bool,
+    mode_table: Arc<ModeTable>,
+    base: Option<PermissionProfile>,
+) -> Holly {
+    let input = serde_json::json!({ "script": script }).to_string();
+    let scripted = Arc::new(vec![
+        LlmResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: RHAI_TOOL.into(),
+                input,
+                provider_meta: None,
+            }],
+        },
+        LlmResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+        },
+    ]);
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        agents: agents.clone(),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut tools = host_tools(root.to_path_buf());
+    tools.register(ReadRawTool::new(root.to_path_buf()));
+    tools.register(CallTool::new(root.to_path_buf()));
+    if bash_registered {
+        tools.register(BashTool::new(root.to_path_buf()));
+    }
+    spawn_with_policy_over(
+        &holly,
+        tools,
+        agents,
+        mode_table,
+        Some(base.unwrap_or_else(|| PermissionProfile::new(Permission::Allow))),
+    );
+    holly
+}
+
+/// Shared `spawn_tool_executor_with_policy` wiring for
+/// [`spawn_with_rhai_mode`]/[`spawn_with_rhai_exec_mode`]: a `ModeResolver`
+/// over the given `mode_table` (instead of `ModeTable::builtin()`), clamped
+/// to `base` (defaulting allow-all) — mirrors `spawn_with_rhai_escape`'s own
+/// inline wiring minus the escape-root policy.
+fn spawn_with_policy_over(
+    holly: &Holly,
+    tools: entanglement_runtime::ToolRegistry,
+    agents: AgentCatalog,
+    mode_table: Arc<ModeTable>,
+    base: Option<PermissionProfile>,
+) {
+    let base = base.unwrap_or_else(|| PermissionProfile::new(Permission::Allow));
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let modes = perm_modes();
+    let shared_tools = tools.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        mode_table.clone(),
+        shared_tools.clone(),
+        base.clone(),
+        None,
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let _executor = spawn_tool_executor_with_policy(
+        holly,
+        shared_tools,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(RwLock::new(agents)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        base,
+        active,
+        modes,
+        resolver,
+        grants,
+        Hooks::default(),
+        None,
+        mode_table,
+        Arc::new(PlanFileRegistry::new()),
+        None,
+        None,
+        None,
+    );
 }
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -361,6 +553,7 @@ async fn collect_auto_approving(
                     session: sid.clone(),
                     request_id: request_id.clone(),
                     scope: Default::default(),
+                    mode: None,
                 })
                 .await
                 .unwrap();
@@ -376,13 +569,16 @@ async fn collect_auto_approving(
 
 async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: agent.into(),
+            prompt: "go".into(),
+            user: None,
         })
         .await
         .unwrap();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
 }
 
 #[tokio::test]
@@ -528,6 +724,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
                     session: sid.clone(),
                     request_id: request_id.clone(),
                     scope: ApprovalScope::Session,
+                    mode: None,
                 })
                 .await
                 .unwrap();
@@ -593,14 +790,16 @@ async fn pre_existing_durable_grant_is_honored_without_a_new_prompt() {
 #[tokio::test]
 async fn deny_binding_surfaces_as_catchable_script_error() {
     let dir = TempDir::new("deny");
-    // edit is denied by the profile; the binding throws, the script catches it.
-    let holly = spawn_with_rhai(
+    // edit is denied by the mode; the binding throws, the script catches it.
+    // A custom mode table (not the real `build`) is needed here: `build`'s
+    // own `allow: [read, write, exec]` class rule would otherwise let `edit`
+    // (`Capability::Write`) straight through.
+    let permission = PermissionProfile::new(Permission::Allow).with("edit", Permission::Deny);
+    let holly = spawn_with_rhai_mode(
         r#"let r = ""; try { edit("f.txt", "", "x"); r = "ran" } catch(e) { r = "caught: " + e } r"#,
         &dir.path,
-        one_profile(
-            "denyedit",
-            PermissionProfile::new(Permission::Allow).with("edit", Permission::Deny),
-        ),
+        one_profile("denyedit", permission.clone()),
+        mode_table_for(&permission),
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -621,13 +820,15 @@ async fn deny_binding_surfaces_as_catchable_script_error() {
 #[tokio::test]
 async fn ask_binding_parks_then_runs_on_approve() {
     let dir = TempDir::new("ask");
-    let holly = spawn_with_rhai(
+    // A custom mode table, not the real `build` (whose own class-allow would
+    // let `edit` straight through with no prompt) — see the comment on
+    // `deny_binding_surfaces_as_catchable_script_error`.
+    let permission = PermissionProfile::new(Permission::Allow).with("edit", Permission::Ask);
+    let holly = spawn_with_rhai_mode(
         r#"edit("f.txt", "", "approved\n"); read("f.txt")"#,
         &dir.path,
-        one_profile(
-            "askedit",
-            PermissionProfile::new(Permission::Allow).with("edit", Permission::Ask),
-        ),
+        one_profile("askedit", permission.clone()),
+        mode_table_for(&permission),
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -656,6 +857,7 @@ async fn ask_binding_parks_then_runs_on_approve() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();
@@ -674,13 +876,13 @@ async fn ask_binding_parks_then_runs_on_approve() {
 async fn ask_is_resolved_once_per_function_per_run() {
     let dir = TempDir::new("ask-once");
     // Two edits in one run; the first asks, the approval covers the second.
-    let holly = spawn_with_rhai(
+    // Custom mode table — see `ask_binding_parks_then_runs_on_approve`.
+    let permission = PermissionProfile::new(Permission::Allow).with("edit", Permission::Ask);
+    let holly = spawn_with_rhai_mode(
         r#"edit("a.txt", "", "1\n"); edit("b.txt", "", "2\n"); "done""#,
         &dir.path,
-        one_profile(
-            "askedit",
-            PermissionProfile::new(Permission::Allow).with("edit", Permission::Ask),
-        ),
+        one_profile("askedit", permission.clone()),
+        mode_table_for(&permission),
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -703,6 +905,7 @@ async fn ask_is_resolved_once_per_function_per_run() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();
@@ -802,29 +1005,27 @@ async fn grep_json_returns_addressable_match_records() {
     );
 }
 
-/// ADR-0206: a structured-output escape hatch is not a permission escape
-/// hatch — a profile that masks `glob` masks `glob_json` too (the
-/// `graded_name` alias), and a denied profile denies it.
+/// ADR-0206/ADR-0207: a structured-output escape hatch is not a permission
+/// escape hatch — `glob_json` still grades as its alias target `glob` (the
+/// `graded_name` alias, unretired by ADR-0207), so a denied profile still
+/// denies it (see `glob_json` denial coverage elsewhere); here an allow-all
+/// mode lets it run.
 #[tokio::test]
-async fn glob_json_is_masked_when_glob_is_masked() {
+async fn glob_json_alias_grades_as_glob() {
     let dir = TempDir::new("glob-json-mask");
     std::fs::write(dir.path.join("a.rs"), "x\n").unwrap();
-    let profiles = one_profile_with_tools(
-        "build",
-        PermissionProfile::new(Permission::Allow),
-        Some(vec!["read".into(), "rhai".into()]),
+    let holly = spawn_with_rhai(
+        r#"glob_json("*.rs").files.len()"#,
+        &dir.path,
+        one_profile("build", PermissionProfile::new(Permission::Allow)),
     );
-    let holly = spawn_with_rhai(r#"glob_json("*.rs").files.len()"#, &dir.path, profiles);
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     prompt(&holly, &sid, "build").await;
     let events = collect(sub, &sid).await;
 
     let out = rhai_output(&events).expect("expected rhai output");
-    assert!(
-        out.contains("restricted by profile"),
-        "masked glob_json must surface the mask error: {out}"
-    );
+    assert!(out.contains('1'), "glob_json must run: {out}");
 }
 
 /// ADR-0206: the zero-match shape is an empty array plus a notice — the
@@ -854,15 +1055,16 @@ async fn glob_json_zero_match_carries_a_notice() {
 async fn read_raw_is_graded_and_masked_as_an_alias_of_read() {
     let dir = TempDir::new("read-raw-alias");
     std::fs::write(dir.path.join("cfg.json"), r#"{"secret": true}"#).unwrap();
-    // A profile that denies `read` must also block `read_raw` — otherwise a
-    // script could bypass a `read` restriction through the unlabeled raw path.
-    let holly = spawn_with_rhai(
+    // A mode that denies `read` must also block `read_raw` — otherwise a
+    // script could bypass a `read` restriction through the unlabeled raw
+    // path. Custom mode table — `build`'s own class-allow would otherwise
+    // let `read` straight through.
+    let permission = PermissionProfile::new(Permission::Allow).with("read", Permission::Deny);
+    let holly = spawn_with_rhai_mode(
         r#"let r = ""; try { read_raw("cfg.json"); r = "leaked" } catch(e) { r = "caught: " + e } r"#,
         &dir.path,
-        one_profile(
-            "denyread",
-            PermissionProfile::new(Permission::Allow).with("read", Permission::Deny),
-        ),
+        one_profile("denyread", permission.clone()),
+        mode_table_for(&permission),
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -939,14 +1141,16 @@ async fn call_binding_runs_argv_exec_when_allowed() {
 #[tokio::test]
 async fn call_binding_denied_surfaces_as_catchable_script_error() {
     let dir = TempDir::new("call-deny");
-    let holly = spawn_with_rhai_exec(
+    // Custom mode table — `build`'s own `exec` class-allow would otherwise
+    // let `call` straight through (`bash`/`call` share the `Exec` capability).
+    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Deny);
+    let holly = spawn_with_rhai_exec_mode(
         r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
         &dir.path,
-        one_profile(
-            "denycall",
-            PermissionProfile::new(Permission::Allow).with("call", Permission::Deny),
-        ),
+        one_profile("denycall", permission.clone()),
         false,
+        mode_table_for(&permission),
+        None,
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -957,45 +1161,6 @@ async fn call_binding_denied_surfaces_as_catchable_script_error() {
     assert!(
         out.contains("caught") && out.contains("denied"),
         "deny should throw a catchable error; got {out}"
-    );
-}
-
-#[tokio::test]
-async fn call_binding_masked_when_omitted_from_profile_tools() {
-    let dir = TempDir::new("call-masked");
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "readonly".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        // `rhai` itself must stay allowlisted so the run reaches the binding
-        // mask being tested here — only `call` is omitted.
-        tools: Some(vec!["read".into(), RHAI_TOOL.into()]),
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
-    let holly = spawn_with_rhai_exec(
-        r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
-        &dir.path,
-        profiles,
-        false,
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    prompt(&holly, &sid, "readonly").await;
-    let events = collect(sub, &sid).await;
-
-    let out = rhai_output(&events).expect("expected rhai output");
-    assert!(
-        out.contains("caught") && out.contains("restricted"),
-        "call omitted from `tools` must mask the binding; got {out}"
     );
 }
 
@@ -1053,14 +1218,16 @@ async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
     // its real newlines — lands in the tool output verbatim; a *returned*
     // string instead gets JSON-serialized (escaped `\n`), which would make a
     // line-based assertion on the echoed output meaningless.
-    let holly = spawn_with_rhai_exec(
+    // Custom mode table — `build`'s own `exec` class-allow would otherwise
+    // let both calls through with no prompt at all.
+    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Ask);
+    let holly = spawn_with_rhai_exec_mode(
         r#"print(exec("echo", ["a"])); print(exec("echo", ["b"]));"#,
         &dir.path,
-        one_profile(
-            "askcall",
-            PermissionProfile::new(Permission::Allow).with("call", Permission::Ask),
-        ),
+        one_profile("askcall", permission.clone()),
         false,
+        mode_table_for(&permission),
+        None,
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -1117,7 +1284,7 @@ async fn bash_binding_workdir_scoped_rule_fires_for_matching_workdir() {
 
     let out = rhai_output(&events).expect("expected rhai output");
     assert!(
-        out.contains("denied:") && out.contains("denied by permission profile"),
+        out.contains("denied:") && out.contains("denied by mode `build`"),
         "bash{{sub*}} must deny bash(\"...\", \"sub\"): {out}"
     );
     assert!(
@@ -1137,14 +1304,15 @@ async fn bash_binding_workdir_scoped_rule_fires_for_matching_workdir() {
 #[tokio::test]
 async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
     let dir = TempDir::new("call-same-cmd");
-    let holly = spawn_with_rhai_exec(
+    // Custom mode table — see `approving_one_call_command_does_not_auto_clear_a_different_one`.
+    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Ask);
+    let holly = spawn_with_rhai_exec_mode(
         r#"print(exec("echo", ["a"])); print(exec("echo", ["a"]));"#,
         &dir.path,
-        one_profile(
-            "askcall",
-            PermissionProfile::new(Permission::Allow).with("call", Permission::Ask),
-        ),
+        one_profile("askcall", permission.clone()),
         false,
+        mode_table_for(&permission),
+        None,
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -1274,39 +1442,44 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         },
     ]);
 
-    let profiles =
+    let agents =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+    let modes = perm_modes();
+    let shared_tools = tools.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        allow_all_table(),
+        shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         skills,
         PermissionProfile::new(Permission::Allow),
         active,
+        modes,
         resolver,
         grants,
         Hooks::default(),
         None,
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -1358,7 +1531,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
 fn spawn_with_rhai_background(
     script: &str,
     root: &std::path::Path,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
 ) -> (Holly, entanglement_runtime::script_ops::ScriptRegistry) {
     let input = serde_json::json!({ "script": script, "background": true }).to_string();
     let scripted = Arc::new(vec![
@@ -1380,7 +1553,7 @@ fn spawn_with_rhai_background(
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1388,25 +1561,33 @@ fn spawn_with_rhai_background(
     tools.register(ReadRawTool::new(root.to_path_buf()));
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let modes = perm_modes();
+    let shared_tools = tools.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        allow_all_table(),
+        shared_tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let scripts = entanglement_runtime::script_ops::ScriptRegistry::new();
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        tools.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         scripts.clone(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        modes,
         resolver,
         grants,
         Hooks::default(),
         None,
-        SandboxConfig::none(),
+        allow_all_table(),
         Arc::new(PlanFileRegistry::new()),
         // No per-user MCP scopes (#684) — single-user.
         None,

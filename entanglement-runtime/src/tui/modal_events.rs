@@ -118,15 +118,6 @@ async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
     if app.showing_settings_dialog() {
         return super::settings_events::click_settings(app, column, row);
     }
-    // Highest priority first: the tools dialog overlays the profile picker
-    // (`e` opens it over the picker without closing it, #330), so it wins.
-    if app.showing_tools_dialog() {
-        let area = app.tools_dialog_rect();
-        if let Some(idx) = list_row_index(area, row, app.tools_dialog().tools().len()) {
-            app.tools_dialog_state().select(Some(idx));
-        }
-        return;
-    }
     if app.showing_session_tools_dialog() {
         let area = app.session_tools_dialog_rect();
         if let Some(idx) = list_row_index(area, row, app.session_tools_dialog().rows().len()) {
@@ -160,20 +151,32 @@ async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: u16) {
         return;
     }
     if app.showing_profile_picker() {
+        // Read-only (ADR-0207 §9): a click just moves the highlight or, off
+        // the list, closes the picker — there is nothing left to send.
         let area = app.profile_picker_rect();
         let len = app.available_profiles().len();
         if let Some(idx) = list_row_index(area, row, len) {
             app.profile_picker_state().select(Some(idx));
-            if let Some(agent_name) = app.select_profile_picker() {
+        } else if !rect_contains(area, column, row) {
+            app.close_profile_picker();
+        }
+        return;
+    }
+    if app.showing_mode_picker() {
+        let area = app.mode_picker_rect();
+        let len = app.available_modes().len();
+        if let Some(idx) = list_row_index(area, row, len) {
+            app.mode_picker_state().select(Some(idx));
+            if let Some(mode) = app.select_mode_picker() {
                 let _ = holly
-                    .send(InMsg::SetAgent {
+                    .send(InMsg::SetMode {
                         session: app.active_session_id().clone(),
-                        agent: agent_name,
+                        mode,
                     })
                     .await;
             }
         } else if !rect_contains(area, column, row) {
-            app.close_profile_picker();
+            app.close_mode_picker();
         }
         return;
     }
@@ -265,6 +268,18 @@ async fn resume_selected(app: &mut App, holly: &Holly) {
                         id,
                         dropped
                     );
+                } else if let Some((retired, replacement)) =
+                    crate::session_store::retired_agent(&records)
+                {
+                    // ADR-0207 stage 6a: a log naming a retired agent can't
+                    // resume — see the matching check in `main.rs`.
+                    tracing::error!(
+                        "Refusing to resume session {}: its log names the retired agent `{}` \
+                         — {}",
+                        id,
+                        retired,
+                        replacement
+                    );
                 } else {
                     app.restore_session(id.clone(), &records);
                     let paired = crate::session_store::pair_records(&records);
@@ -342,8 +357,8 @@ fn any_modal_open(app: &App) -> bool {
         || app.showing_sessions_modal()
         || app.showing_profile_picker()
         || app.showing_model_picker()
+        || app.showing_mode_picker()
         || app.showing_key_dialog()
-        || app.showing_tools_dialog()
         || app.showing_command_palette()
         || app.showing_resume_modal()
         || app.showing_help()
@@ -362,10 +377,10 @@ fn wheel_modal_next(app: &mut App) -> bool {
         app.profile_picker_next();
     } else if app.showing_model_picker() {
         app.model_picker_next();
+    } else if app.showing_mode_picker() {
+        app.mode_picker_next();
     } else if app.showing_key_dialog() {
         app.key_dialog_next();
-    } else if app.showing_tools_dialog() {
-        app.tools_dialog_next();
     } else if app.showing_command_palette() {
         app.command_palette().select_next();
     } else if app.showing_resume_modal() {
@@ -395,10 +410,10 @@ fn wheel_modal_prev(app: &mut App) -> bool {
         app.profile_picker_prev();
     } else if app.showing_model_picker() {
         app.model_picker_prev();
+    } else if app.showing_mode_picker() {
+        app.mode_picker_prev();
     } else if app.showing_key_dialog() {
         app.key_dialog_prev();
-    } else if app.showing_tools_dialog() {
-        app.tools_dialog_prev();
     } else if app.showing_command_palette() {
         app.command_palette().select_prev();
     } else if app.showing_resume_modal() {
@@ -416,24 +431,13 @@ fn wheel_modal_prev(app: &mut App) -> bool {
     true
 }
 
-pub(super) async fn handle_profile_picker_event(
-    app: &mut App,
-    holly: &Holly,
-    key: KeyEvent,
-) -> Result<bool> {
+/// Read-only (ADR-0207 §9): navigates and closes, never sends anything — the
+/// picker lists the roster and marks the session's own agent, with no way to
+/// switch.
+pub(super) async fn handle_profile_picker_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Enter => {
             app.close_profile_picker();
-        }
-        KeyCode::Enter => {
-            if let Some(agent_name) = app.select_profile_picker() {
-                let _ = holly
-                    .send(entanglement_core::InMsg::SetAgent {
-                        session: app.active_session_id().clone(),
-                        agent: agent_name,
-                    })
-                    .await;
-            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.profile_picker_next();
@@ -446,11 +450,6 @@ pub(super) async fn handle_profile_picker_event(
         }
         KeyCode::PageUp => {
             app.profile_picker_page_up(DIALOG_PAGE_SIZE);
-        }
-        // `e`: edit the highlighted profile's tool allowlist (#330) — opens the
-        // checklist dialog over the picker, leaving it open underneath.
-        KeyCode::Char('e') => {
-            app.open_tools_dialog();
         }
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
@@ -505,6 +504,48 @@ pub(super) async fn handle_model_picker_event(
     Ok(false)
 }
 
+/// Drive the `/mode` picker (#560 P12, ADR-0207 §12): `Enter` sends a live
+/// `InMsg::SetMode` for the active session — core cascades the switch over
+/// the session's whole spawn sub-tree (ADR-0207 §6).
+pub(super) async fn handle_mode_picker_event(
+    app: &mut App,
+    holly: &Holly,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_mode_picker();
+        }
+        KeyCode::Enter => {
+            if let Some(mode) = app.select_mode_picker() {
+                let _ = holly
+                    .send(InMsg::SetMode {
+                        session: app.active_session_id().clone(),
+                        mode,
+                    })
+                    .await;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.mode_picker_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.mode_picker_prev();
+        }
+        KeyCode::PageDown => {
+            app.mode_picker_page_down(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::PageUp => {
+            app.mode_picker_page_up(DIALOG_PAGE_SIZE);
+        }
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+            return Ok(true);
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 /// Drive the two-stage `/key` dialog (#304). Stage 1 picks a provider; stage 2
 /// reads the key into a masked buffer and, on Enter, persists it (writer + prime
 /// process env + transcript status). No engine traffic — the write is head-side.
@@ -542,29 +583,6 @@ pub(super) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
             }
             _ => {}
         },
-    }
-    Ok(false)
-}
-
-/// Drive the `/agent` picker's `e` tools-checklist dialog (#330): `Space`
-/// toggles the highlighted row, `Enter` materializes the checked set as a
-/// user-layer override and closes, `Esc` discards. No engine traffic — the
-/// write is head-side and takes effect on the next restart.
-pub(super) async fn handle_tools_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
-    match key.code {
-        KeyCode::Esc => app.close_tools_dialog(),
-        KeyCode::Enter => {
-            let _ = app.submit_tools_dialog();
-        }
-        KeyCode::Char(' ') => app.tools_dialog_toggle(),
-        KeyCode::Down | KeyCode::Char('j') => app.tools_dialog_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.tools_dialog_prev(),
-        KeyCode::PageDown => app.tools_dialog_page_down(DIALOG_PAGE_SIZE),
-        KeyCode::PageUp => app.tools_dialog_page_up(DIALOG_PAGE_SIZE),
-        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
-            return Ok(true);
-        }
-        _ => {}
     }
     Ok(false)
 }
@@ -908,6 +926,18 @@ pub(super) async fn handle_resume_modal_event(
                                 "Refusing to resume session {}: log is missing {} dropped record(s)",
                                 id,
                                 dropped
+                            );
+                        } else if let Some((retired, replacement)) =
+                            crate::session_store::retired_agent(&records)
+                        {
+                            // ADR-0207 stage 6a: a log naming a retired agent
+                            // can't resume — see the matching check in `main.rs`.
+                            tracing::error!(
+                                "Refusing to resume session {}: its log names the retired agent \
+                                 `{}` — {}",
+                                id,
+                                retired,
+                                replacement
                             );
                         } else {
                             // Visible transcript first, then engine context.

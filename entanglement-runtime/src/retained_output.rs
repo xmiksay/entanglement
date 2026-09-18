@@ -160,11 +160,45 @@ impl RetainedOutputRegistry {
         })
     }
 
+    /// Snapshot every retained entry, optionally filtered to one `owner`
+    /// (#560 P12: the `explore(kind: "pending")` aggregator's own use, which
+    /// filters to a whole spawn sub-tree locally rather than calling this
+    /// once per member session — mirrors every other registry's `snapshot`).
+    /// Sorted by handle for a deterministic reply. An ownerless entry (the
+    /// session-less [`crate::tools::Tool::run`] path) is included only under
+    /// `owner: None`, matching [`page`][Self::page]'s own visibility rule.
+    pub fn snapshot(&self, owner: Option<&SessionId>) -> Vec<RetainedInfo> {
+        let mut inner = self.lock();
+        evict_expired(&mut inner.entries, Instant::now());
+        let mut list: Vec<RetainedInfo> = inner
+            .entries
+            .iter()
+            .filter(|(_, e)| owner.is_none_or(|o| owner_allows(&e.owner, o)))
+            .map(|(id, e)| RetainedInfo {
+                handle: id.clone(),
+                owner: e.owner.clone(),
+                is_file: e.output_file.is_some(),
+                age: Instant::now().saturating_duration_since(e.created),
+            })
+            .collect();
+        list.sort_by(|a, b| a.handle.cmp(&b.handle));
+        list
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .expect("retained-output registry poisoned")
     }
+}
+
+/// One retained-output entry, as reported to a #560 P12 `explore(kind:
+/// "pending")` listing.
+pub struct RetainedInfo {
+    pub handle: String,
+    pub owner: Option<SessionId>,
+    pub is_file: bool,
+    pub age: Duration,
 }
 
 /// Whether `caller` may read an entry owned by `owner` — an ownerless entry
@@ -209,6 +243,28 @@ fn evict_expired(entries: &mut HashMap<String, Entry>, now: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_scopes_to_owner_and_reports_file_vs_text() {
+        let reg = RetainedOutputRegistry::new();
+        let a = SessionId::new("a");
+        let b = SessionId::new("b");
+        let text_id = reg.register_text(Some(a.clone()), "hi".to_string());
+        let file_id = reg.register_file(Some(b.clone()), "out.txt".to_string());
+
+        let all = reg.snapshot(None);
+        assert_eq!(all.len(), 2);
+
+        let only_a = reg.snapshot(Some(&a));
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].handle, text_id);
+        assert!(!only_a[0].is_file);
+
+        let only_b = reg.snapshot(Some(&b));
+        assert_eq!(only_b.len(), 1);
+        assert_eq!(only_b[0].handle, file_id);
+        assert!(only_b[0].is_file);
+    }
 
     #[test]
     fn text_entry_pages_from_the_requested_offset() {

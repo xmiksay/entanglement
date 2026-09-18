@@ -37,6 +37,7 @@ async fn drain(llm: &mut dyn Llm) -> String {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     };
     let mut s = llm.stream(req).await.unwrap();

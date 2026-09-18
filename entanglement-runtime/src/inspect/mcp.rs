@@ -103,10 +103,12 @@ mod tests {
     fn empty_config() -> Config {
         Config {
             agent: None,
+            mode: None,
             provider: None,
             model: None,
             verbose: false,
             permissions: PermissionProfile::new(Permission::Allow),
+            modes: HashMap::new(),
             hooks: Default::default(),
             mcp: HashMap::new(),
             endpoints: HashMap::new(),

@@ -410,6 +410,20 @@ pub struct LlmRequest<'a> {
     /// pin, so a dead pinned endpoint fails one caller's probe fast instead of
     /// retry-storming through the LLM-tuned ladder on every call.
     pub retry: Option<crate::client::RetryConfig>,
+    /// A short, ephemeral line appended after the conversation — e.g. core's
+    /// per-round permission-mode notice (ADR-0207 §9) — rendered as the
+    /// wire's final user-role turn but **never** part of `messages` and never
+    /// cached. Kept out of `messages` deliberately: every provider places its
+    /// cache breakpoints by inspecting real history (the last/third-to-last
+    /// user turn on Anthropic, ADR-0202/#673), and a value that is last every
+    /// round but different every round would anchor there and invalidate the
+    /// prefix each request instead of ever landing a hit. Each `build_body`
+    /// appends it *after* anchor placement, so it is invisible to that logic.
+    /// `None` behaves exactly as if the field did not exist. Owned (not
+    /// `&'a str`): every caller builds it fresh from live, non-`'a` state
+    /// (e.g. `Session::mode`) each round, so borrowing would just force the
+    /// caller to stash an extra local for a one-shot value.
+    pub trailing_notice: Option<String>,
 }
 
 /// Name of the client-side discovery envelope tool (ADR-0204): `invoke
@@ -428,7 +442,7 @@ pub type LlmStream = BoxStream<'static, anyhow::Result<LlmEvent>>;
 /// than baked in once at client construction (#550): a backend's
 /// `default_model` and a given [`LlmRequest::model`] can diverge — a
 /// profile's `model:` set without `provider:` is the documented
-/// request-level fallback (`AgentProfile::model_pin` returns `None`, so
+/// request-level fallback (`Agent::model_pin` returns `None`, so
 /// `SetAgent` doesn't rebind the client) — and resolving the cap once from
 /// the client's construction-time model would then pair the *wrong* model's
 /// cap with the *actual* request's model. `None` ⇒ no per-model cap; the
@@ -553,8 +567,8 @@ pub type ModelResolver = std::sync::Arc<
 
 /// Resolves a named agent profile's **persisted** generation override (#374,
 /// the generation-parameter analogue of the model pin ADR-0081 bakes directly
-/// into `AgentProfile.provider`/`model`). [`GenerationParams`] carries a
-/// non-`Eq` `f32` (`temperature`), so it can't join `AgentProfile`'s
+/// into `Agent.provider`/`model`). [`GenerationParams`] carries a
+/// non-`Eq` `f32` (`temperature`), so it can't join `Agent`'s
 /// `PartialEq + Eq` derive the way the pin fields do — this resolver is a
 /// separate seam instead, mirroring [`ModelResolver`]'s shape but purely local
 /// (a managed-file lookup, no network/key validation), hence `Option` rather
@@ -668,9 +682,11 @@ fn echo_reply(req: &LlmRequest<'_>, full: bool) -> String {
         .collect();
     let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
     let mut reply = format!(
-        "echo: messages={total}, users={users:?}, system_len={}, system_sha={}, tools={tools:?}",
+        "echo: messages={total}, users={users:?}, system_len={}, system_sha={}, tools={tools:?}, \
+         trailing_notice={:?}",
         req.system.len(),
         sha8(req.system),
+        req.trailing_notice,
     );
     if full {
         reply.push_str("\nsystem:\n");
@@ -728,6 +744,7 @@ mod tests {
             generation: None,
             cache_key: None,
             retry: None,
+            trailing_notice: None,
         }
     }
 

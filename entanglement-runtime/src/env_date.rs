@@ -1,7 +1,7 @@
 //! Pins the `<env>` block's `Date:` line per session (#566, ADR-0202 §5).
 //!
 //! [`system_prompt::EnvBlock`][crate::system_prompt::EnvBlock] is baked once
-//! into every [`AgentProfile::system_prompt`][entanglement_core::AgentProfile]
+//! into every [`Agent::system_prompt`][entanglement_core::Agent]
 //! at load time. The system block is the provider cache's second segment
 //! (`tools → system → messages`), so **any** byte change there re-bills the
 //! whole history at the cache-write rate. Re-stamping today's date every turn

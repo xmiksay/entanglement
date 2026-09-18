@@ -23,8 +23,7 @@ mod config;
 mod routing;
 
 pub use config::{
-    ConfigError, EngineConfig, ProfileRegistry, SessionModel, SystemPromptResolver,
-    ToolSpecResolver,
+    AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
 
@@ -98,11 +97,21 @@ const FORK_CAPACITY: usize = 64;
 /// between attempts lets a merely-behind session drain; a genuinely stalled one
 /// sheds after the last attempt rather than blocking routing to other sessions.
 const ROUTE_ATTEMPTS: usize = 8;
-/// Profile a new session starts under (opencode-style: `build` is the default).
-/// Public so a head synthesizing its own trusted `Spawn` (the authenticated
-/// wire head, ADR-0174) names the same profile the lazy-`Prompt` path
-/// resolves, instead of a hardcoded string that could drift.
-pub const DEFAULT_PROFILE: &str = "build";
+/// Profile a new session starts under (ADR-0207 stage 6a collapsed the
+/// three-persona-plus-two roster to `general`/`plan`/`debug`; `general` is
+/// the default worker persona, formerly named `build`). Public so a head
+/// synthesizing its own trusted `Spawn` (the authenticated wire head,
+/// ADR-0174) names the same profile the lazy-`Prompt` path resolves, instead
+/// of a hardcoded string that could drift.
+pub const DEFAULT_AGENT: &str = "general";
+/// Permission mode a new session starts under (ADR-0207): authority is a
+/// second, independent axis from the agent, so this deliberately shares no
+/// definition with [`DEFAULT_AGENT`] — it only happens to share a spelling
+/// with the *former* default agent name because `skutter`'s four-mode table
+/// names its ordinary interactive posture `build` too. Core carries this name
+/// opaquely; it validates against nothing, since the mode table lives in the
+/// runtime.
+pub const DEFAULT_MODE: &str = "build";
 
 /// Handle to the running engine. Cheap to clone; the actor task lives until all
 /// clones drop (the inbox closes) or every session stops.
@@ -470,6 +479,16 @@ async fn supervisor(
     // (and the tree-walk helpers that read it) reflect the real hierarchy;
     // previously nothing ever inserted here, so every session was a root.
     let mut parent_links: HashMap<SessionId, Option<SessionId>> = HashMap::new();
+    // session → its live mode (ADR-0207 §6), the supervisor's own cache — not
+    // the wire `SessionInfo`, which stays a spawn-time snapshot like its other
+    // fields. Written on every `SetMode` cascade and on `Spawn`/resume, read
+    // only to seed a fresh child's `initial_mode` from its parent. Sparse: an
+    // absent entry means `DEFAULT_MODE`, so a session never explicitly set
+    // never needs an entry. Cleared on `CloseSession` (the id is retired for
+    // good); left in place across a hibernate/resume cycle, since resume
+    // re-derives it from the replayed truth (`spawn_resumed`) and nothing
+    // consults it while the session is hibernated.
+    let mut modes: HashMap<SessionId, String> = HashMap::new();
     // Idle-TTL auto-hibernation sweep (#363). `None` (the default) makes this
     // branch never armed, so a `select!` with no `idle_ttl` configured takes the
     // exact same path as the old bare `rx.recv().await` — byte-identical
@@ -575,6 +594,7 @@ async fn supervisor(
                     session_meta.remove(&victim);
                 }
                 parent_links.remove(&victim);
+                modes.remove(&victim);
                 // Tombstone the id regardless of liveness: it is spent
                 // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
                 // can't respawn it blank.
@@ -595,6 +615,49 @@ async fn supervisor(
             // when it decides a settled root has been idle past `idle_ttl`.
             hibernate_subtree(session, &mut sessions, &mut session_meta, &mut parent_links).await;
             continue;
+        }
+
+        if let InMsg::SetMode { session, mode } = &msg {
+            // ADR-0207 §6: mode applies to the whole spawn sub-tree, not just
+            // the target — reusing `collect_subtree`, the exact tree-walk
+            // `CloseSession`/`HibernateSession` already cascade over, so a
+            // switch on a session with live children reaches them too. Each
+            // live descendant gets its own `SessionCmd::SetMode`, so it
+            // applies and announces through the same per-session path a
+            // direct switch would (immediately, turn live or not — a mode is
+            // a label the runtime grades the *next* call against, never
+            // deferred like `SetAgent` used to be) — no session-loop
+            // special-casing needed for the cascade to be correct. `modes` is
+            // updated for
+            // every id in the subtree, live or not, so a hibernated
+            // descendant's cache entry is fixed up defensively too (it plays
+            // no functional role until that id resumes and re-derives the
+            // truth from its own replay anyway).
+            //
+            // Deliberately **no `continue`**: this only cascades onto the
+            // target's *other* descendants. The target session itself still
+            // falls through to the ordinary routing below, unchanged — that
+            // is what preserves `SetMode`'s existing lazy-create-if-unseen
+            // behavior (a `SetMode` sent before a session's first prompt
+            // pre-seeds its mode, same as every other session-scoped `InMsg`
+            // already could before this cascade existed).
+            modes.insert(session.clone(), mode.clone());
+            for descendant in collect_subtree(session, &parent_links) {
+                if &descendant == session {
+                    continue;
+                }
+                modes.insert(descendant.clone(), mode.clone());
+                if let Some(tx) = sessions.get(&descendant) {
+                    route_to_session(
+                        tx,
+                        SessionCmd::SetMode(mode.clone()),
+                        &descendant,
+                        &events,
+                        &seqs,
+                    )
+                    .await;
+                }
+            }
         }
 
         if let InMsg::Resume { records, .. } = &msg {
@@ -625,6 +688,7 @@ async fn supervisor(
                 &mut sessions,
                 &mut session_meta,
                 &mut parent_links,
+                &mut modes,
                 &events,
                 &seqs,
                 &activity,
@@ -658,6 +722,7 @@ async fn supervisor(
                     &mut sessions,
                     &mut session_meta,
                     &mut parent_links,
+                    &mut modes,
                     &events,
                     &seqs,
                     &activity,
@@ -677,7 +742,6 @@ async fn supervisor(
             agent,
             prompt,
             user,
-            sponsored,
         } = &msg
         {
             // A duplicate spawn for a live child is a no-op (the child already runs).
@@ -700,14 +764,14 @@ async fn supervisor(
             // supervisor error refuses instead (#119). The lazy-Prompt path
             // below still uses `resolve`, but only for a genuinely fresh id —
             // a known sub-agent child refuses the same way (issue #639).
-            let profile = match cfg.profiles.get(agent) {
+            let resolved_agent = match cfg.agents.get(agent) {
                 Some(p) => p.clone(),
                 None => {
                     emit_supervisor_error(
                         &events,
                         &seqs,
                         child,
-                        &format!("cannot spawn unknown agent profile `{agent}`"),
+                        &format!("cannot spawn unknown agent `{agent}`"),
                     );
                     continue;
                 }
@@ -735,8 +799,22 @@ async fn supervisor(
                         .and_then(|m| m.user.clone())
                 });
             let effective_user = inherited_user.or_else(|| user.clone());
+            // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
+            // spawned child starts under its parent's live mode. A
+            // compaction successor (predecessor set, no parent — the
+            // `/compact` fork, ADR-0110) is the same session continuing, so
+            // it inherits the source's mode the same way `effective_user`
+            // falls back to it above. Neither known ⇒ a genuine fresh root,
+            // `DEFAULT_MODE`.
+            let initial_mode = parent
+                .as_ref()
+                .and_then(|p| modes.get(p))
+                .or_else(|| predecessor.as_ref().and_then(|p| modes.get(p)))
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_MODE.to_string());
+            modes.insert(child.clone(), initial_mode.clone());
             // Record the parent link *before* spawning so it's in place for any
-            // later lazy path, and so the child starts under the requested profile.
+            // later lazy path, and so the child starts under the requested agent.
             parent_links.insert(child.clone(), parent.clone());
             // A compaction successor (ADR-0205): remember which session it took
             // over from, so a late tool result addressed to that now-retired
@@ -749,11 +827,9 @@ async fn supervisor(
                 SessionInfo {
                     session: child.clone(),
                     parent: parent.clone(),
-                    profile: profile.name.clone(),
+                    agent: resolved_agent.name.clone(),
                     root: is_root,
-                    profile_detail: Some(profile.detail()),
                     user: effective_user.clone(),
-                    sponsored: *sponsored,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -762,7 +838,6 @@ async fn supervisor(
             let sid = child.clone();
             let predecessor = predecessor.clone();
             let parent_for_loop = parent.clone();
-            let sponsored = *sponsored;
             let seqs2 = seqs.clone();
             let activity2 = activity.clone();
             let forks = fork_tx.clone();
@@ -772,12 +847,12 @@ async fn supervisor(
                     srx,
                     ev,
                     cfg2,
-                    profile,
+                    resolved_agent,
                     None,
                     parent_for_loop,
                     predecessor,
                     effective_user,
-                    sponsored,
+                    initial_mode,
                     seqs2,
                     activity2,
                     forks,
@@ -835,7 +910,7 @@ async fn supervisor(
             // leaves this map entry in place (unlike `session_meta`) so this
             // check can catch it (issue #639). Silently blank-respawning it
             // here would both discard its history and re-create it under
-            // `build`'s permission profile and tool mask, the exact
+            // `build`'s permission mode and tool set, the exact
             // escalation the unknown-`Spawn`-target case above refuses.
             // Refuse and point the caller at `Resume` instead.
             if parent_links.get(&session_id).cloned().flatten().is_some() {
@@ -851,17 +926,15 @@ async fn supervisor(
             // with no parent — e.g. a hibernated `/compact` successor root)
             // keeps the lazy-Prompt path's single-user convenience: an unknown
             // session id auto-creates a blank root under `build`.
-            let profile = cfg.profiles.resolve(DEFAULT_PROFILE);
+            let agent = cfg.agents.resolve(DEFAULT_AGENT);
             session_meta.insert(
                 session_id.clone(),
                 SessionInfo {
                     session: session_id.clone(),
                     parent: None,
-                    profile: profile.name.clone(),
+                    agent: agent.name.clone(),
                     root: true,
-                    profile_detail: Some(profile.detail()),
                     user: None,
-                    sponsored: false,
                 },
             );
             let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
@@ -873,7 +946,18 @@ async fn supervisor(
             let forks = fork_tx.clone();
             tokio::spawn(async move {
                 session_loop(
-                    sid, srx, ev, cfg2, profile, None, None, None, None, false, seqs2, activity2,
+                    sid,
+                    srx,
+                    ev,
+                    cfg2,
+                    agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    DEFAULT_MODE.to_string(),
+                    seqs2,
+                    activity2,
                     forks,
                 )
                 .await
@@ -910,6 +994,7 @@ fn spawn_resumed(
     sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
     session_meta: &mut HashMap<SessionId, SessionInfo>,
     parent_links: &mut HashMap<SessionId, Option<SessionId>>,
+    modes: &mut HashMap<SessionId, String>,
     events: &broadcast::Sender<OutEvent>,
     seqs: &SeqRegistry,
     activity: &ActivityRegistry,
@@ -934,22 +1019,25 @@ fn spawn_resumed(
             return None;
         }
     };
-    // Enrich the replay-derived meta with the resolved posture (#189): the log
-    // preserves only the profile name, but the replayed session holds the full
-    // profile, so a reconnecting head sees the live posture.
-    let mut meta = resume_meta(target, records);
-    meta.profile_detail = Some(initial_session.profile.detail());
+    let meta = resume_meta(target, records);
     session_meta.insert(target.clone(), meta);
     let parent = initial_session.parent.clone();
     if let Some(p) = parent.as_ref() {
         parent_links.insert(target.clone(), Some(p.clone()));
     }
+    // Re-derive the mode cache from the replayed truth rather than trusting
+    // whatever it held before this session hibernated (ADR-0207 §6): correct
+    // either way (hibernation itself never changes mode), but this is what
+    // keeps the cache right the first time a *newly* resumed id (never seen
+    // by this process before, e.g. a fresh `skutter` instance) spawns a
+    // child of its own.
+    modes.insert(target.clone(), initial_session.mode.clone());
     let children = initial_session.children.clone();
     let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
     let ev = events.clone();
     let cfg2 = cfg.clone();
     let sid = target.clone();
-    let profile = initial_session.profile.clone();
+    let profile = initial_session.agent.clone();
     let seqs2 = seqs.clone();
     let activity2 = activity.clone();
     let forks = forks.clone();
@@ -962,12 +1050,13 @@ fn spawn_resumed(
             profile,
             Some(initial_session),
             parent,
-            // Resume reconstructs `predecessor`/`user`/`sponsored` from the log
-            // (replay); pass `None`/`false` for them so none is overwritten
-            // (session.rs's resumed-takes-precedence rule, #626 for the third).
+            // Resume reconstructs `predecessor`/`user`/`mode` from
+            // the log (replay); pass `None`/`DEFAULT_MODE` for them so
+            // none is overwritten (session.rs's resumed-takes-precedence
+            // rule, ADR-0207 §6 for `mode`).
             None,
             None,
-            false,
+            DEFAULT_MODE.to_string(),
             seqs2,
             activity2,
             forks,

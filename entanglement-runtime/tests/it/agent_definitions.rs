@@ -3,7 +3,7 @@
 //! Covers discovery + precedence (project > user > built-in) via the real
 //! `load_registry`, and an end-to-end spawn under a purely file-defined profile
 //! (the `subagent_spawn.rs` pattern): a parent spawns a child under a project
-//! agent whose permission profile was loaded from disk.
+//! agent loaded from disk.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    MessageRole, OutEvent, Permission, SessionId, ToolCall,
+    MessageRole, OutEvent, SessionId, ToolCall,
 };
 
 use entanglement_runtime::agents::load_registry;
@@ -29,7 +29,7 @@ use entanglement_runtime::ToolRegistry;
 fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
-) -> entanglement_core::ProfileRegistry {
+) -> entanglement_core::AgentCatalog {
     let _guard = crate::env_lock();
     match user {
         Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
@@ -57,49 +57,33 @@ fn write_agent(dir: &std::path::Path, file: &str, contents: &str) {
 fn built_ins_present_without_any_files() {
     let empty = tempfile::tempdir().unwrap();
     let reg = load_with_dirs(None, empty.path());
-    assert!(reg.get("build").is_some());
+    // ADR-0207 stage 6a collapsed the five-persona roster to three.
+    assert!(reg.get("general").is_some());
     assert!(reg.get("plan").is_some());
-    assert!(reg.get("explore").is_some());
-    assert!(reg.get("research").is_some());
-    // The built-in `explore` came through the loader unchanged.
-    assert_eq!(
-        reg.get("explore").unwrap().permission.for_tool("edit"),
-        Permission::Deny
-    );
+    assert!(reg.get("debug").is_some());
+    assert!(reg.get("explore").is_none());
+    assert!(reg.get("research").is_none());
 }
 
 #[test]
-fn user_layer_shadows_built_in_research() {
-    // ADR-0167: the user layer is the intended tweak path for the embedded
-    // `research` profile — a same-name file replaces the whole definition,
-    // permission block included.
+fn user_layer_shadows_built_in_plan() {
+    // The user layer is the intended tweak path for an embedded profile — a
+    // same-name file replaces the whole definition.
     let user = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     write_agent(
         user.path(),
-        "research.md",
-        "---\nname: research\ndescription: user research\nmode: all\npermission:\n  default: deny\n  read: allow\n---\nuser research prompt",
+        "plan.md",
+        "---\nname: plan\ndescription: user plan\n---\nuser plan prompt",
     );
 
     let reg = load_with_dirs(Some(user.path()), project.path());
-    let research = reg.get("research").unwrap();
-    assert_eq!(research.description, "user research");
-    assert_eq!(research.system_prompt, "user research prompt");
-    // The override's permission block replaced the built-in's wholesale:
-    // exec is now hard-denied, not ask-graded.
-    assert_eq!(
-        research.permission.resolve("bash", Some("git log")),
-        Permission::Deny
-    );
+    let plan = reg.get("plan").unwrap();
+    assert_eq!(plan.description, "user plan");
+    assert_eq!(plan.system_prompt, "user plan prompt");
     // And without the file, the embedded definition is what loads.
     let reg = load_with_dirs(None, project.path());
-    assert_eq!(
-        reg.get("research")
-            .unwrap()
-            .permission
-            .resolve("bash", Some("git log")),
-        Permission::Ask
-    );
+    assert!(reg.get("plan").is_some());
 }
 
 #[test]
@@ -107,22 +91,22 @@ fn project_overrides_user_overrides_builtin() {
     let user = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
 
-    // User replaces the built-in `build` and adds a `reviewer`.
+    // User replaces the built-in `general` and adds a `reviewer`.
     write_agent(
         user.path(),
-        "build.md",
-        "---\nname: build\ndescription: user build\npermission:\n  default: ask\n---\nuser build prompt",
+        "general.md",
+        "---\nname: general\ndescription: user general\n---\nuser general prompt",
     );
     write_agent(
         user.path(),
         "reviewer.md",
         "---\nname: reviewer\ndescription: user reviewer\n---\nreview things",
     );
-    // Project wins over the user's `build` and adds a `deployer`.
+    // Project wins over the user's `general` and adds a `deployer`.
     write_agent(
         &project.path().join(".entanglement").join("agents"),
-        "build.md",
-        "---\nname: build\ndescription: project build\npermission:\n  default: deny\n---\nproject build prompt",
+        "general.md",
+        "---\nname: general\ndescription: project general\n---\nproject general prompt",
     );
     write_agent(
         &project.path().join(".entanglement").join("agents"),
@@ -132,23 +116,23 @@ fn project_overrides_user_overrides_builtin() {
 
     let reg = load_with_dirs(Some(user.path()), project.path());
 
-    // Project `build` wins (deny default), replacing user's (ask) and built-in (allow).
-    let build = reg.get("build").unwrap();
-    assert_eq!(build.description, "project build");
-    assert_eq!(build.permission.for_tool("edit"), Permission::Deny);
-    assert_eq!(build.system_prompt, "project build prompt");
+    // Project `general` wins, replacing user's and built-in's.
+    let general = reg.get("general").unwrap();
+    assert_eq!(general.description, "project general");
+    assert_eq!(general.system_prompt, "project general prompt");
     // User-only and project-only agents both survive.
     assert_eq!(reg.get("reviewer").unwrap().description, "user reviewer");
     assert_eq!(reg.get("deployer").unwrap().description, "project deployer");
     // Untouched built-ins remain.
-    assert!(reg.get("explore").is_some());
+    assert!(reg.get("debug").is_some());
 }
 
 #[test]
 fn skills_preload_composes_body_into_the_agent_prompt() {
     // End-to-end (#117): a project skill on disk + a project agent that preloads
-    // it. The composed system prompt carries the skill body, and preload leaves
-    // the tool mask alone — `load_skill` is still advertised (not an allowlist).
+    // it. The composed system prompt carries the skill body; preload is not an
+    // allowlist, so it has no bearing on `load_skill` access (a runtime
+    // permission-mode fact, ADR-0207).
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     // A project skill with a `references/` payload so path substitution runs.
@@ -193,8 +177,6 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
         prompt.contains(&abs_ref.display().to_string()),
         "ref not absolutized:\n{prompt}"
     );
-    // Preload is not an allowlist: runtime access is untouched.
-    assert!(coder.advertises_tool("load_skill"));
 }
 
 #[test]
@@ -253,9 +235,6 @@ fn foreign_claude_agents_load_leniently_and_native_wins() {
     let backend = reg.get("backend").expect("foreign agent discovered");
     assert_eq!(backend.description, "claude backend");
     assert_eq!(backend.system_prompt, "backend prompt");
-    // Foreign agents are spawnable delegation targets with no tool mask.
-    assert_eq!(backend.mode, entanglement_core::AgentMode::All);
-    assert!(backend.advertises_tool("edit"));
     assert!(reg.get("broken").is_none(), "malformed foreign skipped");
     assert_eq!(reg.get("dup").unwrap().description, "native dup");
 }
@@ -274,14 +253,14 @@ fn prompt_report_tolerates_broken_foreign_file() {
     std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
     let report = entanglement_runtime::agents::prompt_report(
         root,
-        "build",
+        "general",
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
     );
     std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
 
     let report = report.expect("broken foreign file must not abort");
-    assert!(report.is_some(), "built-in build still resolves");
+    assert!(report.is_some(), "built-in general still resolves");
 }
 
 // ── per-agent provider/model pin frontmatter (#323, ADR-0081) ──────────────────
@@ -406,7 +385,11 @@ fn last_user<'a>(req: &'a LlmRequest<'_>) -> &'a str {
     req.messages
         .iter()
         .rev()
-        .find(|m| m.role == MessageRole::User)
+        // Skip the trailing mode notice (ADR-0207 §9) — appended fresh to
+        // every request from `Session::mode`, never part of the real
+        // conversation, so it must never be mistaken for what the user
+        // actually said.
+        .find(|m| m.role == MessageRole::User && !m.text().starts_with("[mode: "))
         .and_then(|m| m.content.iter().find_map(|p| p.as_text()))
         .unwrap_or("")
 }
@@ -438,15 +421,14 @@ async fn spawn_under_a_file_defined_profile() {
     write_agent(
         &project.path().join(".entanglement").join("agents"),
         "worker.md",
-        "---\nname: worker\ndescription: file-defined worker\nmode: subagent\n\
-         permission:\n  default: allow\n---\nYou are the worker.",
+        "---\nname: worker\ndescription: file-defined worker\n---\nYou are the worker.",
     );
     let profiles = load_with_dirs(None, project.path());
     assert!(profiles.get("worker").is_some(), "worker loaded from disk");
 
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(DelegateLlm) as Box<dyn Llm>),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -471,10 +453,10 @@ async fn spawn_under_a_file_defined_profile() {
         match &ev {
             OutEvent::SessionStarted {
                 parent: Some(p),
-                profile,
+                agent,
                 root: false,
                 ..
-            } if p == &parent && profile == "worker" => child_under_worker = true,
+            } if p == &parent && agent == "worker" => child_under_worker = true,
             OutEvent::ToolOutput {
                 session,
                 tool,
@@ -532,8 +514,8 @@ fn report_for(
 fn prompt_report_reports_builtin_source_and_prompt() {
     let empty = tempfile::tempdir().unwrap();
     let ctx = PromptContext::load(empty.path());
-    let report = report_for(empty.path(), "build", &ctx).expect("build resolves");
-    assert_eq!(report.source, "built-in (build.md)");
+    let report = report_for(empty.path(), "general", &ctx).expect("general resolves");
+    assert_eq!(report.source, "built-in (general.md)");
     // The report's prompt matches the registry-assembled one for the same inputs.
     // `load_registry` reads the process-global `ENTANGLEMENT_AGENTS_DIR`, so it
     // must run under `ENV_LOCK` with the user dir isolated — exactly as
@@ -552,8 +534,8 @@ fn prompt_report_reports_builtin_source_and_prompt() {
         reg
     };
     assert_eq!(
-        report.profile.system_prompt,
-        reg.get("build").unwrap().system_prompt
+        report.agent.system_prompt,
+        reg.get("general").unwrap().system_prompt
     );
     // A primary agent gets the env block; the body part points at the winning file.
     assert!(report.parts.iter().any(|p| p.label == "environment"));
@@ -562,7 +544,7 @@ fn prompt_report_reports_builtin_source_and_prompt() {
         .iter()
         .find(|p| p.label == "agent body")
         .expect("body part");
-    assert_eq!(body.source, "built-in (build.md)");
+    assert_eq!(body.source, "built-in (general.md)");
 }
 
 #[test]
@@ -577,29 +559,32 @@ fn prompt_report_prefers_project_definition() {
     let project = tempfile::tempdir().unwrap();
     write_agent(
         &project.path().join(".entanglement").join("agents"),
-        "build.md",
-        "---\nname: build\ndescription: project override\n---\nProject build body.",
+        "general.md",
+        "---\nname: general\ndescription: project override\n---\nProject general body.",
     );
     let ctx = PromptContext::load(project.path());
-    let report = report_for(project.path(), "build", &ctx).expect("build resolves");
+    let report = report_for(project.path(), "general", &ctx).expect("general resolves");
     // The project file wins over the embedded built-in (later layer).
-    assert!(report.source.ends_with("build.md"));
+    assert!(report.source.ends_with("general.md"));
     assert!(report.source.contains(".entanglement"));
-    assert!(report.profile.system_prompt.contains("Project build body."));
+    assert!(report.agent.system_prompt.contains("Project general body."));
 }
 
 #[test]
-fn prompt_report_subagent_omits_env_and_skill_index() {
+fn prompt_report_includes_env_and_skill_index_for_every_agent() {
+    // ADR-0207 §4 retires the old `Subagent`-mode reduced form: any agent
+    // may be a session root or a spawn target, so composition no longer
+    // varies — `debug` (the old reference "leaf") gets the env block and
+    // tier-1 skill index too now.
     let empty = tempfile::tempdir().unwrap();
     let mut ctx = PromptContext::load(empty.path());
     ctx.skills = vec![entanglement_runtime::system_prompt::SkillDisclosure {
         name: "git".into(),
         description: "commit helpers".into(),
     }];
-    // `explore` is the reference subagent: no env block, no tier-1 skill index.
-    let report = report_for(empty.path(), "explore", &ctx).expect("explore resolves");
-    assert!(!report.parts.iter().any(|p| p.label == "environment"));
-    assert!(!report.parts.iter().any(|p| p.label == "skill index"));
+    let report = report_for(empty.path(), "debug", &ctx).expect("debug resolves");
+    assert!(report.parts.iter().any(|p| p.label == "environment"));
+    assert!(report.parts.iter().any(|p| p.label == "skill index"));
 }
 
 // ---------------------------------------------------------------------------
@@ -633,15 +618,15 @@ fn resolve_with_dirs(
 fn resolve_registry_reports_builtin_layer_and_no_shadow() {
     let empty = tempfile::tempdir().unwrap();
     let resolved = resolve_with_dirs(None, empty.path());
-    let build = resolved
+    let general = resolved
         .iter()
-        .find(|r| r.profile.name == "build")
-        .expect("build present");
-    assert_eq!(build.layer, AgentLayer::BuiltIn);
-    assert_eq!(build.source, "built-in (build.md)");
-    assert!(build.shadowed.is_empty());
+        .find(|r| r.agent.name == "general")
+        .expect("general present");
+    assert_eq!(general.layer, AgentLayer::BuiltIn);
+    assert_eq!(general.source, "built-in (general.md)");
+    assert!(general.shadowed.is_empty());
     // Sorted by name for a stable table.
-    let names: Vec<&str> = resolved.iter().map(|r| r.profile.name.as_str()).collect();
+    let names: Vec<&str> = resolved.iter().map(|r| r.agent.name.as_str()).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
     assert_eq!(names, sorted);
@@ -653,33 +638,30 @@ fn resolve_registry_tracks_project_over_user_over_builtin() {
     let project = tempfile::tempdir().unwrap();
     write_agent(
         user.path(),
-        "build.md",
-        "---\nname: build\ndescription: user build\n---\nuser body",
+        "general.md",
+        "---\nname: general\ndescription: user general\n---\nuser body",
     );
     write_agent(
         &project.path().join(".entanglement").join("agents"),
-        "build.md",
-        "---\nname: build\ndescription: project build\ntools: [read, edit]\n---\nproject body",
+        "general.md",
+        "---\nname: general\ndescription: project general\n---\nproject body",
     );
 
     let resolved = resolve_with_dirs(Some(user.path()), project.path());
-    let build = resolved
+    let general = resolved
         .iter()
-        .find(|r| r.profile.name == "build")
-        .expect("build present");
+        .find(|r| r.agent.name == "general")
+        .expect("general present");
 
-    // Project wins; the resolved mask/source reflect the winner.
-    assert_eq!(build.layer, AgentLayer::Project);
-    assert!(build.source.ends_with("build.md"));
-    assert!(build.source.contains(".entanglement"));
-    assert_eq!(
-        build.profile.tools.as_deref(),
-        Some(&["read".to_string(), "edit".to_string()][..])
-    );
+    // Project wins; the resolved layer/source reflect the winner.
+    assert_eq!(general.layer, AgentLayer::Project);
+    assert!(general.source.ends_with("general.md"));
+    assert!(general.source.contains(".entanglement"));
+    assert_eq!(general.agent.description, "project general");
 
     // Both shadowed layers are recorded in precedence order: built-in, then user.
-    let layers: Vec<AgentLayer> = build.shadowed.iter().map(|(l, _)| *l).collect();
+    let layers: Vec<AgentLayer> = general.shadowed.iter().map(|(l, _)| *l).collect();
     assert_eq!(layers, vec![AgentLayer::BuiltIn, AgentLayer::User]);
-    assert_eq!(build.shadowed[0].1, "built-in (build.md)");
-    assert!(build.shadowed[1].1.ends_with("build.md"));
+    assert_eq!(general.shadowed[0].1, "built-in (general.md)");
+    assert!(general.shadowed[1].1.ends_with("general.md"));
 }

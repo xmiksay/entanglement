@@ -10,6 +10,8 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
+use super::immediate::{apply_or_stash_mid_stream, fields};
+use super::mode::mode_notice_with_transition;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
@@ -56,6 +58,13 @@ pub(super) async fn stream_round(
     // startup default, or the last live switch (#218). `Copy`, so snapshot it
     // once rather than re-borrow `s` while `s.llm` streams below.
     let generation = s.generation;
+    // The mode transition marker (#560 follow-up) is **consumed** here, once
+    // per round, not re-read inside the retry loop below: a transparent
+    // stream-failure retry re-sends the identical round the model never saw,
+    // so it must carry the identical notice, not a second, now-empty read of
+    // an already-taken `Option`. See `Session::mode_transition_from`'s doc
+    // for why this is ephemeral session state, never `Context`/replay.
+    let trailing_notice = mode_notice_with_transition(&s.mode, s.mode_transition_from.take());
     let mut attempt: usize = 0;
     let mut text_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -64,12 +73,23 @@ pub(super) async fn stream_round(
     let mut shown = false;
     let stream_err: Option<String>;
     loop {
+        // The mode notice (ADR-0207 §9) rides as `trailing_notice` — appended
+        // by each provider after the real conversation, right before the
+        // model replies — rebuilt fresh from `s.mode` every round rather than
+        // ever pushed into `s.ctx`. See `mode::mode_notice`'s doc for why a
+        // persisted push would desync live vs. replayed history, and
+        // `LlmRequest::trailing_notice`'s doc for why it travels out-of-band
+        // instead of chained onto `messages`: a provider's cache-anchor
+        // placement (ADR-0202/#673) inspects the *last* history message, and
+        // a value that is last every round but different every round would
+        // anchor there and invalidate the cached prefix each request instead
+        // of ever landing a hit.
         let req = LlmRequest {
             // The profile's prompt, or a per-turn `system_prompt_resolver`
             // override, resolved once by the caller (#310, ADR-0078).
             system,
             // A live model switch (#218) overrides the profile's pinned model.
-            model: s.model.as_deref().or(s.profile.model.as_deref()),
+            model: s.model.as_deref().or(s.agent.model.as_deref()),
             messages: s.ctx.messages(),
             tools: specs,
             generation,
@@ -81,6 +101,7 @@ pub(super) async fn stream_round(
             // ladder — only aux traffic (narrate/session-title/summarize)
             // requests the fail-fast override (#560 follow-up).
             retry: None,
+            trailing_notice: Some(trailing_notice.clone()),
         };
         tracing::debug!(
             messages_count = req.messages.len(),
@@ -124,11 +145,7 @@ pub(super) async fn stream_round(
                 }
                 None => return StreamedRound::Cancelled,
                 Some(other) => {
-                    tracing::debug!(
-                        cmd = ?other,
-                        "command arrived before streaming started; stashed for replay after turn"
-                    );
-                    stash.push_back(other);
+                    apply_or_stash_mid_stream(other, fields!(s), stash, session, events, &s.seq)
                 }
             }
         };
@@ -166,11 +183,14 @@ pub(super) async fn stream_round(
                             return StreamedRound::Cancelled;
                         }
                         Some(other) => {
-                            tracing::debug!(
-                                cmd = ?other,
-                                "command arrived mid-stream; stashed for replay after turn"
+                            apply_or_stash_mid_stream(
+                                other,
+                                fields!(s),
+                                stash,
+                                session,
+                                events,
+                                &s.seq,
                             );
-                            stash.push_back(other);
                             continue;
                         }
                     }

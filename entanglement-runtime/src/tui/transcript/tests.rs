@@ -392,6 +392,79 @@ fn approval_tail_footer_shows_session_and_always_shortcuts() {
 }
 
 #[test]
+fn approval_tail_footer_shows_plan_accept_keys_not_generic_scopes() {
+    // #560, ADR-0207 §7 extension: `propose_plan` gets its own `[u]`/`[b]`
+    // accept keys instead of the generic `y`/`s`/`a`/`d` scope letters, which
+    // meant nothing for this tool.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        crate::tool_names::PROPOSE_PLAN_TOOL,
+        &serde_json::json!({
+            "content": "# Plan",
+            "path": ".entanglement/plans/s1.md",
+            "suggested_mode": serde_json::Value::Null,
+        })
+        .to_string(),
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let footer_text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(footer_text.contains("[u]"), "{footer_text:?}");
+    assert!(footer_text.contains("[b]"), "{footer_text:?}");
+    assert!(
+        footer_text.contains("default"),
+        "the auto option must be marked the default: {footer_text:?}"
+    );
+    assert!(
+        !footer_text.contains("[y]")
+            && !footer_text.contains("[s]")
+            && !footer_text.contains("[a]"),
+        "generic scope letters must not leak into the plan footer: {footer_text:?}"
+    );
+}
+
+#[test]
+fn approval_tail_footer_marks_the_models_suggested_mode() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        crate::tool_names::PROPOSE_PLAN_TOOL,
+        &serde_json::json!({
+            "content": "# Plan",
+            "path": ".entanglement/plans/s1.md",
+            "suggested_mode": "build",
+        })
+        .to_string(),
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let footer_text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        footer_text.contains("build (suggested)"),
+        "the suggested build option must be annotated: {footer_text:?}"
+    );
+}
+
+#[test]
 fn approval_tail_edit_shows_a_diff_not_raw_json() {
     // #487: the approval body reuses the shared per-tool renderer instead of
     // `serde_json::to_string_pretty`, so an `edit` approval shows a real diff
@@ -1227,5 +1300,125 @@ fn mcp_call_header_reads_server_then_tool() {
     assert!(
         header.contains("Bug") && !header.contains("mcp__"),
         "{header:?}"
+    );
+}
+
+fn feed_bash_with_output(app: &mut App, sid: &SessionId, output: &str, is_error: bool) {
+    feed_tool_call(app, sid, 1, "bash", r#"{"command":"run it"}"#);
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".to_string(),
+        tool: "bash".to_string(),
+        output: output.to_string(),
+        content: vec![],
+        is_error,
+        duration_ms: None,
+        exit_code: None,
+        envelope: None,
+    });
+    app.toggle_block(0);
+}
+
+#[test]
+fn bash_output_wraps_instead_of_overflowing() {
+    // The real-use bug: a `bash`/`call` output body used to skip wrapping
+    // entirely (`render_plain_output` formatted each raw line untouched), so
+    // a long line ran off the right edge of the panel (#wrap).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long = "a".repeat(200);
+    feed_bash_with_output(&mut app, &sid, &long, false);
+
+    let body = render_body_lines(&mut app, 40);
+    for line in &body.lines {
+        assert!(
+            line_display_width(line) <= 40,
+            "bash output line exceeds panel width: {}",
+            line_display_width(line)
+        );
+    }
+    let a_lines = body
+        .lines
+        .iter()
+        .filter(|l| line_text(l).contains('a'))
+        .count();
+    assert!(
+        a_lines > 1,
+        "the 200-char unbroken line must hard-break across multiple lines, got {a_lines}"
+    );
+}
+
+#[test]
+fn bash_json_output_is_pretty_printed_and_highlighted() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_bash_with_output(&mut app, &sid, r#"{"ok":true,"items":[1,2,3]}"#, false);
+
+    let body = render_body_lines(&mut app, 80);
+    let text = body
+        .lines
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("\"ok\": true"),
+        "JSON output should be pretty-printed, not left as one line: {text:?}"
+    );
+    assert!(text.contains("\"items\": ["), "{text:?}");
+    // Highlighted: at least one span in the body carries a syntect fg color.
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.style.fg.is_some())),
+        "expected the pretty-printed JSON to be syntax-highlighted"
+    );
+}
+
+#[test]
+fn bash_prose_output_with_a_brace_is_not_reformatted() {
+    // A shell one-liner or log line containing `{` must render untouched, not
+    // be misdetected as JSON (only a body that parses as JSON *as a whole*
+    // gets reformatted).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let output = "for f in *.rs { echo $f }  # not actually valid JSON";
+    feed_bash_with_output(&mut app, &sid, output, false);
+
+    let body = render_body_lines(&mut app, 80);
+    let text = body
+        .lines
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text.contains(output),
+        "prose must render verbatim: {text:?}"
+    );
+}
+
+#[test]
+fn bash_output_rewraps_after_width_change() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long = "word ".repeat(30);
+    feed_bash_with_output(&mut app, &sid, &long, false);
+
+    let wide = render_body_lines(&mut app, 80);
+    let narrow = render_body_lines(&mut app, 30);
+    for line in &narrow.lines {
+        assert!(
+            line_display_width(line) <= 30,
+            "re-wrapped line exceeds the new width: {}",
+            line_display_width(line)
+        );
+    }
+    assert!(
+        narrow.lines.len() > wide.lines.len(),
+        "the narrower width must produce more wrapped lines: {} vs {}",
+        narrow.lines.len(),
+        wide.lines.len()
     );
 }

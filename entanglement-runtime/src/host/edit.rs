@@ -3,6 +3,7 @@
 //! Only writes under the working directory (path-escape rejected).
 
 use super::resolve_under_root_or_grant;
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -62,6 +63,9 @@ struct EditInput {
 impl Tool for EditTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("edit")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Write]
     }
     fn description(&self) -> &str {
         "Exact-string replace within a file under the working directory. \
@@ -200,6 +204,14 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn capability_is_write() {
+        assert_eq!(
+            EditTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Write]
+        );
     }
 
     #[tokio::test]

@@ -27,14 +27,14 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, Catalog, EngineConfig, Holly, InMsg, Llm,
+    stream_from_response, Agent, AgentCatalog, Catalog, EngineConfig, Holly, InMsg, Llm,
     LlmRequest, LlmResponse, LlmStream, McpServerState, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId, ToolCall,
+    SessionId, ToolCall,
 };
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig};
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
@@ -134,26 +134,36 @@ fn done_response() -> LlmResponse {
     }
 }
 
-/// A profile with no tool mask (`tools: None`) so every call — including a
-/// namespaced MCP one never seen before — is in-mask and reaches
-/// `tool_runner::dispatch` directly, never `mask_request`. `permission`
-/// grades every call `perm` (`Ask` proves the ladder still runs after a
-/// lazy enable; `Allow` keeps the other scenarios to one round-trip).
-fn unmasked_profile(name: &str, perm: Permission) -> ProfileRegistry {
-    let mut profiles = ProfileRegistry::default();
-    profiles.insert(AgentProfile {
+/// A single-mode table named `"build"` (matching `DEFAULT_MODE`) with the
+/// given `default` grade and no rules — the mode-based analog of
+/// `unmasked_profile`'s `perm` (ADR-0207 stage 4 grades from the session's
+/// mode, not its `Agent`): `Ask` proves the ladder still runs after a
+/// lazy enable; `Allow` keeps the other scenarios to one round-trip.
+fn mode_table_with_default(default: Permission) -> Arc<entanglement_runtime::mode::ModeTable> {
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default,
+        rules: entanglement_runtime::mode::Rules::default(),
+        limits: entanglement_runtime::mode::Limits::default(),
+        sandbox: None,
+        sandbox_network: false,
+    };
+    Arc::new(
+        entanglement_runtime::mode::ModeTable::new(vec![mode]).expect("single-mode table is valid"),
+    )
+}
+
+/// `perm` is unused here (the profile carries no permission fact any more,
+/// ADR-0207) but kept as a parameter since every call site also feeds it to
+/// [`mode_table_with_default`] to build the mode that actually grades.
+fn unmasked_profile(name: &str, _perm: Permission) -> AgentCatalog {
+    let mut profiles = AgentCatalog::default();
+    profiles.insert(Agent {
         name: name.into(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(perm),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     });
     profiles
 }
@@ -176,40 +186,46 @@ impl Tool for EchoBash {
 /// `ActiveServers` every time — the whole point of every test here is that
 /// the called tool is *not* already registered/connected.
 fn spawn_executor(
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     scripted: Vec<LlmResponse>,
     avail: AvailableMcp,
+    mode_table: Arc<entanglement_runtime::mode::ModeTable>,
 ) -> Holly {
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(scripted.clone())) as Box<dyn Llm>),
-        profiles: profiles.clone(),
+        agents: agents.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = reg.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        mode_table.clone(),
+        shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(agents)),
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        mode_table,
         Arc::new(PlanFileRegistry::new()),
         None,
         None,
@@ -276,12 +292,21 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
         tool_call_response("t1", "mcp__testsrv__ping"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Ask),
+    );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();
@@ -304,6 +329,7 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
             session: sid.clone(),
             request_id: "t1".into(),
             scope: entanglement_core::ApprovalScope::Once,
+            mode: None,
         })
         .await
         .unwrap();
@@ -335,12 +361,21 @@ async fn disabled_tier_gets_a_truthful_decline_not_unknown_tool() {
         tool_call_response("t1", "mcp__offsrv__anything"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();
@@ -379,12 +414,21 @@ async fn genuinely_unknown_tool_keeps_the_unknown_tool_hint() {
         tool_call_response("t1", "totally_bogus_tool_zzz"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();
@@ -424,12 +468,21 @@ async fn enable_failure_is_distinguishable_and_a_repeat_call_is_guarded() {
         tool_call_response("t2", "mcp__brokensrv__y"),
         done_response(),
     ];
-    let holly = spawn_executor(profiles, scripted, avail);
+    let holly = spawn_executor(
+        profiles,
+        scripted,
+        avail,
+        mode_table_with_default(Permission::Allow),
+    );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: "mcptest".into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();

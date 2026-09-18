@@ -19,18 +19,20 @@ impl App {
     }
 
     /// Record a `SessionDir` grant for `dir` (already normalized root-relative,
-    /// #485) against the active session, and render the confirmation as a
-    /// transcript status line — the note flags a not-yet-created directory
-    /// rather than rejecting it (ADR-0126 grants directories that don't exist
-    /// yet). A missing grant store (never true outside tests) renders as an
-    /// error instead of silently doing nothing.
+    /// #485) against the active session's *current mode* (#634, ADR-0207 §8:
+    /// a directory grant is mode-scoped like every other grant), and render
+    /// the confirmation as a transcript status line — the note flags a
+    /// not-yet-created directory rather than rejecting it (ADR-0126 grants
+    /// directories that don't exist yet). A missing grant store (never true
+    /// outside tests) renders as an error instead of silently doing nothing.
     pub(crate) fn apply_allow_grant(&mut self, dir: &str) {
         let Some(grants) = self.grants.clone() else {
             self.record_allow_error("no grant store installed".to_string());
             return;
         };
         let session = self.active_session_id().clone();
-        let stored = grants.grant_session_dir(&session, dir);
+        let mode = self.mode().to_string();
+        let stored = grants.grant_session_dir(&session, dir, &mode);
         let note = if self.root().join(&stored).exists() {
             ""
         } else {
@@ -51,9 +53,39 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use entanglement_core::SessionId;
+    use entanglement_core::{OutEvent, SessionId};
 
     use super::*;
+
+    /// #634: a `SessionDir` grant recorded via `/allow` is scoped to the
+    /// active session's *current* mode, matching `GrantKey`'s own scoping —
+    /// it fires under the mode it was earned in and not another, and a later
+    /// `/allow` after a mode switch is scoped to the new one.
+    #[test]
+    fn apply_allow_grant_scopes_to_the_active_mode() {
+        let session = SessionId::new("s1");
+        let mut app = App::new_for_test(session.clone());
+        let grants = Arc::new(DefaultGrantStore::load());
+        app.set_grants(grants.clone());
+
+        // No `ModeChanged` folded yet — the view's default mirrors the
+        // engine's own `DEFAULT_MODE` ("build").
+        app.apply_allow_grant("src");
+        assert!(grants.is_granted(&session, "read", Some("src/a.rs"), "build"));
+        assert!(
+            !grants.is_granted(&session, "read", Some("src/a.rs"), "research"),
+            "a directory grant earned in build must not fire in research"
+        );
+
+        // Switching mode changes what a *later* `/allow` is scoped to.
+        app.handle_out_event(OutEvent::ModeChanged {
+            session: session.clone(),
+            mode: "research".to_string(),
+        });
+        app.apply_allow_grant("docs");
+        assert!(grants.is_granted(&session, "read", Some("docs/a.rs"), "research"));
+        assert!(!grants.is_granted(&session, "read", Some("docs/a.rs"), "build"));
+    }
 
     #[test]
     fn apply_allow_grant_toasts_the_grant() {

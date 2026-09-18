@@ -87,7 +87,7 @@ fn build_holly_and_executor(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };

@@ -46,15 +46,14 @@
 //! never an OOM. `import`/`eval` are disabled so a script cannot pull in modules
 //! or re-enter the parser.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use entanglement_core::{
-    AgentProfile, AgentState, ApprovalScope, Holly, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolCall, ToolOverlayEntry,
+    AgentState, ApprovalScope, Holly, OutEvent, Permission, SessionId, ToolCall,
 };
 
 use crate::tools::ToolRegistry;
@@ -66,6 +65,9 @@ use tokio::sync::oneshot;
 
 // The detached `background: true` path (#637, ADR-0185).
 mod background;
+// The per-run binding grading snapshot — split out of this (grandfathered
+// over-cap) file, #451/ADR-0207 stage 4c.
+mod binding_policy;
 // Pure JSON/YAML (de)serialization script functions — no IO, no permission
 // check, split out of this (grandfathered over-cap) file.
 mod data;
@@ -73,19 +75,15 @@ mod data;
 // told, as opposed to what runs.
 mod spec;
 
+pub use binding_policy::BindingPolicy;
 pub use spec::rhai_spec;
 
 use crate::host::truncate_head_tail;
 use crate::pending::{self, PendingDecisions};
-use crate::permission::{
-    ancestor_chain, min_permission, overlay_entry_grade, overlay_grade_entry, permission_chain,
-    permission_workdir, tool_masked,
-};
-use crate::permission_bash::resolve_scoped_bash_aware;
+use crate::permission::permission_workdir;
 use crate::permission_path::grading_arg;
 use crate::seam;
-use crate::subagent::SpawnGuard;
-use crate::tool_names::{BINDING_TOOLS, RHAI_TOOL};
+use crate::tool_names::RHAI_TOOL;
 use crate::tool_runner::EscapeRoot;
 
 /// Default wall-clock budget for a script, in seconds, when the model omits
@@ -129,150 +127,6 @@ pub fn is_background(input: &str) -> bool {
         .ok()
         .and_then(|v| v.get("background").and_then(|b| b.as_bool()))
         .unwrap_or(false)
-}
-
-/// Permission decision for one binding, precomputed once per script run.
-#[derive(Clone)]
-enum Decision {
-    /// Tool masked out of the session's effective set (#116) — does not exist.
-    Masked,
-    /// Tool available; run it under this permission.
-    Perm(Permission),
-}
-
-/// The per-run binding policy: which host functions are masked out (#116), plus
-/// the least-privilege permission chain — the session's own profile, each
-/// ancestor (#77), then the config ceiling (#172) — resolved *per call* so an
-/// argument-scoped rule (#173) sees the binding's actual input. Built once in the
-/// executor loop where the profile state lives, then moved into the script task
-/// so the read stays ordered with lifecycle events. The mask is argument-
-/// independent so it stays a precomputed set; only the grade is resolved live.
-pub struct BindingPolicy {
-    masked: HashSet<&'static str>,
-    /// Profiles folded least-privilege for each call: `[own, ancestors…, base]`.
-    chain: Vec<PermissionProfile>,
-    /// The overlay entry that overrides a binding's grade, keyed by binding
-    /// name (#628, closing the ADR-0149 deferral): the nearest
-    /// ancestor-chain link with a live overlay entry for that binding, same
-    /// lookup [`overlay_grade_entry`] gives `tool_runner::dispatch` — so a
-    /// script's `bash()` under an overlay (its own session's or an
-    /// ancestor's) grades the same way a direct `bash` call would, instead
-    /// of always falling through to `chain` below.
-    overlay: HashMap<&'static str, ToolOverlayEntry>,
-    /// The config permission ceiling (#172) an overlay grade still clamps
-    /// against — the same `base` already folded into `chain`'s last element
-    /// for the non-overlay path, kept as its own field so the overlay path
-    /// doesn't need to assume where in `chain` it landed.
-    base: PermissionProfile,
-    /// The project root a path-arg binding's argument is normalized relative
-    /// to before matching (#485, ADR-0125) — mirrors `tool_runner::dispatch`'s
-    /// use of `grading_arg`. `None` keeps the pre-#485 verbatim match.
-    root: Option<PathBuf>,
-}
-
-impl BindingPolicy {
-    /// Snapshot each binding's agent mask, overlay grade, and the effective
-    /// permission chain for `session`, appending the user config's global
-    /// ceiling (#172) so the quintet bindings honor the same `permissions`
-    /// floor — including its argument-scoped rules (#173) — as a direct tool
-    /// call.
-    pub fn capture(
-        active: &HashMap<SessionId, AgentProfile>,
-        guard: &SpawnGuard,
-        overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-        session: &SessionId,
-        base: &PermissionProfile,
-        root: Option<&Path>,
-    ) -> Self {
-        // The session's live tool overlay (#539, ADR-0149) reaches the binding
-        // *mask* through `tool_masked` below (an overlay-admitted `bash` binding
-        // exists), and now its Ask/Allow grade override too (#628) via `overlay`
-        // below — mirroring `tool_runner::dispatch`'s per-link chain walk
-        // instead of resolving only through the profile chain.
-        let masked: HashSet<&'static str> = BINDING_TOOLS
-            .into_iter()
-            .filter(|tool| tool_masked(active, guard, overlays, session, tool))
-            .collect();
-        let session_chain = ancestor_chain(guard, session);
-        let overlay: HashMap<&'static str, ToolOverlayEntry> = BINDING_TOOLS
-            .into_iter()
-            .filter(|tool| !masked.contains(tool))
-            .filter_map(|tool| {
-                overlay_grade_entry(overlays, &session_chain, tool).map(|entry| (tool, entry))
-            })
-            .collect();
-        let mut chain = permission_chain(active, guard, session);
-        chain.push(base.clone());
-        BindingPolicy {
-            masked,
-            chain,
-            overlay,
-            base: base.clone(),
-            root: root.map(Path::to_path_buf),
-        }
-    }
-
-    /// Resolve one binding call: masked tools do not exist; a tool with an
-    /// overlay grade (#628) resolves that entry clamped to the config
-    /// ceiling, replacing the profile chain exactly as
-    /// `tool_runner::dispatch` does for a direct call; otherwise the grade is
-    /// the least-privileged across the whole chain for this tool + argument
-    /// (+ `workdir` for `exec`/`bash`, #480). `read_raw` is graded and masked
-    /// as an alias of `read` — it is not in `BINDING_TOOLS`/a profile's
-    /// `tools`/`disallowed_tools` at all (never advertised, see
-    /// [`crate::host::ReadRawTool`]), so without this alias a profile that
-    /// restricts `read` would be silently bypassed by a script reaching for
-    /// the unlabeled raw path instead. The same alias applies to the overlay
-    /// lookup, for the same reason. `glob_json`/`grep_json` alias `glob`/
-    /// `grep` identically (ADR-0206) — a structured-output escape hatch must
-    /// not be a permission escape hatch.
-    fn decide(&self, tool: &'static str, input: &str) -> Decision {
-        let tool = graded_name(tool);
-        if self.masked.contains(tool) {
-            return Decision::Masked;
-        }
-        let arg = grading_arg(tool, input, self.root.as_deref());
-        let workdir = permission_workdir(tool, input);
-        let perm = match self.overlay.get(tool) {
-            Some(entry) => {
-                let overlay_profile = overlay_entry_grade(tool, entry);
-                let grade = resolve_scoped_bash_aware(
-                    &overlay_profile,
-                    tool,
-                    arg.as_deref(),
-                    workdir.as_deref(),
-                );
-                min_permission(
-                    grade,
-                    resolve_scoped_bash_aware(&self.base, tool, arg.as_deref(), workdir.as_deref()),
-                )
-            }
-            None => self.chain.iter().fold(Permission::Allow, |acc, p| {
-                min_permission(
-                    acc,
-                    resolve_scoped_bash_aware(p, tool, arg.as_deref(), workdir.as_deref()),
-                )
-            }),
-        };
-        Decision::Perm(perm)
-    }
-}
-
-/// The mask/grade identity of a binding call: script-facing variant names
-/// resolve to the model-facing tool they ride on — `read_raw` → `read`
-/// (ADR-0098) and `glob_json`/`grep_json` → `glob`/`grep` (ADR-0206). A
-/// variant is never advertised as its own tool, so a profile can only mean
-/// the alias target when it masks or grades its family; the mapping lives
-/// here (not in `BINDING_TOOLS`) because the *bridge* still dispatches the
-/// literal variant name — [`crate::host::GlobJsonTool`] etc. — this is
-/// purely the policy identity.
-fn graded_name(tool: &'static str) -> &'static str {
-    match tool {
-        "read_raw" => "read",
-        "glob_json" => "glob",
-        "grep_json" => "grep",
-        other => other,
-    }
 }
 
 /// One host-function invocation crossing the bridge: the tool to run, its JSON
@@ -336,7 +190,14 @@ pub async fn run_rhai(
     // `rhai`'s own permission gate (Allow/Ask/Deny), like any host tool.
     match self_perm {
         Permission::Deny => {
-            let out = format!("tool `{RHAI_TOOL}` denied by permission profile");
+            // Same wording as a binding's refusal below and as
+            // `tool_runner::dispatch`'s: one denial, one explanation. It said
+            // "denied by permission profile" until now — naming a concept
+            // ADR-0207 retired, in the one path the mode migration missed.
+            let out = format!(
+                "tool `{RHAI_TOOL}` denied by mode `{}` — use /mode to switch",
+                policy.mode
+            );
             seam::reply(&holly, session, request_id, out, true).await;
             return;
         }
@@ -572,23 +433,20 @@ async fn service_binding(
     // is the exact one that was approved, not a differently-keyed stand-in.
     let bind_rid = format!("{request_id}:rhai:{}", call.tool);
 
-    let perm = match policy.decide(call.tool, &call.input) {
-        Decision::Masked => {
+    let perm = match policy.decide(call.tool, &call.input).await {
+        // Names the mode, matching `tool_runner::dispatch`'s own decline
+        // text (ADR-0207 stage 4b) — covers both an ordinary mode `deny` and
+        // an overlay withdrawal (#634), which also resolves to `Deny` here.
+        Permission::Deny => {
             return (
                 Err(format!(
-                    "tool `{}` is not available to this agent (restricted by profile)",
-                    call.tool
+                    "tool `{}` denied by mode `{}` — use /mode to switch",
+                    call.tool, policy.mode
                 )),
                 false,
             )
         }
-        Decision::Perm(Permission::Deny) => {
-            return (
-                Err(format!("tool `{}` denied by permission profile", call.tool)),
-                false,
-            )
-        }
-        Decision::Perm(perm) => perm,
+        perm => perm,
     };
 
     let escape = escape_root
@@ -739,7 +597,7 @@ async fn await_approval(
 ) -> Approval {
     // Register before emitting so the inbound router can never resolve the
     // decision ahead of this waiter (#156).
-    let rx = pending.register(session, request_id);
+    let rx = pending.register(session, request_id, "rhai", tool.to_string());
     // Mint a fresh per-session seq (#157) rather than reusing the `ToolExec` seq.
     holly.emit_for_session(session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
@@ -752,7 +610,9 @@ async fn await_approval(
         set_state(holly, session, AgentState::WaitingApproval);
     }
     match pending::await_decision(rx).await {
-        seam::Decision::Approve { scope } => Approval::Approved(scope),
+        // `mode` (#560) is `propose_plan`-only; a rhai binding's own `Ask`
+        // approval never sets it.
+        seam::Decision::Approve { scope, .. } => Approval::Approved(scope),
         seam::Decision::Reject { reason } => {
             Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
         }
@@ -1143,6 +1003,132 @@ fn set_state(holly: &Holly, session: &SessionId, state: AgentState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    use entanglement_core::{PermissionProfile, ToolOverlayEntry};
+
+    use crate::capability::Capability;
+    use crate::mode::{Limits, Mode, ModeTable, Rules};
+    use crate::policy::{ModeResolver, PermissionResolver};
+    use crate::subagent::SpawnGuard;
+    use crate::tools::{SharedRegistry, Tool};
+
+    /// Test helper (ADR-0207 stage 4b): build a `BindingPolicy` graded
+    /// through a single-mode `ModeResolver` — the successor to the old
+    /// `Agent`-chain fixture every `binding_policy_*` test below used
+    /// before this stage. `entries` carries the same `tool`/`tool(arg)`/
+    /// `tool{workdir}` rule-key grammar the retired `PermissionProfile`
+    /// fixtures used (`Rules::from_lists` sorts them into the mode's
+    /// grade-keyed lists), so each test's rule strings carry over unchanged.
+    /// An empty registry is fine here: every rule below names a literal tool,
+    /// never a bare capability class, so `Mode::resolve` never needs a real
+    /// `Tool::capabilities()` to match one.
+    fn policy_for(
+        session: &SessionId,
+        guard: &SpawnGuard,
+        overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+        default: Permission,
+        entries: &[(&str, Permission)],
+        base: &PermissionProfile,
+    ) -> BindingPolicy {
+        let resolver = resolver_for(std::slice::from_ref(session), default, entries, base);
+        BindingPolicy::capture(
+            guard,
+            overlays,
+            session,
+            base,
+            resolver,
+            "test".to_string(),
+            None,
+        )
+    }
+
+    /// A minimal stub for the capability-class-named tools (`read`/`write`) a
+    /// bare mode rule key of the same spelling resolves to a *class*, never
+    /// the literal tool (`mode::rules`'s `capability_class` doc) — so a test
+    /// rule like `"read": Allow` only matches when something in the registry
+    /// actually declares `Capability::Read` for a tool named `read`. Real
+    /// host tools do; this stands in for them without pulling in the real
+    /// `ReadTool`'s root-containment machinery these tests don't need.
+    struct StubTool {
+        name: &'static str,
+        capability: Capability,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for StubTool {
+        fn name(&self) -> std::borrow::Cow<'static, str> {
+            std::borrow::Cow::Borrowed(self.name)
+        }
+        async fn run(&self, input: &str) -> anyhow::Result<String> {
+            Ok(input.to_string())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            match self.capability {
+                Capability::Read => &[Capability::Read],
+                Capability::Write => &[Capability::Write],
+                Capability::Exec => &[Capability::Exec],
+                Capability::Plan => &[Capability::Plan],
+                Capability::Control => &[Capability::Control],
+            }
+        }
+    }
+
+    /// The resolver half of [`policy_for`], split out so a test that needs
+    /// more than one [`BindingPolicy`] against the *same* mode/resolver — the
+    /// overlay-reaches-a-child test below — can call
+    /// [`BindingPolicy::capture`] itself once per session, sharing one
+    /// resolver bound to every `sessions` entry.
+    fn resolver_for(
+        sessions: &[SessionId],
+        default: Permission,
+        entries: &[(&str, Permission)],
+        base: &PermissionProfile,
+    ) -> Arc<dyn PermissionResolver> {
+        let mut allow = Vec::new();
+        let mut deny = Vec::new();
+        let mut prompt = Vec::new();
+        for (key, grade) in entries {
+            match grade {
+                Permission::Allow => allow.push(key.to_string()),
+                Permission::Deny => deny.push(key.to_string()),
+                Permission::Ask => prompt.push(key.to_string()),
+            }
+        }
+        let mode = Mode {
+            name: "test".to_string(),
+            default,
+            rules: Rules::from_lists(&deny, &allow, &prompt),
+            limits: Limits::default(),
+            sandbox: None,
+            sandbox_network: false,
+        };
+        let modes = Arc::new(Mutex::new(
+            sessions
+                .iter()
+                .map(|s| (s.clone(), "test".to_string()))
+                .collect::<HashMap<_, _>>(),
+        ));
+        let table = Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"));
+        let mut registry = ToolRegistry::new();
+        registry.register(StubTool {
+            name: "read",
+            capability: Capability::Read,
+        });
+        registry.register(StubTool {
+            name: "write",
+            capability: Capability::Write,
+        });
+        let registry: SharedRegistry = Arc::new(RwLock::new(registry));
+        Arc::new(ModeResolver::new(
+            modes,
+            table,
+            registry,
+            base.clone(),
+            None,
+        ))
+    }
 
     /// Build a sandboxed engine with no bindings (the bridge senders are dropped
     /// immediately, so any binding call errors) — enough to exercise the sandbox
@@ -1338,77 +1324,43 @@ mod tests {
         assert!(is_error);
     }
 
-    #[test]
-    fn binding_policy_masks_and_grades() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "readonly".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask).with("read", Permission::Allow),
-            tools: Some(vec!["read".into(), "glob".into(), "grep".into()]),
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    /// ADR-0207 §8 ("the mask machinery is deleted"): the retired `tools`
+    /// allowlist no longer withholds a binding — `edit` (never named by the
+    /// mode's own rules) now falls through to the mode's `default` grade
+    /// like any other tool, instead of not existing.
+    #[tokio::test]
+    async fn binding_policy_grades_every_binding_from_the_mode_only() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         // Allow-all base = the embedded config default: a no-op ceiling.
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Ask,
+            &[("read", Permission::Allow)],
+            &base,
+        );
 
-        // `edit` is not in the allowlist → masked.
-        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
-        // `read` survives the mask and is Allow.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `glob` survives the mask but only its default Ask grade.
-        assert!(matches!(
-            policy.decide("glob", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
+        // `edit` has no rule of its own — falls through to the mode's
+        // `default: Ask`.
+        assert_eq!(policy.decide("edit", "{}").await, Permission::Ask);
+        // `read` has its own explicit rule.
+        assert_eq!(policy.decide("read", "{}").await, Permission::Allow);
+        // `glob` has no rule of its own either — same default Ask grade.
+        assert_eq!(policy.decide("glob", "{}").await, Permission::Ask);
     }
 
-    /// #628: a live tool overlay's grade override now reaches a `rhai`
-    /// binding, not just the generic dispatch route — a `bash()` binding
-    /// under a session's own `Allow` overlay entry runs without the
-    /// profile's own `Ask` default, and a spawned child with no overlay of
-    /// its own inherits the grade from its parent's, mirroring the mask's
-    /// existing per-link reach (`tool_overlay_admits_past_mask_per_link`).
-    #[test]
-    fn binding_policy_honors_the_overlay_grade_and_reaches_a_child() {
-        use entanglement_core::{AgentMode, PermissionProfile, ToolOverlayEntry};
-
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            // The profile alone would ask before running `bash`.
-            permission: PermissionProfile::new(Permission::Ask),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    /// #628: a live tool overlay's grade override reaches a `rhai` binding,
+    /// not just the generic dispatch route — a `bash()` binding under a
+    /// session's own `Allow` overlay entry runs without the profile's own
+    /// `Ask` default, and a spawned child with no overlay of its own
+    /// inherits the grade from its parent's.
+    #[tokio::test]
+    async fn binding_policy_honors_the_overlay_grade_and_reaches_a_child() {
         let parent = SessionId::new("parent");
         let child = SessionId::new("child");
-        let mut active = HashMap::new();
-        active.insert(parent.clone(), profile.clone());
-        active.insert(child.clone(), profile);
         let mut guard = SpawnGuard::new();
         guard.record_start(parent.clone(), None);
         guard.record_start(child.clone(), Some(parent.clone()));
@@ -1424,313 +1376,228 @@ mod tests {
             }],
         );
         let base = PermissionProfile::new(Permission::Allow);
+        // The mode alone would ask before running `bash`.
+        let resolver = resolver_for(
+            &[parent.clone(), child.clone()],
+            Permission::Ask,
+            &[],
+            &base,
+        );
 
         // The overlay session's own binding grades Allow, bypassing the
-        // profile's Ask default.
-        let parent_policy =
-            BindingPolicy::capture(&active, &guard, &overlays, &parent, &base, None);
-        assert!(matches!(
-            parent_policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        // mode's Ask default.
+        let parent_policy = BindingPolicy::capture(
+            &guard,
+            &overlays,
+            &parent,
+            &base,
+            resolver.clone(),
+            "test".to_string(),
+            None,
+        );
+        assert_eq!(parent_policy.decide("bash", "{}").await, Permission::Allow);
 
         // The child has no overlay of its own, but inherits the parent's
         // grade for the same binding.
-        let child_policy = BindingPolicy::capture(&active, &guard, &overlays, &child, &base, None);
-        assert!(matches!(
-            child_policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        let child_policy = BindingPolicy::capture(
+            &guard,
+            &overlays,
+            &child,
+            &base,
+            resolver,
+            "test".to_string(),
+            None,
+        );
+        assert_eq!(child_policy.decide("bash", "{}").await, Permission::Allow);
         // An unrelated binding is untouched by the overlay and still asks.
-        assert!(matches!(
-            child_policy.decide("edit", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
+        assert_eq!(child_policy.decide("edit", "{}").await, Permission::Ask);
     }
 
-    /// ADR-0194: skills no longer mask tools, so a `BindingPolicy` reflects
-    /// only the agent mask — `write` (in the agent's own `tools` allowlist)
-    /// grades normally with no skill layer able to refuse it, `read_raw`
-    /// stays graded/masked as an alias of `read` for the agent mask, and a
-    /// tool outside the agent's own allowlist (`edit`) is still `Masked`.
-    #[test]
-    fn binding_policy_reflects_only_the_agent_mask_skills_do_not_narrow_it() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: Some(vec!["read".into(), "write".into()]),
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    /// ADR-0194: skills no longer mask tools; ADR-0207 §8 retires the agent
+    /// mask too — a `BindingPolicy` reflects only the permission chain, so
+    /// `write`/`read`/`read_raw`/`edit` all grade identically off the
+    /// profile's own allow-all default, whether or not `tools` names them.
+    #[tokio::test]
+    async fn binding_policy_reflects_only_the_mode() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
 
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Allow,
+            &[],
+            &base,
+        );
 
-        // `write` is in the agent's own allowlist — no skill layer to exclude it.
-        assert!(matches!(
-            policy.decide("write", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `read` grades normally too.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `read_raw` is graded/masked as an alias of `read` for the agent mask.
-        assert!(matches!(
-            policy.decide("read_raw", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        // `edit` is outside the agent's own `tools` allowlist — still masked.
-        assert!(matches!(policy.decide("edit", "{}"), Decision::Masked));
+        assert_eq!(policy.decide("write", "{}").await, Permission::Allow);
+        assert_eq!(policy.decide("read", "{}").await, Permission::Allow);
+        // `read_raw` is graded as an alias of `read`.
+        assert_eq!(policy.decide("read_raw", "{}").await, Permission::Allow);
+        // `edit` has no rule of its own — grades the same allow-all default
+        // as the rest.
+        assert_eq!(policy.decide("edit", "{}").await, Permission::Allow);
     }
 
-    #[test]
-    fn binding_policy_honors_config_base_ceiling() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        // An allow-all agent, but a config base that forces `read: ask`.
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    #[tokio::test]
+    async fn binding_policy_honors_config_base_ceiling() {
+        // An allow-all mode, but a config base that forces `read: ask`.
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow).with("read", Permission::Ask);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Allow,
+            &[],
+            &base,
+        );
 
-        // The base ceiling clamps the `read` binding to Ask despite the agent's
+        // The base ceiling clamps the `read` binding to Ask despite the mode's
         // allow-all; `write` (base-silent) stays Allow.
-        assert!(matches!(
-            policy.decide("read", "{}"),
-            Decision::Perm(Permission::Ask)
-        ));
-        assert!(matches!(
-            policy.decide("write", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(policy.decide("read", "{}").await, Permission::Ask);
+        assert_eq!(policy.decide("write", "{}").await, Permission::Allow);
     }
 
-    #[test]
-    fn binding_policy_resolves_argument_scoped_rules_per_call() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
+    #[tokio::test]
+    async fn binding_policy_resolves_argument_scoped_rules_per_call() {
         // Edits ask by default, but edits under `src/` are pre-approved (#173).
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("edit(src/*)", Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Ask,
+            &[("edit(src/*)", Permission::Allow)],
+            &base,
+        );
 
         // Same tool, two inputs, two grades — resolved live against the path.
-        assert!(matches!(
-            policy.decide("edit", r#"{"path":"src/main.rs"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
-            policy.decide("edit", r#"{"path":"Cargo.toml"}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+        assert_eq!(
+            policy.decide("edit", r#"{"path":"src/main.rs"}"#).await,
+            Permission::Allow
+        );
+        assert_eq!(
+            policy.decide("edit", r#"{"path":"Cargo.toml"}"#).await,
+            Permission::Ask
+        );
     }
 
     /// ADR-0197: a rhai `bash()` binding grades a compound pipeline
     /// per-segment too, not as one full-string glob match — mirroring
     /// `tool_runner::dispatch`'s direct-call behavior for the same command.
-    #[test]
-    fn binding_policy_grades_compound_bash_per_segment() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("bash(find *)", Permission::Allow)
-                .with("bash(grep *)", Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    #[tokio::test]
+    async fn binding_policy_grades_compound_bash_per_segment() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Ask,
+            &[
+                ("bash(find *)", Permission::Allow),
+                ("bash(grep *)", Permission::Allow),
+            ],
+            &base,
+        );
 
         // Every segment matches an Allow rule — the whole pipeline is allowed.
-        assert!(matches!(
-            policy.decide("bash", r#"{"command":"find . | grep x"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(
+            policy
+                .decide("bash", r#"{"command":"find . | grep x"}"#)
+                .await,
+            Permission::Allow
+        );
         // `rm` has no rule — the compound falls through to `Ask`, not the
         // over-match a full-string `bash(find *)` glob would have produced.
-        assert!(matches!(
-            policy.decide("bash", r#"{"command":"find . && rm -rf /tmp/x"}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+        assert_eq!(
+            policy
+                .decide("bash", r#"{"command":"find . && rm -rf /tmp/x"}"#)
+                .await,
+            Permission::Ask
+        );
     }
 
-    /// #419: `call`/`bash` are graded through the same Allow/Ask/Deny chain as
-    /// the quintet — the Call capability (#418) applies to them identically.
-    #[test]
-    fn binding_policy_grades_call_and_bash_allow_ask_deny() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "exec".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("call", Permission::Allow)
-                .with("bash", Permission::Deny),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    /// ADR-0207 §4: `bash`/`call` are two spellings of the same `Exec`
+    /// capability and share **one** rule set now — a rule written for either
+    /// grades both, superseding the pre-stage-4b `Agent` world where
+    /// each carried its own independent rule namespace.
+    #[tokio::test]
+    async fn binding_policy_grades_call_and_bash_from_one_shared_rule() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Ask,
+            &[("bash", Permission::Deny)],
+            &base,
+        );
 
-        assert!(matches!(
-            policy.decide("call", "{}"),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
-            policy.decide("bash", "{}"),
-            Decision::Perm(Permission::Deny)
-        ));
+        // A rule written for `bash` denies a `call` binding too.
+        assert_eq!(policy.decide("call", "{}").await, Permission::Deny);
+        assert_eq!(policy.decide("bash", "{}").await, Permission::Deny);
     }
 
-    /// #419: a profile whose `tools` allowlist omits `call` (and `bash`) masks
-    /// both bindings out, same as any other tool the #116 mask governs.
-    #[test]
-    fn binding_policy_masks_call_and_bash_when_omitted_from_tools() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "readonly".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow),
-            tools: Some(vec!["read".into()]),
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    /// ADR-0207 §8: the retired `tools` allowlist omitting `call`/`bash` no
+    /// longer withholds either binding — both still grade through the
+    /// mode's own (here, allow-all) rules.
+    #[tokio::test]
+    async fn binding_policy_no_longer_masks_call_and_bash_when_unruled() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Allow,
+            &[],
+            &base,
+        );
 
-        assert!(matches!(policy.decide("call", "{}"), Decision::Masked));
-        assert!(matches!(policy.decide("bash", "{}"), Decision::Masked));
+        assert_eq!(policy.decide("call", "{}").await, Permission::Allow);
+        assert_eq!(policy.decide("bash", "{}").await, Permission::Allow);
     }
 
     /// #419: an arg-scoped `call(git *): allow` rule under a `default: ask`
-    /// profile pre-clears `git` invocations while everything else still asks —
+    /// mode pre-clears `git` invocations while everything else still asks —
     /// mirrors the existing `bash(git *)` coverage in `permission.rs`.
-    #[test]
-    fn binding_policy_resolves_call_arg_scoped_git_rule() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Ask)
-                .with("call(git *)", Permission::Allow),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    #[tokio::test]
+    async fn binding_policy_resolves_call_arg_scoped_git_rule() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Ask,
+            &[("call(git *)", Permission::Allow)],
+            &base,
+        );
 
-        assert!(matches!(
-            policy.decide("call", r#"{"command":"git","args":["status"]}"#),
-            Decision::Perm(Permission::Allow)
-        ));
-        assert!(matches!(
-            policy.decide("call", r#"{"command":"rm","args":["-rf","/"]}"#),
-            Decision::Perm(Permission::Ask)
-        ));
+        assert_eq!(
+            policy
+                .decide("call", r#"{"command":"git","args":["status"]}"#)
+                .await,
+            Permission::Allow
+        );
+        assert_eq!(
+            policy
+                .decide("call", r#"{"command":"rm","args":["-rf","/"]}"#)
+                .await,
+            Permission::Ask
+        );
     }
 
     /// #419 fix A: the `approved` cache key scopes `call`/`bash` to the
@@ -1780,49 +1647,60 @@ mod tests {
 
     /// #480/ADR-0130: a workdir-scoped `bash{/tmp/*}: deny` rule fires for a
     /// binding call that marshals a `workdir` — inert (falls through to the
-    /// profile's default) when the call carries none, exactly like a direct
+    /// mode's default) when the call carries none, exactly like a direct
     /// tool call with no `workdir` argument.
-    #[test]
-    fn binding_policy_resolves_workdir_scoped_bash_rule() {
-        use entanglement_core::{AgentMode, PermissionProfile};
-
-        let profile = AgentProfile {
-            name: "build".into(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            system_prompt: String::new(),
-            model: None,
-            provider: None,
-            permission: PermissionProfile::new(Permission::Allow)
-                .with("bash{/tmp/*}", Permission::Deny),
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
-        };
+    #[tokio::test]
+    async fn binding_policy_resolves_workdir_scoped_bash_rule() {
         let session = SessionId::new("s");
-        let mut active = HashMap::new();
-        active.insert(session.clone(), profile);
         let guard = SpawnGuard::new();
         let base = PermissionProfile::new(Permission::Allow);
-        let policy =
-            BindingPolicy::capture(&active, &guard, &HashMap::new(), &session, &base, None);
+        let policy = policy_for(
+            &session,
+            &guard,
+            &HashMap::new(),
+            Permission::Allow,
+            &[("bash{/tmp/*}", Permission::Deny)],
+            &base,
+        );
 
-        assert!(matches!(
-            policy.decide("bash", r#"{"command":"ls","workdir":"/tmp/scratch"}"#),
-            Decision::Perm(Permission::Deny)
-        ));
-        assert!(matches!(
-            policy.decide("bash", r#"{"command":"ls","workdir":"/home/x"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(
+            policy
+                .decide("bash", r#"{"command":"ls","workdir":"/tmp/scratch"}"#)
+                .await,
+            Permission::Deny
+        );
+        assert_eq!(
+            policy
+                .decide("bash", r#"{"command":"ls","workdir":"/home/x"}"#)
+                .await,
+            Permission::Allow
+        );
         // No `workdir` marshalled at all: the rule never matches, same as
         // today's behavior before this call carried the field.
-        assert!(matches!(
-            policy.decide("bash", r#"{"command":"ls"}"#),
-            Decision::Perm(Permission::Allow)
-        ));
+        assert_eq!(
+            policy.decide("bash", r#"{"command":"ls"}"#).await,
+            Permission::Allow
+        );
+    }
+
+    /// #634 (gap 2 of ADR-0207 stage 4b): an overlay **deny** entry reaches
+    /// a script binding exactly like it reaches a direct call — restored
+    /// alongside the generic dispatch path's own deny fix, since a script is
+    /// otherwise a live escape hatch around `/disable tool`.
+    #[tokio::test]
+    async fn binding_policy_honors_an_overlay_deny() {
+        let session = SessionId::new("s");
+        let guard = SpawnGuard::new();
+        let mut overlays = HashMap::new();
+        overlays.insert(session.clone(), vec![ToolOverlayEntry::deny("bash")]);
+        let base = PermissionProfile::new(Permission::Allow);
+        let policy = policy_for(&session, &guard, &overlays, Permission::Allow, &[], &base);
+
+        // The mode alone would allow `bash` outright — the overlay deny
+        // still wins.
+        assert_eq!(policy.decide("bash", "{}").await, Permission::Deny);
+        // An unrelated binding is untouched.
+        assert_eq!(policy.decide("read", "{}").await, Permission::Allow);
     }
 
     /// #480: `exec`/`bash`'s new three/two-arg overloads marshal `workdir`

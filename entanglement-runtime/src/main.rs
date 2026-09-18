@@ -22,22 +22,23 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, config, discover, endpoint, extra_roots, history, host, inspect, logging,
-    mcp, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy, poll,
-    propose_plan, retained_output, script_ops, session_store, skills, subagent, system_prompt,
-    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, tool_state, watch,
+    agents, ask_user, capability, config, discover, endpoint, extra_roots, history, host, inspect,
+    logging, mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch, policy,
+    poll, propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
+    system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch,
     SharedRegistry, ToolRegistry,
 };
+use mode::ModeTable;
 use tool_runner::{DiscoverySurface, EscapeRoot};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use entanglement_core::{EngineConfig, Holly, IdKind, InMsg, ProfileRegistry, SessionId};
+use entanglement_core::{AgentCatalog, EngineConfig, Holly, IdKind, InMsg, SessionId};
 use entanglement_provider::{
     Catalog, GenerationParams, HttpClient, LlmFactory, ModelInfo, ModelPricing, ModelResolver,
     ProviderEntry, ResolvedModel, WebSearchConfig, Wire,
 };
-use policy::{DefaultGrantStore, PermissionResolver, ProfileResolver};
+use policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -89,7 +90,7 @@ use tui::tui;
 async fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
-    profiles: ProfileRegistry,
+    agents: AgentCatalog,
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
 ) -> (
@@ -116,7 +117,7 @@ async fn build_config(
         web_search_config(user_config),
     ));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
-    cfg.profiles = profiles;
+    cfg.agents = agents;
     // Thread the resolved model's context window into the engine (#178) so each
     // session budgets its history against the real window (128k for GLM-5.2, not
     // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.
@@ -141,12 +142,22 @@ async fn build_config(
         .and_then(|p| p.canonicalize())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let secret_env = catalog.key_envs();
-    // Optional bubblewrap confinement for bash/call (#399, ADR-0104; #479 adds
-    // the per-profile `sandbox:` frontmatter override on top of this
-    // process-global default). Off by default — an unset `ENTANGLEMENT_SANDBOX`
-    // means unsandboxed, full-privilege execution, matching every release
-    // before this.
-    let sandbox_config = policy::SandboxConfig::from_env();
+    // Per-session permission mode (ADR-0207 stage 4), folded from
+    // `OutEvent::ModeChanged` by the tool executor — constructed here,
+    // *before* `register_default_tools`, so `bash`/`call`'s sandbox resolver
+    // (below) and the executor's `ModeResolver` (wired much later, once
+    // `Holly` exists) share the exact same map and mode table instead of two
+    // copies that could drift. `skutter` always runs the four built-in modes
+    // — code, not configuration (ADR-0207 §2).
+    let perm_modes = Arc::new(Mutex::new(HashMap::new()));
+    let mode_table = Arc::new(ModeTable::builtin().expect("built-in permission modes must parse"));
+    // Sandbox confinement is a **mode** fact now (ADR-0207 §6, stage 5b):
+    // `SandboxConfig` reads `perm_modes` directly and layers
+    // `ENTANGLEMENT_SANDBOX`/`ENTANGLEMENT_SANDBOX_NETWORK` on top as a
+    // tighten-only env override (`SandboxPolicy::most_confined`). Off by
+    // default — an unset `ENTANGLEMENT_SANDBOX` and a mode with no
+    // `sandbox:` key mean unsandboxed, full-privilege execution.
+    let sandbox_config = policy::SandboxConfig::new(perm_modes.clone(), mode_table.clone());
     // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
     // block). `call`'s own default-output artifact used to live here too;
@@ -271,35 +282,30 @@ async fn build_config(
         .register(GrepJsonTool::new(root.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
-    // the model. Per-profile spawn control (#119, ADR-0040) makes the family
-    // *per-profile* — each profile's roster + target enum is scoped to who it may
-    // spawn, and a non-spawning profile gets nothing — so it lives in
-    // `profile_tool_specs` (appended by core for the active profile), not the
-    // shared `tool_specs`. Empty entries are simply omitted.
-    // Plan authorship (#231, ADR-0049; #513, ADR-0145): `propose_plan` — the
-    // sole plan-authorship tool, `update_plan` removed — is advertised only to
-    // a profile that *explicitly* allowlists it — the default-closed gate that
-    // replaces the old `owns_plan` flag, so it never leaks to an inherit-all
-    // profile. It rides the same per-profile seam as the spawn family; core's
-    // #116 mask filters it again at turn time.
-    let profile_tool_specs = cfg
-        .profiles
-        .iter()
-        .filter_map(|p| {
-            let mut specs = subagent::spawn_specs_for(p, &cfg.profiles);
-            specs.extend(propose_plan::specs_for(p));
-            (!specs.is_empty()).then(|| (p.name.clone(), specs))
-        })
-        .collect();
-    cfg.profile_tool_specs = profile_tool_specs;
+    // the model. Spawning is unconditional now (ADR-0207 §6/§9) — the roster
+    // is a constant, not scoped per spawning profile — so it joins the
+    // shared `tool_specs` like `ask_user`/`update_tasks` below, keeping the
+    // advertised array identical across `SetAgent` (the whole point of the
+    // constant roster).
+    cfg.tool_specs.extend(subagent::agent_specs(&cfg.agents));
     // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
-    // no cross-agent authority, so it rides the shared specs (a read-only profile
-    // masks it out via its allowlist + permission). The runtime executor
-    // intercepts it to emit the `TaskList` snapshot.
+    // no cross-agent authority, so it rides the shared specs (a read-only
+    // session's permission mode declines the call at dispatch). The runtime
+    // executor intercepts it to emit the `TaskList` snapshot.
     cfg.tool_specs.push(plan_tasks::update_tasks_spec());
     // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
     // profile may surface a decision prompt, so it stays in the shared specs.
     cfg.tool_specs.push(ask_user::ask_user_spec());
+    // `propose_plan` (#231, ADR-0049; #513, ADR-0145) is advertised
+    // unconditionally now (ADR-0207 §7: the old default-closed per-profile
+    // allowlist gate is retired along with the mask it read) — it joins the
+    // shared specs like `update_tasks`; the force-park on `Ask` is the only
+    // gate left.
+    cfg.tool_specs.push(propose_plan::propose_plan_spec());
+    // `request_mode` (#560, ADR-0207 §10) is likewise unconditional — a
+    // blocked model must always be able to ask for more authority, in every
+    // mode including the one that would deny the ask itself.
+    cfg.tool_specs.push(request_mode::request_mode_spec());
     // `poll` (#605, ADR-0161) is runtime-owned like `ask_user` but not a spawn
     // tool either — it joins both background `bash` jobs and sub-agents, so it
     // rides the shared specs rather than the per-profile spawn family.
@@ -307,17 +313,17 @@ async fn build_config(
     // `rhai` is a runtime-owned sandboxed script tool (#122, ADR-0046). Its
     // bindings are exactly the root-contained quintet, so it is no more
     // privileged than the always-registered tools and rides the shared specs
-    // (registered by default; a profile masks it like any tool via its
-    // allowlist). The executor intercepts it before permission resolution.
-    // Behind the `rhai` feature (#502, ADR-0135) — absent entirely from a lean
-    // build that opts out of it.
+    // (registered by default; graded like any tool through the session's
+    // permission mode). The executor intercepts it before permission
+    // resolution. Behind the `rhai` feature (#502, ADR-0135) — absent
+    // entirely from a lean build that opts out of it.
     #[cfg(feature = "rhai")]
     cfg.tool_specs.push(script::rhai_spec());
-    // The `/agent` picker's tools-checklist dialog (#330) offers every advertised
-    // tool name — captured here (before `cfg` is moved into `Holly::spawn`), not
-    // via the `ToolRegistry` alone, so it also includes the runtime-owned specs
-    // appended above (`update_tasks`/`ask_user`/`rhai`) that aren't registry
-    // tools but are still maskable via a profile's `tools`/`disallowed_tools`.
+    // `/tools` and the bare `/enable` checklist offer every advertised tool
+    // name — captured here (before `cfg` is moved into `Holly::spawn`), not
+    // via the `ToolRegistry` alone, so it also includes the runtime-owned
+    // specs appended above (`update_tasks`/`ask_user`/`rhai`) that aren't
+    // registry tools.
     let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
     tool_names.sort();
     tool_names.dedup();
@@ -1024,15 +1030,22 @@ struct Cli {
     /// it may follow the subcommand: `skutter run … --verbose`.
     #[arg(long, global = true)]
     verbose: bool,
-    /// Auto-approve every tool approval request instead of auto-rejecting it
-    /// (#554). Only affects `run` heads (explicit `run` and the implicit
-    /// one-shot form): there is no interactive user to answer a `ToolRequest`
-    /// there (e.g. the escape-root gate on an out-of-root path, which fires
-    /// even under a profile's `Allow`), and without this flag such a request
-    /// is rejected immediately with a reason rather than parking the run.
-    /// Global so it may follow the subcommand: `skutter run … --yes`.
+    /// Retired (#554, ADR-0207 §11): auto-approving every `ToolRequest` was
+    /// head-level, all-or-nothing, and invisible to core/the TUI — precisely
+    /// what a permission mode is not. Parsed only so `skutter … --yes` fails
+    /// loudly with a pointer to its replacement instead of clap's unknown-flag
+    /// error; see the startup check in `main`.
     #[arg(long, global = true)]
     yes: bool,
+    /// Run the session under this permission mode (`research`/`plan`/`build`/
+    /// `auto`, ADR-0207) instead of the engine's default (`build`). Only
+    /// affects `run` heads (explicit `run` and the implicit one-shot form) —
+    /// `auto` is the unattended posture `--yes` used to approximate, now with
+    /// a real deny-by-default posture, run/turn/duration budgets, and no
+    /// silent widening. Global so it may follow the subcommand:
+    /// `skutter run … --mode auto`.
+    #[arg(long, global = true)]
+    mode: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1044,7 +1057,7 @@ enum Cmd {
         /// Session id to use (generates UUID if not specified).
         #[arg(long)]
         session: Option<String>,
-        /// Agent profile to run under (build | plan | explore | custom).
+        /// Agent profile to run under (general | plan | debug | custom).
         #[arg(long)]
         agent: Option<String>,
         /// Output format.
@@ -1063,7 +1076,7 @@ enum Cmd {
     Tui {
         #[arg(long)]
         session: Option<String>,
-        /// Agent profile to run under (build | plan | explore | custom).
+        /// Agent profile to run under (general | plan | debug | custom).
         #[arg(long)]
         agent: Option<String>,
     },
@@ -1169,6 +1182,15 @@ enum InspectCmd {
     /// which has no managed file of its own. Takes a **root** session id (see
     /// `skutter sessions`).
     Session { id: String },
+    /// List the four permission modes (no `name`), or print one mode's
+    /// resolved rules — built-in shape plus any `config.yml` `modes:` tuning
+    /// — plus its limits, sandbox, and per-tool outcome for a known roster
+    /// (#560, ADR-0207 stage 6c). The replacement for the mask columns
+    /// `agents` lost in stage 4c.
+    Modes {
+        /// Mode to detail (research | plan | build | auto). Omit for the table.
+        name: Option<String>,
+    },
 }
 
 /// Whether this invocation runs the TUI as its head — either the explicit
@@ -1187,6 +1209,17 @@ fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // `--yes` is retired (#554, ADR-0207 §11) — exit the same clean way
+    // `select_provider`'s other user-facing CLI errors do (`eprintln!` +
+    // code 2), not a panic and not clap's own unknown-flag error, since the
+    // flag itself still parses.
+    if cli.yes {
+        eprintln!(
+            "skutter: --yes is retired — use `--mode auto` for an unattended \
+             run instead (ADR-0207 §11)"
+        );
+        std::process::exit(2);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Load the layered user config (#172, ADR-0047) up front: embedded defaults <
@@ -1271,6 +1304,7 @@ async fn main() -> Result<()> {
             InspectCmd::McpTokens => inspect::inspect_mcp_tokens(),
             InspectCmd::Mcp => inspect::inspect_mcp(&cwd),
             InspectCmd::Session { id } => inspect::inspect_session(&cwd, id),
+            InspectCmd::Modes { name } => inspect::inspect_modes(&cwd, name.as_deref()),
         };
     }
 
@@ -1366,7 +1400,7 @@ async fn main() -> Result<()> {
     let live_agent_models = Arc::new(Mutex::new(agent_models));
     // Per-agent generation-parameter overrides (#374, ADR-0094): unlike the model
     // pin above, this doesn't overlay onto `profiles` (`GenerationParams` isn't
-    // `Eq`, so it can't join `AgentProfile`'s derive) — instead it's wrapped in a
+    // `Eq`, so it can't join `Agent`'s derive) — instead it's wrapped in a
     // `GenerationResolver` closure threaded onto `EngineConfig` below, resolved
     // by profile name at session start / `SetAgent`. Also threaded straight into
     // the TUI (#376), the only surface that writes to it (`/set`'s
@@ -1437,6 +1471,11 @@ async fn main() -> Result<()> {
     // session since the mode never changes mid-session).
     engine_config.system_prompt_resolver =
         Some(system_prompt_mode::resolver(advertising_state.clone()));
+    // The static "what modes exist" preamble (ADR-0207 §9/§12): the runtime
+    // owns the mode table, so it supplies this text; core folds it once into
+    // the cached system prompt. Must stay static across every session — see
+    // `mode::describe::modes_preamble`'s own doc for why.
+    engine_config.modes_preamble = Some(mode::describe::modes_preamble());
     // Per-purpose aux-model pins (Issue 5): a managed `aux-models.yml` sibling
     // of `agent-models.yml`, consulted by the `AuxLlmRegistry` to route a side
     // transformation (session-title generation today; compaction summary once
@@ -1488,6 +1527,7 @@ async fn main() -> Result<()> {
             avail: mcp_available.clone(),
             advertising: advertising_state.clone(),
             inputs: advertising_inputs.clone(),
+            agent_specs: subagent::agent_specs(&engine_config.agents),
         },
     ));
     // Live MCP server management (#375): `ActiveServers` was seeded by
@@ -1507,8 +1547,8 @@ async fn main() -> Result<()> {
     // (#329, ADR-0084) to resolve permissions (#59) and drive the TUI picker;
     // the engine gets its own (immutable-for-the-process-lifetime) copy via
     // `engine_config`, captured here *before* it moves into `Holly::spawn`.
-    let live_profiles: Arc<RwLock<ProfileRegistry>> =
-        Arc::new(RwLock::new(engine_config.profiles.clone()));
+    let live_profiles: Arc<RwLock<AgentCatalog>> =
+        Arc::new(RwLock::new(engine_config.agents.clone()));
     let holly = Holly::spawn(engine_config);
 
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
@@ -1518,13 +1558,39 @@ async fn main() -> Result<()> {
     // wires the lifecycle hooks (#199) around tool dispatch and prompt ingress.
     // Built directly against `spawn_tool_executor_with_policy` (#311) rather
     // than the `_with_hooks` convenience wrapper (which owns a plain
-    // `ProfileRegistry`) because the head needs its own handles on `active` and
+    // `AgentCatalog`) because the head needs its own handles on `active` and
     // `grants` — `grants` feeds the definitions watcher's `LiveDefinitions`
     // below (#329), so a persisted "always allow" grant another skutter
     // instance recorded is visible on the next reload.
     let active = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ProfileResolver::new(
-        active.clone(),
+    // Per-session permission mode (ADR-0207 stage 4), folded from
+    // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
+    // `ModeResolver` grades every call from this map, not from `active`.
+    // `perm_modes` is the *same* map `sandbox_config` was built from in
+    // `build_config` (ADR-0207 §6, stage 5b) — sandboxing must see exactly
+    // the mode *names* dispatch sees, not a second copy that can drift.
+    //
+    // `mode_table` is deliberately **not** `sandbox_config.table` here
+    // (ADR-0207 stage 6c): that early table has to exist before the tool
+    // registry does (`register_default_tools` bakes its sandbox resolver in
+    // at construction), so it's built-in-only and carries no `config.yml`
+    // `modes:` tuning — harmless for sandboxing, since `ModeTuning` has no
+    // `sandbox`/limits fields to tune (only rule grades). Permission
+    // *grading* does need the tuned rules, and tuning's own guard (ADR-0207
+    // §5) needs a real capability resolver to validate against — both only
+    // available now that `tools` is fully populated.
+    let perm_modes = sandbox_config.modes.clone();
+    let mode_table = Arc::new({
+        let registry = tools.read().expect("tool registry lock poisoned");
+        mode::build_table(&user_config.modes, &|name| {
+            capability::capability_of(name, &registry)
+        })
+        .context("building the permission mode table from config.yml `modes:`")?
+    });
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        mode_table.clone(),
+        tools.clone(),
         user_config.permissions.clone(),
         // Root-relative arg normalization (#485, ADR-0125): cloned before
         // `escape_root` moves into `spawn_tool_executor_with_policy` below.
@@ -1550,15 +1616,17 @@ async fn main() -> Result<()> {
         live_skills.clone(),
         user_config.permissions.clone(),
         active,
+        perm_modes,
         resolver,
         grants.clone(),
         user_config.hooks.clone(),
         // Escape-root approval (ADR-0109): the same store the host tools read.
         Some(escape_root),
-        // Per-profile sandbox confinement (#479): the same `own`/`floor` maps
-        // `register_default_tools`'s resolver reads, so the dispatch loop's
-        // fold below is what `bash`/`call` actually see.
-        sandbox_config,
+        // The mode table `perm_modes` resolves against (ADR-0207 §6, stage
+        // 5b) — used only to source a spawn's `max_depth`/`max_agents`
+        // bound; sandboxing itself reads `perm_modes` directly, independent
+        // of this executor (`register_default_tools`'s resolver above).
+        mode_table,
         plan_files.clone(),
         // No per-user MCP scopes (#684) — single-user.
         None,
@@ -1631,7 +1699,7 @@ async fn main() -> Result<()> {
     // registry mutation in core is a rejected design). `reload_rx` only matters
     // to the TUI (a status line); every other head lets its messages drop.
     let live = watch::LiveDefinitions {
-        profiles: live_profiles.clone(),
+        agents: live_profiles.clone(),
         skills: live_skills.clone(),
         agent_models: live_agent_models.clone(),
         grants: grants.clone(),
@@ -1653,7 +1721,6 @@ async fn main() -> Result<()> {
     let plans_watcher_handle =
         plan_watch::spawn_plans_watcher(&holly, plan_root, plan_files.clone());
 
-    let auto_approve = cli.yes;
     let result = match cli.cmd {
         Some(Cmd::Run {
             prompt,
@@ -1662,6 +1729,7 @@ async fn main() -> Result<()> {
             format,
             resume,
         }) => {
+            let fresh = resume.is_none();
             let session_id = if let Some(resume_id) = &resume {
                 SessionId::new(resume_id.clone())
             } else {
@@ -1681,6 +1749,16 @@ async fn main() -> Result<()> {
                          reconstruct an incomplete conversation. Start a fresh session instead."
                     );
                 }
+                // ADR-0207 stage 6a: a log naming a retired agent can't resume
+                // — the profile no longer exists, and silently falling back to
+                // a different one would replay the conversation under an
+                // identity it never actually ran under.
+                if let Some((retired, replacement)) = session_store::retired_agent(&records) {
+                    anyhow::bail!(
+                        "Refusing to resume {resume_session_id}: its log names the retired \
+                         agent `{retired}` — {replacement}. Start a fresh session instead."
+                    );
+                }
 
                 holly
                     .resume(session_id.clone(), pair_records(&records))
@@ -1688,25 +1766,53 @@ async fn main() -> Result<()> {
             }
 
             // CLI `--agent` wins; else the user config's default agent (#172).
+            // An agent is fixed for a session's whole life (ADR-0207 §9), so
+            // this only ever applies to a fresh spawn below — warn rather than
+            // silently ignoring an explicit `--agent` alongside `--resume`.
             let agent = agent.or_else(|| user_config.agent.clone());
-            if let Some(ref a) = agent {
+            if fresh {
+                // An empty-prompt `Spawn` just binds the session's identity
+                // (agent); the real prompt goes through `run_one` below, once
+                // any `--mode` switch (next) has already landed — sending it
+                // first would race the still-nonexistent session id into the
+                // supervisor's lazy-create-under-default fallback instead of
+                // this chosen agent (see `holly.rs`'s unknown-session-id path).
                 holly
-                    .send(InMsg::SetAgent {
+                    .send(InMsg::Spawn {
                         session: session_id.clone(),
-                        agent: a.to_string(),
+                        parent: None,
+                        predecessor: None,
+                        agent: agent
+                            .clone()
+                            .unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string()),
+                        prompt: String::new(),
+                        user: None,
+                    })
+                    .await?;
+            } else if agent.is_some() {
+                tracing::warn!(
+                    "--agent is ignored with --resume: a resumed session's agent is fixed"
+                );
+            }
+            // `--mode` (ADR-0207 §11/§12): `SetMode` is trusted-only (a mode
+            // *is* the session's authority), so this direct `Holly::send` —
+            // not the wire — is exactly the surface it's meant for.
+            // Precedence: `--mode` > `config.yml` `mode:` > the engine's own
+            // `DEFAULT_MODE`, mirroring `agent`'s `--agent` > config > default
+            // just above. `None` either way sends nothing, leaving the
+            // session at `DEFAULT_MODE` exactly as before this setting
+            // existed.
+            let mode = cli.mode.clone().or_else(|| user_config.mode.clone());
+            if let Some(m) = mode {
+                holly
+                    .send(InMsg::SetMode {
+                        session: session_id.clone(),
+                        mode: m,
                     })
                     .await?;
             }
             let prompt = prompt.join(" ");
-            run_one(
-                &holly,
-                &session_id,
-                agent.as_deref(),
-                &prompt,
-                &format,
-                auto_approve,
-            )
-            .await
+            run_one(&holly, &session_id, &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => {
             let session_id =
@@ -1723,19 +1829,26 @@ async fn main() -> Result<()> {
         Some(Cmd::Tui { session, agent }) => {
             let session_id =
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
-            // Subscribe *before* the bootstrap `SetAgent` send below, matching
+            // Subscribe *before* the bootstrap `Spawn` send below, matching
             // the "subscribe before send" convention `subagent.rs` follows for
             // spawned children — otherwise the session task can emit
             // `SessionStarted`/`AgentChanged` before `tui()` gets around to
             // subscribing, permanently desyncing the agent badge (#598).
             let holly_sub = holly.subscribe();
             // CLI `--agent` wins; else the user config's default agent (#172).
+            // An empty-prompt `Spawn` just binds the session's identity — the
+            // agent is fixed for the session's whole life from here (ADR-0207
+            // §9); the user's real first prompt arrives later, through the TUI.
             let agent = agent.or_else(|| user_config.agent.clone());
             if let Some(a) = agent {
                 holly
-                    .send(InMsg::SetAgent {
+                    .send(InMsg::Spawn {
                         session: session_id.clone(),
-                        agent: a.to_string(),
+                        parent: None,
+                        predecessor: None,
+                        agent: a,
+                        prompt: String::new(),
+                        user: None,
                     })
                     .await?;
             }
@@ -1774,15 +1887,19 @@ async fn main() -> Result<()> {
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             if cli.prompt.is_empty() {
                 let session_id = SessionId::new(holly.next_id(IdKind::Session));
-                // Subscribe before the bootstrap `SetAgent` send — see the
+                // Subscribe before the bootstrap `Spawn` send — see the
                 // matching comment on the `Cmd::Tui` arm above (#598).
                 let holly_sub = holly.subscribe();
                 let agent = user_config.agent.clone();
                 if let Some(ref a) = agent {
                     holly
-                        .send(InMsg::SetAgent {
+                        .send(InMsg::Spawn {
                             session: session_id.clone(),
+                            parent: None,
+                            predecessor: None,
                             agent: a.to_string(),
+                            prompt: String::new(),
+                            user: None,
                         })
                         .await?;
                 }
@@ -1814,24 +1931,37 @@ async fn main() -> Result<()> {
             } else {
                 let session_id = SessionId::new(holly.next_id(IdKind::Session));
                 let agent = user_config.agent.clone();
+                // An empty-prompt `Spawn` binds the session's identity before
+                // any `--mode` switch below reaches the supervisor — sending
+                // `SetMode` first would race the still-nonexistent id into the
+                // lazy-create-under-default fallback instead of this agent
+                // (see the explicit `Run` arm above).
                 if let Some(ref a) = agent {
                     holly
-                        .send(InMsg::SetAgent {
+                        .send(InMsg::Spawn {
                             session: session_id.clone(),
+                            parent: None,
+                            predecessor: None,
                             agent: a.to_string(),
+                            prompt: String::new(),
+                            user: None,
+                        })
+                        .await?;
+                }
+                // `--mode` (ADR-0207 §11/§12) — see the explicit `Run` arm
+                // above for the full `--mode` > config `mode:` > default
+                // precedence.
+                let mode = cli.mode.clone().or_else(|| user_config.mode.clone());
+                if let Some(m) = mode {
+                    holly
+                        .send(InMsg::SetMode {
+                            session: session_id.clone(),
+                            mode: m,
                         })
                         .await?;
                 }
                 let prompt = cli.prompt.join(" ");
-                run_one(
-                    &holly,
-                    &session_id,
-                    agent.as_deref(),
-                    &prompt,
-                    "text",
-                    auto_approve,
-                )
-                .await
+                run_one(&holly, &session_id, &prompt, "text").await
             }
         }
     };

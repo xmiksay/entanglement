@@ -221,6 +221,7 @@ impl Llm for OpenAiLlm {
             self.web_search.as_ref(),
             req.cache_key.filter(|_| self.send_prompt_cache_key),
             thinking,
+            req.trailing_notice.as_deref(),
         );
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 

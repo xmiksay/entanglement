@@ -18,7 +18,7 @@
 //! ```
 //!
 //! [`AgentModelStore::apply`] overlays these pins onto the loaded
-//! [`ProfileRegistry`] at startup, so a persisted pin wins over a profile's
+//! [`AgentCatalog`] at startup, so a persisted pin wins over a profile's
 //! frontmatter `provider`/`model` — precedence *persisted file > frontmatter*.
 //! Missing/malformed file → empty + warn (fail-open: a corrupt file must never
 //! wedge startup, and a dropped pin only reverts a profile to its frontmatter
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
-use entanglement_core::ProfileRegistry;
+use entanglement_core::AgentCatalog;
 use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
@@ -121,9 +121,9 @@ impl AgentModelStore {
 
     /// Overlay the persisted pins onto `registry` (#323): for each stored agent
     /// with a matching profile, set its `provider` + `model` so it forms a
-    /// [`model_pin`][entanglement_core::AgentProfile::model_pin] — persisted file
+    /// [`model_pin`][entanglement_core::Agent::model_pin] — persisted file
     /// wins over frontmatter. A pin for an unknown profile is ignored (logged).
-    pub fn apply(&self, registry: &mut ProfileRegistry) {
+    pub fn apply(&self, registry: &mut AgentCatalog) {
         for (name, pin) in &self.agents {
             match registry.get(name) {
                 Some(profile) => {

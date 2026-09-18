@@ -18,6 +18,8 @@ use std::sync::{Arc, RwLock};
 
 use entanglement_core::{ContentPart, SessionId, ToolCall, ToolSpec};
 
+use crate::capability::Capability;
+
 /// A single capability the engine can execute on the host.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -106,6 +108,19 @@ pub trait Tool: Send + Sync {
     /// `skills::alias_tool::AliasTool`) is untouched.
     fn alias_rewrite(&self, _input: &str) -> Option<(String, String)> {
         None
+    }
+
+    /// What this tool does to the host or session (ADR-0207 §3) — vocabulary
+    /// only in this stage, nothing reads it yet. Default is `Write`,
+    /// deliberately the *most* restrictive answer a read-only mode can act
+    /// on: the old name-table approach (ADR-0114) failed because a tool
+    /// added without an entry silently inherited whatever the table's
+    /// absence meant, which in practice was "allowed everywhere". An
+    /// unannotated tool must instead fail closed — refused by a read-only
+    /// mode until someone deliberately declares it `Read`, not silently
+    /// let through because nobody wrote it down.
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Write]
     }
 }
 
@@ -376,6 +391,16 @@ mod tests {
 
     fn dummy_session() -> SessionId {
         SessionId::new("test-session")
+    }
+
+    /// Pins the fail-safe default (ADR-0207 §3): a tool that never overrides
+    /// `capabilities` — like `Echo` above — must read as the *most*
+    /// restrictive answer, `Write`, never something a read-only mode would
+    /// let through unannounced. If a future edit relaxes the trait default,
+    /// this is the test that should break.
+    #[test]
+    fn unannotated_tool_defaults_to_write() {
+        assert_eq!(Echo.capabilities(), &[Capability::Write]);
     }
 
     #[tokio::test]

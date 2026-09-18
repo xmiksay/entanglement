@@ -26,7 +26,15 @@ struct ScriptLlm {
 #[async_trait]
 impl Llm for ScriptLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        let history = serde_json::to_string(req.messages)?;
+        // `trailing_notice` carries the mode notice out of band from
+        // `messages` (the prompt-cache fix) — recorded as a synthesized
+        // final message so this file's history-shape assertions below keep
+        // testing the same observable behavior.
+        let mut probed = req.messages.to_vec();
+        if let Some(notice) = &req.trailing_notice {
+            probed.push(Message::user(notice.clone()));
+        }
+        let history = serde_json::to_string(&probed)?;
         self.requests.lock().unwrap().push(history);
         let resp = self.responses.lock().unwrap().pop_front();
         Ok(stream_from_response(resp.unwrap_or_else(|| text("ok"))))
@@ -156,8 +164,18 @@ async fn prompt_sent_while_parked_survives_the_log_round_trip() {
     );
     let messages: Vec<Message> = serde_json::from_str(&live_history).unwrap();
     let texts: Vec<String> = messages.iter().map(Message::text).collect();
+    // Trailing entry is the mode notice (ADR-0207 §9) — appended fresh to
+    // every request from `Session::mode`, never persisted.
     assert_eq!(
         texts,
-        ["go", "", "contents", "also check y", "done", "probe"]
+        [
+            "go",
+            "",
+            "contents",
+            "also check y",
+            "done",
+            "probe",
+            "[mode: build]"
+        ]
     );
 }

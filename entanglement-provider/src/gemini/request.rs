@@ -37,8 +37,22 @@ pub(super) fn build_body(
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
     cached_content: Option<&str>,
+    trailing_notice: Option<&str>,
 ) -> Value {
-    let mut body = json!({ "contents": convert_messages(messages) });
+    let mut contents = convert_messages(messages);
+    // Appended last, merged into a trailing `user` turn when there is one —
+    // Gemini rejects non-alternating roles (`coalesce_same_role`'s doc) —
+    // via the same helper Anthropic uses, since this wire has no per-message
+    // cache-anchor concept to keep the notice out of (caching here is the
+    // separate `cachedContents` resource above).
+    if let Some(notice) = trailing_notice {
+        crate::anthropic::append_final_user_block(
+            &mut contents,
+            json!({ "text": notice }),
+            "parts",
+        );
+    }
+    let mut body = json!({ "contents": contents });
     if let Some(name) = cached_content {
         body["cachedContent"] = json!(name);
     } else {
@@ -362,7 +376,7 @@ mod request_tests {
 
     #[test]
     fn body_has_contents_and_omits_empties() {
-        let body = build_body("", &[Message::user("hi")], &[], None, None);
+        let body = build_body("", &[Message::user("hi")], &[], None, None, None);
         assert_eq!(body["contents"][0]["role"], "user");
         assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
         assert!(body.get("systemInstruction").is_none());
@@ -379,6 +393,7 @@ mod request_tests {
             &[spec],
             None,
             Some("cachedContents/abc123"),
+            None,
         );
         assert_eq!(body["cachedContent"], "cachedContents/abc123");
         assert!(body.get("systemInstruction").is_none());
@@ -423,7 +438,14 @@ mod request_tests {
             thinking_budget_tokens: Some(1024),
             reasoning_effort: None,
         };
-        let body = build_body("be nice", &[Message::user("hi")], &[spec], Some(g), None);
+        let body = build_body(
+            "be nice",
+            &[Message::user("hi")],
+            &[spec],
+            Some(g),
+            None,
+            None,
+        );
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "be nice");
         assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "greet");
         assert!((body["generationConfig"]["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -446,7 +468,7 @@ mod request_tests {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::High),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None, None);
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             HIGH_EFFORT_THINKING_BUDGET
@@ -461,7 +483,7 @@ mod request_tests {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::Low),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None, None);
         assert!(body["generationConfig"].get("thinkingConfig").is_none());
     }
 
@@ -473,7 +495,7 @@ mod request_tests {
             thinking_budget_tokens: Some(777),
             reasoning_effort: Some(ReasoningEffort::High),
         };
-        let body = build_body("", &[Message::user("hi")], &[], Some(g), None);
+        let body = build_body("", &[Message::user("hi")], &[], Some(g), None, None);
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
             777

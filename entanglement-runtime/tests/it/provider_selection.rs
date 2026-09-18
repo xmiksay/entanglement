@@ -3,28 +3,44 @@
 
 use std::process::Command;
 
-/// A managed-env-file path guaranteed not to exist, so the child `skutter`
-/// process never backfills a key this test just removed from its env with a
-/// real key from the developer's real `${config_dir}/entanglement/.env`
-/// (#220's "env file loaded at startup" behavior — without this override a
-/// real key on the host machine defeats `env_remove` and the process makes a
-/// genuine, hanging network call instead of exiting on the missing-key path).
-fn no_managed_env_file() -> std::path::PathBuf {
+/// A managed-file path guaranteed not to exist, so a child `skutter` process
+/// never picks up state from the developer's *real*
+/// `${config_dir}/entanglement/` — a real `.env` key would defeat
+/// `env_remove` and make a genuine, hanging network call instead of exiting
+/// on the missing-key path (#220's "env file loaded at startup" behavior);
+/// a real `config.yml` is read unconditionally at startup regardless of
+/// which provider/key env vars this test sets (`ENTANGLEMENT_CONFIG_FILE` is
+/// consulted before any provider selection at all), so *every* spawn below
+/// needs this override too, not just the env-file one — found the hard way:
+/// a real config.yml this migration briefly mis-rewrote (ADR-0207 stage 6c)
+/// made every test in this file fail on an unrelated "loading user config"
+/// error instead of the provider-selection path they actually exercise.
+/// `label` keys the temp name so two overrides in the same process (env
+/// file + config file) never collide on one path.
+fn no_managed_file(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
-        "entanglement-test-no-such-env-{}-{:?}",
+        "entanglement-test-no-such-{label}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ))
 }
 
+/// Every managed-file override a spawned `skutter` needs to run fully
+/// isolated from the developer's real `${config_dir}/entanglement/` (see
+/// [`no_managed_file`]).
+fn isolated(cmd: &mut Command) -> &mut Command {
+    cmd.env("ENTANGLEMENT_ENV_FILE", no_managed_file("env"))
+        .env("ENTANGLEMENT_CONFIG_FILE", no_managed_file("config"))
+}
+
 /// Run `skutter run hi` with `ENTANGLEMENT_PROVIDER=<provider>` set and its key
 /// env var removed, returning the finished output.
 fn run_missing_key(provider: &str, key_env: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_skutter"))
-        .args(["run", "hi"])
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_skutter"));
+    cmd.args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDER", provider)
-        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
-        .env_remove(key_env)
+        .env_remove(key_env);
+    isolated(&mut cmd)
         .output()
         .expect("failed to spawn skutter")
 }
@@ -64,10 +80,9 @@ fn missing_anthropic_key_exits_cleanly() {
 
 #[test]
 fn unknown_provider_exits_cleanly() {
-    let out = Command::new(env!("CARGO_BIN_EXE_skutter"))
-        .args(["run", "hi"])
-        .env("ENTANGLEMENT_PROVIDER", "nope")
-        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_skutter"));
+    cmd.args(["run", "hi"]).env("ENTANGLEMENT_PROVIDER", "nope");
+    let out = isolated(&mut cmd)
         .output()
         .expect("failed to spawn skutter");
     assert_eq!(out.status.code(), Some(2));
@@ -94,12 +109,12 @@ fn user_defined_provider_is_looked_up() {
     )
     .expect("write user catalog");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_skutter"))
-        .args(["run", "hi"])
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_skutter"));
+    cmd.args(["run", "hi"])
         .env("ENTANGLEMENT_PROVIDERS_FILE", &path)
         .env("ENTANGLEMENT_PROVIDER", "myproxy")
-        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
-        .env_remove("MYPROXY_KEY")
+        .env_remove("MYPROXY_KEY");
+    let out = isolated(&mut cmd)
         .output()
         .expect("failed to spawn skutter");
     assert_eq!(out.status.code(), Some(2), "expected clean exit code 2");
@@ -121,10 +136,10 @@ fn malformed_user_catalog_errors() {
     std::fs::write(&path, "providers:\n  - name: zai\n    typo_field: 1\n")
         .expect("write user catalog");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_skutter"))
-        .args(["run", "hi"])
-        .env("ENTANGLEMENT_PROVIDERS_FILE", &path)
-        .env("ENTANGLEMENT_ENV_FILE", no_managed_env_file())
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_skutter"));
+    cmd.args(["run", "hi"])
+        .env("ENTANGLEMENT_PROVIDERS_FILE", &path);
+    let out = isolated(&mut cmd)
         .output()
         .expect("failed to spawn skutter");
     assert_ne!(out.status.code(), Some(0), "malformed catalog must fail");

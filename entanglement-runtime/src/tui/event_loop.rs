@@ -9,9 +9,9 @@ use super::event::Event;
 use super::keybindings::LeaderResult;
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
-    handle_model_picker_event, handle_mouse, handle_profile_picker_event, handle_question_event,
-    handle_resume_modal_event, handle_session_tools_dialog_event, handle_sessions_modal_event,
-    handle_tools_dialog_event, handle_tools_view_event, DIALOG_PAGE_SIZE,
+    handle_mode_picker_event, handle_model_picker_event, handle_mouse, handle_profile_picker_event,
+    handle_question_event, handle_resume_modal_event, handle_session_tools_dialog_event,
+    handle_sessions_modal_event, handle_tools_view_event, DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -88,23 +88,11 @@ pub(super) async fn handle_event(
                     return Ok(app.handle_quit_key());
                 }
                 app.clear_quit_pending();
-                // Cascade-vs-detach `Stop` confirm (#626) — a blocking modal,
-                // checked ahead of everything else so it can't be typed through.
-                if app.showing_stop_confirm() {
-                    return crate::tui::stop_command::handle_stop_confirm_event(app, holly, key)
-                        .await;
-                }
                 if app.showing_sessions_modal() {
                     return handle_sessions_modal_event(app, holly, key).await;
                 }
                 if app.showing_settings_dialog() {
                     return crate::tui::settings_events::handle_settings_key(app, holly, key).await;
-                }
-                // Checked before the profile picker: `e` opens the tools dialog
-                // *over* the picker without closing it (#330), so it must win the
-                // routing while both are marked open.
-                if app.showing_tools_dialog() {
-                    return handle_tools_dialog_event(app, key).await;
                 }
                 // Bare `/enable`'s session-tools checklist (#539).
                 if app.showing_session_tools_dialog() {
@@ -115,10 +103,13 @@ pub(super) async fn handle_event(
                     return handle_tools_view_event(app, holly, key).await;
                 }
                 if app.showing_profile_picker() {
-                    return handle_profile_picker_event(app, holly, key).await;
+                    return handle_profile_picker_event(app, key).await;
                 }
                 if app.showing_model_picker() {
                     return handle_model_picker_event(app, holly, key).await;
+                }
+                if app.showing_mode_picker() {
+                    return handle_mode_picker_event(app, holly, key).await;
                 }
                 if app.showing_key_dialog() {
                     return handle_key_dialog_event(app, key).await;
@@ -274,9 +265,29 @@ pub(super) async fn handle_event(
 
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
+                        // `propose_plan` (#560, ADR-0207 §7 extension): acceptance
+                        // itself chooses the mode the session switches to, so this
+                        // tool gets its own two accept keys instead of the generic
+                        // scope letters below (its scope was already inert — the
+                        // runtime never records a grant for a plan approval). `u`
+                        // is the DEFAULT bare accept -> `auto` (bounded, so it's
+                        // the safe "go implement this" choice); `b` is the
+                        // explicit opt-in to `build`. A model's own `mode`
+                        // suggestion only pre-selects which one the footer marks
+                        // "(suggested)" (`transcript.rs`) — it never decides;
+                        // only this keystroke does.
+                        KeyCode::Char('u') if is_plan_request(app) => {
+                            send_plan_approval(app, holly, request_id.clone(), "auto").await;
+                        }
+                        KeyCode::Char('b') if is_plan_request(app) => {
+                            send_plan_approval(app, holly, request_id.clone(), "build").await;
+                        }
+                        // The generic scope letters mean nothing for `propose_plan`
+                        // (no grant is ever recorded for it) — swallow them here
+                        // rather than let `y` silently fire the old default.
+                        KeyCode::Char('y' | 's' | 'a' | 'd') if is_plan_request(app) => {}
                         // Approve scopes (#174): `y` this once, `s` for the rest of
-                        // the session, `a` always (persisted). All three share the
-                        // plan-handoff path — scope is inert for `propose_plan`.
+                        // the session, `a` always (persisted).
                         KeyCode::Char('y') => {
                             send_approval(app, holly, request_id.clone(), ApprovalScope::Once)
                                 .await;
@@ -433,11 +444,15 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
-                            } else if let Some(agent_name) = app.cycle_primary_profile() {
+                            } else if let Some(mode) = app.cycle_mode(true) {
+                                // Cycles the permission mode, not the agent:
+                                // ADR-0207 fixed the agent at session start, so
+                                // mode is the only axis left that a keystroke
+                                // can meaningfully switch.
                                 let _ = holly
-                                    .send(entanglement_core::InMsg::SetAgent {
+                                    .send(InMsg::SetMode {
                                         session: app.active_session_id().clone(),
-                                        agent: agent_name,
+                                        mode,
                                     })
                                     .await;
                             }
@@ -455,11 +470,15 @@ pub(super) async fn handle_event(
                             let input_text = app.input().lines().join("\n");
                             if input_text.starts_with('/') && input_text.chars().count() == 1 {
                                 app.toggle_command_palette();
-                            } else if let Some(agent_name) = app.cycle_primary_profile_back() {
+                            } else if let Some(mode) = app.cycle_mode(false) {
+                                // Cycles the permission mode, not the agent:
+                                // ADR-0207 fixed the agent at session start, so
+                                // mode is the only axis left that a keystroke
+                                // can meaningfully switch.
                                 let _ = holly
-                                    .send(entanglement_core::InMsg::SetAgent {
+                                    .send(InMsg::SetMode {
                                         session: app.active_session_id().clone(),
-                                        agent: agent_name,
+                                        mode,
                                     })
                                     .await;
                             }
@@ -511,10 +530,6 @@ pub(super) async fn handle_event(
                             // same `InMsg::Stop` Esc already sends in approval
                             // mode. The app no longer quits on Esc; `/exit` and
                             // the two-stage Ctrl+C remain the quit paths.
-                            // Routed through `request_stop` (#626): a plan
-                            // session parked on a live sponsored build child
-                            // arms the cascade-vs-detach confirm instead of
-                            // sending `Stop` right away.
                             if app.mention_visible() {
                                 app.hide_mention();
                             } else if app.slash_visible() {
@@ -862,12 +877,9 @@ async fn send_name(app: &mut App, holly: &Holly, text: &str) {
 }
 
 /// Send `/stop [--all]` (#6): the bare form routes through
-/// `stop_command::request_stop` (#626) — the same cascade-vs-detach-aware
-/// path the repurposed Esc uses — so a plan session parked on a live
-/// sponsored build child offers the choice instead of always detaching;
-/// `--all` fans out a raw `InMsg::Stop` to every live session, bypassing the
-/// confirm. A parse error (unknown argument) is rendered as a status line
-/// instead.
+/// `stop_command::request_stop`; `--all` fans out a raw `InMsg::Stop` to
+/// every live session directly. A parse error (unknown argument) is rendered
+/// as a status line instead.
 async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
     let all = match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Stop)
     {
@@ -878,10 +890,6 @@ async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
         }
     };
     if all {
-        // `--all` fans out a raw `Stop` to every live session, bypassing the
-        // cascade-vs-detach confirm (#626) — a bulk action re-confirming per
-        // session would defeat its own purpose, so this form keeps the
-        // pre-#626 detach-always semantics.
         let ids: Vec<_> = app
             .sessions()
             .into_iter()
@@ -973,9 +981,10 @@ async fn send_pause_resume_toggle(app: &mut App, holly: &Holly) {
 }
 
 /// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear
-/// the prompt. Scope is inert for `propose_plan` (the runtime records grants
-/// only on the generic tool path); the sponsored-build handoff is now runtime
-/// policy (ADR-0138), so the head just forwards the approval.
+/// the prompt. `mode` is always `None` here — a `propose_plan` request never
+/// reaches this path any more (it has its own [`send_plan_approval`], which is
+/// the only caller that sets `mode`); every other tool's scope is graded by
+/// the generic permission path, which this just forwards.
 async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
     let pending = app.pending_tool_request().cloned();
     let _ = holly
@@ -983,6 +992,7 @@ async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: 
             session: app.active_session_id().clone(),
             request_id,
             scope,
+            mode: None,
         })
         .await;
     // Pop the answered request and surface the next parked one, if any (#273).
@@ -1007,6 +1017,39 @@ fn record_approved(app: &mut App, tool: &str, scope: ApprovalScope) {
         ApprovalScope::SessionDir => "session, dir",
     };
     app.record_status("approval", format!("✓ approved {tool} ({scope_label})"));
+}
+
+/// Whether the currently parked approval is a `propose_plan` request (#560,
+/// ADR-0207 §7 extension) — the one tool whose accept keys diverge from the
+/// generic `y`/`s`/`a`/`d` scope letters (see the match arms above).
+fn is_plan_request(app: &App) -> bool {
+    app.pending_tool_request()
+        .is_some_and(|(_, tool, _)| tool == crate::tool_names::PROPOSE_PLAN_TOOL)
+}
+
+/// Send the `propose_plan`-specific [`InMsg::Approve`] (#560, ADR-0207 §7
+/// extension): here the *approver* chooses the mode the session switches to —
+/// `mode` is `Some("auto")` for the `[u]` bare-accept default or
+/// `Some("build")` for the explicit `[b]` choice, read by
+/// `propose_plan::run_propose_plan` in place of the old hardcoded `build`
+/// constant. Scope stays `Once` — it was already inert for this tool (the
+/// runtime never records a grant for a plan approval), so there is nothing
+/// for `[s]`/`[a]`/`[d]` to mean here; this function is the only accept path
+/// `propose_plan` offers now.
+async fn send_plan_approval(app: &mut App, holly: &Holly, request_id: String, mode: &'static str) {
+    let pending = app.pending_tool_request().cloned();
+    let _ = holly
+        .send(InMsg::Approve {
+            session: app.active_session_id().clone(),
+            request_id,
+            scope: ApprovalScope::Once,
+            mode: Some(mode.to_string()),
+        })
+        .await;
+    app.advance_approval();
+    if let Some((_, tool, _)) = &pending {
+        app.record_status("approval", format!("✓ approved {tool} → mode `{mode}`"));
+    }
 }
 
 /// Records a rejection (and its optional reason) as a one-line transcript

@@ -16,12 +16,18 @@
 //! drop-in replacement with the identical signature plus the profile
 //! receiver. Core's `resolve_scoped`/`glob_match` stay untouched (`make
 //! tree` keeps the runtime's policy layer out of core); this is a
-//! runtime-only wrapper, applied independently at each existing call site
-//! (the ancestor-chain fold, the config ceiling clamp, the tool-overlay
-//! grade) rather than as one refactored top-level function — `min`-folding a
-//! segment grade is associative and commutative, so folding per layer then
-//! combining layers with the existing `min_permission` calls gives exactly
-//! the same answer as folding once over every (layer, segment) pair would.
+//! runtime-only wrapper, applied independently at each remaining call site
+//! (the tool-overlay grade, in both `tool_runner::dispatch` and
+//! `BindingPolicy::decide`) rather than as one refactored top-level function
+//! — `min`-folding a segment grade is associative and commutative, so
+//! folding per layer then combining layers with the existing
+//! `min_permission` calls gives exactly the same answer as folding once over
+//! every (layer, segment) pair would. The config **ceiling** clamp
+//! (`permission::clamp_to_base`) no longer routes through here (ADR-0207
+//! stage 6c): it grades through `mode::Mode::resolve` instead, which does
+//! its own compound-command splitting and additionally understands
+//! capability-class ceiling rules (`deny: [write]`), which this
+//! `PermissionProfile`-only wrapper has no notion of.
 
 use entanglement_core::{Permission, PermissionProfile};
 
@@ -155,6 +161,37 @@ mod tests {
         assert_eq!(
             resolve_scoped_bash_aware(&profile, "bash", Some("find . > out.txt"), None),
             Permission::Ask
+        );
+    }
+
+    #[test]
+    fn fd_dup_redirect_no_longer_forces_opaque_and_reaches_the_prompt_rule() {
+        // The regression this closes: `2>&1` used to force the whole
+        // command Opaque, which drops the arg-scoped rule and grades off
+        // the profile's *default* instead. Pin the default to `Allow` (a
+        // value neither segment's own rule produces) so this test can tell
+        // "reached `bash(git push*)`'s own `Ask`" apart from "fell through
+        // to the default and got lucky" — pre-fix this asserted `Allow`.
+        let profile = PermissionProfile::new(Permission::Allow)
+            .with("bash(tail *)", Permission::Allow)
+            .with("bash(git push*)", Permission::Ask);
+        assert_eq!(
+            resolve_scoped_bash_aware(
+                &profile,
+                "bash",
+                Some("git push origin main 2>&1 | tail -6"),
+                None
+            ),
+            Permission::Ask
+        );
+    }
+
+    #[test]
+    fn dev_null_redirect_reaches_the_matching_allow_rule() {
+        let profile = PermissionProfile::new(Permission::Ask).with("bash(ls*)", Permission::Allow);
+        assert_eq!(
+            resolve_scoped_bash_aware(&profile, "bash", Some("ls -la 2>/dev/null"), None),
+            Permission::Allow
         );
     }
 

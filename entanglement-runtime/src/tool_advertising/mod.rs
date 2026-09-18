@@ -160,6 +160,14 @@ impl AdvertisingInputs {
         }
     }
 
+    /// The catalog this instance was built with (#560 P12, ADR-0207 §12):
+    /// threaded into `LadderCtx` so `explore`/`describe`'s `models` kind and
+    /// `agent`'s `model` parameter validation read the exact same catalog
+    /// every advertising resolution already does, rather than a second copy.
+    pub fn catalog(&self) -> Option<&Arc<Catalog>> {
+        self.catalog.as_ref()
+    }
+
     /// Resolve a session with no bound model as `provider`/`model`.
     pub fn with_default_model(
         mut self,

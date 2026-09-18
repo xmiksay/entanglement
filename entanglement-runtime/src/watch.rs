@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use entanglement_core::ProfileRegistry;
+use entanglement_core::AgentCatalog;
 use notify_debouncer_mini::DebounceEventResult;
 use sha2::{Digest, Sha256};
 
@@ -51,10 +51,10 @@ const MANAGED_FILE_ENVS: &[&str] = &[
 ];
 
 /// The runtime-held mirrors a reload swaps. See the module doc for why this is
-/// deliberately *not* core's `EngineConfig.profiles`.
+/// deliberately *not* core's `EngineConfig.agents`.
 #[derive(Clone)]
 pub struct LiveDefinitions {
-    pub profiles: Arc<RwLock<ProfileRegistry>>,
+    pub agents: Arc<RwLock<AgentCatalog>>,
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
     pub grants: Arc<DefaultGrantStore>,
@@ -235,7 +235,21 @@ pub(crate) fn spawn_debounced_watcher(
     let mut debouncer =
         match notify_debouncer_mini::new_debouncer(debounce, move |res: DebounceEventResult| {
             match res {
-                Ok(events) if !events.is_empty() => {
+                // `notify_debouncer_mini` can emit a provisional
+                // `AnyContinuous` event for a path ahead of its final `Any`
+                // — the same logical write straddling a debounce tick, not
+                // a second change (see `DebounceDataInner::debounced_events`:
+                // an entry still updating right at the deadline is reported
+                // once as `AnyContinuous` and rescheduled, only settling to
+                // `Any` on a later tick with no further updates). Counting
+                // `AnyContinuous` double-fired the reload callback for one
+                // edit; only a batch containing a real `Any` means "this
+                // change has settled".
+                Ok(events)
+                    if events
+                        .iter()
+                        .any(|e| e.kind == notify_debouncer_mini::DebouncedEventKind::Any) =>
+                {
                     tracing::debug!(count = events.len(), "definitions watcher: debounced batch");
                     let _ = tx.send(());
                 }
@@ -338,7 +352,7 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let agent_count = new_profiles.iter().count();
     let skill_count = new_skills.disclosures().len();
     *live.skills.write().unwrap() = Arc::new(new_skills);
-    *live.profiles.write().unwrap() = new_profiles;
+    *live.agents.write().unwrap() = new_profiles;
 
     Ok(format!(
         "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) — \
@@ -512,17 +526,16 @@ mod tests {
         }
         tokio::time::sleep(TEST_DEBOUNCE * 3).await;
 
-        // Usually collapses to exactly 1. `notify_debouncer_mini` can emit a
-        // provisional `AnyContinuous` plus a final `Any` (2 callbacks) when the
-        // last raw event's kernel delivery lands right at the debounce
-        // boundary — inherent scheduler jitter under a loaded host, not a
-        // watcher bug — so the assertion allows that one extra tick while still
-        // proving the burst collapsed (5 writes, nowhere near 5 callbacks).
-        let fired = count.load(Ordering::SeqCst);
-        assert!(
-            (1..=2).contains(&fired),
-            "a burst within the debounce window must collapse to 1 (occasionally 2 under \
-             scheduler jitter) callbacks, not {fired}"
+        // `notify_debouncer_mini` can emit a provisional `AnyContinuous`
+        // event ahead of the final `Any` for the same write — the debounced
+        // watcher now only counts a batch as a real change when it contains
+        // an `Any` (see `spawn_debounced_watcher`'s handler), so a burst
+        // collapses to exactly 1 callback, not "1 or 2 depending on
+        // scheduler jitter".
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a burst within the debounce window must collapse to exactly 1 callback"
         );
         handle.abort();
     }

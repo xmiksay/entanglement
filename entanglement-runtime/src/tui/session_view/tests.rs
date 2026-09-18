@@ -601,12 +601,11 @@ fn elapsed_tracks_running_then_freezes_on_end() {
         session: sid(),
         parent: Some(SessionId::new("root")),
         predecessor: None,
-        profile: "explore".into(),
+        agent: "explore".into(),
         model: None,
         root: false,
         ts: 1_000,
         user: None,
-        sponsored: false,
     });
     // Running: measured against the current wall clock.
     assert_eq!(v.elapsed_secs(4_000), Some(3));
@@ -800,4 +799,41 @@ fn session_meta_changed_folds_name_and_action() {
         action: None,
     }));
     assert_eq!(v.action(), None);
+}
+
+/// Every streamed delta clears the pending prompt. That used to scan back to
+/// the last `User` entry each time, so a resumed log with a million deltas
+/// and a handful of prompts froze the TUI for minutes. This size takes
+/// billions of steps under the old scan and finishes at once now.
+#[test]
+fn a_long_delta_stream_does_not_rescan_the_transcript() {
+    let mut v = SessionView::new();
+    v.record_user_message("go".to_string());
+    for seq in 1..=200_000u64 {
+        v.apply_event(OutEvent::ReasoningDelta {
+            session: sid(),
+            seq,
+            text: "t".to_string(),
+        });
+    }
+    assert!(matches!(
+        v.transcript().first(),
+        Some(TranscriptEntry::User { pending: false, .. })
+    ));
+
+    // A new prompt is pending again until its turn produces content.
+    v.record_user_message("next".to_string());
+    assert!(matches!(
+        v.transcript().last(),
+        Some(TranscriptEntry::User { pending: true, .. })
+    ));
+    v.apply_event(OutEvent::TextDelta {
+        session: sid(),
+        seq: 200_001,
+        text: "reply".to_string(),
+    });
+    assert!(v
+        .transcript()
+        .iter()
+        .all(|e| !matches!(e, TranscriptEntry::User { pending: true, .. })));
 }

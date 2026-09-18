@@ -20,9 +20,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, ModelResolver, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, ResolvedModel, SessionId,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId,
 };
 
 type Seen = Arc<Mutex<Vec<Option<String>>>>;
@@ -73,36 +72,29 @@ fn resolver(seen: &Seen) -> ModelResolver {
     })
 }
 
-fn profile(name: &str, pin: Option<(&str, &str)>) -> AgentProfile {
-    AgentProfile {
+fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
+    Agent {
         name: name.to_string(),
         description: String::new(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: pin.map(|(_, m)| m.to_string()),
         provider: pin.map(|(p, _)| p.to_string()),
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
-fn registry() -> ProfileRegistry {
-    let mut reg = ProfileRegistry::default();
-    // `Session::replay` falls back to a default `build` profile in a couple of
-    // edge cases (unrelated to what these tests exercise), so it must exist
-    // alongside the pinned `plan` profile these tests actually use.
-    reg.insert(profile("build", None));
+fn registry() -> AgentCatalog {
+    let mut reg = AgentCatalog::default();
+    // `Session::replay` falls back to the default `general` profile in a
+    // couple of edge cases (unrelated to what these tests exercise), so it
+    // must exist alongside the pinned `plan` profile these tests actually use.
+    reg.insert(profile("general", None));
     reg.insert(profile("plan", Some(("anthropic", "claude-x"))));
     reg
 }
 
 fn config(seen: &Seen) -> EngineConfig {
     EngineConfig {
-        profiles: registry(),
+        agents: registry(),
         model_resolver: Some(resolver(seen)),
         ..EngineConfig::default()
     }
@@ -155,12 +147,11 @@ fn diverged_log(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 session: sid.clone(),
                 parent: None,
                 predecessor: None,
-                profile: "plan".into(),
+                agent: "plan".into(),
                 model: Some("claude-x".into()),
                 root: true,
                 ts: 0,
                 user: None,
-                sponsored: false,
             },
         ),
         (
@@ -168,7 +159,6 @@ fn diverged_log(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
             OutEvent::AgentChanged {
                 session: sid.clone(),
                 agent: "plan".into(),
-                profile_detail: None,
             },
         ),
         (
@@ -247,7 +237,6 @@ async fn fresh_session_start_is_unaffected() {
             agent: "plan".into(),
             prompt: "hi".into(),
             user: None,
-            sponsored: false,
         })
         .await
         .unwrap();
@@ -294,12 +283,11 @@ async fn resuming_an_already_corrected_log_stays_idempotent() {
             session: sid.clone(),
             parent: None,
             predecessor: None,
-            profile: "plan".into(),
+            agent: "plan".into(),
             model: Some("glm-b".into()),
             root: true,
             ts: 1,
             user: None,
-            sponsored: false,
         },
     ));
     log.push((

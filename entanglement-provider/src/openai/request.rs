@@ -21,12 +21,19 @@ pub(super) fn build_body(
     web_search: Option<&WebSearchConfig>,
     cache_key: Option<&str>,
     thinking: crate::ThinkingSpec,
+    trailing_notice: Option<&str>,
 ) -> Value {
-    let mut msgs = Vec::with_capacity(messages.len() + 1);
+    let mut msgs = Vec::with_capacity(messages.len() + 2);
     if !system.is_empty() {
         msgs.push(json!({ "role": "system", "content": system }));
     }
     msgs.extend(convert_messages(messages, thinking));
+    // Appended last, as its own turn — unlike Anthropic/Gemini this wire has
+    // no cache-anchor placement to keep it out of, and chat-completions
+    // tolerates consecutive same-role messages, so no merge is needed.
+    if let Some(notice) = trailing_notice {
+        msgs.push(json!({ "role": "user", "content": notice }));
+    }
     let mut body = json!({
         "model": model,
         "messages": msgs,

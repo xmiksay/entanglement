@@ -51,35 +51,31 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   brief path, generated env, …). A load-time `debug!` (`agent=… prompt_len=…
   brief=<path|none> skills=…`) surfaces the same facts during any run.
   `skutter inspect agents [name]` (#185) surfaces the **layer-collision winner**
-  the silent later-wins `insert` used to swallow: with no `name`, a table (name,
-  mode, model, winning layer, source path, tool-mask summary, dispatch tally) of
-  every resolved
-  agent; with a `name`, the full resolved profile (permission rules, tool mask,
-  per-tool dispatch state,
-  spawn control, plan authority, assembled-prompt length) **plus** which
-  lower-layer definitions it overrode — the exact fields #116/#119/#140
-  enforcement hinges on. Same engine-free discovery as `inspect prompt`, via a
+  the silent later-wins `insert` used to swallow: with no `name`, a table
+  (name, model, winning layer, source path) of every resolved agent; with a
+  `name`, the full resolved profile — **identity and provenance only**
+  now — name, description, model/provider pin, assembled-prompt length,
+  plus which lower-layer definitions it overrode.
+  [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  moved every permission fact (the tool mask, the permission rules, plan
+  authorship, spawn control, sandbox confinement) off `Agent` and
+  onto the session's independent permission mode, so this view lost the
+  columns those facts used to fill — a profile has no posture left to
+  render here at all. Same engine-free discovery as `inspect prompt`, via a
   `(layer, source)` provenance sidecar (`agents::resolve_registry`); `load_registry`
   also emits a `replaces=<prior layer>` `debug!` at each overriding insert.
-  **Three-state, not present/absent:** since advertisement stopped tracking the
-  mask ([agents & permissions](agents-and-permissions.md) §physical tool
-  restriction), a masked-out tool is advertised and *declined at dispatch*, so
-  both views render each tool's dispatch state — `allowed` / `asks` /
-  `declines` (`runtime::tool_state`) — instead of implying the tool is gone.
-  The mask stays printed beside it as the **source** data (it is what the user
-  edits); the state is its consequence: the detail view lists every roster tool
-  with its state, the table carries the `allowed:N asks:N declines:N` tally.
-  `declines` folds three causes — a `Deny` grade, the mask, and the
-  profile-defining advertisement gates (`may_spawn` for `agent`/`agent_send`,
-  explicit allowlist membership for `propose_plan`), all of which refuse the
-  call. Where an argument-/workdir-scoped rule (`write(.entanglement/plans/*.md):
-  allow`) makes a concrete call land elsewhere than the bare grade, the state
-  says so rather than picking one: `declines (allowed by argument)`, off
-  `PermissionProfile::scoped_grades` (each scoped rule probed with its own
-  pattern as the value, so a later bare rule overriding it is reflected).
-  Engine-free means no registry: the roster is the compile-time built-in
-  vocabulary (`tool_names::known_tool_names`, `read_raw` withheld) and MCP tools
-  are necessarily absent — the view says so inline.
+  What replaces the old mask/dispatch-state columns is `skutter inspect modes
+  [name]` (§permission modes in [agents & permissions](agents-and-permissions.md)):
+  with no `name`, the four built-in modes at a glance (default grade,
+  sandbox posture); with a `name`, its **resolved** rule table (built-in
+  shape plus any `config.yml` `modes:` tuning) and the outcome for a known
+  tool roster — `allowed` / `asks` / `declines`, the same three-state
+  vocabulary the old `inspect agents` view used, now attached to the mode
+  rather than the agent. Engine-free means no registry there either: the
+  roster is the compile-time built-in vocabulary plus the runtime-owned
+  pseudo-tools (`capability::static_capability_of`), and MCP/endpoint tools
+  are necessarily absent — a dynamic, environment-dependent surface out of
+  scope for a static report.
   `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
   **skill** registry — the authoring loop was "start a session and ask the model":
   no `name` prints a table (name, user_only, winning layer, `root_dir`,
@@ -329,7 +325,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   out to every live one), and `Ctrl+Space` toggles pause/resume on the active
   session (safe because the engine treats `PauseSession` on an idle session
   and `ResumeSession` on a non-paused one as idempotent no-ops,
-  [ADR-0144](../adr/0144-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+  [ADR-0208](../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
   The sessions modal adds lifecycle **quick keys** on the highlighted row
   (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
   modal staying open so several sessions can be acted on in a row, plus
@@ -337,13 +333,18 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   session is refused with a status line). **Every single-target `Stop` site**
   (bare `Esc`, `/stop`'s bare form, the sessions modal's `s`, the command
   palette's `/stop` pick) routes through `tui/stop_command.rs::request_stop`
-  (#626, [ADR-0172](../adr/0172-tui-stop-cascade-vs-detach-confirm-modal.md)):
-  if the target is `WaitingAgent` with a live sponsored `propose_plan` build
-  child (`OutEvent::SessionStarted.sponsored`), it arms a confirm modal
-  (`c` cascades — stops the child too; `Enter`/`y`/`d` detaches, the pre-#626
-  default; `Esc`/`n` cancels) instead of sending `Stop` immediately;
-  otherwise behavior is unchanged. `/stop --all` bypasses the confirm and
-  keeps raw fan-out semantics. `/name <text>` sets the session's
+(originally #626,
+  [ADR-0172](../adr/0172-tui-stop-cascade-vs-detach-confirm-modal.md)): it
+  used to arm a cascade-vs-detach confirm modal (`c` cascades, `Enter`/`y`/`d`
+  detaches, `Esc`/`n` cancels) when the target was `WaitingAgent` with a live
+  **sponsored** `propose_plan` build child
+  (`OutEvent::SessionStarted.sponsored`). [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  §7 retires that handoff entirely — plan approval switches the session's own
+  mode instead of spawning a child, so `sponsored` is never `true` any more
+  (it stays on the wire only for old-log replay) — and with the confirm's
+  premise gone, `request_stop` now **always** sends `Stop` immediately,
+  unconditionally, for every target. `/stop --all` keeps its raw fan-out
+  semantics unchanged. `/name <text>` sets the session's
   display name via `InMsg::SetSessionMeta`
   ([ADR-0151](../adr/0151-settable-session-metadata.md)); the sidebar and
   sessions modal prefer the name over the short id and the live `action` over
@@ -382,7 +383,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   without leaving the TUI. It reuses the identical engine-free renderers
   (`inspect::tui_reports` → the shared `render_*` helpers): the Prompt tab is the
   active agent's `--parts` breakdown; the Agents tab is the registry table plus
-  the active agent's full detail (permission / mask / spawn / plan authorship); the
+  the active agent's full detail — **identity and provenance only** since
+  [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  (name, description, model/provider pin, assembled-prompt length,
+  overridden lower layers; no more permission/mask/spawn/plan-authorship
+  columns to show — that posture is `skutter inspect modes`' job now, not
+  yet surfaced as a fourth tab here); the
   Skills tab is the exact `disclosures()` block the model sees plus the full table
   (including `user_only`). Views resolve on open from the cwd + live agent, so
   they stay fresh across mid-session definition edits. The Agents and Skills tabs

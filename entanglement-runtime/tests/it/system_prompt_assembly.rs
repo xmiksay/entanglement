@@ -5,10 +5,14 @@
 //! sessions through `Holly` and captures the exact `system` string each one sends
 //! to the LLM on its first turn, asserting:
 //!
-//! - a **primary** agent that flags `include_brief` gets
+//! - an agent that flags `include_brief` gets
 //!   `preamble + body + brief + env + skills`;
-//! - a **subagent** gets `preamble + body` only — and *not* the project brief the
-//!   sibling primary included (the child never inherits the parent's prompt).
+//! - a spawned agent that does not flag it gets `preamble + body + env +
+//!   skills` — env/skills are unconditional now (ADR-0207 §4 retires the old
+//!   `Subagent`-mode reduced form; any agent may be a session root or a
+//!   spawn target) — but never the project brief the sibling agent included
+//!   (a spawned agent never inherits the parent's prompt; each is composed
+//!   independently from its own body and its own `include_brief`).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -51,21 +55,22 @@ impl Llm for RecordingLlm {
 }
 
 #[tokio::test]
-async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
-    // A file-defined primary that opts into the brief, and a subagent that does not.
+async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
+    // A file-defined agent that opts into the brief, and one that does not —
+    // identity only now (ADR-0207 §4), no `mode:` frontmatter key left.
     let project = tempfile::tempdir().unwrap();
     let agents_dir = project.path().join(".entanglement").join("agents");
     write_agent(
         &agents_dir,
         "parent.md",
         &format!(
-            "---\nname: parent\ndescription: primary\nmode: primary\ninclude_brief: true\n---\n{PARENT_BODY}"
+            "---\nname: parent\ndescription: primary\ninclude_brief: true\n---\n{PARENT_BODY}"
         ),
     );
     write_agent(
         &agents_dir,
         "child.md",
-        &format!("---\nname: child\ndescription: leaf\nmode: subagent\n---\n{CHILD_BODY}"),
+        &format!("---\nname: child\ndescription: leaf\n---\n{CHILD_BODY}"),
     );
 
     // Explicit composition inputs: real preamble, brief, env, and one skill.
@@ -114,7 +119,7 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
                 seen: seen_factory.clone(),
             }) as Box<dyn Llm>
         }),
-        profiles,
+        agents: profiles,
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -132,7 +137,6 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
                 agent: agent.into(),
                 prompt: "task".into(),
                 user: None,
-                sponsored: false,
             })
             .await
             .unwrap();
@@ -160,33 +164,82 @@ async fn spawned_child_system_has_preamble_and_body_but_not_the_parent_brief() {
         .find(|s| s.contains(CHILD_BODY))
         .expect("child session streamed a request");
 
-    // Primary: the full five-part assembly.
-    assert!(parent_sys.contains(PREAMBLE), "primary keeps the preamble");
-    assert!(parent_sys.contains(BRIEF), "primary flagged the brief in");
-    assert!(parent_sys.contains("<env>"), "primary gets the env block");
+    // `parent`: the full five-part assembly.
+    assert!(parent_sys.contains(PREAMBLE), "keeps the preamble");
+    assert!(parent_sys.contains(BRIEF), "flagged the brief in");
+    assert!(parent_sys.contains("<env>"), "gets the env block");
     assert!(
         parent_sys.contains("git: commit helpers"),
-        "primary gets the skill index"
+        "gets the skill index"
     );
 
-    // Subagent: preamble + body only — never the parent's brief, env, or skills.
-    assert!(child_sys.contains(PREAMBLE), "subagent keeps the preamble");
-    assert!(
-        child_sys.contains(CHILD_BODY),
-        "subagent keeps its own body"
-    );
+    // `child`: preamble + body + env + skills — env/skills are unconditional
+    // now (ADR-0207 §4) — but never the parent's brief (it never flagged
+    // `include_brief`) or the parent's own body/prompt.
+    assert!(child_sys.contains(PREAMBLE), "keeps the preamble");
+    assert!(child_sys.contains(CHILD_BODY), "keeps its own body");
     assert!(
         !child_sys.contains(BRIEF),
-        "unflagged subagent must NOT carry the brief: {child_sys:?}"
+        "unflagged agent must NOT carry the brief: {child_sys:?}"
     );
-    assert!(!child_sys.contains("<env>"), "subagent gets no env block");
+    assert!(child_sys.contains("<env>"), "gets the env block too");
     assert!(
-        !child_sys.contains("git: commit helpers"),
-        "subagent gets no skill index"
+        child_sys.contains("git: commit helpers"),
+        "gets the skill index too"
     );
     // And it is composed from its own body, not the parent's.
     assert!(
         !child_sys.contains(PARENT_BODY),
         "no parent-prompt inheritance"
     );
+}
+
+/// ADR-0207 §9/§12: `EngineConfig::modes_preamble` (the runtime's static
+/// "what modes exist" text, `mode::describe::modes_preamble`) is folded into
+/// the cached system prompt once and is byte-identical across two entirely
+/// independent sessions — it must never vary per session/turn, since it sits
+/// in the provider's cached prefix.
+#[tokio::test]
+async fn modes_preamble_reaches_the_system_prompt_identically_across_sessions() {
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_factory = seen.clone();
+    let preamble = entanglement_runtime::mode::describe::modes_preamble();
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(RecordingLlm {
+                seen: seen_factory.clone(),
+            }) as Box<dyn Llm>
+        }),
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        modes_preamble: Some(preamble.clone()),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let mut sub = holly.subscribe();
+
+    for id in ["s1", "s2"] {
+        holly
+            .send(InMsg::prompt(SessionId::new(id), "task"))
+            .await
+            .unwrap();
+    }
+    let mut done = 0;
+    while done < 2 {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+            Ok(Ok(OutEvent::Done { .. })) => done += 1,
+            Ok(Ok(_)) => {}
+            other => panic!("turn did not finish: {other:?}"),
+        }
+    }
+
+    let systems = seen.lock().unwrap().clone();
+    assert_eq!(systems.len(), 2);
+    for system in &systems {
+        assert!(system.contains(&preamble), "{system}");
+    }
+    // Not just "both contain it" — the trailing preamble text itself must be
+    // byte-identical between the two sessions.
+    let suffix = |s: &str| s[s.rfind(&preamble).expect("preamble present")..].to_string();
+    assert_eq!(suffix(&systems[0]), suffix(&systems[1]));
 }

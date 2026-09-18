@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
+use entanglement_core::{Agent, AgentCatalog};
 use entanglement_runtime::config::agent_models::AgentModelStore;
 
 // `ENTANGLEMENT_AGENT_MODELS_FILE` is process-global; tests that set it serialize.
@@ -14,20 +14,13 @@ fn tmp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("entanglement-agent-models-it-{name}.yml"))
 }
 
-fn profile(name: &str) -> AgentProfile {
-    AgentProfile {
+fn profile(name: &str) -> Agent {
+    Agent {
         name: name.to_string(),
         description: "d".into(),
-        mode: AgentMode::Primary,
         system_prompt: String::new(),
         model: None,
         provider: None,
-        permission: PermissionProfile::new(Permission::Allow),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
     }
 }
 
@@ -95,7 +88,7 @@ fn apply_overlays_pins_and_wins_over_frontmatter() {
     // A pin for a profile the registry doesn't carry is ignored, not fatal.
     store.set("ghost", "x", "y").unwrap();
 
-    let mut reg = ProfileRegistry::default();
+    let mut reg = AgentCatalog::default();
     // `build` carries a frontmatter pin the persisted store must override.
     let mut build = profile("build");
     build.provider = Some("zai".into());

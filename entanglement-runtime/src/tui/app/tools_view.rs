@@ -5,12 +5,15 @@
 //!
 //! Row building reuses [`crate::discover::index_rows`] — the exact live
 //! index `explore`/`tool_search` already serve — for name/description/kind,
-//! then layers this session's own mask/overlay/advertising status on top.
+//! then layers this session's own overlay/advertising status on top. No
+//! profile-borne mask or permission grade exists to layer any more (ADR-0207
+//! moved both onto the session's independent permission mode), so `masked`
+//! reflects the overlay alone and `grade` has nothing local left to report.
 //! Nothing here re-walks the registry/MCP/skill state independently.
 
 use std::sync::Arc;
 
-use entanglement_core::{AgentProfile, Holly, Permission, ToolAdvertising, ToolOverlayEntry};
+use entanglement_core::{Holly, ToolAdvertising, ToolOverlayEntry};
 use ratatui::widgets::ListState;
 
 use crate::discover::IndexRow;
@@ -18,7 +21,7 @@ use crate::tool_advertising::AdvertisingState;
 use crate::tool_names;
 use crate::tui::tools_view::{ToolsView, ToolsViewRow};
 
-use super::{App, ProfileInfo};
+use super::App;
 
 impl App {
     /// Install the shared ADR-0196 §2-3 pinned-mode/discovered-set handle —
@@ -96,8 +99,6 @@ impl App {
     fn tools_view_rows(&self) -> Vec<ToolsViewRow> {
         let session = self.active_session_id().clone();
         let overlay = self.overlay_entries(&session);
-        let agent = self.sessions.active_view().agent().to_string();
-        let profile = self.available_profiles.iter().find(|p| p.name == agent);
 
         let index: Vec<IndexRow> = match self.mcp_handles() {
             Some(handles) => {
@@ -136,7 +137,7 @@ impl App {
 
         let mut rows: Vec<ToolsViewRow> = index
             .into_iter()
-            .map(|r| build_row(r, profile, &overlay, mode, &discovered))
+            .map(|r| build_row(r, &overlay, mode, &discovered))
             .collect();
         rows.sort_by(|a, b| a.kind.cmp(b.kind).then_with(|| a.name.cmp(&b.name)));
         rows
@@ -145,24 +146,17 @@ impl App {
 
 fn build_row(
     row: IndexRow,
-    profile: Option<&ProfileInfo>,
     overlay: &[ToolOverlayEntry],
     mode: Option<ToolAdvertising>,
     discovered: &[String],
 ) -> ToolsViewRow {
-    let profile_default = profile
-        .map(|p| AgentProfile::mask_allows(p.tools.as_deref(), &p.disallowed_tools, &row.name))
-        .unwrap_or(true);
-    let effective = ToolOverlayEntry::disposition(overlay, &row.name).unwrap_or(profile_default);
-    // A profile-only resolution (no ancestor clamp, no grant-store lookup) —
-    // "cheaply available" per the task's own bar; the real dispatch-time
-    // grade can still differ (an ancestor's tighter permission chain, an
-    // already-granted session `Ask`→`Allow` upgrade).
-    let grade = profile.map(|p| match p.permission.resolve(&row.name, None) {
-        Permission::Allow => "allow",
-        Permission::Ask => "ask",
-        Permission::Deny => "deny",
-    });
+    // Every profile inherits every tool now (ADR-0207) — the session's own
+    // overlay is the only thing left that can mask a row here.
+    let effective = ToolOverlayEntry::disposition(overlay, &row.name).unwrap_or(true);
+    // No profile-borne permission grade exists any more either (ADR-0207
+    // moved it onto the session's mode, not wired into this view yet) — the
+    // column has nothing local left to report.
+    let grade = None;
     ToolsViewRow {
         status: status_for(&row.name, mode, discovered),
         name: row.name,
@@ -207,7 +201,7 @@ fn is_kernel(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::{AgentMode, PermissionProfile, SessionId};
+    use entanglement_core::SessionId;
 
     fn index_row(name: &str, kind: &'static str) -> IndexRow {
         IndexRow {
@@ -218,23 +212,10 @@ mod tests {
         }
     }
 
-    fn profile(name: &str, permission: PermissionProfile) -> ProfileInfo {
-        ProfileInfo {
-            name: name.to_string(),
-            description: String::new(),
-            mode: AgentMode::Primary,
-            tools: None,
-            disallowed_tools: Vec::new(),
-            permission,
-            may_spawn: true,
-        }
-    }
-
     #[test]
     fn full_mode_reports_every_row_advertised() {
         let row = build_row(
             index_row("bash", "tool"),
-            None,
             &[],
             Some(ToolAdvertising::Full),
             &[],
@@ -246,7 +227,6 @@ mod tests {
     fn tool_search_mode_distinguishes_kernel_discoverable_and_discovered() {
         let kernel = build_row(
             index_row("bash", "tool"),
-            None,
             &[],
             Some(ToolAdvertising::ToolSearch),
             &[],
@@ -255,7 +235,6 @@ mod tests {
 
         let undiscovered = build_row(
             index_row("mcp__docs__search", "mcp"),
-            None,
             &[],
             Some(ToolAdvertising::ToolSearch),
             &[],
@@ -264,7 +243,6 @@ mod tests {
 
         let discovered = build_row(
             index_row("mcp__docs__search", "mcp"),
-            None,
             &[],
             Some(ToolAdvertising::ToolSearch),
             &["mcp__docs__search".to_string()],
@@ -274,37 +252,26 @@ mod tests {
 
     #[test]
     fn no_advertising_handle_reports_n_a() {
-        let row = build_row(index_row("bash", "tool"), None, &[], None, &[]);
+        let row = build_row(index_row("bash", "tool"), &[], None, &[]);
         assert_eq!(row.status, "n/a");
     }
 
     #[test]
-    fn masked_reflects_the_profile_default_overridden_by_the_overlay() {
-        let mut p = profile("plan", PermissionProfile::new(Permission::Ask));
-        p.tools = Some(vec!["read".to_string()]);
-        let masked = build_row(index_row("bash", "tool"), Some(&p), &[], None, &[]);
-        assert!(masked.masked, "bash isn't in the plan profile's allowlist");
+    fn masked_reflects_the_overlay_since_no_profile_mask_exists_any_more() {
+        // ADR-0207: every profile inherits every tool, so only the session's
+        // own overlay can mask a row here.
+        let unmasked = build_row(index_row("bash", "tool"), &[], None, &[]);
+        assert!(!unmasked.masked);
 
-        let overlay = vec![ToolOverlayEntry::allow("bash")];
-        let unmasked = build_row(index_row("bash", "tool"), Some(&p), &overlay, None, &[]);
-        assert!(
-            !unmasked.masked,
-            "an enable overlay entry overrides the mask"
-        );
+        let overlay = vec![ToolOverlayEntry::deny("bash")];
+        let masked = build_row(index_row("bash", "tool"), &overlay, None, &[]);
+        assert!(masked.masked, "a deny overlay entry masks the row");
     }
 
     #[test]
-    fn grade_reads_the_profiles_own_permission_resolution() {
-        let p = profile(
-            "build",
-            PermissionProfile::new(Permission::Allow).with("write", Permission::Deny),
-        );
-        let allow = build_row(index_row("read", "tool"), Some(&p), &[], None, &[]);
-        assert_eq!(allow.grade, Some("allow"));
-        let deny = build_row(index_row("write", "tool"), Some(&p), &[], None, &[]);
-        assert_eq!(deny.grade, Some("deny"));
-        let none = build_row(index_row("read", "tool"), None, &[], None, &[]);
-        assert_eq!(none.grade, None);
+    fn grade_has_no_profile_local_source_left() {
+        let row = build_row(index_row("read", "tool"), &[], None, &[]);
+        assert_eq!(row.grade, None);
     }
 
     #[test]

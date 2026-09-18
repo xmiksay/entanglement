@@ -4,26 +4,7 @@ use ratatui::widgets::ListState;
 
 use crate::session_store::{list_sessions, LogRecord, SessionMeta};
 
-use super::{App, ProfileInfo};
-
-/// The implicit Tab-cycle ring (`mode: primary` only, #322) derived from an
-/// entry-agent roster: cross-vendor `all`-mode agents (ADR-0074) stay reachable
-/// via the `/agent` picker but don't flood the ring. Falls back to the whole
-/// roster if no primaries exist, so Tab never cycles an empty ring. Shared by
-/// [`App::new`][super::construct] and [`App::refresh_profiles`] (#329) so a
-/// definitions-watcher reload derives the ring identically to startup.
-pub(super) fn primary_order(available_profiles: &[ProfileInfo]) -> Vec<String> {
-    let primaries: Vec<String> = available_profiles
-        .iter()
-        .filter(|p| p.mode == entanglement_core::AgentMode::Primary)
-        .map(|p| p.name.clone())
-        .collect();
-    if primaries.is_empty() {
-        available_profiles.iter().map(|p| p.name.clone()).collect()
-    } else {
-        primaries
-    }
-}
+use super::{AgentInfo, App};
 
 impl App {
     pub fn showing_profile_picker(&self) -> bool {
@@ -34,7 +15,7 @@ impl App {
         &mut self.profile_picker_state
     }
 
-    pub fn available_profiles(&self) -> &[ProfileInfo] {
+    pub fn available_profiles(&self) -> &[AgentInfo] {
         &self.available_profiles
     }
 
@@ -55,18 +36,6 @@ impl App {
     pub fn close_profile_picker(&mut self) {
         self.showing_profile_picker = false;
         self.mark_dirty();
-    }
-
-    pub fn select_profile_picker(&mut self) -> Option<String> {
-        if let Some(selected) = self.profile_picker_state.selected() {
-            if selected < self.available_profiles.len() {
-                let profile_name = self.available_profiles[selected].name.clone();
-                self.showing_profile_picker = false;
-                self.mark_dirty();
-                return Some(profile_name);
-            }
-        }
-        None
     }
 
     pub fn profile_picker_next(&mut self) {
@@ -114,45 +83,6 @@ impl App {
                 .select(Some(selected.saturating_sub(n)));
             self.mark_dirty();
         }
-    }
-
-    /// Advance the active session to the next agent in the Tab cycle ring
-    /// (`mode: primary` only, #322). When the current agent is off-ring — an
-    /// `all`-mode agent picked via the Ctrl+A picker — land on the first ring
-    /// entry rather than the one after it.
-    pub fn cycle_primary_profile(&mut self) -> Option<String> {
-        let current = self.sessions.active_view().agent().to_string();
-        let next_index = match self
-            .primary_profile_order
-            .iter()
-            .position(|name| name == &current)
-        {
-            Some(idx) => (idx + 1) % self.primary_profile_order.len(),
-            None => 0,
-        };
-        let new_agent = self.primary_profile_order[next_index].clone();
-        self.sessions.active_view_mut().set_agent(new_agent.clone());
-        self.mark_dirty();
-        Some(new_agent)
-    }
-
-    /// Reverse of [`cycle_primary_profile`][Self::cycle_primary_profile]
-    /// (Shift+Tab, #322). Off-ring current agent → the last ring entry.
-    pub fn cycle_primary_profile_back(&mut self) -> Option<String> {
-        let current = self.sessions.active_view().agent().to_string();
-        let len = self.primary_profile_order.len();
-        let prev_index = match self
-            .primary_profile_order
-            .iter()
-            .position(|name| name == &current)
-        {
-            Some(idx) => (idx + len - 1) % len,
-            None => len - 1,
-        };
-        let new_agent = self.primary_profile_order[prev_index].clone();
-        self.sessions.active_view_mut().set_agent(new_agent.clone());
-        self.mark_dirty();
-        Some(new_agent)
     }
 
     pub fn showing_sessions_modal(&self) -> bool {
@@ -257,18 +187,17 @@ impl App {
         self.agent_models = Some(store);
     }
 
-    /// Re-derive the `/agent` picker roster + Tab-cycle ring from a freshly
+    /// Re-derive the `/agent` picker's (read-only) roster from a freshly
     /// reloaded registry (#329), the live-reload counterpart of the roster
     /// [`App::new`][super::construct] builds once at startup. The current
     /// picker selection index is left as-is (best-effort — a picker that
     /// happens to be open mid-reload may briefly point at a shifted row).
-    pub fn refresh_profiles(&mut self, entry_profiles: Vec<ProfileInfo>) {
+    pub fn refresh_profiles(&mut self, entry_profiles: Vec<AgentInfo>) {
         // A reload that somehow yields no entry agent keeps the previous
-        // roster rather than emptying the picker/ring it indexes unconditionally.
+        // roster rather than emptying the picker it lists unconditionally.
         if entry_profiles.is_empty() {
             return;
         }
-        self.primary_profile_order = primary_order(&entry_profiles);
         self.available_profiles = entry_profiles;
         self.mark_dirty();
     }
@@ -277,18 +206,18 @@ impl App {
     /// active agent plus the picked `(provider, model)`. The matching
     /// `ModelChanged` for the active session commits it (see
     /// [`persist_model_if_pending`][Self::persist_model_if_pending]); an `Error`
-    /// clears it. A `ModelChanged` from a `SetAgent` pin application has no pending
-    /// recorded here, so it never writes.
+    /// clears it.
     pub fn record_pending_model_persist(&mut self, provider: String, model: String) {
         let agent = self.agent().to_string();
         self.pending_model_persist = Some((agent, provider, model));
     }
 
     /// Commit a pending persist when its confirming `ModelChanged` arrives for the
-    /// active session (#323). Matches the pending `(provider, model)` so a
-    /// `ModelChanged` raced in by an interleaved `SetAgent` pin never commits the
-    /// wrong pin. Writes via the store, drops the pending, and records a transcript
-    /// status line. A write failure is logged and surfaced, never fatal.
+    /// active session (#323). Matches the pending `(provider, model)` so an
+    /// unrelated `ModelChanged` (e.g. the session-start pin re-announce) never
+    /// commits the wrong pin. Writes via the store, drops the pending, and
+    /// records a transcript status line. A write failure is logged and
+    /// surfaced, never fatal.
     pub(super) fn persist_model_if_pending(
         &mut self,
         session: &SessionId,
@@ -441,6 +370,122 @@ impl App {
                 .select(Some(selected.saturating_sub(n)));
             self.mark_dirty();
         }
+    }
+
+    pub fn showing_mode_picker(&self) -> bool {
+        self.showing_mode_picker
+    }
+
+    pub fn mode_picker_state(&mut self) -> &mut ListState {
+        &mut self.mode_picker_state
+    }
+
+    pub fn available_modes(&self) -> &[AgentInfo] {
+        &self.available_modes
+    }
+
+    /// Open the picker with the session's current mode highlighted, or
+    /// close it — `/mode`'s own toggle (#560 P12, ADR-0207 §12).
+    pub fn toggle_mode_picker(&mut self) {
+        self.showing_mode_picker = !self.showing_mode_picker;
+        if self.showing_mode_picker {
+            let mode = self.mode().to_string();
+            let current_index = self
+                .available_modes
+                .iter()
+                .position(|m| m.name == mode)
+                .unwrap_or(0);
+            self.mode_picker_state.select(Some(current_index));
+        }
+        self.mark_dirty();
+    }
+
+    pub fn close_mode_picker(&mut self) {
+        self.showing_mode_picker = false;
+        self.mark_dirty();
+    }
+
+    pub fn mode_picker_next(&mut self) {
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let next = (selected + 1) % self.available_modes.len();
+            self.mode_picker_state.select(Some(next));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_prev(&mut self) {
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let prev = if selected == 0 {
+                self.available_modes.len() - 1
+            } else {
+                selected - 1
+            };
+            self.mode_picker_state.select(Some(prev));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_page_down(&mut self, n: usize) {
+        if self.available_modes.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.mode_picker_state.selected() {
+            let last = self.available_modes.len() - 1;
+            self.mode_picker_state
+                .select(Some((selected + n).min(last)));
+            self.mark_dirty();
+        }
+    }
+
+    pub fn mode_picker_page_up(&mut self, n: usize) {
+        if self.available_modes.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.mode_picker_state.selected() {
+            self.mode_picker_state
+                .select(Some(selected.saturating_sub(n)));
+            self.mark_dirty();
+        }
+    }
+
+    /// Resolve the highlighted row to its mode name and close the picker.
+    /// `None` when nothing is selected (an empty roster, which never
+    /// happens for the fixed four-mode list but mirrors every other
+    /// picker's defensive shape).
+    pub fn select_mode_picker(&mut self) -> Option<String> {
+        let name = self
+            .mode_picker_state
+            .selected()
+            .and_then(|i| self.available_modes.get(i))
+            .map(|m| m.name.clone())?;
+        self.showing_mode_picker = false;
+        self.mark_dirty();
+        Some(name)
+    }
+
+    /// The mode `Tab`/`Shift+Tab` should switch to, or `None` when the roster
+    /// has nothing to cycle to.
+    ///
+    /// `Tab` used to cycle *agents*. ADR-0207 fixed an agent for a session's
+    /// life, so that binding lost its subject — but the muscle memory is worth
+    /// keeping, and mode is now the axis a user can actually change mid-session.
+    /// Pure: the caller sends the `SetMode`, so this stays testable without a
+    /// live engine.
+    pub fn cycle_mode(&self, forward: bool) -> Option<String> {
+        let modes = &self.available_modes;
+        if modes.len() < 2 {
+            return None;
+        }
+        let here = modes
+            .iter()
+            .position(|m| m.name == self.mode())
+            .unwrap_or(0);
+        let next = if forward {
+            (here + 1) % modes.len()
+        } else {
+            (here + modes.len() - 1) % modes.len()
+        };
+        Some(modes[next].name.clone())
     }
 
     pub fn showing_resume_modal(&self) -> bool {

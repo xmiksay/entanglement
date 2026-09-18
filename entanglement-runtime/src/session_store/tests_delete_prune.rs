@@ -13,12 +13,11 @@ fn write_session_file(cwd: &Path, id: &SessionId) -> PathBuf {
             session: id.clone(),
             parent: None,
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: true,
             ts: 1000,
             user: None,
-            sponsored: false,
         }),
     );
     append(cwd, id, &record).expect("append should succeed");

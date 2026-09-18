@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use entanglement_core::{
-    ApprovalScope, EngineConfig, Holly, InMsg, OutEvent, Permission, PermissionProfile,
-    ProfileRegistry, SessionId,
+    AgentCatalog, ApprovalScope, EngineConfig, Holly, InMsg, OutEvent, Permission,
+    PermissionProfile, SessionId,
 };
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::permission::permission_arg;
@@ -39,7 +39,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 /// Grades each tool call by the calling session's tenant — the part of the
 /// #311 seam a multi-tenant embedder swaps in place of the CLI's
-/// `ProfileResolver`. A real embedder looks `tenant_of(session)` up in its own
+/// `ModeResolver`. A real embedder looks `tenant_of(session)` up in its own
 /// DB instead of this static map. This is also the whole per-user permission
 /// story after ADR-0181 (the runtime ships no `UserId`-keyed module): resolve
 /// the process-global profile first, then clamp by the tenant's own ceiling
@@ -67,7 +67,13 @@ struct NoGrants;
 
 #[async_trait]
 impl GrantStore for NoGrants {
-    fn is_granted(&self, _session: &SessionId, _tool: &str, _arg: Option<&str>) -> bool {
+    fn is_granted(
+        &self,
+        _session: &SessionId,
+        _tool: &str,
+        _arg: Option<&str>,
+        _mode: &str,
+    ) -> bool {
         false
     }
 
@@ -77,6 +83,7 @@ impl GrantStore for NoGrants {
         _tool: &str,
         _arg: Option<&str>,
         _scope: ApprovalScope,
+        _mode: &str,
     ) {
     }
 
@@ -94,11 +101,11 @@ fn tenant_of(session: &SessionId) -> &str {
 async fn main() -> anyhow::Result<()> {
     let tools = host::host_tools(std::env::temp_dir());
     let tool_specs = tools.specs();
-    let profiles = ProfileRegistry::new(); // just the built-in `build` profile
+    let profiles = AgentCatalog::new(); // just the built-in `build` profile
 
     let holly = Holly::spawn(EngineConfig {
         tool_specs,
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default() // EchoLlm — no provider key, deterministic
     });
 
@@ -141,11 +148,26 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         PermissionProfile::new(Permission::Allow),
         Arc::new(Mutex::new(HashMap::new())),
+        // `TenantResolver` above grades from its own per-tenant table, not
+        // from a session's permission mode (ADR-0207) — this map only
+        // matters to the default `ModeResolver`, which this example
+        // doesn't use, so an always-empty one is correct here.
+        Arc::new(Mutex::new(HashMap::new())),
         resolver,
         grants,
         Hooks::default(),
         None,
-        entanglement_runtime::policy::SandboxConfig::none(),
+        // `TenantResolver` also grades spawn bounds independent of the
+        // default `ModeResolver`'s mode table — an embedder that skips
+        // `ModeTable` entirely still needs *some* table wired here so
+        // `SpawnGuard` has depth/fan-out limits to read; the built-in four
+        // are a reasonable default even though this example's sessions
+        // never actually set a mode (an unseen session's spawn simply fails
+        // closed, mirroring `ModeResolver`'s own fail-closed default).
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         // The per-user MCP scope seam (#684) wired above.
         Some(scopes),

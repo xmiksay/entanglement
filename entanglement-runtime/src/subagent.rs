@@ -32,11 +32,10 @@
 //! executor runs it *before* permission resolution — it bypasses the permission
 //! profile exactly like the runtime's `propose_plan` / `update_tasks` state tools.
 
-use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use entanglement_core::{
-    AgentProfile, AgentState, Holly, IdKind, InMsg, OutEvent, ProfileRegistry, SessionId, ToolSpec,
+    Agent, AgentCatalog, AgentState, Holly, IdKind, InMsg, OutEvent, SessionId, ToolSpec,
 };
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
@@ -46,185 +45,28 @@ use crate::retained_output::RetainedOutputRegistry;
 use crate::seam::reply;
 use crate::tool_names::AGENT_TOOL;
 
-/// Maximum spawn nesting: the root (user-initiated) session is depth 0, so this
-/// lets the root spawn a child (depth 1), that child spawn (depth 2), and so on
-/// up to and including depth `MAX_SPAWN_DEPTH`. A spawn that would exceed it is
-/// refused. Bounds unbounded recursion — a sub-agent that keeps calling
-/// `agent` (#76, follow-up to ADR-0022).
-const MAX_SPAWN_DEPTH: usize = 3;
+mod spawn_guard;
+pub use spawn_guard::{SpawnGuard, SpawnSlot};
 
-/// Maximum sub-agents spawned beneath a single root, summed across the whole
-/// tree. Cumulative and never decremented — sequential spawns count too, so a
-/// session cannot dodge the cap by letting each child finish before the next.
-const MAX_SPAWNS_PER_ROOT: usize = 16;
+/// Sub-agent profile used when the model omits `agent` (ADR-0207 stage 6a:
+/// the roster collapsed to `general`/`plan`/`debug` — read-only posture is a
+/// permission mode now, not a persona, so the default target is simply the
+/// default worker persona, same as [`entanglement_core::holly::DEFAULT_AGENT`]).
+const DEFAULT_SUBAGENT: &str = "general";
 
-/// Tracks the live session tree so the runtime can bound sub-agent spawning
-/// (#76). Fed each `SessionStarted` (for the parent link) and consulted on every
-/// `agent` call before a child is started. Lives in the tool executor's
-/// single-threaded event loop, so it needs no synchronization.
-///
-/// A **sponsored child** (ADR-0138) has a parent-child link but its permission
-/// resolution stops at the child — it runs with its own profile's permissions,
-/// no ancestor walk. Authorization is user approval of a plan (`propose_plan`
-/// accept), which spawns a `build` child of the read-only `plan` session.
-/// Sponsored spawns are exempt from `MAX_SPAWNS_PER_ROOT` (sequential,
-/// user-authorized) but still bounded by `MAX_SPAWN_DEPTH`.
-#[derive(Default)]
-pub struct SpawnGuard {
-    /// child → parent, from `SessionStarted`. Absent or `None` ⇒ a root.
-    parents: HashMap<SessionId, Option<SessionId>>,
-    /// root → cumulative sub-agents spawned beneath it (never decremented).
-    spawns_per_root: HashMap<SessionId, usize>,
-    /// Sessions spawned as **sponsored** (ADR-0138) — permission roots despite
-    /// having a parent link. Authorization is user plan approval, not the
-    /// ancestor chain, so [`crate::permission::effective_permission`] skips the
-    /// ancestor walk for these. Exempt from `MAX_SPAWNS_PER_ROOT` but not from
-    /// `MAX_SPAWN_DEPTH`.
-    sponsored: HashSet<SessionId>,
-}
-
-impl SpawnGuard {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record a session's parent from its `SessionStarted` event.
-    pub fn record_start(&mut self, session: SessionId, parent: Option<SessionId>) {
-        self.parents.insert(session, parent);
-    }
-
-    /// The recorded parent of `session`, if any. Lets the tool executor walk a
-    /// child's ancestry to clamp its permissions to the parent chain (#77).
-    pub fn parent_of(&self, session: &SessionId) -> Option<SessionId> {
-        self.parents.get(session).cloned().flatten()
-    }
-
-    /// Record a sponsored spawn (ADR-0138): establishes the parent link and
-    /// marks `child` as a permission root, so [`effective_permission`][crate::permission::effective_permission]
-    /// resolves its own profile without walking ancestors. Called *before* the
-    /// `InMsg::Spawn` is sent so the link is in place by the time the child's
-    /// first `ToolExec` arrives.
-    pub fn record_sponsored_start(&mut self, child: SessionId, parent: SessionId) {
-        self.parents.insert(child.clone(), Some(parent));
-        self.sponsored.insert(child);
-    }
-
-    /// Whether `session` was spawned as a sponsored child (ADR-0138) — a
-    /// permission root despite having a parent link.
-    pub fn is_sponsored(&self, session: &SessionId) -> bool {
-        self.sponsored.contains(session)
-    }
-
-    /// Decide whether `parent` may spawn another sub-agent. On approval, charges
-    /// the spawn against the root's budget and returns `Ok`. On refusal, returns
-    /// the message to relay to the parent as the `agent` tool output.
-    pub fn try_spawn(&mut self, parent: &SessionId) -> Result<(), String> {
-        let child_depth = self.depth(parent) + 1;
-        if child_depth > MAX_SPAWN_DEPTH {
-            return Err(format!(
-                "sub-agent spawn refused: max spawn depth ({MAX_SPAWN_DEPTH}) reached — \
-                 this sub-agent is too deeply nested to spawn another. Do the work directly."
-            ));
-        }
-        let root = self.root_of(parent);
-        let count = self.spawns_per_root.entry(root).or_insert(0);
-        if *count >= MAX_SPAWNS_PER_ROOT {
-            return Err(format!(
-                "sub-agent spawn refused: per-root spawn budget ({MAX_SPAWNS_PER_ROOT}) \
-                 exhausted — too many sub-agents already spawned in this session tree. \
-                 Do the work directly."
-            ));
-        }
-        *count += 1;
-        Ok(())
-    }
-
-    /// Decide whether `parent` may sponsor another sub-agent (ADR-0138).
-    /// Sponsored spawns are exempt from `MAX_SPAWNS_PER_ROOT` — they are
-    /// sequential and individually user-authorized (each `propose_plan`
-    /// approval spawns one build child), so a long plan/build cycle can't
-    /// exhaust the fan-out budget meant for unattended `agent { background: true }`
-    /// fan-out.
-    /// `MAX_SPAWN_DEPTH` still applies: a sponsored build nested three levels
-    /// deep still can't sponsor further. On approval records nothing — the
-    /// caller follows up with [`record_sponsored_start`] once the child id is
-    /// minted.
-    pub fn try_sponsor_spawn(&self, parent: &SessionId) -> Result<(), String> {
-        let child_depth = self.depth(parent) + 1;
-        if child_depth > MAX_SPAWN_DEPTH {
-            return Err(format!(
-                "sponsored spawn refused: max spawn depth ({MAX_SPAWN_DEPTH}) reached — \
-                 this sub-agent is too deeply nested to sponsor another."
-            ));
-        }
-        Ok(())
-    }
-
-    /// Number of ancestors of `session` (a root is depth 0). The `visited` set
-    /// guards against a malformed cycle in the parent links.
-    fn depth(&self, session: &SessionId) -> usize {
-        let mut depth = 0;
-        let mut current = session.clone();
-        let mut visited = HashSet::new();
-        while visited.insert(current.clone()) {
-            match self.parents.get(&current).cloned().flatten() {
-                Some(parent) => {
-                    depth += 1;
-                    current = parent;
-                }
-                None => break,
-            }
-        }
-        depth
-    }
-
-    /// Walk to the root of `session`'s tree (itself if it has no parent).
-    fn root_of(&self, session: &SessionId) -> SessionId {
-        let mut current = session.clone();
-        let mut visited = HashSet::new();
-        while visited.insert(current.clone()) {
-            match self.parents.get(&current).cloned().flatten() {
-                Some(parent) => current = parent,
-                None => break,
-            }
-        }
-        current
-    }
-}
-
-/// Sub-agent profile used when the model omits `agent` — read-only explore is
-/// the safe default.
-const DEFAULT_SUBAGENT: &str = "explore";
-
-/// The per-profile spawn tool spec (#119, ADR-0040; #606, ADR-0161): the single
-/// `agent` tool advertised to a session running under `profile`, with the
-/// roster + `agent` enum scoped to exactly the profiles `profile` may spawn
-/// (its `spawnable_agents` allowlist ∩ the target-side mode gate). Empty when
-/// the profile may not spawn or has no valid targets — so the tool is
-/// **withheld** from that session's model (the structural half of the gate;
-/// the runtime executor refuses a stale call regardless). `poll` (#605) is
-/// *not* part of this spec — it rides the shared `cfg.tool_specs` instead
-/// (like `ask_user`), since it also joins non-spawn job handles and so isn't
-/// conditioned on spawn capability alone; a profile still masks it via its own
-/// `tools:` list. Stored in
-/// [`EngineConfig::profile_tool_specs`][entanglement_core::EngineConfig] and
-/// appended by core's `run_turn` for the active profile.
-///
-/// `agent_send` (#609, ADR-0162) rides alongside `agent` here rather than the
-/// shared `cfg.tool_specs` `poll` uses: it is only ever useful against a
-/// handle `agent`/a sponsored `propose_plan` build already produced, so a
-/// profile that can't spawn has no legitimate use for it either.
-pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Vec<ToolSpec> {
-    if !profile.may_spawn() {
-        return Vec::new();
-    }
-    // A valid target is spawnable-mode (subagent/all) *and* on this profile's
-    // allowlist — checked against `profile`'s own list, so the roster is not
-    // transitive down the tree (each hop re-checks the spawner).
-    let targets: Vec<&AgentProfile> = registry
-        .iter()
-        .filter(|t| t.spawnable_as_subagent() && profile.spawn_target_allowed(&t.name))
-        .collect();
+/// The `agent`/`agent_send` tool specs, advertised unconditionally to every
+/// session (ADR-0207 §4/§6): spawning is never *graded* — `agent`/
+/// `agent_send` are `Capability::Control` — and any registered agent may be a
+/// session root or a spawn target, so the roster is a **constant**: every
+/// profile in `registry`, not a per-spawner subset (the old `can_spawn`/
+/// `spawnable_agents` gates are retired, ADR-0040 superseded). Spawning is
+/// bounded instead by the session's mode `max_depth`/`max_agents`
+/// ([`SpawnGuard::try_spawn`]). Because this no longer varies by profile, it
+/// joins the shared `cfg.tool_specs` like `ask_user`/`poll` rather than a
+/// per-profile table — ADR-0207 §9: "the advertised tools array no longer
+/// varies by agent or by mode".
+pub fn agent_specs(registry: &AgentCatalog) -> Vec<ToolSpec> {
+    let targets: Vec<&Agent> = registry.iter().collect();
     if targets.is_empty() {
         return Vec::new();
     }
@@ -238,7 +80,7 @@ pub fn spawn_specs_for(profile: &AgentProfile, registry: &ProfileRegistry) -> Ve
 /// is disclosed inline (#112): each spawnable agent's `name: description` is
 /// listed in the tool description and the `agent` argument is constrained to
 /// that set.
-pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
+pub fn agent_spec(targets: &[&Agent]) -> ToolSpec {
     ToolSpec::with_schema(
         AGENT_TOOL,
         format!(
@@ -258,7 +100,7 @@ pub fn agent_spec(targets: &[&AgentProfile]) -> ToolSpec {
 /// The `name: description` roster line block disclosed to the spawning model —
 /// `description` is the only field of a definition a parent ever sees (#112).
 /// Scoped to the profiles this spawner may target (#119).
-fn roster(targets: &[&AgentProfile]) -> String {
+fn roster(targets: &[&Agent]) -> String {
     let mut out = String::from("Available agents:");
     for p in targets {
         out.push_str(&format!("\n- {}: {}", p.name, p.description));
@@ -270,7 +112,7 @@ fn roster(targets: &[&AgentProfile]) -> String {
 /// `agent` name is constrained to `targets` (an enum) so the model can only
 /// pick a profile it is actually allowed to spawn (#119); `background` (#606)
 /// flips the return shape from the blocking default to an immediate handle.
-fn agent_input_schema(targets: &[&AgentProfile]) -> serde_json::Value {
+fn agent_input_schema(targets: &[&Agent]) -> serde_json::Value {
     let names: Vec<&str> = targets.iter().map(|p| p.name.as_str()).collect();
     serde_json::json!({
         "type": "object",
@@ -290,6 +132,14 @@ fn agent_input_schema(targets: &[&AgentProfile]) -> serde_json::Value {
                     waiting for the sub-agent's answer. Poll the handle with \
                     `poll` to collect it once it's done. Default false (blocks \
                     until the sub-agent finishes)."
+            },
+            "model": {
+                "type": "string",
+                "description": "Catalog model id to run the sub-agent on \
+                    (see explore kind: models for the active roster). Omit \
+                    to inherit the parent's model. An unknown id refuses the \
+                    spawn and names the valid ids instead of silently \
+                    falling back."
             }
         },
         "required": ["agent", "prompt"]
@@ -315,6 +165,7 @@ enum LaunchMode {
 /// `events` must be a receiver subscribed *before* the [`InMsg::Spawn`] is sent
 /// (the caller subscribes synchronously), so the child's events — including its
 /// terminal `Done` — cannot race ahead of the watcher.
+#[allow(clippy::too_many_arguments)]
 pub async fn launch_subagent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -323,6 +174,11 @@ pub async fn launch_subagent(
     parent: SessionId,
     request_id: String,
     input: String,
+    // The child's model pin (#560 P12, ADR-0207 §12): resolved + validated
+    // against the catalog by the caller (`orchestration::spawn`) before this
+    // task was even spawned, so a refusal never mints a child — see
+    // `permission::resolve_model`. `None` inherits, exactly as before.
+    model_pin: Option<(String, String)>,
 ) {
     launch(
         holly,
@@ -333,6 +189,7 @@ pub async fn launch_subagent(
         request_id,
         input,
         LaunchMode::Detached,
+        model_pin,
     )
     .await;
 }
@@ -342,6 +199,7 @@ pub async fn launch_subagent(
 /// ([`collect_child_answer`]) and fold its answer + elapsed straight into the
 /// `ToolOutput`. Still records into `registry`, so a parent `Stop` while parked
 /// leaves the child collectable via `poll`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent(
     holly: Holly,
     events: Receiver<OutEvent>,
@@ -350,6 +208,7 @@ pub async fn run_agent(
     parent: SessionId,
     request_id: String,
     input: String,
+    model_pin: Option<(String, String)>,
 ) {
     launch(
         holly,
@@ -360,6 +219,7 @@ pub async fn run_agent(
         request_id,
         input,
         LaunchMode::AwaitAnswer,
+        model_pin,
     )
     .await;
 }
@@ -379,8 +239,9 @@ async fn launch(
     request_id: String,
     input: String,
     mode: LaunchMode,
+    model_pin: Option<(String, String)>,
 ) {
-    let (agent, prompt, _background) = parse_input(&input);
+    let (agent, prompt, _background, _model) = parse_input(&input);
     let child = SessionId::new(holly.next_id(IdKind::Session));
     // Register *before* sending Spawn so a poll can never precede the handle
     // (the parent only learns the id from the reply below, which comes after).
@@ -394,7 +255,6 @@ async fn launch(
             agent: agent.clone(),
             prompt,
             user: None,
-            sponsored: false, // not a sponsored propose_plan build (#626)
         })
         .await
         .is_err()
@@ -409,6 +269,21 @@ async fn launch(
         )
         .await;
         return;
+    }
+    // The child's model pin (#560 P12, ADR-0207 §12): sent right after
+    // `Spawn` so it lands before the child's first turn. Already validated
+    // against the catalog by the caller — a `SetModel` failure here (e.g. a
+    // key that vanished between validation and this send) surfaces as the
+    // child's own `OutEvent::Error`, same as any live `SetModel`; it does
+    // not unwind the spawn, since the child session now genuinely exists.
+    if let Some((provider, model)) = model_pin {
+        let _ = holly
+            .send(InMsg::SetModel {
+                session: child.clone(),
+                provider,
+                model,
+            })
+            .await;
     }
 
     // Non-blocking: hand the handle back now — the parent turn continues instead
@@ -614,11 +489,19 @@ pub fn is_background(input: &str) -> bool {
     parse_input(input).2
 }
 
+/// The requested `model` (#560 P12, ADR-0207 §12), if any — read by the tool
+/// executor to validate/resolve it against the catalog before a child is
+/// minted, mirroring [`target_agent`]. `None` means inherit, exactly as
+/// before this parameter existed.
+pub fn target_model(input: &str) -> Option<String> {
+    parse_input(input).3
+}
+
 /// Parse the `agent` tool input. Providers send a JSON object `{"agent": …,
-/// "prompt": …, "background": …}`; scripted/raw backends may send a bare
-/// string, which is treated as the prompt under the default sub-agent profile
-/// with `background` defaulting to `false`.
-fn parse_input(input: &str) -> (String, String, bool) {
+/// "prompt": …, "background": …, "model": …}`; scripted/raw backends may send
+/// a bare string, which is treated as the prompt under the default sub-agent
+/// profile with `background` defaulting to `false` and no `model` override.
+fn parse_input(input: &str) -> (String, String, bool, Option<String>) {
     match serde_json::from_str::<serde_json::Value>(input) {
         Ok(v) => {
             let agent = v
@@ -636,9 +519,14 @@ fn parse_input(input: &str) -> (String, String, bool) {
                 .get("background")
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false);
-            (agent, prompt, background)
+            let model = v
+                .get("model")
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+                .map(str::to_string);
+            (agent, prompt, background, model)
         }
-        Err(_) => (DEFAULT_SUBAGENT.to_string(), input.to_string(), false),
+        Err(_) => (DEFAULT_SUBAGENT.to_string(), input.to_string(), false, None),
     }
 }
 
@@ -895,170 +783,89 @@ mod tests {
 
     #[test]
     fn parse_input_reads_json_object() {
-        let (agent, prompt, background) = parse_input(r#"{"agent":"build","prompt":"do it"}"#);
+        let (agent, prompt, background, model) =
+            parse_input(r#"{"agent":"build","prompt":"do it"}"#);
         assert_eq!(agent, "build");
         assert_eq!(prompt, "do it");
         assert!(!background);
+        assert_eq!(model, None);
     }
 
     #[test]
     fn parse_input_reads_background_flag() {
-        let (_, _, background) =
+        let (_, _, background, _) =
             parse_input(r#"{"agent":"build","prompt":"do it","background":true}"#);
         assert!(background);
     }
 
     #[test]
-    fn parse_input_defaults_agent_to_explore() {
-        let (agent, prompt, _) = parse_input(r#"{"prompt":"look around"}"#);
+    fn parse_input_reads_model_override() {
+        let (_, _, _, model) =
+            parse_input(r#"{"agent":"build","prompt":"do it","model":"glm-5.3"}"#);
+        assert_eq!(model, Some("glm-5.3".to_string()));
+        assert_eq!(target_model(r#"{"prompt":"x"}"#), None);
+    }
+
+    #[test]
+    fn parse_input_defaults_agent_to_general() {
+        let (agent, prompt, _, _) = parse_input(r#"{"prompt":"look around"}"#);
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "look around");
     }
 
     #[test]
     fn parse_input_falls_back_to_raw_string() {
-        let (agent, prompt, background) = parse_input("just a prompt");
+        let (agent, prompt, background, model) = parse_input("just a prompt");
         assert_eq!(agent, DEFAULT_SUBAGENT);
         assert_eq!(prompt, "just a prompt");
         assert!(!background);
+        assert_eq!(model, None);
     }
 
     #[test]
-    fn spawn_specs_scope_the_enum_to_valid_targets() {
-        // The default registry: build/plan (Primary, not targets), explore +
-        // debug (Subagent, targets). `build` may spawn, so it gets the `agent`
-        // spec — and both spawnable leaves are valid targets, so the enum
-        // lists them.
+    fn agent_specs_list_every_registered_agent() {
+        // ADR-0207 §6/§9: spawning is unconditional and the roster is
+        // constant — every registered agent is a valid target (stage 6a's
+        // collapsed three-persona roster: `general`/`plan`/`debug`).
         let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let build = reg.get("build").unwrap();
-        let specs = spawn_specs_for(build, &reg);
+        let specs = agent_specs(&reg);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec![AGENT_TOOL, crate::tool_names::AGENT_SEND_TOOL]);
         let enum_names = specs[0].schema["properties"]["agent"]["enum"]
             .as_array()
             .unwrap();
-        assert!(enum_names.iter().any(|n| n == "explore"));
+        assert!(enum_names.iter().any(|n| n == "general"));
         assert!(enum_names.iter().any(|n| n == "debug"));
-        assert!(!enum_names.iter().any(|n| n == "build"));
-        assert!(!enum_names.iter().any(|n| n == "plan"));
-    }
-
-    #[test]
-    fn spawn_specs_empty_for_a_non_spawning_profile() {
-        // `explore` is a Subagent leaf — it may not spawn, so it gets no family.
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
-        let explore = reg.get("explore").unwrap();
-        assert!(spawn_specs_for(explore, &reg).is_empty());
-    }
-
-    /// Build a guard with a linear ancestry chain `root → a → b → …` recorded.
-    fn guard_with_chain(chain: &[&str]) -> (SpawnGuard, Vec<SessionId>) {
-        let mut guard = SpawnGuard::new();
-        let ids: Vec<SessionId> = chain.iter().map(|c| SessionId::new(*c)).collect();
-        for (i, id) in ids.iter().enumerate() {
-            let parent = i.checked_sub(1).map(|p| ids[p].clone());
-            guard.record_start(id.clone(), parent);
-        }
-        (guard, ids)
-    }
-
-    #[test]
-    fn root_may_spawn_and_charges_the_budget() {
-        let (mut guard, ids) = guard_with_chain(&["root"]);
-        assert!(guard.try_spawn(&ids[0]).is_ok());
-        assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(1));
-    }
-
-    #[test]
-    fn spawn_refused_past_max_depth() {
-        // root(0) → a(1) → b(2) → c(3): c is at MAX_SPAWN_DEPTH, so its spawn
-        // (which would be depth 4) is refused.
-        let (mut guard, ids) = guard_with_chain(&["root", "a", "b", "c"]);
-        let deepest = ids.last().unwrap();
-        let err = guard.try_spawn(deepest).unwrap_err();
-        assert!(err.contains("max spawn depth"), "got: {err}");
-        // A shallower ancestor (depth 2 → child depth 3) is still allowed.
-        assert!(guard.try_spawn(&ids[2]).is_ok());
-    }
-
-    #[test]
-    fn spawn_refused_past_per_root_budget() {
-        let (mut guard, ids) = guard_with_chain(&["root"]);
-        for _ in 0..MAX_SPAWNS_PER_ROOT {
-            assert!(guard.try_spawn(&ids[0]).is_ok());
-        }
-        let err = guard.try_spawn(&ids[0]).unwrap_err();
-        assert!(err.contains("per-root spawn budget"), "got: {err}");
-    }
-
-    #[test]
-    fn budget_is_shared_across_the_whole_tree() {
-        // A grandchild's spawns count against the same root budget as the root's.
-        let (mut guard, ids) = guard_with_chain(&["root", "child"]);
-        guard.try_spawn(&ids[0]).unwrap();
-        guard.try_spawn(&ids[1]).unwrap();
-        assert_eq!(guard.spawns_per_root.get(&ids[0]).copied(), Some(2));
-        assert!(!guard.spawns_per_root.contains_key(&ids[1]));
-    }
-
-    #[test]
-    fn unknown_session_treated_as_root() {
-        let mut guard = SpawnGuard::new();
-        let orphan = SessionId::new("orphan");
-        // No `record_start`: depth 0, its own root — the spawn is allowed.
-        assert!(guard.try_spawn(&orphan).is_ok());
-    }
-
-    #[test]
-    fn sponsored_spawn_records_parent_link_and_set() {
-        let mut guard = SpawnGuard::new();
-        let parent = SessionId::new("plan");
-        let child = SessionId::new("build");
-        guard.record_start(parent.clone(), None);
-        guard.record_sponsored_start(child.clone(), parent.clone());
-        assert_eq!(guard.parent_of(&child), Some(parent.clone()));
-        assert!(guard.is_sponsored(&child));
-        // The plan parent is not itself sponsored.
-        assert!(!guard.is_sponsored(&parent));
-    }
-
-    #[test]
-    fn try_sponsor_spawn_exceeds_depth_at_max() {
-        // root(0) → a(1) → b(2) → c(3): c is at MAX_SPAWN_DEPTH, so its
-        // sponsored spawn (which would be depth 4) is refused.
-        let (guard, ids) = guard_with_chain(&["root", "a", "b", "c"]);
-        let deepest = ids.last().unwrap();
-        let err = guard.try_sponsor_spawn(deepest).unwrap_err();
-        assert!(err.contains("max spawn depth"), "got: {err}");
-        // A shallower ancestor (depth 2 → child depth 3) is still allowed.
-        assert!(guard.try_sponsor_spawn(&ids[2]).is_ok());
-    }
-
-    #[test]
-    fn sponsored_spawns_exhaust_never_hit_fanout_cap() {
-        // N sequential sponsored spawns never trip MAX_SPAWNS_PER_ROOT —
-        // sponsorship is exempt from the fan-out budget (ADR-0138). Sponsoring
-        // far past the cap leaves the budget untouched, so plain spawns still
-        // succeed afterward.
-        let (mut guard, ids) = guard_with_chain(&["root"]);
-        for _ in 0..(MAX_SPAWNS_PER_ROOT + 5) {
-            assert!(
-                guard.try_sponsor_spawn(&ids[0]).is_ok(),
-                "sponsored spawns must not exhaust the fan-out budget"
-            );
-        }
-        // Sponsored spawns didn't charge the budget: a plain spawn still works.
+        assert!(enum_names.iter().any(|n| n == "plan"));
+        // #560 P12, ADR-0207 §12: `model` rides the same spec every session
+        // advertises unconditionally (`agent` is a `TOOL_SEARCH_KERNEL`
+        // member) — verified here against the exact schema a session
+        // receives, not a separate description.
         assert!(
-            guard.try_spawn(&ids[0]).is_ok(),
-            "fan-out budget must be untouched by sponsored spawns"
+            specs[0].schema["properties"]["model"].is_object(),
+            "{:?}",
+            specs[0].schema
         );
-        // And exhausting it with plain spawns is still the ceiling for plain.
-        for _ in 1..MAX_SPAWNS_PER_ROOT {
-            guard.try_spawn(&ids[0]).unwrap();
-        }
-        let err = guard.try_spawn(&ids[0]).unwrap_err();
-        assert!(err.contains("per-root spawn budget"), "got: {err}");
-        // A sponsored spawn under an exhausted plain budget still succeeds.
-        assert!(guard.try_sponsor_spawn(&ids[0]).is_ok());
+    }
+
+    #[test]
+    fn agent_specs_are_identical_regardless_of_which_profile_asks() {
+        // The whole point of the constant roster (ADR-0207 §9): the array
+        // must not depend on the caller's own profile, since `SetAgent` must
+        // stay free of prompt-cache invalidation. `agent_specs` takes no
+        // spawner argument at all now, so calling it twice against the same
+        // registry is the only meaningful "regardless of who asks" check —
+        // compare by (name, description, schema) since `ToolSpec` has no
+        // `PartialEq`.
+        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        let a = agent_specs(&reg);
+        let b = agent_specs(&reg);
+        let project = |specs: &[ToolSpec]| -> Vec<(String, String, serde_json::Value)> {
+            specs
+                .iter()
+                .map(|s| (s.name.clone(), s.description.clone(), s.schema.clone()))
+                .collect()
+        };
+        assert_eq!(project(&a), project(&b));
     }
 }

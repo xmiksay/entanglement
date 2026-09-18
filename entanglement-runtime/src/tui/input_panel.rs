@@ -24,7 +24,6 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
     let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
 
-    let agent_color = app.profile_color_for(app.agent());
     let state_color = match app.state() {
         AgentState::Idle => Color::Green,
         AgentState::Thinking => Color::Yellow,
@@ -49,9 +48,15 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
         AgentState::Error => "Error",
     };
 
+    // The badge names the session's permission *mode*, not its agent
+    // (ADR-0207): the agent is fixed for the session's whole life, while the
+    // mode is what changes and what decides whether a call is allowed — so the
+    // always-visible indicator shows the axis a user can act on.
     let badge_top = Line::from(vec![Span::styled(
-        app.agent(),
-        Style::default().fg(agent_color).bold(),
+        app.mode(),
+        Style::default()
+            .fg(app.profile_color_for(app.mode()))
+            .bold(),
     )]);
 
     let badge_bottom = Line::from(vec![Span::styled(

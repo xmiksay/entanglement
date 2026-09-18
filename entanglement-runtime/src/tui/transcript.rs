@@ -63,29 +63,35 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             ));
 
             lines.push(Line::from(""));
-            // The three approval scopes (#174): `y` once, `s` for the rest of
-            // the session, `a` persisted to the grants file. All three dispatch
-            // in `event_loop`; the labels must surface them or the shortcuts read
-            // as missing. The `[d]` directory variant (read-only triad) follows.
-            let mut footer = vec![
-                Span::styled("[y]", Style::default().fg(Color::Green).bold()),
-                Span::raw(" approve  "),
-                Span::styled("[s]", Style::default().fg(Color::Green).bold()),
-                Span::raw(" approve session  "),
-                Span::styled("[a]", Style::default().fg(Color::Green).bold()),
-                Span::raw(" approve always  "),
-            ];
-            // `[d]` (#486, ADR-0126) only makes sense for the read-only triad
-            // (`read`/`grep`/`glob`) — a `SessionDir` grant on any other tool
-            // would just degrade to an exact `Session` grant, so the hint is
-            // withheld rather than shown misleadingly.
-            if crate::tool_names::is_read_capability_member(&tool) {
-                footer.push(Span::styled(
-                    "[d]",
-                    Style::default().fg(Color::Green).bold(),
-                ));
-                footer.push(Span::raw(" allow dir (session)  "));
-            }
+            let mut footer = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
+                plan_accept_footer(&input)
+            } else {
+                // The three approval scopes (#174): `y` once, `s` for the rest
+                // of the session, `a` persisted to the grants file. All three
+                // dispatch in `event_loop`; the labels must surface them or the
+                // shortcuts read as missing. The `[d]` directory variant
+                // (read-only triad) follows.
+                let mut footer = vec![
+                    Span::styled("[y]", Style::default().fg(Color::Green).bold()),
+                    Span::raw(" approve  "),
+                    Span::styled("[s]", Style::default().fg(Color::Green).bold()),
+                    Span::raw(" approve session  "),
+                    Span::styled("[a]", Style::default().fg(Color::Green).bold()),
+                    Span::raw(" approve always  "),
+                ];
+                // `[d]` (#486, ADR-0126) only makes sense for the read-only
+                // triad (`read`/`grep`/`glob`) — a `SessionDir` grant on any
+                // other tool would just degrade to an exact `Session` grant, so
+                // the hint is withheld rather than shown misleadingly.
+                if crate::tool_names::is_read_capability_member(&tool) {
+                    footer.push(Span::styled(
+                        "[d]",
+                        Style::default().fg(Color::Green).bold(),
+                    ));
+                    footer.push(Span::raw(" allow dir (session)  "));
+                }
+                footer
+            };
             footer.extend([
                 Span::styled("[n]", Style::default().fg(Color::Red).bold()),
                 Span::raw(" reject  "),
@@ -113,6 +119,37 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     line_blocks.resize(lines.len(), None);
 
     RenderedBody { lines, line_blocks }
+}
+
+/// `propose_plan`'s own two accept keys (#560, ADR-0207 §7 extension) —
+/// replaces the generic `y`/`s`/`a`/`d` scope letters, which meant nothing for
+/// this tool (its approval was never grant-tracked). `[u]` is the DEFAULT bare
+/// accept, landing in the bounded `auto` posture; `[b]` is the explicit
+/// opt-in to `build`. `input` is the resolved `ToolRequest` JSON
+/// (`run_propose_plan`'s own shape, `propose_plan.rs`), whose `suggested_mode`
+/// field — the model's own hint, never a decision — marks whichever option it
+/// named as "(suggested)" so the human sees it without it choosing for them.
+fn plan_accept_footer(input: &str) -> Vec<Span<'static>> {
+    let suggested = serde_json::from_str::<serde_json::Value>(input)
+        .ok()
+        .and_then(|v| {
+            v.get("suggested_mode")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        });
+    let label = |mode: &str, plain: &str| {
+        if suggested.as_deref() == Some(mode) {
+            format!("{plain} (suggested)  ")
+        } else {
+            format!("{plain}  ")
+        }
+    };
+    vec![
+        Span::styled("[u]", Style::default().fg(Color::Green).bold()),
+        Span::raw(label("auto", " accept \u{2192} auto (default)")),
+        Span::styled("[b]", Style::default().fg(Color::Green).bold()),
+        Span::raw(label("build", " accept \u{2192} build")),
+    ]
 }
 
 /// Wrap a footer of styled `spans` to `available_width`, pushing each wrapped

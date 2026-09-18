@@ -13,9 +13,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
 };
+
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::common::{spawn_tool_executor, unknown_tool};
 
@@ -333,107 +335,139 @@ async fn custom_max_turns_is_honored() {
     );
 }
 
-/// Regression: a `SetAgent` arriving between tool calls is stashed and
-/// applied after the turn. (Any non-Stop command exercises the same stash
-/// path; `SetAgent` is a convenient one because its effect — switching the
-/// profile — is observable on the next turn.)
+/// Regression (#560): `SetMode` arriving while a turn is parked directly in
+/// the *outer session loop* — waiting on a tool's `ToolResult`, not mid-LLM-
+/// stream — applies **immediately**, not once the whole turn ends.
+///
+/// This is the exact shape a `propose_plan` approval hits in production: the
+/// runtime sends `InMsg::SetMode` and then the `ToolResult` that resumes the
+/// parked call, both while the turn is still parked on that very call. Before
+/// this fix, `session.rs`'s `SetMode` arm deferred whenever `s.turn.is_some()`
+/// (copied from the now-deleted `SetAgent`'s stash, which genuinely needed
+/// it) — so the switch only landed once the *whole* turn ended, meaning the
+/// continuing turn's own next tool call was graded under the stale mode. A
+/// slow **executor** (not a slow LLM) opens exactly this window: the
+/// tool-call round completes near-instantly, the turn parks on `ToolExec` in
+/// the outer loop, and only the `ToolResult` reply is delayed — unlike
+/// mid-LLM-stream arrival (`prompt_arriving_during_streaming_is_stashed_and_replayed`'s
+/// sibling coverage), which is a different code path (`stream.rs`'s own
+/// stash) this fix leaves untouched.
 #[tokio::test]
-async fn setagent_arriving_between_tool_calls_is_stashed_and_applied() {
-    // First turn: a tool call (no preamble) so the engine enters the
-    // tool-dispatch loop where the second try_recv site lives. The tool is
-    // unknown to the registry, which surfaces as a ToolOutput string — the
-    // turn completes normally and the stashed SetAgent is then applied.
-    let delay = Duration::from_millis(100);
+async fn setmode_arriving_between_tool_calls_applies_immediately() {
     let scripted = Arc::new(vec![
         LlmResponse {
             text: "".into(),
             tool_calls: vec![entanglement_core::ToolCall {
                 id: "t1".into(),
-                name: "unknown-tool".into(),
+                name: "slow-tool".into(),
                 input: "{}".into(),
                 provider_meta: None,
             }],
         },
-        // Second turn: just text, so we can assert it lands.
+        // Runs in the *same* turn, once the delayed ToolResult below drains
+        // the parked batch — proving the switch didn't need a fresh Prompt.
         LlmResponse {
-            text: "post-setagent-reply".into(),
+            text: "post-setmode-reply".into(),
             tool_calls: vec![],
         },
     ]);
-    let mut cfg = EngineConfig {
+    let cfg = EngineConfig {
+        // No LLM-side delay this time — the delay lives in the executor
+        // reply below, so the only window this test opens is the parked
+        // wait for `ToolResult`, not the pre-stream/mid-stream wait for the
+        // model itself.
         llm_factory: Arc::new(move || {
-            Box::new(SlowScriptedLlm::new((*scripted).clone(), delay)) as Box<dyn Llm>
+            Box::new(SlowScriptedLlm::new((*scripted).clone(), Duration::ZERO)) as Box<dyn Llm>
         }),
         ..EngineConfig::default()
     };
-    // Core carries only the `build` built-in (#201); register a second profile to
-    // switch to, so the stashed SetAgent has a real target to resolve.
-    cfg.profiles.insert(AgentProfile {
-        name: "reviewer".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: "Review the changes.".into(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Ask),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
-        sandbox: None,
-    });
     let holly = Holly::spawn(cfg);
-    // The tool call is an unknown tool; execution is now a runtime round-trip
-    // (#58) so the turn only completes once the executor answers.
-    spawn_tool_executor(&holly, unknown_tool);
     let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
 
+    let reply_delay = Duration::from_millis(150);
+    let mut exec_sub = holly.subscribe();
+    let exec_holly = holly.clone();
+    tokio::spawn(async move {
+        loop {
+            match exec_sub.recv().await {
+                Ok(OutEvent::ToolExec {
+                    session,
+                    request_id,
+                    ..
+                }) => {
+                    tokio::time::sleep(reply_delay).await;
+                    let _ = exec_holly
+                        .send(InMsg::tool_result(session, request_id, "ok"))
+                        .await;
+                }
+                Ok(_) => {}
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    let sub = holly.subscribe();
+    let mut sub2 = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "first"))
         .await
         .unwrap();
-    // Inject SetAgent mid-turn. Before ADR-0018 this was silently dropped;
-    // the next Prompt would still run under the `build` profile.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    // Subscribe BEFORE sending SetAgent so we don't miss the AgentChanged
-    // event when the engine replays the stashed command after turn 1 ends.
-    let mut sub2 = holly.subscribe();
+
+    // Land well inside the executor's reply delay — the turn is parked on
+    // `ToolResult` in the outer session loop by now (the tool-call round has
+    // no LLM-side delay), not streaming.
+    tokio::time::sleep(Duration::from_millis(30)).await;
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "reviewer".into(),
+            mode: "reviewer".into(),
         })
         .await
         .unwrap();
 
-    // Watch for the AgentChanged event (fires when the stashed SetAgent is
-    // replayed after turn 1 completes).
-    let mut saw_reviewer = false;
+    // Ordering, not a timing margin, is what actually distinguishes the fix:
+    // `SetMode` is sent well before the executor's delayed `ToolResult`
+    // lands, so the *new* behavior (apply immediately) must show
+    // `ModeChanged` before the parked call's own `ToolOutput`; the *old*,
+    // deferred behavior could only apply it once the whole turn ended, which
+    // is strictly after `ToolOutput` too.
+    let mut reviewer_at: Option<tokio::time::Instant> = None;
+    let mut tool_output_at: Option<tokio::time::Instant> = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub2.recv()).await {
-        if let OutEvent::AgentChanged { agent, session, .. } = ev {
-            if session == sid && agent == "reviewer" {
-                saw_reviewer = true;
-                break;
+    while reviewer_at.is_none() || tool_output_at.is_none() {
+        let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub2.recv()).await else {
+            break;
+        };
+        let now = tokio::time::Instant::now();
+        match &ev {
+            OutEvent::ModeChanged { mode, session, .. }
+                if session == &sid && mode == "reviewer" =>
+            {
+                reviewer_at.get_or_insert(now);
             }
+            OutEvent::ToolOutput { session, .. } if session == &sid => {
+                tool_output_at.get_or_insert(now);
+            }
+            _ => {}
         }
     }
+    let reviewer_at =
+        reviewer_at.expect("SetMode must switch the session even while parked on a tool result");
+    let tool_output_at =
+        tool_output_at.expect("the parked tool call must eventually resolve via ToolOutput");
     assert!(
-        saw_reviewer,
-        "stashed SetAgent should have switched the session to the reviewer profile"
+        reviewer_at < tool_output_at,
+        "ModeChanged must apply before the parked tool call resolves, not \
+         only once the whole turn ends (the old deferred behavior)"
     );
 
-    // Now send a real follow-up Prompt; it runs on the still-alive session.
-    holly
-        .send(InMsg::prompt(sid.clone(), "second"))
-        .await
-        .unwrap();
-
-    // And confirm the second turn's reply also surfaced via the original sub.
+    // The turn continues past the delayed ToolResult in the *same* turn — no
+    // second Prompt needed — proving the mode switch didn't require the turn
+    // to end first either.
     let texts = collect_texts_for(sub, &sid, Duration::from_millis(500)).await;
     assert!(
-        texts.iter().any(|t| t == "post-setagent-reply"),
-        "second turn (post-stash-replay) should produce its reply; got {texts:?}"
+        texts.iter().any(|t| t == "post-setmode-reply"),
+        "the same turn must continue past the delayed ToolResult; got {texts:?}"
     );
 }

@@ -7,6 +7,7 @@
 
 use super::resolve_under_root_or_grant;
 use super::unified_diff::{apply_hunks, parse_hunks};
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -48,6 +49,9 @@ struct ApplyPatchInput {
 impl Tool for ApplyPatchTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("apply_patch")
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Write]
     }
     fn description(&self) -> &str {
         "Apply a unified diff (one or more `@@ -l,s +l,s @@` hunks) to a file \
@@ -135,6 +139,14 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn capability_is_write() {
+        assert_eq!(
+            ApplyPatchTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Write]
+        );
     }
 
     #[tokio::test]

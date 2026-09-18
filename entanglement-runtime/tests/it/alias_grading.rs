@@ -3,24 +3,31 @@
 //! called the tool it wraps directly** — never through its own namespaced
 //! name. Proven end-to-end through the real tool executor (not a unit test
 //! on the rewrite function alone), mirroring `permission_dispatch.rs`'s
-//! harness: a profile that denies `bash` outright but leaves every other
+//! harness: a mode that denies `bash` outright but leaves every other
 //! (unlisted) tool name at its permissive `default: allow` would — if the
 //! alias's own name were graded instead of `bash`'s — let a
-//! `skill__x__alias_bash` call straight through. It must not.
+//! `skill__x__alias_bash` call straight through. It must not. Since ADR-0207
+//! stage 4, grading comes from the session's permission mode, not its agent
+//! profile, so the fixture is a `Mode`, not an `Agent`.
 
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, AgentMode, AgentProfile, EngineConfig, Holly, InMsg, Llm, LlmRequest,
-    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ProfileRegistry, SessionId,
-    ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+};
+use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
+use entanglement_runtime::plan_files::PlanFileRegistry;
+use entanglement_runtime::policy::{
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::tools::{register_skill_tools, SkillToolDef};
 use entanglement_runtime::skills::{SkillMeta, SkillRegistry};
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 struct ScriptedLlm {
@@ -81,27 +88,20 @@ fn skill_with_bash_alias() -> SkillRegistry {
     skills
 }
 
-/// A profile denying `bash` outright, everything else at the permissive
+/// A mode denying `bash` outright, everything else at the permissive
 /// `default: allow` — the shape that would let a mis-graded alias slip
-/// through if it graded under its own name instead of `bash`'s.
-fn denies_bash_but_defaults_allow() -> ProfileRegistry {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    profiles.insert(AgentProfile {
-        name: "denybash".into(),
-        description: String::new(),
-        mode: AgentMode::Primary,
-        system_prompt: String::new(),
-        model: None,
-        provider: None,
-        permission: PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny),
-        tools: None,
-        disallowed_tools: Vec::new(),
-        can_spawn: None,
-        spawnable_agents: None,
+/// through if it graded under its own name instead of `bash`'s. Named
+/// `"build"` so a session picks it up as `DEFAULT_MODE` with no `SetMode`.
+fn denies_bash_but_defaults_allow() -> Arc<ModeTable> {
+    let mode = Mode {
+        name: "build".to_string(),
+        default: Permission::Allow,
+        rules: Rules::from_lists(&["bash".to_string()], &[], &[]),
+        limits: Limits::default(),
         sandbox: None,
-    });
-    profiles
+        sandbox_network: false,
+    };
+    Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
 
 async fn collect(
@@ -151,30 +151,53 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
             tool_calls: vec![],
         },
     ]);
-    let profiles = denies_bash_but_defaults_allow();
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
+    let shared_reg = reg.shared();
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let perm_modes = Arc::new(Mutex::new(HashMap::new()));
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        denies_bash_but_defaults_allow(),
+        shared_reg.clone(),
         PermissionProfile::new(Permission::Allow),
+        None,
+    ));
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let _executor = spawn_tool_executor_with_policy(
+        &holly,
+        shared_reg,
+        entanglement_runtime::host::jobs::JobRegistry::new(),
+        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
+        entanglement_runtime::script_ops::ScriptRegistry::new(),
+        Arc::new(RwLock::new(profiles)),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        PermissionProfile::new(Permission::Allow),
+        active,
+        perm_modes,
+        resolver,
+        grants,
+        Default::default(),
+        None,
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
+        Arc::new(PlanFileRegistry::new()),
+        None,
+        None,
+        None,
     );
 
     let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetAgent {
-            session: sid.clone(),
-            agent: "denybash".into(),
-        })
-        .await
-        .unwrap();
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = collect(sub, &sid).await;

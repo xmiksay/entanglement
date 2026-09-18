@@ -33,8 +33,15 @@ pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "
 
 /// Tool name the plan agent calls to submit its plan (`content` XOR `path`)
 /// for approval (#141, ADR-0042; #513, ADR-0145 — the sole plan-authorship
-/// tool, `update_plan` removed).
+/// tool, `update_plan` removed; ADR-0207 §7 grades it by `Capability::Plan`
+/// instead of per-profile membership).
 pub const PROPOSE_PLAN_TOOL: &str = "propose_plan";
+
+/// Tool name a session calls to ask the user to widen its permission mode
+/// when a needed tool is blocked (ADR-0207 §10) — `Capability::Control`,
+/// never graded, but still force-parks an approval like [`PROPOSE_PLAN_TOOL`]:
+/// widening is real authority, only the user grants it.
+pub const REQUEST_MODE_TOOL: &str = "request_mode";
 
 /// Tool name the model calls to spawn a sub-agent — blocks for its answer by
 /// default; `background: true` returns a handle immediately instead, joined
@@ -105,10 +112,16 @@ pub fn is_non_maskable(tool: &str) -> bool {
 
 /// The `ToolSearch`-mode advertised set (ADR-0196 §2): the fixed
 /// high-frequency host tools plus the runtime-owned roster plus the
-/// discovery pair. Excludes the profile-defining specs (`propose_plan`,
-/// `agent`/`agent_send`) — those are threaded separately by
-/// `cfg.profile_tool_specs` (core-side, per-profile, ADR-0192's carve-out)
-/// and reach every mode's advertised array regardless of this list.
+/// discovery pair. `propose_plan`/`request_mode` join it too (ADR-0207 §7/
+/// §9/§10): both must be advertised unconditionally and their schema never
+/// varies by profile. `agent`/`agent_send` are unconditional too now (stage
+/// 5b retires the old per-profile spawn roster, ADR-0040) — they ride the
+/// plain shared `cfg.tool_specs` alongside everything else here, not a
+/// separate per-profile table. Keeping the kernel set here (not just in
+/// [`crate::discover::runtime_owned_specs`]) is what keeps them visible from
+/// round one under the default `client_side` `tool_search` encoding, which
+/// filters its pool down to exactly this list
+/// ([`crate::tool_advertising::client_side_surface`]).
 pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     "read",
     "edit",
@@ -121,55 +134,53 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     LOAD_SKILL_TOOL,
     EXPLORE_TOOL,
     DESCRIBE_TOOL,
+    PROPOSE_PLAN_TOOL,
+    REQUEST_MODE_TOOL,
+    // `agent`/`agent_send` (stage 5b, ADR-0207 §6/§9): previously appended
+    // unconditionally *after* this kernel filter from the now-retired
+    // per-profile `profile_tool_specs` table, so they were always visible
+    // regardless of discovery state. Now that they ride the plain
+    // `cfg.tool_specs` pool like everything else, they must be named here
+    // too or `client_side_surface`'s kernel filter would silently drop them
+    // until an explicit `describe` — a functional regression, not just a
+    // representational one, for the default `tool_search` mode.
+    AGENT_TOOL,
+    AGENT_SEND_TOOL,
 ];
 
-/// Capability-level permission keys (#418, ADR-0114) and the tools each fans
-/// out to when a profile's `permission:` map uses the capability name instead
-/// of spelling out every member tool — `("read", &["read", "grep", "glob"])`
-/// means a bare `read: allow` grades all three read-only tools identically.
-/// `call`'s member list is `bash` only: the literal `call` tool is
-/// [`MULTI_GROUP`], not a single-group member — see there for why. This table
-/// is the fixed, compile-time built-in membership only — an external MCP tool
-/// (`mcp__<server>__<tool>`) is never a member here, since it isn't
-/// self-describing; a bare capability key additionally fans out to whatever an
-/// MCP server's config-side `capabilities:` annotation maps to it (#426,
-/// `entanglement_runtime::mcp::capability_index`), a *data-driven* extension
-/// of this same table applied alongside it in
-/// `agents::expand_capabilities`. A config-declared endpoint tool
-/// (`endpoint__<name>`, #560 P8) joins the *same* data-driven `call` index —
-/// unlike an MCP tool, with no per-tool config hint needed: every endpoint
-/// tool is unconditionally a network call, so `config::parse`/`main.rs`
-/// simply add `endpoint__<name>` to the index's `call` bucket for every
-/// declared endpoint alongside whatever the `mcp:` section contributed
-/// (`entanglement_core::PermissionProfile::resolve` matches a rule key
-/// against a tool name literally or via the single `*` wildcard — not an
-/// arbitrary glob — so this can't be a static `endpoint__*` table entry the
-/// way an agent tool *mask* pattern could be, ADR-0148; it has to be a
-/// concrete per-name index like MCP's). A skill-declared endpoint tool
-/// (`skill__<skill>__<name>`) is deliberately **not** in that index — it
-/// shares the `skill__` namespace with alias/rhai-backed skill tools that
-/// grade under a different name entirely (see `skills::alias_tool`), so a
-/// profile wanting to grade it under `call` names it explicitly.
+/// Capability-level permission keys (#418, ADR-0114). ADR-0207 §3 replaced
+/// this table's role as the *grading* vocabulary — a mode/ceiling rule's bare
+/// class key (`read`/`write`/`exec`/`plan`/`control`) now matches by each
+/// tool's own declared [`crate::capability::Capability`] (`mode::rules`'s
+/// private `capability_class`), not this static membership list, and the
+/// agent-frontmatter/config-ceiling expansion that used to consume it
+/// (`agents::expand_capabilities`/`permission_from_value`) is retired along
+/// with it. What's left: validating an MCP server's
+/// config-side `capabilities:` annotation strings
+/// ([`is_capability_name`], `entanglement_runtime::mcp::capability_index`)
+/// and the `SessionDir` grant-widening read-triad check
+/// ([`is_read_capability_member`], ADR-0126) — both orthogonal to mode/
+/// ceiling grading.
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write", "apply_patch"]),
     ("call", &["bash"]),
 ];
 
-/// Tools that belong to *every* capability at once, because they can
-/// themselves read, write, or execute regardless of which capability key
-/// graded them: the argv-exec `call` tool and the sandboxed `rhai` script
-/// (bound to the quintet plus `call`/`bash`, see [`BINDING_TOOLS`]). Never
-/// expanded by a bare/arg-scoped capability rule — instead, `permission_from_value`
-/// grades them by the least-privileged bare `read`/`write`/`call` (+ literal
-/// `rhai`) grade a profile sets, so restricting any one capability tightens
-/// what these general-purpose tools may do.
+/// Tools that used to belong to *every* ADR-0114 capability at once for the
+/// now-retired frontmatter/ceiling expansion this fed
+/// (`agents::expand_capabilities`) — kept only as a historical marker;
+/// nothing reads it any more. Superseded by each tool's own declared
+/// [`crate::capability::Capability`] set (`call`/`rhai` both carry
+/// `Capability::Exec` directly, `rhai` several — see
+/// `crate::capability::runtime_owned`), which needs no such special-cased
+/// multi-membership list.
 pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
 
-/// Whether `name` names a capability (`read`/`write`/`call`) — shared by the
-/// frontmatter/ceiling expansion above and by an MCP server's config-side
-/// `capabilities` annotation (#426, `entanglement_runtime::mcp::capability_index`),
-/// which validates its declared capability strings against the same table.
+/// Whether `name` names a capability (`read`/`write`/`call`) — used by an MCP
+/// server's config-side `capabilities` annotation (#426,
+/// `entanglement_runtime::mcp::capability_index`), which validates its
+/// declared capability strings against the same table.
 pub fn is_capability_name(name: &str) -> bool {
     CAPABILITIES.iter().any(|(n, _)| *n == name)
 }

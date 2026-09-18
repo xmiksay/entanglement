@@ -78,8 +78,14 @@ pub async fn reply_content(
 /// The head's answer to a parked tool round-trip, already filtered to the
 /// waiting `(session, request_id)`.
 pub enum Decision {
-    /// `Approve` — carries the approval scope (#174).
-    Approve { scope: ApprovalScope },
+    /// `Approve` — carries the approval scope (#174) and, for a `propose_plan`
+    /// approval only (#560, ADR-0207 §7 extension), the mode the approver chose
+    /// to switch into (`mode`, mirroring [`InMsg::Approve::mode`]). Every other
+    /// orchestrator ignores `mode`.
+    Approve {
+        scope: ApprovalScope,
+        mode: Option<String>,
+    },
     /// `Reject` — carries the optional reason.
     Reject { reason: Option<String> },
     /// `AnswerQuestion` — one inner vec of chosen labels / free text per
@@ -120,7 +126,8 @@ impl Decision {
                 session,
                 request_id,
                 scope,
-            } => Some((session, request_id, Decision::Approve { scope })),
+                mode,
+            } => Some((session, request_id, Decision::Approve { scope, mode })),
             InMsg::Reject {
                 session,
                 request_id,

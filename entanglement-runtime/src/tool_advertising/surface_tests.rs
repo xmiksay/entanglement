@@ -99,6 +99,7 @@ fn sources() -> SurfaceSources {
         tools: reg.shared(),
         avail: Arc::new(AvailableMcp::default()),
         advertising: Arc::new(AdvertisingState::new()),
+        agent_specs: Vec::new(),
         inputs: Arc::new(
             AdvertisingInputs::new(
                 Arc::new(crate::config::bare_config()),

@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
 use crate::session::SessionCmd;
 
-use super::{next_seq_for, SeqRegistry, DEFAULT_PROFILE, ROUTE_ATTEMPTS};
+use super::{next_seq_for, SeqRegistry, DEFAULT_AGENT, ROUTE_ATTEMPTS};
 
 /// Route a command to a session without letting one saturated session block the
 /// supervisor's single loop — and thereby delay routing to *every* other
@@ -75,7 +75,7 @@ pub(super) fn emit_supervisor_error(
 /// records too (#415, mirroring the `is_target` scoping in
 /// [`Session::replay`][crate::session::Session::replay]). Absent (an older log,
 /// or `session` never appears in it), it's treated as a root under the base
-/// `build` profile.
+/// `build` agent.
 pub(super) fn resume_meta(
     session: &SessionId,
     records: &[(Option<InMsg>, OutEvent)],
@@ -84,10 +84,9 @@ pub(super) fn resume_meta(
         if let OutEvent::SessionStarted {
             session: started,
             parent,
-            profile,
+            agent,
             root,
             user,
-            sponsored,
             ..
         } = ev
         {
@@ -97,24 +96,18 @@ pub(super) fn resume_meta(
             return SessionInfo {
                 session: session.clone(),
                 parent: parent.clone(),
-                profile: profile.clone(),
+                agent: agent.clone(),
                 root: *root,
-                // The replay log carries only the profile *name*; the caller fills
-                // the resolved detail from the replayed session's profile (#189).
-                profile_detail: None,
                 user: user.clone(),
-                sponsored: *sponsored,
             };
         }
     }
     SessionInfo {
         session: session.clone(),
         parent: None,
-        profile: DEFAULT_PROFILE.to_string(),
+        agent: DEFAULT_AGENT.to_string(),
         root: true,
-        profile_detail: None,
         user: None,
-        sponsored: false,
     }
 }
 
@@ -140,7 +133,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         InMsg::Stop { .. } => SessionCmd::Stop,
         InMsg::PauseSession { .. } => SessionCmd::Pause,
         InMsg::ResumeSession { .. } => SessionCmd::Unpause,
-        InMsg::SetAgent { agent, .. } => SessionCmd::SetAgent(agent),
+        InMsg::SetMode { mode, .. } => SessionCmd::SetMode(mode),
         InMsg::SetModel {
             provider, model, ..
         } => SessionCmd::SetModel(provider, model),

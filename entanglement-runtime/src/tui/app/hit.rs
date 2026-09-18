@@ -46,18 +46,18 @@ impl App {
         self.modal_click.model_picker
     }
 
+    pub fn set_mode_picker_rect(&mut self, area: Rect) {
+        self.modal_click.mode_picker = area;
+    }
+    pub fn mode_picker_rect(&self) -> Rect {
+        self.modal_click.mode_picker
+    }
+
     pub fn set_key_dialog_rect(&mut self, area: Rect) {
         self.modal_click.key_dialog = area;
     }
     pub fn key_dialog_rect(&self) -> Rect {
         self.modal_click.key_dialog
-    }
-
-    pub fn set_tools_dialog_rect(&mut self, area: Rect) {
-        self.modal_click.tools_dialog = area;
-    }
-    pub fn tools_dialog_rect(&self) -> Rect {
-        self.modal_click.tools_dialog
     }
 
     pub fn set_session_tools_dialog_rect(&mut self, area: Rect) {

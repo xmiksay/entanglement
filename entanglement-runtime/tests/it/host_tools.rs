@@ -116,7 +116,7 @@ async fn read_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -191,7 +191,7 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -293,7 +293,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -376,7 +376,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
 }
 
 #[tokio::test]
-async fn write_tool_denied_under_explore_profile() {
+async fn write_tool_denied_under_research_mode() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-write-deny-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -410,7 +410,7 @@ async fn write_tool_denied_under_explore_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -423,72 +423,45 @@ async fn write_tool_denied_under_explore_profile() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "explore".into(),
+            mode: "research".into(),
         })
         .await
         .unwrap();
     let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
     holly
         .send(InMsg::prompt(sid.clone(), "try to write"))
         .await
         .unwrap();
 
-    // `write` is *masked* out of `explore`'s tool set (#116, ADR-0038). Since
-    // ADR-0198 that mask miss parks an approval instead of an outright
-    // decline — `explore`'s permission rules never explicitly name `write`,
-    // only the ambient `default: deny` reaches it, which is not the ADR's
-    // hard-limit floor. Advertisement is decoupled, so the model does see
-    // the schema and the offer's attribution names the declining profile.
-    let mut input = None;
-    while let Ok(Ok(ev)) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), watch.recv()).await
-    {
-        if let OutEvent::ToolRequest { tool, input: i, .. } = &ev {
-            if tool == "write" {
-                input = Some(i.clone());
-                break;
-            }
-        }
-    }
-    let input = input.expect("write must park a mask-attributed approval, not decline outright");
-    assert!(
-        input.contains("outside agent profile `explore`'s tool mask"),
-        "got {input:?}"
-    );
-
-    // Approving the mask offer still runs the *rest* of the ladder unchanged
-    // (ADR-0198 §4): `explore`'s ambient `default: deny` denies `write` on
-    // the merits, so the file still never lands even past the approval.
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id: "w1".into(),
-            scope: entanglement_core::ApprovalScope::Once,
-        })
-        .await
-        .unwrap();
+    // `research` mode class-denies `write` outright (ADR-0207 §4/§8: a mode
+    // `deny` is absolute, no prompt) — the tool mask this used to go through
+    // (#116, ADR-0038, ADR-0198's approval-offer softening) is retired.
     let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a mode deny never parks an approval; got {events:?}"
+    );
     assert!(
         events.iter().any(|e| matches!(
             e,
             OutEvent::ToolOutput { output, .. }
-                if output == "tool `write` denied by permission profile"
+                if output.contains("tool `write` denied by mode `research`")
         )),
-        "the underlying permission grade must still refuse write past the mask approval; got \
-         {events:?}"
+        "the denial must name the mode; got {events:?}"
     );
     assert!(!root.join("blocked.txt").exists(), "write must not land");
 }
 
 #[tokio::test]
-async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
-    // #524, ADR-0142: `plan` now advertises `write` (unmasked), but only to
-    // carve out `.entanglement/plans/*.md` for the plan tool (#513) — its bare
-    // grade is `deny`, so a write anywhere else resolves through the permission
-    // ladder and is refused there, not declined by the mask.
+async fn write_tool_denied_outside_plans_folder_under_plan_mode() {
+    // #524, ADR-0142: `plan` mode carves out `.entanglement/plans/*.md` for
+    // the plan tool (#513) with a longer, scoped `allow` rule, but its bare
+    // `write` grade is class-`deny` (ADR-0207 §4) — a write anywhere else is
+    // refused outright, no approval offered.
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-write-plan-mask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -522,7 +495,7 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -535,9 +508,9 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "plan".into(),
+            mode: "plan".into(),
         })
         .await
         .unwrap();
@@ -551,7 +524,7 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            OutEvent::ToolOutput { output, .. } if output.contains("denied by permission profile")
+            OutEvent::ToolOutput { output, .. } if output.contains("denied by mode `plan`")
         )),
         "plan should deny a write outside the plans folder; got {events:?}"
     );
@@ -559,7 +532,7 @@ async fn write_tool_denied_outside_plans_folder_under_plan_profile() {
 }
 
 #[tokio::test]
-async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
+async fn write_tool_allowed_in_plans_folder_under_plan_mode() {
     // #524, ADR-0142: the opencode-style plans-folder carve-out — `plan` may
     // write `.entanglement/plans/*.md` even though it is otherwise physically
     // read-only.
@@ -598,7 +571,7 @@ async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -611,9 +584,9 @@ async fn write_tool_allowed_in_plans_folder_under_plan_profile() {
     );
     let sid = SessionId::new("s1");
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::SetMode {
             session: sid.clone(),
-            agent: "plan".into(),
+            mode: "plan".into(),
         })
         .await
         .unwrap();
@@ -676,7 +649,7 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -752,7 +725,7 @@ async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile()
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
@@ -802,8 +775,14 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
     let _cleanup = Drop_(root.clone());
 
     // A payload full of shell metacharacters: passed as argv it must reach
-    // `printf` verbatim, never expanded or split by a shell.
-    let payload = "$HOME && rm -rf / | cat *.rs";
+    // `printf` verbatim, never expanded or split by a shell. Deliberately
+    // avoids a literal `rm -rf /`-shaped substring: `call`'s own runtime
+    // behavior never shell-interprets this string (the whole point being
+    // tested), but the *grading* layer's compound-command splitter still
+    // reads the space-joined `command`+`args` textually (#173) and build
+    // mode's destructive-command deny list (ADR-0207 §4) would otherwise
+    // flag this fixture data as if it were a real destructive command.
+    let payload = "$HOME && echo pwned | cat *.rs";
     let call_call = LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -830,7 +809,7 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        profiles: entanglement_runtime::agents::built_in_registry()
+        agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
     };

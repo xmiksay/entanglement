@@ -73,7 +73,7 @@ async fn compact_op(
     // Model resolution mirrors turn.rs's request field: a live switch (#218)
     // overrides the profile's pinned model; `None` falls back to the backend's
     // own default.
-    let model = s.model.as_deref().or(s.profile.model.as_deref());
+    let model = s.model.as_deref().or(s.agent.model.as_deref());
     // Resolved exactly as a turn round resolves them, so the session-backend
     // summary request replays the same cached prefix (ADR-0202).
     let specs = resolve_specs(cfg, session, s);

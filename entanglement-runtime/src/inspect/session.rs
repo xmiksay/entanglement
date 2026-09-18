@@ -59,12 +59,12 @@ fn fold(target: &SessionId, records: &[LogRecord]) -> FoldedState {
         match ev {
             OutEvent::SessionStarted {
                 session,
-                profile,
+                agent,
                 model,
                 ..
             } if session == target => {
                 state.started = true;
-                state.agent = Some(profile.clone());
+                state.agent = Some(agent.clone());
                 state.model = model.clone();
             }
             OutEvent::AgentChanged { session, agent, .. } if session == target => {
@@ -163,12 +163,11 @@ mod tests {
                     session: target.clone(),
                     parent: None,
                     predecessor: None,
-                    profile: "build".to_string(),
+                    agent: "build".to_string(),
                     model: Some("glm-4.5".to_string()),
                     root: true,
                     ts: 0,
                     user: None,
-                    sponsored: false,
                 },
             ),
             out(
@@ -176,7 +175,6 @@ mod tests {
                 OutEvent::AgentChanged {
                     session: target.clone(),
                     agent: "plan".to_string(),
-                    profile_detail: None,
                 },
             ),
             out(
@@ -233,12 +231,11 @@ mod tests {
                     session: target.clone(),
                     parent: None,
                     predecessor: None,
-                    profile: "build".to_string(),
+                    agent: "build".to_string(),
                     model: None,
                     root: true,
                     ts: 0,
                     user: None,
-                    sponsored: false,
                 },
             ),
             out(

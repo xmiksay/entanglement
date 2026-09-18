@@ -1,24 +1,27 @@
 //! File-based agent definitions (#112, ADR-0034).
 //!
 //! An agent is a markdown file with YAML frontmatter: the frontmatter is the
-//! config bundle (`name`/`description`/`mode`/`model`/`permission`/…), the body
-//! below the closing `---` is the agent's system-prompt body. Definitions are
-//! discovered at startup and folded into a core [`ProfileRegistry`].
+//! identity bundle (`name`/`description`/`model`/…), the body below the
+//! closing `---` is the agent's system-prompt body. Definitions are discovered
+//! at startup and folded into a core [`AgentCatalog`].
 //!
 //! The body is not stored raw: as each definition is parsed it is composed into
 //! the final `system_prompt` by [`crate::system_prompt::assemble`] (shared
 //! preamble + body + project brief + env block + skill index, #113). Baking the
 //! assembled prompt into the registry here keeps every downstream consumer
-//! (session start, `SetAgent`, spawn) a pass-through.
+//! (session start, spawn) a pass-through.
 //!
 //! # Layers & precedence
 //!
 //! Three layers, later wins on a `name` collision:
 //!
-//! 1. **built-in** — embedded [`include_str!`] files (`build`, `plan`,
-//!    `explore`, `debug`, `research`), parsed through the *same* loader. Editing a built-in
-//!    is just dropping a same-`name` file in a higher layer; there is no special
-//!    "edit built-ins" code path.
+//! 1. **built-in** — embedded [`include_str!`] files (`general`, `plan`,
+//!    `debug` — ADR-0207 stage 6a collapsed the five-persona roster:
+//!    `build` renamed to `general` (unchanged body, the default worker
+//!    persona), `explore`/`research` retired since their read-only posture is
+//!    a permission **mode** now, not a persona), parsed through the *same*
+//!    loader. Editing a built-in is just dropping a same-`name` file in a
+//!    higher layer; there is no special "edit built-ins" code path.
 //! 2. **user** — `~/.claude/agents/*.md` (cross-vendor, lenient), then
 //!    `${config_dir}/entanglement/agents/*.md` (native, strict).
 //! 3. **project** — `.claude/agents` then `.agents/agents` (both lenient), then
@@ -30,47 +33,61 @@
 //! infallible. Foreign (cross-vendor) dirs are parsed leniently per ADR-0074:
 //! only `name` + `description` are read (unknown keys like Claude Code's
 //! `tools: Read, Grep` string, `model`, `color` are ignored) and a malformed
-//! file is warned and skipped — it must not abort the load. A foreign agent
-//! defaults to `mode: all` so it is spawnable as a delegation target.
+//! file is warned and skipped — it must not abort the load.
 //!
-//! # Tool mask (#116) and deferred frontmatter
+//! # Authority left the agent (ADR-0207)
 //!
-//! `tools`/`disallowed_tools` (the tool mask) now reach the core
-//! [`AgentProfile`] and are **enforced** (#116, ADR-0038): core filters the
-//! advertised specs by the mask at turn time and the runtime executor refuses a
-//! masked call at dispatch, so a restricted agent's model never sees the schema
-//! and a hallucinated call is still refused.
+//! `tools`/`disallowed_tools` (the tool mask, #116/ADR-0038), `permission`
+//! (#59), `can_spawn`/`spawnable_agents` (#119, ADR-0040), `sandbox`
+//! (ADR-0134) and `mode` (primary/subagent/all, ADR-0034) are no longer
+//! agent frontmatter keys: authority is a second, independent session axis
+//! now — the permission **mode** — not anything an `Agent` carries,
+//! and any agent may be a session root or a spawn target (ADR-0207 §4/§6).
+//! A definition naming any of those fails to parse (`deny_unknown_fields`),
+//! same as any other unrecognized key.
 //!
-//! `can_spawn`/`spawnable_agents` (fine-grained spawn control) now reach the core
-//! [`AgentProfile`] and are **enforced** (#119, ADR-0040): `can_spawn` gates the
-//! whole `agent_*` family (withheld from the model + refused at dispatch when a
-//! profile may not spawn) and `spawnable_agents` scopes which profiles it may
-//! spawn — both layered in front of the ADR-0023 budget and the ADR-0024 clamp.
+//! # `SetAgent` is gone (ADR-0207 §9, stage 6a)
+//!
+//! An agent is chosen once, when a session starts, and is fixed for that
+//! session's life — a spawned sub-agent is a fresh session with its own
+//! system prompt, which is what delegating to a different persona actually
+//! needs; there is no live "switch agent" message any more.
+//!
+//! # Migrating a legacy native-layer file
+//!
+//! A user/project **native** definition (`${config_dir}/entanglement/agents`,
+//! `<root>/.entanglement/agents`) authored before ADR-0207 may still carry the
+//! retired authority keys (`migrate::RETIRED_AGENT_KEYS`). Rather than bricking the
+//! load on every one of them forever, [`migrate_legacy_agent_file`] self-heals
+//! a **strict**-layer parse failure that is caused by exactly those keys: it
+//! backs the file up to `<file>.bak`, rewrites it without them, and warns
+//! naming the file and the closest replacement permission **mode** inferred
+//! from what the dropped rules allowed. A parse failure the retired keys
+//! don't explain (a genuine typo) still aborts loudly — this must never paper
+//! over a mistake by guessing. Foreign (lenient) files are unaffected: they
+//! never carried these keys as anything but ignored noise (ADR-0074).
+
+mod migrate;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{AgentMode, AgentProfile, Permission, PermissionProfile, ProfileRegistry};
+use entanglement_core::{Agent, AgentCatalog};
 use serde::Deserialize;
 
 use crate::layers::Strictness;
 use crate::mcp::McpCapabilityIndex;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, assemble_parts, PromptContext, PromptPart};
-use crate::tool_names;
-
-mod materialize;
-pub use materialize::{rewrite_tools, save_tools_override, winning_raw_text};
+use migrate::migrate_legacy_agent_file;
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
 /// the agent's identity is its frontmatter `name`.
 const BUILT_INS: &[(&str, &str)] = &[
-    ("build.md", include_str!("build.md")),
+    ("general.md", include_str!("general.md")),
     ("plan.md", include_str!("plan.md")),
-    ("explore.md", include_str!("explore.md")),
     ("debug.md", include_str!("debug.md")),
-    ("research.md", include_str!("research.md")),
 ];
 
 /// Env var overriding the user agents directory (tests + non-XDG setups).
@@ -81,62 +98,30 @@ const AGENTS_DIR_ENV: &str = "ENTANGLEMENT_AGENTS_DIR";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentDefinition {
-    /// Unique id; what `agent { agent }` / `SetAgent` reference.
+    /// Unique id; what `agent { agent }` spawns by.
     name: String,
     /// One-line summary; the only field disclosed to a spawning model.
     description: String,
-    /// `primary` / `subagent` / `all`. Defaults to `primary`.
-    #[serde(default = "default_mode")]
-    mode: AgentMode,
     /// Provider model override, or `inherit` / omitted for the session default.
     #[serde(default)]
     model: Option<String>,
-    /// Provider this profile pins `model` to (#323, ADR-0081). Set alongside
+    /// Provider this agent pins `model` to (#323, ADR-0081). Set alongside
     /// `model` to form a *model pin*: the session re-binds to `(provider, model)`
-    /// on `SetAgent`/session start. `inherit`/omitted ⇒ no provider pin; `model`
+    /// at session start. `inherit`/omitted ⇒ no provider pin; `model`
     /// alone stays the legacy request-level fallback. `provider` without `model`
     /// is a loud load error (a provider with nothing to run is meaningless).
     #[serde(default)]
     provider: Option<String>,
-    /// Per-tool `Allow | Ask | Deny` rules. Omitted ⇒ allow-all.
-    #[serde(default)]
-    permission: Option<serde_yaml::Value>,
     /// Fold the project brief into this agent's system prompt (#113). Opt-in:
     /// omitted ⇒ the brief is not included even when a brief file exists.
     #[serde(default)]
     include_brief: bool,
-    /// Tool allowlist; omitted ⇒ inherit all. Enforced (#116, ADR-0038): masks
-    /// both the advertised specs and dispatch.
-    #[serde(default)]
-    tools: Option<Vec<String>>,
-    /// Tool denylist, applied after the allowlist (#116, ADR-0038).
-    #[serde(default)]
-    disallowed_tools: Vec<String>,
-    /// Whether this profile may spawn sub-agents (#119, ADR-0040). Omitted ⇒
-    /// derive from `mode` (`subagent` closed, otherwise open).
-    #[serde(default)]
-    can_spawn: Option<bool>,
-    /// Which agents this profile may spawn, by name (#119, ADR-0040). Omitted ⇒
-    /// any registered profile whose `mode` permits sub-agent use.
-    #[serde(default)]
-    spawnable_agents: Option<Vec<String>>,
-    /// Per-profile bubblewrap confinement override for `bash`/`call` (#479,
-    /// ADR-0104 amendment): `bwrap`/`bubblewrap` confines, `none` forces
-    /// unconfined, `inherit`/omitted defers to the process-global
-    /// `ENTANGLEMENT_SANDBOX` default. Any other value is a loud load error
-    /// (`build_profile`), matching every other frontmatter key's strictness.
-    #[serde(default)]
-    sandbox: Option<String>,
     /// Skills to **preload** into this agent's system prompt (#117): the listed
     /// skills' full bodies are injected at load (paths substituted, same pipeline
-    /// as `load_skill`). Preload only — *not* an allowlist: runtime skill access
-    /// is the orthogonal `load_skill` tool mask (`tools`/`disallowed_tools`).
+    /// as `load_skill`). Preload only — *not* an allowlist: runtime `load_skill`
+    /// access is governed by the session's permission mode, not the agent.
     #[serde(default)]
     skills: Option<Vec<String>>,
-}
-
-fn default_mode() -> AgentMode {
-    AgentMode::Primary
 }
 
 /// Lenient frontmatter for cross-vendor agents (ADR-0074): only the identity
@@ -150,24 +135,18 @@ struct ForeignAgentFrontmatter {
 }
 
 impl ForeignAgentFrontmatter {
-    /// Map onto the native definition: `mode: all` (a Claude agent is a
-    /// delegation target, so it must be spawnable; `all` keeps it selectable as
-    /// a primary too — shadow with a native definition to restrict), allow-all
-    /// permission, no tool mask, no brief/preload.
+    /// Map onto the native definition: no brief/preload, no model/provider
+    /// pin. No authority to drop any more (ADR-0207) — a foreign agent's
+    /// posture is whatever session mode it runs under, same as any native
+    /// one, and it is a spawn target like any other agent (ADR-0207 §6) with
+    /// zero mapping needed.
     fn into_definition(self) -> AgentDefinition {
         AgentDefinition {
             name: self.name,
             description: self.description,
-            mode: AgentMode::All,
             model: None,
             provider: None,
-            permission: None,
             include_brief: false,
-            tools: None,
-            disallowed_tools: Vec::new(),
-            can_spawn: None,
-            spawnable_agents: None,
-            sandbox: None,
             skills: None,
         }
     }
@@ -183,9 +162,37 @@ fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
         Strictness::Strict => {
             let (frontmatter, body) = crate::frontmatter::split(&raw.content)
                 .with_context(|| format!("parsing agent `{}`", raw.source))?;
-            let def: AgentDefinition = serde_yaml::from_str(&frontmatter)
-                .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
-            Ok(Some((def, body)))
+            match serde_yaml::from_str::<AgentDefinition>(&frontmatter) {
+                Ok(def) => Ok(Some((def, body))),
+                Err(e) => {
+                    // A real on-disk file (not an embedded built-in, which
+                    // never carries the retired keys) gets one self-heal
+                    // attempt before the parse error aborts the load.
+                    let Some(path) = raw.path.as_deref() else {
+                        return Err(e).with_context(|| {
+                            format!("invalid frontmatter in agent `{}`", raw.source)
+                        });
+                    };
+                    match migrate_legacy_agent_file(path, &frontmatter, &body)? {
+                        Some(cleaned) => {
+                            let def: AgentDefinition = serde_yaml::from_str(&cleaned)
+                                .with_context(|| {
+                                    format!(
+                                        "invalid frontmatter in agent `{}` even after dropping \
+                                         retired keys",
+                                        raw.source
+                                    )
+                                })?;
+                            Ok(Some((def, body)))
+                        }
+                        // No retired key explains the failure — a genuine
+                        // typo, so the original error stands (no guessing).
+                        None => Err(e).with_context(|| {
+                            format!("invalid frontmatter in agent `{}`", raw.source)
+                        }),
+                    }
+                }
+            }
         }
         Strictness::Lenient => {
             let parsed = crate::frontmatter::split(&raw.content).and_then(|(frontmatter, body)| {
@@ -216,7 +223,7 @@ fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, String)>> {
 /// collision (project > user > built-in). A malformed file in any layer aborts.
 ///
 /// `ctx` carries the deterministic system-prompt inputs (shared preamble,
-/// project brief, environment block, skill index): each profile's body is
+/// project brief, environment block, skill index): each agent's body is
 /// composed into a final `system_prompt` via [`assemble`] as it is parsed
 /// (#113). Pass [`PromptContext::default`] for the raw, un-composed bodies.
 ///
@@ -230,8 +237,8 @@ pub fn load_registry(
     ctx: &PromptContext,
     skills: &SkillRegistry,
     mcp: &McpCapabilityIndex,
-) -> Result<ProfileRegistry> {
-    let mut reg = ProfileRegistry::default();
+) -> Result<AgentCatalog> {
+    let mut reg = AgentCatalog::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
     // longer silent (#185): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect agents` surfaces.
@@ -243,29 +250,29 @@ pub fn load_registry(
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills, mcp)
+        let agent = build_agent(def, &body, ctx, skills, mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
         if let Some((prior_layer, prior_source)) =
-            winning.insert(profile.name.clone(), (raw.layer, raw.source.clone()))
+            winning.insert(agent.name.clone(), (raw.layer, raw.source.clone()))
         {
             tracing::debug!(
-                agent = %profile.name,
+                agent = %agent.name,
                 layer = raw.layer.label(),
                 replaces = %format!("{} ({})", prior_layer.label(), prior_source),
                 source = %raw.source,
                 "agent definition overrides a lower layer",
             );
         }
-        reg.insert(profile);
+        reg.insert(agent);
     }
     Ok(reg)
 }
 
-/// Parse *only* the embedded built-in set (`build`/`plan`/`explore`/`debug`)
-/// into a [`ProfileRegistry`], skipping the user/project layers
+/// Parse *only* the embedded built-in set (`general`/`plan`/`debug`)
+/// into a [`AgentCatalog`], skipping the user/project layers
 /// [`load_registry`] consults. The runtime is the single source of the
-/// built-ins (#201): core carries only the `build` fallback
-/// [`ProfileRegistry::new`] synthesizes, so callers that need the full set
+/// built-ins (#201): core carries only the `general` fallback
+/// [`AgentCatalog::new`] synthesizes, so callers that need the full set
 /// without touching the filesystem parse the embedded markdown here. Prompts
 /// are composed with an identity [`PromptContext`] (no brief/env/skills),
 /// matching the raw built-in bodies.
@@ -277,15 +284,15 @@ pub fn load_registry(
 /// entirely. So a parse failure here is surfaced as a `Result` — same as
 /// every other layer — rather than an unconditional panic baked into a
 /// library function.
-pub fn built_in_registry() -> Result<ProfileRegistry> {
+pub fn built_in_registry() -> Result<AgentCatalog> {
     let ctx = PromptContext::default();
     let skills = SkillRegistry::default();
     let mcp = McpCapabilityIndex::new();
-    let mut reg = ProfileRegistry::default();
+    let mut reg = AgentCatalog::default();
     for (file, contents) in BUILT_INS {
-        let profile = parse_definition(contents, &ctx, &skills, &mcp)
+        let agent = parse_definition(contents, &ctx, &skills, &mcp)
             .with_context(|| format!("embedded built-in agent `{file}` must parse"))?;
-        reg.insert(profile);
+        reg.insert(agent);
     }
     Ok(reg)
 }
@@ -295,11 +302,11 @@ pub fn built_in_registry() -> Result<ProfileRegistry> {
 /// layer/source won, and every lower-layer definition of the same name it
 /// overrode.
 pub struct AgentResolution {
-    /// The fully assembled winning profile (mode/model/permission/mask + prompt).
-    pub profile: AgentProfile,
+    /// The fully assembled winning agent (mode/model pin/spawn posture + prompt).
+    pub agent: Agent,
     /// Which precedence layer the winner came from.
     pub layer: AgentLayer,
-    /// The winner's origin (`built-in (build.md)` or a file path).
+    /// The winner's origin (`built-in (general.md)` or a file path).
     pub source: String,
     /// Lower-layer definitions of the same name the winner overrode, in
     /// precedence order — `(layer, source)` each. Empty when nothing was shadowed.
@@ -312,11 +319,10 @@ pub struct AgentResolution {
 /// exactly as at load (native aborts, foreign warns and skips).
 ///
 /// `skutter inspect agents` (unlike [`load_registry`]) doesn't already resolve
-/// the user config's MCP servers, so this reports each profile's permission
-/// rules with an empty [`McpCapabilityIndex`] — a bare `read: allow` here shows
-/// only the built-in fan-out, not any config-side MCP capability hint (#426).
-/// Real permission resolution (`load_registry`, driving the engine) still sees
-/// the full fan-out; only this debug view is scoped down.
+/// the user config's MCP servers, so this parses with an empty
+/// [`McpCapabilityIndex`] — harmless now that agent parsing carries no
+/// permission fan-out of its own (ADR-0207); kept for
+/// [`build_agent`]'s shared signature.
 pub fn resolve_registry(
     root: &Path,
     ctx: &PromptContext,
@@ -327,20 +333,20 @@ pub fn resolve_registry(
     // definitions in precedence order so the last is the winner and the rest are
     // what it shadowed.
     let mut order: Vec<String> = Vec::new();
-    let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, AgentProfile)>> =
+    let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, Agent)>> =
         std::collections::HashMap::new();
     for raw in discover(root)? {
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
-        let profile = build_profile(def, &body, ctx, skills, &mcp)
+        let agent = build_agent(def, &body, ctx, skills, &mcp)
             .with_context(|| format!("parsing agent `{}`", raw.source))?;
-        let name = profile.name.clone();
+        let name = agent.name.clone();
         let entry = by_name.entry(name.clone()).or_default();
         if entry.is_empty() {
             order.push(name);
         }
-        entry.push((raw.layer, raw.source, profile));
+        entry.push((raw.layer, raw.source, agent));
     }
 
     let mut resolved: Vec<AgentResolution> = order
@@ -349,27 +355,27 @@ pub fn resolve_registry(
             let mut defs = by_name
                 .remove(&name)
                 .expect("name recorded on first insert");
-            let (layer, source, profile) = defs.pop().expect("at least one definition per name");
+            let (layer, source, agent) = defs.pop().expect("at least one definition per name");
             let shadowed = defs.into_iter().map(|(l, s, _)| (l, s)).collect();
             AgentResolution {
-                profile,
+                agent,
                 layer,
                 source,
                 shadowed,
             }
         })
         .collect();
-    resolved.sort_by(|a, b| a.profile.name.cmp(&b.profile.name));
+    resolved.sort_by(|a, b| a.agent.name.cmp(&b.agent.name));
     Ok(resolved)
 }
 
 /// Everything `skutter inspect prompt` needs for one agent (#184): the winning
-/// definition's source, the assembled profile, and the per-part breakdown.
+/// definition's source, the assembled agent, and the per-part breakdown.
 pub struct AgentPromptReport {
-    /// Where the winning definition came from (`built-in (build.md)` or a path).
+    /// Where the winning definition came from (`built-in (general.md)` or a path).
     pub source: String,
-    /// The fully assembled profile (its `system_prompt` is the resolved prompt).
-    pub profile: AgentProfile,
+    /// The fully assembled agent (its `system_prompt` is the resolved prompt).
+    pub agent: Agent,
     /// The included prompt slices with their sources, in prompt order.
     pub parts: Vec<PromptPart>,
     /// Whether the definition opted into the project brief (`include_brief`).
@@ -382,9 +388,8 @@ pub struct AgentPromptReport {
 /// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
 /// without spawning the engine (#184). `Ok(None)` if no such agent exists;
 /// malformed definitions behave exactly as at load (native aborts, foreign
-/// warns and skips). Like [`resolve_registry`], resolves permission with an
-/// empty [`McpCapabilityIndex`] (#426) — this view doesn't consult the user
-/// config's MCP servers.
+/// warns and skips). Parses with an empty [`McpCapabilityIndex`], kept for
+/// [`build_agent`]'s shared signature (#426; harmless now, ADR-0207).
 pub fn prompt_report(
     root: &Path,
     agent: &str,
@@ -407,19 +412,18 @@ pub fn prompt_report(
     };
 
     let include_brief = def.include_brief;
-    let mode = def.mode;
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
-    let mut parts = assemble_parts(&body, include_brief, mode, ctx, &preloaded);
+    let mut parts = assemble_parts(&body, include_brief, ctx, &preloaded);
     // `assemble_parts` labels the body with a generic source; here we know the
     // actual winning file, so point the body part at it.
     for p in parts.iter_mut().filter(|p| p.label == "agent body") {
         p.source = source.clone();
     }
     let brief_included = parts.iter().any(|p| p.label == "project brief");
-    let profile = build_profile(def, &body, ctx, skills, &McpCapabilityIndex::new())?;
+    let agent = build_agent(def, &body, ctx, skills, &McpCapabilityIndex::new())?;
     Ok(Some(AgentPromptReport {
         source,
-        profile,
+        agent,
         parts,
         include_brief,
         brief_included,
@@ -432,13 +436,17 @@ pub fn prompt_report(
 pub use crate::layers::Layer as AgentLayer;
 
 /// A discovered agent definition file *before* parsing: which layer it came from
-/// (#185), a display label for its origin (`built-in (build.md)` or the file
-/// path), and the raw file content.
+/// (#185), a display label for its origin (`built-in (general.md)` or the file
+/// path), the raw file content, and — for a real on-disk file only — the path
+/// itself, so a strict-layer parse failure can attempt the retired-key
+/// self-heal ([`migrate_legacy_agent_file`]). `None` for an embedded built-in,
+/// which has no file to rewrite and never carries a retired key.
 struct RawAgent {
     layer: AgentLayer,
     strictness: Strictness,
     source: String,
     content: String,
+    path: Option<PathBuf>,
 }
 
 /// Enumerate every agent definition in precedence order — embedded built-ins,
@@ -454,6 +462,7 @@ fn discover(root: &Path) -> Result<Vec<RawAgent>> {
             strictness: Strictness::Strict,
             source: format!("built-in ({file})"),
             content: (*contents).to_string(),
+            path: None,
         })
         .collect();
     crate::layers::load_layers(root, "agents", AGENTS_DIR_ENV, built_ins, read_dir_raws)
@@ -486,51 +495,53 @@ fn read_dir_raws(
             strictness,
             source: path.display().to_string(),
             content,
+            path: Some(path),
         });
     }
     Ok(())
 }
 
 /// Split frontmatter from body, parse the frontmatter as YAML, and build a core
-/// [`AgentProfile`]. The body is composed with `ctx` into the final
+/// [`Agent`]. The body is composed with `ctx` into the final
 /// `system_prompt` via [`assemble`]: shared preamble + body + brief (if
-/// `include_brief`) + env + skills, with subagents getting the reduced form
-/// (#113).
+/// `include_brief`) + env + skills — unconditional for every agent now
+/// (ADR-0207 §4 retires the old `Subagent`-mode reduced form, #113).
 fn parse_definition(
     content: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
     mcp: &McpCapabilityIndex,
-) -> Result<AgentProfile> {
+) -> Result<Agent> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let def: AgentDefinition =
         serde_yaml::from_str(&frontmatter).context("invalid agent frontmatter")?;
-    build_profile(def, &body, ctx, skills, mcp)
+    build_agent(def, &body, ctx, skills, mcp)
 }
 
-/// Build a core [`AgentProfile`] from an already-parsed definition + body,
+/// Build a core [`Agent`] from an already-parsed definition + body,
 /// composing the final `system_prompt` via [`assemble`]. Split out from
 /// [`parse_definition`] so `inspect` can reuse it after it has the definition in
 /// hand (to also render the per-part breakdown from the same inputs).
-fn build_profile(
+///
+/// `_mcp` is dead weight since ADR-0207 (agent parsing carries no permission
+/// fan-out any more) — kept only so every call site in this module shares one
+/// signature; [`permission_from_value`]/`expand_capabilities` still need a real
+/// [`McpCapabilityIndex`] for the config `permissions:` ceiling
+/// ([`crate::config`]).
+fn build_agent(
     def: AgentDefinition,
     body: &str,
     ctx: &PromptContext,
     skills: &SkillRegistry,
-    mcp: &McpCapabilityIndex,
-) -> Result<AgentProfile> {
+    _mcp: &McpCapabilityIndex,
+) -> Result<Agent> {
     if def.name.trim().is_empty() {
         bail!("agent frontmatter `name` must not be empty");
     }
-    let permission = match &def.permission {
-        Some(v) => permission_from_value(v, mcp)?,
-        None => PermissionProfile::new(Permission::Allow),
-    };
     let preloaded = resolve_preload(def.skills.as_deref().unwrap_or(&[]), &def.name, skills)?;
     let include_brief = def.include_brief;
-    let mode = def.mode;
     // `inherit` is the "no pin" sentinel on both model and provider (matching
-    // `model`'s existing filter); drop it before it reaches the profile.
+    // `model`'s existing filter); drop it before it reaches the agent.
     let model = def.model.filter(|m| m != "inherit");
     let provider = def.provider.filter(|p| p != "inherit");
     // A provider pin needs a model to run (#323, ADR-0081): `provider:` without
@@ -541,39 +552,16 @@ fn build_profile(
             def.name
         );
     }
-    // `inherit` is the same "defer to the process default" sentinel `model`/
-    // `provider` use; any other value must be one `host::sandbox` actually
-    // understands, checked here (not in the runtime) so a typo is a loud load
-    // error like every other frontmatter key, not a silently-ignored override
-    // (#479, ADR-0104 amendment).
-    let sandbox = def.sandbox.filter(|s| s != "inherit");
-    if let Some(s) = &sandbox {
-        if !matches!(s.as_str(), "bwrap" | "bubblewrap" | "none") {
-            bail!(
-                "agent `{}` sets invalid `sandbox` value `{s}`: expected `bwrap`, \
-                 `bubblewrap`, `none`, or `inherit`",
-                def.name
-            );
-        }
-    }
-    let profile = AgentProfile {
+    let agent = Agent {
         name: def.name,
         description: def.description,
-        mode,
-        system_prompt: assemble(body, include_brief, mode, ctx, &preloaded),
+        system_prompt: assemble(body, include_brief, ctx, &preloaded),
         model,
         provider,
-        permission,
-        tools: def.tools,
-        disallowed_tools: def.disallowed_tools,
-        can_spawn: def.can_spawn,
-        spawnable_agents: def.spawnable_agents,
-        sandbox,
     };
     // The one observability point at load (#184): the assembled prompt is
     // otherwise invisible. `brief`/`skills` report what actually reached this
-    // prompt — `brief` is `none` unless the agent opts in *and* a brief exists;
-    // `skills` is 0 for a subagent (the tier-1 index is withheld for it).
+    // prompt — `brief` is `none` unless the agent opts in *and* a brief exists.
     let brief = if include_brief {
         ctx.brief_path
             .as_ref()
@@ -582,67 +570,15 @@ fn build_profile(
     } else {
         "none".to_string()
     };
-    let skills_in_prompt = if mode != AgentMode::Subagent {
-        ctx.skills.len()
-    } else {
-        0
-    };
+    let skills_in_prompt = ctx.skills.len();
     tracing::debug!(
-        agent = %profile.name,
-        prompt_len = profile.system_prompt.len(),
+        agent = %agent.name,
+        prompt_len = agent.system_prompt.len(),
         brief = %brief,
         skills = skills_in_prompt,
         "assembled agent system prompt",
     );
-    warn_unrecognized_mask_entries(&profile);
-    Ok(profile)
-}
-
-/// Warn on a `tools`/`disallowed_tools` mask entry or `permission` rule key
-/// that names nothing [`tool_names::is_recognized_mask_entry`] can vouch for
-/// (#623) — most likely a stale or typo'd tool name, e.g. one retired by a
-/// rename (`bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`,
-/// #605/#606). Today an unrecognized mask entry silently masks nothing and an
-/// unrecognized permission-rule key silently never matches, so a stale config
-/// degrades quietly instead of failing loud; this surfaces the drift at load
-/// time instead of leaving it to be noticed the hard way (ADR-0161 "Config
-/// churn", ADR-0166). Deliberately a warning, not a load error: an entry this
-/// function can't vouch for might still be a not-yet-connected MCP tool this
-/// process just hasn't discovered the exact spelling of, so aborting the load
-/// would be the wrong failure mode.
-fn warn_unrecognized_mask_entries(profile: &AgentProfile) {
-    let mask_entries = profile
-        .tools
-        .iter()
-        .flatten()
-        .map(|t| ("tools", t.as_str()))
-        .chain(
-            profile
-                .disallowed_tools
-                .iter()
-                .map(|t| ("disallowed_tools", t.as_str())),
-        );
-    for (field, entry) in mask_entries {
-        if !tool_names::is_recognized_mask_entry(entry) {
-            tracing::warn!(
-                agent = %profile.name,
-                field,
-                entry,
-                "agent tool mask names an unrecognized tool — check for a stale or renamed tool name",
-            );
-        }
-    }
-    for (key, _) in &profile.permission.rules {
-        let (tool, _) = split_capability_key(key);
-        if !tool_names::is_recognized_mask_entry(tool) {
-            tracing::warn!(
-                agent = %profile.name,
-                field = "permission",
-                entry = %key,
-                "agent permission rule names an unrecognized tool — check for a stale or renamed tool name",
-            );
-        }
-    }
+    Ok(agent)
 }
 
 /// Resolve a definition's `skills:` preload (#117) to rendered bodies via the
@@ -659,220 +595,13 @@ fn resolve_preload(names: &[String], agent: &str, skills: &SkillRegistry) -> Res
         .collect()
 }
 
-/// Convert a `permission` mapping into a core [`PermissionProfile`]. Keys are
-/// tool patterns — `"*"`, a tool name, a **capability key** (`read`/`write`/
-/// `call`, #418, ADR-0114), or an argument-scoped `tool(pattern)` /
-/// `capability(pattern)` glob (e.g. `bash(git *)`, `edit(src/*)`, `read(src/*)`,
-/// #173); the reserved `default` key sets the fallback permission. Rules
-/// preserve file order (last match wins, ADR-0003). An omitted `default` ⇒
-/// allow. Shared with the user config's `permissions` section (#172), which
-/// uses the identical shape. Capability keys are expanded here, at parse time,
-/// into the literal per-tool rules [`PermissionProfile::resolve`] actually
-/// matches against — core stays capability-unaware (ADR-0006) — see
-/// [`expand_capabilities`]. `mcp` is the config-side MCP capability index
-/// (#426, [ADR-0117](../../../docs/adr/0117-mcp-tool-capability-fan-out.md))
-/// that additionally folds any annotated MCP tool into a bare capability's
-/// fan-out — pass an empty index where no MCP fan-out applies.
-pub(crate) fn permission_from_value(
-    value: &serde_yaml::Value,
-    mcp: &McpCapabilityIndex,
-) -> Result<PermissionProfile> {
-    let map = value.as_mapping().context(
-        "`permission` must be a mapping of tool → allow|ask|deny (a tool name, `*`, or a \
-         capability key `read`/`write`/`call`)",
-    )?;
-    let mut default = Permission::Allow;
-    let mut entries: Vec<(String, Permission)> = Vec::new();
-    for (key, val) in map {
-        let key = key.as_str().context(
-            "`permission` keys must be strings (a tool name, `*`, or a capability key \
-             `read`/`write`/`call`)",
-        )?;
-        let perm: Permission = serde_yaml::from_value(val.clone())
-            .with_context(|| format!("invalid permission for `{key}` (expected allow|ask|deny)"))?;
-        if key == "default" {
-            default = perm;
-        } else {
-            entries.push((key.to_string(), perm));
-        }
-    }
-    Ok(PermissionProfile {
-        rules: expand_capabilities(entries, mcp),
-        default,
-    })
-}
-
-/// A capability rule key's scope, once split from its tool/capability part
-/// (mirrors core's private `RuleScope`): unscoped, an argument-scoped
-/// `cap(pattern)` (command/path, #173), or a workdir-scoped `cap{pattern}`
-/// (`bash`/`call`'s working directory, #425).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CapScope<'a> {
-    None,
-    Arg(&'a str),
-    Workdir(&'a str),
-}
-
-/// Split a rule key into its tool/capability part and scope: `read(src/*)` ⇒
-/// `("read", Arg("src/*"))`, `call{/tmp/*}` ⇒ `("call", Workdir("/tmp/*"))`,
-/// `read` ⇒ `("read", None)`. A runtime-local mirror of core's private
-/// `split_rule_key` — duplicated rather than exposed, since the
-/// capability-expansion logic it feeds must not leak into core (ADR-0006).
-fn split_capability_key(key: &str) -> (&str, CapScope<'_>) {
-    if let Some(open) = key.find('(') {
-        if key.ends_with(')') {
-            return (&key[..open], CapScope::Arg(&key[open + 1..key.len() - 1]));
-        }
-    }
-    if let Some(open) = key.find('{') {
-        if key.ends_with('}') {
-            return (
-                &key[..open],
-                CapScope::Workdir(&key[open + 1..key.len() - 1]),
-            );
-        }
-    }
-    (key, CapScope::None)
-}
-
-/// The tools a capability expands to when the key is bare (no `(...)`), or
-/// `None` if `cap` isn't a capability name at all. `call`'s bare expansion is
-/// `bash` only — the literal `call` tool is graded separately, see
-/// [`tool_names::MULTI_GROUP`].
-fn capability_members(cap: &str) -> Option<&'static [&'static str]> {
-    tool_names::CAPABILITIES
-        .iter()
-        .find(|(name, _)| *name == cap)
-        .map(|(_, members)| *members)
-}
-
-/// The tools an argument-scoped capability key (`read(src/*)`) expands to —
-/// identical to [`capability_members`] except `call`, which additionally
-/// includes the literal `call` tool: an argument-scoped rule can meaningfully
-/// restrict it by command pattern, unlike the bare case where `call`'s grade
-/// comes only from the multi-group pre-scan below.
-fn arg_scoped_capability_members(cap: &str) -> Vec<&'static str> {
-    if cap == "call" {
-        return vec!["call", "bash"];
-    }
-    capability_members(cap)
-        .map(<[&str]>::to_vec)
-        .unwrap_or_default()
-}
-
-/// Expand capability keys (`read`/`write`/`call`, #418, ADR-0114) among
-/// already-parsed `(key, permission)` entries (file order, `default` already
-/// extracted) into the literal per-tool rules `PermissionProfile::resolve`
-/// matches against. Two passes:
-///
-/// 1. **Pre-scan**: collect the grade of every *bare* (no `(...)`/`{...}`)
-///    capability key that's set, plus any bare literal `rhai` grade (it
-///    tightens the same way). Their least-privileged (`min`) grade is emitted
-///    **first** as `call: mg` and `rhai: mg` ([`tool_names::MULTI_GROUP`]) —
-///    these two tools can themselves read, write, or execute, so restricting
-///    any one capability tightens what they may do, regardless of key order in
-///    the source map. Emitting them first lets a later scoped `call(...)`/
-///    `call{...}` rule still refine `call` (last-match-wins); nothing refines
-///    `rhai`, which has no argument.
-/// 2. **In order**, for each entry: a non-capability key (a literal tool name,
-///    `*`, or a scoped literal like `edit(src/*)`/`bash{/tmp/*}`) is pushed
-///    verbatim (today's pre-#418 behavior); a bare capability key pushes its
-///    single-group members only (`read`⇒read/grep/glob, `write`⇒edit/write,
-///    `call`⇒bash — `call`/`rhai` themselves are handled by the pre-scan, not
-///    re-emitted here) **plus** any MCP tool `mcp` annotates with that
-///    capability (#426) — `read: allow` also allows every namespaced
-///    `mcp__<server>__<tool>` a server's config-side `capabilities:` hint maps
-///    to `read`; a scoped capability key `cap(g)`/`cap{g}` pushes
-///    `member(g)`/`member{g}` for each of its (possibly wider, see
-///    [`arg_scoped_capability_members`]) *built-in* members only — an MCP tool
-///    name has no notion of a command/workdir argument to scope against, so
-///    `mcp` is not consulted there — `call{/tmp/*}: allow` fans
-///    out to `call{/tmp/*}` and `bash{/tmp/*}` exactly like the arg-scoped
-///    case, since a workdir-scoped rule (#425) restricts the same member set
-///    as a command-scoped one.
-///
-/// Single-group members resolve through core's ordinary last-match-wins
-/// (a later literal `grep: ask` still overrides an earlier `read: allow`).
-fn expand_capabilities(
-    entries: Vec<(String, Permission)>,
-    mcp: &McpCapabilityIndex,
-) -> Vec<(String, Permission)> {
-    let mg = entries
-        .iter()
-        .filter_map(|(key, perm)| {
-            let (name, scope) = split_capability_key(key);
-            if scope != CapScope::None {
-                return None;
-            }
-            (capability_members(name).is_some() || name == tool_names::RHAI_TOOL).then_some(*perm)
-        })
-        .reduce(crate::permission::min_permission);
-
-    let mut rules = Vec::new();
-    if let Some(mg) = mg {
-        for name in tool_names::MULTI_GROUP {
-            rules.push((name.to_string(), mg));
-        }
-    }
-
-    for (key, perm) in entries {
-        let (name, scope) = split_capability_key(&key);
-        let name = name.to_string();
-        match scope {
-            CapScope::None => match capability_members(&name) {
-                Some(members) => {
-                    rules.extend(members.iter().map(|m| (m.to_string(), perm)));
-                    rules.extend(
-                        mcp.get(&name)
-                            .into_iter()
-                            .flatten()
-                            .map(|m| (m.clone(), perm)),
-                    );
-                }
-                None => rules.push((key, perm)),
-            },
-            CapScope::Arg(pattern) => {
-                rules.extend(scoped_member_rules(&name, '(', pattern, ')', &key, perm));
-            }
-            CapScope::Workdir(pattern) => {
-                rules.extend(scoped_member_rules(&name, '{', pattern, '}', &key, perm));
-            }
-        }
-    }
-    rules
-}
-
-/// The literal `member(pattern)`/`member{pattern}` rules a scoped capability
-/// key fans out to — shared by [`CapScope::Arg`] and [`CapScope::Workdir`],
-/// which differ only in the bracket pair wrapping `pattern`. Falls back to
-/// pushing `key` verbatim when `name` isn't a capability at all (a literal
-/// scoped tool rule like `edit(src/*)`/`bash{/tmp/*}`, unaffected by #418).
-fn scoped_member_rules(
-    name: &str,
-    open: char,
-    pattern: &str,
-    close: char,
-    key: &str,
-    perm: Permission,
-) -> Vec<(String, Permission)> {
-    let members = arg_scoped_capability_members(name);
-    if members.is_empty() {
-        vec![(key.to_string(), perm)]
-    } else {
-        members
-            .into_iter()
-            .map(|m| (format!("{m}{open}{pattern}{close}"), perm))
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Parse with an identity context + empty skill registry so tests assert the
     /// raw body verbatim (no preload injection).
-    fn parse(content: &str) -> Result<AgentProfile> {
+    fn parse(content: &str) -> Result<Agent> {
         parse_definition(
             content,
             &PromptContext::default(),
@@ -882,7 +611,7 @@ mod tests {
     }
 
     /// Parse against a supplied skill registry, to exercise `skills:` preload.
-    fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<AgentProfile> {
+    fn parse_with_skills(content: &str, skills: &SkillRegistry) -> Result<Agent> {
         parse_definition(
             content,
             &PromptContext::default(),
@@ -907,684 +636,36 @@ mod tests {
         reg
     }
 
-    /// Parse a YAML `permission:` mapping literal through the shared expansion
-    /// path (#418) for capability-key tests.
-    fn perm(yaml: &str) -> PermissionProfile {
-        perm_with_mcp(yaml, &McpCapabilityIndex::new())
-    }
-
-    /// Like [`perm`] but with an explicit MCP capability index, for #426's
-    /// capability-fan-out-covers-MCP-tools tests.
-    fn perm_with_mcp(yaml: &str, mcp: &McpCapabilityIndex) -> PermissionProfile {
-        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-        permission_from_value(&value, mcp).unwrap()
-    }
-
     #[test]
-    fn bare_read_capability_expands_to_read_grep_and_glob() {
-        let p = perm("default: deny\nread: allow");
-        assert_eq!(p.for_tool("read"), Permission::Allow);
-        assert_eq!(p.for_tool("grep"), Permission::Allow);
-        assert_eq!(p.for_tool("glob"), Permission::Allow);
-        // Not a member of `read` — untouched.
-        assert_eq!(p.for_tool("edit"), Permission::Deny);
-    }
-
-    #[test]
-    fn bare_call_capability_also_covers_every_endpoint_tool() {
-        // #560 P8: unlike an MCP tool (needs a config-side capability hint
-        // to join a bare capability's fan-out, #426), a config-declared
-        // endpoint tool is *always* a network call — `endpoint::
-        // call_capability_names` unconditionally feeds every declared
-        // endpoint into the same data-driven `call` index MCP capabilities
-        // use, so a bare `call: allow` covers it with no per-tool
-        // annotation.
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert(
-            "call".to_string(),
-            vec![
-                "endpoint__weather".to_string(),
-                "endpoint__other".to_string(),
-            ],
-        );
-        let p = perm_with_mcp("default: deny\ncall: allow", &mcp);
-        assert_eq!(p.for_tool("bash"), Permission::Allow);
-        assert_eq!(p.for_tool("endpoint__weather"), Permission::Allow);
-        assert_eq!(p.for_tool("endpoint__other"), Permission::Allow);
-        // An undeclared endpoint tool (absent from the index) is untouched —
-        // this is a concrete per-name list, not a glob.
-        assert_eq!(p.for_tool("endpoint__not_declared"), Permission::Deny);
-        // A skill-declared endpoint tool is namespaced `skill__…`, sharing
-        // that prefix with alias/rhai-backed skill tools that grade under a
-        // different name entirely — deliberately not in this index either.
-        assert_eq!(p.for_tool("skill__research__gh_search"), Permission::Deny);
-    }
-
-    #[test]
-    fn bare_read_capability_also_covers_an_mcp_annotated_tool() {
-        // #426: a config-side `capabilities:` hint folds an MCP tool into the
-        // same bare capability fan-out as the built-in read-only set.
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert(
-            "read".to_string(),
-            vec![
-                "mcp__docs__search".to_string(),
-                "mcp__docs__fetch".to_string(),
-            ],
-        );
-        let p = perm_with_mcp("default: deny\nread: allow", &mcp);
-        assert_eq!(p.for_tool("read"), Permission::Allow);
-        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Allow);
-        assert_eq!(p.for_tool("mcp__docs__fetch"), Permission::Allow);
-        // An MCP tool annotated under a different capability is untouched.
-        mcp.insert("write".to_string(), vec!["mcp__docs__edit".to_string()]);
-        let p = perm_with_mcp("default: deny\nread: allow", &mcp);
-        assert_eq!(p.for_tool("mcp__docs__edit"), Permission::Deny);
-    }
-
-    #[test]
-    fn a_later_literal_rule_overrides_an_mcp_capability_fanout() {
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert("read".to_string(), vec!["mcp__docs__search".to_string()]);
-        let p = perm_with_mcp("read: allow\nmcp__docs__search: ask", &mcp);
-        assert_eq!(p.for_tool("read"), Permission::Allow);
-        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Ask);
-    }
-
-    #[test]
-    fn arg_scoped_read_capability_does_not_fan_out_to_mcp_tools() {
-        // Scoped capability keys stay built-in-only (#426): an MCP tool has no
-        // command/workdir argument to scope a rule against.
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert("read".to_string(), vec!["mcp__docs__search".to_string()]);
-        let p = perm_with_mcp("default: ask\nread(src/*): allow", &mcp);
-        assert_eq!(p.for_tool("mcp__docs__search"), Permission::Ask);
-    }
-
-    #[test]
-    fn arg_scoped_write_capability_is_path_scoped_and_excludes_other_capabilities() {
-        let p = perm("default: deny\nwrite(src/*): allow");
-        assert_eq!(p.resolve("edit", Some("src/main.rs")), Permission::Allow);
-        assert_eq!(p.resolve("write", Some("src/main.rs")), Permission::Allow);
-        // apply_patch joins the `write` capability's fan-out (#455).
-        assert_eq!(
-            p.resolve("apply_patch", Some("src/main.rs")),
-            Permission::Allow
-        );
-        // Outside the scoped path, falls through to `default`.
-        assert_eq!(p.resolve("edit", Some("docs/x.md")), Permission::Deny);
-        // grep/glob/call are not members of `write` — the arg-scoped rule
-        // leaves them at `default`.
-        assert_eq!(p.for_tool("grep"), Permission::Deny);
-        assert_eq!(p.for_tool("glob"), Permission::Deny);
-        assert_eq!(p.for_tool("call"), Permission::Deny);
-    }
-
-    #[test]
-    fn arg_scoped_call_capability_expands_to_call_and_bash() {
-        let p = perm("default: deny\ncall(git *): allow");
-        assert_eq!(p.resolve("call", Some("git status")), Permission::Allow);
-        assert_eq!(p.resolve("bash", Some("git status")), Permission::Allow);
-        // Outside the command pattern, falls through to `default`.
-        assert_eq!(p.resolve("call", Some("rm -rf /")), Permission::Deny);
-        assert_eq!(p.resolve("bash", Some("rm -rf /")), Permission::Deny);
-    }
-
-    #[test]
-    fn workdir_scoped_call_capability_expands_to_call_and_bash() {
-        // #425: a workdir-scoped `call{...}` capability key fans out to
-        // `call{...}` and `bash{...}` exactly like the command-scoped case.
-        let p = perm("default: deny\ncall{/tmp/*}: allow");
-        assert_eq!(
-            p.resolve_scoped("call", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
-        assert_eq!(
-            p.resolve_scoped("bash", None, Some("/tmp/scratch")),
-            Permission::Allow
-        );
-        // Outside the workdir pattern, falls through to `default`.
-        assert_eq!(
-            p.resolve_scoped("call", None, Some("/home/x")),
-            Permission::Deny
-        );
-        assert_eq!(
-            p.resolve_scoped("bash", None, Some("/home/x")),
-            Permission::Deny
-        );
-        // A workdir-scoped rule never matches through the plain `resolve`
-        // entry point (equivalent to `workdir = None`).
-        assert_eq!(p.resolve("bash", None), Permission::Deny);
-    }
-
-    #[test]
-    fn arg_scoped_read_capability_matches_grep_and_glob_by_path() {
-        // #416 phase A: grep/glob's `permission_arg` yields a path, so a
-        // `read(...)` arg-scoped rule restricts them to a subtree exactly like
-        // `read`/`edit`/`write`.
-        let p = perm("default: ask\nread(src/*): allow");
-        assert_eq!(p.resolve("read", Some("src/main.rs")), Permission::Allow);
-        assert_eq!(p.resolve("grep", Some("src/main.rs")), Permission::Allow);
-        assert_eq!(p.resolve("glob", Some("src/lib.rs")), Permission::Allow);
-        assert_eq!(p.resolve("grep", Some("docs/x.md")), Permission::Ask);
-    }
-
-    #[test]
-    fn capability_grammar_matches_core_split_rule_key_forms() {
-        // #453: `split_capability_key` is a runtime-local mirror of core's
-        // private `split_rule_key` (protocol.rs). This fixture walks every
-        // grammar form that function's own test asserts
-        // (`split_rule_key_parses_tool_and_pattern`: bare, `(arg)`, `{workdir}`,
-        // and unterminated brackets), applied to the `read`/`call` capabilities
-        // so the split's scope classification is load-bearing for
-        // `expand_capabilities`'s fan-out, and checks it against a hand-built
-        // core `PermissionProfile` over the literal member rules it should
-        // produce. If core ever grows a new scope bracket that
-        // `split_capability_key` doesn't learn too, a capability key using it
-        // would silently stop expanding on the runtime side while core parses
-        // it differently — this test pins today's agreement so that kind of
-        // drift fails loudly here instead of shipping silently.
-
-        // Bare: unscoped, applies to every member unconditionally.
-        let got = perm("default: deny\nread: allow");
-        let want = PermissionProfile::new(Permission::Deny)
-            .with("read", Permission::Allow)
-            .with("grep", Permission::Allow)
-            .with("glob", Permission::Allow);
-        for name in ["read", "grep", "glob"] {
-            assert_eq!(got.for_tool(name), want.for_tool(name), "bare `{name}`");
-        }
-
-        // `(pattern)`: argument-scoped, fans out to `member(pattern)`.
-        let got = perm("default: ask\nread(src/*): allow");
-        let want = PermissionProfile::new(Permission::Ask)
-            .with("read(src/*)", Permission::Allow)
-            .with("grep(src/*)", Permission::Allow)
-            .with("glob(src/*)", Permission::Allow);
-        for name in ["read", "grep", "glob"] {
-            for arg in [Some("src/main.rs"), Some("lib/main.rs"), None] {
-                assert_eq!(
-                    got.resolve(name, arg),
-                    want.resolve(name, arg),
-                    "arg-scoped `{name}` arg={arg:?}"
-                );
-            }
-        }
-
-        // `{pattern}`: workdir-scoped, fans out to `member{pattern}` — proven
-        // on `call` since `read`/`grep`/`glob` have no workdir concept.
-        let got = perm("default: ask\ncall{/tmp/*}: allow");
-        let want = PermissionProfile::new(Permission::Ask)
-            .with("call{/tmp/*}", Permission::Allow)
-            .with("bash{/tmp/*}", Permission::Allow);
-        for name in ["call", "bash"] {
-            for workdir in [Some("/tmp/scratch"), Some("/etc/passwd"), None] {
-                assert_eq!(
-                    got.resolve_scoped(name, None, workdir),
-                    want.resolve_scoped(name, None, workdir),
-                    "workdir-scoped `{name}` workdir={workdir:?}"
-                );
-            }
-        }
-
-        // Unterminated brackets: core's `split_rule_key` falls back to a
-        // literal, unscoped tool name (`bash(oops` ⇒ `("bash(oops", None)`,
-        // per its own test) — so the capability lookup on the *whole* string
-        // misses and the key passes through unexpanded on both sides.
-        for key in ["read(oops", "read{oops"] {
-            let yaml = format!("default: deny\n{key}: allow");
-            let got = perm(&yaml);
-            for name in ["read", "grep", "glob"] {
-                assert_eq!(
-                    got.for_tool(name),
-                    Permission::Deny,
-                    "malformed `{key}` `{name}`"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn multi_group_call_and_rhai_take_least_privilege_regardless_of_key_order() {
-        let forward = perm("read: allow\nwrite: deny");
-        let backward = perm("write: deny\nread: allow");
-        for p in [forward, backward] {
-            assert_eq!(p.for_tool("call"), Permission::Deny);
-            assert_eq!(p.for_tool("rhai"), Permission::Deny);
-        }
-    }
-
-    #[test]
-    fn a_later_literal_rule_overrides_the_earlier_capability_fanout() {
-        let p = perm("read: allow\ngrep: ask");
-        assert_eq!(p.for_tool("read"), Permission::Allow);
-        assert_eq!(p.for_tool("glob"), Permission::Allow);
-        assert_eq!(p.for_tool("grep"), Permission::Ask);
-    }
-
-    #[test]
-    fn non_capability_keys_pass_through_verbatim() {
-        let p = perm("default: allow\nbash: ask");
-        assert_eq!(p.for_tool("bash"), Permission::Ask);
-        // `bash` is not a capability name (only read/write/call are), so it
-        // never joins the multi-group pre-scan — `call`/`rhai` stay at
-        // `default`.
-        assert_eq!(p.for_tool("call"), Permission::Allow);
-        assert_eq!(p.for_tool("rhai"), Permission::Allow);
-    }
-
-    #[test]
-    fn ceiling_style_bare_call_deny_denies_both_call_and_bash() {
-        let p = perm("call: deny");
-        assert_eq!(p.for_tool("call"), Permission::Deny);
-        assert_eq!(p.for_tool("bash"), Permission::Deny);
-    }
-
-    #[test]
-    fn a_literal_rhai_grade_tightens_the_multi_group_minimum() {
-        let p = perm("call: allow\nrhai: deny");
-        assert_eq!(p.for_tool("call"), Permission::Deny);
-        assert_eq!(p.for_tool("rhai"), Permission::Deny);
-    }
-
-    #[test]
-    fn a_looser_literal_rhai_grade_still_wins_for_rhai_itself() {
-        // mg = min(read: deny, rhai: allow) = deny, clamping `call`; but
-        // `rhai` is a plain literal key too, so its own later verbatim push
-        // (today's pre-#418 behavior for a non-capability key) restores the
-        // grade the profile actually asked for.
-        let p = perm("read: deny\nrhai: allow");
-        assert_eq!(p.for_tool("call"), Permission::Deny);
-        assert_eq!(p.for_tool("rhai"), Permission::Allow);
-    }
-
-    #[test]
-    fn built_in_registry_resolves_all_five_profiles() {
+    fn built_in_registry_resolves_the_three_agents() {
         // Exercises the public seam itself (#585): a parse failure here comes
         // back as an `Err` an embedder can handle, not a panic baked into the
         // function.
         let reg = built_in_registry().expect("embedded built-ins must parse");
-        for name in ["build", "plan", "explore", "debug", "research"] {
+        for name in ["general", "plan", "debug"] {
             assert!(reg.get(name).is_some(), "missing built-in `{name}`");
         }
     }
 
     #[test]
-    fn built_ins_parse_with_expected_shape() {
+    fn built_ins_parse_with_expected_identity() {
         // The embedded built-ins must parse — this is what lets `load_registry`
-        // treat their parse as infallible.
-        let mut reg = ProfileRegistry::default();
-        for (file, contents) in BUILT_INS {
-            let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
-            reg.insert(p);
-        }
-        let build = reg.get("build").expect("build built-in");
-        assert_eq!(build.mode, AgentMode::Primary);
-        assert_eq!(build.permission.for_tool("edit"), Permission::Allow);
-        assert!(build.system_prompt.starts_with("You are a coding agent"));
-        // Plan authorship is default-closed (#231, ADR-0049; #513): inherit-all
-        // `build` does not explicitly allowlist `propose_plan`, so it authors
-        // no plan.
-        assert!(!crate::plan_tasks::explicitly_allowlists(
-            build,
-            "propose_plan"
-        ));
-
-        let plan = reg.get("plan").expect("plan built-in");
-        assert_eq!(plan.permission.for_tool("read"), Permission::Allow);
-        // #524, ADR-0142: `write`'s bare grade is a hard `deny` (fanning out to
-        // `edit`/`write`/`apply_patch` via the capability key, #418) — the
-        // plans-folder carve-out below is the only crack in an otherwise
-        // physically read-only agent.
-        assert_eq!(plan.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(plan.permission.for_tool("write"), Permission::Deny);
-        // #524: the plans-folder carve-out (opencode-style) — `write`/`edit`
-        // succeed for `.entanglement/plans/*.md` even though the bare grade is
-        // `deny`, but nowhere else.
-        assert_eq!(
-            plan.permission
-                .resolve("write", Some(".entanglement/plans/foo.md")),
-            Permission::Allow
-        );
-        assert_eq!(
-            plan.permission
-                .resolve("edit", Some(".entanglement/plans/foo.md")),
-            Permission::Allow
-        );
-        assert_eq!(
-            plan.permission.resolve("write", Some("src/main.rs")),
-            Permission::Deny
-        );
-        // #418: `plan.md`'s `read: allow` is now a capability key, so it fans
-        // out to `grep`/`glob` too (both are read-only and already advertised)
-        // — an intentional, pinned flip from the pre-#418 `ask` default rather
-        // than a silent diff.
-        assert_eq!(plan.permission.for_tool("grep"), Permission::Allow);
-        assert_eq!(plan.permission.for_tool("glob"), Permission::Allow);
-        // Plan authors the plan (#231, ADR-0049; #513, ADR-0145): its tool mask
-        // carries the read trio + delegation/skill tools + `propose_plan`, plus
-        // `write`/`edit` scoped to the plans folder (#524). Children spawned
-        // under it inherit the clamp. Its allowlist explicitly opts into plan
-        // authorship.
-        assert!(crate::plan_tasks::explicitly_allowlists(
-            plan,
-            "propose_plan"
-        ));
-        assert!(plan.advertises_tool("read"));
-        assert!(plan.advertises_tool("agent"));
-        assert!(plan.advertises_tool("load_skill"));
-        assert!(plan.advertises_tool("propose_plan"));
-        assert!(plan.advertises_tool("edit"));
-        assert!(plan.advertises_tool("write"));
-        // #597: `call`/`bash` are on plan's own mask too — not so plan runs
-        // shell itself, but so the ancestor-chain mask intersection (ADR-0038)
-        // stops erasing them from an `explore` child it delegates research to.
-        // `explore.md` still grades its own call/bash `Ask`.
-        assert!(plan.advertises_tool("call"));
-        assert!(plan.advertises_tool("bash"));
-        // The *coarse* (no-argument) grade for `call` stays `Deny`: `call` is
-        // a `MULTI_GROUP` tool (ADR-0114) whose bare grade is the least
-        // privileged of every bare capability — `write: deny` pulls it down
-        // regardless of any bare `call: ...` a profile writes. `bash` isn't
-        // multi-group, so its coarse grade is plain `default: ask`.
-        assert_eq!(plan.permission.for_tool("call"), Permission::Deny);
-        assert_eq!(plan.permission.for_tool("bash"), Permission::Ask);
-        // A real invocation always carries its command as the `call`/`bash`
-        // argument (#173/#425), so `call(*): ask` — an arg-scoped capability
-        // key, which ADR-0114 lets refine `call`'s multi-group floor — is what
-        // actually governs dispatch: any concrete command resolves `Ask`, not
-        // the coarse `Deny` above.
-        assert_eq!(
-            plan.permission.resolve("call", Some("gh issue view 594")),
-            Permission::Ask
-        );
-        assert_eq!(
-            plan.permission.resolve("bash", Some("git status")),
-            Permission::Ask
-        );
-
-        let explore = reg.get("explore").expect("explore built-in");
-        assert_eq!(explore.mode, AgentMode::Subagent);
-        assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
-        // Read-only `explore` never authors a plan and cannot mutate tasks (#175):
-        // its allowlist omits `propose_plan`/`update_tasks` and permission denies.
-        assert!(!explore.advertises_tool("propose_plan"));
-        assert!(!explore.advertises_tool("update_tasks"));
-        assert_eq!(
-            explore.permission.for_tool("update_tasks"),
-            Permission::Deny
-        );
-        // #explore-ask-shell (ADR-0137): the read-only reference agent now
-        // advertises exec tools (`call`/`bash`/`rhai`) at `Ask` grade so a
-        // `git status`/`git diff` it needs isn't a hard dead-end — each call
-        // escalates to the user, never runs silently. File mutation stays
-        // hard-denied, and it still cannot spawn.
-        assert!(explore.advertises_tool("read"));
-        assert!(explore.advertises_tool("glob"));
-        assert!(explore.advertises_tool("grep"));
-        assert!(explore.advertises_tool("call"));
-        assert!(explore.advertises_tool("bash"));
-        // #615/#605: `poll` rides along with `bash` so a background job
-        // `explore` starts is actually readable, not a write-only dead-end.
-        // `poll` is intercepted before permission resolution (ADR-0161 §3), so
-        // it carries no grade of its own — only advertisement matters here.
-        assert!(explore.advertises_tool("poll"));
-        assert!(explore.advertises_tool("rhai"));
-        assert_eq!(explore.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(explore.permission.for_tool("bash"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("call"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("rhai"), Permission::Ask);
-        assert_eq!(explore.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(explore.permission.for_tool("write"), Permission::Deny);
-        assert!(!explore.advertises_tool("edit"));
-        assert!(!explore.advertises_tool("write"));
-        assert!(!explore.advertises_tool("agent"));
-
-        // `debug`: a spawnable sub-agent with `build`'s own permissions (allow
-        // everything, inherit-all tool mask) so it can actually compile/run tests
-        // to verify a fix — unlike the read-only spawn targets (`explore`,
-        // `research`), it never gets stuck unable to execute.
-        let debug = reg.get("debug").expect("debug built-in");
-        assert_eq!(debug.mode, AgentMode::Subagent);
-        assert!(debug.spawnable_as_subagent());
-        assert_eq!(debug.permission.for_tool("edit"), Permission::Allow);
-        assert_eq!(debug.permission.for_tool("bash"), Permission::Allow);
-        assert!(debug.tools.is_none(), "inherit-all, like build");
-        // Plan authorship is default-closed (#231, ADR-0049), same as `build`.
-        assert!(!crate::plan_tasks::explicitly_allowlists(
-            debug,
-            "propose_plan"
-        ));
-
-        // `research` (ADR-0167, mode since flipped to `primary` so the TUI
-        // Tab ring cycles build → plan → research): the global read-only Q&A
-        // agent, with no plan authorship or plans-folder carve-out, unlike
-        // `plan`. Delegation goes to read-only `explore` leaves.
-        let research = reg.get("research").expect("research built-in");
-        assert_eq!(research.mode, AgentMode::Primary);
-        assert_eq!(research.permission.for_tool("read"), Permission::Allow);
-        assert_eq!(research.permission.for_tool("grep"), Permission::Allow);
-        assert_eq!(research.permission.for_tool("glob"), Permission::Allow);
-        // `write: deny` fans to the whole write capability, with no carve-out
-        // anywhere — the mask omits the write tools too, so this is belt and
-        // suspenders.
-        assert_eq!(research.permission.for_tool("edit"), Permission::Deny);
-        assert_eq!(research.permission.for_tool("write"), Permission::Deny);
-        assert_eq!(
-            research.permission.resolve("write", Some("src/main.rs")),
-            Permission::Deny
-        );
-        assert!(!research.advertises_tool("edit"));
-        assert!(!research.advertises_tool("write"));
-        assert!(!research.advertises_tool("propose_plan"));
-        // Same multi-group floor as `plan` (ADR-0114/ADR-0159): `call`'s coarse
-        // grade is dragged to `Deny` by `write: deny`, while the arg-scoped
-        // `call(*): ask` governs every real dispatch; the later literal
-        // `rhai: ask` out-ranks the floor for `rhai` by last-match.
-        assert_eq!(research.permission.for_tool("call"), Permission::Deny);
-        assert_eq!(research.permission.for_tool("bash"), Permission::Ask);
-        assert_eq!(research.permission.for_tool("rhai"), Permission::Ask);
-        assert_eq!(
-            research.permission.resolve("call", Some("git log")),
-            Permission::Ask
-        );
-        assert_eq!(
-            research
-                .permission
-                .resolve("bash", Some("git blame src/lib.rs")),
-            Permission::Ask
-        );
-        // `agent_send` (#609, ADR-0162) rides the mask next to `agent`, as it
-        // does on `plan`: a research parent re-engages an explore child it
-        // already launched instead of respawning one and losing its context.
-        // The spawn family bypasses the permission ladder, so the mask *is* the
-        // gate — its nominal grade is just research's `default: ask`.
-        for tool in [
-            "read",
-            "glob",
-            "grep",
-            "agent",
-            "agent_send",
-            "poll",
-            "call",
-            "bash",
-            "rhai",
-        ] {
-            assert!(
-                research.advertises_tool(tool),
-                "research must advertise `{tool}`"
-            );
-        }
-        assert_eq!(research.permission.for_tool("agent_send"), Permission::Ask);
-        // Explore-only spawn closure: research may spawn, but only the
-        // read-only `explore` leaf (which cannot spawn at all) — the subtree
-        // can never widen into a write-capable profile. As a primary, research
-        // itself is no longer a legal spawn target.
-        assert!(research.may_spawn());
-        assert!(!research.spawnable_as_subagent());
-        assert!(research.spawn_target_allowed("explore"));
-        assert!(!research.spawn_target_allowed("build"));
-        assert!(!research.spawn_target_allowed("research"));
-    }
-
-    /// ADR-0195 §3: the curated read-only Allow rules shipped in the embedded
-    /// (lowest, shadowable) agent layer — exact-prefix command globs for
-    /// commands that cannot mutate anything. Least-privilege tiers (`explore`,
-    /// `research`) pre-approve them; every other command still escalates; and
-    /// the config ceiling still clamps them down like any profile grade.
-    #[test]
-    fn curated_read_only_rules_allow_inspection_but_not_mutation() {
-        let mut reg = ProfileRegistry::default();
+        // treat their parse as infallible. ADR-0207 left each built-in with no
+        // permission or spawn posture of its own (identity only: name,
+        // description, system prompt, model/provider pin); read-only/
+        // read-write behavior and spawn bounds are both runtime permission-
+        // mode facts now, and any agent is a valid spawn target.
+        let mut reg = AgentCatalog::default();
         for (file, contents) in BUILT_INS {
             let p = parse(contents).unwrap_or_else(|e| panic!("{file}: {e}"));
             reg.insert(p);
         }
 
-        // Both least-privileged tiers pre-approve the curated set …
-        for name in ["explore", "research"] {
-            let profile = reg.get(name).expect("built-in");
-            assert_eq!(
-                profile.permission.resolve("bash", Some("find .")),
-                Permission::Allow,
-                "{name}: `bash find .` is curated read-only"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("rg pattern src")),
-                Permission::Allow,
-                "{name}: `call rg …` is curated read-only"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("cat README.md")),
-                Permission::Allow,
-                "{name}: `call cat …` is curated read-only"
-            );
-            // … while everything outside it still escalates.
-            assert_eq!(
-                profile.permission.resolve("bash", Some("git status")),
-                Permission::Ask,
-                "{name}: a non-curated command still asks"
-            );
-            assert_eq!(
-                profile.permission.resolve("call", Some("git status")),
-                Permission::Ask,
-                "{name}: a non-curated `call` still asks"
-            );
-            // And nothing outside the curated set runs silently on `explore` —
-            // the prefix never widens past its own commands (`bash: ask` is an
-            // explicit rule there, so an unlisted command escalates rather
-            // than hitting the `default: deny` floor).
-            if name == "explore" {
-                assert_eq!(
-                    profile.permission.resolve("bash", Some("rm -rf /")),
-                    Permission::Ask,
-                    "explore: an unlisted command escalates, never auto-runs"
-                );
-            }
-        }
+        let general = reg.get("general").expect("general built-in");
+        assert!(general.system_prompt.starts_with("You are a coding agent"));
 
-        // The ceiling clamps the curated Allow down exactly as it clamps any
-        // profile grade (#172): a `bash: deny` ceiling wins over every rule.
-        let explore = reg.get("explore").expect("built-in");
-        let deny_bash = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("bash", Some("find .")),
-                &deny_bash,
-                "bash",
-                Some("find ."),
-                None,
-            ),
-            Permission::Deny,
-            "a ceiling denying `bash` must clamp the curated Allow"
-        );
-        // A narrower arg-scoped ceiling (`bash(find *): ask`) re-tightens just
-        // the curated slice it names, leaving an unrelated rule untouched.
-        let ask_find =
-            PermissionProfile::new(Permission::Allow).with("bash(find *)", Permission::Ask);
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("bash", Some("find .")),
-                &ask_find,
-                "bash",
-                Some("find ."),
-                None,
-            ),
-            Permission::Ask,
-            "an arg-scoped ceiling re-tightens the curated slice"
-        );
-        assert_eq!(
-            crate::permission::clamp_to_base(
-                explore.permission.resolve("call", Some("rg pattern")),
-                &ask_find,
-                "call",
-                Some("rg pattern"),
-                None,
-            ),
-            Permission::Allow,
-            "a `bash`-scoped ceiling leaves the curated `call` rules alone"
-        );
-    }
-
-    /// The explore/research/plan provider-bundled-MCP gap: all three profiles
-    /// mask in `mcp_enable` + `"mcp__*"` and grade `mcp_enable: allow`
-    /// outright (ADR-0152's tier is the consent boundary, not the profile),
-    /// while a bundled server's own tools ride the ordinary `read`
-    /// capability fan-out — so a read-hinted tool (e.g. z.ai's
-    /// `web_search_prime`) grades Allow but an unhinted one still falls
-    /// through to each profile's own default.
-    #[test]
-    fn explore_research_and_plan_can_enable_and_use_a_read_hinted_bundled_mcp_tool() {
-        let mut mcp = McpCapabilityIndex::new();
-        mcp.insert(
-            "read".to_string(),
-            vec!["mcp__web_search_prime__webSearchPrime".to_string()],
-        );
-        for (file, contents) in BUILT_INS {
-            if *file != "explore.md" && *file != "research.md" && *file != "plan.md" {
-                continue;
-            }
-            let p = parse_definition(
-                contents,
-                &PromptContext::default(),
-                &SkillRegistry::default(),
-                &mcp,
-            )
-            .unwrap_or_else(|e| panic!("{file}: {e}"));
-            assert!(
-                p.advertises_tool("mcp_enable"),
-                "{file}: must mask in mcp_enable"
-            );
-            assert!(
-                p.advertises_tool("mcp__web_search_prime__webSearchPrime"),
-                "{file}: \"mcp__*\" mask entry must admit a namespaced MCP tool"
-            );
-            assert_eq!(
-                p.permission.for_tool("mcp_enable"),
-                Permission::Allow,
-                "{file}: mcp_enable is graded outright — the tier gates consent, not this profile"
-            );
-            assert_eq!(
-                p.permission
-                    .for_tool("mcp__web_search_prime__webSearchPrime"),
-                Permission::Allow,
-                "{file}: a read-hinted bundled MCP tool must ride the `read: allow` fan-out"
-            );
-            // An MCP tool the catalog never hinted `read` is not admitted by
-            // the fan-out and falls through to the profile's own default
-            // (posture pinned: explore denies, research/plan ask) — the same
-            // capability index, a second tool absent from it.
-            let expected_default = if *file == "explore.md" {
-                Permission::Deny
-            } else {
-                Permission::Ask
-            };
-            assert_eq!(
-                p.permission.for_tool("mcp__some_write_server__delete"),
-                expected_default,
-                "{file}: an unhinted MCP tool must not silently grade Allow"
-            );
-        }
+        assert!(reg.get("plan").is_some());
+        assert!(reg.get("debug").is_some());
     }
 
     #[test]
@@ -1600,6 +681,7 @@ mod tests {
             strictness: Strictness::Lenient,
             source: "~/.claude/agents/test.md".into(),
             content: content.into(),
+            path: None,
         }
     }
 
@@ -1612,9 +694,6 @@ mod tests {
         );
         let (def, body) = parse_raw(&raw).unwrap().expect("foreign agent parses");
         assert_eq!(def.name, "helper");
-        assert_eq!(def.mode, AgentMode::All, "delegation target ⇒ mode all");
-        assert_eq!(def.tools, None, "Claude tool names are dropped, no mask");
-        assert!(def.permission.is_none(), "allow-all default");
         assert_eq!(body, "body");
     }
 
@@ -1673,28 +752,99 @@ mod tests {
             parse("---\nname: x\ndescription: d\nmodel: inherit\n---\nDo the thing.\n").unwrap();
         assert_eq!(p.system_prompt, "Do the thing.");
         assert_eq!(p.model, None);
-        // Omitted permission ⇒ allow-all.
-        assert_eq!(p.permission.for_tool("edit"), Permission::Allow);
     }
 
     #[test]
-    fn unrecognized_mask_and_permission_entries_warn_but_do_not_fail_the_load() {
-        // #623: a stale/renamed tool name (e.g. a config that predates
-        // #605/#606's `bash_output`/`agent_poll`/`agent_spawn` → `poll`/`agent`
-        // rename) must not brick startup — it degrades to a `tracing::warn!`
-        // (unobservable here with no test subscriber wired) while the profile
-        // still loads with the mask/rule intact verbatim.
-        let p = parse(
-            "---\nname: x\ndescription: d\ntools: [read, agent_spawn]\n\
-             disallowed_tools: [bash_output]\npermission:\n  agent_poll: ask\n---\nbody",
+    fn retired_authority_frontmatter_keys_are_rejected() {
+        // ADR-0207: authority left the agent entirely, in two stages — the
+        // tool mask/`permission` first, then (stage 5b) spawn control,
+        // sandbox, and the primary/subagent/all `mode` distinction. A
+        // definition naming any of them is now a plain unknown-field load
+        // error, same as any other typo — never silently ignored or warned.
+        for frontmatter in [
+            "---\nname: x\ndescription: d\ntools: [read]\n---\nbody",
+            "---\nname: x\ndescription: d\ndisallowed_tools: [bash]\n---\nbody",
+            "---\nname: x\ndescription: d\npermission:\n  default: ask\n---\nbody",
+            "---\nname: x\ndescription: d\nmode: primary\n---\nbody",
+            "---\nname: x\ndescription: d\ncan_spawn: true\n---\nbody",
+            "---\nname: x\ndescription: d\nspawnable_agents: [explore]\n---\nbody",
+            "---\nname: x\ndescription: d\nsandbox: bwrap\n---\nbody",
+        ] {
+            let err = parse(frontmatter).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("unknown field"), "got: {msg}");
+        }
+    }
+
+    /// End-to-end through [`parse_raw`] against a real file: a native-layer
+    /// definition still carrying `tools`/`permission` self-heals instead of
+    /// bricking the load — backed up, rewritten, and re-parsed transparently.
+    #[test]
+    fn legacy_native_file_self_heals_with_backup_and_warning() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("legacy.md");
+        std::fs::write(
+            &path,
+            "---\nname: reviewer\ndescription: d\ntools: [read, glob, grep]\npermission:\n  default: ask\n---\nBody text.\n",
         )
         .unwrap();
-        assert_eq!(
-            p.tools.as_deref(),
-            Some(&["read".to_string(), "agent_spawn".to_string()][..])
-        );
-        assert_eq!(p.disallowed_tools, vec!["bash_output".to_string()]);
-        assert_eq!(p.permission.for_tool("agent_poll"), Permission::Ask);
+        let raw = RawAgent {
+            layer: AgentLayer::User,
+            strictness: Strictness::Strict,
+            source: path.display().to_string(),
+            content: std::fs::read_to_string(&path).unwrap(),
+            path: Some(path.clone()),
+        };
+
+        let (def, body) = parse_raw(&raw).unwrap().expect("self-healed and parsed");
+        assert_eq!(def.name, "reviewer");
+        assert_eq!(body, "Body text.");
+
+        // The backup keeps the original bytes with the retired keys intact.
+        let bak = path.with_extension("md.bak");
+        let backed_up = std::fs::read_to_string(&bak).expect("backup written");
+        assert!(backed_up.contains("tools:"));
+
+        // The file itself was rewritten without the retired keys, and a
+        // second parse (no more raw-content caching) succeeds directly —
+        // proving the rewrite, not just an in-memory patch, is what's live.
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(!rewritten.contains("tools:"));
+        assert!(!rewritten.contains("permission:"));
+        assert!(rewritten.contains("Body text."));
+        let raw2 = RawAgent {
+            content: rewritten,
+            ..raw
+        };
+        assert!(parse_raw(&raw2).unwrap().is_some());
+    }
+
+    /// A parse failure the retired keys don't explain (a genuine typo) still
+    /// aborts loudly — the self-heal must never paper over a real mistake.
+    #[test]
+    fn a_typo_unrelated_to_retired_keys_still_aborts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("typo.md");
+        std::fs::write(
+            &path,
+            "---\nname: x\ndescription: d\ntypo_field: 1\n---\nbody",
+        )
+        .unwrap();
+        let raw = RawAgent {
+            layer: AgentLayer::User,
+            strictness: Strictness::Strict,
+            source: path.display().to_string(),
+            content: std::fs::read_to_string(&path).unwrap(),
+            path: Some(path.clone()),
+        };
+
+        let err = parse_raw(&raw).unwrap_err();
+        assert!(format!("{err:#}").contains("typo_field"));
+        // No migration side effect: the file is untouched, no backup written.
+        assert!(!path.with_extension("md.bak").exists());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("typo_field"));
     }
 
     #[test]
@@ -1704,49 +854,9 @@ mod tests {
     }
 
     #[test]
-    fn mode_all_and_tool_mask_reach_the_profile() {
-        let p = parse(
-            "---\nname: x\ndescription: d\nmode: all\ntools: [read, grep]\n\
-             disallowed_tools: [bash]\ncan_spawn: true\nspawnable_agents: [explore]\n---\nbody",
-        )
-        .unwrap();
-        assert_eq!(p.mode, AgentMode::All);
-        // `tools`/`disallowed_tools` now reach the core profile and drive the
-        // advertised-set mask (#116).
-        assert_eq!(
-            p.tools.as_deref(),
-            Some(&["read".to_string(), "grep".to_string()][..])
-        );
-        assert_eq!(p.disallowed_tools, vec!["bash".to_string()]);
-        assert!(p.advertises_tool("read"));
-        assert!(!p.advertises_tool("edit"));
-        assert!(!p.advertises_tool("bash"));
-        // `can_spawn`/`spawnable_agents` now reach the core profile too (#119).
-        assert!(p.may_spawn());
-        assert!(p.spawn_target_allowed("explore"));
-        assert!(!p.spawn_target_allowed("build"));
-    }
-
-    #[test]
-    fn tool_mask_glob_entry_parses_and_matches_mcp() {
-        // #537: a wildcard entry rides the frontmatter verbatim (no parse-time
-        // expansion — MCP tool names don't exist yet when profiles load) and
-        // matches dynamically at advertisement time.
-        let p = parse(
-            "---\nname: x\ndescription: d\ntools: [read, \"mcp__*\"]\n\
-             disallowed_tools: [\"mcp__jira__*\"]\n---\nbody",
-        )
-        .unwrap();
-        assert!(p.advertises_tool("read"));
-        assert!(p.advertises_tool("mcp__docs__search"));
-        assert!(!p.advertises_tool("mcp__jira__create_issue"));
-        assert!(!p.advertises_tool("edit"));
-    }
-
-    #[test]
     fn skills_preload_injects_body_into_system_prompt() {
-        // `skills:` preloads the full body; the tool mask is untouched (preload is
-        // not an allowlist), so `load_skill` stays advertised for the rest (#117).
+        // `skills:` preloads the full body; `load_skill` access is a runtime
+        // permission-mode fact now, not anything the agent masks (#117).
         let skills = skill_registry("git", false, "Run `git commit` carefully.");
         let p = parse_with_skills(
             "---\nname: x\ndescription: d\nskills: [git]\n---\nBody.",
@@ -1768,25 +878,6 @@ mod tests {
             "{}",
             p.system_prompt
         );
-        // Preload does not touch the tool mask — `load_skill` still advertised.
-        assert!(p.advertises_tool("load_skill"));
-    }
-
-    #[test]
-    fn preload_and_mask_are_independent_mechanisms() {
-        // The "preload X but block everything else" corner case (#117): preload a
-        // skill body *and* mask `load_skill` out so no other skill is loadable.
-        let skills = skill_registry("git", false, "git body");
-        let p = parse_with_skills(
-            "---\nname: x\ndescription: d\nskills: [git]\n\
-             disallowed_tools: [load_skill]\n---\nBody.",
-            &skills,
-        )
-        .unwrap();
-        // Body is preloaded...
-        assert!(p.system_prompt.contains("git body"), "{}", p.system_prompt);
-        // ...but runtime access to *any* skill is masked off.
-        assert!(!p.advertises_tool("load_skill"));
     }
 
     #[test]
@@ -1816,16 +907,5 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("nope"), "got: {msg}");
-    }
-
-    #[test]
-    fn spawn_fields_default_from_mode_when_omitted() {
-        // A subagent leaf with no `can_spawn` defaults closed; a primary opens.
-        let leaf = parse("---\nname: x\ndescription: d\nmode: subagent\n---\nbody").unwrap();
-        assert!(!leaf.may_spawn());
-        let primary = parse("---\nname: y\ndescription: d\n---\nbody").unwrap();
-        assert!(primary.may_spawn());
-        // An omitted allowlist is open to any target.
-        assert!(primary.spawn_target_allowed("anything"));
     }
 }

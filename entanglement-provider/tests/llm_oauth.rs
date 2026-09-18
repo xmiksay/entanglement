@@ -165,6 +165,7 @@ fn req<'a>() -> LlmRequest<'a> {
         tools: &[],
         generation: None,
         cache_key: None,
+        trailing_notice: None,
         retry: None,
     }
 }

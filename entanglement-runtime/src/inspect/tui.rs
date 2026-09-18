@@ -108,7 +108,7 @@ pub fn agent_detail(cwd: &Path, name: &str) -> Option<String> {
             .context("resolving agent registry")?;
         Ok(resolved
             .iter()
-            .find(|r| r.profile.name == name)
+            .find(|r| r.agent.name == name)
             .map(render_agent_detail))
     };
     // Match the overlay's inline-error convention so a resolution failure still
@@ -161,8 +161,8 @@ fn tui_agent_views(cwd: &Path, agent: &str) -> (Vec<InspectItem>, String) {
         let items: Vec<InspectItem> = resolved
             .iter()
             .map(|r| InspectItem {
-                name: r.profile.name.clone(),
-                summary: r.profile.description.clone(),
+                name: r.agent.name.clone(),
+                summary: r.agent.description.clone(),
                 layer: r.layer.label().to_string(),
             })
             .collect();
@@ -170,7 +170,7 @@ fn tui_agent_views(cwd: &Path, agent: &str) -> (Vec<InspectItem>, String) {
         // Flat summary: the table, with the active agent's detail appended so the
         // "why was this denied / which layer won" state is one glance away.
         let mut out = render_agent_table(&resolved);
-        if let Some(entry) = resolved.iter().find(|r| r.profile.name == agent) {
+        if let Some(entry) = resolved.iter().find(|r| r.agent.name == agent) {
             out.push('\n');
             let _ = writeln!(out, "═══ active agent: {agent} ═══\n");
             out.push_str(&render_agent_detail(entry));
@@ -222,20 +222,18 @@ mod tests {
     /// `skill_detail` and the CLI's `inspect_agents`/`inspect_skills` helpers.
     #[test]
     fn detail_matches_cli_renderer_for_built_in_agent_and_skill() {
-        // The built-in `build` agent / `rhai` skill are always present
+        // The built-in `general` agent / `rhai` skill are always present
         // (embedded), so this is cwd-independent — but resolve against a temp
         // root with no overrides so a user-layer definition can't perturb it.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
-        let agent = agent_detail(root, "build");
+        let agent = agent_detail(root, "general");
         assert!(
             agent
                 .as_ref()
-                .is_some_and(|s| s.contains("name:        build")
-                    && s.contains("mode:")
-                    && s.contains("layer:")),
-            "agent_detail should render the built-in `build` profile, got: {agent:?}"
+                .is_some_and(|s| s.contains("name:        general") && s.contains("layer:")),
+            "agent_detail should render the built-in `general` profile, got: {agent:?}"
         );
 
         let skill = skill_detail(root, "rhai");

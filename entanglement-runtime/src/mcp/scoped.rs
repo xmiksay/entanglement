@@ -306,7 +306,10 @@ impl McpScopes {
         .map_err(|_| anyhow::anyhow!("connecting MCP server `{name}` timed out"))??;
         let tools: Vec<Arc<dyn Tool>> = defs
             .into_iter()
-            .map(|def| Arc::new(McpTool::new(client.clone(), name, def)) as Arc<dyn Tool>)
+            .map(|def| {
+                Arc::new(McpTool::new(client.clone(), name, def, &cfg.capabilities))
+                    as Arc<dyn Tool>
+            })
             .collect();
         let specs: Vec<ToolSpec> = tools
             .iter()

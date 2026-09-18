@@ -15,7 +15,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, PermissionResolver, ProfileResolver, SandboxConfig,
+    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::{AdvertisingState, Encoding};
@@ -73,7 +73,7 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
                 responses: Mutex::new((*scripted).clone()),
             }) as Box<dyn Llm>
         }),
-        profiles: profiles.clone(),
+        agents: profiles.clone(),
         ..EngineConfig::default()
     });
 
@@ -92,12 +92,19 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
     reg.register(EchoRead);
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> =
-        Arc::new(ProfileResolver::new(active.clone(), base.clone(), None));
+    let perm_modes = crate::mode_support::perm_modes();
+    let shared_tools = reg.shared();
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        crate::mode_support::allow_all_table(),
+        shared_tools.clone(),
+        base.clone(),
+        None,
+    ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
     let _executor = spawn_tool_executor_with_policy(
         &holly,
-        reg.shared(),
+        shared_tools,
         entanglement_runtime::host::jobs::JobRegistry::new(),
         entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
         entanglement_runtime::script_ops::ScriptRegistry::new(),
@@ -105,11 +112,15 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
         Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
         base,
         active,
+        perm_modes,
         resolver,
         grants,
         Default::default(),
         None,
-        SandboxConfig::none(),
+        Arc::new(
+            entanglement_runtime::mode::ModeTable::builtin()
+                .expect("built-in permission modes must parse"),
+        ),
         Arc::new(PlanFileRegistry::new()),
         None,
         // No advertising inputs: nothing re-pins over the state set above.
@@ -121,9 +132,13 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
     );
 
     holly
-        .send(InMsg::SetAgent {
+        .send(InMsg::Spawn {
             session: sid.clone(),
+            parent: None,
+            predecessor: None,
             agent: agent.into(),
+            prompt: String::new(),
+            user: None,
         })
         .await
         .unwrap();
@@ -163,8 +178,8 @@ fn decline(events: &[OutEvent]) -> (String, bool) {
 
 #[tokio::test]
 async fn malformed_envelope_under_invoke_explains_the_schema_on_dispatch() {
-    // `build` admits every tool, so the registry miss is found in `dispatch`.
-    let (output, is_error) = decline(&run_malformed_invoke(Discovery::Invoke, "build").await);
+    // `general` admits every tool, so the registry miss is found in `dispatch`.
+    let (output, is_error) = decline(&run_malformed_invoke(Discovery::Invoke, "general").await);
     assert!(output.starts_with("malformed invoke call"), "{output}");
     assert!(output.contains(r#""args": {...}"#), "{output}");
     assert!(is_error);
@@ -172,16 +187,16 @@ async fn malformed_envelope_under_invoke_explains_the_schema_on_dispatch() {
 
 #[tokio::test]
 async fn malformed_envelope_under_native_first_explains_the_schema_on_a_mask_miss() {
-    // `explore`'s allowlist doesn't name `invoke`: the mask-miss path.
-    let (output, is_error) =
-        decline(&run_malformed_invoke(Discovery::NativeFirst, "explore").await);
+    // No profile carries a mask any more (ADR-0207); this pins the same
+    // dispatch decline path a mask-miss used to take, now on mode alone.
+    let (output, is_error) = decline(&run_malformed_invoke(Discovery::NativeFirst, "debug").await);
     assert!(output.starts_with("malformed invoke call"), "{output}");
     assert!(is_error);
 }
 
 #[tokio::test]
 async fn stray_invoke_under_append_is_an_ordinary_unknown_tool() {
-    for agent in ["build", "explore"] {
+    for agent in ["general", "debug"] {
         let (output, is_error) = decline(&run_malformed_invoke(Discovery::Append, agent).await);
         assert!(
             output.starts_with("unknown tool: `invoke`"),

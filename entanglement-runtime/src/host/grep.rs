@@ -6,6 +6,7 @@
 
 use super::glob::suggest_files_pattern;
 use super::{list_files_with_extra_roots, truncate_output, FileList};
+use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -221,6 +222,9 @@ impl Tool for GrepTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep")
     }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[Capability::Read]
+    }
     fn description(&self) -> &str {
         "Search file contents for a regular expression. Returns matching lines \
          as `path:lineno:line`. Optional `path` limits which files to search: \
@@ -335,6 +339,14 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn capability_is_read() {
+        assert_eq!(
+            GrepTool::new(tmp().path().to_path_buf()).capabilities(),
+            &[Capability::Read]
+        );
     }
 
     #[tokio::test]

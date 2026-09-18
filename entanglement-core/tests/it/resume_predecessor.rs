@@ -27,12 +27,11 @@ async fn resumed_successor_reannounces_its_predecessor() {
             session: successor.clone(),
             parent: None,
             predecessor: Some(source.clone()),
-            profile: "build".into(),
+            agent: "build".into(),
             model: None,
             root: true,
             ts: 0,
             user: None,
-            sponsored: false,
         },
     )];
 

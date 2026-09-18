@@ -32,12 +32,15 @@ pub struct ToolsViewRow {
     pub kind: &'static str,
     /// `"kernel"` | `"advertised"` | `"discoverable"` | `"n/a"`.
     pub status: &'static str,
-    /// Withheld by the active profile's mask, net of the session overlay —
-    /// the same effective-availability read `session_tools_dialog` computes.
+    /// Withheld by the session's own tool overlay — the same
+    /// effective-availability read `session_tools_dialog` computes. No
+    /// profile-borne mask exists any more (ADR-0207): every profile inherits
+    /// every tool, so the overlay is the only thing that can mask a row.
     pub masked: bool,
-    /// The profile's own permission grade for this name (`allow`/`ask`/
-    /// `deny`), ignoring ancestor clamps and grants — `None` where no
-    /// profile is resolvable (a skill row, an unmatched agent name).
+    /// Always `None` now (ADR-0207 moved the permission grade off the
+    /// profile and onto the session's mode, not wired into this view yet) —
+    /// kept as a field so a later stage can populate it from the mode
+    /// without another `ToolsViewRow` shape change.
     pub grade: Option<&'static str>,
 }
 

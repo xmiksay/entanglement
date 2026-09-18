@@ -1,59 +1,39 @@
-use super::{App, ProfileInfo};
+use super::{AgentInfo, App};
 use crate::tui::mention::{FileIndex, MentionPopup};
 use crate::tui::session_view::TranscriptEntry;
-use entanglement_core::{
-    AgentMode, AgentState, OutEvent, Permission, PermissionProfile, SessionId,
-};
+use entanglement_core::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{Catalog, GenerationParams, ModelInfo, ReasoningEffort};
 use ratatui::layout::Rect;
 
-/// Build an `App` over a custom entry-agent roster so the Tab-cycle ring
-/// filtering (#322) can be exercised: `build`/`plan` as `Primary`, `helper` as
-/// `All`.
-fn app_with_mixed_modes(sid: SessionId) -> App {
+/// Build an `App` over a three-agent roster — every agent is on the Tab-cycle
+/// ring now (ADR-0207 §4 retires the old primary/subagent/all `mode` filter).
+fn app_with_three_agents(sid: SessionId) -> App {
     App::new(
         sid,
         Catalog::builtin(),
         vec![
-            ProfileInfo {
+            AgentInfo {
                 name: "build".to_string(),
                 description: "Coding agent".to_string(),
-                mode: AgentMode::Primary,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Allow),
-                may_spawn: true,
             },
-            ProfileInfo {
+            AgentInfo {
                 name: "plan".to_string(),
                 description: "Planning agent".to_string(),
-                mode: AgentMode::Primary,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Allow),
-                may_spawn: true,
             },
-            ProfileInfo {
+            AgentInfo {
                 name: "helper".to_string(),
                 description: "Cross-vendor helper".to_string(),
-                mode: AgentMode::All,
-                tools: None,
-                disallowed_tools: Vec::new(),
-                permission: PermissionProfile::new(Permission::Allow),
-                may_spawn: true,
             },
         ],
         vec!["read".to_string(), "edit".to_string(), "bash".to_string()],
     )
 }
 
-/// Move the active session's agent off the cycle ring, as the Ctrl+A picker
-/// would when landing on an `all`-mode agent.
+/// Switch the active session's agent.
 fn set_agent(app: &mut App, sid: &SessionId, agent: &str) {
     app.handle_out_event(OutEvent::AgentChanged {
         session: sid.clone(),
         agent: agent.to_string(),
-        profile_detail: None,
     });
 }
 
@@ -560,6 +540,36 @@ fn select_model_picker_maps_flat_index_to_provider_and_model() {
     }
 }
 
+/// #560 P12, ADR-0207 §12: `/mode`'s picker pre-selects the session's
+/// current mode, cycles over the fixed four-name roster, and — unlike the
+/// now-read-only `/agent` picker — resolving a selection closes it and hands
+/// back the picked name for the caller to send as `InMsg::SetMode`.
+#[test]
+fn mode_picker_preselects_current_mode_and_cycles_the_fixed_roster() {
+    let mut app = App::new_for_test(SessionId::new("test"));
+    // `App::new_for_test`'s session starts in "build" (session_view.rs's own
+    // default before any real `ModeChanged` is folded in).
+    let modes: Vec<String> = app
+        .available_modes()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(modes, vec!["research", "plan", "build", "auto"]);
+
+    app.toggle_mode_picker();
+    assert!(app.showing_mode_picker());
+    assert_eq!(
+        app.mode_picker_state().selected(),
+        Some(2),
+        "preselects build"
+    );
+
+    app.mode_picker_next();
+    assert_eq!(app.mode_picker_state().selected(), Some(3));
+    assert_eq!(app.select_mode_picker(), Some("auto".to_string()));
+    assert!(!app.showing_mode_picker(), "selecting closes the picker");
+}
+
 #[test]
 fn model_changed_event_updates_the_context_bar() {
     // A live switch (#218) surfaces `ModelChanged`; the head updates its global
@@ -616,51 +626,9 @@ fn model_changed_tracks_active_provider_and_model() {
 }
 
 #[test]
-fn tab_cycle_skips_mode_all_agents() {
-    // The implicit Tab cycle ring is `mode: primary` only (#322): a cross-vendor
-    // `all`-mode agent stays out of the ring, so cycling only ever visits
-    // build↔plan.
+fn agent_picker_lists_every_entry_agent() {
     let sid = SessionId::new("test");
-    let mut app = app_with_mixed_modes(sid.clone());
-    set_agent(&mut app, &sid, "build");
-
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("plan"));
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("build"));
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("plan"));
-}
-
-#[test]
-fn tab_cycle_from_off_ring_agent_lands_on_first_primary() {
-    // Picking `helper` (an `all`-mode agent) via Ctrl+A puts the session off the
-    // ring; Tab must land on the first ring entry, not the one after index 0.
-    let sid = SessionId::new("test");
-    let mut app = app_with_mixed_modes(sid.clone());
-    set_agent(&mut app, &sid, "helper");
-
-    assert_eq!(app.cycle_primary_profile().as_deref(), Some("build"));
-}
-
-#[test]
-fn reverse_tab_cycle_wraps_and_lands_on_last_primary_off_ring() {
-    let sid = SessionId::new("test");
-    let mut app = app_with_mixed_modes(sid.clone());
-
-    // On-ring: from build, backwards wraps to plan (the last ring entry).
-    set_agent(&mut app, &sid, "build");
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("plan"));
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("build"));
-
-    // Off-ring `helper` → the last ring entry.
-    set_agent(&mut app, &sid, "helper");
-    assert_eq!(app.cycle_primary_profile_back().as_deref(), Some("plan"));
-}
-
-#[test]
-fn agent_picker_still_lists_all_entry_agents() {
-    // The Ctrl+A picker roster is unchanged — it still lists every entry agent
-    // (`primary | all`), including the `all`-mode `helper` the Tab ring skips.
-    let sid = SessionId::new("test");
-    let app = app_with_mixed_modes(sid);
+    let app = app_with_three_agents(sid);
 
     let names: Vec<&str> = app
         .available_profiles()
@@ -693,12 +661,11 @@ fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
             session: id.clone(),
             parent: None,
             predecessor: None,
-            profile: "build".to_string(),
+            agent: "build".to_string(),
             model: None,
             root: true,
             ts: 1000,
             user: None,
-            sponsored: false,
         }),
     );
     append(cwd, id, &record).expect("seed append");
@@ -785,4 +752,29 @@ fn resume_modal_d_deletes_past_session_and_drops_it_from_list() {
     let survivor_id = app.available_sessions()[0].id.clone();
     let survivor_path = crate::session_store::session_path(dir.path(), &survivor_id).unwrap();
     assert!(survivor_path.exists(), "survivor untouched");
+}
+
+/// `Tab`/`Shift+Tab` cycle the permission mode, wrapping in both directions
+/// from wherever the session currently is.
+///
+/// Regression guard: the binding used to cycle *agents*, and ADR-0207 removed
+/// that without giving it a new subject — so `Tab` silently did nothing until a
+/// user noticed. Pinning both directions keeps it attached to the axis that can
+/// still change mid-session.
+#[test]
+fn tab_cycles_the_permission_mode_in_both_directions() {
+    let app = App::new_for_test(SessionId::new("test"));
+    // Roster is the fixed four; the test session starts in `build` (index 2).
+    assert_eq!(app.mode(), "build");
+
+    assert_eq!(
+        app.cycle_mode(true).as_deref(),
+        Some("auto"),
+        "build -> auto"
+    );
+    assert_eq!(
+        app.cycle_mode(false).as_deref(),
+        Some("plan"),
+        "build -> plan going back"
+    );
 }

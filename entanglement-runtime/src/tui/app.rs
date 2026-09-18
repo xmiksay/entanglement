@@ -39,16 +39,13 @@ mod settings;
 mod settings_apply;
 mod slash;
 mod state;
-mod stop_confirm;
 mod toast;
-mod tools;
 mod tools_view;
 mod types;
 mod view;
 
 pub use inspect::InspectTab;
-pub use stop_confirm::StopConfirm;
-pub use types::{ModalClickAreas, ProfileInfo, UiEffect};
+pub use types::{AgentInfo, ModalClickAreas, UiEffect};
 
 #[cfg(test)]
 mod tests;
@@ -65,11 +62,11 @@ pub struct App {
     history_index: Option<usize>,
     history_search_term: Option<String>,
 
-    // Profile picker state — catalog is global, selection acts on the active session.
+    // Profile picker state (ADR-0207 §9: read-only, lists the roster and marks
+    // the session's own — there is no live switch any more).
     showing_profile_picker: bool,
     profile_picker_state: ListState,
-    available_profiles: Vec<ProfileInfo>,
-    primary_profile_order: Vec<String>,
+    available_profiles: Vec<AgentInfo>,
 
     // Model picker state — catalog is global, selection is display-only (requires restart)
     showing_model_picker: bool,
@@ -80,11 +77,21 @@ pub struct App {
     /// `ModelChanged`. Shown in the bottom bar beside the model.
     active_provider: String,
 
+    // Permission-mode picker state (#560 P12, ADR-0207 §12): the four
+    // built-in modes, name-sorted match to `AgentInfo`'s shape (name +
+    // description) so the picker reuses the same row rendering as
+    // `available_profiles`. Unlike the (now read-only) profile picker,
+    // confirming here sends a live `InMsg::SetMode`.
+    showing_mode_picker: bool,
+    mode_picker_state: ListState,
+    available_modes: Vec<AgentInfo>,
+
     // Per-agent model pins (#323, ADR-0081): the managed `agent-models.yml` store,
     // and the pending persist recorded when the `/model` picker confirms. The
     // matching `ModelChanged` for the active session commits the write; an `Error`
-    // (or a `ModelChanged` with no pending, i.e. a `SetAgent` pin application)
-    // clears it without writing. `None` store in tests / when no config dir.
+    // (or an unrelated `ModelChanged` with no pending, e.g. the session-start
+    // pin re-announce) clears it without writing. `None` store in tests / when
+    // no config dir.
     agent_models:
         Option<std::sync::Arc<std::sync::Mutex<crate::config::agent_models::AgentModelStore>>>,
     /// `(agent, provider, model)` awaiting its `ModelChanged` confirmation.
@@ -94,9 +101,8 @@ pub struct App {
     // the managed `agent-generation.yml` store, and the pending persist recorded
     // when `/set`'s Enter sends `InMsg::SetGeneration`. The matching
     // `GenerationChanged` for the active session commits the write; an `Error`
-    // (or a `GenerationChanged` with no pending, i.e. a `/show` query or a
-    // `SetAgent` reapplication) clears it without writing. `None` store in tests
-    // / when no config dir.
+    // (or a `GenerationChanged` with no pending, e.g. a `/show` query) clears
+    // it without writing. `None` store in tests / when no config dir.
     agent_generation: Option<
         std::sync::Arc<std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>>,
     >,
@@ -140,14 +146,14 @@ pub struct App {
     tool_overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     // Bare `/enable`'s session-tools checklist dialog (#539): toggle any
     // advertised tool's availability for the active session; the overlay is
-    // the diff against the profile mask.
+    // the diff against the session's inherit-all default (ADR-0207 — no
+    // profile carries a mask any more).
     session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog,
 
-    // `/agent` picker's `e` tools-checklist dialog (#330): the full advertised
-    // tool roster (host + MCP + runtime-owned specs, from
-    // `EngineConfig::tool_specs` at startup) plus the checklist's own state.
+    // The full advertised tool roster (host + MCP + runtime-owned specs, from
+    // `EngineConfig::tool_specs` at startup) — feeds `/tools` and the bare
+    // `/enable` session-tools checklist.
     tool_roster: Vec<String>,
-    tools_dialog: crate::tui::tools_dialog::ToolsDialog,
 
     // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
     // P9, ADR-0199 part 3): read-only here — `/tools`' status column
@@ -257,10 +263,6 @@ pub struct App {
     // loop like `quit_pending`.
     toast: Option<(String, Instant)>,
 
-    // Cascade-vs-detach confirm for `Stop` on a plan session with a live
-    // sponsored `propose_plan` build child (#626, ADR-0145 "Consequences").
-    pending_stop_confirm: Option<StopConfirm>,
-
     // Bare `/set`'s tabbed settings dialog + the catalog its model rows use.
     settings: settings::SettingsState,
 }
@@ -312,6 +314,13 @@ impl App {
 
     pub fn agent(&self) -> &str {
         self.sessions.active_view().agent()
+    }
+
+    /// The active session's live permission mode (ADR-0207) — `/allow`
+    /// (#634) reads this to scope a `SessionDir` grant to the mode it's
+    /// earned under.
+    pub fn mode(&self) -> &str {
+        self.sessions.active_view().mode()
     }
 
     pub fn state(&self) -> AgentState {
@@ -396,9 +405,9 @@ impl App {
                 context_window: context_window.map(|w| w as u32),
             });
             // Persist-on-confirmation (#323): a `/model` pick recorded a pending
-            // persist; its matching `ModelChanged` commits the write. A
-            // `ModelChanged` from a `SetAgent` pin application has no pending, so
-            // it never writes.
+            // persist; its matching `ModelChanged` commits the write. An
+            // unrelated `ModelChanged` (e.g. the session-start pin re-announce)
+            // has no pending, so it never writes.
             self.persist_model_if_pending(session, provider, model);
         }
         // A generation-knob change (#374/#376): always render a status line with
