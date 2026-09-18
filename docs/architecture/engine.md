@@ -779,7 +779,8 @@ process-global `MAX_SPAWN_DEPTH`/`MAX_SPAWNS_PER_ROOT` constants are gone —
 permission-graded at all, and **any agent may spawn any registered agent**.
 What bounds it instead is two mode facts applying to the session's whole
 spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents` (concurrent
-children per root), both `Option<u32>` on the mode's `Limits` — undefined
+children per root — held from spawn until the child's answer arrives, never
+a cumulative budget), both `Option<u32>` on the mode's `Limits` — undefined
 means unlimited — enforced by `SpawnGuard::try_spawn`, which still folds
 parent links from `SessionStarted` and replies with a clear refusal
 `ToolOutput` naming the limit instead of starting a child.

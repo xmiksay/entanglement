@@ -71,7 +71,7 @@ pub(super) async fn spawn(
             .to_string()),
     };
     match spawn_result {
-        Ok(()) => {
+        Ok(slot) => {
             // `refusal` was `None` here, so `model_result` is `Ok` too — the
             // two checks above refuse together (`refusal`'s `or_else` folds
             // a model error in), never independently.
@@ -81,6 +81,10 @@ pub(super) async fn spawn(
             let retained = ctx.retained.clone();
             let holly = ctx.holly.clone();
             tokio::spawn(async move {
+                // Held until the child's answer is in (both launch shapes
+                // watch the child to the end), so the mode's `max_agents`
+                // counts running sub-agents, not spawns ever made.
+                let _slot = slot;
                 // The default blocks and parks for the
                 // answer; `background: true` hands the
                 // handle back at once — one guard path,

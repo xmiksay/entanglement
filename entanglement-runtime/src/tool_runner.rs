@@ -484,7 +484,7 @@ pub fn spawn_tool_executor_with_policy(
             });
         }
         // Bounds the spawn tree (#76): tracks parent links from lifecycle events
-        // and per-root spawn budgets. Lives in this single-threaded loop, so the
+        // and per-root running sub-agent counts. Lives in this single-threaded loop, so the
         // spawn decision below is race-free.
         let mut spawn_guard = crate::subagent::SpawnGuard::new();
         // Per-session tool advertising (ADR-0196 §2-3): pinned at session

@@ -428,14 +428,12 @@ impl Llm for RecursiveLlm {
     }
 }
 
-/// Every registered agent is a valid spawn target now (ADR-0207 §6) — spawn
-/// control is bounded only by the session's mode `max_depth`/`max_agents`,
-/// never by the target's own profile. This drives the fan-out (`max_agents`)
-/// limit test below: the root repeatedly delegates a trivial blocking
-/// `agent` call to `general`, which always answers immediately (never
-/// recurses), so the *fan-out* budget — not depth — is what eventually
-/// refuses it.
+/// The root issues one blocking `agent` call per round, twelve rounds in a
+/// row — more than `build`'s `max_agents` (8) — each to a `general` child that
+/// answers at once, so no two children ever run together.
 struct SequentialFanOutLlm;
+
+const SEQUENTIAL_SPAWNS: usize = 12;
 
 #[async_trait]
 impl Llm for SequentialFanOutLlm {
@@ -444,15 +442,12 @@ impl Llm for SequentialFanOutLlm {
         if last_user(&req) == "child-task" {
             return Ok(finish("child-answer"));
         }
-        // The root: one blocking `agent` call per round, counted by how many
-        // tool results have folded back in so far (a success or a refusal
-        // both fold as one `Tool`-role message).
         let rounds = req
             .messages
             .iter()
             .filter(|m| m.role == MessageRole::Tool)
             .count();
-        if rounds >= 9 {
+        if rounds >= SEQUENTIAL_SPAWNS {
             return Ok(finish("root done"));
         }
         Ok(call(
@@ -463,14 +458,40 @@ impl Llm for SequentialFanOutLlm {
     }
 }
 
-#[tokio::test]
-async fn spawn_fan_out_is_bounded_and_refusal_is_relayed() {
-    // `spawn_tool_executor`'s default `ModeResolver` puts every session
-    // under `DEFAULT_MODE` ("build"), whose built-in `max_agents` is 8: the
-    // 9th sequential blocking spawn beneath the same root must be refused,
-    // naming the limit and the mode (ADR-0207 §6).
+/// The root launches nine `background: true` children in a single round; each
+/// child sleeps before answering, so all of them are still running when the
+/// batch dispatches.
+struct ParallelFanOutLlm;
+
+const PARALLEL_SPAWNS: usize = 9;
+
+#[async_trait]
+impl Llm for ParallelFanOutLlm {
+    async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        if last_user(&req) == "child-task" {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            return Ok(finish("child-answer"));
+        }
+        if last_tool(&req).is_some() {
+            return Ok(finish("root done"));
+        }
+        Ok(stream_from_response(LlmResponse {
+            text: String::new(),
+            tool_calls: (0..PARALLEL_SPAWNS)
+                .map(|i| ToolCall {
+                    id: format!("spawn{i}"),
+                    name: "agent".into(),
+                    input: r#"{"agent":"general","prompt":"child-task","background":true}"#.into(),
+                    provider_meta: None,
+                })
+                .collect(),
+        }))
+    }
+}
+
+fn fan_out_config(llm: fn() -> Box<dyn Llm>) -> Holly {
     let cfg = EngineConfig {
-        llm_factory: Arc::new(|| Box::new(SequentialFanOutLlm) as Box<dyn Llm>),
+        llm_factory: Arc::new(llm),
         agents: entanglement_runtime::agents::built_in_registry()
             .expect("built-in agents must parse"),
         ..EngineConfig::default()
@@ -483,36 +504,72 @@ async fn spawn_fan_out_is_bounded_and_refusal_is_relayed() {
         profiles,
         entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
     );
+    holly
+}
 
+/// Drive `root` to its `Done`, returning how many children were granted a
+/// spawn and every refusal the spawn guard relayed. Counted off the root's own
+/// `agent` results rather than `SessionStarted`: a background launch answers
+/// before its child starts, so the root can finish first.
+async fn run_fan_out(holly: &Holly) -> (usize, Vec<String>) {
     let root = SessionId::new("root");
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::prompt(root.clone(), "start"))
         .await
         .unwrap();
-
-    let mut sessions_started = 0usize;
-    let mut refusal: Option<String> = None;
+    let mut granted = 0usize;
+    let mut refusals = Vec::new();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
         match &ev {
-            OutEvent::SessionStarted { .. } => sessions_started += 1,
-            OutEvent::ToolOutput { output, .. } if output.contains("per-root spawn budget") => {
-                refusal = Some(output.clone());
+            OutEvent::ToolOutput {
+                session,
+                tool,
+                output,
+                ..
+            } if session == &root && tool == "agent" => {
+                if output.contains("spawn refused") {
+                    refusals.push(output.clone());
+                } else {
+                    granted += 1;
+                }
             }
             OutEvent::Done { session, .. } if session == &root => break,
             _ => {}
         }
     }
+    (granted, refusals)
+}
 
-    let refusal = refusal.expect("the 9th sequential spawn should be refused by fan-out");
+/// The reported bug: `max_agents` was charged per spawn and never given back,
+/// so a session delegating one task at a time was refused after eight
+/// sub-agents although only one ever ran at once. It bounds concurrency.
+#[tokio::test]
+async fn sequential_spawns_are_never_refused_by_max_agents() {
+    let holly = fan_out_config(|| Box::new(SequentialFanOutLlm));
+    let (granted, refusals) = run_fan_out(&holly).await;
+    assert!(refusals.is_empty(), "no spawn may be refused: {refusals:?}");
+    assert_eq!(granted, SEQUENTIAL_SPAWNS);
+}
+
+#[tokio::test]
+async fn parallel_fan_out_is_bounded_and_refusal_is_relayed() {
+    // `spawn_tool_executor`'s default `ModeResolver` puts every session under
+    // `DEFAULT_MODE` ("build"), whose built-in `max_agents` is 8: with eight
+    // background children still running, the ninth launch in the same batch
+    // is refused, naming the limit and the mode (ADR-0207 §6).
+    let holly = fan_out_config(|| Box::new(ParallelFanOutLlm));
+    let (granted, refusals) = run_fan_out(&holly).await;
+    assert_eq!(
+        refusals.len(),
+        1,
+        "exactly the ninth is refused: {refusals:?}"
+    );
+    let refusal = &refusals[0];
+    assert!(refusal.contains("already running"), "says why: {refusal}");
     assert!(refusal.contains('8'), "names the limit: {refusal}");
     assert!(refusal.contains("build"), "names the mode: {refusal}");
-    // root(0) + 8 successful general children = 9 sessions; the 9th spawn
-    // attempt is refused before a child starts.
-    assert_eq!(
-        sessions_started, 9,
-        "only the mode's max_agents (8) children should actually start"
-    );
+    assert_eq!(granted, 8, "only the mode's max_agents (8) may run at once");
 }
 
 /// Parent delegates once with the blocking `agent` tool; the child answers

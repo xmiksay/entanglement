@@ -854,7 +854,10 @@ below realize one model:
   spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents`
   (concurrent children per root) — undefined means unlimited, exceeding
   either returns an `is_error` naming the limit
-  (`entanglement-runtime/src/subagent.rs`). `runtime::permission::spawn_refusal(target,
+  (`entanglement-runtime/src/subagent/spawn_guard.rs`). A child counts from
+  its spawn until its answer arrives (a `SpawnSlot` held by its launch task),
+  so a session delegating one task at a time never runs out; an idle child
+  re-woken by `agent_send` is not counted again. `runtime::permission::spawn_refusal(target,
   registry)` checks only whether `target` is a known agent name — the old
   `spawner`-side `may_spawn`/allowlist checks are gone with the fields they
   read. The `agent` tool also gains a `model` parameter, validated against
