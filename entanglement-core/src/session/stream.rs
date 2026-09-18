@@ -10,7 +10,7 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
-use super::mode::mode_notice;
+use super::mode::mode_notice_with_transition;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
@@ -57,6 +57,13 @@ pub(super) async fn stream_round(
     // startup default, or the last live switch (#218). `Copy`, so snapshot it
     // once rather than re-borrow `s` while `s.llm` streams below.
     let generation = s.generation;
+    // The mode transition marker (#560 follow-up) is **consumed** here, once
+    // per round, not re-read inside the retry loop below: a transparent
+    // stream-failure retry re-sends the identical round the model never saw,
+    // so it must carry the identical notice, not a second, now-empty read of
+    // an already-taken `Option`. See `Session::mode_transition_from`'s doc
+    // for why this is ephemeral session state, never `Context`/replay.
+    let trailing_notice = mode_notice_with_transition(&s.mode, s.mode_transition_from.take());
     let mut attempt: usize = 0;
     let mut text_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -93,7 +100,7 @@ pub(super) async fn stream_round(
             // ladder — only aux traffic (narrate/session-title/summarize)
             // requests the fail-fast override (#560 follow-up).
             retry: None,
-            trailing_notice: Some(mode_notice(&s.mode)),
+            trailing_notice: Some(trailing_notice.clone()),
         };
         tracing::debug!(
             messages_count = req.messages.len(),

@@ -9,7 +9,10 @@
 //! for why a persisted push would desync live vs. replayed history: a
 //! session's very first `Prompt` always folds at the very first log record on
 //! replay, so anything meant to precede it live cannot be reconstructed after
-//! it without an ordering mismatch).
+//! it without an ordering mismatch). The *first* request built after a real
+//! switch also names what the mode changed from (#560 follow-up,
+//! `session::mode::mode_notice_with_transition`) — every later round reverts
+//! to the plain form.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -146,13 +149,120 @@ async fn every_request_carries_a_trailing_notice_reflecting_the_current_mode() {
         .unwrap();
     recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
 
-    // The switch is reflected on the very next request, still trailing.
+    // The switch is reflected on the very next request — and, since this is
+    // the *first* request built since the switch, it also names what the
+    // mode changed from (#560 follow-up): a plain `[mode: research]` alone
+    // would silently swap out from under the model with nothing marking the
+    // edge.
+    {
+        let requests = seen.lock().unwrap();
+        let last = requests.last().expect("a request was recorded");
+        assert_eq!(
+            last.last().map(Message::text).as_deref(),
+            Some("[mode: research — changed from build]"),
+            "the first request after a switch must call out the transition: {last:?}"
+        );
+    }
+
+    // The transition marker is consumed exactly once: a *third* prompt with
+    // no intervening `SetMode` gets the plain, un-annotated notice again.
+    holly
+        .send(InMsg::prompt(sid.clone(), "third prompt"))
+        .await
+        .unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
     let requests = seen.lock().unwrap().clone();
     let last = requests.last().expect("a request was recorded");
     assert_eq!(
         last.last().map(Message::text).as_deref(),
         Some("[mode: research]"),
-        "the notice must reflect the switched-to mode: {last:?}"
+        "the transition callout must fire only once, not on every later round: {last:?}"
+    );
+}
+
+/// #560 follow-up: several `SetMode`s landing before the model's next round
+/// (a plan-approval cascade, or just a fast re-typed `/mode`) must collapse
+/// into a single notice naming the *original* mode and the *final* one, not
+/// an intermediate stop along the way.
+#[tokio::test]
+async fn several_switches_before_the_next_request_collapse_into_one_transition() {
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let cfg = EngineConfig {
+        llm_factory: recording_factory(&seen),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
+
+    // Starts at DEFAULT_MODE (`build`); three switches land back-to-back
+    // with no request in between.
+    for mode in ["research", "plan", "auto"] {
+        holly
+            .send(InMsg::SetMode {
+                session: sid.clone(),
+                mode: mode.to_string(),
+            })
+            .await
+            .unwrap();
+        recv_until(
+            &mut sub,
+            |e| matches!(e, OutEvent::ModeChanged { mode: m, .. } if m == mode),
+        )
+        .await;
+    }
+
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
+
+    let requests = seen.lock().unwrap().clone();
+    let last = requests.last().expect("a request was recorded");
+    assert_eq!(
+        last.last().map(Message::text).as_deref(),
+        Some("[mode: auto — changed from build]"),
+        "three switches must collapse into one notice naming the original \
+         mode and the final one, never `research` or `plan`: {last:?}"
+    );
+}
+
+/// #560 follow-up: a `SetMode` that names the mode the session is already in
+/// is not a transition — nothing actually changed, so nothing is called out.
+#[tokio::test]
+async fn set_mode_to_the_current_mode_produces_no_transition() {
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let cfg = EngineConfig {
+        llm_factory: recording_factory(&seen),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
+
+    // Still `build` (DEFAULT_MODE) — a no-op switch.
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "build".to_string(),
+        })
+        .await
+        .unwrap();
+    recv_until(&mut sub, is_mode_changed).await;
+
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
+
+    let requests = seen.lock().unwrap().clone();
+    let last = requests.last().expect("a request was recorded");
+    assert_eq!(
+        last.last().map(Message::text).as_deref(),
+        Some("[mode: build]"),
+        "a SetMode to the current mode must not manufacture a transition: {last:?}"
     );
 }
 
@@ -429,4 +539,85 @@ async fn set_mode_cascades_to_live_descendants() {
             }
         }
     }
+}
+
+/// ADR-0207 §6 + #560 follow-up: a cascaded `SetMode` gives the reached
+/// descendant its own transition notice too, not just the directly-targeted
+/// session — each session in the cascade folds the switch through the same
+/// `SessionCmd::SetMode` arm, computing `from` against its *own* prior mode,
+/// independent of whatever the target session's own transition looks like.
+#[tokio::test]
+async fn cascaded_set_mode_gives_the_descendant_its_own_transition_notice() {
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let cfg = EngineConfig {
+        llm_factory: recording_factory(&seen),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let parent = SessionId::new("parent-cascade-notice");
+    let child = SessionId::new("child-cascade-notice");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(parent.clone(), "hi"))
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
+    )
+    .await;
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(parent.clone()),
+            predecessor: None,
+            agent: "general".into(),
+            prompt: "subtask".into(),
+            user: None,
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+    )
+    .await;
+
+    // The child inherited `build` at spawn (`spawned_child_inherits_the_parents_live_mode`);
+    // cascading the parent's switch to `plan` must reach it.
+    holly
+        .send(InMsg::SetMode {
+            session: parent.clone(),
+            mode: "plan".into(),
+        })
+        .await
+        .unwrap();
+    recv_until(&mut sub, |e| {
+        matches!(e, OutEvent::ModeChanged { session, mode, .. } if *session == child && mode == "plan")
+    })
+    .await;
+
+    holly
+        .send(InMsg::prompt(child.clone(), "continue"))
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+    )
+    .await;
+
+    let requests = seen.lock().unwrap().clone();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.iter().any(|m| m.text() == "continue"))
+        .expect("the child's own request must have been recorded");
+    assert_eq!(
+        last.last().map(Message::text).as_deref(),
+        Some("[mode: plan — changed from build]"),
+        "the cascaded descendant must get its own transition notice, computed \
+         against its own prior mode: {last:?}"
+    );
 }

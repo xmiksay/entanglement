@@ -23,7 +23,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | Stop{session}
          | PauseSession{session}   // hold at Paused — no cancel, no eviction; deferred-until-safe mid-stream (#516, ADR-0208)
          | ResumeSession{session}   // lift a PauseSession hold; continues a drained-but-undriven parked batch with no re-prompt (#516, ADR-0208)
-         | SetMode{session,mode}   // trusted-only: switch the session's permission mode → ModeChanged, cascades over the whole live spawn sub-tree; deferred-until-safe mid-turn like SetModel (#560, ADR-0207 §12). SetAgent is gone (ADR-0207 §9) — an agent is chosen once, at session start or spawn, and is fixed for that session's life
+         | SetMode{session,mode}   // trusted-only: switch the session's permission mode → ModeChanged, cascades over the whole live spawn sub-tree; applied IMMEDIATELY, turn live or paused or not — unlike SetModel/SetGeneration/SetToolOverlay, a mode is a label the runtime grades the *next* tool call against, not something a live round is using, so deferring it left a same-turn propose_plan approval executing its first call under the stale mode (#560 fix, ADR-0207 §12). SetAgent is gone (ADR-0207 §9) — an agent is chosen once, at session start or spawn, and is fixed for that session's life
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
@@ -266,8 +266,9 @@ session's next piece of work without losing it or evicting it."
 trust tier as `Stop`) drive a `Session.paused: bool` that is **not**
 persisted/replayed (like `Stop`'s cancel — a hibernate/resume cycle always
 comes back unpaused). Two holds depending on what the session was doing when
-paused: an **idle** session defers its next `Prompt`/`SetMode`/`SetModel`/
-`SetGeneration`/`Oneshot` onto the existing turn-stash queue; a **parked**
+paused: an **idle** session defers its next `Prompt`/`SetModel`/
+`SetGeneration`/`Oneshot` onto the existing turn-stash queue (`SetMode` is
+the one exception, applied immediately even while paused — see below); a **parked**
 batch keeps folding arriving `ToolResult`s into `Context` as normal (stashing
 them would deadlock — the stash only drains once the turn goes idle, which
 needs every pending result resolved first) but does not re-enter `drive_turn`
@@ -331,7 +332,8 @@ variant/`wire_allowed`/`SessionCmd`, just a new `match` arm in
 `session::ops::run_oneshot`. `"compact"` (session compaction via LLM
 summarization) is the first and only op today; an unknown `op` is a
 recoverable `Error`. Wire-allowed (mutates only the caller's own session) and
-deferred while a turn is live via the same stash gate as `SetMode`/`SetModel`
+deferred while a turn is live via the same stash gate as `SetModel`
+(unlike `SetMode`, which applies immediately, #560)
 — a oneshot never runs concurrently with a turn, which is what lets it reuse
 the session's `&mut Llm` handle directly instead of racing the turn loop's
 inbox `select!`. On success it emits the **persisted, seq-bearing**
@@ -390,7 +392,8 @@ later session spawned under that same profile re-applies it at start —
 `SetAgent` is gone
 ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
 §9), so session start is the only re-application locus left. Deferred
-(stashed) while a turn is live, like `SetMode`/`SetModel`. See the engine doc
+(stashed) while a turn is live, like `SetModel` (unlike `SetMode`, which
+applies immediately, #560). See the engine doc
 for the session-start overlay precedence and the runtime doc for the
 per-profile persisted store.
 
@@ -478,7 +481,9 @@ surface via `/enable`/`/disable` (a bare
 `/enable` being the session-tools checklist dialog (the
 overlay as a diff against the mode's own grade)), and the `/mcp` panel's `e`/`d`
 server keys.
-Stash-deferred while a turn is live, like `SetMode`/`SetModel`.
+Stash-deferred while a turn is live, like `SetModel` — a mid-round edit
+would change the advertised tool array under a request already in flight
+(unlike `SetMode`, which changes no array and applies immediately, #560).
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 

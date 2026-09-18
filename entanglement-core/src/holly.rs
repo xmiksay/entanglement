@@ -623,10 +623,12 @@ async fn supervisor(
             // `CloseSession`/`HibernateSession` already cascade over, so a
             // switch on a session with live children reaches them too. Each
             // live descendant gets its own `SessionCmd::SetMode`, so it
-            // stashes/applies/announces through the same per-session path a
-            // direct switch would (deferred while its own turn is live, its
-            // own `ModeChanged` broadcast) — no session-loop special-casing
-            // needed for the cascade to be correct. `modes` is updated for
+            // applies and announces through the same per-session path a
+            // direct switch would (immediately, turn live or not — a mode is
+            // a label the runtime grades the *next* call against, never
+            // deferred like `SetAgent` used to be) — no session-loop
+            // special-casing needed for the cascade to be correct. `modes` is
+            // updated for
             // every id in the subtree, live or not, so a hibernated
             // descendant's cache entry is fixed up defensively too (it plays
             // no functional role until that id resumes and re-derives the

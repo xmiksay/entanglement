@@ -38,6 +38,28 @@ pub struct Session {
     /// [`ModeChanged`][crate::protocol::OutEvent::ModeChanged] records
     /// (last write wins).
     pub mode: String,
+    /// Pending permission-mode **transition** marker (#560 follow-up): the
+    /// mode `mode` held immediately before its most recent unconsumed
+    /// `SetMode`, set only when that switch actually changed `mode` (a
+    /// `SetMode` to the current value leaves this untouched). `Some(prev)`
+    /// until the next request's trailing notice consumes it
+    /// (`mode::mode_notice_with_transition`, `stream.rs`) and resets it to
+    /// `None`, so the model is told about a mode change exactly once, on the
+    /// very next round, and sees the plain `[mode: X]` form every round
+    /// after. Several `SetMode`s landing before that next round (a
+    /// `propose_plan` approval cascade, a fast re-typed `/mode`) collapse
+    /// into one notice naming the *original* mode and the *final* one: only
+    /// the first unconsumed switch in a stretch ever writes this field
+    /// (`Option::get_or_insert_with`); later switches in the same window just
+    /// keep advancing `mode` itself.
+    ///
+    /// Deliberately **not persisted or replayed** — like [`mode`][Self::mode]'s
+    /// own notice (see `mode.rs`'s module doc on the pairing hazard, and its
+    /// own doc above `mode_notice_with_transition`), a resumed session has no
+    /// live "next round" to attach a transition to, so it simply shows the
+    /// plain notice; reconstructing this on replay would invent a semantics
+    /// nothing calls for.
+    pub mode_transition_from: Option<String>,
     /// Effective model id when the user switched model/provider mid-session
     /// (#218), overriding the agent's pinned [`Agent::model`] on every
     /// request and in pricing. `None` keeps the agent's model (the startup
@@ -163,6 +185,7 @@ impl Session {
             llm: (cfg.llm_factory)(),
             agent,
             mode: DEFAULT_MODE.to_string(),
+            mode_transition_from: None,
             model: None,
             provider: None,
             generation: cfg.generation,

@@ -472,26 +472,60 @@ pub(crate) async fn session_loop(
                         == Forked::Yes;
                 }
             }
-            // Live mode switch (ADR-0207): deferred while a turn is live, same
-            // as every other live-adjust command below — but unlike `SetModel`
-            // there is no registry to fail against (core carries no mode
-            // table), so this always succeeds, the
-            // `SetGeneration`/`SetToolOverlay` shape. Pure state:
-            // the model-visible notice is rebuilt from `s.mode` fresh every
-            // round (`stream.rs`), never pushed into `ctx` here — see
+            // Live mode switch (ADR-0207): applied immediately, turn live or
+            // paused or not — unlike `SetModel`/`SetGeneration`/
+            // `SetToolOverlay` below, a mode is never deferred. Those defer
+            // because they touch something a live round is actively using
+            // (the backend, generation knobs riding the in-flight request,
+            // the advertised tool array) — a mid-round edit there would be
+            // incoherent or bust the provider cache. A mode is neither: it is
+            // a **label** the runtime's own `perm_modes` fold reads only at
+            // the moment it grades the *next* tool call (`tool_runner.rs`),
+            // and the model-visible notice is rebuilt from `s.mode` fresh
+            // every round (`stream.rs`) rather than pushed into `ctx` — see
             // `mode::mode_notice`'s doc for why, and how that keeps a switch
-            // free of the provider prompt-cache miss a mid-session tools/system
-            // edit would cost (ADR-0202).
+            // free of the provider prompt-cache miss a mid-session tools/
+            // system edit would cost (ADR-0202). So there is nothing live to
+            // protect by waiting.
+            //
+            // This matters concretely for `propose_plan` approval (#560,
+            // ADR-0207 §7): the approval's `SetMode` is sent *from inside*
+            // the very turn it must reshape, immediately followed by the
+            // `ToolResult` that resumes it. Deferring the switch (the old
+            // behavior, copied from `SetAgent`'s now-deleted stash — a
+            // persona swap genuinely does need to wait, since it rewrites
+            // the system prompt) left that continuing turn's next tool call
+            // graded under the *old*, plan-denying mode: a plan accepted
+            // into `build`/`auto` still had its first edit refused. Applying
+            // here means the outer loop's `ModeChanged` broadcast lands
+            // before the paired `ToolResult` is even processed, so
+            // `tool_runner`'s `perm_modes` fold sees the new mode before it
+            // ever grades the next call.
+            //
+            // A narrowing switch issued mid-turn (e.g. `/mode research` while
+            // `build` is running) is strictly safer this way too: it now
+            // closes the gap on the very next tool call instead of leaving
+            // every call still in flight for the rest of the turn running
+            // under the old, wider mode.
+            //
+            // Paused: a held session has nothing actively grading either —
+            // whatever is parked was already dispatched under whatever mode
+            // was live at the time, and nothing new dispatches until
+            // `ResumeSession` — so applying now vs. after `Unpause` changes
+            // nothing observable, and immediate is simpler than one more
+            // deferred-command special case.
             Some(SessionCmd::SetMode(mode)) => {
-                if s.turn.is_some() || s.paused {
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::SetMode(mode),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
+                // #560 follow-up: record the pre-switch mode for the next
+                // request's transition notice (`mode::mode_notice_with_transition`,
+                // `stream.rs`) — but only when this genuinely changes `mode`,
+                // and only if nothing is already pending. The latter is what
+                // collapses several switches landing before the model's next
+                // round (a plan-approval cascade, a fast re-typed `/mode`)
+                // into one notice naming the *original* mode, not an
+                // intermediate one: the first unconsumed switch writes this,
+                // every later one in the same window only advances `mode`.
+                if mode != s.mode {
+                    s.mode_transition_from.get_or_insert_with(|| s.mode.clone());
                 }
                 s.mode = mode.clone();
                 let _ = events.send(OutEvent::ModeChanged {

@@ -119,6 +119,21 @@ fn text_response(text: &str) -> LlmResponse {
     }
 }
 
+/// A `write` tool call — used to prove a same-turn call issued right after
+/// plan approval is graded under the *new* mode, not the `plan` mode the
+/// call started in.
+fn write_call(id: &str, path: &str, content: &str) -> LlmResponse {
+    LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: "write".into(),
+            input: serde_json::json!({"path": path, "content": content}).to_string(),
+            provider_meta: None,
+        }],
+    }
+}
+
 /// Spawn a `Holly` + real tool executor rooted at `root`, with the given
 /// per-session `llm_factory`, graded against the always-`Allow` single-mode
 /// fixture (`mode_support::allow_all_table`). Mirrors `tests/rhai.rs`'s
@@ -231,38 +246,26 @@ async fn collect_until_done(
     events
 }
 
-/// Collect every event for `sid`, including the deferred post-`Done`
-/// `ModeChanged` a `propose_plan` approval emits: `InMsg::SetMode` is
-/// stashed while a turn is live (exactly like `SetAgent`'s old stash), and
-/// `run_propose_plan` sends it *before* the `ToolResult` that continues the
-/// turn — so it lands only once the whole turn concludes, after `Done`, not
-/// synchronously with the `ToolOutput`. `collect_until_done` breaks exactly
-/// at `Done` and would miss it; this keeps listening a short while past
-/// `Done` instead of breaking on it.
-async fn collect_past_done(
-    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
-    sid: &SessionId,
-) -> Vec<OutEvent> {
-    let mut events = Vec::new();
-    let mut saw_done = false;
-    loop {
-        let per_event_timeout = if saw_done {
-            Duration::from_millis(300)
-        } else {
-            Duration::from_secs(5)
-        };
-        let Ok(Ok(ev)) = tokio::time::timeout(per_event_timeout, sub.recv()).await else {
-            break;
-        };
-        if matches!(&ev, OutEvent::Done { session, .. } if session == sid) {
-            saw_done = true;
-        }
-        if ev.session() == Some(sid) || matches!(&ev, OutEvent::SessionStarted { .. }) {
-            events.push(ev);
-        }
-    }
-    events
-}
+// `collect_past_done` used to live here: `InMsg::SetMode` was deferred while
+// a turn was live (`entanglement-core/src/session.rs`'s old `SetMode` arm,
+// copied from `SetAgent`'s stash), and `run_propose_plan` sends it *before*
+// the `ToolResult` that continues the turn — so the approval's `ModeChanged`
+// only landed once the whole turn concluded, strictly after `Done`, and
+// `collect_until_done` (below) would miss it by breaking exactly at `Done`.
+//
+// #560 fixed the underlying bug that deferral caused: a plan accepted into
+// `build`/`auto` still had its *first* edit in the same turn graded under
+// the stale `plan` mode, since the mode switch hadn't landed yet. The fix —
+// applying `SetMode` immediately, turn live or not, since a mode is a label
+// the runtime grades the *next* tool call against, not something a live
+// round is using — also means the approval's `ModeChanged` now lands well
+// before `Done` (right after `SetMode` is sent, strictly before the
+// `ToolResult` that resumes the turn is even processed). `collect_until_done`
+// alone is therefore enough for every test below; see
+// `approved_write_lands_in_the_same_turn_under_build`/`..._under_auto` for
+// the property this was really guarding: that the *next* tool call in the
+// same turn is actually graded under the new mode, not merely that
+// `Session::mode` reads correctly once the turn has already ended.
 
 fn assert_mode_changed_to(events: &[OutEvent], sid: &SessionId, mode: &str) {
     assert!(
@@ -320,7 +323,7 @@ async fn approve_with_explicit_build_choice_switches_the_session_to_build_mode()
         .await
         .unwrap();
 
-    let events = collect_past_done(&mut sub, &sid).await;
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
     assert_mode_changed_to(&events, &sid, "build");
     assert_plan_output_names_mode(&events, "build");
     assert!(
@@ -363,7 +366,7 @@ async fn approve_with_no_mode_named_defaults_to_auto() {
         .await
         .unwrap();
 
-    let events = collect_past_done(&mut sub, &sid).await;
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
     assert_mode_changed_to(&events, &sid, "auto");
     assert_plan_output_names_mode(&events, "auto");
 }
@@ -423,7 +426,7 @@ async fn a_models_suggested_mode_pre_selects_but_never_decides() {
         })
         .await
         .unwrap();
-    let events = collect_past_done(&mut sub, &sid).await;
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
     assert_mode_changed_to(&events, &sid, "auto");
 }
 
@@ -456,7 +459,7 @@ async fn an_explicit_opposite_choice_overrides_the_models_suggestion() {
         })
         .await
         .unwrap();
-    let events = collect_past_done(&mut sub, &sid).await;
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
     assert_mode_changed_to(&events, &sid, "build");
 }
 
@@ -1097,6 +1100,109 @@ async fn plan_mode_still_force_parks_propose_plan() {
     );
 }
 
+/// #560, the property ADR-0207 §7's "same turn continues" promise exists for:
+/// a `write` issued *right after* approval — in the same turn, no new
+/// `Prompt` — must be graded under the mode the approver just picked, not
+/// the `plan` mode the call started in (which flat-denies `write` outside
+/// `.entanglement/plans/`, per `entanglement-runtime/src/mode/builtin/plan.yml`).
+/// Uses the real built-in `ModeTable`, unlike the always-`Allow` fixture the
+/// tests above use, specifically so `plan` mode's own `write` restriction can
+/// tell a stale-mode dispatch apart from a correctly-switched one — the
+/// always-`Allow` fixture would let the write through either way. This is
+/// the `[b]` explicit-`build` acceptance path.
+#[tokio::test]
+async fn approved_write_lands_in_the_same_turn_under_build() {
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        write_call("w1", "notes.txt", "hello from the same turn"),
+        text_response("done"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    set_mode_and_wait(&holly, &sid, "plan").await;
+    let request_id = await_request(&holly, &sid).await;
+
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: Some("build".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
+    assert_mode_changed_to(&events, &sid, "build");
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { tool, is_error, .. } if tool == "write" && *is_error)
+        ),
+        "the write must succeed under the new `build` mode, not the stale \
+         `plan` mode it would have been denied under: {events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+        "hello from the same turn",
+        "the write must actually have landed on disk, not merely avoided an error"
+    );
+}
+
+/// Same property as [`approved_write_lands_in_the_same_turn_under_build`],
+/// the `[u]` accept-into-`auto` path (a bare accept — no `Approve::mode`
+/// named — defaults to `auto`, #560).
+#[tokio::test]
+async fn approved_write_lands_in_the_same_turn_under_auto() {
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        write_call("w1", "notes.txt", "hello from the same turn"),
+        text_response("done"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    set_mode_and_wait(&holly, &sid, "plan").await;
+    let request_id = await_request(&holly, &sid).await;
+
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: None,
+        })
+        .await
+        .unwrap();
+
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
+    assert_mode_changed_to(&events, &sid, "auto");
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { tool, is_error, .. } if tool == "write" && *is_error)
+        ),
+        "the write must succeed under the new `auto` mode, not the stale \
+         `plan` mode it would have been denied under: {events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+        "hello from the same turn",
+        "the write must actually have landed on disk, not merely avoided an error"
+    );
+}
+
 #[tokio::test]
 async fn the_approved_mode_survives_a_replay_round_trip() {
     // #560: the mechanism for carrying the approver's choice must satisfy
@@ -1131,8 +1237,10 @@ async fn the_approved_mode_survives_a_replay_round_trip() {
         .await
         .unwrap();
 
-    // Wait until the tap has flushed the approval's `ModeChanged` (it lands
-    // after `Done`, like `collect_past_done` above accounts for).
+    // Wait until the tap has flushed the approval's `ModeChanged` — it now
+    // lands well before `Done` (#560), but the persistence subscriber is its
+    // own async task, so this still polls the log rather than assuming a
+    // synchronous write.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let records = loop {
         let records = read(log_dir.path(), &sid).expect("read log");

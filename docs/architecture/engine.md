@@ -175,9 +175,15 @@ folded into the session's `SessionUsage`, and emitted as `OutEvent::Usage`; a
 `StopReason::MaxTokens` also emits a truncation-warning `Error` (✅ #192,
 [ADR-0055](../adr/0055-usage-cost-and-stop-reason-surfacing.md)). Permission dispatch and approval no longer run
 here — the runtime tool executor owns them (§3, §8, ✅ #59). While parked, the
-session loop stashes a `Prompt`/`SetMode`/`SetModel` for the live turn's fold
+session loop stashes a `Prompt`/`SetModel` for the live turn's fold
 site / replay-after-turn; only the stash gate differs from idle (the stash is
-popped only between turns).
+popped only between turns). `SetMode` is the one exception (#560): it applies
+immediately even while parked — a mode is a label the runtime's tool-dispatch
+gate reads on the *next* call, not something a live round is using, so there
+is nothing to protect by waiting. This is the shape a `propose_plan` approval
+actually hits — `SetMode` then `ToolResult`, both while parked on that very
+call — and deferring it left the continuing turn's next tool call graded
+under the mode the plan was written in, not the one just approved into.
 
 **Live model/provider switch** (✅ #218,
 [ADR-0063](../adr/0063-realtime-model-provider-switch.md)): an idle `SetModel {
@@ -186,7 +192,9 @@ runtime-supplied `Fn(&str,&str) -> Result<ResolvedModel,_>` capturing the catalo
 + warm per-endpoint client, #217), rebuilds `Session::llm`, and retargets the
 per-session `model` (overrides `profile.model` on the request + in pricing) +
 `generation` + the `Context` window budget — no restart. Emits `ModelChanged`
-(unknown provider / missing key → `Error`); deferred mid-turn like `SetMode`, and
+(unknown provider / missing key → `Error`); deferred mid-turn (rebuilding the
+backend under a live round would be incoherent — unlike `SetMode`, which
+applies immediately, #560), and
 replay re-applies it to re-bind a resumed session. That success arm is factored
 into `Session::rebind`, shared by the live switch and the pin path below.
 
@@ -262,8 +270,11 @@ matches the display instead of continuing as if the model said nothing. Any
 half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
 same stash discipline applies inside the streaming loop and while the turn is
 parked (ADR-0018): a mid-turn `Stop` interrupts, every other queued command
-(`Prompt`, `SetMode`, `SetModel`, …) is pushed onto the replay stash, so a follow-up sent
-while the engine is busy is never silently dropped. A stashed **`Prompt` is additionally
+(`Prompt`, `SetModel`, …) is pushed onto the replay stash, so a follow-up sent
+while the engine is busy is never silently dropped. `SetMode` arriving inside
+the streaming loop still rides this same stash (unchanged); arriving while
+parked between tool calls it applies immediately instead (#560) — see the
+tool-round-trip section above. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`
@@ -506,8 +517,9 @@ recoverable warning that runs on to its normal `Done`.
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the turn loop above: `run_oneshot` never streams tool calls and
 never parks — it either completes in one round-trip or fails cleanly. Routed
-like `SetMode`/`SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
-while `s.turn.is_some()`), so it only ever runs with no turn in flight — the
+like `SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
+while `s.turn.is_some()` — unlike `SetMode`, which applies immediately, #560),
+so it only ever runs with no turn in flight — the
 invariant that lets `compact_op` drive a bare `llm.stream(...)` (via
 `session/summary_attempt.rs`'s small `drain` helper that drains the stream for
 `Text` chunks + the `Finish` usage, noting any tool call) instead of going through
@@ -624,9 +636,12 @@ uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
 `SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
 existing gates rather than adding a new code path: every command that already
 checks `s.turn.is_some()` to decide "defer onto the stash" (`Prompt`,
-`SetMode`, `SetModel`, `SetGeneration`, `Oneshot`) now checks
+`SetModel`, `SetGeneration`, `Oneshot`) now checks
 `s.turn.is_some() || s.paused` — so an *idle* paused session defers its next
-`Prompt` exactly like a live turn defers a mid-turn one. The stash-pop
+`Prompt` exactly like a live turn defers a mid-turn one. `SetMode` is the one
+command that checks neither (#560): a mode is a label, not something a paused
+session's parked batch is actively using, so it applies immediately whether
+paused or not. The stash-pop
 condition at the top of the loop gained a matching `&& !s.paused` guard, or a
 deferred command would be immediately popped back off the queue and
 re-stashed (the same busy-loop the pre-existing "pop only when idle" comment
@@ -874,22 +889,40 @@ next resubmit) and emits a session-scoped `OutEvent::PlanChanged { path, hash
 
 **Approve** — the entire ADR-0138 mechanism this used to trigger is gone: no
 `SpawnGuard` sponsor mutation, no child session, no `WaitingAgent` block, no
-folded-back build report. The executor instead sends `InMsg::SetMode {
-session, mode: "build" }` on the **plan session itself** and replies at
-once: `` "plan file: <path>\n\nplan approved — this session's mode switched
-to `build`. Continue the same turn, implementing the plan directly." `` Core
-cascades that `SetMode` over the session's whole live spawn sub-tree (§6:
-mode applies uniformly, no per-spawn override), so a plan session with
-running children switches them too. There is nothing left here that is
-head-specific: the switch is a single logged event, costs no approval wait,
-and every head (including one-shot `run`/`pipe`, which previously had to
-auto-reject the interactive approval) gets it for free. A multi-phase
-plan → build → review loop is now: work in `build` mode, `/mode plan` (or
-`request_mode`) to go back when the plan needs revising, edit the file,
-`propose_plan` again. **Reject + reason** folds `tool \`propose_plan\`
+folded-back build report. The executor instead sends `InMsg::SetMode` on the
+**plan session itself** and replies at once, naming the plan file and the mode
+it switched to; the same turn continues, implementing the plan directly.
+
+**Which mode is the approver's choice** (#560): `InMsg::Approve` carries an
+optional `mode`. The prompt offers `[u]` accept → `auto`, `[b]` accept →
+`build`, `[n]` reject. A bare accept (no `mode`) goes to `auto`, since
+accepting a plan usually means "go do it" and `auto` is bounded by its budgets,
+its timeout and a deny list covering every network-mutating command. An
+unrecognised value fails *safe* to `build` rather than open to `auto` — a
+mistyped cautious choice must not run a plan unattended. `propose_plan` may
+*suggest* `build` or `auto` through its own optional `mode` argument; that only
+pre-selects the option and never decides.
+
+The switch takes effect **immediately**, not at turn end: `SetMode` is applied
+the moment it is dequeued, so the tool calls the continuing turn makes are
+graded under the new mode. (It used to be stashed while a turn was live, which
+left the post-approval turn running in `plan` mode with `write` still denied.)
+The model's next request carries `[mode: auto — changed from plan]` once, then
+the plain notice. Core cascades the `SetMode` over the session's whole live
+spawn sub-tree (§6: mode applies uniformly, no per-spawn override), so a plan
+session with running children switches them too.
+
+Headless `run` still **auto-rejects** every plan, even under `--mode auto`:
+accepting a plan unattended would let a bounded run revise its own plan and
+proceed, which is a different thing from executing a plan a person approved.
+
+A multi-phase plan → build → review loop is: work in `build` or `auto`, `/mode
+plan` to go back when the plan needs revising, edit the file, `propose_plan`
+again. Going back is the user's action — `request_mode` only ever *widens*, so
+it cannot move `build → plan`. **Reject + reason** folds `tool \`propose_plan\`
 rejected (plan file: <path>): <reason>` back, still naming the file
-(materialized either way — rejection is about the *proposal*, not the
-file); the model revises and re-proposes in the same turn.
+(materialized either way — rejection is about the *proposal*, not the file);
+the model revises and re-proposes in the same turn.
 
 **Sandboxed script tool — `rhai`** (✅ #122,
 [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)). The model calls

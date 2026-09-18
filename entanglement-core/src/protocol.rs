@@ -1149,9 +1149,16 @@ pub enum InMsg {
     /// is a second axis, independent of the agent: core carries `mode` as an
     /// **opaque name it never evaluates** — the runtime owns the mode table
     /// (`research`/`plan`/`build`/`auto` for `skutter`) and every rule that
-    /// name resolves to. Applied once the
-    /// live turn ends when one is running (stash replay), the same
-    /// deferred-until-safe shape [`SetModel`][InMsg::SetModel] uses. Always
+    /// name resolves to. Applied **immediately**, turn live or not — unlike
+    /// [`SetModel`][InMsg::SetModel]/[`SetGeneration`][InMsg::SetGeneration]/
+    /// [`SetToolOverlay`][InMsg::SetToolOverlay], which defer because they
+    /// touch something a live round is actively using (the backend, the
+    /// in-flight request's generation knobs, the advertised tool array). A
+    /// mode is a label consulted only when the runtime next grades a tool
+    /// call, so there is nothing for a live turn to protect by waiting —
+    /// deferring it instead left a `propose_plan` approval's very next tool
+    /// call graded under the mode the plan was *written* in, not the one the
+    /// approver just switched to (#560). Always
     /// succeeds and confirms with [`OutEvent::ModeChanged`] — core has no
     /// table to validate `mode` against, so there is nothing to fail here; an
     /// unresolvable name is the runtime's problem to reject at the point it is
@@ -1169,7 +1176,10 @@ pub enum InMsg {
     /// same-provider model change and a full provider switch uniformly. On
     /// success the session emits [`OutEvent::ModelChanged`]; an unknown
     /// provider / missing key surfaces [`OutEvent::Error`]. Applied once the live
-    /// turn ends when one is running (stash replay), like [`SetMode`][InMsg::SetMode].
+    /// turn ends when one is running (stash replay) — rebuilding the backend
+    /// mid-round would be incoherent. Unlike [`SetMode`][InMsg::SetMode]
+    /// (applied immediately — a mode is a label, not something a live round
+    /// is using).
     SetModel {
         session: SessionId,
         provider: String,
@@ -1186,7 +1196,8 @@ pub enum InMsg {
     /// params — even when every override happens to match the current value — so a
     /// head can rely on the reply to confirm the write landed. Applied once the
     /// live turn ends when one is running (stash replay), like
-    /// [`SetMode`][InMsg::SetMode]/[`SetModel`][InMsg::SetModel]. The merged
+    /// [`SetModel`][InMsg::SetModel] (unlike [`SetMode`][InMsg::SetMode],
+    /// which applies immediately — see its own doc for why). The merged
     /// result is also recorded in `Session::generation_by_agent`, so a resumed
     /// session's replay-reconstructed live override isn't clobbered by the
     /// persisted default `EngineConfig::generation_resolver` would otherwise
@@ -1230,7 +1241,10 @@ pub enum InMsg {
     /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
     /// Always succeeds and always emits `ToolOverlayChanged` with the full
     /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
-    /// deferred while a turn is live (stash replay), like `SetMode`.
+    /// deferred while a turn is live (stash replay), like `SetModel` — a
+    /// mid-round edit would change the advertised tool array under a request
+    /// already in flight. Unlike [`SetMode`][InMsg::SetMode], which applies
+    /// immediately since it changes no array and busts no cache.
     /// **Trusted-only** (not wire-allowed, #472, ADR-0124): it can hand the
     /// model tools with no restart and — with `allow: true` — no approval
     /// prompt.
@@ -1243,7 +1257,7 @@ pub enum InMsg {
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
     /// `op` (`"compact"` today; an unknown op emits a recoverable `Error`).
     /// Mutates only the caller's own `Context`, so it is wire-allowed. Deferred
-    /// while a turn is live (stash replay), like `SetMode`/`SetModel`.
+    /// while a turn is live (stash replay), like `SetModel`.
     /// `"compact"`'s `args`: `instructions` (optional free-text steer) and
     /// `kept` (optional `u64`, default `0` — a keep-tail request, #397/
     /// ADR-0102, clamped to the nearest safe turn boundary).

@@ -39,6 +39,19 @@
 //! message of every request — after the real conversation, right before the
 //! model replies — so it always reflects `Session::mode` as of *this* round,
 //! covering session start and every switch uniformly with no special-casing.
+//!
+//! A plain per-round notice has its own gap, though: a switch is silent
+//! otherwise — `[mode: plan]` just becomes `[mode: build]` next round, with
+//! nothing marking the edge, so a model mid-task can keep acting on its
+//! earlier understanding. [`mode_notice_with_transition`] closes it: the
+//! *first* request built after a real change names what the mode changed
+//! from too, consuming [`Session::mode_transition_from`][super::Session] (set
+//! by the same `SetMode` handling that updates `mode` itself) so the callout
+//! fires exactly once and every later round falls back to the plain form.
+//! Same ephemerality as the base notice and for the same reason: it lives
+//! only on `Session` state and the outgoing request, never `Context`, never
+//! replayed — a resumed session has no live "next round" to attach a
+//! transition to, so it simply shows the plain notice.
 
 /// Text appended as the last message of every request, reflecting `mode` as
 /// of the round being built right now. Deliberately terse: it only names
@@ -49,12 +62,57 @@ pub(super) fn mode_notice(mode: &str) -> String {
     format!("[mode: {mode}]")
 }
 
+/// [`mode_notice`], plus a one-shot **transition** callout (#560 follow-up):
+/// on the first request after a `SetMode` actually changed the mode, name
+/// what it changed *from* too — `[mode: build — changed from plan]` — since
+/// the plain per-round notice alone silently swaps `[mode: plan]` for
+/// `[mode: build]` with nothing marking the edge, and a model mid-task can
+/// easily keep acting on its earlier understanding of what it may do. Every
+/// request after that reverts to the plain form.
+///
+/// `from` is [`Session::mode_transition_from`][super::Session] **taken**
+/// (not borrowed) by the caller, once per round — see that field's own doc
+/// for why the marker is consumed exactly once and never persisted/replayed.
+/// Core never attributes *who* changed the mode (a user `/mode`, a
+/// `propose_plan`/`request_mode` approval): it only ever sees
+/// `InMsg::SetMode { mode }`, and "changed from X" is accurate regardless of
+/// the cause. `from == mode` (a switch that net cancelled itself out before
+/// the next round, e.g. `plan → build → plan`) is treated as no transition —
+/// there is nothing true to call out.
+pub(super) fn mode_notice_with_transition(mode: &str, from: Option<String>) -> String {
+    match from {
+        Some(from) if from != mode => format!("[mode: {mode} — changed from {from}]"),
+        _ => mode_notice(mode),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::mode_notice;
+    use super::{mode_notice, mode_notice_with_transition};
 
     #[test]
     fn notice_names_the_mode() {
         assert_eq!(mode_notice("research"), "[mode: research]");
+    }
+
+    #[test]
+    fn transition_names_both_modes_once() {
+        assert_eq!(
+            mode_notice_with_transition("build", Some("plan".to_string())),
+            "[mode: build — changed from plan]"
+        );
+    }
+
+    #[test]
+    fn no_transition_falls_back_to_the_plain_notice() {
+        assert_eq!(mode_notice_with_transition("build", None), "[mode: build]");
+    }
+
+    #[test]
+    fn a_transition_that_nets_to_the_same_mode_is_not_a_transition() {
+        assert_eq!(
+            mode_notice_with_transition("plan", Some("plan".to_string())),
+            "[mode: plan]"
+        );
     }
 }
