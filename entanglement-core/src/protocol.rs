@@ -885,11 +885,26 @@ pub enum InMsg {
     /// `scope` (#174) controls how long the approval lasts — [`ApprovalScope::Once`]
     /// by default, so a head that omits it keeps the historical one-shot behavior
     /// (and the default scope is omitted on the wire, additive for older heads).
+    ///
+    /// `mode` (#560, ADR-0207 §7 extension) is meaningful only when this approves
+    /// a `propose_plan` request: it carries the mode the *approver* chose to
+    /// switch the session into (`"build"` or `"auto"`) — acceptance is a mode
+    /// switch (ADR-0207 §7), and picking which one is the human's decision, made
+    /// at the approval prompt itself. `None` (the wire default, additive for
+    /// older heads) means a bare accept with no mode named, which the
+    /// `propose_plan` orchestrator resolves to `"auto"` — the documented default
+    /// for "go implement this", not a second-guess of it. Every other approval
+    /// ignores this field. Core carries it as opaque `Option<String>`, exactly
+    /// like [`SetMode`][InMsg::SetMode]'s own `mode` — validating it against the
+    /// closed `build`/`auto` set is the runtime's job (the runtime owns the mode
+    /// table), not core's.
     Approve {
         session: SessionId,
         request_id: String,
         #[serde(default, skip_serializing_if = "ApprovalScope::is_once")]
         scope: ApprovalScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
     },
     /// Reject a pending tool request.
     Reject {
@@ -2334,6 +2349,7 @@ mod tests {
                 session: s.clone(),
                 request_id: "r".into(),
                 scope: ApprovalScope::Once,
+                mode: None,
             },
             InMsg::Reject {
                 session: s.clone(),
@@ -2495,9 +2511,11 @@ mod tests {
             session: SessionId::new("s1"),
             request_id: "r1".into(),
             scope: ApprovalScope::Once,
+            mode: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("scope"), "default scope must be omitted");
+        assert!(!json.contains("mode"), "default mode must be omitted");
         let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1"}"#;
         assert_eq!(serde_json::from_str::<InMsg>(legacy).unwrap(), msg);
     }
@@ -2513,11 +2531,39 @@ mod tests {
                 session: SessionId::new("s1"),
                 request_id: "r1".into(),
                 scope,
+                mode: None,
             };
             let json = serde_json::to_string(&msg).unwrap();
             assert!(json.contains("scope"));
             assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
         }
+    }
+
+    /// #560 (ADR-0207 §7 extension): `mode` is the approver's plan-acceptance
+    /// choice, additive and omitted by default exactly like `scope` — an older
+    /// head's frame (no `mode`) still deserializes to `None`.
+    #[test]
+    fn approve_mode_roundtrips_when_set() {
+        let msg = InMsg::Approve {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            scope: ApprovalScope::Once,
+            mode: Some("build".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"mode\":\"build\""), "{json}");
+        assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+
+        let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1"}"#;
+        assert_eq!(
+            serde_json::from_str::<InMsg>(legacy).unwrap(),
+            InMsg::Approve {
+                session: SessionId::new("s1"),
+                request_id: "r1".into(),
+                scope: ApprovalScope::Once,
+                mode: None,
+            }
+        );
     }
 
     /// #486: `SessionDir` is an additive variant — pin its exact wire spelling

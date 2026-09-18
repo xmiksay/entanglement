@@ -212,6 +212,7 @@ mod tests {
             "req-1",
             Decision::Approve {
                 scope: ApprovalScope::Once,
+                mode: None,
             },
         );
         assert!(matches!(await_decision(rx).await, Decision::Approve { .. }));
@@ -273,6 +274,7 @@ mod tests {
             "req-1",
             Decision::Approve {
                 scope: ApprovalScope::Once,
+                mode: None,
             },
         );
         assert!(matches!(

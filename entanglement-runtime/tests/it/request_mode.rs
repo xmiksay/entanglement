@@ -270,6 +270,7 @@ async fn approval_switches_the_session_mode() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();

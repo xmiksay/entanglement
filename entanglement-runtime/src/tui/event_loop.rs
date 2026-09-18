@@ -265,9 +265,29 @@ pub(super) async fn handle_event(
 
                 match current_mode {
                     ApprovalMode::WaitingForApproval { request_id } => match key.code {
+                        // `propose_plan` (#560, ADR-0207 §7 extension): acceptance
+                        // itself chooses the mode the session switches to, so this
+                        // tool gets its own two accept keys instead of the generic
+                        // scope letters below (its scope was already inert — the
+                        // runtime never records a grant for a plan approval). `u`
+                        // is the DEFAULT bare accept -> `auto` (bounded, so it's
+                        // the safe "go implement this" choice); `b` is the
+                        // explicit opt-in to `build`. A model's own `mode`
+                        // suggestion only pre-selects which one the footer marks
+                        // "(suggested)" (`transcript.rs`) — it never decides;
+                        // only this keystroke does.
+                        KeyCode::Char('u') if is_plan_request(app) => {
+                            send_plan_approval(app, holly, request_id.clone(), "auto").await;
+                        }
+                        KeyCode::Char('b') if is_plan_request(app) => {
+                            send_plan_approval(app, holly, request_id.clone(), "build").await;
+                        }
+                        // The generic scope letters mean nothing for `propose_plan`
+                        // (no grant is ever recorded for it) — swallow them here
+                        // rather than let `y` silently fire the old default.
+                        KeyCode::Char('y' | 's' | 'a' | 'd') if is_plan_request(app) => {}
                         // Approve scopes (#174): `y` this once, `s` for the rest of
-                        // the session, `a` always (persisted). All three share the
-                        // plan-handoff path — scope is inert for `propose_plan`.
+                        // the session, `a` always (persisted).
                         KeyCode::Char('y') => {
                             send_approval(app, holly, request_id.clone(), ApprovalScope::Once)
                                 .await;
@@ -961,9 +981,10 @@ async fn send_pause_resume_toggle(app: &mut App, holly: &Holly) {
 }
 
 /// Send an [`InMsg::Approve`] with the chosen [`ApprovalScope`] (#174) and clear
-/// the prompt. Scope is inert for `propose_plan` (the runtime records grants
-/// only on the generic tool path); the sponsored-build handoff is now runtime
-/// policy (ADR-0138), so the head just forwards the approval.
+/// the prompt. `mode` is always `None` here — a `propose_plan` request never
+/// reaches this path any more (it has its own [`send_plan_approval`], which is
+/// the only caller that sets `mode`); every other tool's scope is graded by
+/// the generic permission path, which this just forwards.
 async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: ApprovalScope) {
     let pending = app.pending_tool_request().cloned();
     let _ = holly
@@ -971,6 +992,7 @@ async fn send_approval(app: &mut App, holly: &Holly, request_id: String, scope: 
             session: app.active_session_id().clone(),
             request_id,
             scope,
+            mode: None,
         })
         .await;
     // Pop the answered request and surface the next parked one, if any (#273).
@@ -995,6 +1017,39 @@ fn record_approved(app: &mut App, tool: &str, scope: ApprovalScope) {
         ApprovalScope::SessionDir => "session, dir",
     };
     app.record_status("approval", format!("✓ approved {tool} ({scope_label})"));
+}
+
+/// Whether the currently parked approval is a `propose_plan` request (#560,
+/// ADR-0207 §7 extension) — the one tool whose accept keys diverge from the
+/// generic `y`/`s`/`a`/`d` scope letters (see the match arms above).
+fn is_plan_request(app: &App) -> bool {
+    app.pending_tool_request()
+        .is_some_and(|(_, tool, _)| tool == crate::tool_names::PROPOSE_PLAN_TOOL)
+}
+
+/// Send the `propose_plan`-specific [`InMsg::Approve`] (#560, ADR-0207 §7
+/// extension): here the *approver* chooses the mode the session switches to —
+/// `mode` is `Some("auto")` for the `[u]` bare-accept default or
+/// `Some("build")` for the explicit `[b]` choice, read by
+/// `propose_plan::run_propose_plan` in place of the old hardcoded `build`
+/// constant. Scope stays `Once` — it was already inert for this tool (the
+/// runtime never records a grant for a plan approval), so there is nothing
+/// for `[s]`/`[a]`/`[d]` to mean here; this function is the only accept path
+/// `propose_plan` offers now.
+async fn send_plan_approval(app: &mut App, holly: &Holly, request_id: String, mode: &'static str) {
+    let pending = app.pending_tool_request().cloned();
+    let _ = holly
+        .send(InMsg::Approve {
+            session: app.active_session_id().clone(),
+            request_id,
+            scope: ApprovalScope::Once,
+            mode: Some(mode.to_string()),
+        })
+        .await;
+    app.advance_approval();
+    if let Some((_, tool, _)) = &pending {
+        app.record_status("approval", format!("✓ approved {tool} → mode `{mode}`"));
+    }
 }
 
 /// Records a rejection (and its optional reason) as a one-line transcript

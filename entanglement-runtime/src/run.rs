@@ -127,17 +127,11 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
             request_id, tool, ..
         } = &ev
         {
-            let reason = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
-                "non-interactive head cannot accept a plan; run interactively (tui) to accept"
-            } else {
-                "non-interactive head auto-rejects tool approval requests; \
-                 rerun with --mode auto for an unattended run, or interactively (tui) to decide"
-            };
             holly
                 .send(InMsg::Reject {
                     session: session.clone(),
                     request_id: request_id.clone(),
-                    reason: Some(reason.to_string()),
+                    reason: Some(reject_reason(tool).to_string()),
                 })
                 .await?;
         }
@@ -146,4 +140,44 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
         }
     }
     Ok(())
+}
+
+/// The auto-reject reason for a `ToolRequest` this one-shot head has no
+/// interactive user to answer. `propose_plan` gets its own message (accepting
+/// a plan is a mode switch this head can't observe or drive either way);
+/// every other tool gets the generic pointer to `--mode auto` or `tui`.
+///
+/// Deliberately takes no mode/flag input (#560, ADR-0207 §7 extension): this
+/// head auto-rejects a plan **unconditionally**, `--mode auto` included — an
+/// unattended run must never silently start auto-*accepting* its own plans,
+/// only running the *tools* `--mode auto`'s bounded posture already allows.
+fn reject_reason(tool: &str) -> &'static str {
+    if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
+        "non-interactive head cannot accept a plan; run interactively (tui) to accept"
+    } else {
+        "non-interactive head auto-rejects tool approval requests; \
+         rerun with --mode auto for an unattended run, or interactively (tui) to decide"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn propose_plan_gets_its_own_reason_regardless_of_any_mode() {
+        // No `mode`/`--yes`-style parameter exists on this function at all —
+        // proof by signature that the reject is unconditional, not gated on
+        // `--mode auto` (#560).
+        let reason = reject_reason(crate::tool_names::PROPOSE_PLAN_TOOL);
+        assert!(reason.contains("cannot accept a plan"), "{reason}");
+        assert!(!reason.contains("--mode auto"), "{reason}");
+    }
+
+    #[test]
+    fn every_other_tool_gets_the_generic_unattended_pointer() {
+        let reason = reject_reason("bash");
+        assert!(reason.contains("--mode auto"), "{reason}");
+        assert_ne!(reason, reject_reason(crate::tool_names::PROPOSE_PLAN_TOOL));
+    }
 }

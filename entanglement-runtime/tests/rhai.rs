@@ -553,6 +553,7 @@ async fn collect_auto_approving(
                     session: sid.clone(),
                     request_id: request_id.clone(),
                     scope: Default::default(),
+                    mode: None,
                 })
                 .await
                 .unwrap();
@@ -723,6 +724,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
                     session: sid.clone(),
                     request_id: request_id.clone(),
                     scope: ApprovalScope::Session,
+                    mode: None,
                 })
                 .await
                 .unwrap();
@@ -855,6 +857,7 @@ async fn ask_binding_parks_then_runs_on_approve() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();
@@ -902,6 +905,7 @@ async fn ask_is_resolved_once_per_function_per_run() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();

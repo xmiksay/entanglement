@@ -392,6 +392,79 @@ fn approval_tail_footer_shows_session_and_always_shortcuts() {
 }
 
 #[test]
+fn approval_tail_footer_shows_plan_accept_keys_not_generic_scopes() {
+    // #560, ADR-0207 §7 extension: `propose_plan` gets its own `[u]`/`[b]`
+    // accept keys instead of the generic `y`/`s`/`a`/`d` scope letters, which
+    // meant nothing for this tool.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        crate::tool_names::PROPOSE_PLAN_TOOL,
+        &serde_json::json!({
+            "content": "# Plan",
+            "path": ".entanglement/plans/s1.md",
+            "suggested_mode": serde_json::Value::Null,
+        })
+        .to_string(),
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let footer_text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(footer_text.contains("[u]"), "{footer_text:?}");
+    assert!(footer_text.contains("[b]"), "{footer_text:?}");
+    assert!(
+        footer_text.contains("default"),
+        "the auto option must be marked the default: {footer_text:?}"
+    );
+    assert!(
+        !footer_text.contains("[y]")
+            && !footer_text.contains("[s]")
+            && !footer_text.contains("[a]"),
+        "generic scope letters must not leak into the plan footer: {footer_text:?}"
+    );
+}
+
+#[test]
+fn approval_tail_footer_marks_the_models_suggested_mode() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        crate::tool_names::PROPOSE_PLAN_TOOL,
+        &serde_json::json!({
+            "content": "# Plan",
+            "path": ".entanglement/plans/s1.md",
+            "suggested_mode": "build",
+        })
+        .to_string(),
+    );
+
+    let body = render_body_lines(&mut app, 80);
+    let footer_text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        footer_text.contains("build (suggested)"),
+        "the suggested build option must be annotated: {footer_text:?}"
+    );
+}
+
+#[test]
 fn approval_tail_edit_shows_a_diff_not_raw_json() {
     // #487: the approval body reuses the shared per-tool renderer instead of
     // `serde_json::to_string_pretty`, so an `edit` approval shows a real diff

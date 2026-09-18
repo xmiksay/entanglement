@@ -397,12 +397,19 @@ never here**; each bullet is the claim + where to read it:
 - **Plans**: `propose_plan` is the sole plan-authorship tool (`Capability::Plan`,
   allowed only in `plan` mode — a mode denying it flat-declines before any
   file is touched), file-backed under `.entanglement/plans/`, force-parked on
-  `Ask` regardless. On approval the session tree **switches to `build` mode**
-  in place and the same turn continues — no sponsored child, no permission
-  root; [ADR-0024](../docs/adr/0024-subagent-permission-gating.md)'s ancestor
+  `Ask` regardless. On approval the session tree **switches mode** in place
+  and the same turn continues — no sponsored child, no permission root;
+  [ADR-0024](../docs/adr/0024-subagent-permission-gating.md)'s ancestor
   privilege clamp loses its only exemption
   ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
   §7, superseding [ADR-0138](../docs/adr/0138-sponsored-build-child-and-propose-plan-cycle.md)).
+  **Which mode is the approver's own choice** (#560): `InMsg::Approve` carries
+  an optional `mode` (`build`/`auto`) offered at the prompt — a bare accept
+  (`None`) defaults to `auto` (bounded, so "go implement this" stays safe
+  unattended); `propose_plan` may *suggest* one via its own optional `mode`
+  argument, which only pre-selects the prompt's option and never decides.
+  Asymmetric with `request_mode` on purpose: that tool still refuses `auto`
+  outright since there the *model* asks with no human answering.
   A blocked model widens into `plan`/`build` itself via `request_mode`
   (force-parked the same way, never into/from `auto`). A session-scoped
   content-hash staleness guard refuses a stale

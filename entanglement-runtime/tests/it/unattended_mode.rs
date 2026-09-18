@@ -294,6 +294,7 @@ async fn a_second_identical_call_parks_an_approval() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();

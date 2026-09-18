@@ -206,6 +206,7 @@ async fn load_skill_then_read_a_substituted_ref() {
             session: sid.clone(),
             request_id: "l1".into(),
             scope: entanglement_core::ApprovalScope::Once,
+            mode: None,
         })
         .await
         .unwrap();

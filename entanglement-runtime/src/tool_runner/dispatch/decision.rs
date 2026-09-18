@@ -67,7 +67,9 @@ pub(super) async fn await_decision(
         }
     };
     match decision {
-        seam::Decision::Approve { scope } => {
+        // `mode` (#560) is `propose_plan`-only; the generic permission `Ask`
+        // approval this dispatch handles never sets it.
+        seam::Decision::Approve { scope, .. } => {
             set_thinking(holly, &session);
             if let Some((store, abs)) = &escape_grant {
                 // The prompt was forced by an out-of-root access (ADR-0109):

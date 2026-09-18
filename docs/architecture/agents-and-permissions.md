@@ -929,20 +929,37 @@ below realize one model:
   grade only decides whether the call is reachable at all). **Approve** —
   the whole ADR-0138 mechanism this replaces is gone: no `SpawnGuard`
   mutation, no sponsored `build` child, no `WaitingAgent` block, no folded-back
-  final report. Instead the executor sends `InMsg::SetMode { session, mode:
-  "build" }` on the **same** session and replies immediately — core cascades
-  that `SetMode` over the session's whole live spawn sub-tree (§6: mode
-  applies to the whole spawn sub-tree, no per-spawn override), so a plan
-  session with running children switches them too, in place, with the same
-  turn continuing: `"plan file: <path>\\n\\nplan approved — this session's
-  mode switched to \`build\`. Continue the same turn, implementing the plan
-  directly."` A multi-phase plan → build → review loop is now just: work in
-  `build` mode, `/mode plan` (or `request_mode`) back when the plan needs
-  revising, edit the file, `propose_plan` again. **Reject + reason** → the
-  existing fold-back (`tool \`propose_plan\` rejected (plan file: <path>):
-  <reason>`); the model revises and re-proposes in the same turn. One-shot
-  heads (`run`/`pipe`) can't park an interactive approval, so they
-  auto-reject with a "non-interactive head" reason.
+  final report. Instead the executor sends `InMsg::SetMode { session, mode }`
+  on the **same** session and replies immediately — core cascades that
+  `SetMode` over the session's whole live spawn sub-tree (§6: mode applies to
+  the whole spawn sub-tree, no per-spawn override), so a plan session with
+  running children switches them too, in place, with the same turn
+  continuing.
+
+  **Which mode is the *approver's* choice, not a hardcoded `build` (#560):**
+  `InMsg::Approve` carries an optional `mode` (`"build"` or `"auto"`) — the
+  approval prompt offers both, defaulting a bare accept (`mode: None`) to
+  `auto` (bounded by its own `max_turns`/`max_duration`/timeout/deny-list,
+  §11 — "go implement this" is usually what an accept means, and `auto` is
+  the safe posture for that) with an explicit opt-in to `build` available too.
+  `propose_plan` itself gains an optional `mode` argument (`"build"`/`"auto"`
+  only) letting the model *suggest* which option the prompt pre-selects — a
+  suggestion never decides, only the approver's own keystroke does. This is
+  the deliberate asymmetry with `request_mode` below, which refuses `auto` as
+  a target outright: there the model asks with no human in the loop, so
+  granting itself the unsupervised posture is never safe; here a human is
+  answering the prompt, so a model's `auto` suggestion is just a hint the
+  human can ignore. The reply names the mode actually landed on: `"plan file:
+  <path>\\n\\nplan approved — this session's mode switched to \`<mode>\`.
+  Continue the same turn, implementing the plan directly."` A multi-phase
+  plan → build → review loop is now just: work in `build` mode, `/mode plan`
+  (or `request_mode`) back when the plan needs revising, edit the file,
+  `propose_plan` again. **Reject + reason** → the existing fold-back (`tool
+  \`propose_plan\` rejected (plan file: <path>): <reason>`); the model
+  revises and re-proposes in the same turn. One-shot heads (`run`/`pipe`)
+  can't park an interactive approval, so they auto-reject with a
+  "non-interactive head" reason — unconditionally, `--mode auto` included, so
+  an unattended run never starts auto-accepting its own plans.
   Built-in `plan` mode (§the four built-in modes above) is physically
   read-only apart from one carve-out (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):

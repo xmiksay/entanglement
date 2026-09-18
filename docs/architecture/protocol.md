@@ -8,10 +8,11 @@ One set of serde-tagged types crosses every transport:
 
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
-InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,scope?}  // approval →
+InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,scope?,mode?}  // approval →
          //   content: [{type:text,text} | {type:image,source:{type:base64,media_type,data}}]; legacy `text:"…"` still deserializes (#197, ADR-0064)
          | Reject{session,request_id,reason?}                         // runtime, not core (#59)
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
+         //   mode: build | auto, meaningful only when approving a propose_plan request (#560) — the approver's mode choice; None (a bare accept) resolves to auto in the runtime orchestrator, never evaluated by core
          | ToolResult{session,request_id,content:[ContentPart],is_error=false,duration_ms?,exit_code?}   // runtime → core: tool ran (#58)
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          //   is_error/duration_ms (#636, ADR-0176): structured side channel alongside content's still-unchanged text — denied/masked/refused/unknown-tool/errored calls set is_error; duration_ms is measured once, generically, around the whole host-tool dispatch

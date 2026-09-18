@@ -610,7 +610,9 @@ async fn await_approval(
         set_state(holly, session, AgentState::WaitingApproval);
     }
     match pending::await_decision(rx).await {
-        seam::Decision::Approve { scope } => Approval::Approved(scope),
+        // `mode` (#560) is `propose_plan`-only; a rhai binding's own `Ask`
+        // approval never sets it.
+        seam::Decision::Approve { scope, .. } => Approval::Approved(scope),
         seam::Decision::Reject { reason } => {
             Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
         }

@@ -10,9 +10,11 @@
 //! missing/non-`.md` file, or a stale `path`), which replies immediately with
 //! no prompt at all. Per ADR-0207 §7:
 //!
-//! - **Approve** switches the session's mode to `build` (`InMsg::SetMode`) and
-//!   replies at once, naming the plan file — no child spawned, no blocking
-//!   wait; the same turn continues with the plan already in context.
+//! - **Approve** switches the session's mode (`InMsg::SetMode`) to whichever of
+//!   `build`/`auto` the approver chose on `Approve::mode` — `None` (a bare
+//!   accept) defaults to `auto` (#560) — and replies at once, naming the plan
+//!   file and the mode landed in; no child spawned, no blocking wait, the same
+//!   turn continues with the plan already in context.
 //! - **Reject** folds the typed reason back, unchanged, still naming the file.
 //! - **Stop** while parked on the Ask wait unwinds silently: no `ToolResult` is
 //!   ever owed for that call.
@@ -23,15 +25,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId, ToolCall,
+    session::Session, stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::mode::ModeTable;
+use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::session_store::{pair_records, read, LogPayload};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -227,8 +231,66 @@ async fn collect_until_done(
     events
 }
 
+/// Collect every event for `sid`, including the deferred post-`Done`
+/// `ModeChanged` a `propose_plan` approval emits: `InMsg::SetMode` is
+/// stashed while a turn is live (exactly like `SetAgent`'s old stash), and
+/// `run_propose_plan` sends it *before* the `ToolResult` that continues the
+/// turn — so it lands only once the whole turn concludes, after `Done`, not
+/// synchronously with the `ToolOutput`. `collect_until_done` breaks exactly
+/// at `Done` and would miss it; this keeps listening a short while past
+/// `Done` instead of breaking on it.
+async fn collect_past_done(
+    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    sid: &SessionId,
+) -> Vec<OutEvent> {
+    let mut events = Vec::new();
+    let mut saw_done = false;
+    loop {
+        let per_event_timeout = if saw_done {
+            Duration::from_millis(300)
+        } else {
+            Duration::from_secs(5)
+        };
+        let Ok(Ok(ev)) = tokio::time::timeout(per_event_timeout, sub.recv()).await else {
+            break;
+        };
+        if matches!(&ev, OutEvent::Done { session, .. } if session == sid) {
+            saw_done = true;
+        }
+        if ev.session() == Some(sid) || matches!(&ev, OutEvent::SessionStarted { .. }) {
+            events.push(ev);
+        }
+    }
+    events
+}
+
+fn assert_mode_changed_to(events: &[OutEvent], sid: &SessionId, mode: &str) {
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ModeChanged { session, mode: got } if session == sid && got == mode)
+        ),
+        "approval must emit ModeChanged({mode}): {events:?}"
+    );
+}
+
+fn assert_plan_output_names_mode(events: &[OutEvent], mode: &str) {
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { tool, output, is_error, .. }
+                if tool == PROPOSE_PLAN_TOOL && !is_error
+                    && output.contains(".entanglement/plans/s1.md")
+                    && output.contains(mode)
+        )),
+        "the tool result must name the plan file and the mode it switched to ({mode}): {events:?}"
+    );
+}
+
 #[tokio::test]
-async fn approve_switches_the_session_to_build_mode_and_continues_the_turn() {
+async fn approve_with_explicit_build_choice_switches_the_session_to_build_mode() {
+    // #560, ADR-0207 §7 extension: acceptance itself chooses the mode now —
+    // this exercises the explicit `[b]` choice (`Approve::mode: Some("build")`).
+    // The bare-accept default is covered separately below.
     let dir = tempdir();
     let root = dir.path();
     let scripted = Arc::new(vec![
@@ -253,75 +315,191 @@ async fn approve_switches_the_session_to_build_mode_and_continues_the_turn() {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
+            mode: Some("build".to_string()),
         })
         .await
         .unwrap();
 
-    // `InMsg::SetMode` is deferred while a turn is live, exactly like
-    // `SetAgent` (session.rs's stash) — and the turn very much still is:
-    // `run_propose_plan` sends `SetMode` *before* the `ToolResult` that
-    // continues it. So the approval's `ModeChanged` lands only once this
-    // whole turn concludes (after `Done`), not synchronously with the
-    // `ToolOutput` — collect a bit past `Done` instead of breaking on it.
-    let mut saw_mode_changed = false;
-    let mut got_output = false;
-    let mut saw_other_session = false;
-    let mut saw_done = false;
-    loop {
-        let per_event_timeout = if saw_done {
-            Duration::from_millis(300)
-        } else {
-            Duration::from_secs(5)
-        };
-        let Ok(Ok(ev)) = tokio::time::timeout(per_event_timeout, sub.recv()).await else {
-            break;
-        };
-        match &ev {
-            OutEvent::ModeChanged { session, mode } if session == &sid => {
-                assert_eq!(
-                    mode, "build",
-                    "approval must switch the session to build mode"
-                );
-                saw_mode_changed = true;
-            }
-            OutEvent::SessionStarted { session, .. } if session != &sid => {
-                saw_other_session = true;
-            }
-            OutEvent::ToolOutput {
-                session,
-                tool,
-                output,
-                is_error,
-                ..
-            } if session == &sid && tool == PROPOSE_PLAN_TOOL => {
-                assert!(!is_error, "an approved plan is not a tool error: {output}");
-                assert!(
-                    output.contains(".entanglement/plans/s1.md"),
-                    "the tool result must name the plan file's location (#513): {output}"
-                );
-                assert!(
-                    output.contains("build"),
-                    "the tool result must name the mode it switched to: {output}"
-                );
-                got_output = true;
-            }
-            OutEvent::Done { session, .. } if session == &sid => saw_done = true,
-            _ => {}
-        }
-    }
-    assert!(saw_mode_changed, "approval must emit ModeChanged(build)");
+    let events = collect_past_done(&mut sub, &sid).await;
+    assert_mode_changed_to(&events, &sid, "build");
+    assert_plan_output_names_mode(&events, "build");
     assert!(
-        got_output,
-        "approve must reply at once — no child, no blocking wait"
-    );
-    assert!(
-        !saw_other_session,
-        "ADR-0207 §7: approval spawns no sponsored child any more"
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::SessionStarted { session, .. } if session != &sid)),
+        "ADR-0207 §7: approval spawns no sponsored child any more: {events:?}"
     );
     assert_eq!(
         std::fs::read_to_string(root.join(".entanglement/plans/s1.md")).unwrap(),
         "# Ship it"
     );
+}
+
+#[tokio::test]
+async fn approve_with_no_mode_named_defaults_to_auto() {
+    // #560: a bare accept — the wire carries `Approve::mode: None` — is the
+    // DEFAULT and must land in the bounded `auto` posture, not the old
+    // hardcoded `build`.
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("continuing to implement the plan"),
+    ]);
+    let holly = spawn_with_root(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
+    let sid = SessionId::new("s1");
+    let request_id = await_request(&holly, &sid).await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: None,
+        })
+        .await
+        .unwrap();
+
+    let events = collect_past_done(&mut sub, &sid).await;
+    assert_mode_changed_to(&events, &sid, "auto");
+    assert_plan_output_names_mode(&events, "auto");
+}
+
+#[tokio::test]
+async fn a_models_suggested_mode_pre_selects_but_never_decides() {
+    // #560: `propose_plan(mode: "build")` is a suggestion for which option the
+    // prompt pre-selects — it never decides. A bare accept (no `Approve::mode`
+    // named) still lands in `auto`, the documented default, proving the
+    // suggestion carried no authority on its own.
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call(
+            "p1",
+            serde_json::json!({"content": "# Ship it", "mode": "build"}),
+        ),
+        text_response("continuing to implement the plan"),
+    ]);
+    let holly = spawn_with_root(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
+    let sid = SessionId::new("s1");
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let mut request_id = None;
+    let mut suggested_seen = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
+        if let OutEvent::ToolRequest {
+            request_id: rid,
+            tool,
+            input,
+            ..
+        } = &ev
+        {
+            assert_eq!(tool, PROPOSE_PLAN_TOOL);
+            let v: serde_json::Value = serde_json::from_str(input).unwrap();
+            suggested_seen = Some(v["suggested_mode"].as_str().map(str::to_string));
+            request_id = Some(rid.clone());
+            break;
+        }
+    }
+    assert_eq!(
+        suggested_seen,
+        Some(Some("build".to_string())),
+        "the ToolRequest must carry the model's suggestion for the head to pre-select"
+    );
+
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id: request_id.unwrap(),
+            scope: Default::default(),
+            mode: None,
+        })
+        .await
+        .unwrap();
+    let events = collect_past_done(&mut sub, &sid).await;
+    assert_mode_changed_to(&events, &sid, "auto");
+}
+
+#[tokio::test]
+async fn an_explicit_opposite_choice_overrides_the_models_suggestion() {
+    // #560: the model suggests `auto`, but the approver explicitly picks
+    // `build` — the human's keystroke always wins.
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call(
+            "p1",
+            serde_json::json!({"content": "# Ship it", "mode": "auto"}),
+        ),
+        text_response("continuing to implement the plan"),
+    ]);
+    let holly = spawn_with_root(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
+    let sid = SessionId::new("s1");
+    let request_id = await_request(&holly, &sid).await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: Some("build".to_string()),
+        })
+        .await
+        .unwrap();
+    let events = collect_past_done(&mut sub, &sid).await;
+    assert_mode_changed_to(&events, &sid, "build");
+}
+
+#[tokio::test]
+async fn propose_plan_mode_argument_rejects_a_retired_mode_name() {
+    // #560: the model's `mode` suggestion is validated against the same
+    // closed `build`/`auto` set an approval resolves into — `research` (a
+    // retired ADR-0207 mode name here) is refused, not silently accepted.
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call(
+            "p1",
+            serde_json::json!({"content": "# Ship it", "mode": "research"}),
+        ),
+        text_response("ok"),
+    ]);
+    let holly = spawn_with_root(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "an invalid `mode` suggestion must never force an approval prompt: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { tool, output, is_error, .. }
+                if tool == PROPOSE_PLAN_TOOL && *is_error
+                    && output.contains("build") && output.contains("auto")
+        )),
+        "an invalid `mode` suggestion must be refused: {events:?}"
+    );
+    // Refused before any file was materialized.
+    assert!(!root.join(".entanglement/plans/s1.md").exists());
 }
 
 #[tokio::test]
@@ -714,6 +892,7 @@ async fn every_phase_re_parks_on_ask_independently() {
             session: sid.clone(),
             request_id: request_id_1.clone(),
             scope: Default::default(),
+            mode: None,
         })
         .await
         .unwrap();
@@ -738,6 +917,7 @@ async fn every_phase_re_parks_on_ask_independently() {
                         session: sid.clone(),
                         request_id: request_id.clone(),
                         scope: Default::default(),
+                        mode: None,
                     })
                     .await
                     .unwrap();
@@ -914,5 +1094,77 @@ async fn plan_mode_still_force_parks_propose_plan() {
             .iter()
             .any(|e| matches!(e, OutEvent::ToolOutput { tool, .. } if tool == PROPOSE_PLAN_TOOL)),
         "plan mode must let the call reach the ordinary reject fold-back: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_approved_mode_survives_a_replay_round_trip() {
+    // #560: the mechanism for carrying the approver's choice must satisfy
+    // replay — `Session::replay` reconstructs `mode` purely by folding the
+    // persisted `OutEvent::ModeChanged` record (last write wins,
+    // `entanglement-core/src/session/replay.rs`), so it never needs to
+    // re-derive *how* the mode was chosen. This exercises the real path: a
+    // persisted log, read back, replayed with no engine running.
+    let dir = tempdir();
+    let root = dir.path().to_path_buf();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("continuing to implement the plan"),
+    ]);
+    let holly = spawn_with_root(
+        &root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+    );
+    let log_dir = tempdir();
+    let _tap = spawn_persistence_subscriber(&holly, log_dir.path().to_path_buf());
+
+    let sid = SessionId::new("s1");
+    let request_id = await_request(&holly, &sid).await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: Some("build".to_string()),
+        })
+        .await
+        .unwrap();
+
+    // Wait until the tap has flushed the approval's `ModeChanged` (it lands
+    // after `Done`, like `collect_past_done` above accounts for).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let records = loop {
+        let records = read(log_dir.path(), &sid).expect("read log");
+        if records.iter().any(|r| {
+            matches!(
+                &r.payload,
+                LogPayload::Out(OutEvent::ModeChanged { mode, .. }) if mode == "build"
+            )
+        }) {
+            break records;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "tap never flushed ModeChanged(build)"
+        );
+        // Keep draining `sub` so the broadcast channel the tap also reads
+        // from doesn't fill up and lag it.
+        let _ = tokio::time::timeout(Duration::from_millis(20), sub.recv()).await;
+    };
+
+    // Replay with a *fresh* config carrying no live engine state at all —
+    // `session.mode` must come purely from the persisted log.
+    let profiles =
+        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let cfg = EngineConfig {
+        agents: profiles,
+        ..EngineConfig::default()
+    };
+    let paired = pair_records(&records);
+    let replayed = Session::replay(&paired, &cfg, &sid).expect("replay");
+    assert_eq!(
+        replayed.mode, "build",
+        "replay must reconstruct the mode the approval actually chose, not the old hardcoded default"
     );
 }

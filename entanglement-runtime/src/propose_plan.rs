@@ -36,12 +36,42 @@
 //! out of band since is refused with a re-read-required error.
 //!
 //! - **Approve** → the session (and its live spawn sub-tree — core cascades
-//!   `InMsg::SetMode` over it, ADR-0207 §6) switches to `build` mode and the
-//!   call returns immediately, naming the plan file. No sponsored child, no
-//!   permission root, no blocking wait: the same turn continues, plan still
-//!   in context, and the model that wrote it executes it directly. This
-//!   supersedes ADR-0138's sponsored `build` handoff entirely — approving a
-//!   plan today spawns nothing.
+//!   `InMsg::SetMode` over it, ADR-0207 §6) switches to a mode **the approver
+//!   chooses at the prompt** (#560, extending ADR-0207 §7) and the call
+//!   returns immediately, naming the plan file and the mode landed in. No
+//!   sponsored child, no permission root, no blocking wait: the same turn
+//!   continues, plan still in context, and the model that wrote it executes
+//!   it directly. This supersedes ADR-0138's sponsored `build` handoff
+//!   entirely — approving a plan today spawns nothing.
+//!
+//!   **Which mode**: the prompt offers exactly two — `auto` (the *default*: a
+//!   bare accept with no mode named lands here, since accepting a plan
+//!   ordinarily means "go do it", and `auto` is the bounded posture with its
+//!   own `max_turns`/`max_duration`/timeout/deny-list guarding an unattended
+//!   run, ADR-0207 §11) or `build` (an explicit opt-in to the supervised
+//!   posture instead). The choice is carried on [`InMsg::Approve::mode`] —
+//!   the head's own record of what its user pressed — and read here off
+//!   [`seam::Decision::Approve::mode`]; [`resolve_accept_mode`] is the single
+//!   place that turns an absent/unrecognized value into the `auto` default,
+//!   so "no mode named" and "an old/foreign head that doesn't know this
+//!   field" degrade identically. Because the switch is applied via the same
+//!   `InMsg::SetMode` → `OutEvent::ModeChanged` path every mode change always
+//!   has used, replay reconstructs the outcome from the persisted
+//!   `ModeChanged` record with no special-casing (`Session::replay`,
+//!   `entanglement-core/src/session/replay.rs`) — it never needs to re-derive
+//!   *how* the mode was chosen, only what it settled on.
+//!
+//!   The model may *suggest* one of the two via the tool's own optional
+//!   `mode` argument (parsed by [`parse_suggested_mode`]) — carried through to
+//!   the `ToolRequest`'s `suggested_mode` field so the head can pre-select it
+//!   at the prompt (the TUI footer marks it "(suggested)",
+//!   `tui::transcript`). A suggestion never decides: [`resolve_accept_mode`]
+//!   only ever consults the *approver's* choice, never the model's. This is
+//!   the deliberate asymmetry with `request_mode` (`crate::request_mode`),
+//!   which refuses `auto` as a target outright — there the *model* is asking
+//!   with no human in the loop; here a human is answering the prompt, so a
+//!   suggestion of `auto` is just a hint the human can ignore. Do not unify
+//!   the two: same word, different authority.
 //! - **Reject + reason** → the existing rejection fold-back (`tool
 //!   \`propose_plan\` rejected: <reason>`); the model revises and re-proposes in
 //!   the same turn, no new code.
@@ -64,14 +94,11 @@ use crate::seam;
 use crate::tool_names::PROPOSE_PLAN_TOOL;
 use crate::tool_runner::resolve_effective;
 
+mod accept_mode;
 mod resolve;
+use accept_mode::{parse_suggested_mode, resolve_accept_mode};
 pub(crate) use resolve::PLANS_DIR;
 use resolve::{parse_plan_input, resolve_plan};
-
-/// The mode an approved plan's session (and its live spawn sub-tree) switches
-/// to (ADR-0207 §7) — the same name the built-in mode table calls its
-/// ordinary implementation posture.
-const BUILD_MODE: &str = "build";
 
 /// The `propose_plan` tool schema. Advertised **unconditionally** now
 /// (ADR-0207 §7 — the old default-closed, per-profile allowlist gate is
@@ -87,10 +114,13 @@ pub fn propose_plan_spec() -> ToolSpec {
          as-is — it must be the file you most recently read, wrote, or edited; \
          a file changed by someone else since is refused, re-read it first). \
          Only usable in `plan` mode — request it with request_mode if you are \
-         not there yet. The user approves or rejects: on approval this \
-         session's mode switches to `build` and you continue the same turn \
-         implementing the plan directly. On rejection you receive their \
-         reason and should revise and call propose_plan again.",
+         not there yet. The user approves or rejects; on approval this \
+         session's mode switches to whichever of `build`/`auto` the user \
+         picked at the prompt (a bare accept defaults to `auto`) and you \
+         continue the same turn implementing the plan directly. Optionally \
+         suggest which one with `mode` — it only pre-selects that option for \
+         the user, who always makes the actual choice. On rejection you \
+         receive their reason and should revise and call propose_plan again.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -101,6 +131,11 @@ pub fn propose_plan_spec() -> ToolSpec {
                 "path": {
                     "type": "string",
                     "description": "Path to an existing .md plan file to submit as-is, instead of `content`."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["build", "auto"],
+                    "description": "Optional: which mode to suggest the user accept into. Pre-selects that option at the prompt; never decides — the user's own choice always wins."
                 }
             }
         }),
@@ -121,8 +156,10 @@ pub fn propose_plan_spec() -> ToolSpec {
 /// could lag and drop it. A `Stop` while parked unwinds silently: core's turn
 /// cancels on the same `Stop`, so no `ToolResult` is owed.
 ///
-/// On **Approve**, switches `session` to `build` mode (`InMsg::SetMode` —
-/// core cascades this over the session's live spawn sub-tree, ADR-0207 §6)
+/// On **Approve**, switches `session` to whichever of `build`/`auto` the
+/// approver picked (`InMsg::SetMode` — core cascades this over the session's
+/// live spawn sub-tree, ADR-0207 §6; [`resolve_accept_mode`] is where the
+/// choice becomes a concrete mode name, defaulting a bare accept to `auto`)
 /// and replies at once; the same turn continues with the plan already in
 /// context.
 #[allow(clippy::too_many_arguments)]
@@ -148,6 +185,17 @@ pub async fn run_propose_plan(
         seam::reply(&holly, session, request_id, output, true).await;
         return;
     }
+
+    // #560: the model's own suggestion for which acceptance option to
+    // pre-select — a self-correctable validation error like the content/path
+    // shape below, refused before any file is touched.
+    let suggested_mode = match parse_suggested_mode(&input) {
+        Ok(m) => m,
+        Err(msg) => {
+            seam::reply(&holly, session, request_id, msg, true).await;
+            return;
+        }
+    };
 
     let plan_input = match parse_plan_input(&input) {
         Ok(p) => p,
@@ -182,7 +230,9 @@ pub async fn run_propose_plan(
     // prompt. `input` carries the *resolved* content (not the model's raw
     // `content`-XOR-`path` call) so a `path`-mode approval still shows the
     // full plan text, not just a filename — `tui::tool_render`'s
-    // `propose_plan` arm reads this same JSON shape.
+    // `propose_plan` arm reads this same JSON shape. `suggested_mode` (#560)
+    // rides along purely so the head can pre-select the model's suggestion at
+    // the prompt — it plays no role in what actually gets applied below.
     holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
         session: session.clone(),
         seq,
@@ -191,13 +241,18 @@ pub async fn run_propose_plan(
         input: serde_json::json!({
             "content": resolution.content,
             "path": resolution.rel_path,
+            "suggested_mode": suggested_mode,
         })
         .to_string(),
     });
     holly.emit_status(&session, AgentState::WaitingApproval);
 
     match pending::await_decision(rx).await {
-        seam::Decision::Approve { .. } => {
+        seam::Decision::Approve { mode: chosen, .. } => {
+            // #560: the *approver's* choice, never the model's suggestion —
+            // `resolve_accept_mode` is the one place "no choice named"
+            // becomes the `auto` default.
+            let target_mode = resolve_accept_mode(chosen);
             // ADR-0207 §7: approval is a mode switch, not a spawn. Core
             // cascades this `SetMode` over the session's whole live spawn
             // sub-tree (ADR-0207 §6, `holly.rs`'s `InMsg::SetMode` handling),
@@ -205,7 +260,7 @@ pub async fn run_propose_plan(
             if holly
                 .send(InMsg::SetMode {
                     session: session.clone(),
-                    mode: BUILD_MODE.to_string(),
+                    mode: target_mode.to_string(),
                 })
                 .await
                 .is_err()
@@ -216,7 +271,7 @@ pub async fn run_propose_plan(
             set_thinking(&holly, &session);
             let output = format!(
                 "plan file: {}\n\nplan approved — this session's mode switched to \
-                 `{BUILD_MODE}`. Continue the same turn, implementing the plan directly.",
+                 `{target_mode}`. Continue the same turn, implementing the plan directly.",
                 resolution.rel_path
             );
             seam::reply(&holly, session, request_id, output, false).await;
@@ -255,5 +310,18 @@ mod tests {
         assert!(spec.schema.get("required").is_none());
         assert!(spec.schema["properties"].get("content").is_some());
         assert!(spec.schema["properties"].get("path").is_some());
+    }
+
+    /// #560: the schema's `mode` enum must name exactly the two accepted
+    /// suggestions — nothing wider, nothing narrower. `parse_suggested_mode`/
+    /// `resolve_accept_mode` have their own unit tests in the `accept_mode`
+    /// submodule.
+    #[test]
+    fn spec_mode_enum_is_exactly_build_and_auto() {
+        let spec = propose_plan_spec();
+        let enum_vals = spec.schema["properties"]["mode"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(enum_vals, &["build", "auto"]);
     }
 }

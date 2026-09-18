@@ -329,6 +329,7 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
             session: sid.clone(),
             request_id: "t1".into(),
             scope: entanglement_core::ApprovalScope::Once,
+            mode: None,
         })
         .await
         .unwrap();
