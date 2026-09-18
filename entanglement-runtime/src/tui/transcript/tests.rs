@@ -1302,3 +1302,123 @@ fn mcp_call_header_reads_server_then_tool() {
         "{header:?}"
     );
 }
+
+fn feed_bash_with_output(app: &mut App, sid: &SessionId, output: &str, is_error: bool) {
+    feed_tool_call(app, sid, 1, "bash", r#"{"command":"run it"}"#);
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".to_string(),
+        tool: "bash".to_string(),
+        output: output.to_string(),
+        content: vec![],
+        is_error,
+        duration_ms: None,
+        exit_code: None,
+        envelope: None,
+    });
+    app.toggle_block(0);
+}
+
+#[test]
+fn bash_output_wraps_instead_of_overflowing() {
+    // The real-use bug: a `bash`/`call` output body used to skip wrapping
+    // entirely (`render_plain_output` formatted each raw line untouched), so
+    // a long line ran off the right edge of the panel (#wrap).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long = "a".repeat(200);
+    feed_bash_with_output(&mut app, &sid, &long, false);
+
+    let body = render_body_lines(&mut app, 40);
+    for line in &body.lines {
+        assert!(
+            line_display_width(line) <= 40,
+            "bash output line exceeds panel width: {}",
+            line_display_width(line)
+        );
+    }
+    let a_lines = body
+        .lines
+        .iter()
+        .filter(|l| line_text(l).contains('a'))
+        .count();
+    assert!(
+        a_lines > 1,
+        "the 200-char unbroken line must hard-break across multiple lines, got {a_lines}"
+    );
+}
+
+#[test]
+fn bash_json_output_is_pretty_printed_and_highlighted() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_bash_with_output(&mut app, &sid, r#"{"ok":true,"items":[1,2,3]}"#, false);
+
+    let body = render_body_lines(&mut app, 80);
+    let text = body
+        .lines
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("\"ok\": true"),
+        "JSON output should be pretty-printed, not left as one line: {text:?}"
+    );
+    assert!(text.contains("\"items\": ["), "{text:?}");
+    // Highlighted: at least one span in the body carries a syntect fg color.
+    assert!(
+        body.lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.style.fg.is_some())),
+        "expected the pretty-printed JSON to be syntax-highlighted"
+    );
+}
+
+#[test]
+fn bash_prose_output_with_a_brace_is_not_reformatted() {
+    // A shell one-liner or log line containing `{` must render untouched, not
+    // be misdetected as JSON (only a body that parses as JSON *as a whole*
+    // gets reformatted).
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let output = "for f in *.rs { echo $f }  # not actually valid JSON";
+    feed_bash_with_output(&mut app, &sid, output, false);
+
+    let body = render_body_lines(&mut app, 80);
+    let text = body
+        .lines
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text.contains(output),
+        "prose must render verbatim: {text:?}"
+    );
+}
+
+#[test]
+fn bash_output_rewraps_after_width_change() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let long = "word ".repeat(30);
+    feed_bash_with_output(&mut app, &sid, &long, false);
+
+    let wide = render_body_lines(&mut app, 80);
+    let narrow = render_body_lines(&mut app, 30);
+    for line in &narrow.lines {
+        assert!(
+            line_display_width(line) <= 30,
+            "re-wrapped line exceeds the new width: {}",
+            line_display_width(line)
+        );
+    }
+    assert!(
+        narrow.lines.len() > wide.lines.len(),
+        "the narrower width must produce more wrapped lines: {} vs {}",
+        narrow.lines.len(),
+        wide.lines.len()
+    );
+}

@@ -55,9 +55,14 @@ pub(super) fn render_block(
             *expanded,
         ),
         Block::User { text, pending } => render_user(text, *pending, theme, user, available_width),
-        Block::ToolOutput { tool, output } => {
-            render_tool_output(tool.as_deref(), output, theme, tool_out, available_width)
-        }
+        Block::ToolOutput { tool, output } => render_tool_output(
+            tool.as_deref(),
+            output,
+            theme,
+            tool_out,
+            available_width,
+            md,
+        ),
         Block::Error { message } => render_error(message, theme, error, available_width),
         Block::Done => vec![Line::from("")],
     }
@@ -95,6 +100,7 @@ fn render_tool_output(
     theme: Theme,
     tool_out: RoleColors,
     available_width: u16,
+    md: &MarkdownRenderer,
 ) -> Vec<Line<'static>> {
     let padding = padding_line(tool_out, available_width);
     let mut out = vec![padding.clone()];
@@ -111,7 +117,7 @@ fn render_tool_output(
     );
     out.push(theme.decorate(Line::from(header), tool_out, available_width));
 
-    let rendered = tool_render::render_tool_output(tool, output, theme, available_width);
+    let rendered = tool_render::render_tool_output(tool, output, theme, available_width, md);
     for line in rendered.lines {
         out.push(theme.decorate(line, tool_out, available_width));
     }
