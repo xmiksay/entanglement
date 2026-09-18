@@ -148,9 +148,8 @@ async fn set_session_meta_applies_immediately_while_a_turn_is_parked() {
     // The contrast with `SetGeneration`'s stash gate: with the turn parked on
     // an unresolved tool call (`Session::turn` is `Some`), `SetGeneration`
     // defers until the turn ends — `SetSessionMeta` must ack right away,
-    // before the tool result resolves the turn. (A mid-*stream* arrival is
-    // deferred by the generic stash like every command — the session task is
-    // single-threaded — so the parked state is where immediacy is observable.)
+    // before the tool result resolves the turn. (Mid-stream immediacy is
+    // covered by `meta_updates_mid_stream_never_crowd_out_a_prompt`.)
     let responses: Arc<Mutex<VecDeque<LlmResponse>>> = Arc::new(Mutex::new(
         vec![
             LlmResponse {
@@ -383,5 +382,67 @@ async fn if_unset_write_after_resume_does_not_clobber_the_restored_name() {
         name.as_deref(),
         Some("My Named Session"),
         "an if_unset write must not overwrite a name restored by resume"
+    );
+}
+
+/// Sleeps before streaming, so everything sent meanwhile lands mid-stream.
+struct SlowLlm;
+
+#[async_trait]
+impl Llm for SlowLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(stream_from_response(LlmResponse {
+            text: "reply".into(),
+            tool_calls: vec![],
+        }))
+    }
+}
+
+/// The reported error: the narrator sends one `SetSessionMeta` per tool call.
+/// Mid-stream they were stashed until the turn ended, uncapped, so a long
+/// turn filled the 64-command stash and the user's next `Prompt` was dropped
+/// with "too many commands queued". They now apply at once, and the prompt
+/// is queued.
+#[tokio::test]
+async fn meta_updates_mid_stream_never_crowd_out_a_prompt() {
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(|| Box::new(SlowLlm) as Box<dyn Llm>),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+
+    holly
+        .send(InMsg::prompt(sid.clone(), "first"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for i in 0..100 {
+        set_meta(&holly, &sid, None, Some(&format!("step {i}"))).await;
+    }
+    holly
+        .send(InMsg::prompt(sid.clone(), "second"))
+        .await
+        .unwrap();
+
+    let mut meta_before_done = 0;
+    let mut dones = 0;
+    while dones < 2 {
+        let ev = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .expect("timed out")
+            .expect("event stream closed");
+        match ev {
+            OutEvent::Error { message, .. } => panic!("unexpected error: {message}"),
+            OutEvent::SessionMetaChanged { .. } if dones == 0 => meta_before_done += 1,
+            OutEvent::Done { .. } => dones += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        meta_before_done, 100,
+        "every mid-stream meta update is acked before the turn ends"
     );
 }

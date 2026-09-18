@@ -26,6 +26,7 @@
 mod compaction_request;
 mod emit;
 mod fork;
+mod immediate;
 mod invoke_envelope;
 mod mode;
 mod ops;
@@ -513,15 +514,15 @@ pub(crate) async fn session_loop(
             // was live at the time, and nothing new dispatches until
             // `ResumeSession` — so applying now vs. after `Unpause` changes
             // nothing observable, and immediate is simpler than one more
-            // deferred-command special case.
-            Some(SessionCmd::SetMode(mode)) => {
-                mode::apply_set_mode(
-                    &mut s.mode,
-                    &mut s.mode_transition_from,
-                    mode,
-                    &session,
-                    &events,
-                );
+            // deferred-command special case. `SetSessionMeta` and the
+            // lineage mirror apply immediately too — see `immediate.rs`.
+            Some(
+                cmd @ (SessionCmd::SetMode(_)
+                | SessionCmd::SetSessionMeta(..)
+                | SessionCmd::ChildSpawned(_)
+                | SessionCmd::ChildClosed(_)),
+            ) => {
+                let _ = immediate::try_apply(cmd, immediate::fields!(s), &session, &events);
             }
             // Live model/provider switch (#218): re-resolve against the runtime's
             // catalog-backed resolver, rebuild the backend, and retarget the
@@ -585,34 +586,6 @@ pub(crate) async fn session_loop(
                 let _ = events.send(OutEvent::GenerationChanged {
                     session: session.clone(),
                     generation: merged,
-                });
-            }
-            // Display metadata (name/action): applied immediately even
-            // mid-turn — the `ChildSpawned` pattern, not the stash gate —
-            // since `action` ("what the agent is doing now") is only useful if
-            // it can change while a turn runs. Pure state + ack, no engine
-            // behavior reads it.
-            Some(SessionCmd::SetSessionMeta(name, action, if_unset)) => {
-                // `None` leaves a field untouched; `Some("")` clears it.
-                // `if_unset` (#553, the auto-title generator's path): a
-                // session that already has a name — set via `/name`, or
-                // restored on resume before this command was ever sent —
-                // keeps it; the generator's write silently no-ops instead of
-                // racing (and losing to) a user-set name.
-                if let Some(name) = name {
-                    let name = cap_meta_field(name);
-                    if !if_unset || s.name.is_none() {
-                        s.name = (!name.is_empty()).then_some(name);
-                    }
-                }
-                if let Some(action) = action {
-                    let action = cap_meta_field(action);
-                    s.action = (!action.is_empty()).then_some(action);
-                }
-                let _ = events.send(OutEvent::SessionMetaChanged {
-                    session: session.clone(),
-                    name: s.name.clone(),
-                    action: s.action.clone(),
                 });
             }
             // Live tool-overlay replacement (#539, ADR-0149): like
@@ -694,18 +667,6 @@ pub(crate) async fn session_loop(
             // clearing its state — the committed assistant message and any
             // already-arrived outputs stay in Context. Idle Stop is a no-op
             // (a mid-stream Stop is caught inside the streamed round).
-            // Lineage mirror (children): a spawn/close edge the supervisor
-            // records in `parent_links` is reflected onto this session's live
-            // children list. Pure state — applied immediately even mid-turn, and
-            // idempotent (a duplicate spawn or an unknown close is a no-op).
-            Some(SessionCmd::ChildSpawned(child)) => {
-                if !s.children.contains(&child) {
-                    s.children.push(child);
-                }
-            }
-            Some(SessionCmd::ChildClosed(child)) => {
-                s.children.retain(|c| c != &child);
-            }
             Some(SessionCmd::Stop) => {
                 if s.turn.take().is_some() {
                     // A cancelled turn is still a completed interaction — `Done`

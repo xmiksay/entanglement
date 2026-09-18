@@ -271,12 +271,18 @@ half-assembled tool calls are dropped (no `Finish` ⇒ possibly incomplete). The
 same stash discipline applies inside the streaming loop and while the turn is
 parked (ADR-0018): a mid-turn `Stop` interrupts, every other queued command
 (`Prompt`, `SetModel`, …) is pushed onto the replay stash, so a follow-up sent
-while the engine is busy is never silently dropped. `SetMode` is the
-exception: it never rides the stash — inside the streaming loop (pre-stream
-wait included) and while parked alike it applies the moment it is dequeued
-(`session::mode::apply_set_mode`, #560), so a mid-stream `/mode research`
-grades the tool calls that very round is emitting — see the tool-round-trip
-section above. A stashed **`Prompt` is additionally
+while the engine is busy is never silently dropped. `SetMode`,
+`SetSessionMeta` and the `ChildSpawned`/`ChildClosed` lineage mirror are the
+exception: they never ride the stash — inside the streaming loop (pre-stream
+wait included) and while parked alike they apply the moment they are
+dequeued (`session::immediate`), so a mid-stream `/mode research` grades the
+tool calls that very round is emitting — see the tool-round-trip section
+above. The stash drains only when a turn ends, so letting the narrator's
+per-tool-call `SetSessionMeta` in used to fill it to its 64-command cap
+during a long turn, and the user's next `Prompt` was refused. Mid-stream the
+user-issued deferrable commands (`Prompt`/`SetModel`/`SetGeneration`/
+`SetToolOverlay`/`Oneshot`) hit the same cap as the idle loop's; lifecycle
+commands (`Hibernate`, `Pause`/`Unpause`, `ToolResult`) are never dropped. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../adr/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`

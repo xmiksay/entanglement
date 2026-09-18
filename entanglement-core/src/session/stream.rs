@@ -10,7 +10,8 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{emit_turn_error, next_seq};
-use super::mode::{apply_set_mode, mode_notice_with_transition};
+use super::immediate::{apply_or_stash_mid_stream, fields};
+use super::mode::mode_notice_with_transition;
 use super::{Session, SessionCmd};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use entanglement_provider::{
@@ -143,20 +144,8 @@ pub(super) async fn stream_round(
                     return StreamedRound::Cancelled;
                 }
                 None => return StreamedRound::Cancelled,
-                // Applied now, never stashed — see `apply_set_mode`.
-                Some(SessionCmd::SetMode(mode)) => apply_set_mode(
-                    &mut s.mode,
-                    &mut s.mode_transition_from,
-                    mode,
-                    session,
-                    events,
-                ),
                 Some(other) => {
-                    tracing::debug!(
-                        cmd = ?other,
-                        "command arrived before streaming started; stashed for replay after turn"
-                    );
-                    stash.push_back(other);
+                    apply_or_stash_mid_stream(other, fields!(s), stash, session, events, &s.seq)
                 }
             }
         };
@@ -193,22 +182,15 @@ pub(super) async fn stream_round(
                             drop(stream);
                             return StreamedRound::Cancelled;
                         }
-                        Some(SessionCmd::SetMode(mode)) => {
-                            apply_set_mode(
-                                &mut s.mode,
-                                &mut s.mode_transition_from,
-                                mode,
+                        Some(other) => {
+                            apply_or_stash_mid_stream(
+                                other,
+                                fields!(s),
+                                stash,
                                 session,
                                 events,
+                                &s.seq,
                             );
-                            continue;
-                        }
-                        Some(other) => {
-                            tracing::debug!(
-                                cmd = ?other,
-                                "command arrived mid-stream; stashed for replay after turn"
-                            );
-                            stash.push_back(other);
                             continue;
                         }
                     }
