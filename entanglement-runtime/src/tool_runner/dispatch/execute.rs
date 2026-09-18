@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{Holly, OutEvent, SessionId, ToolCall};
+use entanglement_core::{Holly, OutEvent, SessionId, ToolCall, ToolEnvelope};
 
 use crate::arg_validate;
 use crate::hooks::Hooks;
@@ -27,6 +27,12 @@ pub(super) async fn run_and_reply(
     hooks: &Hooks,
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
+    // The call exactly as the model emitted it, when core unwrapped an
+    // `invoke` envelope (ADR-0204) — `None` for an ordinary native call.
+    // Needed only for duplicate-key re-scanning below; every other use of
+    // `tool`/`input` in this function already means the *inner* call either
+    // way.
+    envelope: Option<ToolEnvelope>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -58,7 +64,17 @@ pub(super) async fn run_and_reply(
     // elsewhere) has no advertised schema here, so it's exempt by
     // construction — nothing to validate against.
     if let Some(spec) = tools.spec_for(&tool) {
-        if let Some(violation) = arg_validate::validate(&spec.schema, &input) {
+        if let Some(mut violation) = arg_validate::validate(&spec.schema, &input) {
+            // Core's `invoke` unwrap has to parse the outer envelope to pull
+            // out `args`, which collapses a duplicate key inside it exactly
+            // like `validate`'s own parse of `input` just did above — so a
+            // duplicate that lived under `args` is already gone from `input`
+            // by the time it reaches here. Re-scan the envelope's raw text
+            // (the call exactly as the model emitted it, still carrying the
+            // duplicate) instead, whenever this call arrived that way.
+            if let Some(env) = &envelope {
+                violation.duplicate_keys = arg_validate::find_duplicate_keys(&env.input);
+            }
             tracing::warn!(
                 tool = %tool,
                 violation = ?violation.lines(),
@@ -77,8 +93,18 @@ pub(super) async fn run_and_reply(
                     .mark(&session, &tool);
             }
             let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
+            // The delivered-schema dedup guard (ADR-0196 §6) only ever applies
+            // to a *native* call: that tool's schema sits in the `tools` array
+            // every round, so repeating it in a decline is genuinely
+            // redundant. A tool reached through `invoke` is never in `tools`
+            // — the model sees its schema nowhere else but inside a tool
+            // result — so "already provided above" would point it at
+            // something it cannot see. Never suppress here, no matter how
+            // many times this tool has already violated its schema this
+            // session.
+            let suppress_schema = already_delivered && !via_invoke;
             let mut output =
-                arg_validate::decline_text_for(&spec, &violation, already_delivered, via_invoke);
+                arg_validate::decline_text_for(&spec, &violation, suppress_schema, via_invoke);
             if validation.note(&session, &tool, &input, true) {
                 output.push_str("\n\n");
                 output.push_str(arg_validate::LOOP_BREAKER_NOTE);

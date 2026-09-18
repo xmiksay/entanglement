@@ -15,7 +15,9 @@ pub(crate) mod grade;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentState, Holly, OutEvent, Permission, PermissionProfile, SessionId};
+use entanglement_core::{
+    AgentState, Holly, OutEvent, Permission, PermissionProfile, SessionId, ToolEnvelope,
+};
 
 use crate::capability::{self, Capability};
 use crate::hooks::Hooks;
@@ -78,6 +80,9 @@ pub(crate) async fn dispatch(
     // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
+    // The call as emitted when core unwrapped an `invoke` envelope (ADR-0204)
+    // — for `execute::run_and_reply`'s duplicate-key re-scan; `None` natively.
+    envelope: Option<ToolEnvelope>,
     // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
     // register into, and to re-snapshot from on success — `tools` above is
     // an already-cloned snapshot that a fresh registration is invisible to),
@@ -106,6 +111,27 @@ pub(crate) async fn dispatch(
     // silently again.
     denials: &crate::run_limits::DenialTracker,
 ) {
+    // The `Control` bypass and the `Allow` grade below call `execute::
+    // run_and_reply` with the same dozen args — one macro, not two copies.
+    macro_rules! run_and_reply {
+        ($tool:expr, $input:expr) => {
+            execute::run_and_reply(
+                holly,
+                tools,
+                skills,
+                active_skill,
+                hooks,
+                advertising,
+                validation,
+                envelope,
+                session,
+                request_id,
+                $tool,
+                $input,
+            )
+            .await
+        };
+    }
     // A hallucinated tool name can never execute, so reject it *before* the
     // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
     // a call that can only fail, `pre_tool_use` vetoes a call that was never
@@ -224,20 +250,7 @@ pub(crate) async fn dispatch(
                 .await;
             return;
         }
-        execute::run_and_reply(
-            holly,
-            tools,
-            skills,
-            active_skill,
-            hooks,
-            advertising,
-            validation,
-            session,
-            request_id,
-            tool,
-            input,
-        )
-        .await;
+        run_and_reply!(tool, input);
         return;
     }
     // A matching overlay **deny** entry withdraws the tool from the session
@@ -304,20 +317,7 @@ pub(crate) async fn dispatch(
 
     match perm {
         Permission::Allow if escape.is_none() => {
-            execute::run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
+            run_and_reply!(tool, input);
         }
         Permission::Deny => {
             // ADR-0207 §4: a mode `deny` is absolute — no prompt — and the
@@ -383,6 +383,7 @@ pub(crate) async fn dispatch(
                 hooks,
                 advertising,
                 validation,
+                envelope,
                 rx,
                 escape_grant,
                 session,

@@ -42,6 +42,7 @@ mod endpoint;
 mod hooks;
 mod host_tools;
 mod invoke_envelope;
+mod invoke_schema_violation;
 mod list_operations;
 mod load_skill;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]

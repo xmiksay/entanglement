@@ -857,6 +857,7 @@ pub fn spawn_tool_executor_with_policy(
                     tool,
                     input,
                     agent,
+                    envelope,
                     ..
                 }) => {
                     // Idempotence for core's re-offer timer (#274, ADR-0071):
@@ -921,6 +922,7 @@ pub fn spawn_tool_executor_with_policy(
                         &mut spawn_guard,
                         &overlays,
                         route,
+                        envelope,
                         session,
                         request_id,
                         tool,

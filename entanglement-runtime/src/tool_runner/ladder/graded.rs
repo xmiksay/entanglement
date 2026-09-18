@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 #[cfg(feature = "rhai")]
 use std::sync::Arc;
 
-use entanglement_core::SessionId;
+use entanglement_core::{SessionId, ToolEnvelope};
 
 use crate::cancel::TaskCanceller;
 use crate::permission::{ancestor_chain, overlay_denies, overlay_grade_entry};
@@ -145,11 +145,16 @@ pub(super) async fn rhai(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn permission(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
     overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     tool: String,
+    // The call exactly as the model emitted it, when core unwrapped an
+    // `invoke` envelope (ADR-0204) — carried through to `dispatch`'s
+    // duplicate-key re-scan; `None` for an ordinary native call.
+    envelope: Option<ToolEnvelope>,
     session: SessionId,
     request_id: String,
     input: String,
@@ -279,6 +284,7 @@ pub(super) async fn permission(
             &ceiling,
             &advertising,
             &validation,
+            envelope,
             &registry,
             &mcp_avail,
             &mcp_active,

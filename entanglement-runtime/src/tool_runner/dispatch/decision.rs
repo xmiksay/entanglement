@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentState, ApprovalScope, Holly, SessionId};
+use entanglement_core::{AgentState, ApprovalScope, Holly, SessionId, ToolEnvelope};
 
 use crate::arg_validate;
 use crate::hooks::Hooks;
@@ -41,6 +41,10 @@ pub(super) async fn await_decision(
     hooks: &Hooks,
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
+    // The call exactly as the model emitted it, when core unwrapped an
+    // `invoke` envelope (ADR-0204) — carried across the approval park to
+    // `execute::run_and_reply`'s duplicate-key re-scan on approval.
+    envelope: Option<ToolEnvelope>,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
     session: SessionId,
@@ -98,6 +102,7 @@ pub(super) async fn await_decision(
                 hooks,
                 advertising,
                 validation,
+                envelope,
                 session,
                 request_id,
                 tool,

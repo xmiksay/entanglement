@@ -25,7 +25,7 @@ mod orchestration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentCatalog, Catalog, Holly, PermissionProfile, SessionId};
+use entanglement_core::{AgentCatalog, Catalog, Holly, PermissionProfile, SessionId, ToolEnvelope};
 
 use crate::agent_registry::AgentRegistry;
 use crate::cancel::CancelRegistry;
@@ -192,6 +192,12 @@ pub(super) async fn route_tool_exec(
     spawn_guard: &mut SpawnGuard,
     overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     route: Intercept,
+    // The call exactly as the model emitted it, when core unwrapped an
+    // `invoke` envelope (ADR-0204). Only the `Permission` route's schema
+    // validation needs it (`graded::permission`'s duplicate-key re-scan) —
+    // every other route ignores it, same as `tool`/`input` themselves are
+    // ignored by routes that never dispatch a call.
+    envelope: Option<ToolEnvelope>,
     session: SessionId,
     request_id: String,
     tool: String,
@@ -221,7 +227,17 @@ pub(super) async fn route_tool_exec(
             graded::rhai(ctx, spawn_guard, overlays, tool, session, request_id, input).await;
         }
         Intercept::Permission => {
-            graded::permission(ctx, spawn_guard, overlays, tool, session, request_id, input).await;
+            graded::permission(
+                ctx,
+                spawn_guard,
+                overlays,
+                tool,
+                envelope,
+                session,
+                request_id,
+                input,
+            )
+            .await;
         }
     }
 }
