@@ -9,8 +9,8 @@
 # grew past the cap after this change; split them instead.
 #
 # Split guidance from issue #451 (natural seams to split along, once
-# attempted): protocol.rs by message family; tool_runner.rs ladder vs
-# executor; main.rs by subcommand. The provider parser splits
+# attempted): protocol.rs by message family; main.rs by subcommand
+# (tool_runner.rs was split ladder vs executor, #712). The provider parser splits
 # (anthropic.rs/openai.rs) are easier after the UTF-8 chunk-boundary fix
 # rework touches the same code region.
 #
@@ -21,7 +21,6 @@
 # change that added this gate.
 entanglement-core/src/protocol.rs
 entanglement-runtime/src/main.rs
-entanglement-runtime/src/tool_runner.rs
 entanglement-core/src/holly.rs
 entanglement-runtime/src/agents/mod.rs
 entanglement-core/src/session.rs
