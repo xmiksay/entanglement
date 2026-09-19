@@ -50,7 +50,7 @@ make test-live     # opt-in live z.ai probes (ZAI_API_KEY): tool discovery + pro
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
-make verify        # check-fmt + tree + check-lean + file-cap + lint + test  (CI-equivalent gate)
+make verify        # check-fmt + tree + check-lean + file-cap + userid + lint + test  (CI-equivalent gate)
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)

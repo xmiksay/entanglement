@@ -21,7 +21,7 @@ The loop is the point — phase 6 returns to phase 4 (push) until the review is 
 - **Don't assume you start on `master`.** Orient first (Phase 0), then create the feature branch off `origin/master` from *whatever* branch you're on (`git switch -c <branch> origin/master`). Never `git switch master` as a step — it fails the moment you're mid-work elsewhere or the tree is dirty. Never switch branches over uncommitted work.
 - **After a rebase, push `--force-with-lease` — NEVER plain `--force`.** `--force-with-lease` aborts if the remote moved since your last fetch (someone else pushed); `--force` would clobber their work.
 - **Conventional Commits only** with a real scope (`feat(engine): …`, `fix(cli): …`, `docs: …`, …). No `Co-Authored-By` trailer.
-- **Tests ship with the change.** Run `make verify` (check-fmt + tree + check-lean + lint + test) before every push and before opening the PR.
+- **Tests ship with the change.** Run `make verify` (check-fmt + tree + check-lean + file-cap + userid + lint + test) before every push and before opening the PR.
 - **Keep history linear:** rebase onto `origin/master`; don't `git merge` it into your branch.
 - **Never auto-merge the PR.** Merge is the maintainer's (or the user's explicit) call. Stop when approved + no outstanding threads.
 
@@ -93,7 +93,7 @@ Stay linear before sending anything up:
 ```bash
 git fetch origin
 git rebase origin/master               # resolve conflicts, re-run verify if so
-make verify                            # check-fmt + tree + check-lean + lint + test
+make verify                            # check-fmt + tree + check-lean + file-cap + userid + lint + test
 ```
 
 Then:
@@ -127,7 +127,7 @@ gh pr create --base master --head <branch> \
 - <bullet summary of each meaningful change>
 
 ## Verification
-- `make verify` (check-fmt + tree + check-lean + lint + test) passes
+- `make verify` (check-fmt + tree + check-lean + file-cap + userid + lint + test) passes
 - <how a reviewer can confirm it works>
 
 ## Follow-ups
