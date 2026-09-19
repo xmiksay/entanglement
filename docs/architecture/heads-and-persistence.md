@@ -120,7 +120,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   is refused per-frame (a non-JSON line falls back to a `Prompt` on the socket's
   own default session, `pipe` parity); a 30s ping keeps an idle socket alive and
   a `broadcast::Lagged` is a dropped-events gap → `continue`, never a silent
-  relay death (#158). Scoped **local, single-user, loopback-bound**: reached via
+  relay death (#158). Graceful shutdown on Ctrl-C **or SIGTERM**; a live
+  socket gets a `Close` frame and ends when the engine's outbox closes
+  (`Holly::shutdown`), so an open browser tab never holds shutdown open (#699). Scoped **local, single-user, loopback-bound**: reached via
   `--port <N>` and **always** bound to `127.0.0.1` (no non-loopback bind is
   offered — the loopback bind is the one required non-public control). The WS is
   a general protocol interface (the future Vue SPA is the primary but not

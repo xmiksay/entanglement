@@ -1968,15 +1968,11 @@ async fn main() -> Result<()> {
 
     // Shut the engine down and let the persistence task flush before exit: a
     // one-shot `run` ends the instant the turn does, and the detached subscriber
-    // still holds broadcast-buffered events it hasn't written. The tool executor
-    // and history responder each hold a `Holly` clone (an inbox + event sender),
-    // so aborting them is required for the channels to actually close and the
-    // persistence subscriber to drain + exit. Aborting each of these top-level
-    // handles also drops every task it spawned in turn (a `JoinSet` local to its
-    // future, or the `CancelAllOnDrop` guard for the tool executor's per-call
-    // dispatch/rhai tasks, #545) — a bare detached `tokio::spawn` from inside one
-    // of these would otherwise keep its own `Holly` clone alive indefinitely and
-    // this whole shutdown would never observe the channels close.
+    // still holds broadcast-buffered events it hasn't written. `Holly::shutdown`
+    // closes the outbox however many clones survive (#700) — a `serve`
+    // connection or a detached task can no longer hold the drain open. The
+    // runtime services are still aborted so their own work (a `JoinSet` local to
+    // each future, the tool executor's `CancelAllOnDrop` guard, #545) stops too.
     tool_executor.abort();
     mcp_responder_handle.abort();
     throttle_handle.abort();
@@ -1989,7 +1985,7 @@ async fn main() -> Result<()> {
     if let Some(h) = plans_watcher_handle {
         h.abort();
     }
-    drop(holly);
+    holly.shutdown().await;
     // Backstop (#545): the drain above should now complete promptly, but a
     // future oversight in a detached task (or a sink write that never returns)
     // must not hang the process forever — a bounded wait beats an unkillable
