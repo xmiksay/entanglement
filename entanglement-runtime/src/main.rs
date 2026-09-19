@@ -1208,6 +1208,7 @@ fn launches_tui_head(cmd: &Option<Cmd>, prompt: &[String]) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    logging::startup_mark("process start");
     let cli = Cli::parse();
     // `--yes` is retired (#554, ADR-0207 §11) — exit the same clean way
     // `select_provider`'s other user-facing CLI errors do (`eprintln!` +
@@ -1267,6 +1268,7 @@ async fn main() -> Result<()> {
     // mid-session log line corrupts the display.
     let launches_tui = launches_tui_head(&cli.cmd, &cli.prompt);
     logging::init(cli.verbose || user_config.verbose, launches_tui)?;
+    logging::startup_mark("config+prune+logging");
 
     // First run: drop a commented starter config so `${config_dir}/entanglement/`
     // is a discoverable starting point rather than an empty dir (#219). The
@@ -1398,6 +1400,7 @@ async fn main() -> Result<()> {
     // Shared with the definitions watcher (#329): a reload re-reads the managed
     // file and re-applies it onto the freshly-loaded profiles the same way.
     let live_agent_models = Arc::new(Mutex::new(agent_models));
+    logging::startup_mark("skills+agents");
     // Per-agent generation-parameter overrides (#374, ADR-0094): unlike the model
     // pin above, this doesn't overlay onto `profiles` (`GenerationParams` isn't
     // `Eq`, so it can't join `Agent`'s derive) — instead it's wrapped in a
@@ -1445,6 +1448,7 @@ async fn main() -> Result<()> {
         &user_config,
     )
     .await;
+    logging::startup_mark("tools+mcp connect");
     // Per-agent generation-parameter overrides (#374, ADR-0094): resolved by
     // profile name at session start / `SetAgent`, same precedence tier the model
     // pin's persisted file occupies (persisted store > profile/catalog default).
@@ -1720,7 +1724,7 @@ async fn main() -> Result<()> {
     // otherwise re-discover on the next `propose_plan` call).
     let plans_watcher_handle =
         plan_watch::spawn_plans_watcher(&holly, plan_root, plan_files.clone());
-
+    logging::startup_mark("engine+responders ready");
     let result = match cli.cmd {
         Some(Cmd::Run {
             prompt,

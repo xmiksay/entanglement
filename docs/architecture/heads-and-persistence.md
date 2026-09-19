@@ -95,7 +95,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   per-target directives and `trace` are reachable — e.g.
   `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
   flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
-  (issue #187, `runtime::logging`). `inspect config` (#172) prints the resolved
+  (issue #187, `runtime::logging`). Cold-start attribution (#703):
+  `RUST_LOG=skutter::startup=debug` logs the wall-clock since process start at
+  each phase boundary (`config+prune+logging`, `skills+agents`,
+  `tools+mcp connect`, `engine+responders ready`, `tui first frame`); the TUI's
+  syntect syntax/theme sets load on the first fenced code block, not before
+  the first frame. `inspect config` (#172) prints the resolved
   user config with per-field provenance — every fallback setting in
   [`config::Config`](../../entanglement-runtime/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
