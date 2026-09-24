@@ -4,9 +4,11 @@ How the headless engine is structured and how the four interfaces share one
 contract. Overview & roadmap in [`../README.md`](../README.md). The *why* behind
 each choice here is recorded in the [decision log](adr/README.md) (ADRs).
 
-This document describes the current *what is*, with the three-layer direction
-([ADR-0006](adr/0006-core-dependency-hygiene-gate.md)) marked inline:
-**✅ shipped** vs **🚧 decided but pending** (tracked in GitHub issues).
+This document describes the current *what is* — the three-layer dependency
+direction `provider ← core ← runtime`
+([ADR-0053](adr/0053-invert-core-provider-seam.md), superseding the direction
+of [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)'s original gate).
+Decided-but-pending work lives in GitHub issues, not inline here.
 
 ## Modules
 

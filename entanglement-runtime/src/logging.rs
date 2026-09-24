@@ -64,6 +64,18 @@ fn log_file_path() -> Result<PathBuf> {
     Ok(dir.join("skutter.log"))
 }
 
+static STARTUP: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Log the wall-clock since process start at a startup phase boundary, so a
+/// slow cold start can be attributed (#703). The first call — `main`'s very
+/// first line, before logging exists — only pins the origin. Debug-level under
+/// its own target: `RUST_LOG=skutter::startup=debug skutter`.
+pub fn startup_mark(phase: &str) {
+    let start = STARTUP.get_or_init(std::time::Instant::now);
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    tracing::debug!(target: "skutter::startup", phase, elapsed_ms, "startup phase");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

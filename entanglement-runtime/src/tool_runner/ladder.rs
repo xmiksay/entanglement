@@ -5,7 +5,7 @@
 //! handler — [`orchestration`] for the routes that bypass permission
 //! entirely (`Capability::Control`, or a tool with its own unconditional
 //! semantics) and [`graded`] for the two that resolve a grade first. Split
-//! out of `tool_runner.rs` (issue #451) — the executor loop there folds
+//! out of `tool_runner.rs` (issue #451) — the executor loop (`lifecycle.rs`) folds
 //! lifecycle events and calls into this module once per `ToolExec`;
 //! everything about *which* handler a tool name reaches, and how that
 //! handler is launched, lives in this module tree.

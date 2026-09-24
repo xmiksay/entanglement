@@ -1,11 +1,33 @@
-# auto: unattended run (ADR-0207 §11). `default: deny` is load-bearing here,
-# not decoration: nobody is watching, so anything not explicitly listed is
-# refused and the turn continues rather than parking a prompt that will never
-# be answered. That is why exec is an explicit command list instead of the
-# `exec` capability class — a class allow would mean `default: deny` never
-# fires and the deny list below became the only guard, leaving anything
-# harmful nobody thought to enumerate permitted. `bash` and `call` share
-# these rules (ADR-0207 §4), so one spelling covers both.
+# auto: unattended run (ADR-0207 §11, amended by ADR-0209). `default: prompt`
+# — not `deny` — because the unattended guarantee comes from
+# `question_timeout`, never from the default grade.
+#
+# The original cut spelled this `default: deny`, reasoning that nobody is
+# watching so anything unlisted should be refused outright rather than park a
+# prompt that will never be answered. That reasoning was right about
+# *parking* and wrong about the *grade*. A `Deny` is absolute — it takes
+# dispatch's `Permission::Deny` arm and replies immediately — so it bypassed
+# the very escalation ADR-0207 §11 built for this mode:
+# `run_limits::collapses_ask` refuses a first `Ask` *without* parking, and
+# `DenialTracker::record_repeat` parks a bounded approval on a **second**
+# identical call, "since a model insisting twice may genuinely need it".
+# With `default: deny` that path was unreachable for every command not
+# explicitly enumerated — i.e. nearly all of them — so an attended `auto`
+# session could never approve anything, and a model's correct retry was
+# refused identically forever.
+#
+# `default: prompt` restores the ladder without weakening the posture,
+# because the timeout does the work: genuinely unattended, the first call
+# collapses to a denial, the second parks, nobody answers, and
+# `on_timeout: deny` refuses it 60s later — the same outcome, one prompt
+# later. Attended, the user gets to decide.
+#
+# What stays: the `deny` list below is absolute regardless of the default,
+# and exec is still an **explicit command list**, never the `exec` capability
+# class. That distinction is the one ADR-0207 §11 actually needed — a class
+# allow would run unenumerated commands *silently*, which is a different
+# thing from prompting for them. `bash` and `call` share these rules
+# (ADR-0207 §4), so one spelling covers both.
 #
 # The exec allow list is the shared read-only set (`readonly_exec.yml`,
 # spliced in by `builtin.rs`) plus this mode's own build-tooling extras —
@@ -13,9 +35,11 @@
 # `research`'s (different git coverage, no `sed`/`awk`/`diff`); that drift
 # is exactly what a single shared list removes.
 #
-# The deny entries stay even though exec is not class-allowed: they cost
-# nothing and keep holding if a user tunes `exec` on via `config.yml`.
-default: deny
+# The `deny` entries below carry more weight under `default: prompt` than
+# they did under `default: deny`: they are now the only grade an unattended
+# run refuses *without* an escalation path, so everything genuinely
+# irreversible belongs there rather than relying on the default.
+default: prompt
 deny:
   - plan
   - "bash(rm -rf /*)"

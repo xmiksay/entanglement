@@ -161,7 +161,7 @@ make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make test         # unit + integration
 make test-live    # opt-in live z.ai probes (needs ZAI_API_KEY)
 make lint         # clippy --all-targets -D warnings
-make verify       # check-fmt + tree + check-lean + file-cap + lint + test (CI-equivalent)
+make verify       # check-fmt + tree + check-lean + file-cap + userid + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)

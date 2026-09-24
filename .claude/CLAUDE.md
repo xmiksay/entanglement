@@ -50,7 +50,7 @@ make test-live     # opt-in live z.ai probes (ZAI_API_KEY): tool discovery + pro
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
-make verify        # check-fmt + tree + check-lean + file-cap + lint + test  (CI-equivalent gate)
+make verify        # check-fmt + tree + check-lean + file-cap + userid + lint + test  (CI-equivalent gate)
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
@@ -258,7 +258,13 @@ never here**; each bullet is the claim + where to read it:
   still grade root-relative; a `config.yml` `permissions:` ceiling still
   clamps least-privilege over every mode's grade; `Approve` still carries
   scope (`Once`/`Session`/`SessionDir`/`Always`) and a grant is now **mode-scoped**
-  too (earned in `build`, inert in `research`). [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  too (earned in `build`, inert in `research`). `auto` is the unattended
+  posture, and its bound is `question_timeout`/`on_timeout`, **not** its
+  default grade: its default is `prompt`, so an unenumerated call collapses
+  to a refusal and an identical retry parks a bounded approval (60s, expiring
+  as a denial) — only the explicit `deny` list refuses with no escalation
+  path ([ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)
+  amending ADR-0207 §11). [agents & permissions](../docs/architecture/agents-and-permissions.md),
   [ADR-0051](../docs/adr/0051-argument-scoped-permission-rules.md)/[ADR-0052](../docs/adr/0052-approval-scope-and-persisted-grants.md)/[ADR-0116](../docs/adr/0116-workdir-scoped-permission-rules-for-bash-call.md)/[ADR-0125](../docs/adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)/[ADR-0126](../docs/adr/0126-session-scoped-directory-grants.md)/[ADR-0088](../docs/adr/0088-session-aware-tool-execution.md)/[ADR-0197](../docs/adr/0197-compound-bash-commands-grade-per-segment.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
 - **`rhai` is a sandboxed script tool with file/exec bindings** graded
   through the same permission chain as everything else — the session's
