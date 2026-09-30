@@ -88,10 +88,10 @@ router/envelope tool, every call by its native name either way.
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,
-materializes or binds one, force-parks on approval every phase, and — on
-approve — spawns the sponsored `build` child *blocking*, folding its full
-report back so the plan agent can review, edit the file, and re-propose the
-next phase (#513, ADR-0145). `OutEvent::TaskList` (markdown `content`) is a
+materializes or binds one, force-parks on approval, and — on approve —
+switches the session's mode in place to the approver's pick (`build`, or
+`auto` on a bare accept) so the same turn continues into implementation
+(#513, ADR-0145; ADR-0207 §7). `OutEvent::TaskList` (markdown `content`) is a
 separate, simpler snapshot from `update_tasks`: permission-gated but carrying
 no host resource, so the runtime intercepts it out of the tool registry and
 emits the snapshot instead of dispatching (#231, ADR-0049). Every head

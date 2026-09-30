@@ -338,10 +338,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   used to arm a cascade-vs-detach confirm modal (`c` cascades, `Enter`/`y`/`d`
   detaches, `Esc`/`n` cancels) when the target was `WaitingAgent` with a live
   **sponsored** `propose_plan` build child
-  (`OutEvent::SessionStarted.sponsored`). [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  (flagged by the since-deleted `SessionStarted.sponsored`). [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   §7 retires that handoff entirely — plan approval switches the session's own
-  mode instead of spawning a child, so `sponsored` is never `true` any more
-  (it stays on the wire only for old-log replay) — and with the confirm's
+  mode instead of spawning a child, and the `sponsored` field left the wire
+  with it — and with the confirm's
   premise gone, `request_stop` now **always** sends `Stop` immediately,
   unconditionally, for every target. `/stop --all` keeps its raw fan-out
   semantics unchanged. `/name <text>` sets the session's
