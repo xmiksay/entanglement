@@ -105,8 +105,8 @@ fn allow_all_table() -> Arc<ModeTable> {
 }
 
 /// A mode with no allow/deny rules and `default: Ask` — none of the built-in
-/// four modes default to `Ask` on every tool (research/plan/build default to
-/// `prompt` but carry rules, auto defaults to `deny`), so the plain-`Ask`
+/// four modes default to `Ask` on every tool (all four default to
+/// `prompt` but carry rules; ADR-0209 made `auto`'s default `prompt` too), so the plain-`Ask`
 /// dispatch path needs a dedicated fixture.
 fn ask_mode_table() -> Arc<ModeTable> {
     one_mode_table(Permission::Ask, &[], &[])

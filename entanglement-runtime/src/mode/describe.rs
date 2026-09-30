@@ -35,10 +35,12 @@ pub const MODE_SUMMARIES: [(&str, &str); 4] = [
     ),
     (
         "auto",
-        "unattended run: only a curated allowlist (read, write, cargo, make, \
-         git status/diff/log) is allowed — everything unlisted is denied \
-         outright rather than prompting, since nobody is watching \
-         (question_timeout 60s).",
+        "unattended run: a curated allowlist (read, write, cargo, make, \
+         git status/diff/log) runs outright and a short destructive list \
+         (rm -rf, push, hard reset, publish, gh/glab writes) is denied \
+         outright; anything else is refused on first call and parks a \
+         bounded approval if you call it again — which expires as a denial \
+         after 60s when nobody is watching.",
     ),
 ];
 

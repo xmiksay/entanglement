@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use pulldown_cmark::{Options, Parser};
 use ratatui::{
     style::{Color, Style},
@@ -12,18 +14,27 @@ mod md_state;
 
 use md_state::RenderState;
 
-#[derive(Clone)]
-pub struct MarkdownRenderer {
-    syntax_set: SyntaxSet,
-    theme: Theme,
+/// syntect's bundled syntaxes + themes, inflated on the first fenced code
+/// block rather than at TUI start: the load costs hundreds of ms and used to
+/// sit before the first frame (#703). Process-wide, so every clone shares it.
+static HIGHLIGHT: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
+
+fn highlight_assets() -> &'static (SyntaxSet, Theme) {
+    HIGHLIGHT.get_or_init(|| {
+        let mut themes = ThemeSet::load_defaults().themes;
+        let theme = themes
+            .remove("base16-ocean.dark")
+            .expect("syntect bundles the base16-ocean.dark theme");
+        (SyntaxSet::load_defaults_newlines(), theme)
+    })
 }
+
+#[derive(Clone)]
+pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
     pub fn new() -> Self {
-        let syntax_set = SyntaxSet::load_defaults_newlines();
-        let theme_set = ThemeSet::load_defaults();
-        let theme = theme_set.themes["base16-ocean.dark"].clone();
-        Self { syntax_set, theme }
+        Self
     }
 
     /// Parse CommonMark + GFM (tables, strikethrough, task lists, footnotes,
@@ -61,18 +72,18 @@ impl MarkdownRenderer {
     /// machine in `md_state` can delegate here without exposing syntect to the
     /// rest of the crate.
     pub(super) fn highlight_code(&self, language: &str, code: &str) -> Text<'static> {
-        let syntax = self
-            .syntax_set
+        let (syntax_set, theme) = highlight_assets();
+        let syntax = syntax_set
             .find_syntax_by_token(language)
-            .or_else(|| self.syntax_set.find_syntax_by_extension(language))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+            .or_else(|| syntax_set.find_syntax_by_extension(language))
+            .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
-        let mut highlighter = syntect::easy::HighlightLines::new(syntax, &self.theme);
+        let mut highlighter = syntect::easy::HighlightLines::new(syntax, theme);
         let mut lines = Vec::new();
 
         for line in code.lines() {
             let ranges = highlighter
-                .highlight_line(line, &self.syntax_set)
+                .highlight_line(line, syntax_set)
                 .unwrap_or_default();
             let spans: Vec<Span> = ranges
                 .into_iter()

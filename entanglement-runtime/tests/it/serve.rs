@@ -296,3 +296,29 @@ async fn approval_from_non_owning_connection_is_refused_then_owner_unblocks() {
         "connection B must survive the refusal and keep receiving broadcast events, got {events_b:?}"
     );
 }
+
+#[tokio::test]
+async fn engine_shutdown_closes_live_connections() {
+    // #699: a live socket used to hold its `Holly` clone (and so the engine's
+    // outbox) open past shutdown; now the engine closing closes the socket.
+    let holly = Holly::spawn(EngineConfig::default());
+    let port = spawn_server(holly.clone(), None).await;
+    let mut ws = connect(port).await;
+    let sid = SessionId::new("serve-shutdown");
+    let frame = serde_json::to_string(&InMsg::prompt(sid.clone(), "hello")).unwrap();
+    ws.send(Message::Text(frame.into())).await.unwrap();
+    drain_until_done(&mut ws, &sid).await;
+
+    holly.shutdown().await;
+
+    let closed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "socket stayed open after engine shutdown");
+}

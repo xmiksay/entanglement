@@ -161,6 +161,7 @@ pub async fn tui(
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
     let mut last_draw = Instant::now();
+    let mut first_frame_drawn = false;
 
     loop {
         app.tick_thinking();
@@ -180,6 +181,10 @@ pub async fn tui(
                 tokio::time::sleep(wait).await;
             }
             terminal.draw(|f| ui::draw(f, &mut app))?;
+            if !first_frame_drawn {
+                first_frame_drawn = true;
+                crate::logging::startup_mark("tui first frame");
+            }
             last_draw = Instant::now();
         }
 

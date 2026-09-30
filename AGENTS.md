@@ -13,11 +13,11 @@ read the authoritative sources it defers to:
 This is a hard project rule, not a style preference. The Makefile wraps every
 command and `make help` lists them. Key targets:
 
-- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + lint + test`. Run it before declaring a task complete or pushing.
-- **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006, amended by ADR-0053): `entanglement-core` must pull in **zero** UI/web-server crates. Adding `clap`/`axum`/`warp`/`actix`/`rocket`/`tonic`/`tungstenite`/`crossterm`/`ratatui`/`ureq` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green. `reqwest`/`hyper`/`tower` are **not** forbidden — they ride in legitimately via provider (ADR-0053).
+- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + userid + lint + test`. Run it before declaring a task complete or pushing.
+- **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006, amended by ADR-0053): `entanglement-core` must pull in **zero** UI/web-server crates. Adding `clap`/`axum`/`warp`/`actix-web`/`actix`/`rocket`/`tonic`/`tungstenite`/`crossterm`/`ratatui`/`ureq` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green. `reqwest`/`hyper`/`tower` are **not** forbidden — they ride in legitimately via provider (ADR-0053).
 - **`make file-cap`** — enforces the 400-line file cap below (issue #451). A currently-over-cap file must be listed in `scripts/file-cap-allowlist.txt` (grandfathered debt) or the gate fails; splitting a file below the cap requires deleting its row in the same change, or the gate fails the other way (a stale allowlist entry).
 - `make test-unit` / `make test-integration` — split suites (`--lib --bins` vs `--test '*'`).
-- `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI). `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
+- `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI); `make pipe` / `make serve` start the stdio pipe / local WebSocket heads. `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
 
 For a **single test** the Makefile has no target — raw cargo is fine here:
 `cargo test -p entanglement-core --lib session::tests::<name>`.

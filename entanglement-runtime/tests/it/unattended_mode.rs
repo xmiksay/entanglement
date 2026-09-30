@@ -512,3 +512,147 @@ fn retired_yes_flag_errors_with_a_pointer_to_mode_auto() {
         "must not panic, got: {stderr}"
     );
 }
+
+/// ADR-0209, end-to-end on the **real** built-in `auto` table rather than a
+/// synthetic single-mode fixture: an unenumerated command — `gh issue
+/// delete`, the reported case — must reach the collapse-then-park
+/// escalation the tests above exercise.
+///
+/// This is the regression pin that matters. Every other test in this file
+/// builds its own `Permission::Ask` mode, so all of them passed while the
+/// shipped `auto` had `default: deny` and took dispatch's *absolute* arm
+/// instead — two identical calls produced two identical unappealable
+/// denials and no prompt, ever. The machinery was fully tested and
+/// completely unreachable from the mode that ships.
+#[tokio::test]
+async fn the_real_auto_mode_escalates_an_unenumerated_command_on_the_second_call() {
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let cmd = "gh issue delete 51 --yes";
+    // The real `bash` input shape: `permission::permission_arg` parses it as
+    // JSON and reads `.command`, so a bare command string would grade with
+    // `arg: None` and silently match no argument-scoped rule at all.
+    let input = format!(r#"{{"command":"{cmd}"}}"#);
+    let holly = spawn_with_policy(
+        reg,
+        Arc::new(ModeTable::builtin().expect("built-in modes parse")),
+        vec![
+            bash_call("t1", &input),
+            bash_call("t2", &input),
+            done_text(),
+        ],
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "auto".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    let mut watch = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+
+    let mut request_id = None;
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), watch.recv()).await {
+        if let OutEvent::ToolRequest {
+            request_id: rid,
+            tool,
+            ..
+        } = &ev
+        {
+            if tool == "bash" {
+                request_id = Some(rid.clone());
+                break;
+            }
+        }
+    }
+    let request_id = request_id.expect(
+        "the repeated identical call must park an approval — under `default: deny` \
+         it was refused absolutely instead, with no escalation at any retry count",
+    );
+    holly
+        .send(InMsg::Approve {
+            session: sid.clone(),
+            request_id,
+            scope: Default::default(),
+            mode: None,
+        })
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if *output == format!("ran: {input}"))
+        ),
+        "the approved repeat should have run; got {events:?}"
+    );
+    let denials: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } if output.contains("denied") => Some(output),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        denials.len(),
+        1,
+        "only the first call should be denied; got {denials:?}"
+    );
+    assert!(
+        denials[0].contains("unattended"),
+        "the first refusal must be the collapsed-Ask one that invites a retry, \
+         not an absolute mode deny; got {:?}",
+        denials[0]
+    );
+}
+
+/// The other half of ADR-0209: `default: prompt` must not have softened the
+/// explicit `deny` list into something approvable. A destructive command
+/// stays absolute in `auto` — refused identically however many times it is
+/// called, with no `ToolRequest` ever parked.
+#[tokio::test]
+async fn the_real_auto_mode_still_refuses_a_denied_command_absolutely() {
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let input = r#"{"command":"git push origin main"}"#;
+    let holly = spawn_with_policy(
+        reg,
+        Arc::new(ModeTable::builtin().expect("built-in modes parse")),
+        vec![bash_call("t1", input), bash_call("t2", input), done_text()],
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "auto".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a mode `deny` must never park, at any retry count; got {events:?}"
+    );
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
+        ),
+        "the denied command must never run; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, is_error: true, .. }
+                if output.contains("denied by mode `auto`")
+        )),
+        "expected the absolute mode-deny wording; got {events:?}"
+    );
+}

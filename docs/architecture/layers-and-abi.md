@@ -95,6 +95,14 @@ and the loop counters — no cached tool set (the schemas come from
 - `holly.send(InMsg)` — push a typed message in (zero serialization).
 - `holly.subscribe()` — get a `broadcast::Receiver<OutEvent>` (fan-out to N
   subscribers).
+- `holly.shutdown().await` — stop every session and the supervisor and close
+  both broadcasts (subscribers see `RecvError::Closed`) **however many `Holly`
+  clones are still alive** (#700): a handle holds the broadcast senders only
+  through a shared, takeable slot, so a stray clone (a detached task, a live
+  `serve` socket) can no longer keep the outbox open. Idempotent; afterwards
+  `send` fails and a fresh `subscribe()` is already closed. Dropping every
+  clone without calling it still stops the engine (the inbox closes). `skutter`
+  calls it at teardown, before the bounded persistence drain (#545).
 
 This **is** the ABI. The other three heads are adapters that translate their
 wire format to/from `InMsg`/`OutEvent`. Adding a head never touches the engine.

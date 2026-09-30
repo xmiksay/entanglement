@@ -20,11 +20,13 @@ use crate::session::{session_loop, Session, SessionCmd};
 use entanglement_provider::ContentPart;
 
 mod config;
+mod outlets;
 mod routing;
 
 pub use config::{
     AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
+use outlets::Outlets;
 use routing::{emit_supervisor_error, msg_to_cmd, resume_meta, route_to_session};
 
 /// Per-session monotonic seq counters, shared between each session task (which
@@ -113,17 +115,14 @@ pub const DEFAULT_AGENT: &str = "general";
 /// runtime.
 pub const DEFAULT_MODE: &str = "build";
 
-/// Handle to the running engine. Cheap to clone; the actor task lives until all
-/// clones drop (the inbox closes) or every session stops.
+/// Handle to the running engine. Cheap to clone; the actor task lives until
+/// [`shutdown`][Holly::shutdown] or until all clones drop (the inbox closes).
 #[derive(Clone)]
 pub struct Holly {
     inbox: mpsc::Sender<InMsg>,
-    events: broadcast::Sender<OutEvent>,
-    /// Fan-out of every inbound [`InMsg`] (cloned before routing). Lets a
-    /// runtime-side service observe protocol messages it doesn't route itself —
-    /// e.g. the tool executor watching `Approve`/`Reject`/`Stop` while it owns
-    /// permission dispatch + approval (ADR-0010, #59).
-    inbound: broadcast::Sender<InMsg>,
+    /// The outbox plus the fan-out of every inbound [`InMsg`] (lets e.g. the
+    /// tool executor observe `Approve`/`Reject`/`Stop`, ADR-0010, #59).
+    outlets: Arc<Outlets>,
     /// Shared per-session seq counters (#157) — see [`SeqRegistry`].
     seqs: SeqRegistry,
     /// The engine's configured id generator (ADR-0164), cloned out of
@@ -143,10 +142,10 @@ impl Holly {
         let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
         let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
         let id_gen = cfg.id_gen.clone();
-        let supervisor_events = events.clone();
-        let supervisor_inbound = inbound.clone();
+        let (supervisor_events, supervisor_inbound) = (events.clone(), inbound.clone());
         let supervisor_seqs = seqs.clone();
-        tokio::spawn(async move {
+        let (outlets, shutdown) = Outlets::new(events, inbound);
+        outlets.set_supervisor(tokio::spawn(async move {
             supervisor(
                 rx,
                 supervisor_events,
@@ -154,15 +153,24 @@ impl Holly {
                 supervisor_seqs,
                 activity,
                 cfg,
+                shutdown,
             )
             .await
-        });
+        }));
         Self {
             inbox,
-            events,
-            inbound,
+            outlets: Arc::new(outlets),
             seqs,
             id_gen,
+        }
+    }
+
+    /// Stop every session and the supervisor, closing both broadcasts however
+    /// many clones are still alive (#700). Afterwards `send` fails and a fresh
+    /// subscription is already closed. Idempotent.
+    pub async fn shutdown(&self) {
+        if let Some(supervisor) = self.outlets.close() {
+            let _ = supervisor.await;
         }
     }
 
@@ -251,7 +259,7 @@ impl Holly {
 
     /// Subscribe to the outbound event stream (every session, fan-out).
     pub fn subscribe(&self) -> broadcast::Receiver<OutEvent> {
-        self.events.subscribe()
+        self.outlets.subscribe()
     }
 
     /// Mint a fresh monotonic per-session `seq` and broadcast a runtime-authored
@@ -266,7 +274,7 @@ impl Holly {
     /// stream to collide with.
     pub fn emit_for_session(&self, session: &SessionId, make: impl FnOnce(u64) -> OutEvent) {
         let seq = self.next_seq(session);
-        let _ = self.events.send(make(seq));
+        self.outlets.emit(make(seq));
     }
 
     /// Broadcast a point-in-time lifecycle [`OutEvent::Status`] for `session`.
@@ -275,7 +283,7 @@ impl Holly {
     /// [`emit_for_session`][Self::emit_for_session] for the runtime's `Thinking`/
     /// `WaitingApproval` transitions around a parked tool call.
     pub fn emit_status(&self, session: &SessionId, state: AgentState) {
-        let _ = self.events.send(OutEvent::Status {
+        self.outlets.emit(OutEvent::Status {
             session: session.clone(),
             state,
         });
@@ -288,7 +296,7 @@ impl Holly {
     /// way for the runtime's log-owning history responder to answer a late
     /// subscriber without the raw outbound sender being exposed.
     pub fn emit_history(&self, correlation_id: String, session: SessionId, events: Vec<OutEvent>) {
-        let _ = self.events.send(OutEvent::History {
+        self.outlets.emit(OutEvent::History {
             correlation_id,
             session,
             events,
@@ -303,7 +311,7 @@ impl Holly {
         correlation_id: String,
         questions: Vec<crate::protocol::PendingQuestion>,
     ) {
-        let _ = self.events.send(OutEvent::QuestionList {
+        self.outlets.emit(OutEvent::QuestionList {
             correlation_id,
             questions,
         });
@@ -318,7 +326,7 @@ impl Holly {
         correlation_id: String,
         operations: Vec<crate::protocol::OperationInfo>,
     ) {
-        let _ = self.events.send(OutEvent::OperationList {
+        self.outlets.emit(OutEvent::OperationList {
             correlation_id,
             operations,
         });
@@ -332,7 +340,7 @@ impl Holly {
         correlation_id: String,
         servers: Vec<crate::protocol::McpServerStatus>,
     ) {
-        let _ = self.events.send(OutEvent::McpList {
+        self.outlets.emit(OutEvent::McpList {
             correlation_id,
             servers,
         });
@@ -342,7 +350,7 @@ impl Holly {
     /// [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). No `seq` — a point-in-time
     /// engine-global lifecycle event, not session content.
     pub fn emit_mcp_changed(&self, name: String, action: crate::protocol::McpAction) {
-        let _ = self.events.send(OutEvent::McpChanged { name, action });
+        self.outlets.emit(OutEvent::McpChanged { name, action });
     }
 
     /// Broadcast a runtime-authored [`OutEvent::McpAuthChanged`] reply to
@@ -350,7 +358,7 @@ impl Holly {
     /// lifecycle event, not session content. A `Connect` emits twice: an interim
     /// event carrying the authorize URL, then the terminal outcome.
     pub fn emit_mcp_auth_changed(&self, status: crate::protocol::McpAuthStatus) {
-        let _ = self.events.send(OutEvent::McpAuthChanged { status });
+        self.outlets.emit(OutEvent::McpAuthChanged { status });
     }
 
     /// Broadcast a runtime-authored [`OutEvent::Throttle`] transition (#517,
@@ -369,7 +377,7 @@ impl Holly {
         waiters: usize,
         shared_leases: Option<usize>,
     ) {
-        let _ = self.events.send(OutEvent::Throttle {
+        self.outlets.emit(OutEvent::Throttle {
             endpoint,
             throttled,
             in_flight,
@@ -394,22 +402,12 @@ impl Holly {
     /// runtime service (e.g. the tool executor) can react to `Approve`/`Reject`/
     /// `Stop` without the engine having to interpret them.
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InMsg> {
-        self.inbound.subscribe()
+        self.outlets.subscribe_inbound()
     }
 
-    /// Resume a session from replayed log records.
-    ///
-    /// This reconstructs the session state from the provided records and spawns
-    /// a session task seeded from that state. Returns the session ID.
-    ///
-    /// # Parameters
-    ///
-    /// - `root_id`: The session ID to resume
-    /// - `records`: A slice of `(Option<InMsg>, OutEvent)` tuples representing the log
-    ///
-    /// # Returns
-    ///
-    /// The session ID of the resumed session.
+    /// Resume `root_id` from its replayed `(Option<InMsg>, OutEvent)` log
+    /// records: the supervisor rebuilds the session state and spawns a task
+    /// seeded from it. Returns `root_id`.
     #[allow(clippy::result_large_err)] // see `send` — the raw SendError is deliberate
     pub async fn resume(
         &self,
@@ -441,7 +439,8 @@ impl Holly {
 }
 
 /// Route inbound messages to per-session tasks, lazily spawning one per new
-/// [`SessionId`]. Exits (stopping all sessions) when the inbox closes.
+/// [`SessionId`]. Exits (stopping all sessions) when the inbox closes or
+/// [`Holly::shutdown`] is requested.
 async fn supervisor(
     mut rx: mpsc::Receiver<InMsg>,
     events: broadcast::Sender<OutEvent>,
@@ -449,6 +448,7 @@ async fn supervisor(
     seqs: SeqRegistry,
     activity: ActivityRegistry,
     cfg: EngineConfig,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>> = HashMap::new();
     // Session→supervisor channel for the two frames a compaction fork needs
@@ -504,6 +504,7 @@ async fn supervisor(
             Some((ttl, timer)) => {
                 tokio::select! {
                     biased;
+                    _ = outlets::requested(&mut shutdown) => None,
                     m = rx.recv() => m,
                     m = fork_rx.recv() => m,
                     _ = timer.tick() => {
@@ -514,6 +515,7 @@ async fn supervisor(
             }
             None => tokio::select! {
                 biased;
+                _ = outlets::requested(&mut shutdown) => None,
                 m = rx.recv() => m,
                 m = fork_rx.recv() => m,
             },
@@ -969,9 +971,10 @@ async fn supervisor(
             route_to_session(tx, cmd, &session_id, &events, &seqs).await;
         }
     }
-    // Inbox closed: signal every session to stop. Their tasks return on receipt.
+    // Inbox closed or shutdown: stop every session and drop its channel;
+    // `try_send`, as a saturated session must not stall shutdown (#700).
     for (_, tx) in sessions.drain() {
-        let _ = tx.send(SessionCmd::Stop).await;
+        let _ = tx.try_send(SessionCmd::Stop);
     }
 }
 

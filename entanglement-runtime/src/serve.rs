@@ -104,7 +104,8 @@ struct ServeState {
 }
 
 /// Bind `127.0.0.1:port` (loopback-only, ADR-0048) and serve the WS head until
-/// Ctrl-C. The bind is the required non-public control, so no non-loopback bind
+/// Ctrl-C or SIGTERM. Live connections close when the engine shuts down (#699).
+/// The bind is the required non-public control, so no non-loopback bind
 /// is offered.
 pub async fn serve(holly: Holly, port: u16, allowed_origin: Option<String>) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -137,7 +138,26 @@ pub fn router(holly: Holly, allowed_origin: Option<String>) -> Router {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    // `systemctl stop` / a bare `kill` send SIGTERM, not SIGINT (#699).
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!("serve: no SIGTERM handler ({e}); Ctrl-C only");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate => {}
+    }
     tracing::info!("serve head shutting down");
 }
 
@@ -178,7 +198,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
 
     // Outbound pump: fan-out events as JSON text frames; a periodic ping keeps an
     // otherwise-silent socket alive.
-    let out = tokio::spawn(async move {
+    let mut out = tokio::spawn(async move {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -201,7 +221,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                     Err(RecvError::Lagged(n)) => {
                         tracing::warn!("serve: ws relay lagged, skipped {n} events");
                     }
-                    Err(RecvError::Closed) => break,
+                    // Engine shut down (#699): close the socket so the client
+                    // knows, and so this connection releases its `Holly`.
+                    Err(RecvError::Closed) => {
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
                 },
                 _ = ping.tick() => {
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
@@ -215,8 +240,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
     // Inbound pump: parse each text frame as an `InMsg` and route it through the
     // untrusted wire path (#155). A non-JSON line falls back to a `Prompt` on this
     // connection's default session (pipe parity). Ping/pong/binary are ignored
-    // (axum answers pings itself).
-    while let Some(Ok(msg)) = stream.next().await {
+    // (axum answers pings itself). The loop also ends when the outbound pump
+    // does — the client hung up, or the engine shut down (#699).
+    loop {
+        let msg = tokio::select! {
+            m = stream.next() => match m {
+                Some(Ok(m)) => m,
+                _ => break,
+            },
+            _ = &mut out => break,
+        };
         match msg {
             Message::Text(text) => {
                 let trimmed = text.trim();

@@ -95,7 +95,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   per-target directives and `trace` are reachable — e.g.
   `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
   flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
-  (issue #187, `runtime::logging`). `inspect config` (#172) prints the resolved
+  (issue #187, `runtime::logging`). Cold-start attribution (#703):
+  `RUST_LOG=skutter::startup=debug` logs the wall-clock since process start at
+  each phase boundary (`config+prune+logging`, `skills+agents`,
+  `tools+mcp connect`, `engine+responders ready`, `tui first frame`); the TUI's
+  syntect syntax/theme sets load on the first fenced code block, not before
+  the first frame. `inspect config` (#172) prints the resolved
   user config with per-field provenance — every fallback setting in
   [`config::Config`](../../entanglement-runtime/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
@@ -120,7 +125,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   is refused per-frame (a non-JSON line falls back to a `Prompt` on the socket's
   own default session, `pipe` parity); a 30s ping keeps an idle socket alive and
   a `broadcast::Lagged` is a dropped-events gap → `continue`, never a silent
-  relay death (#158). Scoped **local, single-user, loopback-bound**: reached via
+  relay death (#158). Graceful shutdown on Ctrl-C **or SIGTERM**; a live
+  socket gets a `Close` frame and ends when the engine's outbox closes
+  (`Holly::shutdown`), so an open browser tab never holds shutdown open (#699). Scoped **local, single-user, loopback-bound**: reached via
   `--port <N>` and **always** bound to `127.0.0.1` (no non-loopback bind is
   offered — the loopback bind is the one required non-public control). The WS is
   a general protocol interface (the future Vue SPA is the primary but not

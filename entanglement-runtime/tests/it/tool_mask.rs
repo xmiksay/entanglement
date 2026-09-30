@@ -362,7 +362,7 @@ async fn mcp_enable_falls_through_to_unknown_tool_under_every_built_in_mode() {
 /// never graded. `update_tasks` carries no registry entry (#231, ADR-0049;
 /// exempted from the unknown-tool check by `is_state_tool`) and must run
 /// unprompted under every built-in mode, including `auto`'s unattended
-/// `default: deny`. Before this fix it fell through to the generic ladder
+/// posture (`default: prompt` since ADR-0209, bounded by `question_timeout`). Before this fix it fell through to the generic ladder
 /// and prompted under `build`'s `default: prompt`.
 #[tokio::test]
 async fn update_tasks_runs_unprompted_under_every_built_in_mode() {
