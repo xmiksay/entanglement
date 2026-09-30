@@ -29,7 +29,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
          | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the session's mode grade (graded Ask|Allow, optionally arg_pattern-narrowed, overriding even a mode Deny), deny entries withdraw even mode-allowed tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); now mode-scoped — dropped wholesale on a live SetMode (#560, ADR-0207 §8); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
-         | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,sponsored}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); sponsored is VESTIGIAL since ADR-0207 §7 retired the propose_plan sponsored-build-child handoff (ADR-0138) it disambiguated — nothing sets it true any more, but the field stays on the wire for old-log replay, #[serde(default)] false
+         | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); no sponsored flag any more — ADR-0207 §7 retired the propose_plan sponsored-build-child handoff (ADR-0138) it disambiguated and the field left the wire with it (an old log's `sponsored` is an ignored unknown field on replay)
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
          | ListOperations{correlation_id,session?}   // supervisor-global query; every pending job/script/sub-agent, or one session's when session is set → OperationList reply (#607, ADR-0161 §6); wire-allowed — reads the caller's own outstanding work, mutates nothing
@@ -42,10 +42,10 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | HibernateSession{session}   // trusted-only: evict memory, NO tombstone → SessionHibernated, resumable (#318, ADR-0077)
          | Resume{session,records}   // internal, not serialized (#[serde(skip)]); replay log → session (§6b)
 
-OutEvent = SessionStarted{session,parent?,predecessor?,profile,model?,root,ts,user?,sponsored}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522); sponsored is VESTIGIAL, mirroring Spawn's own — see that field's note
+OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user?}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522); no sponsored flag — see Spawn's note
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
-         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,profile,root,user?,sponsored(vestigial)} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
+         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,agent,root,user?} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
@@ -201,7 +201,7 @@ a remote attacker; the WS head routes every inbound frame through
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
-`SessionInfo{session,parent?,profile,root,user?,sponsored}` set — a reconnecting
+`SessionInfo{session,parent?,agent,root,user?}` set — a reconnecting
 head enumerates in one round-trip instead of folding the whole broadcast. Both
 the query and the reply carry an opaque **`correlation_id`** the head mints and
 the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)),
