@@ -36,7 +36,10 @@ fn probe() -> Option<Probe> {
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| "claude-haiku-4-5".to_string());
     Some(Probe {
-        http: reqwest::Client::new(),
+        // Never a bare `Client::new()`: under `rustls-no-provider` it panics.
+        http: entanglement_provider::client::client_builder()
+            .build()
+            .expect("reqwest client builds"),
         key,
         model,
     })

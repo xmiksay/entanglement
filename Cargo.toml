@@ -64,10 +64,11 @@ rhai = { version = "1", default-features = false, features = ["std", "sync", "se
 diffy = "0.5"
 # rustls (not native-tls) so builds need no system OpenSSL headers. 0.13's
 # stock `rustls` feature is aws-lc-rs + the OS trust store; we keep ring + the
-# bundled webpki roots instead (no trust-store dependency, no aws-lc C build in
+# bundled webpki roots instead (no OS trust-store reliance, no aws-lc C build in
 # ARM/musl cross-builds) via `rustls-no-provider` + an explicit client config
 # (entanglement-provider `client::tls`). An embedder on stock 0.13 therefore
-# compiles a second TLS provider — expected. `form` backs the OAuth
+# compiles a second TLS provider — expected; see docs/embedding.md "TLS" for
+# the feature-unification hazards. `form` backs the OAuth
 # token/device/revocation POSTs (opt-in since 0.13). No `charset`: every
 # endpoint we read is UTF-8 JSON/SSE, and without the feature `.text()` falls
 # back to `from_utf8_lossy` — identical here, minus encoding_rs.

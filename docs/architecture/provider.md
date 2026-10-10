@@ -56,13 +56,25 @@ trait Llm: Send {
 - **TLS** (#728): every outbound client — the LLM `HttpClient`, the MCP HTTP
   transport riding it, the OAuth client — starts from `client::client_builder()`,
   a reqwest builder preloaded with one rustls `ClientConfig`: the **ring**
-  crypto provider and the **bundled webpki roots** (no OS trust-store
-  dependency, so minimal/musl containers need no `ca-certificates`; no aws-lc C
-  build in ARM/musl cross-builds). reqwest is built with `rustls-no-provider`,
-  so a bare `reqwest::Client::new()` would panic for want of a process-wide
-  crypto provider — never build one directly. An embedder on stock reqwest
-  0.13 (aws-lc-rs) compiles a second TLS provider alongside ours; that's
-  expected.
+  crypto provider and the **bundled webpki roots** (no runtime reliance on the
+  OS trust store, so minimal/musl containers need no `ca-certificates`; no
+  aws-lc C build in ARM/musl cross-builds; `rustls-platform-verifier` is still
+  compiled — `rustls-no-provider` pulls it — but unused). reqwest is built with
+  `rustls-no-provider`, so a bare `reqwest::Client::new()` would panic for want
+  of a process-wide crypto provider — never build one directly. Cargo feature
+  unification carries this into an embedder's build, with two hazards
+  (detail + cure in [embedding § TLS](../embedding.md#tls-and-the-rustls-crypto-provider)):
+  an embedder that also enables `rustls/aws_lc_rs` (stock reqwest 0.13) gets
+  both providers compiled, so rustls' implicit provider selection
+  (`CryptoProvider::from_crate_features()`) yields `None` and its own
+  `rustls::ClientConfig::builder()` / tokio-tungstenite / sqlx rustls paths
+  panic — its own reqwest `Client::new()` still works; and an embedder on
+  reqwest 0.13 with `default-features = false` and no TLS feature gets
+  `__rustls` unified in, so its `Client::new()` now panics (it used to fail
+  HTTPS only at request time). The opt-in cure is
+  `client::install_default_crypto_provider()` (installs ring process-wide,
+  first caller wins; the engine never calls it) early in `main`, or building
+  clients from `client::client_builder()`.
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
 - **`LlmEvent::Reasoning`** surfaces extended-thinking output (Anthropic

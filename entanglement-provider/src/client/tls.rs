@@ -2,12 +2,13 @@
 //! OAuth): rustls with the `ring` provider and the bundled webpki roots.
 //!
 //! WHY explicit: reqwest 0.13's stock `rustls` feature means aws-lc-rs + the OS
-//! trust store. We keep ring + bundled roots instead — no OS trust-store
-//! dependency (minimal/musl containers work without `ca-certificates`) and no
-//! aws-lc C build in ARM/musl cross-builds. reqwest is built with
-//! `rustls-no-provider`, under which a client built *without* this config
-//! panics looking for a process-wide crypto provider, so every client in this
-//! crate must start from [`client_builder`].
+//! trust store. We keep ring + bundled roots instead — no runtime reliance on
+//! the OS trust store (minimal/musl containers work without `ca-certificates`)
+//! and no aws-lc C build in ARM/musl cross-builds. (`rustls-platform-verifier`
+//! is still compiled — `rustls-no-provider` pulls it — but never used.) reqwest
+//! is built with `rustls-no-provider`, under which a client built *without*
+//! this config panics looking for a process-wide crypto provider, so every
+//! client in this crate must start from [`client_builder`].
 
 use std::sync::{Arc, LazyLock};
 
@@ -32,6 +33,23 @@ static TLS_CONFIG: LazyLock<rustls::ClientConfig> = LazyLock::new(|| {
 /// `reqwest::Client` the provider builds starts here.
 pub fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder().tls_backend_preconfigured(TLS_CONFIG.clone())
+}
+
+/// Opt-in for embedders: install ring as the **process-wide** default rustls
+/// crypto provider. Returns whether this call won — first caller wins, and a
+/// provider someone else already installed is left in place.
+///
+/// The engine never calls this itself; the provider's own clients don't need
+/// it. An embedder does when other code in its build relies on rustls' implicit
+/// provider — a bare `reqwest::Client::new()` (which panics under the
+/// `rustls-no-provider` feature this crate unifies in), or
+/// `rustls::ClientConfig::builder()` / tokio-tungstenite / sqlx rustls paths
+/// when both ring and aws-lc-rs are compiled and rustls can't pick one. Call
+/// it early in `main`, before any such client is built.
+pub fn install_default_crypto_provider() -> bool {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_ok()
 }
 
 #[cfg(test)]
