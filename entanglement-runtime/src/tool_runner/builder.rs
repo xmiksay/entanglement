@@ -152,6 +152,11 @@ impl ToolExecutorBuilder {
     /// The session→permission-mode map (ADR-0207) folded from
     /// `OutEvent::ModeChanged`; the default resolver grades from it, and a
     /// mode-aware sandbox resolver must read this exact map. Default: private.
+    ///
+    /// A custom [`Self::resolver`] (or sandbox resolver) that reads a mode map
+    /// **must** be handed the same `Arc` here: otherwise the executor folds
+    /// `ModeChanged` into its private map and the resolver silently grades
+    /// from a map that never changes.
     pub fn perm_modes(mut self, perm_modes: Arc<Mutex<HashMap<SessionId, String>>>) -> Self {
         self.perm_modes = perm_modes;
         self
@@ -161,6 +166,8 @@ impl ToolExecutorBuilder {
     /// own rules. Default: a [`crate::policy::ModeResolver`] over this
     /// builder's final `perm_modes`, `mode_table`, `tools` and `base`, with
     /// root-relative path normalization when [`Self::escape_root`] is set.
+    /// A custom resolver that grades off a session→mode map must share that
+    /// map via [`Self::perm_modes`], or it never sees a mode change.
     pub fn resolver(mut self, resolver: Arc<dyn PermissionResolver>) -> Self {
         self.resolver = Some(resolver);
         self

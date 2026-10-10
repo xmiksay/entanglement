@@ -361,7 +361,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `escape_root` is set |
 | `grants(Arc<dyn GrantStore>)` | **in-memory only** — `Always` grants never touch `grants.yml` (#747/#775) |
 | `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
-| `perm_modes(..)` / `active(..)` | private maps (pass your own only if you read them too, e.g. a mode-aware sandbox resolver) |
+| `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
 | `hooks(Hooks)` | no hooks |
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |

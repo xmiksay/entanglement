@@ -144,10 +144,8 @@ async fn bare_builder_matches_the_deprecated_four_arg_constructor() {
 
 #[tokio::test]
 async fn grants_seam_persists_an_always_approval_to_the_given_file() {
-    let dir = std::env::temp_dir().join(format!("entanglement-724-grants-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("grants.yml");
-    let _ = std::fs::remove_file(&file);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("grants.yml");
 
     // `git push*` is on `build`'s prompt list, so it parks an approval.
     let (holly, reg) = engine(vec![bash_call("p", "git push origin")]);
@@ -184,7 +182,6 @@ async fn grants_seam_persists_an_always_approval_to_the_given_file() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         persisted.contains("git push origin"),
         "Always grant should land in the wired DefaultGrantStore's file; got {persisted:?}"
