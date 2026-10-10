@@ -26,7 +26,7 @@ use super::App;
 impl App {
     /// Install the shared ADR-0196 §2-3 pinned-mode/discovered-set handle —
     /// the same `Arc` the tool executor and the resolver closures in
-    /// `main.rs` read/write. `/tools`' status column is read-only against it.
+    /// `boot.rs` read/write. `/tools`' status column is read-only against it.
     pub fn set_advertising_state(&mut self, advertising: Arc<AdvertisingState>) {
         self.advertising = Some(advertising);
     }

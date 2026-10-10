@@ -298,7 +298,7 @@ pub(super) async fn handle_resume_modal_event(
                             crate::session_store::retired_agent(&records)
                         {
                             // ADR-0207 stage 6a: a log naming a retired agent
-                            // can't resume — see the matching check in `main.rs`.
+                            // can't resume — see the matching check in `heads.rs`.
                             tracing::error!(
                                 "Refusing to resume session {}: its log names the retired agent \
                                  `{}` — {}",

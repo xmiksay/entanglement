@@ -77,7 +77,7 @@ impl DiscoveredSet {
 /// `native_first`/`invoke` `discovered` is ignored, so the array is
 /// byte-stable for the whole session whatever `describe`
 /// or an arg-validate decline records. Pulled out of the `tool_spec_resolver`
-/// closure in `main.rs` so it unit-tests without the registry.
+/// closure (wired in `boot.rs`) so it unit-tests without the registry.
 pub fn client_side_surface(
     pool: Vec<ToolSpec>,
     discovered: &[String],

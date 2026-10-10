@@ -91,7 +91,7 @@ const TITLE_OUTPUT_CHAR_CAP: usize = 80;
 /// inbound `InMsg` fan-out and, on the first `Prompt` of an unnamed session,
 /// spawns a detached task that calls the aux `session_title` LLM and sends the
 /// result back as `SetSessionMeta`. The outer task is aborted at shutdown
-/// alongside the other runtime responders (`main.rs`); each inner per-prompt
+/// alongside the other runtime responders (`services.rs`); each inner per-prompt
 /// task is tracked in a `JoinSet` rather than a bare detached `tokio::spawn`
 /// (#545) — one still holding its own `Holly` clone while parked on a
 /// throttled/slow aux call would otherwise keep the engine's channels open

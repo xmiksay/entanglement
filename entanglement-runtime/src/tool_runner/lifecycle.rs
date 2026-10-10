@@ -66,7 +66,7 @@ pub(super) async fn run(
     // on end/hibernate. `advertising` (the mode map plus the discovered-
     // tool set `describe` writes into) is caller-constructed and shared
     // — Phase P1's loop-local-only map is gone; the `tool_spec_resolver`/
-    // `system_prompt_resolver` closures in `main.rs` read the same `Arc`.
+    // `system_prompt_resolver` closures in `boot.rs` read the same `Arc`.
     // `advertising_inputs == None` (the convenience wrappers, tests)
     // keeps the fold running so the shape is identical, resolving
     // `tool_search` throughout.

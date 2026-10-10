@@ -20,7 +20,7 @@ use super::click::click_modal;
 /// dispatches the row's action. A click landing outside an open modal's rect
 /// closes it (click-outside-to-close), matching what `Esc` does. The existing
 /// transcript-selection path runs only when no modal/popup is open.
-pub(crate) async fn handle_mouse(app: &mut App, holly: &Holly, ev: MouseEvent) {
+pub(in crate::tui) async fn handle_mouse(app: &mut App, holly: &Holly, ev: MouseEvent) {
     match ev.kind {
         MouseEventKind::ScrollUp => {
             if !wheel_modal_prev(app) {

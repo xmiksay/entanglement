@@ -263,7 +263,7 @@ pub fn capability_index(servers: &HashMap<String, McpServerConfig>) -> Result<Mc
 /// [`AvailableMcp`]'s own roster instead), so `capability_index` alone never
 /// sees it — a read-only profile's bare `read: allow` would otherwise never
 /// fan out to a bundled search tool no matter how it's graded. This is the
-/// index every head should build (`main.rs` does); `capability_index` stays
+/// index every head should build (`boot.rs` does); `capability_index` stays
 /// the lower-level, catalog-free primitive the tests above exercise directly.
 pub fn capability_index_with_catalog(
     catalog: &Catalog,

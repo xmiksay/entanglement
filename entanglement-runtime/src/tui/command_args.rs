@@ -1,6 +1,6 @@
 //! Clap-derived help + arg parsing for every slash command that takes args
 //! (Issue 2). Each `…Args` struct is a pure **parser + help generator** — never
-//! wired into the binary's own clap CLI in `main.rs` (that CLI parses `skutter`'s
+//! wired into the binary's own clap CLI in `args.rs` (that CLI parses `skutter`'s
 //! subcommands, not TUI slash commands). The TUI's raw `/cmd …` text is split on
 //! whitespace, the leading `/cmd` name dropped, and the rest fed to
 //! [`clap::Parser::try_parse_from`]; a [`clap::Error`] maps to the friendly

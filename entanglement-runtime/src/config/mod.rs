@@ -178,7 +178,7 @@ struct RawConfig {
     /// Default permission mode (ADR-0207 §12): `--mode` > this > the engine's
     /// `DEFAULT_MODE`. Not validated against the table here — parsing has no
     /// registry to build one against ([`ceiling`]'s doc); an unknown name is
-    /// caught where the table is actually built (`main.rs`, alongside
+    /// caught where the table is actually built (`services.rs`, alongside
     /// `modes:` below), the same reason `agent` above isn't validated here
     /// either.
     #[serde(default)]
@@ -202,7 +202,7 @@ struct RawConfig {
     /// syntax to define a fifth (§2) — and may only *add* `allow`/`deny`/
     /// `prompt` rules, validated against a live [`crate::capability::Capability`]
     /// resolver once the tool registry exists ([`mode::apply_tuning`],
-    /// `main.rs`). An unrecognized mode name is a loud error there, not
+    /// `services.rs`). An unrecognized mode name is a loud error there, not
     /// silently ignored here.
     #[serde(default)]
     modes: HashMap<String, mode::ModeTuning>,
@@ -300,7 +300,7 @@ pub struct Config {
     /// Per-mode tuning (ADR-0207 §5): raw `config.yml` `modes:` data, keyed
     /// by built-in mode name. Applied over [`crate::mode::ModeTable::builtin`]
     /// once a live [`crate::tools::ToolRegistry`] exists to validate against
-    /// (`main.rs`) — kept raw here since `Config` resolution has no registry
+    /// (`services.rs`) — kept raw here since `Config` resolution has no registry
     /// to build a real [`crate::mode::ModeTable`] with.
     pub modes: HashMap<String, mode::ModeTuning>,
     /// Lifecycle hooks (#199). Empty by default (a no-op).

@@ -5,7 +5,7 @@
 //! `command_args::…Args` import keeps working.
 //!
 //! Each struct is a pure **parser + help generator** — never wired into the
-//! binary's own clap CLI in `main.rs`. **Core hygiene:** `clap` stays in
+//! binary's own clap CLI in `args.rs`. **Core hygiene:** `clap` stays in
 //! `entanglement-runtime` (`tui/`), never `entanglement-core` (`make tree`).
 
 use clap::Parser;

@@ -62,8 +62,10 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   between the two; the WebSocket sibling they left room for shipped as
   `serve = ["cli", "provider", …]` (#153, ADR-0048), keeping `axum` behind its
   own gate. `main.rs` now imports the library modules from the lib
-  crate instead of re-declaring `mod`, so only the bin heads (`pipe`/`run`/`tui`)
-  live in the binary (#208).
+  crate instead of re-declaring `mod`, so only bin-specific code lives in the
+  binary (#208): the heads (`pipe`/`run`/`tui`, dispatched by `heads`), the
+  clap surface (`args`), and the startup wiring (`providers`/`factories` →
+  `engine_setup` → `boot` → `services`, #737).
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*
 now live in `entanglement-runtime` (✅ #57, §8) — as does the `Tool` trait +

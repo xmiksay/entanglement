@@ -171,7 +171,7 @@ fn percent_encode(s: &str, out: &mut String) {
 /// (`tool_names::CAPABILITIES`'s doc); it has to be a concrete per-name
 /// list, merged into the *same* data-driven index MCP capabilities use
 /// (`crate::mcp::McpCapabilityIndex`'s `"call"` bucket) by the two config-
-/// loading call sites (`config::parse`, `main.rs`'s agent-profile loading) —
+/// loading call sites (`config::parse`, `boot.rs`'s agent-profile loading) —
 /// see either call site for the merge.
 pub fn call_capability_names(endpoints: &HashMap<String, EndpointConfig>) -> Vec<String> {
     let mut names: Vec<String> = endpoints
@@ -185,7 +185,7 @@ pub fn call_capability_names(endpoints: &HashMap<String, EndpointConfig>) -> Vec
 /// Register every `config.yml` `endpoints:` entry as `endpoint__<name>`.
 /// Registration is startup-only (P8's plan explicitly allows this: wiring
 /// live-reload for a third definitions source — beside skills/agents — would
-/// need its own debounced watcher wired through `main.rs`'s already-dense
+/// need its own debounced watcher wired through `boot.rs`'s already-dense
 /// startup sequence for a feature with no evidence anyone needs to add an
 /// endpoint mid-session; skipped as disproportionate, unlike skills/agents
 /// which already had `watch.rs` plumbing to reuse).

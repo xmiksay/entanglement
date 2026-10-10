@@ -284,7 +284,7 @@ pub fn note_model_changed(
 
 /// The shared session state Phase P3's resolvers need (#560, ADR-0196 §2-3):
 /// the pinned mode map, the discovered-tool set, and the env-date pin (0202).
-/// One `Arc` constructed by the caller (`main.rs`) and handed to three
+/// One `Arc` constructed by the caller (`boot.rs`) and handed to three
 /// places that used to see disjoint state — the executor loop (writer of
 /// both), the `tool_spec_resolver` closure (reader of both, ADR-0076), and
 /// the `system_prompt_resolver` closure (reader of `modes`, for the §5 prompt

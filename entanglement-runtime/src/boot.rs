@@ -190,7 +190,7 @@ pub(crate) async fn boot(
     // generator) can tell whether it would contend for the same per-model
     // permit before doing so.
     let primary_concurrency = catalog.effective_concurrency(&provider_name, &model_info.id);
-    let aux_registry = entanglement_runtime::aux_llm::AuxLlmRegistry::new(
+    let aux_registry = crate::aux_llm::AuxLlmRegistry::new(
         live_aux_models.clone(),
         build_model_resolver(
             catalog.clone(),

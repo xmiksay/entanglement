@@ -12,9 +12,10 @@
 // Only the bin-specific modules stay `mod` here: the heads (`run`/`pipe`/
 // `tui`, dispatched by `heads`), the clap surface (`args`), and the startup
 // wiring (`providers`/`factories` → `engine_setup` → `boot` → `services`).
-// The reusable library modules live in `lib.rs`; importing them (rather than re-declaring `mod`) stops the
-// library source being compiled a second time and removes the hand-sync that
-// let a bin-only `mod` slip past `check-lean` (issue #208). The crate-root
+// The reusable library modules live in `lib.rs`; importing them (rather
+// than re-declaring `mod`) stops the library source being compiled a second
+// time and removes the hand-sync that let a bin-only `mod` slip past
+// `check-lean` (issue #208). The crate-root
 // `use` below makes each library module reachable as `crate::<name>` from the
 // bin submodules too, matching the existing `use entanglement_provider::…`.
 mod args;
@@ -31,11 +32,11 @@ mod tui;
 #[cfg(feature = "rhai")]
 use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, ask_user, aux_llm, capability, config, discover, endpoint, extra_roots, history, host,
-    inspect, logging, mcp, mode, permission_path, persistence, plan_files, plan_tasks, plan_watch,
-    policy, poll, propose_plan, request_mode, retained_output, script_ops, session_store, skills,
-    subagent, system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names,
-    tool_runner, watch, SharedRegistry, ToolRegistry,
+    agents, arg_validate, ask_user, aux_llm, capability, config, discover, endpoint, extra_roots,
+    history, host, inspect, logging, mcp, mode, narrate, permission_path, persistence, plan_files,
+    plan_tasks, plan_watch, policy, poll, propose_plan, request_mode, retained_output, script_ops,
+    session_store, session_title, skills, subagent, system_prompt, system_prompt_mode, throttle,
+    tool_advertising, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
 };
 
 use anyhow::{Context, Result};
