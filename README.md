@@ -180,7 +180,7 @@ make run-json     # one dummy turn, NDJSON events
 make run-tui      # launch the terminal UI
 make pipe         # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve        # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
-make test         # unit + integration
+make test         # unit + integration (HOME/XDG sandboxed — fails if a test writes there)
 make test-live    # opt-in live z.ai probes (needs ZAI_API_KEY)
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + file-cap + userid + lint + test (CI-equivalent)

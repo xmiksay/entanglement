@@ -7,7 +7,7 @@ use entanglement_core::OutEvent;
 #[test]
 fn list_sessions_takes_the_last_session_meta_name() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let cwd = temp_dir.path();
+    let store = SessionStore::at(temp_dir.path());
     let sid = SessionId::new("named");
     let child = SessionId::new("named-child");
     let meta = |session: &SessionId, name: &str| {
@@ -36,10 +36,12 @@ fn list_sessions_takes_the_last_session_meta_name() {
         meta(&sid, "final name"),
     ];
     for p in payloads {
-        append(cwd, &sid, &LogRecord::new(sid.clone(), p)).expect("append should succeed");
+        store
+            .append(&sid, &LogRecord::new(sid.clone(), p))
+            .expect("append should succeed");
     }
 
-    let sessions = list_sessions(cwd).expect("list_sessions should succeed");
+    let sessions = store.list_sessions().expect("list_sessions should succeed");
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].name.as_deref(), Some("final name"));
 }

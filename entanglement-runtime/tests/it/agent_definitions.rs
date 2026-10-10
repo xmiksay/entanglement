@@ -16,6 +16,7 @@ use entanglement_core::{
 
 use entanglement_runtime::agents::load_registry;
 use entanglement_runtime::mcp::McpCapabilityIndex;
+use entanglement_runtime::session_store::SessionStore;
 use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
@@ -515,7 +516,10 @@ fn report_for(
 #[test]
 fn prompt_report_reports_builtin_source_and_prompt() {
     let empty = tempfile::tempdir().unwrap();
-    let ctx = PromptContext::load(empty.path());
+    let ctx = PromptContext::load_with(
+        empty.path(),
+        &SessionStore::at(empty.path().join(".sessions")),
+    );
     let report = report_for(empty.path(), "general", &ctx).expect("general resolves");
     assert_eq!(report.source, "built-in (general.md)");
     // The report's prompt matches the registry-assembled one for the same inputs.
@@ -552,7 +556,10 @@ fn prompt_report_reports_builtin_source_and_prompt() {
 #[test]
 fn prompt_report_unknown_agent_is_none() {
     let empty = tempfile::tempdir().unwrap();
-    let ctx = PromptContext::load(empty.path());
+    let ctx = PromptContext::load_with(
+        empty.path(),
+        &SessionStore::at(empty.path().join(".sessions")),
+    );
     assert!(report_for(empty.path(), "does-not-exist", &ctx).is_none());
 }
 
@@ -564,7 +571,10 @@ fn prompt_report_prefers_project_definition() {
         "general.md",
         "---\nname: general\ndescription: project override\n---\nProject general body.",
     );
-    let ctx = PromptContext::load(project.path());
+    let ctx = PromptContext::load_with(
+        project.path(),
+        &SessionStore::at(project.path().join(".sessions")),
+    );
     let report = report_for(project.path(), "general", &ctx).expect("general resolves");
     // The project file wins over the embedded built-in (later layer).
     assert!(report.source.ends_with("general.md"));
@@ -579,7 +589,10 @@ fn prompt_report_includes_env_and_skill_index_for_every_agent() {
     // varies — `debug` (the old reference "leaf") gets the env block and
     // tier-1 skill index too now.
     let empty = tempfile::tempdir().unwrap();
-    let mut ctx = PromptContext::load(empty.path());
+    let mut ctx = PromptContext::load_with(
+        empty.path(),
+        &SessionStore::at(empty.path().join(".sessions")),
+    );
     ctx.skills = vec![entanglement_runtime::system_prompt::SkillDisclosure {
         name: "git".into(),
         description: "commit helpers".into(),

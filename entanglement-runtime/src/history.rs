@@ -15,16 +15,14 @@
 //! lives in its root's file, so a `ReplayFrom` naming a child yields an empty
 //! reply until the per-connection replay of the WS `serve` head (#153) maps it.
 
-use std::path::PathBuf;
-
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::session_store::{read, LogPayload};
+use crate::session_store::{LogPayload, SessionStore};
 
 /// Spawns a subscriber that answers [`InMsg::ReplayFrom`] with an
-/// [`OutEvent::History`] snapshot read from the persisted log under `cwd`.
-pub fn spawn_history_responder(holly: &Holly, cwd: PathBuf) -> tokio::task::JoinHandle<()> {
+/// [`OutEvent::History`] snapshot read from the persisted log in `store`.
+pub fn spawn_history_responder(holly: &Holly, store: SessionStore) -> tokio::task::JoinHandle<()> {
     let emitter = holly.clone();
     let mut inbound = holly.subscribe_inbound();
 
@@ -36,7 +34,7 @@ pub fn spawn_history_responder(holly: &Holly, cwd: PathBuf) -> tokio::task::Join
                     correlation_id,
                     after_seq,
                 }) => {
-                    let events = read_history(&cwd, &session, after_seq);
+                    let events = read_history(&store, &session, after_seq);
                     emitter.emit_history(correlation_id, session, events);
                 }
                 Ok(_) => {}
@@ -54,8 +52,8 @@ pub fn spawn_history_responder(holly: &Holly, cwd: PathBuf) -> tokio::task::Join
 /// Read `session`'s persisted content history after `after_seq`. A missing or
 /// unreadable log yields an empty reply (the head still gets its
 /// `correlation_id` back), logged rather than propagated.
-fn read_history(cwd: &std::path::Path, session: &SessionId, after_seq: u64) -> Vec<OutEvent> {
-    match read(cwd, session) {
+fn read_history(store: &SessionStore, session: &SessionId, after_seq: u64) -> Vec<OutEvent> {
+    match store.read(session) {
         Ok(records) => history_after(&records, after_seq),
         Err(e) => {
             tracing::warn!(%session, "history responder: no readable log ({e}); empty reply");

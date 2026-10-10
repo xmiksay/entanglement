@@ -250,6 +250,10 @@ pub struct App {
     // `@file` mention completion + `!bash` passthrough (ADR-0030). `root` is the
     // working directory both the file index and `!bash` execution are rooted at.
     root: PathBuf,
+    // Where the resume modal lists/deletes past logs and the inspect overlay's
+    // env block finds the scratch dir (#747): injected, so a test App never
+    // touches the real data dir. `SessionStore::unavailable()` until wired.
+    session_store: crate::session_store::SessionStore,
     mention: MentionPopup,
     /// Prefix-filter slash-command completion popup (Issue 2). Mirrors
     /// `mention`: persistent across frames, recompute via `update_slash`.

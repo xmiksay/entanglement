@@ -11,15 +11,15 @@ use entanglement_core::{
     content_text, session::Session, EngineConfig, Holly, InMsg, MessageRole, OutEvent, SessionId,
 };
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, read, LogPayload};
+use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
 
 #[tokio::test]
 async fn spawned_child_prompt_is_persisted_and_replayable() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path().to_path_buf();
+    let store = SessionStore::at(tmp.path());
 
     let holly = Holly::spawn(EngineConfig::default());
-    let _tap = spawn_persistence_subscriber(&holly, cwd.clone());
+    let _tap = spawn_persistence_subscriber(&holly, store.clone());
     let mut sub = holly.subscribe();
 
     let child = SessionId::new("child");
@@ -51,7 +51,7 @@ async fn spawned_child_prompt_is_persisted_and_replayable() {
     // flushed the turn's Done before reading the file back.
     let flushed = tokio::time::Instant::now() + Duration::from_secs(5);
     let records = loop {
-        let records = read(&cwd, &child).expect("read log");
+        let records = store.read(&child).expect("read log");
         if records
             .iter()
             .any(|r| matches!(&r.payload, LogPayload::Out(OutEvent::Done { .. })))

@@ -3,12 +3,11 @@
 //! with read-only narrowing by ADR-0215.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use anyhow::{Context, Result};
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId, DEFAULT_AGENT};
 
-use super::{integrity_gap, read, LogPayload, LogRecord};
+use super::{integrity_gap, LogPayload, LogRecord, SessionStore};
 
 /// Agent names ADR-0207 stage 6a retired from the built-in roster: `build`
 /// was renamed `general`; `explore`/`research` became the `research`
@@ -236,17 +235,20 @@ pub fn check_for_resume(
     Ok(check)
 }
 
-/// [`read`] + [`check_for_resume`] for root session `id`.
-pub fn load_for_resume(
-    cwd: &Path,
-    id: &SessionId,
-    known: impl Fn(&str) -> bool,
-) -> Result<(Vec<LogRecord>, ResumeCheck)> {
-    let records =
-        read(cwd, id).with_context(|| format!("Failed to read session records for {id}"))?;
-    let check =
-        check_for_resume(&records, known).with_context(|| format!("Refusing to resume {id}"))?;
-    Ok((records, check))
+impl SessionStore {
+    /// [`read`](Self::read) + [`check_for_resume`] for root session `id`.
+    pub fn load_for_resume(
+        &self,
+        id: &SessionId,
+        known: impl Fn(&str) -> bool,
+    ) -> Result<(Vec<LogRecord>, ResumeCheck)> {
+        let records = self
+            .read(id)
+            .with_context(|| format!("Failed to read session records for {id}"))?;
+        let check = check_for_resume(&records, known)
+            .with_context(|| format!("Refusing to resume {id}"))?;
+        Ok((records, check))
+    }
 }
 
 /// Resumes `root` from `records` under `mode` (`--mode` > config `mode:`).

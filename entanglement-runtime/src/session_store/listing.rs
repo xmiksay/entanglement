@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use entanglement_core::{content_text, InMsg, OutEvent, SessionId};
 
-use super::{read, session_dir, LogPayload};
+use super::{read_path, LogPayload, SessionStore};
 
 /// Session metadata derived from the log file.
 #[derive(Debug, Clone)]
@@ -72,15 +72,18 @@ pub fn first_prompt_snippet(text: &str) -> String {
     format!("{cut}…")
 }
 
-/// Lists all sessions in the current working directory's session folder.
-///
-/// Reads the first line of each `.jsonl` file to extract metadata.
-#[allow(dead_code)]
-pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
-    let dir = session_dir(cwd)?;
+impl SessionStore {
+    /// Lists every session logged in this store, deriving each file's
+    /// [`SessionMeta`] from its records.
+    pub fn list_sessions(&self) -> Result<Vec<SessionMeta>> {
+        list_dir(&self.dir()?)
+    }
+}
+
+fn list_dir(dir: &Path) -> Result<Vec<SessionMeta>> {
     let mut sessions = Vec::new();
 
-    let entries = std::fs::read_dir(&dir)
+    let entries = std::fs::read_dir(dir)
         .with_context(|| format!("Failed to read session directory: {}", dir.display()))?;
 
     for entry in entries {
@@ -113,7 +116,7 @@ pub fn list_sessions(cwd: &Path) -> Result<Vec<SessionMeta>> {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let records = match read(cwd, &session_id) {
+        let records = match read_path(&path) {
             Ok(records) => records,
             Err(e) => {
                 tracing::warn!("Skipping corrupt session file {}: {}", path.display(), e);

@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     // scoped to this cwd's session dir only. A read-only data dir or a transient
     // error is logged and skipped — never fatal to startup. Runs before any head
     // so the TUI's resume modal and `sessions` both reflect the pruned set.
-    match session_store::prune(&cwd, user_config.session_retention_days) {
+    match session_store::SessionStore::for_cwd(&cwd).prune(user_config.session_retention_days) {
         Ok(removed) if removed > 0 => {
             tracing::info!(
                 "startup prune removed {removed} session log(s) older than {} day(s)",

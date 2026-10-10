@@ -65,7 +65,7 @@ mod tests {
     fn apply_allow_grant_scopes_to_the_active_mode() {
         let session = SessionId::new("s1");
         let mut app = App::new_for_test(session.clone());
-        let grants = Arc::new(DefaultGrantStore::load());
+        let grants = Arc::new(DefaultGrantStore::load_from(None));
         app.set_grants(grants.clone());
 
         // No `ModeChanged` folded yet — the view's default mirrors the
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn apply_allow_grant_toasts_the_grant() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-        app.set_grants(Arc::new(DefaultGrantStore::load()));
+        app.set_grants(Arc::new(DefaultGrantStore::load_from(None)));
         app.apply_allow_grant("src");
         assert!(
             app.toast()

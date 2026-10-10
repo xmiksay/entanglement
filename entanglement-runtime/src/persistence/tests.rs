@@ -1,7 +1,7 @@
 //! Tests for the persistence tap (split out under the 400-line cap).
 
 use super::*;
-use crate::session_store::{append, integrity_gap, read, session_dir};
+use crate::session_store::{integrity_gap, SessionStore};
 use std::sync::Mutex;
 
 /// A [`RecordSink`] that captures every `(root, record)` it is handed, so a
@@ -31,16 +31,16 @@ fn roots_map(pairs: &[(&str, &str)]) -> HashMap<SessionId, SessionId> {
 #[test]
 fn record_gap_writes_tombstone_to_each_known_root() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let cwd = temp.path();
+    let store = SessionStore::at(temp.path());
     let root_a = SessionId::new("root-a");
     let root_b = SessionId::new("root-b");
     for r in [&root_a, &root_b] {
-        append(
-            cwd,
-            r,
-            &LogRecord::new(r.clone(), LogPayload::In(InMsg::prompt(r.clone(), "hi"))),
-        )
-        .expect("append");
+        store
+            .append(
+                r,
+                &LogRecord::new(r.clone(), LogPayload::In(InMsg::prompt(r.clone(), "hi"))),
+            )
+            .expect("append");
     }
 
     // A child routes into root-a; both roots also map to themselves.
@@ -49,22 +49,22 @@ fn record_gap_writes_tombstone_to_each_known_root() {
         ("root-a", "root-a"),
         ("root-b", "root-b"),
     ]);
-    record_gap(&mut file_writer(cwd), &roots, 7, "outbound");
+    record_gap(&mut file_writer(&store), &roots, 7, "outbound");
 
-    assert_eq!(integrity_gap(&read(cwd, &root_a).expect("read")), Some(7));
-    assert_eq!(integrity_gap(&read(cwd, &root_b).expect("read")), Some(7));
+    assert_eq!(integrity_gap(&store.read(&root_a).expect("read")), Some(7));
+    assert_eq!(integrity_gap(&store.read(&root_b).expect("read")), Some(7));
 }
 
 #[test]
 fn record_gap_dedups_sessions_sharing_a_root() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let cwd = temp.path();
+    let store = SessionStore::at(temp.path());
     let root = SessionId::new("root");
 
     let roots = roots_map(&[("root", "root"), ("child1", "root"), ("child2", "root")]);
-    record_gap(&mut file_writer(cwd), &roots, 3, "inbound");
+    record_gap(&mut file_writer(&store), &roots, 3, "inbound");
 
-    let records = read(cwd, &root).expect("read");
+    let records = store.read(&root).expect("read");
     let gaps = records
         .iter()
         .filter(|r| matches!(r.payload, LogPayload::Gap { .. }))
@@ -96,8 +96,8 @@ async fn forced_lag_hands_a_custom_sink_the_same_gap_tombstones_as_the_file() {
     // The file sink writes the tombstones to disk; the recording sink is the
     // stand-in embedder target. Both go through the identical lag code path.
     let temp = tempfile::tempdir().expect("temp dir");
-    let cwd = temp.path();
-    let mut file_sink = file_writer(cwd);
+    let store = SessionStore::at(temp.path());
+    let mut file_sink = file_writer(&store);
     let recording = Arc::new(RecordingSink::default());
     let mut recording_writer = GapWriter::new(recording.clone());
 
@@ -122,25 +122,25 @@ async fn forced_lag_hands_a_custom_sink_the_same_gap_tombstones_as_the_file() {
 
     // And what the file sink persisted matches: resume refuses on both roots.
     for r in [SessionId::new("root-a"), SessionId::new("root-b")] {
-        assert_eq!(integrity_gap(&read(cwd, &r).expect("read")), Some(dropped));
+        assert_eq!(integrity_gap(&store.read(&r).expect("read")), Some(dropped));
     }
 }
 
 #[test]
 fn record_gap_with_no_known_roots_writes_nothing() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let cwd = temp.path();
+    let store = SessionStore::at(temp.path());
     let roots: HashMap<SessionId, SessionId> = HashMap::new();
 
-    record_gap(&mut file_writer(cwd), &roots, 5, "outbound");
+    record_gap(&mut file_writer(&store), &roots, 5, "outbound");
 
-    let dir = session_dir(cwd).expect("session_dir");
+    let dir = store.dir().expect("session_dir");
     let count = std::fs::read_dir(&dir).expect("read_dir").count();
     assert_eq!(count, 0, "no root known → no file written");
 }
 
-fn file_writer(cwd: &std::path::Path) -> GapWriter {
-    GapWriter::new(Arc::new(FileSink::new(cwd.to_path_buf())))
+fn file_writer(store: &SessionStore) -> GapWriter {
+    GapWriter::new(Arc::new(FileSink::new(store.clone())))
 }
 
 /// Fails the append calls whose 0-based index is in `fail`, storing the rest.

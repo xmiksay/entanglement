@@ -35,7 +35,7 @@ use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
-use entanglement_runtime::session_store::{pair_records, read, LogPayload};
+use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
 use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
@@ -180,7 +180,7 @@ fn spawn_with_root_and_table(
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants = Arc::new(DefaultGrantStore::load());
+    let grants = Arc::new(DefaultGrantStore::load_from(None));
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store,
@@ -1228,7 +1228,8 @@ async fn the_approved_mode_survives_a_replay_round_trip() {
         Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
     );
     let log_dir = tempdir();
-    let _tap = spawn_persistence_subscriber(&holly, log_dir.path().to_path_buf());
+    let store = SessionStore::at(log_dir.path());
+    let _tap = spawn_persistence_subscriber(&holly, store.clone());
 
     let sid = SessionId::new("s1");
     let request_id = await_request(&holly, &sid).await;
@@ -1249,7 +1250,7 @@ async fn the_approved_mode_survives_a_replay_round_trip() {
     // synchronous write.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let records = loop {
-        let records = read(log_dir.path(), &sid).expect("read log");
+        let records = store.read(&sid).expect("read log");
         if records.iter().any(|r| {
             matches!(
                 &r.payload,

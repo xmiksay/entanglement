@@ -3,11 +3,16 @@
 use entanglement_core::SessionId;
 use ratatui::widgets::ListState;
 
-use crate::session_store::{list_sessions, LogRecord, SessionMeta};
+use crate::session_store::{LogRecord, SessionMeta, SessionStore};
 
 use super::App;
 
 impl App {
+    /// The injected session-log store (#747).
+    pub(crate) fn session_store(&self) -> &SessionStore {
+        &self.session_store
+    }
+
     pub fn showing_resume_modal(&self) -> bool {
         self.showing_resume_modal
     }
@@ -19,10 +24,9 @@ impl App {
     pub fn toggle_resume_modal(&mut self) {
         self.showing_resume_modal = !self.showing_resume_modal;
         if self.showing_resume_modal {
-            // `self.root()` (the canonicalized cwd wired in at startup) is the
-            // same cwd `session_store::delete`/`prune` key off, so the modal
-            // lists exactly the logs a `d` press can reach.
-            if let Ok(mut sessions) = list_sessions(self.root()) {
+            // The same store `d` deletes from (and the startup prune sweeps),
+            // so the modal lists exactly the logs a `d` press can reach.
+            if let Ok(mut sessions) = self.session_store.list_sessions() {
                 // Only root sessions are independently resumable; spawned
                 // children live inside their root's file. Most-recent first.
                 sessions.retain(|s| s.root);
@@ -132,8 +136,7 @@ impl App {
             self.set_toast("cannot delete a live session".to_string());
             return;
         }
-        let cwd = self.root().to_path_buf();
-        match crate::session_store::delete(&cwd, &id) {
+        match self.session_store.delete(&id) {
             Ok(()) => self.set_toast(format!("deleted session {}", id.0)),
             Err(e) => self.set_toast(format!("could not delete session {}: {e:#}", id.0)),
         }
@@ -149,8 +152,7 @@ impl App {
             return;
         };
         let id = meta.id.clone();
-        let cwd = self.root().to_path_buf();
-        match crate::session_store::delete(&cwd, &id) {
+        match self.session_store.delete(&id) {
             Ok(()) => {
                 // Drop the deleted entry from the modal list and clamp the
                 // selection so the highlight stays in range.

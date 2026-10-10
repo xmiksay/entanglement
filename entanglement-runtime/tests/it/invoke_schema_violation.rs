@@ -224,7 +224,7 @@ fn harness(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let executor = spawn_tool_executor_with_policy(
         &holly,
         tools.clone(),

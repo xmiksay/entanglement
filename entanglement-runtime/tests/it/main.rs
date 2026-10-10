@@ -24,6 +24,9 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
 // `policy_seam`) build their own table instead.
 mod mode_support;
 
+// A `skutter` child isolated from the developer's real dirs (#747).
+mod skutter_cmd;
+
 mod advertising_pin;
 mod agent_definitions;
 mod agent_generation;

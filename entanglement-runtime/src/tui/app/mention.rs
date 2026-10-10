@@ -22,6 +22,11 @@ impl App {
         self.update_popups();
     }
 
+    /// Inject the session store the resume modal lists and deletes from.
+    pub fn set_session_store(&mut self, store: crate::session_store::SessionStore) {
+        self.session_store = store;
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

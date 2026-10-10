@@ -136,7 +136,9 @@ pub(crate) async fn build_config(
     // block). `call`'s own default-output artifact used to live here too;
     // since #608 that output is retained in memory instead (`retained`
     // below), so this is purely the general-purpose scratch carve-out now.
-    let scratch_base = session_store::scratch_dir(&root).ok();
+    let scratch_base = session_store::SessionStore::for_cwd(&root)
+        .scratch_dir()
+        .ok();
     // Escape-root approval store (ADR-0109): shared by the host tools (which
     // consult it to relax containment for an approved out-of-root path) and the
     // tool executor (which forces an approval prompt on a first out-of-root

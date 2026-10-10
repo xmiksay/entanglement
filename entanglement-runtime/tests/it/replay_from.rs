@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
 use entanglement_runtime::history::spawn_history_responder;
-use entanglement_runtime::session_store::{append, LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord, SessionStore};
 
 fn out(sid: &SessionId, ev: OutEvent) -> LogRecord {
     LogRecord::new(sid.clone(), LogPayload::Out(ev))
@@ -19,10 +19,10 @@ fn out(sid: &SessionId, ev: OutEvent) -> LogRecord {
 
 #[tokio::test]
 async fn replay_from_answers_with_content_after_cursor() {
-    // A distinct cwd keys a distinct log file (session_store hashes the cwd), so
-    // this test's records never collide with another run's.
+    // A temp-dir store (#747): never the real data dir, and this test's
+    // records never collide with another run's.
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path().to_path_buf();
+    let store = SessionStore::at(tmp.path());
     let sid = SessionId::new("replay-root");
 
     // Persist a lifecycle event (no seq) plus three content events.
@@ -64,12 +64,12 @@ async fn replay_from_answers_with_content_after_cursor() {
             },
         ),
     ] {
-        append(&cwd, &sid, &r).expect("append record");
+        store.append(&sid, &r).expect("append record");
     }
 
     let holly = Holly::spawn(EngineConfig::default());
     let mut sub = holly.subscribe();
-    spawn_history_responder(&holly, cwd.clone());
+    spawn_history_responder(&holly, store.clone());
 
     holly
         .send(InMsg::ReplayFrom {

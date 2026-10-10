@@ -178,7 +178,7 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         shared_reg,

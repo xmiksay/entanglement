@@ -155,6 +155,7 @@ pub async fn tui(
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
     app.init_head_context(root.clone());
+    app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     let mut attention = Attention::from_env();

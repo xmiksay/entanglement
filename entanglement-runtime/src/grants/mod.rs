@@ -53,13 +53,9 @@
 //!   in `research` matches only `research`, exactly like `GrantKey`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use entanglement_core::{ApprovalScope, SessionId};
-use serde::{Deserialize, Serialize};
-
-/// Env var overriding the managed grants file path (tests + non-XDG setups).
-const GRANTS_FILE_ENV: &str = "ENTANGLEMENT_GRANTS_FILE";
 
 /// A single granted tool call: the tool name, the optional argument
 /// (command/path, #173) the grant was recorded against, and the permission
@@ -110,27 +106,6 @@ impl GrantKey {
     }
 }
 
-/// On-disk shape of the managed grants file. A top-level `grants:` list keeps
-/// room for future keys and lets `deny_unknown_fields` flag typos.
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GrantsFile {
-    #[serde(default)]
-    grants: Vec<GrantEntry>,
-}
-
-/// One line of the grants file: a **scoped** entry (mode + rule, written by
-/// every grant this stage records) or a bare rule **string** — a pre-ADR-0207
-/// file, kept parseable so an existing user's file doesn't error out, but
-/// loaded with `mode: None` so it never matches a live call (ADR-0207 §8:
-/// "existing grants.yml entries have no mode; treat them as non-matching").
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum GrantEntry {
-    Scoped { mode: String, rule: String },
-    Legacy(String),
-}
-
 /// The runtime's grant set: per-session (in-memory) plus persisted "always"
 /// grants, with the file path to re-write on an `Always` grant. `session_dirs`
 /// is the [`ApprovalScope::SessionDir`] store (#486, ADR-0126; mode-scoped
@@ -153,7 +128,15 @@ impl FileGrantStore {
     /// empty (a corrupt grants file must never wedge startup, and grants only
     /// *widen* access — dropping them is the safe failure).
     pub fn load() -> Self {
-        let path = grants_file_path();
+        Self::load_from(grants_file_path())
+    }
+
+    /// [`load`](Self::load) from an explicit grants file — or, with `None`, a
+    /// purely in-memory store whose `Always` grants live only as long as it
+    /// does. The injection seam (#747): a test pins a temp file (or none)
+    /// rather than reading the developer's real `grants.yml` or steering
+    /// `ENTANGLEMENT_GRANTS_FILE` through process env.
+    pub fn load_from(path: Option<PathBuf>) -> Self {
         let always = match &path {
             Some(p) => read_grants(p),
             None => HashSet::new(),
@@ -308,95 +291,26 @@ impl FileGrantStore {
     }
 }
 
-/// Resolve the managed grants file path: `ENTANGLEMENT_GRANTS_FILE` wins,
-/// otherwise `${config_dir}/entanglement/grants.yml`. `None` when neither is
-/// available (persistence then silently no-ops).
-fn grants_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(GRANTS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("grants.yml"))
-}
-
-/// Read + parse the grants file at `path` into a key set. A missing file, or any
-/// read/parse error, yields an empty set (logged) — grants only widen access, so
-/// a corrupt file failing closed is the safe outcome.
-fn read_grants(path: &Path) -> HashSet<GrantKey> {
-    if !path.exists() {
-        return HashSet::new();
-    }
-    let parsed = std::fs::read_to_string(path)
-        .map_err(|e| format!("{e}"))
-        .and_then(|t| serde_yaml::from_str::<GrantsFile>(&t).map_err(|e| format!("{e}")));
-    match parsed {
-        Ok(file) => file
-            .grants
-            .iter()
-            .map(|entry| match entry {
-                GrantEntry::Scoped { mode, rule } => GrantKey::from_rule(rule, Some(mode.clone())),
-                // Pre-ADR-0207: no mode was ever recorded — `mode: None`
-                // never matches a live call (module docs).
-                GrantEntry::Legacy(rule) => GrantKey::from_rule(rule, None),
-            })
-            .collect(),
-        Err(e) => {
-            tracing::warn!("ignoring malformed grants file {}: {e}", path.display());
-            HashSet::new()
-        }
-    }
-}
-
-/// Write `grants` to `path` as the managed YAML file, creating the config dir if
-/// needed. Keys are sorted so the file is stable across writes (readable diffs,
-/// no churn). A key with `mode: None` (a pre-ADR-0207 entry this process never
-/// re-earned) round-trips as its original bare-string spelling rather than
-/// being force-upgraded to a fabricated mode.
-fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut keys: Vec<(String, GrantEntry)> = grants
-        .iter()
-        .map(|key| {
-            let rule = key.to_rule();
-            let entry = match &key.mode {
-                Some(mode) => GrantEntry::Scoped {
-                    mode: mode.clone(),
-                    rule: rule.clone(),
-                },
-                None => GrantEntry::Legacy(rule.clone()),
-            };
-            (rule, entry)
-        })
-        .collect();
-    keys.sort_by(|a, b| a.0.cmp(&b.0));
-    let doc = GrantsFile {
-        grants: keys.into_iter().map(|(_, e)| e).collect(),
-    };
-    let body = serde_yaml::to_string(&doc)?;
-    let header = "# entanglement — persisted \"always allow\" tool grants (#174).\n\
-                  # Managed by skutter: a line is appended when you approve a tool with the\n\
-                  # \"always\" scope. Each entry upgrades a matching Ask to Allow (exact match on\n\
-                  # tool + argument); it never overrides a Deny. Delete a line to revoke.\n";
-    crate::config::atomic::atomic_write(path, &format!("{header}{body}"))
-}
-
 // SessionDir directory derivation/coverage (#486, ADR-0126) — split out of
 // this (previously grandfathered-over-cap) file into its own module: a
 // self-contained unit with no dependency on `GrantKey`/mode-scoping.
 mod session_dir;
 use session_dir::{dir_covers, dir_for};
 
+// The managed grants file: path resolution, on-disk shape, read/write.
+mod file;
+use file::{grants_file_path, read_grants, write_grants};
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// `GRANTS_FILE_ENV` is process-global; the tests that set it serialize here.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn tmp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("entanglement-grants-test-{name}.yml"))
+    /// A grants file in a fresh temp dir — each test its own, injected via
+    /// `load_from` (#747), so no process env is shared or mutated.
+    fn tmp_path() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("grants.yml");
+        (dir, path)
     }
 
     #[test]
@@ -634,15 +548,10 @@ mod tests {
 
     #[test]
     fn always_grant_persists_and_reloads_across_stores() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("persist");
-        let _ = std::fs::remove_file(&path);
-        // SAFETY: the var is only read by the *default* file store, which this test
-        // does not construct; the guard above serializes against sibling modules.
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+        let (_dir, path) = tmp_path();
 
         let s = SessionId::new("s");
-        let mut store = FileGrantStore::load();
+        let mut store = FileGrantStore::load_from(Some(path.clone()));
         assert!(store.record(
             &s,
             "bash",
@@ -653,7 +562,7 @@ mod tests {
 
         // A freshly loaded store (new process) sees the persisted grant, and it is
         // global -- any session under the same mode skips the prompt.
-        let reloaded = FileGrantStore::load();
+        let reloaded = FileGrantStore::load_from(Some(path.clone()));
         assert!(reloaded.is_granted(
             &SessionId::new("other"),
             "bash",
@@ -668,26 +577,21 @@ mod tests {
             Some("git status"),
             "research"
         ));
-
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn concurrent_always_grants_from_two_stores_both_survive() {
-        // Two "processes" (threads, each with its own `FileGrantStore::load()`)
+        // Two "processes" (threads, each with its own `FileGrantStore::load_from`)
         // race to record *different* `Always` grants against the same on-disk
         // file (#329). Without the lock's read-current-then-merge, the second
         // writer's `std::fs::write` of its own stale `self.always` would clobber
         // the first writer's grant -- a lost update. A freshly loaded third store
         // must see both.
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("concurrent");
-        let _ = std::fs::remove_file(&path);
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+        let (_dir, path) = tmp_path();
 
-        let a = std::thread::spawn(|| {
-            let mut store = FileGrantStore::load();
+        let (pa, pb) = (path.clone(), path.clone());
+        let a = std::thread::spawn(move || {
+            let mut store = FileGrantStore::load_from(Some(pa));
             store.record(
                 &SessionId::new("a"),
                 "bash",
@@ -696,8 +600,8 @@ mod tests {
                 "build",
             );
         });
-        let b = std::thread::spawn(|| {
-            let mut store = FileGrantStore::load();
+        let b = std::thread::spawn(move || {
+            let mut store = FileGrantStore::load_from(Some(pb));
             store.record(
                 &SessionId::new("b"),
                 "bash",
@@ -709,7 +613,7 @@ mod tests {
         a.join().unwrap();
         b.join().unwrap();
 
-        let reloaded = FileGrantStore::load();
+        let reloaded = FileGrantStore::load_from(Some(path.clone()));
         let any = SessionId::new("other");
         assert!(
             reloaded.is_granted(&any, "bash", Some("git status"), "build"),
@@ -719,19 +623,13 @@ mod tests {
             reloaded.is_granted(&any, "bash", Some("git log"), "build"),
             "grant recorded by the second store must survive a concurrent write"
         );
-
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn reload_picks_up_another_process_grant() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("reload");
-        let _ = std::fs::remove_file(&path);
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+        let (_dir, path) = tmp_path();
 
-        let mut store = FileGrantStore::load();
+        let mut store = FileGrantStore::load_from(Some(path.clone()));
         let session = SessionId::new("s");
         store.record(
             &session,
@@ -742,7 +640,7 @@ mod tests {
         );
 
         // Another instance persists an `Always` grant directly on disk.
-        let mut other = FileGrantStore::load();
+        let mut other = FileGrantStore::load_from(Some(path.clone()));
         other.record(
             &SessionId::new("other"),
             "grep",
@@ -762,22 +660,14 @@ mod tests {
         );
         // The session-scoped grant recorded before reload is untouched.
         assert!(store.is_granted(&session, "bash", Some("echo hi"), "build"));
-
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn malformed_grants_file_loads_empty() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("malformed");
+        let (_dir, path) = tmp_path();
         std::fs::write(&path, "grants: [oops\n").unwrap();
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
-        let store = FileGrantStore::load();
+        let store = FileGrantStore::load_from(Some(path.clone()));
         assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("x"), "build"));
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 
     /// ADR-0207 §8: a grants file written before this stage has no `mode` on
@@ -786,28 +676,20 @@ mod tests {
     /// rather than re-honored under whatever mode a call happens to run in.
     #[test]
     fn legacy_mode_less_grant_never_matches_a_live_call() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("legacy");
+        let (_dir, path) = tmp_path();
         std::fs::write(&path, "grants:\n  - bash(git status)\n").unwrap();
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
-        let store = FileGrantStore::load();
+        let store = FileGrantStore::load_from(Some(path.clone()));
         assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("git status"), "build"));
         assert!(!store.is_granted(&SessionId::new("s"), "bash", Some("git status"), "research"));
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 
     /// A grant recorded by this stage round-trips through the on-disk
     /// `{mode, rule}` shape and is readable back by a fresh store.
     #[test]
     fn scoped_grant_round_trips_through_the_file() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = tmp_path("scoped-roundtrip");
-        let _ = std::fs::remove_file(&path);
-        unsafe { std::env::set_var(GRANTS_FILE_ENV, &path) };
+        let (_dir, path) = tmp_path();
 
-        let mut store = FileGrantStore::load();
+        let mut store = FileGrantStore::load_from(Some(path.clone()));
         store.record(
             &SessionId::new("s"),
             "bash",
@@ -815,7 +697,7 @@ mod tests {
             ApprovalScope::Always,
             "research",
         );
-        let reloaded = FileGrantStore::load();
+        let reloaded = FileGrantStore::load_from(Some(path.clone()));
         assert!(reloaded.is_granted(
             &SessionId::new("other"),
             "bash",
@@ -828,8 +710,5 @@ mod tests {
             Some("git status"),
             "build"
         ));
-
-        unsafe { std::env::remove_var(GRANTS_FILE_ENV) };
-        let _ = std::fs::remove_file(&path);
     }
 }

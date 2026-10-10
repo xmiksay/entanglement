@@ -27,12 +27,14 @@ use crate::session_store::{self, LogPayload, LogRecord};
 /// live tool overlay (folded from the log's events, last write wins).
 pub fn inspect_session(cwd: &Path, id: &str) -> Result<()> {
     let session_id = SessionId::new(id);
-    let records = session_store::read(cwd, &session_id).with_context(|| {
-        format!(
-            "no session log for `{id}` in this directory — run `skutter sessions` for root \
+    let records = session_store::SessionStore::for_cwd(cwd)
+        .read(&session_id)
+        .with_context(|| {
+            format!(
+                "no session log for `{id}` in this directory — run `skutter sessions` for root \
              session ids (a spawned child has no log file of its own)"
-        )
-    })?;
+            )
+        })?;
     print!("{}", render_session(&session_id, &records));
     Ok(())
 }

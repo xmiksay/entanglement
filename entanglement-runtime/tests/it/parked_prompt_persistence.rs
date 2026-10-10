@@ -13,7 +13,7 @@ use entanglement_core::{
     LlmStream, Message, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, read, LogPayload, LogRecord};
+use entanglement_runtime::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
 use tokio::sync::broadcast::Receiver;
 
 type Requests = Arc<Mutex<Vec<String>>>;
@@ -96,10 +96,10 @@ async fn probe(holly: &Holly, requests: &Requests, sid: &SessionId) -> String {
 }
 
 /// The tap writes off its own subscription: wait until `sid`'s log holds `n` `Done`s.
-async fn flushed(cwd: &std::path::Path, sid: &SessionId, n: usize) -> Vec<LogRecord> {
+async fn flushed(store: &SessionStore, sid: &SessionId, n: usize) -> Vec<LogRecord> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let records = read(cwd, sid).expect("read log");
+        let records = store.read(sid).expect("read log");
         let done = records
             .iter()
             .filter(|r| matches!(&r.payload, LogPayload::Out(ev) if is_done(ev)))
@@ -115,7 +115,7 @@ async fn flushed(cwd: &std::path::Path, sid: &SessionId, n: usize) -> Vec<LogRec
 #[tokio::test]
 async fn prompt_sent_while_parked_survives_the_log_round_trip() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path().to_path_buf();
+    let store = SessionStore::at(tmp.path());
     let sid = SessionId::new("parked-prompt");
     let call = ToolCall::new("c1", "read", r#"{"path":"x"}"#);
     let (live, live_requests) = engine(vec![
@@ -126,7 +126,7 @@ async fn prompt_sent_while_parked_survives_the_log_round_trip() {
         },
         text("done"),
     ]);
-    let _tap = spawn_persistence_subscriber(&live, cwd.clone());
+    let _tap = spawn_persistence_subscriber(&live, store.clone());
     let mut sub = live.subscribe();
 
     live.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
@@ -150,7 +150,7 @@ async fn prompt_sent_while_parked_survives_the_log_round_trip() {
         .unwrap();
     wait_for(&mut sub, &sid, is_done).await;
 
-    let records = flushed(&cwd, &sid, 1).await;
+    let records = flushed(&store, &sid, 1).await;
     let live_history = probe(&live, &live_requests, &sid).await;
 
     let (resumed, resumed_requests) = engine(Vec::new());
