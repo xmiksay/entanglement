@@ -199,6 +199,11 @@ impl Session {
                 // (the pairing-order hazard around a session's very first
                 // `Prompt`).
                 OutEvent::ModeChanged { mode, .. } => {
+                    // Mirrors the live drop of the mode-scoped overlay
+                    // (`immediate.rs`); a same-value re-announce keeps it.
+                    if *mode != session.mode {
+                        session.tool_overlay.clear();
+                    }
                     session.mode = mode.clone();
                 }
                 // Re-bind a resumed session to the model it was switched to

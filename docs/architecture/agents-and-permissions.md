@@ -740,7 +740,10 @@ below realize one model:
   **dispatch-only** (setting or clearing it leaves the advertised array
   untouched) and now **mode-scoped**: it is dropped wholesale on any live
   `SetMode`, since an entry enabled under one mode carries no meaning in
-  another. The grade override still reaches down the spawn sub-tree via the
+  another. The runtime's mirror and core's `Session::tool_overlay` both apply
+  this drop, live and on replay, and a compaction successor inherits the
+  overlay only under the mode it was set in (#776,
+  [engine](engine.md)). The grade override still reaches down the spawn sub-tree via the
   same nearest-link-first ancestor-chain walk the ADR-0024 privilege ceiling
   uses (`permission::overlay_grade_entry`/`ancestor_chain`), and the `rhai`
   `BindingPolicy` snapshot consults the identical lookup (a script's
