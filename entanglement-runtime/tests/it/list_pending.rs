@@ -41,27 +41,40 @@ fn reply(text: &str, call: Option<(&str, &str, &str)>) -> LlmStream {
     })
 }
 
-/// A root prompted `"direct"` calls `bash` itself; one prompted `"spawn"`
-/// launches a background child whose prompt `"child-task"` calls `bash`.
-/// Either ends its turn once it has seen a tool result.
+/// Scripted by prompt: `"spawn"` launches a background child (prompt
+/// `"child-task"`); `"widen"` calls `request_mode` for `build`; `"twice"`
+/// calls `bash` again after the first result (an unattended mode's
+/// collapsed `Ask` only parks on the repeat); anything else calls `bash`
+/// once. Every script then ends its turn.
 struct PendingLlm;
+
+const BASH: &str = r#"{"command":"ls"}"#;
 
 #[async_trait]
 impl Llm for PendingLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        if req.messages.iter().any(|m| m.role == MessageRole::Tool) {
-            return Ok(reply("done", None));
-        }
+        let results = req
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .count();
         let asked = |s: &str| {
             req.messages
                 .iter()
                 .any(|m| m.role == MessageRole::User && m.text().contains(s))
         };
-        Ok(if asked("spawn") {
-            let input = r#"{"agent":"general","prompt":"child-task","background":true}"#;
-            reply("", Some(("a1", "agent", input)))
-        } else {
-            reply("", Some(("b1", "bash", r#"{"command":"ls"}"#)))
+        Ok(match results {
+            1 if asked("twice") => reply("", Some(("b2", "bash", BASH))),
+            0 if asked("spawn") => {
+                let input = r#"{"agent":"general","prompt":"child-task","background":true}"#;
+                reply("", Some(("a1", "agent", input)))
+            }
+            0 if asked("widen") => {
+                let input = r#"{"mode":"build","reason":"need it"}"#;
+                reply("", Some(("m1", "request_mode", input)))
+            }
+            0 => reply("", Some(("b1", "bash", BASH))),
+            _ => reply("done", None),
         })
     }
 }
@@ -91,7 +104,23 @@ impl GrantStore for NoGrants {
     fn forget_session(&self, _: &SessionId) {}
 }
 
-/// An engine whose single `build` mode grades every graded tool `Ask`.
+fn ask_mode(name: &str, question_timeout: u64) -> Mode {
+    Mode {
+        name: name.to_string(),
+        default: Permission::Ask,
+        rules: Rules::default(),
+        limits: Limits {
+            question_timeout,
+            ..Limits::default()
+        },
+        sandbox: None,
+        sandbox_network: false,
+    }
+}
+
+/// An engine whose modes all grade every graded tool `Ask`: `build` (the
+/// default), `research` (so `request_mode` has something to widen from) and
+/// `timed` (unattended, 1s `question_timeout`).
 fn spawn_engine() -> Holly {
     let agents =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
@@ -101,15 +130,12 @@ fn spawn_engine() -> Holly {
         ..EngineConfig::default()
     });
     let mode_table = Arc::new(
-        ModeTable::new(vec![Mode {
-            name: "build".to_string(),
-            default: Permission::Ask,
-            rules: Rules::default(),
-            limits: Limits::default(),
-            sandbox: None,
-            sandbox_network: false,
-        }])
-        .expect("single-mode table is valid"),
+        ModeTable::new(vec![
+            ask_mode("build", 0),
+            ask_mode("research", 0),
+            ask_mode("timed", 1),
+        ])
+        .expect("mode table is valid"),
     );
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
@@ -146,8 +172,8 @@ fn spawn_engine() -> Holly {
     holly
 }
 
-/// Wait for the next `bash` `ToolRequest`, returning `(session, request_id, input)`.
-async fn next_bash_request(sub: &mut Receiver<OutEvent>) -> (SessionId, String, String) {
+/// Wait for the next `ToolRequest` for `want`, returning `(session, request_id, input)`.
+async fn next_request(sub: &mut Receiver<OutEvent>, want: &str) -> (SessionId, String, String) {
     while let Ok(Ok(ev)) = tokio::time::timeout(WAIT, sub.recv()).await {
         if let OutEvent::ToolRequest {
             session,
@@ -157,12 +183,12 @@ async fn next_bash_request(sub: &mut Receiver<OutEvent>) -> (SessionId, String, 
             ..
         } = ev
         {
-            if tool == "bash" {
+            if tool == want {
                 return (session, request_id, input);
             }
         }
     }
-    panic!("expected a bash ToolRequest");
+    panic!("expected a {want} ToolRequest");
 }
 
 /// Send `ListPending` over the untrusted wire path and await its reply.
@@ -209,7 +235,7 @@ async fn parked_ask_is_listed_then_gone_once_approved() {
         .send(InMsg::prompt(sid.clone(), "direct"))
         .await
         .unwrap();
-    let (session, request_id, input) = next_bash_request(&mut sub).await;
+    let (session, request_id, input) = next_request(&mut sub, "bash").await;
     assert_eq!(session, sid);
 
     let listed = list(&holly, &mut sub, "c1", Some(&sid)).await;
@@ -258,7 +284,7 @@ async fn root_filter_covers_a_spawned_childs_parked_call() {
         .send(InMsg::prompt(parent.clone(), "spawn"))
         .await
         .unwrap();
-    let (child, request_id, _) = next_bash_request(&mut sub).await;
+    let (child, request_id, _) = next_request(&mut sub, "bash").await;
     assert_ne!(child, parent, "the bash call comes from the child");
 
     let listed = list(&holly, &mut sub, "c-tree", Some(&parent)).await;
@@ -272,4 +298,75 @@ async fn root_filter_covers_a_spawned_childs_parked_call() {
     assert!(list(&holly, &mut sub, "c-none", Some(&unrelated))
         .await
         .is_empty());
+}
+
+/// Switch `sid` to `mode` before its first prompt and wait for the ack.
+async fn set_mode(holly: &Holly, sub: &mut Receiver<OutEvent>, sid: &SessionId, mode: &str) {
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: mode.into(),
+        })
+        .await
+        .unwrap();
+    while let Ok(Ok(ev)) = tokio::time::timeout(WAIT, sub.recv()).await {
+        if let OutEvent::ModeChanged {
+            session, mode: m, ..
+        } = &ev
+        {
+            if session == sid && m == mode {
+                return;
+            }
+        }
+    }
+    panic!("expected ModeChanged({mode})");
+}
+
+#[tokio::test]
+async fn request_mode_park_is_listed_with_kind_mode_and_once_only() {
+    let holly = spawn_engine();
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("widen-root");
+    set_mode(&holly, &mut sub, &sid, "research").await;
+    holly
+        .send(InMsg::prompt(sid.clone(), "widen"))
+        .await
+        .unwrap();
+    let (_, request_id, input) = next_request(&mut sub, "request_mode").await;
+
+    let listed = list(&holly, &mut sub, "c-mode", Some(&sid)).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let p = &listed[0];
+    assert_eq!(p.request_id, request_id);
+    assert_eq!(p.kind, ApprovalKind::Mode);
+    assert_eq!(p.input, input);
+    assert_eq!(p.scopes, vec![ApprovalScope::Once]);
+    assert!(p.reason.contains("`research` -> `build`"), "{}", p.reason);
+}
+
+#[tokio::test]
+async fn timed_out_unattended_park_disappears() {
+    let holly = spawn_engine();
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("timed-root");
+    set_mode(&holly, &mut sub, &sid, "timed").await;
+    holly
+        .send(InMsg::prompt(sid.clone(), "twice"))
+        .await
+        .unwrap();
+    // The first call collapses to a denial; only the repeat parks.
+    let (_, request_id, _) = next_request(&mut sub, "bash").await;
+    let listed = list(&holly, &mut sub, "c-t1", Some(&sid)).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].request_id, request_id);
+
+    // Wait out the 1s question_timeout: the expiry denies the call.
+    while let Ok(Ok(ev)) = tokio::time::timeout(WAIT, sub.recv()).await {
+        if let OutEvent::ToolOutput { request_id: r, .. } = &ev {
+            if r == &request_id {
+                break;
+            }
+        }
+    }
+    assert!(list(&holly, &mut sub, "c-t2", None).await.is_empty());
 }

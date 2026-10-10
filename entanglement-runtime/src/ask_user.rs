@@ -43,7 +43,7 @@ use entanglement_core::{
     AgentState, Holly, OutEvent, Question, QuestionOption, Questions, SessionId, ToolSpec,
 };
 
-use crate::pending::{self, PendingDecisions};
+use crate::pending::PendingDecisions;
 use crate::questions::OpenQuestions;
 use crate::run_limits;
 use crate::seam;
@@ -246,7 +246,10 @@ pub async fn run_ask_user(
         // never target an `ask_user` request id. `None` (elapsed) is handled
         // first and separately: it never targets `open`/`pending` again past
         // this point, matching every other terminal arm below.
-        let decision = match pending::await_decision_timed(rx, timeout).await {
+        let decision = match pending
+            .await_timed(&session, &request_id, rx, timeout)
+            .await
+        {
             Some(decision) => decision,
             None => {
                 open.remove(&session, &request_id);

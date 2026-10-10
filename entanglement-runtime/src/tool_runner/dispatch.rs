@@ -383,6 +383,7 @@ pub(crate) async fn dispatch(
                 advertising,
                 validation,
                 envelope,
+                pending,
                 rx,
                 escape_grant,
                 session,
