@@ -127,7 +127,7 @@ pub(super) async fn prepare(
     redirect_uri: &str,
     client_name: &str,
 ) -> Result<PreparedAuthorization> {
-    let http = super::http_client();
+    let http = super::http_client()?;
     let endpoints = discovery::discover(
         &http,
         mcp_url,

@@ -37,6 +37,8 @@ async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
 httpdate = "1"
 # CSPRNG for the MCP OAuth PKCE verifier + `state` (ADR-0153). Direct OS
 # entropy — no `uuid` wrapper needed for 32 raw bytes.

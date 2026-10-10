@@ -231,15 +231,12 @@ pub struct AuthRequired {
 /// the runtime drives OAuth without naming `reqwest` (ADR-0153). These are
 /// short, infrequent requests to a handful of endpoints, so they want none of
 /// the LLM client's pooling/retry machinery.
-pub(crate) fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+pub(crate) fn http_client() -> Result<reqwest::Client> {
+    crate::client::client_builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        // The builder only fails on a broken TLS backend, which would break
-        // every other request too; a default client keeps the error at the
-        // request site where it can be reported usefully.
-        .unwrap_or_default()
+        .context("failed to build the OAuth HTTP client")
 }
 
 /// Report on a server's stored authorization, refreshing an expired token when
@@ -257,7 +254,7 @@ pub async fn check(store: std::sync::Arc<dyn TokenStore>, server: &str) -> Resul
     if !current.tokens.is_expired(0) {
         return Ok(AuthOutcome::AlreadyValid);
     }
-    let http = http_client();
+    let http = http_client()?;
     token::refresh_locked(server.to_string(), store, http, false)
         .await
         .with_context(|| format!("refreshing the stored token for `{server}`"))?;
@@ -275,23 +272,27 @@ pub async fn disconnect(store: &dyn TokenStore, server: &str) -> Result<AuthOutc
         return Ok(AuthOutcome::NotAuthorized);
     };
     if let Some(endpoint) = current.revocation_endpoint.as_deref() {
-        let http = http_client();
         // Revoke the refresh token when present: revoking the grant root takes
         // the access token with it on a conforming server.
         let (token_value, hint) = match current.tokens.refresh_token.as_deref() {
             Some(rt) => (rt, "refresh_token"),
             None => (current.tokens.access_token.as_str(), "access_token"),
         };
-        if let Err(e) = token::revoke(
-            &http,
-            endpoint,
-            &current.client_id,
-            current.client_secret.as_deref(),
-            token_value,
-            hint,
-        )
-        .await
-        {
+        let revoked = match http_client() {
+            Ok(http) => {
+                token::revoke(
+                    &http,
+                    endpoint,
+                    &current.client_id,
+                    current.client_secret.as_deref(),
+                    token_value,
+                    hint,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = revoked {
             tracing::warn!("could not revoke the token for MCP server `{server}`: {e:#}");
         }
     }

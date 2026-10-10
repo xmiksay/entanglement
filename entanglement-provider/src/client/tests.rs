@@ -455,7 +455,7 @@ async fn request_send_failure_is_transient() {
             let _ = sock.read(&mut buf); // consume the request line, then drop → reset
         }
     });
-    let client = reqwest::Client::new();
+    let client = super::client_builder().build().unwrap();
     let err = client
         .get(format!("http://{addr}/"))
         .send()
@@ -778,7 +778,7 @@ async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops()
     let addr = listener.local_addr().expect("local addr");
     serve_one_response_then_hold_open(listener, b"data: some event\n\n");
 
-    let client = reqwest::Client::new();
+    let client = super::client_builder().build().unwrap();
     let response = client
         .get(format!("http://{addr}/"))
         .send()
@@ -822,7 +822,7 @@ async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = super::client_builder().build().unwrap();
     let response = client
         .get(format!("http://{addr}/"))
         .send()

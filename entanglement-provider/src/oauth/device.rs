@@ -54,7 +54,7 @@ impl DeviceFlow {
         cfg: &OauthConfig,
         resource_metadata_hint: Option<&str>,
     ) -> Result<PendingDeviceAuthorization> {
-        let http = http_client();
+        let http = http_client()?;
         let endpoints = discovery::discover(
             &http,
             mcp_url,

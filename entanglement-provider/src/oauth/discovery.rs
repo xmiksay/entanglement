@@ -294,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn full_override_short_circuits_discovery() {
         // An unroutable base URL proves no network call is attempted.
-        let http = reqwest::Client::new();
+        let http = crate::client::client_builder().build().unwrap();
         let got = discover(
             &http,
             "https://192.0.2.1/mcp",
@@ -325,7 +325,7 @@ mod tests {
     /// since `DeviceFlow::begin` uses its absence to report a clear error.
     #[tokio::test]
     async fn full_override_with_no_device_authorization_leaves_it_none() {
-        let http = reqwest::Client::new();
+        let http = crate::client::client_builder().build().unwrap();
         let got = discover(
             &http,
             "https://192.0.2.1/mcp",
