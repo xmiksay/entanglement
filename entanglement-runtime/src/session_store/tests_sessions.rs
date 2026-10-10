@@ -1,3 +1,4 @@
+use super::listing::FIRST_PROMPT_MAX;
 use super::*;
 
 #[test]

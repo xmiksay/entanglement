@@ -6,7 +6,7 @@
 use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{Dynamic, Engine, EvalAltResult};
 
-use super::runtime_err;
+use super::bindings::runtime_err;
 
 /// The four script-facing names registered below, for the spec's binding
 /// reference to be pinned against (`super::spec`) — the registration itself

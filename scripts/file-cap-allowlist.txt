@@ -24,12 +24,3 @@
 # change that added this gate.
 entanglement-core/src/protocol/in_msg.rs
 entanglement-core/src/protocol/out_event.rs
-entanglement-runtime/src/main.rs
-entanglement-runtime/src/agents/mod.rs
-entanglement-runtime/src/script.rs
-entanglement-runtime/src/session_store.rs
-entanglement-runtime/src/subagent.rs
-entanglement-runtime/src/tui/app/pickers.rs
-entanglement-runtime/src/tui/event_loop.rs
-entanglement-runtime/src/tui/modal_events.rs
-entanglement-runtime/src/tui/session_view/reducer.rs

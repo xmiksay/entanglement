@@ -259,7 +259,7 @@ below realize one model:
   is default-implemented (a no-op echo), so the #311 seam's existing custom
   implementations keep compiling untouched — only `DefaultGrantStore`
   overrides it for real. Two TUI surfaces: `[d]` on an approval prompt
-  (`tui/event_loop.rs`, gated on the pending tool being read-like) and a
+  (`tui/event_loop/approval_keys.rs`, gated on the pending tool being read-like) and a
   proactive `/allow <path>` command (`tui/allow_command.rs`, normalizing the
   path against the head's root and rejecting anything outside it) — both call
   `grant_session_dir` synchronously through a cloned `Arc<DefaultGrantStore>`
@@ -604,7 +604,7 @@ below realize one model:
   turn already in flight keeps its already-resolved system prompt unchanged.
   The permission-mode table is **not** part of this live reload: like the old
   `EngineConfig.profiles`, `ModeTable` is built once at startup
-  (`main.rs`, built-ins + `config.yml` `modes:` tuning validated against the
+  (`services.rs`, built-ins + `config.yml` `modes:` tuning validated against the
   live `ToolRegistry`) and held pinned for the process lifetime — a `modes:`
   edit needs a restart, unlike an agent/skill file. A directory that doesn't exist at watch-start needs a restart to be
   picked up once created (known v1 limit). Separately, every managed file —

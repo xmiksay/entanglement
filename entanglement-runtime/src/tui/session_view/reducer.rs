@@ -1,5 +1,8 @@
 use super::*;
 
+mod notices;
+mod tools;
+
 impl SessionView {
     /// Records the user's outgoing prompt into the transcript so it shows up
     /// in the chat scrollback. Unlike engine `OutEvent`s, user prompts carry
@@ -198,116 +201,27 @@ impl SessionView {
                 tool,
                 delta,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    self.last_seen_seq = seq;
-                    self.clear_pending_user();
-                    match self.streaming_tool_calls.get(&request_id).copied() {
-                        Some(idx) => {
-                            if let Some(TranscriptEntry::ToolCall { input, .. }) =
-                                self.transcript.get_mut(idx)
-                            {
-                                input.push_str(&delta);
-                            }
-                        }
-                        None => {
-                            let idx = self.transcript.len();
-                            self.transcript.push(TranscriptEntry::ToolCall {
-                                request_id: Some(request_id.clone()),
-                                tool,
-                                input: delta,
-                                output: None,
-                                is_error: false,
-                            });
-                            self.streaming_tool_calls.insert(request_id, idx);
-                        }
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_tool_call_delta(seq, request_id, tool, delta),
             OutEvent::ToolCall {
                 seq,
                 request_id,
                 tool,
                 input,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    self.clear_pending_user();
-                    // If the call streamed its args, finalize the in-progress
-                    // entry with the authoritative input rather than duplicating
-                    // it (#194); otherwise push a fresh entry (non-streaming
-                    // providers land here directly).
-                    match self.streaming_tool_calls.remove(&request_id) {
-                        Some(idx) => {
-                            if let Some(TranscriptEntry::ToolCall {
-                                tool: t,
-                                input: buf,
-                                ..
-                            }) = self.transcript.get_mut(idx)
-                            {
-                                *t = tool.clone();
-                                *buf = input.clone();
-                            }
-                        }
-                        None => {
-                            self.transcript.push(TranscriptEntry::ToolCall {
-                                request_id: Some(request_id.clone()),
-                                tool: tool.clone(),
-                                input: input.clone(),
-                                output: None,
-                                is_error: false,
-                            });
-                        }
-                    }
-                    self.last_seen_seq = seq;
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_tool_call(seq, request_id, tool, input),
             OutEvent::ToolRequest {
                 seq,
                 request_id,
                 tool,
                 input,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    self.last_seen_seq = seq;
-                    // Core batch-emits a turn's tool calls (#270, ADR-0061), so
-                    // more requests can land while one is already prompted —
-                    // queue them; only the front drives `approval_mode` (#273).
-                    self.pending_tool_requests
-                        .push_back((request_id.clone(), tool, input));
-                    if matches!(self.approval_mode, ApprovalMode::Normal) {
-                        self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_tool_request(seq, request_id, tool, input),
             OutEvent::UserQuestion {
                 seq,
                 request_id,
                 questions,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    self.last_seen_seq = seq;
-                    // Queued like approvals (#273): the front is the one
-                    // rendered; answering every question in it promotes the
-                    // next call (#488).
-                    self.pending_questions
-                        .push_back(PendingQuestion::new(request_id, questions.0));
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_user_question(seq, request_id, questions),
             // Runtime plumbing (#58): the tool executor answers this, not the
             // UI. The call is already shown via `ToolCall`.
             OutEvent::ToolExec { .. } => false,
@@ -318,39 +232,7 @@ impl SessionView {
                 output,
                 is_error,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    self.last_seen_seq = seq;
-                    // Fold the output (and its is_error classification, #672,
-                    // ADR-0176) into its call so one op is one entry (#340).
-                    // Batch results resolve out of order (#270), so scan from the
-                    // back for the unfilled `ToolCall` with this `request_id`.
-                    let folded = self.transcript.iter_mut().rev().find_map(|e| match e {
-                        TranscriptEntry::ToolCall {
-                            request_id: Some(id),
-                            output: output_slot @ None,
-                            is_error: error_slot,
-                            ..
-                        } if *id == request_id => Some((output_slot, error_slot)),
-                        _ => None,
-                    });
-                    match folded {
-                        Some((slot, error_slot)) => {
-                            *slot = Some(output);
-                            *error_slot = is_error;
-                        }
-                        // No matching call (e.g. a stray/duplicate output): keep
-                        // the standalone notice rather than dropping it.
-                        None => self.transcript.push(TranscriptEntry::ToolOutput {
-                            tool: Some(tool.clone()),
-                            output,
-                        }),
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_tool_output(seq, request_id, tool, output, is_error),
             OutEvent::TaskList { seq, content, .. } => {
                 if seq > self.last_seen_seq {
                     self.task_list = Some(content);
@@ -415,32 +297,7 @@ impl SessionView {
                 auto,
                 mode,
                 ..
-            } => {
-                if seq > self.last_seen_seq {
-                    let how = match (auto, mode) {
-                        (false, _) => "Compacted".to_string(),
-                        (true, CompactionMode::Summary) => "Auto-compacted: the context \
-                             overflowed the model's window, so it was summarized"
-                            .to_string(),
-                        (true, CompactionMode::Prune) => "Auto-compacted: the context \
-                             overflowed the model's window and no summary was available, \
-                             so the oldest tool output was pruned"
-                            .to_string(),
-                    };
-                    let output = format!(
-                        "{how} — continuing in a new session. This one is retired; \
-                         its history is preserved.\n\n{summary}"
-                    );
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some("compact".to_string()),
-                        output,
-                    });
-                    self.last_seen_seq = seq;
-                    true
-                } else {
-                    false
-                }
-            }
+            } => self.fold_compacted(seq, summary, auto, mode),
             // The session's active-skill posture changed (#400, ADR-0106;
             // posture-only since ADR-0194 — skills are additive-only, never a
             // tool-set restriction): reuses the tool-output entry, like
@@ -448,60 +305,20 @@ impl SessionView {
             // the loaded skill is visible in the transcript. `allowed_tools`
             // is vestigial (wire/log-replay compat only) and no longer
             // implies any restriction — not rendered as one.
-            OutEvent::SkillActive { seq, skill_id, .. } => {
-                if seq > self.last_seen_seq {
-                    let output = match skill_id {
-                        Some(id) => format!("skill `{id}` active"),
-                        None => "skill cleared".to_string(),
-                    };
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some("skill".to_string()),
-                        output,
-                    });
-                    self.last_seen_seq = seq;
-                    true
-                } else {
-                    false
-                }
-            }
+            OutEvent::SkillActive { seq, skill_id, .. } => self.fold_skill_active(seq, skill_id),
             // A bound plan file changed out of band (#627, ADR-0145
             // "Consequences"): the watcher-driven live counterpart to
             // `propose_plan`'s staleness guard, which otherwise only surfaces
             // as a refusal at the *next* `propose_plan(path=...)` call.
             // Reuses the tool-output entry, like `SkillActive`'s notice.
-            OutEvent::PlanChanged { seq, path, .. } => {
-                if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some("plan".to_string()),
-                        output: format!(
-                            "plan file `{path}` changed on disk (not through this \
-                             session) — re-read it before submitting it again"
-                        ),
-                    });
-                    self.last_seen_seq = seq;
-                    true
-                } else {
-                    false
-                }
-            }
+            OutEvent::PlanChanged { seq, path, .. } => self.fold_plan_changed(seq, path),
             // Ambiguous-stop bounded retry (#ADR-0118): a distinct out-of-band
             // notice (like `Compacted`/`SkillActive`) reporting the in-place
             // retry. Advancing `last_seen_seq` past this event also closes the
             // preceding partial `TextDelta` segment, so the retry's re-streamed
             // text renders as its own bubble instead of concatenating onto the
             // truncated one.
-            OutEvent::AmbiguousRetry { seq, .. } => {
-                if seq > self.last_seen_seq {
-                    self.transcript.push(TranscriptEntry::ToolOutput {
-                        tool: Some("retry".to_string()),
-                        output: "model stop was ambiguous — retrying in place".to_string(),
-                    });
-                    self.last_seen_seq = seq;
-                    true
-                } else {
-                    false
-                }
-            }
+            OutEvent::AmbiguousRetry { seq, .. } => self.fold_ambiguous_retry(seq),
             // Persisted provider-side web-search block (#481): already rendered
             // live via `ReasoningDelta`'s query/source lines — this is the
             // persisted-to-history echo, so advance the seq dedupe guard but

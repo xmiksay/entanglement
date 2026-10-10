@@ -356,7 +356,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   ([ADR-0151](../adr/0151-settable-session-metadata.md)); the sidebar and
   sessions modal prefer the name over the short id and the live `action` over
   the first-prompt description line. **Modals and popups are mouse-clickable**
-  (f48cec5, `tui/modal_events.rs::click_modal`): with a modal or the
+  (f48cec5, `tui/modal_events/click.rs::click_modal`): with a modal or the
   slash/`@file` popup open, a left click on a row selects it and fires the
   same action `Enter` would, a click outside the open modal's rect closes it
   (matching `Esc`), and the wheel moves the modal's selection — the

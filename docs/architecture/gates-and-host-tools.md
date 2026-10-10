@@ -868,7 +868,7 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   self-permissioning `rhai` tool bypass hooks — matching the issue's "around
   `tool_runner::dispatch`" scope.
 - **Wiring:** `spawn_tool_executor_with_hooks(holly, tools, profiles, base, hooks)`
-  is the seam `main.rs` uses; the historical `spawn_tool_executor` is a no-hook
+  is the seam `skutter` uses (`services.rs`); the historical `spawn_tool_executor` is a no-hook
   wrapper (existing callers/tests unchanged). The inbound subscription is hoisted
   synchronous before the executor task spawns so a first `Prompt` can't race the
   `user_prompt_submit` watcher.
@@ -927,7 +927,7 @@ owned snapshot before spawning its detached task — `std::sync::RwLock`, not
 ([ADR-0076](../adr/0076-per-session-dynamic-tool-specs.md)) is a plain sync
 `Fn` consulted on the turn's hot path and must never block on I/O; a
 `tokio::sync::RwLock` would force that closure into `blocking_read` or break
-0076's no-async contract. `main.rs` wires the resolver to read through the
+0076's no-async contract. `skutter` (`boot.rs`) wires the resolver to read through the
 same `SharedRegistry` handle it hands the executor, reproducing
 `cfg.tool_specs`' composition: registry tools plus the runtime-intercepted
 pseudo-tool specs that aren't `ToolRegistry` entries
@@ -1164,7 +1164,7 @@ the same permission profiles as `read`/`bash`.
   catalog-bundled server (below) never joins `user_config.mcp`, so its own
   `capabilities:` block (e.g. z.ai's `web_search_prime` →
   `{webSearchPrime: read}`) is invisible to `capability_index` alone;
-  `mcp::capability_index_with_catalog` is what `main.rs` actually calls —
+  `mcp::capability_index_with_catalog` is what `skutter` actually calls (`boot.rs`) —
   `capability_index` plus every bundled server's hint, merged with any
   same-name user override the same way `AvailableMcp::partition` merges one.
 - **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut

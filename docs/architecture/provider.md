@@ -883,7 +883,7 @@ ADR-0181, enforced by `make userid`):
 `ModelResolver` itself widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
 so its three call sites in `entanglement-core/src/session/` (session-start
 pin, `SetAgent` pin rebind, `SetModel`) can resolve against the *resolving
-session's own user* — single-user callers (`main.rs::build_model_resolver`)
+session's own user* — single-user callers (`factories.rs::build_model_resolver`)
 simply ignore the parameter. `build_user_model_resolver` looks the session's
 `UserId` up in an embedder-supplied `UserProviderStore`, resolving each
 `UserProviderContext`'s own `Catalog` (same shape as `providers.yml` — so
