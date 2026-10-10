@@ -14,7 +14,6 @@
 //! session. An agent that needs the bytes fetches them through an endpoint/API
 //! tool, not through an MCP result.
 
-use base64::Engine as _;
 use entanglement_core::ContentPart;
 use serde_json::Value;
 
@@ -89,32 +88,30 @@ pub(crate) fn render_result(result: &Value) -> McpResult {
 
 /// Render one content block into `out`; `true` when it was a text block.
 fn render_block(block: &Value, out: &mut Parts) -> bool {
-    let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
-    let mime = str_of(block, "mimeType").unwrap_or_else(|| "unknown type".to_string());
+    let mime = str_of(block, "mimeType").unwrap_or("unknown type");
     match block.get("type").and_then(Value::as_str) {
         Some("text") => {
             if let Some(t) = str_of(block, "text") {
-                out.line(&t);
+                out.line(t);
             }
             return true;
         }
         Some("image") | Some("audio") => {
-            let data = str_of(block, "data");
-            out.line(&binary_placeholder(&mime, data.as_deref(), None));
+            out.line(&binary_placeholder(mime, str_of(block, "data"), None));
         }
         Some("resource") => {
             let res = block.get("resource").unwrap_or(&Value::Null);
             let uri = str_of(res, "uri").unwrap_or_default();
-            let mime = str_of(res, "mimeType").unwrap_or_else(|| "unknown type".to_string());
+            let mime = str_of(res, "mimeType").unwrap_or("unknown type");
             match (str_of(res, "text"), str_of(res, "blob")) {
                 (Some(text), _) => out.line(&format!("[resource {uri} ({mime})]\n{text}")),
-                (None, Some(blob)) => out.line(&binary_placeholder(&mime, Some(&blob), Some(&uri))),
+                (None, Some(blob)) => out.line(&binary_placeholder(mime, Some(blob), Some(uri))),
                 (None, None) => out.line(&format!("[resource {uri} ({mime})]")),
             }
         }
         Some("resource_link") => {
             let uri = str_of(block, "uri").unwrap_or_default();
-            let name = str_of(block, "name").unwrap_or_else(|| uri.clone());
+            let name = str_of(block, "name").unwrap_or(uri);
             let mut line = format!("[resource link: {name} <{uri}> ({mime})");
             if let Some(desc) = str_of(block, "description") {
                 line.push_str(&format!(" — {desc}"));
@@ -128,18 +125,54 @@ fn render_block(block: &Value, out: &mut Parts) -> bool {
     false
 }
 
+/// A string field of `v`, borrowed — a blob can be many megabytes, so nothing
+/// on this path clones it.
+fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Value::as_str)
+}
+
 /// `[binary omitted: <mime>, <size>, uri=<uri>]` — the only form binary
-/// content takes (see the module docs for why). The size is measured by
-/// decoding; malformed or missing base64 reads `size unknown`, never a panic.
+/// content takes (see the module docs for why). Malformed or missing base64
+/// reads `size unknown`, never a panic.
 fn binary_placeholder(mime: &str, b64: Option<&str>, uri: Option<&str>) -> String {
     let size = b64
-        .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-        .map(|bytes| human_size(bytes.len()))
+        .and_then(base64_decoded_len)
+        .map(human_size)
         .unwrap_or_else(|| "size unknown".to_string());
     match uri.filter(|u| !u.is_empty()) {
         Some(uri) => format!("[binary omitted: {mime}, {size}, uri={uri}]"),
         None => format!("[binary omitted: {mime}, {size}]"),
     }
+}
+
+/// Decoded byte length of a base64 payload, computed in one allocation-free
+/// pass instead of decoding it (a 100 MB blob would otherwise cost its full
+/// decode just to print a size). Tolerates line wrapping and missing padding,
+/// both common in the wild; accepts the standard and URL-safe alphabets.
+/// `None` for anything that isn't base64: a foreign byte, data after `=`,
+/// over-long padding, or a length no encoding can produce.
+fn base64_decoded_len(b64: &str) -> Option<usize> {
+    let (mut data, mut pad) = (0usize, 0usize);
+    for &b in b64.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'-' | b'_' if pad == 0 => {
+                data += 1
+            }
+            b'=' => pad += 1,
+            b if b.is_ascii_whitespace() => {}
+            _ => return None,
+        }
+    }
+    if pad > 2 || (pad > 0 && (data + pad) % 4 != 0) {
+        return None;
+    }
+    let tail = match data % 4 {
+        0 => 0,
+        2 => 1,
+        3 => 2,
+        _ => return None,
+    };
+    Some(data / 4 * 3 + tail)
 }
 
 fn human_size(bytes: usize) -> String {
@@ -205,6 +238,35 @@ mod tests {
         assert_eq!(
             texts(&r),
             ["[binary omitted: image/png, size unknown]\n[binary omitted: unknown type, size unknown]"]
+        );
+    }
+
+    #[test]
+    fn base64_size_is_computed_without_decoding() {
+        // Padded, line-wrapped (MIME-style), and unpadded encodings of the
+        // same 8 bytes all measure 8.
+        assert_eq!(base64_decoded_len("iVBORw0KGgo="), Some(8));
+        assert_eq!(base64_decoded_len("iVBO\r\nRw0K\nGgo="), Some(8));
+        assert_eq!(base64_decoded_len("iVBORw0KGgo"), Some(8));
+        assert_eq!(base64_decoded_len("AAAAAA=="), Some(4));
+        assert_eq!(base64_decoded_len("AAAAAA"), Some(4));
+        assert_eq!(base64_decoded_len(""), Some(0));
+        // Not base64: a foreign byte, data after padding, bad lengths.
+        assert_eq!(base64_decoded_len("AAA*"), None);
+        assert_eq!(base64_decoded_len("AA==AA"), None);
+        assert_eq!(base64_decoded_len("A==="), None);
+        assert_eq!(base64_decoded_len("AAAAA"), None);
+    }
+
+    #[test]
+    fn wrapped_or_unpadded_blobs_get_a_real_size() {
+        let r = render_result(&json!({ "content": [
+            { "type": "image", "data": "iVBO\nRw0K\nGgo", "mimeType": "image/png" },
+            { "type": "audio", "data": "", "mimeType": "audio/wav" },
+        ] }));
+        assert_eq!(
+            texts(&r),
+            ["[binary omitted: image/png, 8 B]\n[binary omitted: audio/wav, 0 B]"]
         );
     }
 

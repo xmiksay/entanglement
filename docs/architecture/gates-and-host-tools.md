@@ -1144,7 +1144,8 @@ the same permission profiles as `read`/`bash`.
   carried the answer.
   **Binary is never inlined**: `image`, `audio` and a `resource` `blob` all
   become `[binary omitted: <mime>, <size>, uri=<uri>]` (uri only when the
-  block has one; size from decoding, `size unknown` for malformed base64) —
+  block has one; size computed from the base64 length without decoding,
+  `size unknown` for malformed base64) —
   never an image `ContentPart`. WHY: binary through MCP bloats the context,
   and a part the provider rejects is replayed on every later request (and on
   resume), poisoning the session; an agent that needs the bytes fetches them
