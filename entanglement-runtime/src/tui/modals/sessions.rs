@@ -30,7 +30,7 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Select Agent Profile (Esc to close, Enter to select)"),
+                .title("Agents (read-only, fixed per session; Esc/Enter to close)"),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 

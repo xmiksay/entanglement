@@ -73,8 +73,8 @@
 #    - command: "logger -t entanglement-prompt"
 
 # MCP servers — attach external tool servers (#198, #312). Each entry registers a
-# server's tools into the engine, named `mcp__<server>__<tool>`. They obey the same
-# permission profiles as host tools. A server that fails to connect is logged and
+# server's tools into the engine, named `mcp__<server>__<tool>`. They are graded by
+# the session's permission mode exactly like host tools. A server that fails to connect is logged and
 # skipped, never fatal. Each block picks ONE transport — `command` XOR `url`:
 #
 #   stdio (local subprocess, JSON-RPC over stdio):

@@ -20,7 +20,7 @@ throughout the docs and ADRs map as follows:
 | --- | --- | --- |
 | [Layers & the actor model](architecture/layers-and-abi.md) | §0–1 | core/provider/runtime layering + the actor ABI |
 | [Wire protocol & structured outputs](architecture/protocol.md) | §2, §4 | `InMsg`/`OutEvent`, Plan/TaskList events |
-| [Agents, permissions, skills & prompt](architecture/agents-and-permissions.md) | §3 | profiles, tool mask, spawn gating, skills, prompt assembly |
+| [Agents, permissions, skills & prompt](architecture/agents-and-permissions.md) | §3 | agent profiles (identity), permission modes (authority), spawn limits, skills, prompt assembly |
 | [Per-session engine](architecture/engine.md) | §5 | turn loop, tool round-trip, steering, cancellation |
 | [LLM I/O (provider)](architecture/provider.md) | §5b | streaming client, catalog, pool/retry/rate-limit |
 | [Heads & persistence](architecture/heads-and-persistence.md) | §6, §6b | stdio/TUI/serve heads, event-sourced sessions |

@@ -122,10 +122,10 @@ fn render_session(target: &SessionId, records: &[LogRecord]) -> String {
 
     let _ = writeln!(
         out,
-        "\ntool overlay (ADR-0149 — live, per-session mask override past the agent profile):"
+        "\ntool overlay (ADR-0149 — live, per-session override of the permission mode):"
     );
     if state.tool_overlay.is_empty() {
-        let _ = writeln!(out, "  (none — using the agent profile's own tool mask)");
+        let _ = writeln!(out, "  (none — the permission mode grades every tool)");
     } else {
         for entry in &state.tool_overlay {
             let disposition = if entry.deny {
@@ -133,7 +133,7 @@ fn render_session(target: &SessionId, records: &[LogRecord]) -> String {
             } else if entry.allow {
                 "allow (no approval prompt)"
             } else {
-                "ask (bypasses the agent mask, still prompts)"
+                "ask (overrides a mode deny, still prompts)"
             };
             let _ = writeln!(out, "  {}: {disposition}", entry.pattern);
         }
@@ -217,7 +217,7 @@ mod tests {
         let rendered = render_session(&target, &[]);
         assert!(rendered.contains("warning: no SessionStarted"));
         assert!(rendered.contains("agent:   (unknown)"));
-        assert!(rendered.contains("(none — using the agent profile's own tool mask)"));
+        assert!(rendered.contains("(none — the permission mode grades every tool)"));
     }
 
     #[test]
@@ -247,6 +247,6 @@ mod tests {
             ),
         ];
         let rendered = render_session(&target, &records);
-        assert!(rendered.contains("(none — using the agent profile's own tool mask)"));
+        assert!(rendered.contains("(none — the permission mode grades every tool)"));
     }
 }

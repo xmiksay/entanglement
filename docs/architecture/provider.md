@@ -943,8 +943,9 @@ multi-user embedder instead builds `ModelResolver`s per user via
 relocated it out of the runtime — the runtime crate never names `UserId`,
 ADR-0181, enforced by `make userid`):
 `ModelResolver` itself widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
-so its three call sites in `entanglement-core/src/session/` (session-start
-pin, `SetAgent` pin rebind, `SetModel`) can resolve against the *resolving
+so its call sites in `entanglement-core/src/session/` (session-start
+pin and resume re-announce, replay's `ModelChanged` fold, `SetModel`; the
+former `SetAgent` pin rebind is gone, ADR-0207 §9) can resolve against the *resolving
 session's own user* — single-user callers (`factories.rs::build_model_resolver`)
 simply ignore the parameter. `build_user_model_resolver` looks the session's
 `UserId` up in an embedder-supplied `UserProviderStore`, resolving each

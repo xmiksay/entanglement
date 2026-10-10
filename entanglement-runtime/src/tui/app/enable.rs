@@ -148,7 +148,7 @@ impl App {
 
 fn render_entries(entries: &[ToolOverlayEntry]) -> String {
     if entries.is_empty() {
-        return "(none — profile defaults)".to_string();
+        return "(none — mode defaults)".to_string();
     }
     entries
         .iter()

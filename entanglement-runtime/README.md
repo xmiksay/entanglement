@@ -19,8 +19,8 @@ cargo install entanglement-runtime   # installs the `skutter` binary
 | ABI | (library) | hold a `Holly`, call `send()` / `subscribe()` directly |
 
 Plus `skutter sessions` (list past sessions) and `skutter inspect
-prompt|agents|skills|config` (re-run load-time discovery with no engine, show
-the resolved state and which layer won each override).
+prompt|agents|skills|modes|config|…` (re-run load-time discovery with no
+engine, show the resolved state and which layer won each override).
 
 ## Host tools
 
@@ -32,8 +32,11 @@ a background `call`/`bash` job (`background=true`) is joined with
 the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
 External **MCP servers**
 declared in the user config attach their tools as `mcp__<server>__<tool>`.
-Permission profiles (`Allow | Ask | Deny`, argument-scoped rules, persisted
-"always allow" grants, a user-config ceiling) govern every tool; lifecycle
+The session's permission **mode** (`research` | `plan` | `build` | `auto`;
+`Allow | Ask | Deny` per tool, capability class, or argument-scoped rule) plus
+persisted "always allow" grants and a user-config ceiling govern every tool —
+an agent profile is identity only (prompt + model pin) and carries no
+authority (ADR-0207); lifecycle
 hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch.
 A session advertises this surface in one of two modes (`full` or the default
 `tool_search`, a lean kernel plus `explore`/`describe` discovery — ADR-0196);
@@ -42,8 +45,8 @@ envelope.
 
 ## Providers
 
-Set `ENTANGLEMENT_PROVIDER` (`zai` | `openai` | `ollama` | `anthropic` | any
-catalog entry) or let key auto-detection pick; no key → offline `EchoLlm`. The
+Set `ENTANGLEMENT_PROVIDER` (`zai` | `zai_paas` | `openai` | `ollama` |
+`anthropic` | `gemini` | any catalog entry) or let key auto-detection pick; no key → offline `EchoLlm`. The
 provider/model list is YAML data — see
 [`entanglement-provider`](https://crates.io/crates/entanglement-provider).
 
@@ -55,8 +58,10 @@ provider/model list is YAML data — see
 | `provider` | real LLM backends (via `entanglement-provider`) |
 | `tui` | the terminal UI (ratatui/crossterm) |
 | `serve` | the WebSocket head (axum; implies `cli` + `provider`) |
+| `mcp-http` | the streamable-HTTP MCP transport + its OAuth flow |
+| `rhai` | the sandboxed `rhai` scripting tool |
 
-`default = ["tui", "serve"]` builds the full binary. With
+`default = ["tui", "serve", "mcp-http", "rhai"]` builds the full binary. With
 `--no-default-features` the crate is a **lean embeddable library** — tool
 execution, permission dispatch, spawn, persistence — with no CLI/TUI/transport
 deps.

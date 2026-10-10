@@ -71,7 +71,7 @@ fn agent_input_schema(targets: &[&Agent]) -> serde_json::Value {
             "agent": {
                 "type": "string",
                 "enum": names,
-                "description": "Which agent profile to run the sub-agent under. Defaults to explore (read-only)."
+                "description": "Which agent profile (persona) to run the sub-agent under. Defaults to general. The child inherits this session's permission mode."
             },
             "prompt": {
                 "type": "string",

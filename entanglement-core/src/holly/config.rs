@@ -18,8 +18,8 @@ use super::{UnknownSession, DEFAULT_AGENT};
 /// Resolves the base tool schemas advertised to the model for a specific
 /// session (#308). Its output **replaces** the engine-global
 /// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session.
-/// Nothing downstream filters the result — the agent's tool mask
-/// and session overlay are dispatch-only — so this resolver is the single seam
+/// Nothing downstream filters the result — the session's permission mode
+/// and tool overlay are dispatch-only — so this resolver is the single seam
 /// that shapes a session's base advertised surface. Consulted
 /// fresh at every turn build, so an embedder that mutates its backing store —
 /// e.g. a per-user MCP-server set — sees the change on the *next* turn without
@@ -80,9 +80,10 @@ pub struct EngineConfig {
     /// Per-session override for the advertised base tool schemas (#308,
     /// ADR-0076). When set, it is consulted at every turn build and its output
     /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
-    /// session. Its output is advertised as-is (the agent's tool mask and session
-    /// overlay enforce at dispatch, never here), so a resolver that must keep
-    /// a tool off one tenant's wire has to omit it — masking it will not.
+    /// session. Its output is advertised as-is (the session's permission mode
+    /// and tool overlay enforce at dispatch, never here), so a resolver that
+    /// must keep a tool off one tenant's wire has to omit it — denying it will
+    /// not.
     /// This is the seam a multi-tenant embedder needs: one `Holly`
     /// advertising a different tool surface per user (their per-user MCP-server
     /// tools, a site's `enabled_mcp_server_ids` restriction) without one engine
@@ -361,8 +362,8 @@ impl AgentCatalog {
 /// The built-in `general` agent — the only agent core carries. It is both
 /// the default a fresh session starts under and the synthesized fallback the
 /// supervisor uses when a custom registry omits it (see
-/// [`AgentCatalog::resolve`]). An inherit-all coding agent: no tool mask, no
-/// plan authority (default-closed, #231/ADR-0049). The runtime re-defines this
+/// [`AgentCatalog::resolve`]). Identity only — what it may do is the
+/// session's permission mode (ADR-0207). The runtime re-defines this
 /// same shape as `general.md` (formerly `build.md`, ADR-0207 stage 6a) and
 /// owns the `plan`/`debug` siblings (#201).
 fn default_agent() -> Agent {

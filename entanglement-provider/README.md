@@ -18,9 +18,10 @@ streaming LLM queries.
 | OpenAI | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) |
 | Ollama | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) |
 | Anthropic | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) |
+| Gemini | `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) |
 
-z.ai / OpenAI / Ollama share one `OpenAiLlm` client; Anthropic has its own
-client (distinct content-block format). No key configured → `EchoLlm`, a
+z.ai / OpenAI / Ollama share one `OpenAiLlm` client; Anthropic and Gemini each
+have their own client (distinct content-block formats). No key configured → `EchoLlm`, a
 deterministic offline backend for tests and demos.
 
 ## What's inside

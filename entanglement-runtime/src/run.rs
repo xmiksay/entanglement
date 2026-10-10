@@ -22,13 +22,14 @@ pub(crate) mod summary;
 /// will never speak again.
 ///
 /// A generic (non-`propose_plan`) `ToolRequest` reaching this head (e.g. the
-/// escape-root gate forcing an approval prompt even under a profile's
+/// escape-root gate forcing an approval prompt even under a mode's
 /// `Allow`, ADR-0109) is auto-rejected with a reason the model can act on:
 /// there is no interactive user here to answer it, and left unhandled it
 /// would park until the 60s `recv` timeout below kills the whole run.
 /// `--yes` (#554) used to offer an auto-approve escape hatch for this; it is
 /// retired (ADR-0207 §11) — `--mode auto` is the real unattended posture now
-/// (deny-by-default, run/turn/duration budgets, no silent widening), so this
+/// (bounded default-prompt posture per ADR-0209, run/turn/duration budgets,
+/// no silent widening), so this
 /// head no longer takes a flag to override its default.
 ///
 /// `session` must already exist — resumed, or bound by the caller's own

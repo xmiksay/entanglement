@@ -20,15 +20,15 @@ cannot pull in modules or re-enter the parser.
 ## Host I/O bindings
 
 Each binding passes the **same permission check as the equivalent tool
-call** (mask, agent/skill/config chain, escape-root gate for an
-out-of-project path) and returns that tool's text output. Denial or failure
+call** (the session's permission mode, its tool overlay, the config
+ceiling, and the escape-root gate for an out-of-project path) and returns that tool's text output. Denial or failure
 **throws** — wrap in `try`/`catch` if the script should degrade gracefully
 instead of aborting.
 
 - `read(path)`, `read(path, offset, limit)` — returns `"{lineno}: {line}"`
   text, **not** parseable as JSON/YAML.
 - `read_raw(path)` — exact file content, no line-number prefix; use this
-  before `parse_json`/`parse_yaml`. Graded and masked as an alias of `read`,
+  before `parse_json`/`parse_yaml`. Graded as an alias of `read`,
   not a distinct permission surface.
 - `glob(pattern)`
 - `grep(pattern)`, `grep(pattern, path)`
