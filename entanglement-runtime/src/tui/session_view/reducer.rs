@@ -314,6 +314,18 @@ impl SessionView {
             // as a refusal at the *next* `propose_plan(path=...)` call.
             // Reuses the tool-output entry, like `SkillActive`'s notice.
             OutEvent::PlanChanged { seq, path, .. } => self.fold_plan_changed(seq, path),
+            // `/undo`/`/rewind` outcome (ADR-0212): a notice like `PlanChanged`'s.
+            OutEvent::FilesReverted {
+                seq,
+                to_turn,
+                restored,
+                skipped,
+                ..
+            } => self.fold_notice(
+                seq,
+                "undo",
+                crate::file_backup::summary(to_turn, &restored, &skipped),
+            ),
             // Ambiguous-stop bounded retry (#ADR-0118): a distinct out-of-band
             // notice (like `Compacted`/`SkillActive`) reporting the in-place
             // retry. Advancing `last_seen_seq` past this event also closes the

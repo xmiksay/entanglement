@@ -189,6 +189,17 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // "Consequences"): a non-TUI head sees this live too, not only as a
         // refusal at the next `propose_plan(path=...)` call.
         OutEvent::PlanChanged { path, .. } => writeln!(out, "◆ plan file changed on disk: {path}")?,
+        // Undo/rewind outcome (ADR-0212).
+        OutEvent::FilesReverted {
+            to_turn,
+            restored,
+            skipped,
+            ..
+        } => writeln!(
+            out,
+            "↺ {}",
+            crate::file_backup::summary(*to_turn, restored, skipped)
+        )?,
         // Skill-active posture (#400, ADR-0106; posture-only since ADR-0194): a
         // wire-facing audit event for a head to render, not required for the
         // one-shot text render.

@@ -7,6 +7,7 @@
 use super::resolve_under_root_or_grant;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::file_backup::FileBackups;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -23,6 +24,8 @@ pub struct WriteTool {
     can_write: Option<CanWriteCallback>,
     /// Approval-gated out-of-root access (ADR-0109).
     extra_roots: Option<Arc<ExtraRootStore>>,
+    /// Per-write backups for undo/rewind (ADR-0212).
+    backups: Option<FileBackups>,
 }
 
 impl WriteTool {
@@ -31,7 +34,15 @@ impl WriteTool {
             root,
             can_write: None,
             extra_roots: None,
+            backups: None,
         }
+    }
+
+    /// Back up each file's prior content before a session's write replaces
+    /// it (ADR-0212).
+    pub fn with_backups(mut self, backups: FileBackups) -> Self {
+        self.backups = Some(backups);
+        self
     }
 
     /// Permit approved out-of-root writes (ADR-0109) via the shared grant store.
@@ -94,17 +105,17 @@ impl Tool for WriteTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.write("", input).await
+        self.write(None, "", input).await
     }
 
     async fn run_for_session(
         &self,
-        _session: &SessionId,
+        session: &SessionId,
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
         Ok(crate::tools::text_parts(
-            self.write(request_id, input).await?,
+            self.write(Some(session), request_id, input).await?,
         ))
     }
 }
@@ -112,7 +123,13 @@ impl Tool for WriteTool {
 impl WriteTool {
     /// `request_id` (#449) is forwarded to the escape-root grant check so a
     /// `Once` approval is only consumed by the call it was approved for.
-    async fn write(&self, request_id: &str, input: &str) -> Result<String> {
+    /// `session` is `None` for a session-less `run`, which is never backed up.
+    async fn write(
+        &self,
+        session: Option<&SessionId>,
+        request_id: &str,
+        input: &str,
+    ) -> Result<String> {
         let parsed: WriteInput = serde_json::from_str(input)
             .context("invalid input to write: expected {\"path\": string, \"content\": string}")?;
         let target_abs = resolve_under_root_or_grant(
@@ -130,7 +147,13 @@ impl WriteTool {
         // Read the prior line count (if any) for the overwrite report — and, via
         // its presence, whether this write creates or overwrites — before we
         // truncate the file.
-        let before = tokio::fs::read(&target_abs).await.ok();
+        let read_before = tokio::fs::read(&target_abs).await;
+        // Unreadable-but-present (not NotFound) is no evidence of absence: a
+        // backup claiming "absent" would make a revert delete a real file, so
+        // such a write is left unrecorded instead.
+        let prior_known =
+            !matches!(&read_before, Err(e) if e.kind() != std::io::ErrorKind::NotFound);
+        let before = read_before.ok();
 
         if let Some(parent) = target_abs.parent() {
             tokio::fs::create_dir_all(parent)
@@ -160,6 +183,16 @@ impl WriteTool {
         };
 
         crate::file_change::record(parsed.path.clone(), change_kind, parsed.content.as_bytes());
+        if let (Some(backups), Some(session), true) = (&self.backups, session, prior_known) {
+            backups.record(
+                session,
+                request_id,
+                &target_abs,
+                &parsed.path,
+                before.as_deref(),
+                Some(parsed.content.as_bytes()),
+            );
+        }
 
         Ok(summary)
     }

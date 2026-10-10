@@ -553,3 +553,31 @@ fn oneshot_roundtrips_defaults_args_and_is_wire_allowed() {
         }
     );
 }
+
+/// #731, ADR-0212: `RevertFiles` writes to disk, so it is trusted-only; an
+/// omitted `to_turn` is the "undo" form.
+#[test]
+fn revert_files_roundtrips_and_is_wire_refused() {
+    let msg = InMsg::RevertFiles {
+        session: SessionId::new("s1"),
+        to_turn: Some(2),
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    assert_eq!(
+        json,
+        r#"{"kind":"revert_files","session":"s1","to_turn":2}"#
+    );
+    assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+    assert!(!msg.wire_allowed());
+    assert_eq!(msg.session(), Some(&SessionId::new("s1")));
+    assert_eq!(msg.variant_name(), "revert_files");
+
+    let undo = r#"{"kind":"revert_files","session":"s1"}"#;
+    assert_eq!(
+        serde_json::from_str::<InMsg>(undo).unwrap(),
+        InMsg::RevertFiles {
+            session: SessionId::new("s1"),
+            to_turn: None,
+        }
+    );
+}

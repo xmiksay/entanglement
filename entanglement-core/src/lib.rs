@@ -16,7 +16,7 @@ pub mod session;
 
 pub use context::Context;
 pub use holly::{
-    AgentCatalog, ConfigError, EngineConfig, Holly, SessionLoader, SessionModel,
+    AgentCatalog, ConfigError, EngineConfig, FileReverter, Holly, SessionLoader, SessionModel,
     SystemPromptResolver, ToolSpecResolver, UnknownSession, WireError, DEFAULT_AGENT, DEFAULT_MODE,
 };
 pub use id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
@@ -57,9 +57,10 @@ pub use entanglement_provider::oauth::{
 pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
-    Agent, AgentState, ApprovalKind, ApprovalScope, CompactionMode, FileChangeKind, InMsg,
-    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, ModelChoice,
-    OperationInfo, OperationKind, OperationStatus, OutEvent, PendingApproval, PendingQuestion,
-    Permission, PermissionProfile, Question, QuestionOption, Questions, SessionId, SessionInfo,
-    ToolEnvelope, ToolOverlayEntry, UsagePurpose, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
+    Agent, AgentState, ApprovalKind, ApprovalScope, CompactionMode, FileChangeKind,
+    FileRevertReport, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerSpec,
+    McpServerStatus, ModelChoice, OperationInfo, OperationKind, OperationStatus, OutEvent,
+    PendingApproval, PendingQuestion, Permission, PermissionProfile, Question, QuestionOption,
+    Questions, RevertSkip, SessionId, SessionInfo, ToolEnvelope, ToolOverlayEntry, UsagePurpose,
+    RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
 };

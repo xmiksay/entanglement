@@ -36,6 +36,7 @@ mod mode;
 mod ops;
 mod replay;
 mod replay_pending;
+mod revert;
 mod round;
 mod round_inputs;
 mod start;
@@ -252,7 +253,8 @@ pub(crate) async fn session_loop(
                 cmd @ (SessionCmd::SetModel(..)
                 | SessionCmd::SetGeneration(_)
                 | SessionCmd::SetToolOverlay(_)
-                | SessionCmd::Oneshot(..)),
+                | SessionCmd::Oneshot(..)
+                | SessionCmd::RevertFiles(_)),
             ) if s.turn.is_some() || s.paused => {
                 stash_or_reject(&mut stash, cmd, &session, &events, &s.seq);
             }
@@ -281,6 +283,9 @@ pub(crate) async fn session_loop(
             Some(SessionCmd::Oneshot(op, args)) => {
                 forked =
                     run_oneshot(&session, &mut s, &events, &cfg, op, args).await == Forked::Yes;
+            }
+            Some(SessionCmd::RevertFiles(to_turn)) => {
+                revert::revert_files(&mut s, &session, &events, &cfg, to_turn).await;
             }
             // A result for the parked batch (#270): fold it into context on
             // arrival — arrival order, matching replay's `ToolOutput`-order

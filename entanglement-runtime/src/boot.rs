@@ -16,8 +16,9 @@ use crate::factories::build_model_resolver;
 use crate::providers::web_search_config;
 use crate::tool_runner::EscapeRoot;
 use crate::{
-    agents, config, endpoint, host, logging, mcp, mode, policy, retained_output, script_ops,
-    skills, subagent, system_prompt, system_prompt_mode, tool_advertising, SharedRegistry,
+    agents, config, endpoint, file_backup, host, logging, mcp, mode, policy, retained_output,
+    script_ops, skills, subagent, system_prompt, system_prompt_mode, tool_advertising,
+    SharedRegistry,
 };
 
 /// Everything [`boot`] produced that the services and heads still need, past
@@ -116,6 +117,10 @@ pub(crate) async fn boot(
     // requests (incl. streaming sub-agents) hit one provider at once, so a
     // spawn-storm queues instead of 429-storming (ADR-0111).
     let http_client = HttpClient::new()?;
+    // Per-write file backups (ADR-0212), kept beside the session logs in the
+    // same store the persistence tap writes — a revert reads that log's turns.
+    let file_backups =
+        file_backup::FileBackups::new(crate::session_store::SessionStore::for_cwd(cwd));
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
     let (
@@ -137,6 +142,7 @@ pub(crate) async fn boot(
         profiles,
         live_skills.clone(),
         user_config,
+        file_backups.clone(),
     )
     .await;
     logging::startup_mark("tools+mcp connect");
@@ -240,6 +246,8 @@ pub(crate) async fn boot(
     let live_profiles: Arc<RwLock<AgentCatalog>> =
         Arc::new(RwLock::new(engine_config.agents.clone()));
     let holly = Holly::spawn(engine_config);
+    // Detached like the other engine subscribers: it ends when the outbox closes.
+    file_backups.track_roots(&holly);
     Ok(Engine {
         holly,
         model_info,

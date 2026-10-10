@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use super::InMsg;
 use super::{
     AgentState, FileChangeKind, McpAction, McpAuthStatus, McpServerStatus, OperationInfo,
-    PendingApproval, PendingQuestion, Questions, SessionId, SessionInfo, ToolOverlayEntry,
+    PendingApproval, PendingQuestion, Questions, RevertSkip, SessionId, SessionInfo,
+    ToolOverlayEntry,
 };
 
 mod accessors;
@@ -510,6 +511,24 @@ pub enum OutEvent {
         seq: u64,
         path: String,
         hash: String,
+    },
+    /// The outcome of an [`InMsg::RevertFiles`] (#731, ADR-0212): the session's
+    /// tracked file edits after turn `to_turn` were rolled back. `restored`
+    /// lists the paths put back (rewritten, or deleted when the agent had
+    /// created them); `skipped` the paths left alone and why — most often
+    /// because the file changed since the agent's edit, which a revert never
+    /// clobbers. Emitted by the session itself (seq-bearing, persisted), so
+    /// `Session::replay` re-appends the same user-role revert note to
+    /// `Context` the live session did — and only that: replay never touches
+    /// the filesystem, so a log containing a revert never re-reverts.
+    FilesReverted {
+        session: SessionId,
+        seq: u64,
+        to_turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        restored: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped: Vec<RevertSkip>,
     },
     /// The session's active-skill posture changed (#400, ADR-0106). Emitted by
     /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call

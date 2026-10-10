@@ -35,6 +35,7 @@ mod resume_children;
 mod resume_model_announce;
 mod resume_predecessor;
 mod resume_reoffer;
+mod revert_files;
 mod search_result_persistence;
 mod seq_uniqueness;
 mod session_lifecycle;

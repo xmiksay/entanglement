@@ -83,6 +83,7 @@ mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
 mod retired_knobs;
+mod revert_files;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "provider")]

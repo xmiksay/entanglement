@@ -80,6 +80,15 @@ impl SessionStore {
         Ok(dir)
     }
 
+    /// Root session `root`'s file-backup directory (#731, ADR-0212):
+    /// `<dir>/backups/<root_id>`, holding the prior content of every file its
+    /// session tree's `write`/`edit`/`apply_patch` calls replaced. Not created
+    /// here; it lives and dies with the root's log ([`delete`](Self::delete),
+    /// [`prune`](Self::prune)).
+    pub fn backups_dir(&self, root: &SessionId) -> Result<PathBuf> {
+        Ok(self.dir()?.join(BACKUPS_DIR).join(&root.0))
+    }
+
     /// The path of root session `id`'s JSONL file.
     pub fn session_path(&self, id: &SessionId) -> Result<PathBuf> {
         Ok(self.dir()?.join(format!("{}.jsonl", id.0)))
@@ -121,6 +130,7 @@ impl SessionStore {
         let path = self.session_path(id)?;
         std::fs::remove_file(&path)
             .with_context(|| format!("Failed to delete session file: {}", path.display()))?;
+        remove_backups(&self.dir()?, &id.0);
         Ok(())
     }
 
@@ -185,7 +195,38 @@ impl SessionStore {
                 }
             }
         }
+        prune_orphan_backups(&dir);
         Ok(removed)
+    }
+}
+
+/// Subdirectory of a store holding each root's file backups (ADR-0212).
+const BACKUPS_DIR: &str = "backups";
+
+/// Remove root `id`'s backup directory, if any — best-effort like `prune`
+/// itself: a leftover directory is swept by the next prune.
+fn remove_backups(store_dir: &Path, id: &str) {
+    let path = store_dir.join(BACKUPS_DIR).join(id);
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => tracing::info!("removed file backups {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("could not remove backups {}: {}", path.display(), e),
+    }
+}
+
+/// Backups follow their root's log (ADR-0212): any backup directory whose
+/// `{root_id}.jsonl` is gone — pruned above, deleted, or removed by hand — is
+/// removed too, so retention needs no clock of its own.
+fn prune_orphan_backups(store_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(store_dir.join(BACKUPS_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !store_dir.join(format!("{name}.jsonl")).exists() {
+            remove_backups(store_dir, &name);
+        }
     }
 }
 

@@ -35,6 +35,7 @@ mod overlay;
 mod permission;
 mod questions;
 mod retired;
+mod revert;
 
 pub use approvals::{ApprovalKind, PendingApproval};
 pub use in_msg::InMsg;
@@ -45,6 +46,7 @@ pub use overlay::ToolOverlayEntry;
 pub use permission::{ApprovalScope, Permission, PermissionProfile};
 pub use questions::{PendingQuestion, Question, QuestionOption, Questions};
 pub use retired::{RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS};
+pub use revert::{FileRevertReport, RevertSkip};
 
 /// Stable identifier for a conversation session. Serialized transparently as a
 /// plain string on the wire.

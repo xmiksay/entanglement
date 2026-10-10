@@ -38,6 +38,7 @@ impl OutEvent {
             | OutEvent::Compacted { session, .. }
             | OutEvent::FileChange { session, .. }
             | OutEvent::PlanChanged { session, .. }
+            | OutEvent::FilesReverted { session, .. }
             | OutEvent::SkillActive { session, .. }
             | OutEvent::AmbiguousRetry { session, .. }
             | OutEvent::SearchResult { session, .. }
@@ -99,6 +100,7 @@ impl OutEvent {
             | OutEvent::Compacted { seq, .. }
             | OutEvent::FileChange { seq, .. }
             | OutEvent::PlanChanged { seq, .. }
+            | OutEvent::FilesReverted { seq, .. }
             | OutEvent::SkillActive { seq, .. }
             | OutEvent::AmbiguousRetry { seq, .. }
             | OutEvent::SearchResult { seq, .. }

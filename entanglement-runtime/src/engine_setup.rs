@@ -17,9 +17,9 @@ use crate::script;
 use crate::skills::LoadSkillTool;
 use crate::tool_runner::EscapeRoot;
 use crate::{
-    ask_user, config, endpoint, extra_roots, host, mcp, plan_tasks, policy, poll, propose_plan,
-    request_mode, retained_output, script_ops, session_store, skills, subagent, SharedRegistry,
-    ToolRegistry,
+    ask_user, config, endpoint, extra_roots, file_backup, host, mcp, plan_tasks, policy, poll,
+    propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
+    SharedRegistry, ToolRegistry,
 };
 
 /// Pick a provider and build the engine config.
@@ -66,6 +66,7 @@ pub(crate) async fn build_config(
     agents: AgentCatalog,
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
+    file_backups: file_backup::FileBackups,
 ) -> (
     EngineConfig,
     ModelInfo,
@@ -167,6 +168,9 @@ pub(crate) async fn build_config(
     // ADR-0185): the executor's `rhai` arm writes a `background: true`
     // script's handle/output there, `poll`'s `x-` path reads it back.
     let scripts = script_ops::ScriptRegistry::new();
+    // Undo/rewind (ADR-0212): the file tools back up what they replace, and
+    // core's `RevertFiles` reaches the same store through this seam.
+    cfg.file_reverter = Some(file_backups.reverter());
     let mut tools = register_default_tools(
         root.clone(),
         Some(extra_root_store.clone()),
@@ -174,6 +178,7 @@ pub(crate) async fn build_config(
         sandbox_config.resolver(),
         jobs.clone(),
         retained.clone(),
+        Some(file_backups),
     );
     let escape_root = EscapeRoot {
         root: root.clone(),
@@ -342,8 +347,9 @@ pub(crate) fn register_default_tools(
     sandbox_resolver: Arc<dyn policy::SandboxResolver>,
     jobs: host::JobRegistry,
     retained: retained_output::RetainedOutputRegistry,
+    file_backups: Option<file_backup::FileBackups>,
 ) -> ToolRegistry {
-    let mut tools = host::host_tools_with_extra_roots(root.clone(), extra_roots.clone());
+    let mut tools = host::host_tools_with_backups(root.clone(), extra_roots.clone(), file_backups);
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
@@ -382,6 +388,7 @@ mod tests {
             std::sync::Arc::new(SandboxPolicy::none()),
             crate::host::JobRegistry::new(),
             retained_output::RetainedOutputRegistry::new(),
+            None,
         )
         .specs()
         .into_iter()

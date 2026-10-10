@@ -104,6 +104,9 @@ impl App {
             // needs the trailing text — both call sites intercept it before
             // reaching this dispatch.
             Command::AuxModel => false,
+            // Same shape again (ADR-0212): `/undo`/`/rewind` need `holly` (and
+            // `/rewind` the trailing turn) — both call sites intercept them.
+            Command::Undo | Command::Rewind => false,
         }
     }
 

@@ -56,6 +56,7 @@ pub mod discover;
 pub mod endpoint;
 pub mod env_date;
 pub mod extra_roots;
+pub mod file_backup;
 pub mod file_change;
 pub mod frontmatter;
 pub mod grants;

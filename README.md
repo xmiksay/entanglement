@@ -25,14 +25,14 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+          | RevertFiles | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
           | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock (engine → harness)
+          | FilesReverted | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
@@ -103,6 +103,14 @@ wider than its parent's mode, and a resumed session keeps its replayed mode
 ([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)); a blocked model may ask to widen via
 `request_mode`. Spawning is bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.
+
+**Undo / rewind** (ADR-0212): `write`/`edit`/`apply_patch` back up each
+file's prior content in the session store, so in the TUI `/undo` reverts the
+latest turn's file edits and `/rewind <N>` everything after turn `N` (bare
+`/rewind` lists the turns that have edits, with file counts). A file you
+changed since the agent did is never overwritten — it is reported as skipped.
+Changes made by `bash`, `call` or `rhai` commands are **not** tracked. Other
+heads send the trusted-only `InMsg::RevertFiles` and get `FilesReverted` back.
 
 A session advertises its tool surface in one of two modes (`ToolAdvertising`,
 default `ToolSearch`, ADR-0196): `full` sends every registered spec up
