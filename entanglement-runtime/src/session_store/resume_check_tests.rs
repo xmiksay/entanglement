@@ -127,7 +127,7 @@ fn injected(c: &ResumeCheck, records: &[LogRecord], mode: Option<&str>) -> Vec<(
         .collect()
 }
 
-/// #757: with a forced child, the configured mode rides the replay for every
+/// #757 (ADR-0216): with a forced child, the configured mode rides the replay for every
 /// session outside the forced sub-tree, and the forced child's own live
 /// descendants stay narrowed with it — no session is left for a cascading
 /// `SetMode` to widen.

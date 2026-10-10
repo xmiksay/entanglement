@@ -60,7 +60,7 @@ pub(crate) async fn dispatch(
 
                 // Forced modes ride the replay itself, so a re-offered
                 // parked call is never graded under the wider mode first, and
-                // the configured mode never cascades over them (#757).
+                // the configured mode never cascades over them (ADR-0216).
                 session_store::resume_with_mode(
                     holly,
                     &session_id,
@@ -180,7 +180,7 @@ fn known_agents(head: &Head) -> Vec<String> {
 /// `Holly::send` — not the wire — is exactly the surface it's meant for.
 /// Callers resolve `--mode` > `config.yml` `mode:`; `None` sends nothing,
 /// leaving the session at the engine's own `DEFAULT_MODE`. A resume goes
-/// through `session_store::resume_with_mode` instead (ADR-0215, #757).
+/// through `session_store::resume_with_mode` instead (ADR-0216).
 async fn apply_mode(holly: &Holly, session_id: &SessionId, mode: Option<String>) -> Result<()> {
     if let Some(mode) = mode {
         holly

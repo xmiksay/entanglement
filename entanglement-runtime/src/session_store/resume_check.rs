@@ -65,7 +65,7 @@ pub struct ResumeCheck {
     /// Sessions resume will rebuild under a fallback agent, in log order.
     pub fallbacks: Vec<Fallback>,
     /// Every session resume will rebuild, with its parent, in log order.
-    pub resumed: Vec<(SessionId, Option<SessionId>)>,
+    resumed: Vec<(SessionId, Option<SessionId>)>,
 }
 
 impl ResumeCheck {
@@ -107,7 +107,7 @@ impl ResumeCheck {
     }
 
     /// `records` paired for `Holly::resume`, with a synthetic `ModeChanged`
-    /// appended per rebuilt session when any session is forced (ADR-0215):
+    /// appended per rebuilt session when any session is forced (ADR-0215, ADR-0216):
     /// `research` inside a forced sub-tree, `mode` (the head's `--mode` /
     /// config `mode:`, when set) everywhere else.
     ///
@@ -117,7 +117,7 @@ impl ResumeCheck {
     /// `Holly::resume` would let a re-offered call be graded under the wider
     /// mode first. And `mode` can't follow as a `SetMode` on the root either:
     /// that cascades over the whole tree and would widen a forced child until
-    /// a re-narrowing landed (#757). Appended last so replay's
+    /// a re-narrowing landed (ADR-0216). Appended last so replay's
     /// last-write-wins fold keeps it.
     pub fn paired_for_resume(
         &self,
@@ -253,7 +253,7 @@ pub fn load_for_resume(
 ///
 /// With a forced session in the tree, every mode rides the replay
 /// ([`ResumeCheck::paired_for_resume`]) so the cascading switch never reaches
-/// it (#757). Otherwise `mode` goes out as an ordinary `SetMode` on the root,
+/// it (ADR-0216). Otherwise `mode` goes out as an ordinary `SetMode` on the root,
 /// cascading as usual and keeping the model's "changed from" mode notice.
 pub async fn resume_with_mode(
     holly: &Holly,
