@@ -56,7 +56,7 @@ make tree          # entanglement-core dep hygiene gate (fails on UI/transport c
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
 make userid        # UserId-free entanglement-runtime gate (ADR-0181)
-make test-gates    # dep-gate + userid-gate + file-cap-gate + test-isolated self-tests (scripts/dep-gate.test.sh)
+make test-gates    # dep-gate + userid-gate + file-cap-gate + test-isolated self-tests, default + strict POSIX (scripts/dep-gate.test.sh)
 make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify
 make build | check | clean
 ```

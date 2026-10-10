@@ -22,7 +22,23 @@ fi
 # never trips the gate; only the real token does.
 pattern='(^|[^A-Za-z0-9_])UserId([^A-Za-z0-9_]|$)'
 
-if hits=$(grep -rEn "$pattern" "$src_dir" --include='*.rs' 2>/dev/null); then
+# POSIX-only find + grep (#770). The old `grep -rEn PAT DIR --include='*.rs'
+# 2>/dev/null` relied on GNU option permutation: under POSIXLY_CORRECT the
+# trailing `--include` became a filename operand, grep exited 2, and the gate
+# read that error as "no match" — a vacuous pass. Here grep's rc 1 (no match in
+# this batch) is the only non-zero status tolerated; anything else (unreadable
+# file, bad regex) makes `find` exit non-zero and FAILs the gate. `/dev/null`
+# forces grep to prefix the filename without the non-POSIX `-H`.
+if ! hits=$(find "$src_dir" -type f -name '*.rs' -exec sh -c '
+	grep -En "$0" /dev/null "$@"
+	rc=$?
+	[ "$rc" -le 1 ]
+' "$pattern" {} +); then
+	echo "FAIL (userid): scanning $src_dir errored — the gate cannot verify anything, refusing to pass vacuously" >&2
+	exit 1
+fi
+
+if [ -n "$hits" ]; then
 	echo "FAIL (userid): UserId found in $src_dir (forbidden by ADR-0181):" >&2
 	printf '%s\n' "$hits" >&2
 	exit 1

@@ -80,6 +80,29 @@ printf 'struct MyUserIdLike;\n' >"$udir/nearmiss.rs"
 ucheck "userid: substring near-miss passes" 0 "$udir"
 printf 'use entanglement_core::UserId;\n' >"$udir/hit.rs"
 ucheck "userid: real UserId fails" 1 "$udir"
+# "Anywhere" (header): a doc comment or a string literal counts too.
+rm "$udir/hit.rs"
+printf '/// see [`UserId`]\n' >"$udir/doc.rs"
+ucheck "userid: UserId in a doc comment fails" 1 "$udir"
+rm "$udir/doc.rs"
+printf 'const S: &str = "UserId";\n' >"$udir/lit.rs"
+ucheck "userid: UserId in a string literal fails" 1 "$udir"
+rm "$udir/lit.rs"
+mkdir -p "$udir/a/b"
+printf 'type T = UserId;\n' >"$udir/a/b/deep.rs"
+ucheck "userid: UserId in a nested dir fails" 1 "$udir"
+rm "$udir/a/b/deep.rs"
+printf 'UserId\n' >"$udir/notes.md"
+ucheck "userid: non-.rs file is ignored" 0 "$udir"
+rm "$udir/notes.md"
+# #770: a grep error must FAIL, never read as "no match". Root reads anything,
+# so the case is only meaningful (and only run) unprivileged.
+if [ "$(id -u)" -ne 0 ]; then
+	printf 'fn x() {}\n' >"$udir/unreadable.rs"
+	chmod 000 "$udir/unreadable.rs"
+	ucheck "userid: unreadable .rs fails (not vacuous)" 1 "$udir"
+	rm -f "$udir/unreadable.rs"
+fi
 ucheck "userid: missing dir fails (not vacuous)" 1 "$tmp/no-such-dir"
 
 # --- file-cap-gate.sh self-tests (#745) --------------------------------------
