@@ -41,7 +41,7 @@ Heads depend on core, **never the reverse.**
 - **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (e.g. `actor.rs`, `turn_loop.rs`); runtime/host-tool behavior → `entanglement-runtime/tests/`.
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**
-- Rust stable, edition 2021, MSRV 1.82 (`rust-version` in the workspace `Cargo.toml`); the dev/CI toolchain is pinned to an exact release in `rust-toolchain.toml` (bump deliberately, fixing new lints in the same change).
+- Rust stable, edition 2021, MSRV 1.88 (`rust-version` in the workspace `Cargo.toml`); the dev/CI toolchain is pinned to an exact release in `rust-toolchain.toml` (bump deliberately, fixing new lints in the same change).
 
 ## Commit & PR workflow
 
