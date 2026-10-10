@@ -220,6 +220,7 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             prompt: "look".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -290,6 +291,7 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             prompt: "look".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

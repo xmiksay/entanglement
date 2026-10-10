@@ -243,11 +243,12 @@ pub struct EngineConfig {
     /// blank root (the default — every in-tree single-user head), refuse with
     /// an `Error`, or resume it through the embedder's [`SessionLoader`][super::SessionLoader].
     pub unknown_session: UnknownSession,
-    /// The mode names ordered narrowest → widest (#763, ADR-0218), consulted
-    /// only to clamp a spawned child's [`Agent::default_mode`] to its
-    /// parent's mode. A pair not both on the ladder (the empty default
-    /// included) is incomparable, so the child simply inherits its parent's
-    /// mode — never wider by construction.
+    /// The mode names ordered narrowest → widest (#763, ADR-0218): clamps an
+    /// [`Agent::default_mode`] hint to `DEFAULT_MODE` for a root and to the
+    /// parent's mode for a child, and validates `InMsg::Spawn.mode`. A pair
+    /// not both on the ladder (the empty default included) is incomparable,
+    /// so the session falls back to `DEFAULT_MODE`/its parent's mode — never
+    /// wider by construction.
     pub mode_ladder: Vec<String>,
 }
 

@@ -600,6 +600,7 @@ mod tests {
                 prompt: "subtask".into(),
                 user: None,
                 model: None,
+                mode: None,
             })
             .await
             .unwrap();

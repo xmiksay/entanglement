@@ -563,6 +563,7 @@ async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
             prompt: "go".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

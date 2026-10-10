@@ -168,6 +168,7 @@ pub(crate) fn fork_successor(
                 // Never set here: a `Spawn` model is re-resolved and refuses on
                 // failure (#725); see `Inherited`.
                 model: None,
+                mode: None,
             },
         },
         close: InMsg::CloseSession {

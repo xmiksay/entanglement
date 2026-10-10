@@ -163,6 +163,7 @@ async fn launch(
             prompt,
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .is_err()

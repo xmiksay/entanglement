@@ -36,21 +36,32 @@ Authority lives entirely in the runtime, as the session's **permission mode**
 ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)).
 
 **Starting mode** ([ADR-0218](../adr/0218-agent-default-mode-is-a-starting-hint.md),
-#752/#763). `default_mode` is a starting hint, not authority. It must name a
-built-in mode; an unknown name warns at load and is dropped. The shipped
-`plan` agent sets `default_mode: plan`. A fresh root starts in `--mode` >
-config `mode:` > the agent's `default_mode` > `DEFAULT_MODE` (`build`):
-core seeds the root from the hint at spawn
-(`holly/supervisor/starting_mode.rs`), then the head's `SetMode` lands on
-top. `run`, the implicit one-shot and the TUI share that launch path
-(`heads::start_fresh`), and the TUI applies the same launch mode to the
-sessions it resumes (`LaunchMode`, `resume_with_mode`). A spawned child
-takes its agent's hint only when `EngineConfig::mode_ladder` (`research` <
-`plan` < `build` < `auto`, the ladder `request_mode` widens along) shows it
-is no wider than its parent's mode. Otherwise, including any pair not on the
-ladder, the child inherits the parent's mode, so a hint can only narrow a
-sub-tree. A compaction successor keeps its source's mode. A resumed session
-keeps the mode its log replays and the hint never applies.
+#752/#763). `default_mode` is a starting hint, not authority.
+
+- **Allowed values.** It must name a built-in mode no wider than `build`
+  (`research`/`plan`/`build`). Anything else, `auto` included, warns at load
+  and is dropped. The shipped `plan` agent sets `default_mode: plan`.
+- **Fresh roots.** Precedence is `--mode` > config `mode:` > the agent's
+  `default_mode` > `DEFAULT_MODE` (`build`).
+  - `run`, the implicit one-shot and the TUI share one launch path,
+    `heads::start_fresh`. It sends a single `Spawn` carrying the agent and
+    the launch mode (`InMsg::Spawn.mode`), so the session announces exactly
+    one starting mode and never shows a "changed from" transition.
+  - With no launch mode, core starts the root in the hint
+    (`holly/supervisor/starting_mode.rs`), clamped on
+    `EngineConfig::mode_ladder` to no wider than `DEFAULT_MODE`.
+  - An off-ladder `Spawn.mode` refuses the spawn.
+- **Resumes in the TUI.** The TUI applies the same launch mode to the
+  sessions it resumes (`LaunchMode`, `resume_with_mode`).
+- **Spawned children.** The ladder is `research` < `plan` < `build` <
+  `auto`, the same one `request_mode` widens along. A child takes its
+  requested mode, else its agent's hint, only when the ladder shows it is no
+  wider than its parent's mode. Otherwise, including any pair not on the
+  ladder, the child inherits the parent's mode, so neither can widen a
+  sub-tree.
+- **Compaction successors** keep their source's mode.
+- **Resumed sessions** keep the mode their log replays; the hint never
+  applies.
 
 **At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
 Agents and skills are **data, not code** — discovered from files, disclosed

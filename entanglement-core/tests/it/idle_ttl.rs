@@ -310,6 +310,7 @@ async fn parked_child_pins_settled_root_live() {
             prompt: "do the subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

@@ -126,6 +126,7 @@ async fn resume_cascades_over_a_live_spawned_child() {
             prompt: "child task".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

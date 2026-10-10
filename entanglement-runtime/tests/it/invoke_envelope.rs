@@ -129,6 +129,7 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

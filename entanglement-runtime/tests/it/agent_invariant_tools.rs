@@ -106,6 +106,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             prompt: "go again".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -121,6 +122,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             prompt: "go once more".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

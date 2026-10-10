@@ -452,6 +452,7 @@ async fn spawned_child_inherits_the_parents_live_mode() {
             prompt: "subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -499,6 +500,7 @@ async fn set_mode_cascades_to_live_descendants() {
             prompt: "subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -574,6 +576,7 @@ async fn cascaded_set_mode_gives_the_descendant_its_own_transition_notice() {
             prompt: "subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
