@@ -385,7 +385,15 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   display name via `InMsg::SetSessionMeta`
   ([ADR-0151](../adr/0151-settable-session-metadata.md)); the sidebar and
   sessions modal prefer the name over the short id and the live `action` over
-  the first-prompt description line. **Modals and popups are mouse-clickable**
+  the first-prompt description line. `/undo` and `/rewind <N>`
+  (`tui/undo_command.rs`, [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md))
+  send `InMsg::RevertFiles` for the active session (`to_turn: None` / `Some(N)`);
+  the engine applies it once the session is idle and the reducer renders the
+  `FilesReverted` reply as an `undo` notice (`file_backup::summary`: what was
+  restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
+  changes are not tracked). Bare `/rewind` is the picker: it lists the
+  turns that still have revertable edits (turn, file count, prompt snippet)
+  read straight from the backup store — no engine traffic. **Modals and popups are mouse-clickable**
   (f48cec5, `tui/modal_events/click.rs::click_modal`): with a modal or the
   slash/`@file` popup open, a left click on a row selects it and fires the
   same action `Enter` would, a click outside the open modal's rect closes it
@@ -879,4 +887,7 @@ assistant/tool messages and the model appears to forget the conversation.
   **the current project's session dir only**. The window resolves
   `config.yml`'s `session_retention_days` > the embedded default `30` (the
   env override is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)); an
-  unreadable dir/entry is a warn-and-skip, never fatal.
+  unreadable dir/entry is a warn-and-skip, never fatal. A root's per-write
+  file backups (`backups/<root_id>/`, [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md))
+  share its fate: `delete` removes them with the `.jsonl`, and `prune`
+  removes every backup directory whose `.jsonl` is gone.

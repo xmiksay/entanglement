@@ -149,6 +149,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         } => SessionCmd::SetSessionMeta(name, action, if_unset),
         InMsg::SetToolOverlay { entries, .. } => SessionCmd::SetToolOverlay(entries),
         InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
+        InMsg::RevertFiles { to_turn, .. } => SessionCmd::RevertFiles(to_turn),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
         // CloseSession/HibernateSession queries are filtered out before routing
         // (see supervisor); Resume and Spawn are handled specially. The MCP ops

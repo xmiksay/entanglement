@@ -491,3 +491,35 @@ fn tool_call_carries_optional_provider_meta() {
     );
     assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), call);
 }
+
+/// #731, ADR-0212: a seq-bearing, session-scoped content event; empty lists
+/// stay off the wire.
+#[test]
+fn files_reverted_roundtrips_with_seq_and_compact_empty_lists() {
+    let ev = OutEvent::FilesReverted {
+        session: SessionId::new("s1"),
+        seq: 9,
+        to_turn: 1,
+        restored: vec!["a.rs".into()],
+        skipped: vec![RevertSkip {
+            path: "b.rs".into(),
+            reason: "modified since the agent's edit".into(),
+        }],
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    assert_eq!(ev.seq(), Some(9));
+    assert_eq!(ev.session(), Some(&SessionId::new("s1")));
+
+    let empty = OutEvent::FilesReverted {
+        session: SessionId::new("s1"),
+        seq: 1,
+        to_turn: 0,
+        restored: vec![],
+        skipped: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&empty).unwrap(),
+        r#"{"kind":"files_reverted","session":"s1","seq":1,"to_turn":0}"#
+    );
+}

@@ -261,6 +261,14 @@ async fn submit_on_enter(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<
                         crate::tui::aux_command::send_aux_model(app, &text);
                         return Ok(false);
                     }
+                    if cmd == crate::tui::commands::Command::Undo {
+                        crate::tui::undo_command::send_undo(app, holly).await;
+                        return Ok(false);
+                    }
+                    if cmd == crate::tui::commands::Command::Rewind {
+                        crate::tui::undo_command::send_rewind(app, holly, &text).await;
+                        return Ok(false);
+                    }
                     // Lifecycle commands (#6): `/stop`,
                     // `/pause`, `/continue` need `holly`
                     // and the optional `--all` text.

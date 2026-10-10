@@ -9,6 +9,7 @@ use super::resolve_under_root_or_grant;
 use super::unified_diff::{apply_hunks, parse_hunks};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::file_backup::FileBackups;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -22,6 +23,8 @@ pub struct ApplyPatchTool {
     root: std::path::PathBuf,
     /// Approval-gated out-of-root access (ADR-0109).
     extra_roots: Option<Arc<ExtraRootStore>>,
+    /// Per-write backups for undo/rewind (ADR-0212).
+    backups: Option<FileBackups>,
 }
 
 impl ApplyPatchTool {
@@ -29,7 +32,15 @@ impl ApplyPatchTool {
         Self {
             root,
             extra_roots: None,
+            backups: None,
         }
+    }
+
+    /// Back up each file's prior content before a session's patch replaces
+    /// it (ADR-0212).
+    pub fn with_backups(mut self, backups: FileBackups) -> Self {
+        self.backups = Some(backups);
+        self
     }
 
     /// Permit approved out-of-root patches (ADR-0109) via the shared grant store.
@@ -78,17 +89,17 @@ impl Tool for ApplyPatchTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.apply("", input).await
+        self.apply(None, "", input).await
     }
 
     async fn run_for_session(
         &self,
-        _session: &SessionId,
+        session: &SessionId,
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
         Ok(crate::tools::text_parts(
-            self.apply(request_id, input).await?,
+            self.apply(Some(session), request_id, input).await?,
         ))
     }
 }
@@ -96,7 +107,13 @@ impl Tool for ApplyPatchTool {
 impl ApplyPatchTool {
     /// `request_id` (#449) is forwarded to the escape-root grant check so a
     /// `Once` approval is only consumed by the call it was approved for.
-    async fn apply(&self, request_id: &str, input: &str) -> Result<String> {
+    /// `session` is `None` for a session-less `run`, which is never backed up.
+    async fn apply(
+        &self,
+        session: Option<&SessionId>,
+        request_id: &str,
+        input: &str,
+    ) -> Result<String> {
         let parsed: ApplyPatchInput = serde_json::from_str(input).context(
             "invalid input to apply_patch: expected {\"path\": string, \"patch\": string}",
         )?;
@@ -124,6 +141,16 @@ impl ApplyPatchTool {
             FileChangeKind::ApplyDiff,
             patched.as_bytes(),
         );
+        if let (Some(backups), Some(session)) = (&self.backups, session) {
+            backups.record(
+                session,
+                request_id,
+                &target_abs,
+                &parsed.path,
+                Some(content.as_bytes()),
+                Some(patched.as_bytes()),
+            );
+        }
 
         Ok(format!(
             "{} hunk(s) applied to {}",

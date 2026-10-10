@@ -5,6 +5,7 @@
 use super::resolve_under_root_or_grant;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::file_backup::FileBackups;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -21,6 +22,8 @@ pub struct EditTool {
     can_edit: Option<CanEditCallback>,
     /// Approval-gated out-of-root access (ADR-0109).
     extra_roots: Option<Arc<ExtraRootStore>>,
+    /// Per-write backups for undo/rewind (ADR-0212).
+    backups: Option<FileBackups>,
 }
 
 impl EditTool {
@@ -29,7 +32,15 @@ impl EditTool {
             root,
             can_edit: None,
             extra_roots: None,
+            backups: None,
         }
+    }
+
+    /// Back up each file's prior content before a session's edit replaces
+    /// it (ADR-0212).
+    pub fn with_backups(mut self, backups: FileBackups) -> Self {
+        self.backups = Some(backups);
+        self
     }
 
     /// Permit approved out-of-root edits (ADR-0109) via the shared grant store.
@@ -98,17 +109,17 @@ impl Tool for EditTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.edit("", input).await
+        self.edit(None, "", input).await
     }
 
     async fn run_for_session(
         &self,
-        _session: &SessionId,
+        session: &SessionId,
         request_id: &str,
         input: &str,
     ) -> Result<Vec<ContentPart>> {
         Ok(crate::tools::text_parts(
-            self.edit(request_id, input).await?,
+            self.edit(Some(session), request_id, input).await?,
         ))
     }
 }
@@ -116,7 +127,13 @@ impl Tool for EditTool {
 impl EditTool {
     /// `request_id` (#449) is forwarded to the escape-root grant check so a
     /// `Once` approval is only consumed by the call it was approved for.
-    async fn edit(&self, request_id: &str, input: &str) -> Result<String> {
+    /// `session` is `None` for a session-less `run`, which is never backed up.
+    async fn edit(
+        &self,
+        session: Option<&SessionId>,
+        request_id: &str,
+        input: &str,
+    ) -> Result<String> {
         let parsed: EditInput = serde_json::from_str(input)
             .context("invalid input to edit: expected {\"path\": string, \"oldString\": string, \"newString\": string, ...}")?;
         let target_abs = resolve_under_root_or_grant(
@@ -130,6 +147,12 @@ impl EditTool {
         if let Some(ref can_edit) = self.can_edit {
             can_edit(&parsed.path)?;
         }
+        let backup = |before: Option<&[u8]>, after: &[u8]| {
+            if let (Some(backups), Some(session)) = (&self.backups, session) {
+                let path = &parsed.path;
+                backups.record(session, request_id, &target_abs, path, before, Some(after));
+            }
+        };
 
         if parsed.old_string.is_empty() {
             if target_abs.exists() {
@@ -152,6 +175,7 @@ impl EditTool {
                 FileChangeKind::Create,
                 parsed.new_string.as_bytes(),
             );
+            backup(None, parsed.new_string.as_bytes());
 
             return Ok(format!("created file: {}", parsed.path));
         }
@@ -190,6 +214,7 @@ impl EditTool {
             FileChangeKind::Edit,
             replaced.as_bytes(),
         );
+        backup(Some(content.as_bytes()), replaced.as_bytes());
 
         Ok(format!(
             "{} matches replaced",

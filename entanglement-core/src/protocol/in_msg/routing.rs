@@ -39,6 +39,7 @@ impl InMsg {
             | InMsg::SetSessionMeta { session, .. }
             | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
+            | InMsg::RevertFiles { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. }
@@ -91,6 +92,10 @@ impl InMsg {
     ///   permission posture (e.g. `research` → `build`), so it is
     ///   trusted-only; the analogous widening the model itself may request is
     ///   the graded `request_mode` tool, not this frame.
+    /// - [`RevertFiles`][InMsg::RevertFiles] (#731, ADR-0212): it rewrites and
+    ///   deletes files on disk from the session's backups — an
+    ///   unauthenticated wire frame must not be able to roll back the user's
+    ///   working tree.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -147,7 +152,8 @@ impl InMsg {
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
             | InMsg::McpAuth { .. }
-            | InMsg::SetMode { .. } => false,
+            | InMsg::SetMode { .. }
+            | InMsg::RevertFiles { .. } => false,
         }
     }
 
@@ -182,6 +188,7 @@ impl InMsg {
             InMsg::SetSessionMeta { .. } => "set_session_meta",
             InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
+            InMsg::RevertFiles { .. } => "revert_files",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
         }

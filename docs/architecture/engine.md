@@ -614,6 +614,21 @@ on an `Error` with no `Done` (the #177 gap), the latter on the full
 `emit_turn_error` triple; the #192 `max_tokens` truncation `Error` remains a
 recoverable warning that runs on to its normal `Done`.
 
+**File revert — `InMsg::RevertFiles` (`session/revert.rs`, #731,
+[ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md)).** Deferred
+exactly like `SetModel`/`Oneshot` (stashed while a turn is live or the session
+is paused), so a revert never races the turn's own tool writes. At idle the
+session awaits the runtime's `EngineConfig::file_reverter` seam (core does no
+file I/O; `None` → a recoverable `Error`), emits the seq-bearing
+`FilesReverted` and — only when something was restored — appends a
+user-role note to `Context` (`revert_note`: what was restored/skipped, that
+exec-tool changes were not reverted, re-read before editing). `Session::replay`
+folds `FilesReverted` into the same note and never calls the seam, so a
+resume never re-reverts. The note is folded *before* any prompt paired with
+the event: a `Prompt` sent while the seam was still running is logged ahead
+of `FilesReverted` (and so pairs with it), yet the live session applied the
+revert first.
+
 **Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the turn loop above: `run_oneshot` never streams tool calls and

@@ -36,6 +36,8 @@ pub enum Command {
     Stop,
     Name,
     AuxModel,
+    Undo,
+    Rewind,
 }
 
 impl Command {
@@ -68,6 +70,8 @@ impl Command {
             Command::Stop => "stop",
             Command::Name => "name",
             Command::AuxModel => "aux-model",
+            Command::Undo => "undo",
+            Command::Rewind => "rewind",
         }
     }
 
@@ -118,6 +122,12 @@ impl Command {
             Command::AuxModel => {
                 "Pin a provider/model for an auxiliary purpose (summarize | session_title | narrate) <provider>/<model>"
             }
+            Command::Undo => {
+                "Revert the file edits of the latest turn that has any (write/edit/apply_patch only — not bash)"
+            }
+            Command::Rewind => {
+                "Revert every file edit after turn <N> (bare = list turns with edits; not bash changes)"
+            }
         }
     }
 
@@ -155,6 +165,8 @@ pub fn all_commands() -> Vec<Command> {
         Command::Stop,
         Command::Name,
         Command::AuxModel,
+        Command::Undo,
+        Command::Rewind,
     ]
 }
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::id_gen::{DefaultIdGen, IdGen};
-use crate::protocol::{Agent, SessionId};
+use crate::protocol::{Agent, FileRevertReport, SessionId};
 use entanglement_provider::{
     AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
     ModelResolver, ToolSpec,
@@ -250,7 +250,27 @@ pub struct EngineConfig {
     /// so the session falls back to `DEFAULT_MODE`/its parent's mode — never
     /// wider by construction.
     pub mode_ladder: Vec<String>,
+    /// Performs an [`InMsg::RevertFiles`][crate::protocol::InMsg::RevertFiles]
+    /// (#731, ADR-0212): restores the files a session's tracked edits touched
+    /// after a turn, from the runtime's per-write backups. Core does no file
+    /// I/O, so this is the runtime's seam; the session only calls it when it
+    /// applies the request (idle, never mid-turn) and never on replay. `None`
+    /// (the default) answers every `RevertFiles` with a recoverable `Error`.
+    pub file_reverter: Option<FileReverter>,
 }
+
+/// The [`EngineConfig::file_reverter`] seam: `(session, to_turn)` →
+/// the revert's outcome, or a message for an `OutEvent::Error` when the
+/// revert could not run at all (no session log, no backup store). Async
+/// because the runtime's implementation touches the disk.
+pub type FileReverter = Arc<
+    dyn Fn(
+            SessionId,
+            Option<u32>,
+        ) -> futures::future::BoxFuture<'static, Result<FileRevertReport, String>>
+        + Send
+        + Sync,
+>;
 
 impl EngineConfig {
     /// Fail if the config can't back a running engine — currently, the agent
@@ -285,6 +305,7 @@ impl Default for EngineConfig {
             id_gen: Arc::new(DefaultIdGen::new()),
             unknown_session: UnknownSession::default(),
             mode_ladder: Vec::new(),
+            file_reverter: None,
         }
     }
 }

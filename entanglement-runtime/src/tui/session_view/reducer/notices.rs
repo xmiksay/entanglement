@@ -76,10 +76,19 @@ impl SessionView {
 
     /// `OutEvent::AmbiguousRetry`.
     pub(super) fn fold_ambiguous_retry(&mut self, seq: u64) -> bool {
+        self.fold_notice(
+            seq,
+            "retry",
+            "model stop was ambiguous — retrying in place".to_string(),
+        )
+    }
+
+    /// A seq-deduped one-line notice rendered as a `tool`-tagged output entry.
+    pub(super) fn fold_notice(&mut self, seq: u64, tool: &str, output: String) -> bool {
         if seq > self.last_seen_seq {
             self.transcript.push(TranscriptEntry::ToolOutput {
-                tool: Some("retry".to_string()),
-                output: "model stop was ambiguous — retrying in place".to_string(),
+                tool: Some(tool.to_string()),
+                output,
             });
             self.last_seen_seq = seq;
             true

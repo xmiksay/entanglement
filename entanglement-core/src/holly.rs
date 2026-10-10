@@ -26,7 +26,8 @@ mod supervisor;
 mod unknown_session;
 
 pub use config::{
-    AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
+    AgentCatalog, ConfigError, EngineConfig, FileReverter, SessionModel, SystemPromptResolver,
+    ToolSpecResolver,
 };
 pub(crate) use directory::SessionDirectory;
 use outlets::Outlets;

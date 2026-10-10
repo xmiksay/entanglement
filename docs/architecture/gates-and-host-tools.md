@@ -532,6 +532,49 @@ script tool (table above) is intercepted the same way but is **not** a bypass:
 it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
 (#122, [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)).
 
+### Undo / rewind — per-write file backups — [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md) (#731)
+
+`write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`
+bindings, which run those same registry tools — back up what they replace
+when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
+`skutter` always wires it, an embedder opts in). Only a session's run
+(`run_for_session`) is recorded; a bare `run` is not.
+
+- **Storage** (`file_backup.rs`): under the root session's
+  `SessionStore::backups_dir` — `<store>/backups/<root_id>/` — a
+  content-addressed `blobs/<sha256>` (write-then-rename, deduped per root) and
+  an append-only `manifest.jsonl`: one `change` line per mutation
+  `{id, ts, session, request_id, path (absolute, resolved), display, before:
+  absent | stored{hash,size} | skipped{reason}, after: sha256 | null}` plus
+  `reverted{ids}` markers. A spawned child's changes land in its root's
+  directory (`FileBackups::track_roots` folds `SessionStarted` lineage).
+  Backups ride the log's lifecycle: `SessionStore::delete` removes them with
+  the `.jsonl`, and `prune` removes any backup directory whose log is gone —
+  session retention is the only retention.
+- **Caps**: a prior version over 8 MiB, or past a root's 256 MiB stored
+  budget, is recorded as `skipped` (the change is still listed, so a revert
+  names it as "can't restore … no backup (…)"). A backup failure is logged,
+  never a tool error — the edit already happened.
+- **Turns**: a change belongs to the turn of the session's last user
+  `Prompt` logged before its call's `ToolExec` (a `rhai` binding's
+  `<id>:rhai:<tool>` resolves to the outer call); a call missing from the log
+  falls back to timestamps.
+- **Revert** (`FileBackups::revert`, behind core's `EngineConfig::file_reverter`
+  seam — see [protocol](protocol.md) `RevertFiles`/`FilesReverted`): every
+  unreverted change of the session and its spawn sub-tree after the target
+  turn is grouped per file; the file goes back to the *first* change's
+  `before` (rewritten, or deleted when the agent created it; recreated when
+  the agent deleted it) **only if** it still hashes to the *last* change's
+  `after`. Anything else — a user edit, a `bash` command's change — is
+  reported as skipped and left untouched; its changes stay pending, so the
+  revert goes through once the file is back. Restored changes get a
+  `reverted` marker, so a second undo moves on to the previous turn.
+  Out-of-root writes (an approved escape-root grant) are covered the same way
+  — the manifest holds the resolved absolute path.
+- **Not covered**: anything `bash`, `call` or a `rhai` `exec`/`bash` binding
+  does to the filesystem, plan files written by `propose_plan`, and
+  `!bash` passthrough commands. Every report and the model's note say so.
+
 ### Discovery and lazy tool search — [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
 
 There is no envelope tool. A `ToolSearch`-mode session calls every tool by

@@ -375,6 +375,22 @@ approvals written to the managed `grants.yml` must say so —
 `services.rs`. Leaving the setter out keeps grants for the executor's lifetime
 only.
 
+**Undo/rewind is opt-in too** ([ADR-0212](adr/0212-undo-rewind-via-per-write-file-backups.md)).
+Build the file tools with backups and hand core the matching reverter, all
+from the `SessionStore` your persistence tap writes (a revert reads its turns
+from that log):
+
+```rust,ignore
+let backups = FileBackups::new(store.clone());
+cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
+let tools = host_tools_with_backups(root, extra, Some(backups.clone()));
+let holly = Holly::spawn(cfg);
+backups.track_roots(&holly);                          // child → root lineage
+```
+
+Without it `InMsg::RevertFiles` answers with a recoverable `Error`. With a
+custom `RecordSink` (no file log), write your own `FileReverter`.
+
 **Migrating from the positional constructors** (deprecated in 0.7, removed
 after): `spawn_tool_executor(h, t, a, b)` →
 `ToolExecutor::builder(h, t.shared()).agents(a).base(b).spawn()`;

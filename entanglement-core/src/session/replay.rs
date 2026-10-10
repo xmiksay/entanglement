@@ -83,6 +83,26 @@ impl Session {
         let mut max_seq: u64 = 0;
 
         for (in_msg, out_event) in records {
+            // A file revert (#731, ADR-0212): re-append the note the live
+            // session pushed — only the note; replay never calls the
+            // runtime's reverter, so a resume never touches the disk. Folded
+            // *before* a paired prompt: a prompt sent while the revert ran is
+            // logged ahead of `FilesReverted` and so pairs with it, yet the
+            // live session applied the revert first.
+            if let OutEvent::FilesReverted {
+                session: s,
+                to_turn,
+                restored,
+                skipped,
+                ..
+            } = out_event
+            {
+                if is_target(s) {
+                    if let Some(note) = super::revert::revert_note(restored, skipped, *to_turn) {
+                        session.ctx.push_user(note);
+                    }
+                }
+            }
             // A prompt is scoped by its own session, not the event it was
             // paired with: interleaved child events must neither drop a root
             // prompt nor claim a child's.
@@ -278,6 +298,7 @@ impl Session {
                 // matches what the live model saw, instead of merging both
                 // rounds' text.
                 OutEvent::AmbiguousRetry { nudge, .. } => fold.ambiguous_retry(ctx, nudge),
+                // `FilesReverted` was folded above, ahead of its paired prompt.
                 _ => {}
             }
         }

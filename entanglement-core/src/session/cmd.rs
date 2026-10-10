@@ -103,6 +103,10 @@ pub(crate) enum SessionCmd {
     SetToolOverlay(Vec<ToolOverlayEntry>),
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
+    /// Revert tracked file edits after a turn (#731, ADR-0212) through
+    /// `EngineConfig::file_reverter`. Deferred mid-turn/paused like
+    /// `SetModel`: a revert must not race the turn's own tool writes.
+    RevertFiles(Option<u32>),
     Stop,
     /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the

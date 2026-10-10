@@ -250,6 +250,10 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
                     session: app.active_session_id().clone(),
                 })
                 .await;
+        } else if cmd == crate::tui::commands::Command::Undo {
+            crate::tui::undo_command::send_undo(app, holly).await;
+        } else if cmd == crate::tui::commands::Command::Rewind {
+            crate::tui::undo_command::list_turns(app);
         } else {
             app.execute_command(cmd);
         }

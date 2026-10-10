@@ -165,6 +165,11 @@ pub(super) async fn handle_command_palette_event(
                             session: app.active_session_id().clone(),
                         })
                         .await;
+                } else if cmd == crate::tui::commands::Command::Undo {
+                    super::undo_command::send_undo(app, holly).await;
+                } else if cmd == crate::tui::commands::Command::Rewind {
+                    // No trailing turn: a picked `/rewind` lists the turns.
+                    super::undo_command::list_turns(app);
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }

@@ -43,6 +43,7 @@ mod tool_render;
 mod tools_view;
 mod transcript;
 mod ui;
+mod undo_command;
 mod wrap;
 
 use anyhow::Result;

@@ -444,6 +444,25 @@ pub enum InMsg {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Revert the file edits this session (and its spawned sub-tree) made
+    /// through `write`/`edit`/`apply_patch` — directly or via the `rhai` file
+    /// bindings — **after** user turn `to_turn` (#731, ADR-0212). Turns are
+    /// the session's own user prompts, 1-based; `Some(0)` reverts every
+    /// tracked edit. `None` is "undo": revert the most recent turn that still
+    /// has unreverted edits. Core holds no file I/O: the session hands the
+    /// request to the runtime's `EngineConfig::file_reverter` seam, then
+    /// emits [`OutEvent::FilesReverted`] with the outcome and, when anything
+    /// was restored, appends a user-role note to `Context` so the model does
+    /// not assume its edits still exist. Deferred while a turn is live or the
+    /// session is paused (stash replay), like `SetModel` — a revert must
+    /// never race the turn's own tool writes. Changes made by `bash`/`call`/
+    /// `rhai` exec are not tracked and never reverted. **Trusted-only** (not
+    /// wire-allowed): it writes and deletes files on disk.
+    RevertFiles {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_turn: Option<u32>,
+    },
     /// Spawn a session running `prompt` beneath the named `agent` profile (#60,
     /// ADR-0021). `session` is the new session's id. With `parent = Some(p)` it is
     /// a **child** sub-agent under `p` (the common case): the supervisor records

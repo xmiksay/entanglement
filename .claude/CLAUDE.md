@@ -163,12 +163,12 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | HibernateSession (trusted-only) | Resume (internal, not serialized)
+          | RevertFiles | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | FilesReverted | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
 Load-bearing invariants — **the detail lives in the linked architecture doc,
@@ -278,7 +278,8 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
 - **Trusted/untrusted frame split**: `Holly::send` is privileged;
   `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
-  `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`, `SetMode` refused;
+  `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`, `SetMode`,
+  `RevertFiles` refused;
   `SetToolOverlay` refused only for an enable entry — a deny-only overlay,
   including the empty clearing list, is wire-allowed, #634).
   [protocol](../docs/architecture/protocol.md),
@@ -407,6 +408,14 @@ never here**; each bullet is the claim + where to read it:
   [gates & host tools](../docs/architecture/gates-and-host-tools.md),
   [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0119](../docs/adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)/[ADR-0120](../docs/adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)/[ADR-0132](../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)/[ADR-0142](../docs/adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
   (supersedes [ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)).
+- **Undo/rewind is per-write backups, not git**: `write`/`edit`/`apply_patch`
+  (and the `rhai` file bindings) store each file's prior bytes under the root
+  session's store dir; trusted-only `RevertFiles` → `FilesReverted` restores
+  everything after a turn (TUI `/undo`, `/rewind`), refusing any file changed
+  since, and leaves the model a replay-folded note. `bash`/`call`/`rhai` exec
+  changes are never tracked; replay never touches the disk.
+  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md).
 - **Plans**: `propose_plan` is the sole plan-authorship tool (`Capability::Plan`,
   allowed only in `plan` mode — a mode denying it flat-declines before any
   file is touched), file-backed under `.entanglement/plans/`, force-parked on
