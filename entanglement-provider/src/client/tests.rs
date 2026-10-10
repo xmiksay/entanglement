@@ -1,6 +1,15 @@
 //! Unit tests for the shared HTTP transport (pool identity, pacing gate,
 //! retry-after window, transient-error classification).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+use tokio::sync::Semaphore;
+
+use super::backoff::*;
+use super::endpoint::*;
+use super::rate_limiter::RateLimiter;
+use super::stream::*;
 use super::*;
 
 #[test]

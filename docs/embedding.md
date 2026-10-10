@@ -31,7 +31,7 @@ process, covered in order below. Part of #307/#315.
 Run **one `Holly`**, not one per tenant. `Holly::spawn` is a supervisor task
 plus two broadcast channels ([`entanglement-core/src/holly.rs`](../entanglement-core/src/holly.rs));
 sessions are cheap, lazily-spawned tasks keyed by `SessionId`
-(`entanglement-core/src/holly.rs`, the `supervisor` loop). Spinning up a whole
+(`entanglement-core/src/holly/supervisor.rs`, the `supervisor` loop). Spinning up a whole
 engine per user buys you nothing the session key doesn't already give you, and
 it multiplies every piece of shared state (the provider connection pool,
 [ADR-0050](adr/0050-per-endpoint-connection-pool-retry-rate-limit.md); the
@@ -53,7 +53,7 @@ fn tenant_of(session: &SessionId) -> &str {
 A spawned sub-agent's id is minted by the runtime's `agent` tool, not by your
 head, but it stays inside the same tenant's tree — child sessions
 never cross the parent's namespace (spawn is always relative to a running
-session, `entanglement-core/src/holly.rs`'s `Spawn` arm), so filtering by root
+session, `entanglement-core/src/holly/supervisor/spawn.rs`'s `Spawn` handler), so filtering by root
 prefix already covers the whole subtree.
 
 **Ownership filtering on `subscribe()`.** `Holly::subscribe()` is one

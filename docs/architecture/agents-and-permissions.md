@@ -524,7 +524,7 @@ below realize one model:
   keeps the legacy request-level fallback (`req.model` only, **no** rebind);
   `provider:` **without** `model:` is a loud load error. The rebind lives in
   **core's session-start path only** (`Holly::send`'s `SessionStarted`
-  handling, `session.rs`) — with `SetAgent` gone, an agent is chosen exactly
+  handling, `session/start.rs`) — with `SetAgent` gone, an agent is chosen exactly
   once (`--agent` / `config.yml` `agent:` / a spawn's own `agent` argument),
   so this is the *only* locus left to bind at; a resumed session already
   re-bound from its own `ModelChanged` log skips it. **Precedence:**

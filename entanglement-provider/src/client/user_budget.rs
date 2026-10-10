@@ -9,14 +9,14 @@
 //! silently bound by whichever user's session happened to resolve first
 //! (ADR-0147 "Consequences", ledger row 12).
 //!
-//! This mirrors [`super::ModelSlot`]/`EndpointState::model_slot` (ADR-0140)
+//! This mirrors [`super::endpoint::ModelSlot`]/`EndpointState::model_slot` (ADR-0140)
 //! exactly, just keyed by [`UserId`] instead of model id: a second, narrower
 //! gate — resolved from *that user's own* catalog `rpm`/`concurrency` rather
 //! than whichever user sized the endpoint first — sitting alongside the
 //! per-model gate, under the endpoint-wide cap. A user with no configured
 //! rpm/concurrency (`None`, single-user mode's default) admits solely
 //! through the model/endpoint gates, byte-identical to before this existed.
-//! Unlike the endpoint's own [`super::RateLimiter`], a user's pacing gate is
+//! Unlike the endpoint's own [`super::rate_limiter::RateLimiter`], a user's pacing gate is
 //! **not** AIMD-adaptive — a 429 is a property of the whole endpoint, not of
 //! one user's slice of it, so `penalize`/`relax` stay endpoint-wide only;
 //! the user gate just paces at a fixed `rpm`.
@@ -25,7 +25,8 @@ use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::{EndpointState, RateLimiter};
+use super::endpoint::EndpointState;
+use super::rate_limiter::RateLimiter;
 use crate::UserId;
 
 /// One user's own rpm/concurrency budget on a shared endpoint (#632),

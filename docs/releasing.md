@@ -11,11 +11,12 @@ Before cutting *any* tag — not just major/minor releases — sweep for the
 failure modes that keep recurring (each observed at least once by past
 audits): CHANGELOG entries
 lagging shipped commits, the README/`protocol.md` contract block lagging
-`protocol.rs`, and ADR back-links missing on amendment. A green `make verify`
+`protocol.rs` (+ `protocol/`), and ADR back-links missing on amendment. A green `make verify`
 is **not** a release signal by itself — it proves the code compiles and tests
 pass, not that docs/ADRs/open issues reflect what actually shipped. Concretely, before the version bump below:
 
-1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol.rs`)
+1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol/in_msg*`
+   and `protocol/out_event*`)
    against the contract blocks in `README.md` and `docs/architecture/protocol.md`.
 2. Skim `git log <last-tag>..HEAD` for any ADR that superseded/amended another
    and confirm the back-link landed on both sides.
