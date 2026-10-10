@@ -37,7 +37,7 @@ Heads depend on core, **never the reverse.**
 
 ## Code conventions (this repo-specific)
 
-- **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit. Enforced by `make file-cap` (issue #451) — see `scripts/file-cap-allowlist.txt` for the shrinking list of grandfathered violations.
+- **Files must not exceed 400 lines of code.** Split long files into modules when they exceed this limit. Enforced by `make file-cap` (issue #451; every line except a `#[cfg(test)]`-gated test module counts, #745) — see `scripts/file-cap-allowlist.txt` for the shrinking list of grandfathered violations.
 - **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (e.g. `actor.rs`, `turn_loop.rs`); runtime/host-tool behavior → `entanglement-runtime/tests/`.
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**

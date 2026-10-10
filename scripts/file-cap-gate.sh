@@ -5,10 +5,13 @@
 # `*/tests/**` integration suites and any file literally named `tests.rs`
 # are dedicated test modules by this repo's convention: `#[cfg(test)] mod
 # tests;` in the parent declares the gate, not the child file itself, so
-# they carry no such marker to split on and are excluded outright) and
-# counts "code lines" as everything before the file's own top-level
-# `#[cfg(test)]` marker (an inline `mod tests` boundary) — or the whole file
-# if it has none. A file over 400 code lines fails the gate unless listed in
+# they are excluded outright) and counts "code lines": every line except a
+# `#[cfg(test)]`-gated module — an inline `mod x { … }` block anywhere in the
+# file (brace-matched, string/char/comment-aware) or a `mod x;` declaration
+# (scripts/file-cap-count.awk). Other `#[cfg(test)]` items (helper fns,
+# impls) ship beside production code and still count. Issue #745: the old
+# "everything before the first `#[cfg(test)]`" rule let an early
+# `mod tests;` hide the rest of the file. A file over 400 code lines fails the gate unless listed in
 # the allowlist file (grandfathered debt, issue #451); an allowlisted file
 # that has shrunk back under the cap fails too, forcing the allowlist to
 # shrink as files get split instead of silently going stale.
@@ -24,12 +27,11 @@ if [ ! -f "$allowlist" ]; then
 	exit 1
 fi
 
-# code-lines-before-first-#[cfg(test)] marker (or whole file if absent).
+counter="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/file-cap-count.awk"
+
+# Lines outside the file's `#[cfg(test)]`-gated module(s); see the awk file.
 code_lines() {
-	awk '
-		/^#\[cfg\(test\)\]/ { print NR - 1; found = 1; exit }
-		END { if (!found) print NR }
-	' "$1"
+	awk -f "$counter" "$1"
 }
 
 is_allowlisted() {
