@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use entanglement_core::{InMsg, OutEvent, SessionId};
+use entanglement_core::{OutEvent, SessionId};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -8,8 +8,10 @@ use std::time::SystemTime;
 
 mod listing;
 mod pairing;
+mod payload;
 pub use listing::{children_of, first_prompt_snippet, list_sessions, root_of, SessionMeta};
 pub use pairing::pair_records;
+pub use payload::LogPayload;
 
 /// Returns the base data directory for entanglement session storage.
 ///
@@ -94,24 +96,6 @@ pub fn session_path(cwd: &Path, root_session_id: &SessionId) -> Result<PathBuf> 
     Ok(dir.join(format!("{}.jsonl", root_session_id.0)))
 }
 
-/// Payload of a log record: either an inbound message, an outbound event, or a
-/// gap tombstone.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "direction", rename_all = "lowercase")]
-pub enum LogPayload {
-    In(InMsg),
-    Out(OutEvent),
-    /// Tombstone marking that the persistence recorder lagged and dropped a
-    /// contiguous run of `dropped` broadcast records before this point (#104).
-    /// It is not a real message — a poison marker. The file stays well-formed,
-    /// so without it `Session::replay` would silently fold an incomplete
-    /// history (e.g. a `ToolCall` missing its `ToolOutput`) into a wrong
-    /// `Context`. [`integrity_gap`] detects it so resume refuses.
-    Gap {
-        dropped: u64,
-    },
-}
-
 /// A single record in the session log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogRecord {
@@ -170,8 +154,12 @@ pub fn append(cwd: &Path, root_session_id: &SessionId, record: &LogRecord) -> Re
 /// other record; [`integrity_gap`] inspects them so resume can refuse.
 #[allow(dead_code)]
 pub fn read(cwd: &Path, root_session_id: &SessionId) -> Result<Vec<LogRecord>> {
-    let path = session_path(cwd, root_session_id)?;
-    let file = File::open(&path)
+    read_path(&session_path(cwd, root_session_id)?)
+}
+
+/// [`read`] for a log at an explicit `path` (an exported or archived file).
+pub fn read_path(path: &Path) -> Result<Vec<LogRecord>> {
+    let file = File::open(path)
         .with_context(|| format!("Failed to open session file: {}", path.display()))?;
 
     let reader = BufReader::new(file);

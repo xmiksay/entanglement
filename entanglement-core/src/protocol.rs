@@ -32,6 +32,7 @@ mod out_event;
 mod overlay;
 mod permission;
 mod questions;
+mod retired;
 
 pub use in_msg::InMsg;
 pub use mcp::{McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus};
@@ -39,6 +40,7 @@ pub use out_event::{CompactionMode, OutEvent, ToolEnvelope, UsagePurpose};
 pub use overlay::ToolOverlayEntry;
 pub use permission::{ApprovalScope, Permission, PermissionProfile};
 pub use questions::{PendingQuestion, Question, QuestionOption, Questions};
+pub use retired::{RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS};
 
 /// Stable identifier for a conversation session. Serialized transparently as a
 /// plain string on the wire.
@@ -143,6 +145,8 @@ pub struct SessionInfo {
     pub session: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionId>,
+    /// Spelled `profile` before ADR-0207; the alias keeps 0.6.0 frames loading (#720).
+    #[serde(alias = "profile")]
     pub agent: String,
     pub root: bool,
     /// The session's owning user in a multi-user deployment (#522). `None` in
