@@ -55,9 +55,9 @@ pub(crate) fn format_context(prompt_total: u64, window: Option<u32>) -> String {
 }
 
 fn format_window(w: u32) -> String {
-    if w % 1_000_000 == 0 {
+    if w.is_multiple_of(1_000_000) {
         format!("{}M", w / 1_000_000)
-    } else if w % 1_000 == 0 {
+    } else if w.is_multiple_of(1_000) {
         format!("{}k", w / 1_000)
     } else {
         format_tokens(u64::from(w))

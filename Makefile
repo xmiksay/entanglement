@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid msrv coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -26,6 +26,10 @@ LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-su
 # (issue #107) was 65% workspace lines; floor set just under it to absorb CI
 # variance. Ratchet up as coverage improves — never lower it.
 COV_MIN ?= 60
+
+# The declared MSRV, read from the workspace `rust-version` so the manifest stays
+# the single source of truth for `make msrv` and its CI job.
+MSRV ?= $(shell sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-17s\033[0m %s\n", $$1, $$2}'
@@ -118,6 +122,15 @@ file-cap: ## fail if a src file exceeds 400 code lines and isn't grandfathered
 # name `UserId` — per-user seams live in the provider crate and the embedder.
 userid: ## fail if UserId appears anywhere in entanglement-runtime/src
 	@sh scripts/userid-gate.sh
+
+# MSRV gate (#728): typecheck on the declared `rust-version` toolchain against
+# the committed lockfile, so the claim is tested rather than asserted. Separate
+# from `verify` (which runs the pinned rust-toolchain.toml compiler) and its own
+# target dir so the two toolchains don't thrash each other's build cache.
+msrv: ## cargo check (full + lean runtime) on the declared MSRV toolchain
+	rustup toolchain install $(MSRV) --profile minimal
+	CARGO_TARGET_DIR=target/msrv $(CARGO) +$(MSRV) check --locked --workspace --all-targets
+	CARGO_TARGET_DIR=target/msrv $(CARGO) +$(MSRV) check --locked -p entanglement-runtime --no-default-features --all-targets
 
 verify: check-fmt tree check-lean file-cap userid lint test ## full CI-equivalent gate locally
 

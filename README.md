@@ -164,6 +164,7 @@ make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + file-cap + userid + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
+make msrv         # cargo check (full + lean runtime) on the declared MSRV (rust-version)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
 make install      # cargo install --path entanglement-runtime → `skutter` in $CARGO_HOME/bin
 make build | check | fmt | clean
@@ -177,7 +178,8 @@ GitHub Actions drives the same `make` targets ([`.github/workflows/`](.github/wo
 
 - **`ci.yml`** — runs `make verify` on every PR and every push to `master`,
   putting the `tree` (ADR-0006) and `check-lean` (ADR-0025) hygiene gates under
-  automation.
+  automation, and a separate `make msrv` job that typechecks on the workspace
+  `rust-version` toolchain (#728) so the declared MSRV is tested, not asserted.
 - **`release.yml`** — on a `v*` tag, runs `make verify` **plus** `make coverage`
   (`cargo llvm-cov --workspace`, fails under `COV_MIN`%) and uploads the
   lcov/Cobertura reports as an artifact, so a release is blocked on green tests.
