@@ -43,17 +43,25 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)))
             };
 
+            // An explicit `--mode` wins over ADR-0214's read-only fallback.
+            let explicit_mode = cli.mode.is_some();
+            let mut resume_check = None;
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
-                let (records, note) = session_store::load_for_resume(cwd, &resume_session_id)?;
-                // A retired agent resumes as `general` (#720); say so once.
-                if let Some(note) = note {
-                    eprintln!("{note}");
+                let known = known_agents(&head);
+                let (records, check) =
+                    session_store::load_for_resume(cwd, &resume_session_id, |n| {
+                        known.iter().any(|k| k == n)
+                    })?;
+                // A retired agent resumes under a fallback (ADR-0214); say so.
+                for fallback in &check.fallbacks {
+                    eprintln!("{}", fallback.note(explicit_mode));
                 }
 
                 holly
                     .resume(session_id.clone(), pair_records(&records))
                     .await?;
+                resume_check = Some(check);
             }
 
             // CLI `--agent` wins; else the user config's default agent (#172).
@@ -82,6 +90,10 @@ pub(crate) async fn dispatch(
                 );
             }
             apply_mode(holly, &session_id, cli.mode, user_config).await?;
+            // After `apply_mode`, whose switch cascades over the whole tree.
+            if let Some(check) = &resume_check {
+                session_store::apply_forced_modes(holly, check, explicit_mode).await?;
+            }
             let prompt = prompt.join(" ");
             run_one(holly, &session_id, &prompt, &format).await
         }
@@ -155,6 +167,15 @@ async fn bind_agent(holly: &Holly, session_id: &SessionId, agent: String) -> Res
 /// `mode:` > the engine's own `DEFAULT_MODE`, mirroring `agent`'s `--agent` >
 /// config > default. `None` either way sends nothing, leaving the session at
 /// `DEFAULT_MODE` exactly as before this setting existed.
+/// Every agent name the live catalog carries (ADR-0214's fallback check).
+fn known_agents(head: &Head) -> Vec<String> {
+    let catalog = head
+        .live_profiles
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    catalog.iter().map(|a| a.name.clone()).collect()
+}
+
 async fn apply_mode(
     holly: &Holly,
     session_id: &SessionId,

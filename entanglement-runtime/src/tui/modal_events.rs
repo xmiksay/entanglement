@@ -279,30 +279,7 @@ pub(super) async fn handle_resume_modal_event(
         KeyCode::Esc => {
             app.close_resume_modal();
         }
-        KeyCode::Enter => {
-            if let Some(meta) = app.selected_resume_session() {
-                let id = meta.id.clone();
-                let cwd = app.root().to_path_buf();
-                match crate::session_store::load_for_resume(&cwd, &id) {
-                    Ok((records, note)) => {
-                        // Visible transcript first, then engine context.
-                        app.restore_session(id.clone(), &records);
-                        // A retired agent resumes as `general` (#720); say so.
-                        if let Some(note) = note {
-                            app.record_status("resume", note);
-                        }
-                        let paired = crate::session_store::pair_records(&records);
-                        if let Err(e) = holly.resume(id.clone(), paired).await {
-                            tracing::error!("Failed to resume session {}: {}", id, e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Cannot resume session {}: {:#}", id, e);
-                    }
-                }
-            }
-            app.close_resume_modal();
-        }
+        KeyCode::Enter => click::resume_selected(app, holly).await,
         KeyCode::Down | KeyCode::Char('j') => {
             app.resume_next();
         }

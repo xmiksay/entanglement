@@ -22,7 +22,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, Message, MessageRole, OutEvent, SessionId, DEFAULT_AGENT,
 };
 use entanglement_runtime::session_store::{
-    self, integrity_gap, load_for_resume, pair_records, read_path, retired_agent_note, LogPayload,
+    apply_forced_modes, check_for_resume, integrity_gap, pair_records, read_path, LogPayload,
     LogRecord,
 };
 use tokio::sync::broadcast::Receiver;
@@ -79,16 +79,29 @@ fn v060_log_loads_with_retired_frames_skipped_not_gapped() {
         [("v060-root", "site-editor"), ("v060-child", "explore")],
         "0.6.0's `profile` field lands in `agent`"
     );
-    // The child ran under the retired `explore`: resume notes the fallback
-    // rather than refusing (ADR-0214).
+    // The root resumes as its own last agent; only the still-live child,
+    // which ran under the read-only `explore`, falls back (ADR-0214).
+    let check = check_for_resume(&records, known).expect("no gap");
+    let notes: Vec<String> = check.fallbacks.iter().map(|f| f.note(false)).collect();
     assert_eq!(
-        retired_agent_note(&records).as_deref(),
-        Some("note: session used retired agent `explore`; resuming as `general` (ADR-0207)")
+        notes,
+        [
+            "note: session `v060-child` used retired agent `explore`; resuming as `general` in \
+          `research` mode (ADR-0214)"
+        ]
     );
 }
 
-/// Each request's `(system prompt, messages)`.
-type Requests = Arc<Mutex<Vec<(String, Vec<Message>)>>>;
+/// What one request carried.
+#[derive(Clone)]
+struct Req {
+    system: String,
+    messages: Vec<Message>,
+    /// The out-of-band mode notice (`[mode: …]`, ADR-0207 §9).
+    notice: Option<String>,
+}
+
+type Requests = Arc<Mutex<Vec<Req>>>;
 
 struct ScriptLlm {
     responses: Arc<Mutex<VecDeque<LlmResponse>>>,
@@ -98,10 +111,11 @@ struct ScriptLlm {
 #[async_trait]
 impl Llm for ScriptLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push((req.system.to_string(), req.messages.to_vec()));
+        self.requests.lock().unwrap().push(Req {
+            system: req.system.to_string(),
+            messages: req.messages.to_vec(),
+            notice: req.trailing_notice.clone(),
+        });
         let resp = self.responses.lock().unwrap().pop_front();
         Ok(stream_from_response(resp.unwrap_or_else(|| LlmResponse {
             text: "ok".into(),
@@ -131,6 +145,11 @@ fn general_prompt() -> String {
         .expect("the catalog always carries `general`")
         .system_prompt
         .clone()
+}
+
+/// The names [`engine`]'s catalog carries.
+fn known(name: &str) -> bool {
+    matches!(name, "general" | "plan" | "site-editor") || name == DEFAULT_AGENT
 }
 
 /// An engine whose catalog carries `plan` and the fixture's `site-editor`
@@ -200,7 +219,11 @@ async fn v060_log_resumes_its_parked_turn_with_history_intact() {
         .unwrap();
     wait_for(&mut sub, &root, |ev| matches!(ev, OutEvent::Done { .. })).await;
 
-    let (system, history) = requests.lock().unwrap()[0].clone();
+    let Req {
+        system,
+        messages: history,
+        ..
+    } = requests.lock().unwrap()[0].clone();
     // The fixture switched `site-editor` → `plan` → `site-editor`; the
     // retired `set_agent`s' own `AgentChanged` replies fold last-write-wins.
     assert_eq!(system, EDITOR_PROMPT);
@@ -259,8 +282,8 @@ async fn v060_log_resumes_its_parked_turn_with_history_intact() {
     );
 }
 
-/// Sends `probe` to a resumed `sid` and returns the system prompt it used.
-async fn probe_system(holly: &Holly, requests: &Requests, sid: &SessionId) -> String {
+/// Sends `probe` to a resumed `sid` and returns the request it produced.
+async fn probe(holly: &Holly, requests: &Requests, sid: &SessionId) -> Req {
     let mut sub = holly.subscribe();
     let before = requests.lock().unwrap().len();
     holly
@@ -268,8 +291,8 @@ async fn probe_system(holly: &Holly, requests: &Requests, sid: &SessionId) -> St
         .await
         .unwrap();
     wait_for(&mut sub, sid, |ev| matches!(ev, OutEvent::Done { .. })).await;
-    let system = requests.lock().unwrap()[before].0.clone();
-    system
+    let req = requests.lock().unwrap()[before].clone();
+    req
 }
 
 /// A 0.6.0-shaped log (`profile`, a retired `set_agent`, `profile_detail`).
@@ -303,36 +326,78 @@ async fn retired_set_agent_switch_resumes_under_the_last_agent() {
         .resume(sid.clone(), pair_records(&records))
         .await
         .unwrap();
-    assert_eq!(probe_system(&holly, &requests, &sid).await, PLAN_PROMPT);
+    assert_eq!(probe(&holly, &requests, &sid).await.system, PLAN_PROMPT);
 }
 
-/// The CLI/TUI resume path (`load_for_resume`, ADR-0214): a log whose agent
-/// is the retired `build` loads with a fallback note instead of a refusal,
-/// and resumes under `general`.
-#[tokio::test]
-async fn cli_resume_of_a_retired_build_agent_falls_back_to_general() {
+/// What the CLI's resume path does with a 0.6.0 log rooted under `agent`
+/// (`check_for_resume` → note → resume → `apply_forced_modes`, ADR-0214),
+/// minus the file read: the log is a temp file, never the real data dir.
+/// Returns the notes and the first resumed request.
+async fn resume_like_the_cli(agent: &str, explicit_mode: bool) -> (Vec<String>, Req) {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path();
-    let sid = SessionId::new("retired-build");
-    let path = session_store::session_path(cwd, &sid).expect("session path");
-    std::fs::write(&path, v060_lines("retired-build", "build", None)).unwrap();
+    let path = tmp.path().join("log.jsonl");
+    std::fs::write(&path, v060_lines("retired", agent, None)).unwrap();
+    let records = read_path(&path).expect("load");
+    let check = check_for_resume(&records, known).expect("a retired agent no longer refuses");
+    let notes = check
+        .fallbacks
+        .iter()
+        .map(|f| f.note(explicit_mode))
+        .collect();
 
-    let loaded = load_for_resume(cwd, &sid);
-    // The log lives under the shared data dir (keyed by the temp cwd).
-    session_store::delete(cwd, &sid).expect("clean up the log");
-    let (records, note) = loaded.expect("a retired agent no longer refuses");
-    assert_eq!(
-        note.as_deref(),
-        Some("note: session used retired agent `build`; resuming as `general` (ADR-0207)")
-    );
-
+    let sid = SessionId::new("retired");
     let (holly, requests) = engine();
     holly
         .resume(sid.clone(), pair_records(&records))
         .await
         .unwrap();
+    let mut sub = holly.subscribe();
+    apply_forced_modes(&holly, &check, explicit_mode)
+        .await
+        .unwrap();
+    if check.fallbacks[0].forced_mode(explicit_mode).is_some() {
+        wait_for(&mut sub, &sid, |ev| {
+            matches!(ev, OutEvent::ModeChanged { .. })
+        })
+        .await;
+    }
+    (notes, probe(&holly, &requests, &sid).await)
+}
+
+/// A retired `build` log resumes as `general` in the ordinary default mode.
+#[tokio::test]
+async fn cli_resume_of_a_retired_build_agent_falls_back_to_general() {
+    let (notes, req) = resume_like_the_cli("build", false).await;
     assert_eq!(
-        probe_system(&holly, &requests, &sid).await,
-        general_prompt()
+        notes,
+        ["note: session used retired agent `build`; resuming as `general` (ADR-0214)"]
     );
+    assert_eq!(req.system, general_prompt());
+    assert_eq!(req.notice.as_deref(), Some("[mode: build]"));
+}
+
+/// A read-only retired agent never widens on resume: it lands in `research`
+/// mode — unless the user passed `--mode` explicitly, which wins.
+#[tokio::test]
+async fn cli_resume_of_a_retired_explore_agent_narrows_to_research() {
+    let (notes, req) = resume_like_the_cli("explore", false).await;
+    assert_eq!(
+        notes,
+        [
+            "note: session used retired agent `explore`; resuming as `general` in `research` mode \
+          (ADR-0214)"
+        ]
+    );
+    assert_eq!(req.system, general_prompt());
+    assert_eq!(
+        req.notice.as_deref(),
+        Some("[mode: research — changed from build]")
+    );
+
+    let (notes, req) = resume_like_the_cli("explore", true).await;
+    assert_eq!(
+        notes,
+        ["note: session used retired agent `explore`; resuming as `general` (ADR-0214)"]
+    );
+    assert_eq!(req.notice.as_deref(), Some("[mode: build]"));
 }
