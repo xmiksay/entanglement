@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
-use entanglement_core::{DefaultIdGen, IdGen, IdKind, SessionId};
+use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
 
 /// Retention cap for a not-yet-polled script's output — same bound and same
 /// keep-the-tail policy as a job's per-stream buffer.
@@ -195,7 +195,10 @@ impl ScriptRegistry {
             state: Mutex::new(ScriptState::default()),
             notify: Notify::new(),
         });
-        let id = self.inner.id_gen.next(IdKind::Script);
+        let id = self
+            .inner
+            .id_gen
+            .next(IdKind::Script, &IdContext::default());
         self.inner
             .scripts
             .lock()

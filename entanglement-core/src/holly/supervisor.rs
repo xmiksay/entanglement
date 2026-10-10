@@ -9,8 +9,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::outlets;
 use super::routing::{msg_to_cmd, route_to_session};
-use super::{ActivityRegistry, EngineConfig, SeqRegistry, FORK_CAPACITY};
-use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
+use super::{ActivityRegistry, EngineConfig, SeqRegistry, SessionDirectory, FORK_CAPACITY};
+use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::session::SessionCmd;
 
 mod resume;
@@ -33,7 +33,8 @@ struct Supervisor {
     // can answer without folding the outbound broadcast (ADR-0028). A session
     // task only exits when its channel is dropped (CloseSession / shutdown), so
     // `sessions` is the liveness source of truth and this never drifts.
-    session_meta: HashMap<SessionId, SessionInfo>,
+    // Shared with `Holly::session_info` for synchronous reads (ADR-0211).
+    session_meta: SessionDirectory,
     // Tombstone set of session ids retired by `CloseSession`. Ids are single-use
     // (ADR-0028): once closed, no path — lazy prompt, `Resume`, or `Spawn` — may
     // resurrect the id under a fresh, blank session (issue #105). A head that
@@ -79,12 +80,14 @@ struct Supervisor {
 /// Route inbound messages to per-session tasks, lazily spawning one per new
 /// [`SessionId`]. Exits (stopping all sessions) when the inbox closes or
 /// [`Holly::shutdown`][super::Holly::shutdown] is requested.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn supervisor(
     mut rx: mpsc::Receiver<InMsg>,
     events: broadcast::Sender<OutEvent>,
     inbound: broadcast::Sender<InMsg>,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
+    session_meta: SessionDirectory,
     cfg: EngineConfig,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -100,7 +103,7 @@ pub(super) async fn supervisor(
     let mut sup = Supervisor {
         sessions: HashMap::new(),
         successors: HashMap::new(),
-        session_meta: HashMap::new(),
+        session_meta,
         closed: HashSet::new(),
         parent_links: HashMap::new(),
         modes: HashMap::new(),
@@ -136,7 +139,7 @@ pub(super) async fn supervisor(
             m = fork_rx.recv() => m,
             _ = tick => {
                 if let Some(ttl) = ttl {
-                    sweep_idle_sessions(ttl, &mut sup.sessions, &mut sup.session_meta, &mut sup.parent_links, &sup.activity).await;
+                    sweep_idle_sessions(ttl, &mut sup.sessions, &sup.session_meta, &mut sup.parent_links, &sup.activity).await;
                 }
                 continue;
             }
@@ -178,11 +181,9 @@ impl Supervisor {
         // routed to a session task. `correlation_id` is an opaque token echoed
         // on the reply (#160) — not an overloaded session id.
         if let InMsg::ListSessions { correlation_id } = &msg {
-            let mut list: Vec<SessionInfo> = self.session_meta.values().cloned().collect();
-            list.sort_by(|a, b| a.session.0.cmp(&b.session.0));
             let _ = self.events.send(OutEvent::SessionList {
                 correlation_id: correlation_id.clone(),
-                sessions: list,
+                sessions: self.session_meta.snapshot(),
             });
             return;
         }
@@ -223,7 +224,7 @@ impl Supervisor {
             hibernate_subtree(
                 session,
                 &mut self.sessions,
-                &mut self.session_meta,
+                &self.session_meta,
                 &mut self.parent_links,
             )
             .await;

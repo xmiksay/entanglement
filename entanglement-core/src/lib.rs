@@ -19,7 +19,7 @@ pub use holly::{
     AgentCatalog, ConfigError, EngineConfig, Holly, SessionLoader, SessionModel,
     SystemPromptResolver, ToolSpecResolver, UnknownSession, WireError, DEFAULT_AGENT, DEFAULT_MODE,
 };
-pub use id_gen::{DefaultIdGen, IdGen, IdKind};
+pub use id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 // The tool-advertising mode (`full`/`tool_search`, ADR-0196) rides the same

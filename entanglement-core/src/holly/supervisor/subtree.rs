@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::holly::ActivityRegistry;
-use crate::protocol::{SessionId, SessionInfo};
+use crate::holly::{ActivityRegistry, SessionDirectory};
+use crate::protocol::SessionId;
 use crate::session::SessionCmd;
 
 /// Follow the compaction-successor chain from `session` to the live session
@@ -65,7 +65,7 @@ pub(super) fn collect_subtree(
 pub(super) async fn hibernate_subtree(
     root: &SessionId,
     sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
-    session_meta: &mut HashMap<SessionId, SessionInfo>,
+    session_meta: &SessionDirectory,
     parent_links: &mut HashMap<SessionId, Option<SessionId>>,
 ) {
     for victim in collect_subtree(root, parent_links) {
@@ -105,17 +105,12 @@ pub(super) fn sweep_period(ttl: Duration) -> Duration {
 pub(super) async fn sweep_idle_sessions(
     ttl: Duration,
     sessions: &mut HashMap<SessionId, mpsc::Sender<SessionCmd>>,
-    session_meta: &mut HashMap<SessionId, SessionInfo>,
+    session_meta: &SessionDirectory,
     parent_links: &mut HashMap<SessionId, Option<SessionId>>,
     activity: &ActivityRegistry,
 ) {
     let now = tokio::time::Instant::now();
-    let roots: Vec<SessionId> = session_meta
-        .values()
-        .filter(|m| m.root)
-        .map(|m| m.session.clone())
-        .collect();
-    for root in roots {
+    for root in session_meta.roots() {
         if !sessions.contains_key(&root) {
             continue;
         }

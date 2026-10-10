@@ -35,7 +35,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-use entanglement_core::{DefaultIdGen, IdGen, IdKind, SessionId};
+use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
 
 use eviction::{sweep, JOB_TTL, MAX_FINISHED_JOBS};
 
@@ -173,7 +173,7 @@ impl JobRegistry {
             state: Mutex::new(JobState::default()),
             notify: Notify::new(),
         });
-        let id = self.inner.id_gen.next(IdKind::Job);
+        let id = self.inner.id_gen.next(IdKind::Job, &IdContext::default());
         self.inner
             .jobs
             .lock()

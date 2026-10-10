@@ -101,8 +101,7 @@ impl Supervisor {
                 return None;
             }
         };
-        let meta = resume_meta(target, records);
-        self.session_meta.insert(target.clone(), meta);
+        self.session_meta.insert(resume_meta(target, records));
         let parent = initial_session.parent.clone();
         if let Some(p) = parent.as_ref() {
             self.parent_links.insert(target.clone(), Some(p.clone()));

@@ -45,7 +45,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
 OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user?}   // lifecycle, no seq; predecessor = /compact source this session succeeds (ADR-0110); user = owning user in multi-user deployment (#522); no sponsored flag — see Spawn's note
          | SessionEnded{session,ts}           // lifecycle, no seq
          | SessionHibernated{session,ts}      // lifecycle, no seq; memory evicted, id NOT tombstoned (#318, ADR-0077)
-         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,agent,root,user?} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
+         | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,predecessor?,agent,root,user?} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
@@ -201,7 +201,7 @@ a remote attacker; the WS head routes every inbound frame through
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
-`SessionInfo{session,parent?,agent,root,user?}` set — a reconnecting
+`SessionInfo{session,parent?,predecessor?,agent,root,user?}` set (`predecessor`: a compaction successor's source, ADR-0211; the same record `Holly::session_info` reads synchronously) — a reconnecting
 head enumerates in one round-trip instead of folding the whole broadcast. Both
 the query and the reply carry an opaque **`correlation_id`** the head mints and
 the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)),

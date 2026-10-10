@@ -82,6 +82,7 @@ mod spawn_prompt_persistence;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
+mod subagent_tenant_prefix;
 mod system_prompt_assembly;
 mod tool_mask;
 mod unattended_mode;

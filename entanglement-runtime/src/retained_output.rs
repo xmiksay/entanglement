@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use entanglement_core::{DefaultIdGen, IdGen, IdKind, SessionId};
+use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
 
 /// Per-operation retention cap. Past this, the *tail* of the text survives —
 /// the same keep-the-end policy as every other bound in this codebase — and
@@ -115,7 +115,7 @@ impl RetainedOutputRegistry {
     ) -> String {
         let mut inner = self.lock();
         evict_expired(&mut inner.entries, Instant::now());
-        let id = inner.id_gen.next(IdKind::Output);
+        let id = inner.id_gen.next(IdKind::Output, &IdContext::default());
         inner.entries.insert(
             id.clone(),
             Entry {
