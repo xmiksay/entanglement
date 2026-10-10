@@ -28,7 +28,7 @@
 //!
 //! # The trusted scratch dir (#524, ADR-0142, amends ADR-0109)
 //!
-//! The runtime-owned per-project scratch dir (`session_store::scratch_dir` —
+//! The runtime-owned per-project scratch dir (`SessionStore::scratch_dir` —
 //! already the default `call` output target) is **pre-trusted**: any path
 //! under it (or the dir itself) needs no approval and no prior grant, for
 //! every tool, in every profile. [`with_scratch`][ExtraRootStore::with_scratch]
@@ -39,7 +39,7 @@
 //! ordinary escape-root grant this is **not** per-tool — the scratch dir is a
 //! trusted *location*, not a one-off approval for one tool — and it is never
 //! persisted: it is re-derived from the cwd at every startup, exactly like
-//! `session_store::scratch_dir` itself.
+//! `SessionStore::scratch_dir` itself.
 //!
 //! # Scopes
 //!

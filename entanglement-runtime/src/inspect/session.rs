@@ -6,11 +6,11 @@
 //! file for it, and it cannot be reconstructed by re-running load-time
 //! discovery the way `inspect prompt`/`agents`/`skills`/`config` do. This view
 //! instead reads the persisted `.jsonl` log directly and folds the same
-//! "last write wins" events [`crate::session_store::list_sessions`] already
+//! "last write wins" events [`crate::session_store::SessionStore::list_sessions`] already
 //! folds for `name` — no engine, no LLM, just the log.
 //!
 //! Only a **root** session id resolves: a spawned child's records live inside
-//! its root's log file, not a file of their own ([`crate::session_store::session_path`]),
+//! its root's log file, not a file of their own ([`crate::session_store::SessionStore::session_path`]),
 //! so its tool overlay is visible by inspecting the root and reading the
 //! child's own `ToolOverlayChanged` records within it — a future refinement,
 //! not needed by #558's scope.
@@ -40,7 +40,7 @@ pub fn inspect_session(cwd: &Path, id: &str) -> Result<()> {
 }
 
 /// State folded from `target`'s own records in a (possibly multi-session) log —
-/// mirrors the "last write wins" scan [`session_store::list_sessions`] runs for
+/// mirrors the "last write wins" scan [`session_store::SessionStore::list_sessions`] runs for
 /// `name`, extended to agent/model/tool-overlay.
 #[derive(Default)]
 struct FoldedState {

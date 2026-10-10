@@ -64,17 +64,17 @@ inspect: build ## inspect resolved prompt/agents/skills/config/aux-models/mcp-to
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace
 
-# Every test target runs with HOME/XDG dirs in an empty sandbox and fails if a
-# test wrote there (#747) — a test must never touch the developer's real
-# session logs, grants, config or managed files.
+# Every test-running target (test*, coverage) runs with HOME/XDG dirs in an
+# empty sandbox and fails if a test wrote there (#747) — a test must never
+# touch the developer's real session logs, grants, config or managed files.
 test: ## all tests (unit + integration), HOME/XDG-sandboxed: fails if any test writes there
-	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh test --workspace
 
 test-unit: ## unit tests only (HOME/XDG-sandboxed)
-	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace --lib --bins
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh test --workspace --lib --bins
 
 test-integration: ## integration tests only (tests/ dirs, HOME/XDG-sandboxed)
-	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace --test '*'
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh test --workspace --test '*'
 
 # Opt-in live z.ai probes pinning ADR-0204's provider facts (network + a real
 # ZAI_API_KEY; each test skips when it is unset). Kept out of `test`/`verify`.
@@ -144,7 +144,7 @@ verify: check-fmt tree check-lean file-cap userid lint test ## full CI-equivalen
 # below COV_MIN, writes lcov.info + a Cobertura XML for artifact upload / badges.
 # Install the tool locally with: cargo install cargo-llvm-cov --locked
 coverage: ## cargo llvm-cov --workspace, fail under COV_MIN%
-	$(CARGO) llvm-cov --no-report --workspace
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh llvm-cov --no-report --workspace
 	$(CARGO) llvm-cov report --lcov --output-path lcov.info
 	$(CARGO) llvm-cov report --cobertura --output-path cobertura.xml
 	$(CARGO) llvm-cov report --fail-under-lines $(COV_MIN)
