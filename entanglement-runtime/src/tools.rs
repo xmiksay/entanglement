@@ -90,6 +90,7 @@ pub trait Tool: Send + Sync {
         Ok(ToolRun {
             content: self.run_for_session(session, request_id, input).await?,
             exit_code: None,
+            is_error: false,
         })
     }
 
@@ -132,6 +133,10 @@ pub trait Tool: Send + Sync {
 pub struct ToolRun {
     pub content: Vec<ContentPart>,
     pub exit_code: Option<i32>,
+    /// The tool ran but reports its own failure in-band — an MCP server's
+    /// `isError: true` (#727) — so `content` is the failure text, not an
+    /// answer. `false` for every built-in tool, which fails via `Err` instead.
+    pub is_error: bool,
 }
 
 /// One text part for a non-empty string, none for an empty one — the same fold
@@ -164,7 +169,7 @@ impl ToolExecution {
     fn ok(run: ToolRun) -> Self {
         Self {
             content: run.content,
-            is_error: false,
+            is_error: run.is_error,
             exit_code: run.exit_code,
         }
     }
@@ -445,6 +450,7 @@ mod tests {
             Ok(ToolRun {
                 content: text_parts("[exit 7]".to_string()),
                 exit_code: Some(7),
+                is_error: false,
             })
         }
     }

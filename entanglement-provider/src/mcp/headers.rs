@@ -11,6 +11,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
+/// The challenge header a `401` carries, pointing at the protected-resource
+/// metadata document (RFC 9728) that bootstraps OAuth discovery.
+const WWW_AUTHENTICATE: &str = "WWW-Authenticate";
+
 /// Parse the config header map into a `HeaderMap`, expanding `${VAR}` references
 /// in each value from the environment. An invalid header name/value is a hard
 /// error so a misconfigured auth header fails loudly at connect time.
@@ -50,6 +54,23 @@ pub fn expand_env(input: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Extract the `resource_metadata="…"` parameter from a `WWW-Authenticate`
+/// challenge (RFC 9728 §5.1). Returns `None` when the header is absent or
+/// carries no such parameter — discovery then falls back to the well-known path
+/// derived from the server URL.
+pub fn resource_metadata_url(headers: &HeaderMap) -> Option<String> {
+    let challenge = headers.get(WWW_AUTHENTICATE)?.to_str().ok()?;
+    let start = challenge.find("resource_metadata=")? + "resource_metadata=".len();
+    let rest = &challenge[start..];
+    let value = if let Some(unquoted) = rest.strip_prefix('"') {
+        unquoted.split('"').next()?
+    } else {
+        // Unquoted parameters run to the next comma or whitespace.
+        rest.split([',', ' ']).next()?
+    };
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -92,5 +113,34 @@ mod tests {
         let mut h = HashMap::new();
         h.insert("bad header".to_string(), "x".to_string());
         assert!(build_headers(&h).is_err());
+    }
+
+    fn challenge(v: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(WWW_AUTHENTICATE, HeaderValue::from_static(v));
+        h
+    }
+
+    #[test]
+    fn extracts_quoted_resource_metadata() {
+        let h = challenge(
+            r#"Bearer error="invalid_token", resource_metadata="https://ex.com/.well-known/oauth-protected-resource""#,
+        );
+        assert_eq!(
+            resource_metadata_url(&h).unwrap(),
+            "https://ex.com/.well-known/oauth-protected-resource"
+        );
+    }
+
+    #[test]
+    fn extracts_unquoted_resource_metadata() {
+        let h = challenge("Bearer resource_metadata=https://ex.com/meta, error=x");
+        assert_eq!(resource_metadata_url(&h).unwrap(), "https://ex.com/meta");
+    }
+
+    #[test]
+    fn absent_or_irrelevant_challenge_yields_none() {
+        assert!(resource_metadata_url(&HeaderMap::new()).is_none());
+        assert!(resource_metadata_url(&challenge("Bearer error=\"invalid_token\"")).is_none());
     }
 }

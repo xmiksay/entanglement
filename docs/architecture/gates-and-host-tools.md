@@ -86,11 +86,12 @@ cleared tool against the registry, and replies with `InMsg::ToolResult`.
 `ToolRegistry::execute(&self, call: &ToolCall, session: &SessionId)` threads the
 caller's `SessionId` through to `Tool::run_with_meta` (#681,
 [ADR-0186](../adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md))
-— a defaulted method returning `ToolRun{content, exit_code}` that delegates to
+— a defaulted method returning `ToolRun{content, exit_code, is_error}` that delegates to
 `Tool::run_for_session` (#360,
-[ADR-0088](../adr/0088-session-aware-tool-execution.md)) with `exit_code: None`,
-so only the process runners (`bash`/`call`) override it to surface their numeric
-exit status as a real field. `run_for_session` itself stays a default-delegating
+[ADR-0088](../adr/0088-session-aware-tool-execution.md)) with `exit_code: None`
+and `is_error: false`, so only the process runners (`bash`/`call`) override it
+to surface their numeric exit status as a real field, and `McpTool` to carry a
+server's in-band `isError` onto the ADR-0176 `is_error` channel (#727). `run_for_session` itself stays a default-delegating
 method (falls back to `run_content`) so every in-tree tool is unaffected; a
 multi-tenant embedder overrides it to dispatch per-tenant MCP endpoints or scope
 a DB-backed tool's writes to the caller, since a shared `ToolRegistry` otherwise
@@ -965,13 +966,22 @@ the same permission profiles as `read`/`bash`.
   whichever backs a server. Both share the handshake (`initialize` +
   `notifications/initialized`) then `tools/list` (discovery) / `tools/call`
   (execution) and the JSON-RPC result/error split (`client::jsonrpc_payload`).
+  Discovery is **paginated** (#727, `list_tools_paginated`): `nextCursor` is
+  followed until absent/empty, capped at 100 pages so a server whose cursor
+  loops fails the connect with a clear error instead of hanging it. A
+  **server-initiated request** is answered rather than dropped
+  (`server_request_reply`): `ping` gets the spec's empty result, anything else
+  `-32601`; and a message carrying a `method` is never taken for a response,
+  since each side numbers its ids independently and a server `ping` may reuse
+  an id the client has in flight. No client-side keepalive ping is sent.
   stdio keeps a flat **60 s** per-request timeout so a hung subprocess can't
   park a turn; HTTP's per-request bound is now the shared endpoint pool's own
   (below, [ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)).
   - **stdio (`mcp::stdio::StdioClient`, #198):** one JSON-RPC 2.0 session over the
     spawned subprocess's stdio, newline-delimited frames. A background reader task
     demultiplexes responses to callers by JSON-RPC `id`; notifications are dropped,
-    and on EOF the reader **drains all pending requests with an error** so a crashed
+    a server request (`ping`) is answered on stdin from its own task (so a full
+    stdin pipe can never stall the stdout drain), and on EOF the reader **drains all pending requests with an error** so a crashed
     server can't hang a caller. The subprocess is held for the client's lifetime
     (`kill_on_drop`); keeping the registered tools alive keeps the server alive.
     The child env is the inherited environment **minus the provider API-key
@@ -984,7 +994,11 @@ the same permission profiles as `read`/`bash`.
     feature):** a remote server over `POST <url>` — the streamable-HTTP transport.
     Each request is a discrete `POST` with `Accept: application/json,
     text/event-stream`; the server answers with a lone JSON body **or** an SSE
-    stream (drained until the event whose JSON-RPC `id` matches). Static per-server
+    stream (drained until the event whose JSON-RPC `id` matches; a `ping`
+    request met on that stream is answered with its own `POST` that
+    deliberately bypasses the endpoint pool — the drain still holds the
+    endpoint's concurrency permit, so a pooled reply could deadlock under a cap
+    of 1 — best-effort, 10 s bound, failures only logged). Static per-server
     `headers` (e.g. `Authorization: Bearer …`) authenticate every request, with
     `${VAR}` expanded from the environment so a token stays out of the config file;
     the flip side of that expansion is a documented, accepted leak surface
@@ -1119,8 +1133,19 @@ the same permission profiles as `read`/`bash`.
   `arguments` object, checks it against the schema's top-level `required` array
   before ever contacting the server — a missing field bails with `` tool `name`
   requires parameter `field` `` instead of a cryptic server-side JSON-RPC error
-  (#594) — then calls `tools/call` and flattens the result's text content
-  (v1 is text-only — a non-text block is noted, an `isError` result prefixed).
+  (#594) — then calls `tools/call` and maps the result (`mcp::result`, #727):
+  text blocks fold into text parts (32 KiB-capped like every host tool); an
+  `image` of a provider-inlinable type (png/jpeg/gif/webp, ≤ 5 MiB decoded)
+  becomes a real image `ContentPart` in its original position — the same block
+  `read` returns for an image file (#221) — while any other image, `audio`, a
+  `resource` (uri + mime, then its text or a binary-size summary) or a
+  `resource_link` (name, uri, mime, description) becomes a descriptive text
+  line; `structuredContent` is rendered as JSON only when no text block
+  carried the answer. `isError: true` sets `ToolRun::is_error`, so the call
+  reaches `OutEvent::ToolOutput`/hooks with the structured `is_error` flag
+  ([ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md));
+  the `MCP tool reported an error:` text prefix stays, since no provider wire
+  carries `is_error` to the model.
   Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
   `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
   Governed by the same session permission mode as any host tool — there is

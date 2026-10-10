@@ -180,8 +180,8 @@ never here**; each bullet is the claim + where to read it:
   parked batch re-offers on a timer. `InMsg::ToolResult`/`OutEvent::ToolOutput`
   carry `is_error`/`duration_ms` as a **structured side channel** alongside the
   still-unchanged text `content`/`output` (#636, ADR-0176) — denied/masked/
-  refused/unknown-tool/errored calls set `is_error`; `duration_ms` is measured
-  once, generically, around the whole host-tool dispatch — an optional
+  refused/unknown-tool/errored calls (and an MCP `isError` result, #727) set
+  `is_error`; `duration_ms` is measured once, generically, around the whole host-tool dispatch — an optional
   `envelope` carrying the call exactly as the model emitted it when core
   unwrapped an `invoke` (ADR-0204; replay rebuilds from it) — and `exit_code`
   (#681, ADR-0186): a `bash`/`call` foreground exit (or a `poll` observing a

@@ -14,10 +14,12 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use entanglement_core::{content_text, ContentPart, SessionId};
+
 use super::client::{McpClient, McpToolDef};
+use super::result::{render_result, McpResult};
 use crate::capability::Capability;
-use crate::host::truncate_output;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolRun};
 
 /// A proxy for one tool on one MCP server.
 pub struct McpTool {
@@ -107,6 +109,34 @@ impl Tool for McpTool {
     }
 
     async fn run(&self, input: &str) -> Result<String> {
+        Ok(content_text(&self.call(input).await?.content))
+    }
+
+    async fn run_content(&self, input: &str) -> Result<Vec<ContentPart>> {
+        Ok(self.call(input).await?.content)
+    }
+
+    /// What the registry actually calls: carries the server's `isError` onto
+    /// the structured `is_error` side channel (ADR-0176, #727).
+    async fn run_with_meta(
+        &self,
+        _session: &SessionId,
+        _request_id: &str,
+        input: &str,
+    ) -> Result<ToolRun> {
+        let McpResult { content, is_error } = self.call(input).await?;
+        Ok(ToolRun {
+            content,
+            exit_code: None,
+            is_error,
+        })
+    }
+}
+
+impl McpTool {
+    /// One `tools/call` round-trip, rendered (text, images, resources) by
+    /// [`render_result`].
+    async fn call(&self, input: &str) -> Result<McpResult> {
         // The model sends the tool input as a JSON object string; MCP wants it as
         // the `arguments` object. An empty input is a no-arg call.
         let arguments: Value = if input.trim().is_empty() {
@@ -120,44 +150,7 @@ impl Tool for McpTool {
         // `self.schema` (the server's `inputSchema`) before `run` is ever
         // called — so a missing/malformed argument never reaches this point.
         let result = self.client.call_tool(&self.remote_name, arguments).await?;
-        // MCP servers are the one tool source the runtime doesn't author — cap
-        // their results with the same 32 KiB bound every host tool honors, so a
-        // chatty server can't flood the context in a single call.
-        Ok(truncate_output(render_result(&result)))
-    }
-}
-
-/// Flatten a `tools/call` result into text the model reads. Text blocks are
-/// concatenated; non-text blocks (image/resource) are noted but not inlined
-/// (v1 keeps MCP results text-only). An `isError` result is prefixed so the model
-/// understands the tool reported a failure rather than a normal answer.
-fn render_result(result: &Value) -> String {
-    let is_error = result
-        .get("isError")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut out = String::new();
-    if let Some(blocks) = result.get("content").and_then(Value::as_array) {
-        for block in blocks {
-            match block.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(t) = block.get("text").and_then(Value::as_str) {
-                        out.push_str(t);
-                        out.push('\n');
-                    }
-                }
-                Some(other) => out.push_str(&format!("[{other} content omitted]\n")),
-                None => {}
-            }
-        }
-    }
-    let body = out.trim_end();
-    if is_error {
-        format!("MCP tool reported an error: {body}")
-    } else if body.is_empty() {
-        "(no content)".to_string()
-    } else {
-        body.to_string()
+        Ok(render_result(&result))
     }
 }
 
@@ -262,43 +255,6 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(t.name(), "mcp__my_server__read_file");
-    }
-
-    #[test]
-    fn renders_text_blocks() {
-        let r = json!({ "content": [ { "type": "text", "text": "hello" }, { "type": "text", "text": "world" } ] });
-        assert_eq!(render_result(&r), "hello\nworld");
-    }
-
-    #[test]
-    fn flags_error_results() {
-        let r = json!({ "isError": true, "content": [ { "type": "text", "text": "boom" } ] });
-        assert!(render_result(&r).starts_with("MCP tool reported an error:"));
-    }
-
-    #[test]
-    fn notes_non_text_and_empty() {
-        let img = json!({ "content": [ { "type": "image", "data": "…" } ] });
-        assert_eq!(render_result(&img), "[image content omitted]");
-        assert_eq!(render_result(&json!({ "content": [] })), "(no content)");
-    }
-
-    #[test]
-    fn oversized_results_are_byte_capped() {
-        let big = "x".repeat(crate::host::MAX_OUTPUT_BYTES + 1024);
-        let r = json!({ "content": [ { "type": "text", "text": big } ] });
-        let out = truncate_output(render_result(&r));
-        assert!(
-            out.contains("[truncated:") && out.ends_with("bytes total]"),
-            "expected a truncation notice, got tail: …{}",
-            &out[out.len().saturating_sub(60)..]
-        );
-        // Bounded: the cap plus the short notice, nothing near the input size.
-        assert!(
-            out.len() < crate::host::MAX_OUTPUT_BYTES + 128,
-            "len={}",
-            out.len()
-        );
     }
 
     #[tokio::test]

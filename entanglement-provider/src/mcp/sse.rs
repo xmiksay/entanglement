@@ -4,9 +4,12 @@
 //! into this crate (ADR-0153). A streamable-HTTP server may answer a `POST`
 //! either with a lone `application/json` body or with a `text/event-stream`
 //! whose events carry the JSON-RPC response — plus, on the same stream,
-//! unrelated server notifications. These helpers drain the stream until the
-//! event answering *our* request id arrives.
+//! unrelated server notifications and server-initiated requests (`ping`,
+//! #727). These helpers drain the stream until the event answering *our*
+//! request id arrives, handing each server request's reply frame to the
+//! caller to `POST` back along the way.
 
+use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -14,7 +17,7 @@ use futures::StreamExt;
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
 use serde_json::Value;
 
-use super::jsonrpc_payload;
+use super::{is_response, jsonrpc_payload, server_request_reply};
 
 /// Idle gap on an SSE body: if no chunk arrives within this window the stream is
 /// treated as stalled. Bounds a server that opens `text/event-stream` and then
@@ -30,12 +33,19 @@ pub const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SSE_BUFFER_BYTES: usize = 10 * 1024 * 1024;
 
 /// Drain an SSE body until the JSON-RPC message answering `id` arrives.
-/// `server` names the server in error messages only.
-pub async fn read_sse_response(
+/// `server` names the server in error messages only. Every server-initiated
+/// request seen on the way (`ping`, #727) has its reply frame passed to
+/// `reply`, awaited before the drain continues so replies keep stream order.
+pub async fn read_sse_response<F, Fut>(
     server: &str,
     response: reqwest::Response,
     id: i64,
-) -> Result<Value> {
+    mut reply: F,
+) -> Result<Value>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let mut stream = response.bytes_stream();
     // Buffer raw bytes and split on the `\n` byte: a newline never falls
     // inside a multibyte UTF-8 sequence, so decoding one line at a time can't
@@ -48,9 +58,13 @@ pub async fn read_sse_response(
             Ok(None) => bail!("MCP server `{server}` closed the SSE stream before answering"),
             Err(_) => bail!("MCP server `{server}` SSE stream stalled"),
         };
-        if let Some(v) = feed_chunk(&mut buf, &chunk, &mut data, id)
-            .with_context(|| format!("server `{server}`"))?
-        {
+        let mut replies = Vec::new();
+        let resolved = feed_chunk(&mut buf, &chunk, &mut data, id, &mut replies)
+            .with_context(|| format!("server `{server}`"))?;
+        for frame in replies {
+            reply(frame).await;
+        }
+        if let Some(v) = resolved {
             return Ok(v);
         }
     }
@@ -58,13 +72,16 @@ pub async fn read_sse_response(
 
 /// Fold one network chunk into `buf`/`data`, splitting complete SSE lines out
 /// as they complete and resolving the moment a blank line closes an event
-/// matching `id`. Split out of [`read_sse_response`] so the buffering/cap
-/// logic (#556) is unit-testable without a real network round-trip.
+/// matching `id`; a closed event that is a server request instead pushes its
+/// reply frame onto `replies`. Split out of [`read_sse_response`] so the
+/// buffering/cap logic (#556) is unit-testable without a real network
+/// round-trip.
 fn feed_chunk(
     buf: &mut Vec<u8>,
     chunk: &[u8],
     data: &mut String,
     id: i64,
+    replies: &mut Vec<Value>,
 ) -> Result<Option<Value>> {
     buf.extend_from_slice(chunk);
     if buf.len() > MAX_SSE_BUFFER_BYTES {
@@ -79,8 +96,11 @@ fn feed_chunk(
         let line = String::from_utf8_lossy(&raw[..nl]);
         let line = line.trim_end_matches('\r');
         if line.is_empty() {
-            // End of one event: try to resolve it, else reset and continue.
-            if let Some(v) = event_payload(data, id)? {
+            // End of one event: answer a server request, or try to resolve
+            // our response; else reset and continue.
+            if let Some(frame) = event_reply(data) {
+                replies.push(frame);
+            } else if let Some(v) = event_payload(data, id)? {
                 return Ok(Some(v));
             }
             data.clear();
@@ -110,12 +130,20 @@ pub fn event_payload(data: &str, id: i64) -> Result<Option<Value>> {
         // A non-JSON event is not our response — skip it rather than abort.
         Err(_) => return Ok(None),
     };
-    if msg.get("id").and_then(Value::as_i64) != Some(id) {
+    if !is_response(&msg) || msg.get("id").and_then(Value::as_i64) != Some(id) {
         return Ok(None);
     }
     jsonrpc_payload(&msg)
         .map(Some)
         .map_err(|e| anyhow::anyhow!(e))
+}
+
+/// The reply frame for one SSE event's `data` when it is a server-initiated
+/// request (`ping`, #727) — `None` for our response, a notification, or noise.
+fn event_reply(data: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(data)
+        .ok()
+        .and_then(|msg| server_request_reply(&msg))
 }
 
 /// Does the response advertise an SSE body?
@@ -179,7 +207,7 @@ mod tests {
         let mut buf = Vec::new();
         let mut data = String::new();
         let chunk = vec![b'a'; MAX_SSE_BUFFER_BYTES + 1];
-        let err = feed_chunk(&mut buf, &chunk, &mut data, 1).unwrap_err();
+        let err = feed_chunk(&mut buf, &chunk, &mut data, 1, &mut Vec::new()).unwrap_err();
         assert!(err.to_string().contains("bytes"), "{err}");
     }
 
@@ -192,7 +220,7 @@ mod tests {
         let mut line = b"data:".to_vec();
         line.extend(vec![b'a'; MAX_SSE_BUFFER_BYTES + 1]);
         line.push(b'\n');
-        let err = feed_chunk(&mut buf, &line, &mut data, 1).unwrap_err();
+        let err = feed_chunk(&mut buf, &line, &mut data, 1, &mut Vec::new()).unwrap_err();
         assert!(err.to_string().contains("bytes"), "{err}");
     }
 
@@ -202,15 +230,42 @@ mod tests {
     fn feed_chunk_resolves_a_matching_event_split_across_chunks() {
         let mut buf = Vec::new();
         let mut data = String::new();
+        let mut replies = Vec::new();
         assert!(feed_chunk(
             &mut buf,
             b"data: {\"jsonrpc\":\"2.0\",\"id\":1,",
             &mut data,
-            1
+            1,
+            &mut replies
         )
         .unwrap()
         .is_none());
-        let v = feed_chunk(&mut buf, b"\"result\":{\"ok\":true}}\n\n", &mut data, 1).unwrap();
+        let v = feed_chunk(
+            &mut buf,
+            b"\"result\":{\"ok\":true}}\n\n",
+            &mut data,
+            1,
+            &mut replies,
+        )
+        .unwrap();
         assert_eq!(v.unwrap(), json!({ "ok": true }));
+        assert!(replies.is_empty());
+    }
+
+    /// A server `ping` sharing our request id (#727) is answered, not taken
+    /// for our response; the real response that follows still resolves.
+    #[test]
+    fn feed_chunk_answers_a_ping_and_keeps_waiting_for_our_response() {
+        let mut buf = Vec::new();
+        let mut data = String::new();
+        let mut replies = Vec::new();
+        let chunk = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n\n\
+                      data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let v = feed_chunk(&mut buf, chunk, &mut data, 1, &mut replies).unwrap();
+        assert_eq!(v.unwrap(), json!({ "ok": true }));
+        assert_eq!(
+            replies,
+            [json!({ "jsonrpc": "2.0", "id": 1, "result": {} })]
+        );
     }
 }
