@@ -470,9 +470,11 @@ pub trait Llm: Send {
 
     /// Non-streaming convenience (#728): run [`stream`](Llm::stream) and drain
     /// it into one [`LlmResponse`](crate::LlmResponse), for callers with no
-    /// live display. A mid-stream error fails the whole call — a partial reply
-    /// is never returned, since without its `Finish` the tool calls may be
-    /// incomplete.
+    /// live display. A stream that errors mid-way fails the whole call — a
+    /// partial reply is never returned, since its tool calls may be incomplete.
+    /// A stream that ends cleanly without a `Finish` still returns, with
+    /// `stop_reason: None`: treat that as an ambiguous stop (ADR-0118), not as
+    /// a confident end of turn.
     async fn complete(&mut self, req: LlmRequest<'_>) -> anyhow::Result<crate::LlmResponse> {
         crate::response::collect(self.stream(req).await?).await
     }

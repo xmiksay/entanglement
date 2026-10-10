@@ -52,6 +52,15 @@ jobs:
       - name: Install lld
         run: sudo apt-get update && sudo apt-get install -y lld
 
+      # Select the MSRV toolchain *before* rust-cache, which otherwise resolves
+      # (and keys on) the pinned rust-toolchain.toml compiler. The version comes
+      # from `make msrv-version`, i.e. Cargo.toml's rust-version.
+      - name: Install MSRV toolchain
+        run: |
+          msrv=$(make -s msrv-version)
+          rustup toolchain install "$msrv" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv

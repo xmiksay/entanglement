@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid msrv coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid msrv msrv-version coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -127,6 +127,9 @@ userid: ## fail if UserId appears anywhere in entanglement-runtime/src
 # the committed lockfile, so the claim is tested rather than asserted. Separate
 # from `verify` (which runs the pinned rust-toolchain.toml compiler) and its own
 # target dir so the two toolchains don't thrash each other's build cache.
+msrv-version: ## print the declared MSRV (the CI msrv job selects its toolchain from this)
+	@echo $(MSRV)
+
 msrv: ## cargo check (full + lean runtime) on the declared MSRV toolchain
 	rustup toolchain install $(MSRV) --profile minimal
 	CARGO_TARGET_DIR=target/msrv $(CARGO) +$(MSRV) check --locked --workspace --all-targets
