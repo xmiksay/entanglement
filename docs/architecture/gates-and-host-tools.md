@@ -86,12 +86,15 @@ cleared tool against the registry, and replies with `InMsg::ToolResult`.
 `ToolRegistry::execute(&self, call: &ToolCall, session: &SessionId)` threads the
 caller's `SessionId` through to `Tool::run_with_meta` (#681,
 [ADR-0186](../adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md))
-— a defaulted method returning `ToolRun{content, exit_code, is_error}` that delegates to
-`Tool::run_for_session` (#360,
+— a defaulted method returning `ToolRun{content, exit_code, is_error}` that
+delegates to `Tool::run_for_session` (#360,
 [ADR-0088](../adr/0088-session-aware-tool-execution.md)) with `exit_code: None`
 and `is_error: false`, so only the process runners (`bash`/`call`) override it
 to surface their numeric exit status as a real field, and `McpTool` to carry a
-server's in-band `isError` onto the ADR-0176 `is_error` channel (#727). `run_for_session` itself stays a default-delegating
+server's in-band `isError` onto the ADR-0176 `is_error` channel (#727).
+`ToolRun` derives `Default` and has `ToolRun::new(content)`; implementors build
+it with struct-update syntax so a future metadata field is non-breaking.
+`run_for_session` itself stays a default-delegating
 method (falls back to `run_content`) so every in-tree tool is unaffected; a
 multi-tenant embedder overrides it to dispatch per-tenant MCP endpoints or scope
 a DB-backed tool's writes to the caller, since a shared `ToolRegistry` otherwise
@@ -1134,14 +1137,19 @@ the same permission profiles as `read`/`bash`.
   before ever contacting the server — a missing field bails with `` tool `name`
   requires parameter `field` `` instead of a cryptic server-side JSON-RPC error
   (#594) — then calls `tools/call` and maps the result (`mcp::result`, #727):
-  text blocks fold into text parts (32 KiB-capped like every host tool); an
-  `image` of a provider-inlinable type (png/jpeg/gif/webp, ≤ 5 MiB decoded)
-  becomes a real image `ContentPart` in its original position — the same block
-  `read` returns for an image file (#221) — while any other image, `audio`, a
-  `resource` (uri + mime, then its text or a binary-size summary) or a
-  `resource_link` (name, uri, mime, description) becomes a descriptive text
+  text blocks fold into a text part (32 KiB-capped like every host tool), a
+  `resource`'s text renders under a `[resource <uri> (<mime>)]` header and a
+  `resource_link` as a `[resource link: name <uri> (mime) — description]`
   line; `structuredContent` is rendered as JSON only when no text block
-  carried the answer. `isError: true` sets `ToolRun::is_error`, so the call
+  carried the answer.
+  **Binary is never inlined**: `image`, `audio` and a `resource` `blob` all
+  become `[binary omitted: <mime>, <size>, uri=<uri>]` (uri only when the
+  block has one; size from decoding, `size unknown` for malformed base64) —
+  never an image `ContentPart`. WHY: binary through MCP bloats the context,
+  and a part the provider rejects is replayed on every later request (and on
+  resume), poisoning the session; an agent that needs the bytes fetches them
+  through an endpoint/API tool instead. `isError: true` sets
+  `ToolRun::is_error`, so the call
   reaches `OutEvent::ToolOutput`/hooks with the structured `is_error` flag
   ([ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md));
   the `MCP tool reported an error:` text prefix stays, since no provider wire

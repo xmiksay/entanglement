@@ -126,9 +126,8 @@ impl Tool for McpTool {
     ) -> Result<ToolRun> {
         let McpResult { content, is_error } = self.call(input).await?;
         Ok(ToolRun {
-            content,
-            exit_code: None,
             is_error,
+            ..ToolRun::new(content)
         })
     }
 }
