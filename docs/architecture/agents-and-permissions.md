@@ -442,7 +442,9 @@ below realize one model:
   **once**, here as markdown (#201): core carries only the `general` profile
   its `resolve()` fallback needs (`DEFAULT_AGENT = "general"`; it can't
   parse frontmatter, so it holds no `plan`/`debug` copy to drift from these
-  files). Embedders using core directly get that single fallback via
+  files). Exec-tool choice (`bash` vs `call` vs `rhai`) is deliberately
+  **not** in any body: it lives once, in the `bash` tool description
+  ([gates & host tools](gates-and-host-tools.md), #740). Embedders using core directly get that single fallback via
   `AgentCatalog::new()`; the runtime rebuilds the full set from the
   embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
   your own with `AgentCatalog::insert`.
@@ -814,10 +816,10 @@ below realize one model:
   target (`DEFAULT_SUBAGENT`/`DEFAULT_AGENT = "general"`) when the caller
   omits `agent` — the safe, unscoped-delegation choice, and any agent may
   spawn it or be spawned by it now (there is no more `primary`/`subagent`
-  distinction to gate that). `debug` carries the identical body — full
-  read/write/execute posture is a property of the session's **mode**, not
-  the agent, so nothing distinguishes `debug` from `general` any more beyond
-  its name and description; it survives mainly so a caller can still name it
+  distinction to gate that). `debug` carries a shorter fix-and-verify body
+  — full read/write/execute posture is a property of the session's **mode**,
+  not the agent, so nothing distinguishes `debug` from `general` beyond its
+  name, description and prompt wording; it survives mainly so a caller can still name it
   explicitly (`{"agent": "debug", ...}`) for a debugging persona, e.g. one
   spawned under `build`/`auto` mode to reproduce, fix, and verify a bug
   (compile, run tests).
