@@ -151,6 +151,17 @@ pub(super) fn start_session(
         session: session.clone(),
         mode: s.mode.clone(),
     });
+    // Re-announce a resumed session's replayed overlay, after the mode, for
+    // the same reason. The runtime grades dispatch off its own copy, built
+    // only from `ToolOverlayChanged` and forgotten on hibernate/end. If it is
+    // not told again, a user's deny entry stops applying after a resume
+    // (fail-open) and an enable entry is lost (#776).
+    if is_resumed && !s.tool_overlay.is_empty() {
+        let _ = events.send(OutEvent::ToolOverlayChanged {
+            session: session.clone(),
+            entries: s.tool_overlay.clone(),
+        });
+    }
 
     // Session-start model pin (#323, ADR-0081): bind the starting agent's pin
     // when no model is bound yet. A fresh `build`/spawned sub-agent (e.g. a

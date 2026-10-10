@@ -585,10 +585,19 @@ under (`Inherited.mode == initial_mode`). The two can differ only if the
 supervisor applied a `SetMode` that the source never processed before
 forking; in that case the overlay is dropped. The overlay is logged as
 `ToolOverlayChanged` after the successor's `ModeChanged`, so neither replay
-nor the runtime reads it as cleared by a switch. A later same-mode
-re-announce on resume is not a switch either. Carrying it never changes the
-successor's tools array: the overlay is consulted at dispatch only, and an
-enable never edits the advertised surface by itself (ADR-0196/0204).
+nor the runtime reads it as cleared by a switch. Carrying it never changes
+the successor's tools array: the overlay is consulted at dispatch only, and
+an enable never edits the advertised surface by itself (ADR-0196/0204).
+
+**A resumed session's overlay is re-announced and enforced again.** This
+covers any session, a successor included. The runtime grades dispatch off its
+own copy of the overlay. That copy is built only from `ToolOverlayChanged`
+and forgotten on `SessionHibernated`/`SessionEnded`, and a fresh process never
+had it. So on resume, `start_session` re-emits the overlay that replay
+rebuilt, as a `ToolOverlayChanged` right after the same-mode `ModeChanged`
+re-announce, and that re-announce is not a switch, so the runtime keeps the
+overlay. Without this, a user's deny entry stopped applying after
+hibernate→resume (fail-open) and an enable entry was lost (#776).
 
 **A mid-turn fork carries the turn.** The window gate runs between rounds, so
 the turn's tool batch is always drained when it fires — `drive_turn` is only

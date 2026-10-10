@@ -64,6 +64,7 @@ mod mcp_oauth_refresh;
 mod mcp_scoped;
 #[cfg(feature = "provider")]
 mod narrate;
+mod overlay_resume;
 mod parked_prompt_persistence;
 mod permission_dispatch;
 mod plan_tasks;
