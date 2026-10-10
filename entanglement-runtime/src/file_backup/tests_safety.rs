@@ -211,3 +211,66 @@ fn unrestorable_changes_do_not_pin_undo() {
     assert_eq!(r.restored, vec!["a.txt"]);
     assert_eq!(f.read("c.txt").unwrap(), b"user", "never clobbered");
 }
+
+/// The restore's temp file is created exclusively and never through a
+/// symlink: one planted at the temp path pointing outside the tree errors
+/// instead of writing there.
+#[cfg(unix)]
+#[test]
+fn a_planted_symlink_is_never_written_through() {
+    let f = Fixture::new();
+    let outside = f._tmp.path().join("outside.txt");
+    std::fs::write(&outside, "untouched").unwrap();
+    let planted = f.path(".er-planted.tmp");
+    std::os::unix::fs::symlink(&outside, &planted).unwrap();
+
+    assert!(super::restore::create_exclusive(&planted).is_err());
+    assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+
+    // And a real restore beside the plant goes through its own fresh name.
+    std::fs::write(f.path("a.txt"), "v0").unwrap();
+    f.prompt(&f.sid, "edit");
+    f.change(&f.sid, "a.txt", Some(b"v1"));
+    let report = f.backups.revert(&f.sid, None).unwrap();
+    assert_eq!(report.restored, vec!["a.txt"]);
+    assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+}
+
+/// A filename near `NAME_MAX` still restores: the temp name is short.
+#[test]
+fn a_long_filename_restores() {
+    let f = Fixture::new();
+    let name = format!("{}.txt", "n".repeat(240));
+    std::fs::write(f.path(&name), "v0").unwrap();
+    f.prompt(&f.sid, "edit");
+    f.change(&f.sid, &name, Some(b"v1"));
+    let report = f.backups.revert(&f.sid, None).unwrap();
+    assert_eq!(report.restored, vec![name.clone()]);
+    assert_eq!(f.read(&name).unwrap(), b"v0");
+}
+
+/// A lagged event stream may have hidden a child starting a turn: every
+/// known session counts as busy until it reports a fresh `Status` — except
+/// the revert's own (idle) target.
+#[test]
+fn a_lagged_tracker_refuses_until_sessions_report_again() {
+    let f = Fixture::new();
+    let child = SessionId::new("child");
+    f.prompt(&f.sid, "one");
+    f.change(&f.sid, "a.txt", Some(b"x"));
+    started(&f, &child);
+    f.backups.note_root(f.sid.clone(), f.sid.clone());
+
+    f.backups.poison_for_test();
+    assert!(f.backups.revert(&f.sid, None).is_err(), "child unknown");
+    f.backups.fold_for_test(&OutEvent::Status {
+        session: child,
+        state: AgentState::Idle,
+    });
+    let report = f.backups.revert(&f.sid, None).unwrap();
+    assert_eq!(
+        report.restored,
+        vec!["a.txt"],
+        "the target itself never blocks"
+    );
+}

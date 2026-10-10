@@ -41,7 +41,7 @@ impl FileBackups {
             loop {
                 match events.recv().await {
                     Ok(ev) => this.fold(&ev),
-                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Lagged(_)) => this.poison(),
                     Err(RecvError::Closed) => break,
                 }
             }
@@ -81,6 +81,14 @@ impl FileBackups {
         }
     }
 
+    /// A lagged subscription may have dropped a `Status` that started a turn:
+    /// treat every known session as busy until it reports a fresh `Status`
+    /// (or ends) — refusing is safe, racing a write is not.
+    fn poison(&self) {
+        let known: Vec<SessionId> = lock(&self.inner.roots).keys().cloned().collect();
+        lock(&self.inner.busy).extend(known);
+    }
+
     /// Record that `session` belongs to root `root`.
     pub fn note_root(&self, session: SessionId, root: SessionId) {
         lock(&self.inner.roots).insert(session, root);
@@ -98,15 +106,22 @@ impl FileBackups {
             .unwrap_or_else(|| session.clone())
     }
 
-    /// Whether `session` may still write: mid-turn per its last `Status`, or
-    /// running detached work per the probe.
-    pub(super) fn is_busy(&self, session: &SessionId) -> bool {
-        lock(&self.inner.busy).contains(session)
+    /// Whether `session` may still write: mid-turn per its last `Status`
+    /// (skipped for the revert's own `target`, which core only lets revert
+    /// while idle — a stale mark must not lock it out), or running detached
+    /// work per the probe.
+    pub(super) fn is_busy(&self, session: &SessionId, target: &SessionId) -> bool {
+        (session != target && lock(&self.inner.busy).contains(session))
             || self.inner.probe.get().is_some_and(|probe| probe(session))
     }
 
     #[cfg(test)]
     pub(super) fn fold_for_test(&self, ev: &OutEvent) {
         self.fold(ev);
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_for_test(&self) {
+        self.poison();
     }
 }
