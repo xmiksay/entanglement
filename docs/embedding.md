@@ -536,7 +536,7 @@ Cargo's feature unification carries that into *your* build. Two cases bite:
   your `reqwest::Client::new()` now *panics* at construction for want of a
   provider — previously such a client only failed HTTPS at request time.
 
-The cure for both is one of:
+The general cure, covering both cases and every rustls user in the process:
 
 ```rust
 // Early in main, before any client is built. Process-global, first caller
@@ -544,8 +544,12 @@ The cure for both is one of:
 entanglement_provider::client::install_default_crypto_provider();
 ```
 
-or build your own clients from `entanglement_provider::client::client_builder()`
-(ring + webpki roots, no global state). An embedder on stock reqwest 0.13
+Building your reqwest clients from
+`entanglement_provider::client::client_builder()` (ring + webpki roots, no
+global state) is an alternative **for reqwest clients only** — it fully cures
+case (b), but in case (a) your other rustls users (tokio-tungstenite, sqlx,
+`rustls::ClientConfig::builder()`) still need the install above or an explicit
+provider of their own. An embedder on stock reqwest 0.13
 compiles a second TLS provider (aws-lc-rs) next to ours — that's expected.
 `rustls-platform-verifier` is compiled too (pulled by `rustls-no-provider`) but
 never used: our clients never consult the OS trust store.
