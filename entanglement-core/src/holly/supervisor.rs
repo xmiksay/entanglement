@@ -15,6 +15,7 @@ use crate::session::{ForkFrame, Inherited, SessionCmd};
 
 mod resume;
 mod spawn;
+mod starting_mode;
 mod subtree;
 mod unknown;
 

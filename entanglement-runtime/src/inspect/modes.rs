@@ -50,14 +50,25 @@ const ROSTER: &[&str] = &[
 /// (built-ins + `config.yml` `modes:` tuning, validated against a real
 /// capability resolver) — `inspect` has no live `ToolRegistry`, so it uses
 /// the same no-registry static resolver `BindingPolicy` grades through.
-fn resolved_table(root: &Path) -> Result<ModeTable> {
-    let config = Config::load(root).context("loading user config")?;
+fn resolved_table(config: &Config) -> Result<ModeTable> {
     mode::build_table(&config.modes, &static_capability_of)
         .context("building the permission mode table from config.yml `modes:`")
 }
 
+/// Where a fresh session's starting mode comes from (#752/#763, ADR-0218),
+/// naming the configured `mode:` so the whole chain reads in one place.
+pub(super) fn render_start_precedence(config_mode: Option<&str>) -> String {
+    format!(
+        "\nstarting mode: --mode > config `mode:` ({}) > agent `default_mode` \
+         (see `inspect agents`) > {}\n",
+        config_mode.unwrap_or("unset"),
+        entanglement_core::DEFAULT_MODE
+    )
+}
+
 pub fn inspect_modes(root: &Path, name: Option<&str>) -> Result<()> {
-    let table = resolved_table(root)?;
+    let config = Config::load(root).context("loading user config")?;
+    let table = resolved_table(&config)?;
     match name {
         Some(name) => {
             let m = table.get(name).with_context(|| {
@@ -65,7 +76,11 @@ pub fn inspect_modes(root: &Path, name: Option<&str>) -> Result<()> {
             })?;
             print!("{}", render_mode_detail(m));
         }
-        None => print!("{}", render_mode_table(&table)),
+        None => print!(
+            "{}{}",
+            render_mode_table(&table),
+            render_start_precedence(config.mode.as_deref())
+        ),
     }
     Ok(())
 }
@@ -75,8 +90,7 @@ pub(super) fn render_mode_table(table: &ModeTable) -> String {
     let mut names: Vec<&str> = table.names().collect();
     // Fixed, meaningful order rather than alphabetical — matches how a user
     // thinks about escalation (research → plan → build → auto).
-    const ORDER: [&str; 4] = ["research", "plan", "build", "auto"];
-    names.sort_by_key(|n| ORDER.iter().position(|o| o == n).unwrap_or(usize::MAX));
+    names.sort_by_key(|n| mode::ladder_rank(n).unwrap_or(usize::MAX));
 
     let rows: Vec<Vec<String>> = names
         .iter()
@@ -191,6 +205,14 @@ mod tests {
         assert!(lines[2].starts_with("plan"), "{rendered}");
         assert!(lines[3].starts_with("build"), "{rendered}");
         assert!(lines[4].starts_with("auto"), "{rendered}");
+    }
+
+    #[test]
+    fn start_precedence_names_the_agent_default_and_the_configured_mode() {
+        let line = render_start_precedence(Some("research"));
+        assert!(line.contains("config `mode:` (research)"), "{line}");
+        assert!(line.contains("agent `default_mode`"), "{line}");
+        assert!(render_start_precedence(None).contains("(unset)"));
     }
 
     #[test]

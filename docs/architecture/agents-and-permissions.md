@@ -21,7 +21,8 @@ persona, or persona without changing posture
 all superseded).
 
 A session runs under exactly one core [`Agent`][profile], now
-**identity only**: `{ name, description, system_prompt, model?, provider? }`.
+**identity only**: `{ name, description, system_prompt, model?, provider?,
+default_mode? }`.
 `description` drives delegation matching (§8, the only field a spawning model
 sees); `model`/`provider` are the existing per-profile model pin (below,
 unaffected by ADR-0207). The file-level definition (frontmatter + body, below)
@@ -33,6 +34,23 @@ agent may be a session root or a spawn target now; there is no more
 Authority lives entirely in the runtime, as the session's **permission mode**
 — see §permission modes below for the full rule engine
 ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)).
+
+**Starting mode** ([ADR-0218](../adr/0218-agent-default-mode-is-a-starting-hint.md),
+#752/#763). `default_mode` is a starting hint, not authority. It must name a
+built-in mode; an unknown name warns at load and is dropped. The shipped
+`plan` agent sets `default_mode: plan`. A fresh root starts in `--mode` >
+config `mode:` > the agent's `default_mode` > `DEFAULT_MODE` (`build`):
+core seeds the root from the hint at spawn
+(`holly/supervisor/starting_mode.rs`), then the head's `SetMode` lands on
+top. `run`, the implicit one-shot and the TUI share that launch path
+(`heads::start_fresh`), and the TUI applies the same launch mode to the
+sessions it resumes (`LaunchMode`, `resume_with_mode`). A spawned child
+takes its agent's hint only when `EngineConfig::mode_ladder` (`research` <
+`plan` < `build` < `auto`, the ladder `request_mode` widens along) shows it
+is no wider than its parent's mode. Otherwise, including any pair not on the
+ladder, the child inherits the parent's mode, so a hint can only narrow a
+sub-tree. A compaction successor keeps its source's mode. A resumed session
+keeps the mode its log replays and the hint never applies.
 
 **At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
 Agents and skills are **data, not code** — discovered from files, disclosed

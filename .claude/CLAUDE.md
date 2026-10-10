@@ -150,8 +150,8 @@ notify/mouse (`tui: {notify, mouse}` — the `tui:` block, `config::tui`, that
 survives only as an undocumented subprocess-test hook.
 
 The session's permission **mode** has no env var by design: `--mode` on
-`run`/`tui` > `config.yml` `mode:` > the engine's own `DEFAULT_MODE`
-(`build`) — see the permission-mode contract bullet below
+`run`/`tui` > `config.yml` `mode:` > the agent's `default_mode` > the
+engine's own `DEFAULT_MODE` (`build`) — see the permission-mode contract bullet below
 ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
 
 ## The contract (read before touching the engine)
@@ -252,8 +252,10 @@ never here**; each bullet is the claim + where to read it:
   tie favors the more restrictive grade) — no tier order to memorize. `bash`
   and `call` share one rule set; a compound command grades per segment
   (ADR-0197), falling back to the mode's `default` when the splitter can't
-  parse it. `--mode` on `run`/`tui` > `config.yml` `mode:` > the engine's own
-  `DEFAULT_MODE` (`build`); `request_mode` lets a blocked model ask to widen
+  parse it. `--mode` on `run`/`tui` > `config.yml` `mode:` > the agent's
+  `default_mode` starting hint (fresh sessions only; a child never widens past
+  its parent, [ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md))
+  > the engine's own `DEFAULT_MODE` (`build`); `request_mode` lets a blocked model ask to widen
   (never into/from `auto`, never narrow — that's `/mode`'s job). Path args
   still grade root-relative; a `config.yml` `permissions:` ceiling still
   clamps least-privilege over every mode's grade; `Approve` still carries

@@ -61,6 +61,17 @@ where
     }
 }
 
+/// The built-in modes ordered narrowest → widest (#763, ADR-0218): the one
+/// ordering `request_mode`'s widening check, an agent's `default_mode`
+/// validation, and core's child-spawn clamp
+/// ([`entanglement_core::EngineConfig::mode_ladder`]) all read.
+pub const BUILTIN_LADDER: [&str; 4] = ["research", "plan", "build", "auto"];
+
+/// Position of `mode` on [`BUILTIN_LADDER`]; `None` for a name not on it.
+pub fn ladder_rank(mode: &str) -> Option<usize> {
+    BUILTIN_LADDER.iter().position(|m| *m == mode)
+}
+
 /// One resolved permission mode (ADR-0207 §2/§4): a name, the grade used
 /// when nothing else matches, its rule table, its run limits, and its
 /// sandbox posture — `sandbox`: `Some("bwrap")`/`Some("bubblewrap")` confines
@@ -232,6 +243,18 @@ mod tests {
         let mut names: Vec<&str> = table.names().collect();
         names.sort_unstable();
         assert_eq!(names, vec!["auto", "build", "plan", "research"]);
+    }
+
+    #[test]
+    fn ladder_names_exactly_the_builtin_modes() {
+        let table = ModeTable::builtin().expect("built-ins parse");
+        let mut names: Vec<&str> = table.names().collect();
+        let mut ladder = BUILTIN_LADDER.to_vec();
+        names.sort_unstable();
+        ladder.sort_unstable();
+        assert_eq!(names, ladder);
+        assert!(ladder_rank("research") < ladder_rank("auto"));
+        assert_eq!(ladder_rank("bogus"), None);
     }
 
     #[test]

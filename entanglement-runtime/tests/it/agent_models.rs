@@ -19,6 +19,7 @@ fn profile(name: &str) -> Agent {
         system_prompt: String::new(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 

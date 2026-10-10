@@ -64,6 +64,7 @@ fn explore_profile() -> Agent {
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 
@@ -275,6 +276,7 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
         system_prompt: String::new(),
         model: None,
         provider: None,
+        default_mode: None,
     });
 
     let holly = Holly::spawn(cfg);

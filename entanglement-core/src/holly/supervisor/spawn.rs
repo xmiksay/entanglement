@@ -4,6 +4,7 @@
 use entanglement_provider::{ResolvedModel, UserId};
 use tokio::sync::mpsc;
 
+use super::starting_mode::{starting_mode, Lineage};
 use super::Supervisor;
 use crate::holly::routing::emit_supervisor_error;
 use crate::holly::{DEFAULT_AGENT, DEFAULT_MODE, SESSION_CMD_CAPACITY};
@@ -96,19 +97,31 @@ impl Supervisor {
             // the spawn of a session whose source is being retired.
             None => inherited.as_mut().and_then(|i| i.model.take()),
         };
-        // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
-        // spawned child starts under its parent's live mode. A
-        // compaction successor (predecessor set, no parent — the
-        // `/compact` fork, ADR-0110) is the same session continuing, so
-        // it inherits the source's mode the same way `effective_user`
-        // falls back to it above. Neither known ⇒ a genuine fresh root,
-        // `DEFAULT_MODE`.
-        let initial_mode = parent
-            .as_ref()
-            .and_then(|p| self.modes.get(p))
-            .or_else(|| predecessor.as_ref().and_then(|p| self.modes.get(p)))
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_MODE.to_string());
+        // ADR-0207 §6: mode applies to the whole spawn sub-tree — a child
+        // starts under its parent's live mode, narrowed (never widened) by
+        // its agent's `default_mode`; a compaction successor (ADR-0110) is
+        // the same session continuing, so it keeps the source's mode; a
+        // genuine fresh root starts in its agent's hint (#763, ADR-0218).
+        let mode_of = |id: &SessionId| {
+            self.modes
+                .get(id)
+                .map_or(DEFAULT_MODE, String::as_str)
+                .to_string()
+        };
+        let (parent_mode, source_mode) = (
+            parent.as_ref().map(mode_of),
+            predecessor.as_ref().map(mode_of),
+        );
+        let lineage = match (&parent_mode, &source_mode) {
+            (Some(p), _) => Lineage::Child(p),
+            (None, Some(s)) => Lineage::Successor(s),
+            (None, None) => Lineage::Root,
+        };
+        let initial_mode = starting_mode(
+            lineage,
+            resolved_agent.default_mode.as_deref(),
+            &self.cfg.mode_ladder,
+        );
         self.modes.insert(child.clone(), initial_mode.clone());
         // Record the parent link *before* spawning so it's in place for any
         // later lazy path, and so the child starts under the requested agent.
@@ -237,6 +250,12 @@ impl Supervisor {
         // keeps the lazy-Prompt path's single-user convenience: an unknown
         // session id auto-creates a blank root under `build`.
         let agent = self.cfg.agents.resolve(DEFAULT_AGENT);
+        let initial_mode = starting_mode(
+            Lineage::Root,
+            agent.default_mode.as_deref(),
+            &self.cfg.mode_ladder,
+        );
+        self.modes.insert(session_id.clone(), initial_mode.clone());
         self.session_meta.insert(SessionInfo {
             session: session_id.clone(),
             parent: None,
@@ -264,7 +283,7 @@ impl Supervisor {
                     parent: None,
                     predecessor: None,
                     user: None,
-                    initial_mode: DEFAULT_MODE.to_string(),
+                    initial_mode,
                     spawn_model: None,
                     inherited: None,
                 },

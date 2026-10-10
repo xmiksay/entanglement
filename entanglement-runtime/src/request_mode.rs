@@ -38,6 +38,7 @@
 
 use entanglement_core::{AgentState, ApprovalKind, Holly, InMsg, SessionId};
 
+use crate::mode::ladder_rank;
 use crate::pending::{self, PendingDecisions};
 use crate::seam;
 use crate::tool_names::REQUEST_MODE_TOOL;
@@ -47,17 +48,11 @@ use crate::tool_names::REQUEST_MODE_TOOL;
 /// nothing may ask its way into the one mode with no one watching to approve.
 const AUTO_MODE: &str = "auto";
 
-/// Every mode pair `request_mode` may widen across (ADR-0207 §10) — anything
-/// not listed here (narrowing, a same-mode request, an unknown mode name, or
-/// any pair targeting [`AUTO_MODE`]) is refused as non-widening.
-const WIDENING_PAIRS: &[(&str, &str)] = &[
-    ("research", "plan"),
-    ("research", "build"),
-    ("plan", "build"),
-];
-
+/// Whether `from` → `to` widens along the built-in ladder (ADR-0207 §10):
+/// `research` → `plan` → `build`, never into [`AUTO_MODE`]. Narrowing, a
+/// same-mode request, and an unknown mode name all refuse as non-widening.
 fn widens(from: &str, to: &str) -> bool {
-    WIDENING_PAIRS.contains(&(from, to))
+    to != AUTO_MODE && matches!((ladder_rank(from), ladder_rank(to)), (Some(f), Some(t)) if t > f)
 }
 
 /// The `request_mode` tool schema. Advertised **unconditionally** (ADR-0207

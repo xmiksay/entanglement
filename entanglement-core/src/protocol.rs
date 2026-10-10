@@ -252,6 +252,13 @@ pub struct Agent {
     /// before #323 deserialize with `provider: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The permission mode a fresh session under this agent *starts* in when
+    /// neither the head nor config names one (#763, ADR-0218). A starting-mode
+    /// hint, not authority: it grants nothing beyond that mode's own rules,
+    /// `/mode` still switches it, a spawned child never widens past its
+    /// parent's mode with it, and a resumed session keeps its replayed mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<String>,
 }
 
 impl Agent {

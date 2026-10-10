@@ -13,7 +13,7 @@ use crate::config;
 use crate::pipe::pipe;
 use crate::run::run_one;
 use crate::services::Head;
-use crate::session_store;
+use crate::session_store::{self, LaunchMode};
 use crate::tui::tui;
 
 /// Run the head `cli.cmd` selects (`None` = bare `skutter`: the TUI with no
@@ -44,8 +44,7 @@ pub(crate) async fn dispatch(
             };
 
             // An explicit `--mode` wins over ADR-0215's read-only narrowing.
-            let explicit_mode = cli.mode.is_some();
-            let mode = cli.mode.or_else(|| user_config.mode.clone());
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
@@ -53,7 +52,7 @@ pub(crate) async fn dispatch(
                     .load_for_resume(&resume_session_id, |n| known.iter().any(|k| k == n))?;
                 // A retired agent resumes under a fallback (ADR-0215); say so.
                 for fallback in &check.fallbacks {
-                    eprintln!("{}", fallback.note(explicit_mode));
+                    eprintln!("{}", fallback.note(launch.explicit));
                 }
 
                 // Forced modes ride the replay itself, so a re-offered
@@ -64,8 +63,8 @@ pub(crate) async fn dispatch(
                     &session_id,
                     &records,
                     &check,
-                    explicit_mode,
-                    mode.clone(),
+                    launch.explicit,
+                    launch.mode.clone(),
                 )
                 .await?;
             }
@@ -76,21 +75,10 @@ pub(crate) async fn dispatch(
             // silently ignoring an explicit `--agent` alongside `--resume`.
             let agent = agent.or_else(|| user_config.agent.clone());
             if fresh {
-                // An empty-prompt `Spawn` just binds the session's identity
-                // (agent); the real prompt goes through `run_one` below, once
-                // any `--mode` switch (next) has already landed — sending it
-                // first would race the still-nonexistent session id into the
-                // supervisor's lazy-create-under-default fallback instead of
-                // this chosen agent (see `holly.rs`'s unknown-session-id path).
-                bind_agent(
-                    holly,
-                    &session_id,
-                    agent
-                        .clone()
-                        .unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string()),
-                )
-                .await?;
-                apply_mode(holly, &session_id, mode).await?;
+                let agent = agent
+                    .clone()
+                    .unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string());
+                start_fresh(holly, &session_id, Some(agent), launch.mode).await?;
             } else if agent.is_some() {
                 tracing::warn!(
                     "--agent is ignored with --resume: a resumed session's agent is fixed"
@@ -116,7 +104,18 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
             // CLI `--agent` wins; else the user config's default agent (#172).
             let agent = agent.or_else(|| user_config.agent.clone());
-            launch_tui(holly, session_id, agent, head, catalog, user_config, cwd).await
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
+            launch_tui(
+                holly,
+                session_id,
+                agent,
+                launch,
+                head,
+                catalog,
+                user_config,
+                cwd,
+            )
+            .await
         }
         Some(Cmd::Sessions) => unreachable!("sessions is handled before engine setup"),
         Some(Cmd::Inspect { .. }) => unreachable!("inspect is handled before engine setup"),
@@ -127,24 +126,45 @@ pub(crate) async fn dispatch(
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             let session_id = SessionId::new(holly.next_id(IdKind::Session));
             let agent = user_config.agent.clone();
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
             if cli.prompt.is_empty() {
-                launch_tui(holly, session_id, agent, head, catalog, user_config, cwd).await
+                launch_tui(
+                    holly,
+                    session_id,
+                    agent,
+                    launch,
+                    head,
+                    catalog,
+                    user_config,
+                    cwd,
+                )
+                .await
             } else {
-                // An empty-prompt `Spawn` binds the session's identity before
-                // any `--mode` switch below reaches the supervisor — sending
-                // `SetMode` first would race the still-nonexistent id into the
-                // lazy-create-under-default fallback instead of this agent
-                // (see the explicit `Run` arm above).
-                if let Some(a) = agent {
-                    bind_agent(holly, &session_id, a).await?;
-                }
-                let mode = cli.mode.or_else(|| user_config.mode.clone());
-                apply_mode(holly, &session_id, mode).await?;
+                start_fresh(holly, &session_id, agent, launch.mode).await?;
                 let prompt = cli.prompt.join(" ");
                 run_one(holly, &session_id, &prompt, "text").await
             }
         }
     }
+}
+
+/// Start a fresh session the same way on every head (#752): bind its agent —
+/// core seeds the starting mode from that agent's `default_mode` (#763) —
+/// then land the head's `--mode`/config `mode:` on top, so the precedence is
+/// `--mode` > config `mode:` > agent `default_mode` > `DEFAULT_MODE`. The
+/// bind goes first: a `SetMode` to a still-nonexistent id would lazily
+/// create it under the default agent instead (see `holly.rs`'s
+/// unknown-session-id path). `None` agent leaves that lazy path to create it.
+async fn start_fresh(
+    holly: &Holly,
+    session_id: &SessionId,
+    agent: Option<String>,
+    mode: Option<String>,
+) -> Result<()> {
+    if let Some(agent) = agent {
+        bind_agent(holly, session_id, agent).await?;
+    }
+    apply_mode(holly, session_id, mode).await
 }
 
 /// Bind a fresh session's identity with an empty-prompt `Spawn` — the agent
@@ -178,7 +198,8 @@ fn known_agents(head: &Head) -> Vec<String> {
 /// trusted-only (a mode *is* the session's authority), so this direct
 /// `Holly::send` — not the wire — is exactly the surface it's meant for.
 /// Callers resolve `--mode` > `config.yml` `mode:`; `None` sends nothing,
-/// leaving the session at the engine's own `DEFAULT_MODE`. A resume goes
+/// leaving the session at its agent's `default_mode` (else the engine's
+/// `DEFAULT_MODE`) as seeded at spawn. A resume goes
 /// through `session_store::resume_with_mode` instead (ADR-0216).
 async fn apply_mode(holly: &Holly, session_id: &SessionId, mode: Option<String>) -> Result<()> {
     if let Some(mode) = mode {
@@ -192,12 +213,15 @@ async fn apply_mode(holly: &Holly, session_id: &SessionId, mode: Option<String>)
     Ok(())
 }
 
-/// Bootstrap `session_id` under `agent` (when set) and hand the terminal to
-/// the TUI.
+/// Bootstrap `session_id` under `agent` (when set) and the launch mode, then
+/// hand the terminal to the TUI, which applies the same launch mode to any
+/// session it later resumes (#752).
+#[allow(clippy::too_many_arguments)]
 async fn launch_tui(
     holly: &Holly,
     session_id: SessionId,
     agent: Option<String>,
+    launch: LaunchMode,
     head: Head,
     catalog: Catalog,
     user_config: &config::Config,
@@ -209,9 +233,7 @@ async fn launch_tui(
     // `SessionStarted`/`AgentChanged` before `tui()` gets around to
     // subscribing, permanently desyncing the agent badge (#598).
     let holly_sub = holly.subscribe();
-    if let Some(a) = agent {
-        bind_agent(holly, &session_id, a).await?;
-    }
+    start_fresh(holly, &session_id, agent, launch.mode.clone()).await?;
     tui(
         holly,
         holly_sub,
@@ -232,6 +254,7 @@ async fn launch_tui(
         head.grants,
         head.mcp,
         head.advertising_state,
+        launch,
     )
     .await
 }
@@ -286,5 +309,78 @@ fn format_relative(ts_ms: u64) -> String {
         60..=3599 => format!("{}m ago", secs / 60),
         3600..=86399 => format!("{}h ago", secs / 3600),
         _ => format!("{}d ago", secs / 86400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `start_fresh` is the one launch path `run`, the implicit one-shot and
+    //! the TUI share (#752), so the starting-mode precedence (#763,
+    //! ADR-0218) is proven here once for every head.
+    use std::time::Duration;
+
+    use entanglement_core::{EngineConfig, OutEvent};
+
+    use super::*;
+
+    /// Starts `sid` the way a head does, then returns the mode it settled in
+    /// (the last `ModeChanged` before a barrier turn's `Done`).
+    async fn settled_mode(agent: Option<&str>, launch: LaunchMode) -> String {
+        let holly = Holly::spawn(EngineConfig {
+            agents: entanglement_runtime::agents::built_in_registry().expect("built-ins"),
+            ..EngineConfig::default()
+        });
+        let sid = SessionId::new("s1");
+        let mut sub = holly.subscribe();
+        start_fresh(&holly, &sid, agent.map(String::from), launch.mode)
+            .await
+            .expect("start");
+        holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+        let mut last = None;
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+                .await
+                .expect("turn never finished")
+                .expect("broadcast closed");
+            match ev {
+                OutEvent::ModeChanged { session, mode } if session == sid => last = Some(mode),
+                OutEvent::Done { session, .. } if session == sid => break,
+                _ => {}
+            }
+        }
+        last.expect("no mode announced")
+    }
+
+    #[tokio::test]
+    async fn the_plan_agent_starts_in_plan_with_no_mode_given() {
+        assert_eq!(
+            settled_mode(Some("plan"), LaunchMode::default()).await,
+            "plan"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_mode_beats_the_agents_default() {
+        let launch = LaunchMode::resolve(Some("build".into()), None);
+        assert_eq!(settled_mode(Some("plan"), launch).await, "build");
+    }
+
+    #[tokio::test]
+    async fn a_config_mode_beats_the_agents_default() {
+        let launch = LaunchMode::resolve(None, Some("build".into()));
+        assert_eq!(settled_mode(Some("plan"), launch).await, "build");
+    }
+
+    #[tokio::test]
+    async fn a_mode_with_no_agent_reaches_the_lazily_created_root() {
+        // The bare-TUI case: no `--agent`, but `--mode research`.
+        let launch = LaunchMode::resolve(Some("research".into()), None);
+        assert_eq!(settled_mode(None, launch).await, "research");
+    }
+
+    #[tokio::test]
+    async fn no_mode_and_no_hint_is_the_engine_default() {
+        let mode = settled_mode(Some("general"), LaunchMode::default()).await;
+        assert_eq!(mode, entanglement_core::DEFAULT_MODE);
     }
 }

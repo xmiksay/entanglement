@@ -226,6 +226,7 @@ mod tests {
             system_prompt: String::new(),
             model: None,
             provider: None,
+            default_mode: None,
         });
         let mut skills = SkillRegistry::default();
         skills.insert(crate::skills::SkillMeta {

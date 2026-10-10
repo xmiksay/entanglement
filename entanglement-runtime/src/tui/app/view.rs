@@ -82,6 +82,16 @@ impl App {
         self.configured_editor = editor.filter(|s| !s.trim().is_empty());
     }
 
+    /// The head's launch mode (#752), set once at startup.
+    pub fn set_launch_mode(&mut self, launch_mode: crate::session_store::LaunchMode) {
+        self.launch_mode = launch_mode;
+    }
+
+    /// The launch mode a resumed session gets, exactly as `run --resume`.
+    pub fn launch_mode(&self) -> &crate::session_store::LaunchMode {
+        &self.launch_mode
+    }
+
     /// The persisted default editor, if any — consulted by the `/editor`
     /// round-trip ahead of `$VISUAL`/`$EDITOR`.
     pub fn configured_editor(&self) -> Option<&str> {

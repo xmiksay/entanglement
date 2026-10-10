@@ -141,6 +141,7 @@ impl App {
             http_client: None,
             grants: None,
             configured_editor: None,
+            launch_mode: Default::default(),
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             mcp_panel: crate::tui::mcp_panel::McpPanel::default(),
             mcp_handles: None,

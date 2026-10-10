@@ -53,6 +53,7 @@ fn page_writer() -> Agent {
         system_prompt: "You write pages.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 

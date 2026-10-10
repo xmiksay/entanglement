@@ -251,6 +251,25 @@ impl SessionStore {
     }
 }
 
+/// A head's launch-time mode choice (#752): `--mode`, else config `mode:`.
+/// Every head — `run`, the implicit one-shot, the TUI — resolves it once, the
+/// same way, and applies it to a fresh session and to a resume alike.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchMode {
+    pub mode: Option<String>,
+    /// `--mode` was given, which also disables ADR-0215's read-only forcing.
+    pub explicit: bool,
+}
+
+impl LaunchMode {
+    pub fn resolve(cli: Option<String>, config: Option<String>) -> Self {
+        Self {
+            explicit: cli.is_some(),
+            mode: cli.or(config),
+        }
+    }
+}
+
 /// Resumes `root` from `records` under `mode` (`--mode` > config `mode:`).
 ///
 /// With a forced session in the tree, every mode rides the replay

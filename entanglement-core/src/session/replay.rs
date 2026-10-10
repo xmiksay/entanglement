@@ -335,6 +335,7 @@ mod tests {
             system_prompt: "leaf".into(),
             model: None,
             provider: None,
+            default_mode: None,
         });
         cfg
     }

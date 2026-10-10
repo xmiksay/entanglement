@@ -91,6 +91,8 @@ pub(crate) async fn build_config(
     ));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.agents = agents;
+    // Lets a spawned child's agent `default_mode` narrow it, never widen (#763).
+    cfg.mode_ladder = crate::mode::BUILTIN_LADDER.map(String::from).to_vec();
     // Thread the resolved model's context window into the engine (#178) so each
     // session budgets its history against the real window (128k for GLM-5.2, not
     // a fixed 180k). `None` (unknown model / echo) keeps core's flat fallback.

@@ -5,6 +5,7 @@
 mod common;
 
 mod actor;
+mod agent_default_mode;
 mod agent_generation_pin;
 mod agent_model_pin;
 mod ambiguous_stop;

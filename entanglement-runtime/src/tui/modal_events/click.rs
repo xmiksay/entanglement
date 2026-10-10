@@ -155,8 +155,11 @@ pub(super) async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: 
 }
 
 /// Resumes the resume modal's selected past session — shared by the `Enter`
-/// key and the mouse click. The TUI has no resume-time `--mode`, so ADR-0215's
-/// read-only fallback always applies here (the TUI ignores `--mode` today, #752).
+/// key and the mouse click. Applies the TUI's launch mode exactly as
+/// `run --resume` does (#752): an explicit `--mode` disables ADR-0215's
+/// read-only forcing, and with a forced session every mode rides the replay
+/// (ADR-0216). An agent's `default_mode` never applies here — the replayed
+/// mode wins on resume (ADR-0218).
 pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
     if let Some(meta) = app.selected_resume_session() {
         let id = meta.id.clone();
@@ -172,14 +175,21 @@ pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
             Ok((records, check)) => {
                 // Visible transcript first, then engine context.
                 app.restore_session(id.clone(), &records);
+                let launch = app.launch_mode().clone();
                 for fallback in &check.fallbacks {
-                    app.record_status("resume", fallback.note(false));
+                    app.record_status("resume", fallback.note(launch.explicit));
                 }
-                // The forced modes ride the replay (no later mode switch here
-                // could cascade over them, unlike the CLI's `apply_mode`).
-                let paired = check.paired_for_resume(&records, false, None);
-                if let Err(e) = holly.resume(id.clone(), paired).await {
-                    tracing::error!("Failed to resume session {}: {}", id, e);
+                let resumed = crate::session_store::resume_with_mode(
+                    holly,
+                    &id,
+                    &records,
+                    &check,
+                    launch.explicit,
+                    launch.mode,
+                )
+                .await;
+                if let Err(e) = resumed {
+                    tracing::error!("Failed to resume session {}: {:#}", id, e);
                 }
             }
             Err(e) => {

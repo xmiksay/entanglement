@@ -43,7 +43,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | Head | Status | What it is |
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
-| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
+| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
@@ -63,8 +63,9 @@ A session is a pair **(agent, mode)** — two independent axes
 ([ADR-0207](docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
 
 An **agent** is *identity only* — `{ name, description, system_prompt,
-model?, provider? }` (opencode-style `.md` files; frontmatter may also set
-`include_brief`/`skills`, baked into the prompt at load time). It is chosen
+model?, provider?, default_mode? }` (opencode-style `.md` files; frontmatter may also set
+`include_brief`/`skills`, baked into the prompt at load time, and an optional
+`default_mode` starting hint — below). It is chosen
 once — `--agent`, `config.yml` `agent:`, or the `agent` tool's argument for a
 spawned child — and is fixed for the session's life; there is no live agent
 switch. Built-ins: `general` (the default coding agent and default spawn
@@ -94,8 +95,12 @@ longest matching key wins:
   refused once and parks a bounded (60s) approval on an identical retry
   ([ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
 
-Select a mode with `--mode` on `run` (or `config.yml` `mode:`) and switch it
-live with `/mode` in the TUI; a blocked model may ask to widen via
+Select a mode with `--mode` on `run`/`tui` (or `config.yml` `mode:`) and
+switch it live with `/mode` in the TUI. With neither set, a fresh session
+starts in its agent's `default_mode` (the built-in `plan` agent starts in
+`plan`), else `build`; a spawned child only ever takes a `default_mode` no
+wider than its parent's mode, and a resumed session keeps its replayed mode
+([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)); a blocked model may ask to widen via
 `request_mode`. Spawning is bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.
 

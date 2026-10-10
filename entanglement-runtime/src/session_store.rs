@@ -16,7 +16,7 @@ pub use listing::{children_of, first_prompt_snippet, root_of, SessionMeta};
 pub use pairing::pair_records;
 pub use payload::LogPayload;
 pub use prefix::{resumable_prefix, ResumablePrefix, Truncation};
-pub use resume_check::{check_for_resume, resume_with_mode, Fallback, ResumeCheck};
+pub use resume_check::{check_for_resume, resume_with_mode, Fallback, LaunchMode, ResumeCheck};
 pub use store::SessionStore;
 
 /// Sanitizes a path for safe filesystem use.
