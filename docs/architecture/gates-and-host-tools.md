@@ -907,7 +907,9 @@ ADR-0066's model.
   (draining buffered inbound frames first — the supervisor fans a `Resume` out
   before handling it, so it is always seen ahead of the `SessionStarted`s it
   causes), and one sequential worker runs them, so hooks fire in event order
-  while a slow hook never lags the subscription. Engine-internal LLM calls
+  while a slow hook never lags the subscription. Firings are best-effort under a
+  broadcast lag: dropped events fire nothing, and a pending turn end is
+  forgotten rather than misclassified. Engine-internal LLM calls
   (aux models: `summarize`/`session_title`/`narrate`) open no session and so
   fire nothing; a spawned child is an ordinary session and does.
 

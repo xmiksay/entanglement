@@ -69,14 +69,26 @@ impl Tracker {
     /// Note an inbound frame. Only `Resume` matters: it is fanned out before
     /// the supervisor handles it, so it is always seen ahead of the
     /// `SessionStarted`s it causes (see [`spawn_watch`]).
+    ///
+    /// Mirrors core's cascade rule (`supervisor/resume.rs`): only the target
+    /// and the sessions still live as of the log's end — a `SessionStarted`
+    /// with no later `SessionEnded`/`SessionHibernated` — are re-announced, so
+    /// only those are marked; marking the rest would leak them forever.
     pub(crate) fn observe_in(&mut self, msg: &InMsg) {
-        if let InMsg::Resume { records, .. } = msg {
-            for (_, ev) in records {
-                if let OutEvent::SessionStarted { session, .. } = ev {
-                    self.resuming.insert(session.clone());
-                }
+        let InMsg::Resume { session, records } = msg else {
+            return;
+        };
+        let mut live: Vec<&SessionId> = Vec::new();
+        for (_, ev) in records {
+            match ev {
+                OutEvent::SessionStarted { session, .. } => live.push(session),
+                OutEvent::SessionEnded { session, .. }
+                | OutEvent::SessionHibernated { session, .. } => live.retain(|s| *s != session),
+                _ => {}
             }
         }
+        self.resuming.insert(session.clone());
+        self.resuming.extend(live.into_iter().cloned());
     }
 
     /// Fold one outbound event; returns the hook point it completes, if any.
@@ -126,7 +138,15 @@ impl Tracker {
             OutEvent::Error {
                 session, message, ..
             } => {
-                self.last_error.insert(session.clone(), message.clone());
+                // An error before the resumed `SessionStarted` is the
+                // supervisor refusing the resume (closed/already-live id,
+                // failed replay): no start follows, so drop the mark.
+                self.resuming.remove(session);
+                // Only for a session we track, so an id that never ends
+                // can't grow the map.
+                if self.sessions.contains_key(session) {
+                    self.last_error.insert(session.clone(), message.clone());
+                }
                 None
             }
             OutEvent::Done { session, .. } => {
@@ -198,6 +218,11 @@ impl Tracker {
         }
     }
 
+    /// After a broadcast lag the `Done`/`Status` pairing can't be trusted.
+    pub(crate) fn forget_pending_stops(&mut self) {
+        self.ended_turn.clear();
+    }
+
     /// A finished turn: `stop` for a root, `subagent_stop` for a spawned child.
     fn stop(&mut self, session: &SessionId, state: AgentState) -> Firing {
         let error = self.last_error.remove(session);
@@ -225,6 +250,7 @@ impl Tracker {
     /// A session left memory: forget everything kept for it.
     fn end(&mut self, session: &SessionId, reason: &str) -> Firing {
         let meta = self.sessions.remove(session);
+        self.resuming.remove(session);
         self.compacted.remove(session);
         self.ended_turn.remove(session);
         self.last_error.remove(session);
@@ -275,8 +301,12 @@ pub(crate) fn spawn_watch(
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
+                // Firings are best-effort under lag: dropped events fire
+                // nothing. A pending turn end is forgotten rather than
+                // classified off a `Status` whose `Done` may have been lost.
                 Err(RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "lifecycle hook watcher lagged");
+                    tracker.forget_pending_stops();
                     continue;
                 }
                 Err(RecvError::Closed) => break,
