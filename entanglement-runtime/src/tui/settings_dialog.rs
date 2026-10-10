@@ -11,6 +11,7 @@
 mod apply;
 mod aux;
 mod generation;
+mod rows;
 mod session;
 mod tools;
 
@@ -20,13 +21,13 @@ mod tests;
 pub use apply::{run_plan, ApplyStep, SettingsEffects, ToolsChange};
 pub use aux::AuxTab;
 pub use generation::GenField;
+pub use rows::{RowId, RowView};
 pub use session::{mode_names, model_options, SessionTab};
 pub use tools::{discovery_label, server_of, AdvertisingRows, ToolsTab};
 
 use entanglement_provider::GenerationParams;
 use ratatui::widgets::ListState;
 
-use crate::config::aux_models::Purpose;
 use generation::GenerationTab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,58 +60,6 @@ pub enum Stage {
     Editing,
     /// The second step a pending advertising/discovery re-pin requires.
     ConfirmRepin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RowId {
-    Persist,
-    Model,
-    /// Permission mode (#560 P12, ADR-0207 §12), Session tab. Distinct from
-    /// `Mode` below (the Tools tab's *tool-advertising* mode, full/tool_search
-    /// — an unrelated axis that happens to share the English word).
-    PermMode,
-    Gen(GenField),
-    Tool(usize),
-    Mode,
-    Discovery,
-    /// "Save mode/discovery as default" — no other persist flag on the Tools
-    /// tab any more (ADR-0207 retired the per-agent allowlist the overlay
-    /// used to optionally materialize).
-    AdvertisingPersist,
-    Aux(Purpose),
-    /// Headers, hints and disabled read-only lines — never focusable.
-    Note,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RowView {
-    pub id: RowId,
-    pub label: String,
-    pub value: String,
-    pub changed: bool,
-    pub disabled: Option<&'static str>,
-}
-
-fn row(id: RowId, label: &str, value: String) -> RowView {
-    RowView {
-        id,
-        label: label.to_string(),
-        value,
-        changed: false,
-        disabled: None,
-    }
-}
-
-fn note(text: &str) -> RowView {
-    row(RowId::Note, text, String::new())
-}
-
-fn checkbox(on: bool) -> &'static str {
-    if on {
-        "[x]"
-    } else {
-        "[ ]"
-    }
 }
 
 pub enum Confirm {
@@ -193,151 +142,6 @@ impl SettingsDialog {
             Tab::Session => self.persist[0],
             Tab::Generation => self.persist[1],
         }
-    }
-
-    pub fn rows(&self) -> Vec<RowView> {
-        let agent = self.session.final_agent();
-        match self.tab {
-            Tab::Session => vec![
-                row(
-                    RowId::Persist,
-                    "save as default",
-                    format!(
-                        "{} model pin for agent '{agent}'",
-                        checkbox(self.persist[0])
-                    ),
-                ),
-                // Read-only (ADR-0207 §9): the agent is fixed for the
-                // session's whole life, so this is display, not a `RowId` —
-                // never focusable, never part of the plan.
-                note(&format!("agent: {agent} (fixed for this session)")),
-                RowView {
-                    changed: self.session.model_change().is_some(),
-                    ..row(RowId::Model, "model", self.session.model_label())
-                },
-                note("PgUp/PgDn: jump provider"),
-                RowView {
-                    changed: self.session.mode_change().is_some(),
-                    ..row(
-                        RowId::PermMode,
-                        "mode",
-                        self.session.final_mode().to_string(),
-                    )
-                },
-            ],
-            Tab::Generation => self.generation_rows(agent),
-            Tab::Tools => self.tools_rows(),
-            Tab::Aux => {
-                let mut rows = vec![RowView {
-                    disabled: Some(AUX_PERSIST_REASON),
-                    ..row(RowId::Persist, "save as default", "[x] always".to_string())
-                }];
-                rows.extend(aux::PURPOSES.iter().map(|p| RowView {
-                    changed: self.aux.changed(*p),
-                    ..row(RowId::Aux(*p), p.as_str(), self.aux.value_label(*p))
-                }));
-                rows
-            }
-        }
-    }
-
-    fn generation_rows(&self, agent: &str) -> Vec<RowView> {
-        let model = self.session.final_model();
-        let mut rows = vec![
-            row(
-                RowId::Persist,
-                "save as default",
-                format!(
-                    "{} for agent '{agent}' (once the engine confirms)",
-                    checkbox(self.persist[1])
-                ),
-            ),
-            note(&format!("for model {}/{}", model.provider, model.model)),
-        ];
-        rows.extend(
-            self.generation
-                .caps()
-                .visible_fields()
-                .into_iter()
-                .map(|f| RowView {
-                    changed: self.generation.changed(f),
-                    ..row(RowId::Gen(f), f.label(), self.generation.value_label(f))
-                }),
-        );
-        rows.push(note(
-            "changing effort or thinking rebuilds the prompt cache",
-        ));
-        if self.generation.caps().thinking_required {
-            rows.push(note("this model always thinks (thinking required)"));
-        }
-        rows
-    }
-
-    fn tools_rows(&self) -> Vec<RowView> {
-        let t = &self.tools;
-        let mut rows = vec![note(
-            "── (a) tools this session · Space: toggle, a: auto-allow ──",
-        )];
-        for i in t.indices(false) {
-            let r = &t.rows()[i];
-            let tag = match (r.checked, r.profile_default, r.allow) {
-                (true, false, true) => "  +session (allow)",
-                (true, false, false) => "  +session",
-                (false, true, _) => "  -session",
-                _ => "",
-            };
-            rows.push(RowView {
-                changed: t.row_changed(i),
-                ..row(
-                    RowId::Tool(i),
-                    &r.name,
-                    format!("{}{tag}", checkbox(r.checked)),
-                )
-            });
-        }
-        rows.push(note("── (b) MCP servers ──"));
-        for i in t.indices(true) {
-            let r = &t.rows()[i];
-            let name = server_of(&r.name).unwrap_or(&r.name);
-            rows.push(RowView {
-                changed: t.row_changed(i),
-                ..row(RowId::Tool(i), name, checkbox(r.checked).to_string())
-            });
-        }
-        rows.push(note(
-            "── (c) advertising · re-pins live, asks to confirm ──",
-        ));
-        rows.push(RowView {
-            changed: t.adv.mode_changed(),
-            disabled: t.adv.mode_disabled(),
-            ..row(
-                RowId::Mode,
-                "advertising mode",
-                t.adv.mode().label().to_string(),
-            )
-        });
-        rows.push(RowView {
-            changed: t.adv.discovery_changed(),
-            disabled: t.adv.discovery_disabled(),
-            ..row(
-                RowId::Discovery,
-                "discovery",
-                discovery_label(t.adv.discovery()).to_string(),
-            )
-        });
-        rows.push(RowView {
-            changed: t.adv.persist(),
-            disabled: t.adv.persist_disabled(),
-            ..row(
-                RowId::AdvertisingPersist,
-                "save mode/discovery as default",
-                format!(
-                    "{} for new sessions (config.yml)",
-                    checkbox(t.adv.persist())
-                ),
-            )
-        });
-        rows
     }
 
     fn focusable(&self) -> Vec<usize> {
