@@ -71,6 +71,7 @@ mod record_sink;
 mod reoffer_dedupe;
 mod replay_from;
 mod request_mode;
+mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
 #[cfg(feature = "serve")]

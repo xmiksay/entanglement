@@ -53,6 +53,12 @@ impl ResumablePrefix {
 /// intact head over refusing. The in-tree heads keep #104's stricter *refuse*
 /// policy ([`check_for_resume`][super::check_for_resume]): both use
 /// [`LogPayload::gap_dropped`] to decide what a gap is.
+///
+/// **Before a resumed session writes again, remove the hole.** Its new rows
+/// land after the old tombstone, so the next load would cut at that same
+/// first gap and silently drop everything done since. Either delete the
+/// stored rows from [`Truncation::index`] onward before resuming under the
+/// same id, or resume the prefix into a fresh session id.
 pub fn resumable_prefix<E>(
     rows: impl IntoIterator<Item = Result<LogRecord, E>>,
 ) -> ResumablePrefix {
