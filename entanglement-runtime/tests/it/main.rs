@@ -43,6 +43,7 @@ mod compact_fork;
 #[cfg(feature = "serve")]
 mod endpoint;
 mod executor_builder;
+mod hook_events;
 mod hooks;
 mod host_tools;
 mod invoke_envelope;

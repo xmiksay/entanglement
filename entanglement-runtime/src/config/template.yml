@@ -62,6 +62,13 @@
 #   pre_tool_use       — before a tool runs; a NON-ZERO EXIT BLOCKS the tool.
 #   post_tool_use      — after the result; observational side-effect only.
 #   user_prompt_submit — when a prompt arrives; observational.
+# Observe-only lifecycle points (none can block; payload fields in brackets):
+#   session_start      — a session started [source: fresh|resume|compact].
+#   session_end        — it left memory [reason: closed|hibernated|compacted].
+#   stop               — a root session's turn finished [reason: completed|error].
+#   subagent_stop      — a spawned child's turn finished [parent, agent].
+#   pre_compact        — a compaction was announced [kind: manual|auto|prune].
+#   notification       — an approval / ask_user question parked [kind, message].
 #hooks:
 #  pre_tool_use:
 #    - command: "jq -e '.input.command | test(\"rm -rf\") | not'"
@@ -71,6 +78,10 @@
 #      tools: [write, edit]
 #  user_prompt_submit:
 #    - command: "logger -t entanglement-prompt"
+#  notification:
+#    - command: "jq -r .message | xargs -0 notify-send entanglement"
+#  stop:
+#    - command: "jq -c . >> ~/.local/state/entanglement-turns.jsonl"
 
 # MCP servers — attach external tool servers (#198, #312). Each entry registers a
 # server's tools into the engine, named `mcp__<server>__<tool>`. They are graded by

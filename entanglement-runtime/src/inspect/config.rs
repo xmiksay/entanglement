@@ -161,6 +161,12 @@ fn render_config(resolved: &Resolved) -> String {
         render_hook_list(&mut out, "pre_tool_use", &c.hooks.pre_tool_use);
         render_hook_list(&mut out, "post_tool_use", &c.hooks.post_tool_use);
         render_hook_list(&mut out, "user_prompt_submit", &c.hooks.user_prompt_submit);
+        render_hook_list(&mut out, "session_start", &c.hooks.session_start);
+        render_hook_list(&mut out, "session_end", &c.hooks.session_end);
+        render_hook_list(&mut out, "stop", &c.hooks.stop);
+        render_hook_list(&mut out, "pre_compact", &c.hooks.pre_compact);
+        render_hook_list(&mut out, "subagent_stop", &c.hooks.subagent_stop);
+        render_hook_list(&mut out, "notification", &c.hooks.notification);
     }
 
     let _ = writeln!(out, "\nmcp servers (← {}):", from("mcp"));

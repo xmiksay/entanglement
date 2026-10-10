@@ -850,31 +850,48 @@ index and the dispatch ladder grades, both registered once at startup
 User-configured external commands run around tool execution and on prompt
 ingress, for policy, telemetry, and formatting side-effects. Hooks are a
 **runtime interceptor** (`entanglement-runtime::hooks`), not a core concept:
-core neither knows nor cares that a command runs before a tool. They hang off the
-two seams the runtime already owns — the `tool_runner` dispatch of a `ToolExec`
-and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
+core neither knows nor cares that a command runs before a tool. They hang off
+seams the runtime already owns — the `tool_runner` dispatch of a `ToolExec`,
+the inbound `InMsg::Prompt` fan-out, and (#734) the `OutEvent` stream — so no
+new protocol surface is added.
 
 | point | fires | can block? | payload |
 | --- | --- | --- | --- |
 | `pre_tool_use` | top of the generic `dispatch` (`Intercept::Permission`), **before** the `Allow`/`Ask`/`Deny` decision | **yes** — a non-zero exit vetoes: the tool neither prompts nor runs, and the hook's output becomes the `ToolResult` | `{event, session, tool, input}` |
 | `post_tool_use` | in `run_and_reply` after the tool result, before it folds back | no — observational (exit code logged, never fed to the model); it cannot rewrite the result | `{event, session, tool, input, output, is_error, exit_code}` — `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`, so a hook can branch on outcome without re-parsing `output`'s text; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash`/`call` (JSON `null` for every other tool and for a killed process), so a hook can branch on a specific status without string-matching `[exit N]` |
 | `user_prompt_submit` | when an `InMsg::Prompt` reaches the engine (the executor's inbound `Stop` watcher) | no — observational | `{event, session, prompt}` |
+| `session_start` | on `OutEvent::SessionStarted` — every session, root or child, incl. a compaction successor and each session a resume re-announces | no | `{event, session, source, parent, predecessor, agent, model, root}` — `source` is `resume` when an `InMsg::Resume`'s records name the id, else `compact` when it has a `predecessor`, else `fresh` |
+| `session_end` | on `OutEvent::SessionEnded` / `SessionHibernated` | no | `{event, session, reason, parent, agent}` — `reason`: `hibernated`, `compacted` (the source after its `Compacted`), else `closed` |
+| `stop` | a **root** session's turn finished: its `Done`, classified by the `Status` core always emits right after it | no | `{event, session, reason, error, parent, agent}` — `reason`: `completed` \| `error` (`error` carries the turn's last `Error` message). A `Stop`-cancelled turn emits no `Done`, so it fires nothing; neither does a manual `/compact`'s closing `Done` |
+| `subagent_stop` | the same, for a session spawned with a `parent` (instead of `stop`) | no | as `stop`; `parent` is the spawning session, `agent` the child's profile |
+| `pre_compact` | on `OutEvent::Compacted` — the source's last content event, before the successor starts and the source retires | no | `{event, session, kind, kept, summary}` — `kind`: `manual` \| `auto` \| `prune` |
+| `notification` | an approval parked (`OutEvent::ToolRequest`) or an `ask_user` question parked (`OutEvent::UserQuestion`) | no | approval: `{event, session, kind: "approval", request_id, tool, input, message}` (+ `ENTANGLEMENT_TOOL_NAME`); question: `{event, session, kind: "question", request_id, questions, message}` |
+
+**Why the six #734 points are observe-only.** They are derived by a runtime
+subscriber from events core has already acted on, so there is nothing left to
+veto without a new core seam — and core stays policy-free (ADR-0066). That
+holds even for `pre_compact`, the one that sounds like a gate: since
+[ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md) every
+compaction forks and never rewrites the source log, so a hook has no history
+to rescue first, and an auto-compaction must never be held back into a
+context overflow anyway. Blocking stays `pre_tool_use`'s alone, exactly
+ADR-0066's model.
 
 - **Config:** the `hooks:` section of the layered user config (§ADR-0047/#172).
-  `Config.hooks: Hooks` is three `Vec<HookSpec>` deep-merged and
+  `Config.hooks: Hooks` is nine `Vec<HookSpec>` (one per point) deep-merged and
   `deny_unknown_fields`-validated by the same loader as `permissions`. A
   `HookSpec` is `{command, tools?, timeout_secs?}`; `tools` is an optional
-  name-filter for the tool hooks (empty ⇒ every tool), ignored by
-  `user_prompt_submit`. Empty section ⇒ no hooks (the norm).
+  name-filter for the tool hooks (empty ⇒ every tool), ignored by every
+  other point. Empty section ⇒ no hooks (the norm).
 - **Execution:** each hook is an `sh -c <command>` child fed the JSON payload on
   stdin and given `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` /
-  `ENTANGLEMENT_TOOL_NAME` (tool hooks) env vars. It runs under `timeout_secs`
+  `ENTANGLEMENT_TOOL_NAME` (tool hooks and an approval `notification`) env vars. It runs under `timeout_secs`
   (default 30) in its **own process group**, reusing the exec tools' containment
   (`host::exec`, §8/#168) so a hook that spawns children can't orphan them. A
   timeout or a spawn failure counts as a **failure**, so a `pre_tool_use` hook
   that can't launch **fails closed** (vetoes the tool) rather than letting it
   through.
-- **Scope:** only the generic host-tool dispatch route. The orchestration tools
+- **Scope:** the tool hooks cover only the generic host-tool dispatch route. The orchestration tools
   (`agent`/`ask_user`/`propose_plan`, which touch no host resource) and the
   self-permissioning `rhai` tool bypass hooks — matching the issue's "around
   `tool_runner::dispatch`" scope.
@@ -884,7 +901,15 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   unset seam takes a documented default, table in `docs/embedding.md` §4).
   `ToolExecutorBuilder::spawn` subscribes to the inbound fan-out
   synchronously before the executor task spawns so a first `Prompt` can't race the
-  `user_prompt_submit` watcher.
+  `user_prompt_submit` watcher. When any #734 point is configured it likewise
+  subscribes the outbound stream and a second inbound receiver up front for
+  `hooks::lifecycle::spawn_watch`: a pure `Tracker` folds events into firings
+  (draining buffered inbound frames first — the supervisor fans a `Resume` out
+  before handling it, so it is always seen ahead of the `SessionStarted`s it
+  causes), and one sequential worker runs them, so hooks fire in event order
+  while a slow hook never lags the subscription. Engine-internal LLM calls
+  (aux models: `summarize`/`session_title`/`narrate`) open no session and so
+  fire nothing; a spawned child is an ordinary session and does.
 
 ### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../adr/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
 

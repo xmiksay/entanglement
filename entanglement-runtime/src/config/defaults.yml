@@ -64,9 +64,17 @@ modes: {}
 #   post_tool_use      — after a tool's result; observational side-effect
 #                        (a formatter/telemetry sink). Cannot rewrite the result.
 #   user_prompt_submit — when a prompt reaches the engine; observational.
+# Six more points (#734) are observe-only — none can block anything:
+#   session_start      — a session started (`source`: fresh | resume | compact).
+#   session_end        — it left memory (`reason`: closed | hibernated | compacted).
+#   stop               — a root session's turn finished (`reason`: completed | error).
+#   subagent_stop      — a spawned child's turn finished (+ `parent`, `agent`).
+#   pre_compact        — a compaction was announced (`kind`: manual | auto | prune).
+#   notification       — an approval or ask_user question parked (`kind`:
+#                        approval | question, + `message`) — for desktop notifiers.
 # Each entry is `{command, tools?, timeout_secs?}`: `command` runs via `sh -c`
-# with the event JSON on stdin (`{event, session, tool?, input?, output?,
-# prompt?}`) and ENTANGLEMENT_HOOK_EVENT / _SESSION_ID / _TOOL_NAME in the env;
+# with the event JSON on stdin (`{event, session, …}` plus the point's own
+# fields) and ENTANGLEMENT_HOOK_EVENT / _SESSION_ID / _TOOL_NAME in the env;
 # `tools` (tool hooks only) scopes it to named tools (empty ⇒ all); `timeout_secs`
 # defaults to 30. Empty by default (no hooks).
 hooks: {}

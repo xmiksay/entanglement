@@ -152,6 +152,12 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
     // race a `SessionStarted`/`Usage` broadcast sent right after this
     // function returns and silently miss it.
     let budget_sub = holly.subscribe();
+    // Same discipline for the lifecycle hook watcher (#734): a first
+    // `SessionStarted` must not race its subscription. Skipped entirely when
+    // no observe-only hook point is configured (the norm).
+    let lifecycle_subs = hooks
+        .has_lifecycle()
+        .then(|| (holly.subscribe(), holly.subscribe_inbound()));
     tokio::spawn(async move {
         // Background tasks this executor spawns that must not outlive it (#545):
         // the file-change listener and the decision router below each hold
@@ -258,6 +264,14 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);
+        if let Some((events, inbound)) = lifecycle_subs {
+            crate::hooks::lifecycle::spawn_watch(
+                &mut background,
+                ctx.hooks.clone(),
+                events,
+                inbound,
+            );
+        }
         // `max_turns`/`max_duration` enforcement (ADR-0207 §11, stage 5c):
         // its own subscriber, parked in the same `JoinSet` as every other
         // background task here so it's aborted alongside them rather than

@@ -37,7 +37,9 @@ The session's permission **mode** (`research` | `plan` | `build` | `auto`;
 persisted "always allow" grants and a user-config ceiling govern every tool —
 an agent profile is identity only (prompt + model pin) and carries no
 authority (ADR-0207); lifecycle
-hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch.
+hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch,
+and observe-only lifecycle hooks (`session_start` / `session_end` / `stop` /
+`pre_compact` / `subagent_stop` / `notification`) follow the event stream.
 A session advertises this surface in one of two modes (`full` or the default
 `tool_search`, a lean kernel plus `explore`/`describe` discovery — ADR-0196);
 every tool is still called by its real name either way, never through an
