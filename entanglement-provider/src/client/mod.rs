@@ -96,11 +96,13 @@ mod shared_state;
 mod shared_store;
 mod status;
 mod stream;
+mod tls;
 mod user_budget;
 pub use backoff::extract_retry_after_from_response;
 pub use shared_state::{prune_stale, SharedStateLocation};
 pub use status::ThrottleStatus;
 pub use stream::{log_request_body, spawn_byte_stream};
+pub use tls::client_builder;
 pub use user_budget::UserBudget;
 
 use endpoint::EndpointPool;
@@ -315,7 +317,7 @@ impl HttpClient {
         shared: SharedStateLocation,
         config: RetryConfig,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = client_builder()
             .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)

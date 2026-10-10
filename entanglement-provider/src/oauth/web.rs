@@ -132,7 +132,7 @@ impl PendingWebAuthorization {
                 self.server
             );
         }
-        let http = super::http_client();
+        let http = super::http_client()?;
         let client = ClientRegistration {
             client_id: self.client_id,
             client_secret: self.client_secret,

@@ -290,7 +290,9 @@ pub(crate) fn oauth_error_code(body: &str) -> Option<String> {
 pub struct StoredTokenSource {
     server: String,
     store: Arc<dyn TokenStore>,
-    http: reqwest::Client,
+    // A build failure is kept, not raised, so `new` stays infallible and the
+    // error surfaces at the refresh that actually needs the client.
+    http: Result<reqwest::Client, String>,
     refresh_lock: tokio::sync::Mutex<()>,
 }
 
@@ -306,7 +308,7 @@ impl StoredTokenSource {
         Self {
             server: server.into(),
             store,
-            http: super::http_client(),
+            http: super::http_client().map_err(|e| format!("{e:#}")),
             refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -330,14 +332,10 @@ impl AccessTokenSource for StoredTokenSource {
         if !force_refresh && !current.tokens.is_expired(EXPIRY_SKEW_SECS) {
             return Ok(current.tokens.access_token);
         }
-        refresh_locked(
-            self.server.clone(),
-            self.store.clone(),
-            self.http.clone(),
-            force_refresh,
-        )
-        .await
-        .with_context(|| format!("refreshing the token for `{}`", self.server))
+        let http = self.http.clone().map_err(anyhow::Error::msg)?;
+        refresh_locked(self.server.clone(), self.store.clone(), http, force_refresh)
+            .await
+            .with_context(|| format!("refreshing the token for `{}`", self.server))
     }
 }
 
@@ -432,7 +430,7 @@ mod tests {
             scope: None,
         };
         let err = refresh_token(
-            &reqwest::Client::new(),
+            &crate::client::client_builder().build().unwrap(),
             "https://as.example/token",
             "cid",
             None,
