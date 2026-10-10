@@ -45,7 +45,7 @@ pub(crate) async fn dispatch(
 
             // An explicit `--mode` wins over ADR-0215's read-only narrowing.
             let explicit_mode = cli.mode.is_some();
-            let mut resume_check = None;
+            let mode = cli.mode.or_else(|| user_config.mode.clone());
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
@@ -59,14 +59,17 @@ pub(crate) async fn dispatch(
                 }
 
                 // Forced modes ride the replay itself, so a re-offered
-                // parked call is never graded under the wider mode first.
-                holly
-                    .resume(
-                        session_id.clone(),
-                        check.paired_for_resume(&records, explicit_mode),
-                    )
-                    .await?;
-                resume_check = Some(check);
+                // parked call is never graded under the wider mode first, and
+                // the configured mode never cascades over them (#757).
+                session_store::resume_with_mode(
+                    holly,
+                    &session_id,
+                    &records,
+                    &check,
+                    explicit_mode,
+                    mode.clone(),
+                )
+                .await?;
             }
 
             // CLI `--agent` wins; else the user config's default agent (#172).
@@ -89,15 +92,11 @@ pub(crate) async fn dispatch(
                         .unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string()),
                 )
                 .await?;
+                apply_mode(holly, &session_id, mode).await?;
             } else if agent.is_some() {
                 tracing::warn!(
                     "--agent is ignored with --resume: a resumed session's agent is fixed"
                 );
-            }
-            apply_mode(holly, &session_id, cli.mode, user_config).await?;
-            // After `apply_mode`, whose switch cascades over the whole tree.
-            if let Some(check) = &resume_check {
-                session_store::apply_forced_modes(holly, check, explicit_mode).await?;
             }
             let prompt = prompt.join(" ");
             run_one(holly, &session_id, &prompt, &format).await
@@ -141,7 +140,8 @@ pub(crate) async fn dispatch(
                 if let Some(a) = agent {
                     bind_agent(holly, &session_id, a).await?;
                 }
-                apply_mode(holly, &session_id, cli.mode, user_config).await?;
+                let mode = cli.mode.or_else(|| user_config.mode.clone());
+                apply_mode(holly, &session_id, mode).await?;
                 let prompt = cli.prompt.join(" ");
                 run_one(holly, &session_id, &prompt, "text").await
             }
@@ -175,19 +175,14 @@ fn known_agents(head: &Head) -> Vec<String> {
     catalog.iter().map(|a| a.name.clone()).collect()
 }
 
-/// `--mode` (ADR-0207 §11/§12): `SetMode` is trusted-only (a mode *is* the
-/// session's authority), so this direct `Holly::send` — not the wire — is
-/// exactly the surface it's meant for. Precedence: `--mode` > `config.yml`
-/// `mode:` > the engine's own `DEFAULT_MODE`, mirroring `agent`'s `--agent` >
-/// config > default. `None` either way sends nothing, leaving the session at
-/// `DEFAULT_MODE` exactly as before this setting existed.
-async fn apply_mode(
-    holly: &Holly,
-    session_id: &SessionId,
-    cli_mode: Option<String>,
-    user_config: &config::Config,
-) -> Result<()> {
-    if let Some(mode) = cli_mode.or_else(|| user_config.mode.clone()) {
+/// `--mode` (ADR-0207 §11/§12) for a fresh session: `SetMode` is
+/// trusted-only (a mode *is* the session's authority), so this direct
+/// `Holly::send` — not the wire — is exactly the surface it's meant for.
+/// Callers resolve `--mode` > `config.yml` `mode:`; `None` sends nothing,
+/// leaving the session at the engine's own `DEFAULT_MODE`. A resume goes
+/// through `session_store::resume_with_mode` instead (ADR-0215, #757).
+async fn apply_mode(holly: &Holly, session_id: &SessionId, mode: Option<String>) -> Result<()> {
+    if let Some(mode) = mode {
         holly
             .send(InMsg::SetMode {
                 session: session_id.clone(),

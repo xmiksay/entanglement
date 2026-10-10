@@ -14,7 +14,7 @@ pub use listing::{children_of, first_prompt_snippet, list_sessions, root_of, Ses
 pub use pairing::pair_records;
 pub use payload::LogPayload;
 pub use resume_check::{
-    apply_forced_modes, check_for_resume, load_for_resume, Fallback, ResumeCheck,
+    check_for_resume, load_for_resume, resume_with_mode, Fallback, ResumeCheck,
 };
 
 /// Returns the base data directory for entanglement session storage.
