@@ -130,6 +130,7 @@ async fn persisted_override_applies_at_spawn() {
             agent: "plan".into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -161,6 +162,7 @@ async fn profile_without_override_emits_no_generation_changed_at_spawn() {
             agent: "other".into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

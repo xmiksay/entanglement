@@ -138,6 +138,7 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
                 agent: agent.into(),
                 prompt: "task".into(),
                 user: None,
+                model: None,
             })
             .await
             .unwrap();

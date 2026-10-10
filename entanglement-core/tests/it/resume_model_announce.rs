@@ -238,6 +238,7 @@ async fn fresh_session_start_is_unaffected() {
             agent: "plan".into(),
             prompt: "hi".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

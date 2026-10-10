@@ -127,6 +127,7 @@ pub(crate) fn fork_successor(
             prompt: seed_prompt(compaction.mode, compaction.seed),
             // Inherited from the predecessor by the supervisor (#522).
             user: None,
+            model: None,
         },
         close: InMsg::CloseSession {
             session: session.clone(),

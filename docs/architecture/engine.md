@@ -219,6 +219,23 @@ first regardless; a resolver failure surfaces the same `Error` as `SetModel`
 and keeps the old binding. Replay reconstructs `profile_models`/`provider`
 from the folded `ModelChanged` records.
 
+**Spawn-time model choice** (✅ #725): `InMsg::Spawn { model: Some(ModelChoice
+{ provider, model }) }` picks the model a session starts on — the only way to
+get the *first* round on it, since a follow-up `SetModel` queues behind the
+initiating prompt. The supervisor resolves it through the same
+`model_resolver`, under the session's effective user, **before** recording any
+state for the new session; `start_session` then binds it via `rebind` in the
+pin's slot, so it out-ranks the agent's pin (ADR-0081's session memory >
+static pin — exactly what a `SetModel` before turn one would do) and the pin
+is never applied. `SessionStarted.model` already announces it, and its
+`ModelChanged` right after is what persistence logs and replay re-folds — no
+new event or record shape. Failure is deliberately **stricter** than a
+`SetModel` (which keeps the old binding) or the best-effort pin: an
+unresolvable choice, or an engine with no resolver, refuses the spawn with a
+seq-0 supervisor `Error` (the unknown-`agent` refusal shape, #119) and leaves
+the id free for a corrected retry — running a turn on a model the caller
+didn't ask for would be a silent cost/quality swap no later event can undo.
+
 **Live generation-parameter changes + per-profile persistence** (#374,
 [ADR-0094](../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md))
 mirrors the model pin above, but through a **separate** seam:

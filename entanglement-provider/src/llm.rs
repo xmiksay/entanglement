@@ -559,10 +559,19 @@ impl std::fmt::Display for UserId {
 /// Takes the resolving session's [`UserId`] (`None` in single-user mode, #522):
 /// a multi-user runtime's resolver closure looks up that user's own catalog
 /// overlay + API key instead of the one process-global catalog/env-var key a
-/// single-user embedder's closure captures. The three call sites (session
-/// start, `SetAgent` pin rebind, `SetModel`) all already have the session in
+/// single-user embedder's closure captures. Every call site (session start's
+/// agent-pin rebind, `SetModel`, the supervisor on an `InMsg::Spawn` carrying a
+/// `model` (#725), and replay on resume) already has the session's user in
 /// scope, so this costs single-user callers nothing — they simply ignore the
 /// parameter.
+///
+/// Runs on the engine's supervisor loop for `Spawn`/`Resume`, so it must be
+/// cheap and must not block — no network I/O. A slow resolver stalls every
+/// session's routing, not just the one being resolved. For a multi-user
+/// engine that includes the store behind
+/// [`build_user_model_resolver`][crate::multi_user::build_user_model_resolver]:
+/// it calls `UserProviderStore::context` on every resolve, so that lookup
+/// must answer from memory too.
 pub type ModelResolver = std::sync::Arc<
     dyn Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String> + Send + Sync,
 >;

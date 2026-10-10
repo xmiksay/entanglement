@@ -59,57 +59,32 @@ use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId};
+use crate::protocol::{AgentState, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::UserId;
 
 use emit::{emit_tool_output, reoffer_pending};
 use ops::run_oneshot;
-use start::{start_session, SessionStart};
+use start::start_session;
+pub(crate) use start::SessionStart;
 use turn::drive_turn;
 
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
 /// and `AgentChanged` so a head knows the starting agent.
 ///
-/// If `initial_session` is provided, it's used as the starting state (for resume);
-/// otherwise, a fresh session is created.
+/// If `start.initial_session` is provided, it's used as the starting state (for
+/// resume); otherwise, a fresh session is created.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn session_loop(
     session: SessionId,
     mut rx: mpsc::Receiver<SessionCmd>,
     events: broadcast::Sender<OutEvent>,
     cfg: EngineConfig,
-    agent: Agent,
-    initial_session: Option<Session>,
-    parent: Option<SessionId>,
-    predecessor: Option<SessionId>,
-    user: Option<UserId>,
-    // The mode a fresh spawn starts under — the parent's live mode at spawn
-    // time (ADR-0207 §6: mode applies to the whole spawn sub-tree), or
-    // `DEFAULT_MODE` for a root. Ignored on the resume path (a replayed
-    // session already carries the correct value in `s.mode`) — the caller
-    // passes `DEFAULT_MODE` there too, mirroring the `None`/`false` it passes
-    // for `predecessor`/`user`.
-    initial_mode: String,
+    start: SessionStart,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
     forks: mpsc::Sender<InMsg>,
 ) {
-    let mut s = start_session(
-        &session,
-        &events,
-        &cfg,
-        &seqs,
-        forks,
-        SessionStart {
-            agent,
-            initial_session,
-            parent,
-            predecessor,
-            user,
-            initial_mode,
-        },
-    );
+    let mut s = start_session(&session, &events, &cfg, &seqs, forks, start);
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
     // A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending

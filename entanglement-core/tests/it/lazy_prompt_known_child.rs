@@ -121,6 +121,7 @@ async fn lazy_prompt_refuses_a_known_hibernated_child() {
             agent: "page-writer".into(),
             prompt: "write a page".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

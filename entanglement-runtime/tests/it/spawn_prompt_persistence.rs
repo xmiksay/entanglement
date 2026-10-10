@@ -31,6 +31,7 @@ async fn spawned_child_prompt_is_persisted_and_replayable() {
             agent: "general".into(),
             prompt: "child task".into(),
             user: None,
+            model: None,
         })
         .await
         .expect("send spawn");

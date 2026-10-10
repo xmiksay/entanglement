@@ -1,17 +1,18 @@
 //! Session creation: an explicit `Spawn` (child or compaction-successor root)
 //! and the `SpawnBlank` unknown-session policy's fresh-root auto-create.
 
-use entanglement_provider::UserId;
+use entanglement_provider::{ResolvedModel, UserId};
 use tokio::sync::mpsc;
 
 use super::Supervisor;
 use crate::holly::routing::emit_supervisor_error;
 use crate::holly::{DEFAULT_AGENT, DEFAULT_MODE, SESSION_CMD_CAPACITY};
-use crate::protocol::{SessionId, SessionInfo};
-use crate::session::{session_loop, SessionCmd};
+use crate::protocol::{ModelChoice, SessionId, SessionInfo};
+use crate::session::{session_loop, SessionCmd, SessionStart};
 
 impl Supervisor {
     /// `Spawn`: start `child` under `agent`, queueing `prompt` as its first turn.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn spawn(
         &mut self,
         child: &SessionId,
@@ -20,6 +21,7 @@ impl Supervisor {
         agent: &str,
         prompt: &str,
         user: &Option<UserId>,
+        model: &Option<ModelChoice>,
     ) {
         // A duplicate spawn for a live child is a no-op (the child already runs).
         if self.sessions.contains_key(child) {
@@ -76,6 +78,19 @@ impl Supervisor {
                     .and_then(|m| m.user)
             });
         let effective_user = inherited_user.or_else(|| user.clone());
+        // Resolved here, before any supervisor state is recorded, so a bad
+        // choice refuses the spawn outright (#725) — running the first turn
+        // on a model the caller didn't ask for would be a silent cost/quality
+        // swap no later `Error` can undo.
+        let spawn_model = match model {
+            Some(choice) => {
+                match self.resolve_spawn_model(child, choice, effective_user.as_ref()) {
+                    Some(resolved) => Some(resolved),
+                    None => return,
+                }
+            }
+            None => None,
+        };
         // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
         // spawned child starts under its parent's live mode. A
         // compaction successor (predecessor set, no parent — the
@@ -122,12 +137,15 @@ impl Supervisor {
                 srx,
                 ev,
                 cfg2,
-                resolved_agent,
-                None,
-                parent_for_loop,
-                predecessor,
-                effective_user,
-                initial_mode,
+                SessionStart {
+                    agent: resolved_agent,
+                    initial_session: None,
+                    parent: parent_for_loop,
+                    predecessor,
+                    user: effective_user,
+                    initial_mode,
+                    spawn_model,
+                },
                 seqs2,
                 activity2,
                 forks,
@@ -153,6 +171,32 @@ impl Supervisor {
                 let _ = ptx.send(SessionCmd::ChildSpawned(child.clone())).await;
             }
         }
+    }
+
+    /// Resolve a `Spawn`'s explicit model choice under the session's
+    /// effective user, or emit a supervisor `Error` for `child` and return
+    /// `None` — the same refusal shape an unknown spawn `agent` gets.
+    fn resolve_spawn_model(
+        &self,
+        child: &SessionId,
+        choice: &ModelChoice,
+        user: Option<&UserId>,
+    ) -> Option<ResolvedModel> {
+        let ModelChoice { provider, model } = choice;
+        let result = match self.cfg.model_resolver.as_ref() {
+            Some(resolver) => resolver(user, provider, model),
+            None => Err("model switching is not supported by this engine".to_string()),
+        };
+        result
+            .map_err(|e| {
+                emit_supervisor_error(
+                    &self.events,
+                    &self.seqs,
+                    child,
+                    &format!("cannot spawn on model `{provider}/{model}`: {e}"),
+                );
+            })
+            .ok()
     }
 
     /// The [`UnknownSession::SpawnBlank`][crate::UnknownSession::SpawnBlank]
@@ -208,12 +252,15 @@ impl Supervisor {
                 srx,
                 ev,
                 cfg2,
-                agent,
-                None,
-                None,
-                None,
-                None,
-                DEFAULT_MODE.to_string(),
+                SessionStart {
+                    agent,
+                    initial_session: None,
+                    parent: None,
+                    predecessor: None,
+                    user: None,
+                    initial_mode: DEFAULT_MODE.to_string(),
+                    spawn_model: None,
+                },
                 seqs2,
                 activity2,
                 forks,

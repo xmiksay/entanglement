@@ -161,6 +161,7 @@ async fn bind_agent(holly: &Holly, session_id: &SessionId, agent: String) -> Res
             agent,
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await?;
     Ok(())

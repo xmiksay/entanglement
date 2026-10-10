@@ -48,6 +48,7 @@ async fn spawn_root(holly: &Holly, id: &SessionId, user: Option<UserId>) {
             agent: "general".into(),
             prompt: String::new(),
             user,
+            model: None,
         })
         .await
         .unwrap();
@@ -73,6 +74,7 @@ async fn a_child_of_a_tenant_root_keeps_its_prefix_and_reports_its_lineage() {
             agent: "general".into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -167,6 +169,7 @@ async fn session_info_is_live_only_and_survives_a_hibernate_resume_cycle() {
             agent: "general".into(),
             prompt: String::new(),
             user: Some(alice.clone()),
+            model: None,
         })
         .await
         .unwrap();

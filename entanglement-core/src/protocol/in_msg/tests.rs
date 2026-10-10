@@ -16,6 +16,7 @@ fn wire_allowlist_refuses_the_privileged_frames() {
         agent: "build".into(),
         prompt: "go".into(),
         user: None,
+        model: None,
     }
     .wire_allowed());
     assert!(!InMsg::Resume {

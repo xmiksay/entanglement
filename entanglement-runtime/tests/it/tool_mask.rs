@@ -282,6 +282,7 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
             agent: "general".into(),
             prompt: "edit something".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
