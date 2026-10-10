@@ -1,5 +1,6 @@
 //! The pre-resume checks every in-tree resume path shares (`skutter run
-//! --resume` and both TUI resume entry points), ADR-0214.
+//! --resume` and both TUI resume entry points): ADR-0214, refined per session
+//! with read-only narrowing by ADR-0215.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,7 +16,7 @@ use super::{integrity_gap, read, LogPayload, LogRecord};
 const RETIRED_AGENTS: &[&str] = &["build", "explore", "research"];
 
 /// The retired agents that were read-only. A session that last ran under one
-/// resumes in this mode unless the user chose one explicitly (ADR-0214): the
+/// resumes in this mode unless the user chose one explicitly (ADR-0215): the
 /// fallback persona must not silently widen what the session may do.
 const READ_ONLY_RETIRED: &[&str] = &["explore", "research"];
 const READ_ONLY_MODE: &str = "research";
@@ -52,7 +53,7 @@ impl Fallback {
             .map(|m| format!(" in `{m}` mode"))
             .unwrap_or_default();
         format!(
-            "note: {who} used retired agent `{}`; resuming as `{}`{mode} (ADR-0214)",
+            "note: {who} used retired agent `{}`; resuming as `{}`{mode} (ADR-0215)",
             self.retired, self.resumed_as
         )
     }
@@ -63,6 +64,36 @@ impl Fallback {
 pub struct ResumeCheck {
     /// Sessions resume will rebuild under a fallback agent, in log order.
     pub fallbacks: Vec<Fallback>,
+}
+
+impl ResumeCheck {
+    /// `records` paired for `Holly::resume`, with a synthetic
+    /// `ModeChanged` appended for each forced fallback (ADR-0215).
+    ///
+    /// WHY in the replay stream and not only as a later `SetMode`: a resumed
+    /// session announces its replayed mode and re-offers a parked batch
+    /// *before* it reads its inbox, so a `SetMode` sent after
+    /// `Holly::resume` would let a re-offered call be graded under the wider
+    /// mode first. Appended last so replay's last-write-wins fold keeps it.
+    pub fn paired_for_resume(
+        &self,
+        records: &[LogRecord],
+        explicit_mode: bool,
+    ) -> Vec<(Option<InMsg>, OutEvent)> {
+        let mut paired = super::pair_records(records);
+        for fallback in &self.fallbacks {
+            if let Some(mode) = fallback.forced_mode(explicit_mode) {
+                paired.push((
+                    None,
+                    OutEvent::ModeChanged {
+                        session: fallback.session.clone(),
+                        mode: mode.to_string(),
+                    },
+                ));
+            }
+        }
+        paired
+    }
 }
 
 #[derive(Default)]
@@ -156,10 +187,11 @@ pub fn load_for_resume(
     Ok((records, check))
 }
 
-/// After `Holly::resume` (and after the head applied its own `--mode` /
-/// config mode, which cascades over the tree), narrow each read-only
-/// fallback session to `research`. Sent per session, so it cascades only
-/// over that session's own sub-tree.
+/// Re-narrows each read-only fallback session to `research` after a head's
+/// own `--mode`/config switch, which cascades over the whole tree and would
+/// otherwise re-widen a child that [`ResumeCheck::paired_for_resume`]
+/// already started narrowed (ADR-0215). Sent per session, so it cascades
+/// only over that session's own sub-tree.
 pub async fn apply_forced_modes(
     holly: &Holly,
     check: &ResumeCheck,

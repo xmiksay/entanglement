@@ -13,7 +13,7 @@ use crate::config;
 use crate::pipe::pipe;
 use crate::run::run_one;
 use crate::services::Head;
-use crate::session_store::{self, list_sessions, pair_records};
+use crate::session_store::{self, list_sessions};
 use crate::tui::tui;
 
 /// Run the head `cli.cmd` selects (`None` = bare `skutter`: the TUI with no
@@ -43,7 +43,7 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)))
             };
 
-            // An explicit `--mode` wins over ADR-0214's read-only fallback.
+            // An explicit `--mode` wins over ADR-0215's read-only narrowing.
             let explicit_mode = cli.mode.is_some();
             let mut resume_check = None;
             if let Some(resume_id) = resume {
@@ -53,13 +53,18 @@ pub(crate) async fn dispatch(
                     session_store::load_for_resume(cwd, &resume_session_id, |n| {
                         known.iter().any(|k| k == n)
                     })?;
-                // A retired agent resumes under a fallback (ADR-0214); say so.
+                // A retired agent resumes under a fallback (ADR-0215); say so.
                 for fallback in &check.fallbacks {
                     eprintln!("{}", fallback.note(explicit_mode));
                 }
 
+                // Forced modes ride the replay itself, so a re-offered
+                // parked call is never graded under the wider mode first.
                 holly
-                    .resume(session_id.clone(), pair_records(&records))
+                    .resume(
+                        session_id.clone(),
+                        check.paired_for_resume(&records, explicit_mode),
+                    )
                     .await?;
                 resume_check = Some(check);
             }
@@ -161,13 +166,7 @@ async fn bind_agent(holly: &Holly, session_id: &SessionId, agent: String) -> Res
     Ok(())
 }
 
-/// `--mode` (ADR-0207 §11/§12): `SetMode` is trusted-only (a mode *is* the
-/// session's authority), so this direct `Holly::send` — not the wire — is
-/// exactly the surface it's meant for. Precedence: `--mode` > `config.yml`
-/// `mode:` > the engine's own `DEFAULT_MODE`, mirroring `agent`'s `--agent` >
-/// config > default. `None` either way sends nothing, leaving the session at
-/// `DEFAULT_MODE` exactly as before this setting existed.
-/// Every agent name the live catalog carries (ADR-0214's fallback check).
+/// Every agent name the live catalog carries (ADR-0215's fallback check).
 fn known_agents(head: &Head) -> Vec<String> {
     let catalog = head
         .live_profiles
@@ -176,6 +175,12 @@ fn known_agents(head: &Head) -> Vec<String> {
     catalog.iter().map(|a| a.name.clone()).collect()
 }
 
+/// `--mode` (ADR-0207 §11/§12): `SetMode` is trusted-only (a mode *is* the
+/// session's authority), so this direct `Holly::send` — not the wire — is
+/// exactly the surface it's meant for. Precedence: `--mode` > `config.yml`
+/// `mode:` > the engine's own `DEFAULT_MODE`, mirroring `agent`'s `--agent` >
+/// config > default. `None` either way sends nothing, leaving the session at
+/// `DEFAULT_MODE` exactly as before this setting existed.
 async fn apply_mode(
     holly: &Holly,
     session_id: &SessionId,

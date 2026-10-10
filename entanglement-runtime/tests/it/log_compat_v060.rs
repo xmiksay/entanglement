@@ -22,8 +22,7 @@ use entanglement_core::{
     LlmResponse, LlmStream, Message, MessageRole, OutEvent, SessionId, DEFAULT_AGENT,
 };
 use entanglement_runtime::session_store::{
-    apply_forced_modes, check_for_resume, integrity_gap, pair_records, read_path, LogPayload,
-    LogRecord,
+    check_for_resume, integrity_gap, pair_records, read_path, LogPayload, LogRecord,
 };
 use tokio::sync::broadcast::Receiver;
 
@@ -80,14 +79,14 @@ fn v060_log_loads_with_retired_frames_skipped_not_gapped() {
         "0.6.0's `profile` field lands in `agent`"
     );
     // The root resumes as its own last agent; only the still-live child,
-    // which ran under the read-only `explore`, falls back (ADR-0214).
+    // which ran under the read-only `explore`, falls back (ADR-0215).
     let check = check_for_resume(&records, known).expect("no gap");
     let notes: Vec<String> = check.fallbacks.iter().map(|f| f.note(false)).collect();
     assert_eq!(
         notes,
         [
             "note: session `v060-child` used retired agent `explore`; resuming as `general` in \
-          `research` mode (ADR-0214)"
+          `research` mode (ADR-0215)"
         ]
     );
 }
@@ -330,7 +329,7 @@ async fn retired_set_agent_switch_resumes_under_the_last_agent() {
 }
 
 /// What the CLI's resume path does with a 0.6.0 log rooted under `agent`
-/// (`check_for_resume` → note → resume → `apply_forced_modes`, ADR-0214),
+/// (`check_for_resume` → note → resume with forced modes seeded, ADR-0215),
 /// minus the file read: the log is a temp file, never the real data dir.
 /// Returns the notes and the first resumed request.
 async fn resume_like_the_cli(agent: &str, explicit_mode: bool) -> (Vec<String>, Req) {
@@ -348,19 +347,12 @@ async fn resume_like_the_cli(agent: &str, explicit_mode: bool) -> (Vec<String>, 
     let sid = SessionId::new("retired");
     let (holly, requests) = engine();
     holly
-        .resume(sid.clone(), pair_records(&records))
+        .resume(
+            sid.clone(),
+            check.paired_for_resume(&records, explicit_mode),
+        )
         .await
         .unwrap();
-    let mut sub = holly.subscribe();
-    apply_forced_modes(&holly, &check, explicit_mode)
-        .await
-        .unwrap();
-    if check.fallbacks[0].forced_mode(explicit_mode).is_some() {
-        wait_for(&mut sub, &sid, |ev| {
-            matches!(ev, OutEvent::ModeChanged { .. })
-        })
-        .await;
-    }
     (notes, probe(&holly, &requests, &sid).await)
 }
 
@@ -370,7 +362,7 @@ async fn cli_resume_of_a_retired_build_agent_falls_back_to_general() {
     let (notes, req) = resume_like_the_cli("build", false).await;
     assert_eq!(
         notes,
-        ["note: session used retired agent `build`; resuming as `general` (ADR-0214)"]
+        ["note: session used retired agent `build`; resuming as `general` (ADR-0215)"]
     );
     assert_eq!(req.system, general_prompt());
     assert_eq!(req.notice.as_deref(), Some("[mode: build]"));
@@ -385,19 +377,18 @@ async fn cli_resume_of_a_retired_explore_agent_narrows_to_research() {
         notes,
         [
             "note: session used retired agent `explore`; resuming as `general` in `research` mode \
-          (ADR-0214)"
+          (ADR-0215)"
         ]
     );
     assert_eq!(req.system, general_prompt());
-    assert_eq!(
-        req.notice.as_deref(),
-        Some("[mode: research — changed from build]")
-    );
+    // Already `research` from the replay itself — never a switch away from
+    // `build` that a re-offered call could slip in ahead of.
+    assert_eq!(req.notice.as_deref(), Some("[mode: research]"));
 
     let (notes, req) = resume_like_the_cli("explore", true).await;
     assert_eq!(
         notes,
-        ["note: session used retired agent `explore`; resuming as `general` (ADR-0214)"]
+        ["note: session used retired agent `explore`; resuming as `general` (ADR-0215)"]
     );
     assert_eq!(req.notice.as_deref(), Some("[mode: build]"));
 }
