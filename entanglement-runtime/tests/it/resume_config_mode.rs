@@ -101,3 +101,61 @@ async fn without_a_forced_session_the_configured_mode_cascades() {
     assert_eq!(root_modes.last().map(String::as_str), Some("build"));
     assert_eq!(kid_modes.last().map(String::as_str), Some("build"));
 }
+
+/// #763 (ADR-0218): a `plan` agent's `default_mode: plan` seeds only a fresh
+/// session — a resumed one keeps the mode its own log replays, here the
+/// `build` the user switched to, and never passes through `plan`.
+#[tokio::test]
+async fn a_resumed_session_keeps_its_replayed_mode_over_the_agents_default() {
+    let log = [
+        r#"{"ts":1,"session":"root","payload":{"direction":"out","kind":"session_started","session":"root","parent":null,"agent":"plan","model":null,"root":true,"ts":1}}"#,
+        r#"{"ts":2,"session":"root","payload":{"direction":"out","kind":"mode_changed","session":"root","mode":"plan"}}"#,
+        r#"{"ts":3,"session":"root","payload":{"direction":"out","kind":"mode_changed","session":"root","mode":"build"}}"#,
+    ]
+    .join("\n");
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let path = tmp.path().join("log.jsonl");
+    std::fs::write(&path, log).unwrap();
+    let records = read_path(&path).expect("load");
+
+    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents");
+    assert_eq!(
+        agents.get("plan").unwrap().default_mode.as_deref(),
+        Some("plan")
+    );
+    let check = check_for_resume(&records, |n| agents.get(n).is_some()).expect("no gap");
+    let holly = Holly::spawn(EngineConfig {
+        llm_factory: Arc::new(|| Box::new(DoneLlm) as Box<dyn Llm>),
+        agents,
+        ..EngineConfig::default()
+    });
+
+    let mut sub = holly.subscribe();
+    let root = SessionId::new("root");
+    resume_with_mode(&holly, &root, &records, &check, false, None)
+        .await
+        .expect("resume");
+    holly
+        .send(InMsg::prompt(root.clone(), "go"))
+        .await
+        .expect("prompt");
+
+    let mut modes = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let ev = tokio::time::timeout_at(deadline, sub.recv())
+            .await
+            .expect("root's turn never finished")
+            .expect("broadcast closed");
+        match ev {
+            OutEvent::ModeChanged { session, mode } if session == root => modes.push(mode),
+            OutEvent::Done { session, .. } if session == root => break,
+            _ => {}
+        }
+    }
+    assert!(
+        !modes.is_empty(),
+        "the resumed root never announced its mode"
+    );
+    assert!(modes.iter().all(|m| m == "build"), "{modes:?}");
+}

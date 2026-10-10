@@ -80,6 +80,7 @@ fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
         system_prompt: String::new(),
         model: pin.map(|(_, m)| m.to_string()),
         provider: pin.map(|(p, _)| p.to_string()),
+        default_mode: None,
     }
 }
 

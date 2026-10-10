@@ -372,6 +372,30 @@ mod tests {
 
         assert!(reg.get("plan").is_some());
         assert!(reg.get("debug").is_some());
+
+        // #763: only `plan` carries a starting-mode hint.
+        assert_eq!(
+            reg.get("plan").unwrap().default_mode.as_deref(),
+            Some("plan")
+        );
+        assert_eq!(general.default_mode, None);
+        assert_eq!(reg.get("debug").unwrap().default_mode, None);
+    }
+
+    #[test]
+    fn a_known_default_mode_is_kept() {
+        let p = parse("---\nname: x\ndescription: d\ndefault_mode: research\n---\nbody")
+            .expect("parses");
+        assert_eq!(p.default_mode.as_deref(), Some("research"));
+    }
+
+    #[test]
+    fn an_unknown_default_mode_is_ignored_not_fatal() {
+        // #763: a stale/typo'd mode name warns at load and is dropped, so the
+        // agent still loads and simply starts in the usual mode.
+        let p = parse("---\nname: x\ndescription: d\ndefault_mode: yolo\n---\nbody")
+            .expect("an unknown default_mode must not abort the load");
+        assert_eq!(p.default_mode, None);
     }
 
     #[test]

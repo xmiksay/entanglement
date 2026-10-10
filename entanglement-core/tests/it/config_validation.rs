@@ -18,6 +18,7 @@ fn custom_profile(name: &str) -> Agent {
         system_prompt: "custom".to_string(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 

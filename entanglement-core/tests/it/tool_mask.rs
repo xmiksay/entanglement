@@ -35,6 +35,7 @@ fn explore_profile() -> Agent {
         system_prompt: "You are a read-only exploration agent.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 

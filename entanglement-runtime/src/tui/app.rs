@@ -130,6 +130,8 @@ pub struct App {
     // Persisted default editor from `config.yml` (#persist-editor). Wins over
     // `$VISUAL`/`$EDITOR` in the `/editor` round-trip; `None` ⇒ resolve from env.
     configured_editor: Option<String>,
+    // `--mode`/config `mode:` this TUI launched with, reapplied on resume (#752).
+    launch_mode: crate::session_store::LaunchMode,
 
     // `/key` dialog (#304): two-stage modal to persist a provider API key.
     key_dialog: crate::tui::key_dialog::KeyDialog,

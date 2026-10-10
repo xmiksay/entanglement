@@ -134,6 +134,7 @@ fn agent(name: &str, system_prompt: &str) -> Agent {
         system_prompt: system_prompt.into(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }
 

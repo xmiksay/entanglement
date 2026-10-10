@@ -29,8 +29,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true, hide = true)]
     pub(crate) yes: bool,
     /// Run the session under this permission mode (`research`/`plan`/`build`/
-    /// `auto`, ADR-0207) instead of the engine's default (`build`). Only
-    /// affects `run` heads (explicit `run` and the implicit one-shot form) —
+    /// `auto`, ADR-0207). Precedence: `--mode` > config `mode:` > the agent's
+    /// `default_mode` > `build` (ADR-0218). Applies to `run` (explicit and
+    /// implicit), `--resume`, and the TUI (incl. its resumes) —
     /// `auto` is the unattended posture `--yes` used to approximate, now with
     /// a bounded posture (unlisted calls refuse, then park a 60s approval —
     /// ADR-0209), run/turn/duration budgets, and no silent widening. Global so it may follow the subcommand:

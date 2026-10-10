@@ -432,6 +432,7 @@ async fn profile_changes_during_replay() {
         system_prompt: "Review the changes.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     });
     let result = entanglement_core::session::Session::replay(&records, &cfg, &sid);
 

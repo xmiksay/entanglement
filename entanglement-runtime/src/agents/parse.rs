@@ -9,6 +9,7 @@ use super::discover::RawAgent;
 use super::migrate::migrate_legacy_agent_file;
 use crate::layers::Strictness;
 use crate::mcp::McpCapabilityIndex;
+use crate::mode::{ladder_rank, BUILTIN_LADDER};
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, PromptContext};
 
@@ -41,6 +42,11 @@ pub(super) struct AgentDefinition {
     /// access is governed by the session's permission mode, not the agent.
     #[serde(default)]
     pub(super) skills: Option<Vec<String>>,
+    /// The permission mode a fresh session under this agent starts in when
+    /// neither `--mode` nor config `mode:` names one (#763, ADR-0218) — a
+    /// starting hint, never authority. An unknown mode warns and is dropped.
+    #[serde(default)]
+    pub(super) default_mode: Option<String>,
 }
 
 /// Lenient frontmatter for cross-vendor agents (ADR-0074): only the identity
@@ -67,6 +73,7 @@ impl ForeignAgentFrontmatter {
             provider: None,
             include_brief: false,
             skills: None,
+            default_mode: None,
         }
     }
 }
@@ -188,12 +195,27 @@ pub(super) fn build_agent(
             def.name
         );
     }
+    // Unknown → warn and ignore rather than abort: the hint only picks a
+    // starting posture, so a stale name must not brick the whole catalog.
+    let default_mode = def.default_mode.filter(|mode| {
+        let known = ladder_rank(mode).is_some();
+        if !known {
+            tracing::warn!(
+                agent = %def.name,
+                default_mode = %mode,
+                "ignoring unknown `default_mode` (expected one of {})",
+                BUILTIN_LADDER.join("/"),
+            );
+        }
+        known
+    });
     let agent = Agent {
         name: def.name,
         description: def.description,
         system_prompt: assemble(body, include_brief, ctx, &preloaded),
         model,
         provider,
+        default_mode,
     };
     // The one observability point at load (#184): the assembled prompt is
     // otherwise invisible. `brief`/`skills` report what actually reached this

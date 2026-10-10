@@ -96,6 +96,7 @@ pub async fn tui(
     // resolver closures in `boot.rs` read/write. `/tools`' status column
     // reads it; nothing else in the TUI does.
     advertising_state: std::sync::Arc<crate::tool_advertising::AdvertisingState>,
+    launch_mode: crate::session_store::LaunchMode,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -153,6 +154,7 @@ pub async fn tui(
     app.set_aux_models(aux_models);
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
+    app.set_launch_mode(launch_mode);
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
@@ -438,6 +440,7 @@ mod tests {
             system_prompt: "Plan only.".into(),
             model: None,
             provider: None,
+            default_mode: None,
         });
         let holly = Holly::spawn(cfg);
         let sid = SessionId::new("s1");

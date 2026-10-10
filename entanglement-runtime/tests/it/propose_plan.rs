@@ -1052,6 +1052,37 @@ async fn auto_mode_denies_propose_plan() {
     assert_denied_by_mode("auto").await;
 }
 
+/// #763 (ADR-0218): `--agent plan` with no `--mode`/config `mode:` starts in
+/// the agent's `default_mode: plan`, so `propose_plan` reaches its approval
+/// park with no `SetMode` ever sent.
+#[tokio::test]
+async fn the_plan_agent_can_propose_with_no_mode_given() {
+    let dir = tempdir();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("ok"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        dir.path(),
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::Spawn {
+            session: sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "plan".into(),
+            prompt: String::new(),
+            user: None,
+            model: None,
+        })
+        .await
+        .unwrap();
+    await_request(&holly, &sid).await;
+}
+
 #[tokio::test]
 async fn plan_mode_still_force_parks_propose_plan() {
     let dir = tempdir();

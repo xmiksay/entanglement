@@ -117,6 +117,7 @@ impl Harness {
             system_prompt: String::new(),
             model: Some("claude-x".into()),
             provider: Some("anthropic".into()),
+            default_mode: None,
         });
         EngineConfig {
             llm_factory: self.factory(),

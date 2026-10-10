@@ -306,6 +306,7 @@ fn one_profile(name: &str, _permission: PermissionProfile) -> AgentCatalog {
         system_prompt: String::new(),
         model: None,
         provider: None,
+        default_mode: None,
     });
     profiles
 }

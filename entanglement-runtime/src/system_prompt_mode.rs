@@ -172,6 +172,7 @@ mod tests {
             ),
             model: None,
             provider: None,
+            default_mode: None,
         };
         let resolve = resolver(advertising);
         // Same date, Full mode ⇒ falls back to the unmodified baked prompt.
@@ -198,6 +199,7 @@ mod tests {
             ),
             model: None,
             provider: None,
+            default_mode: None,
         };
         let resolve = resolver(advertising);
         let out = resolve(&session, &profile).expect("ToolSearch mode always returns Some");
@@ -212,6 +214,7 @@ mod tests {
             system_prompt: format!("<env>\nDate: {date}\n</env>"),
             model: None,
             provider: None,
+            default_mode: None,
         }
     }
 

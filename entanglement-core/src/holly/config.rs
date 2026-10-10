@@ -243,6 +243,12 @@ pub struct EngineConfig {
     /// blank root (the default — every in-tree single-user head), refuse with
     /// an `Error`, or resume it through the embedder's [`SessionLoader`][super::SessionLoader].
     pub unknown_session: UnknownSession,
+    /// The mode names ordered narrowest → widest (#763, ADR-0218), consulted
+    /// only to clamp a spawned child's [`Agent::default_mode`] to its
+    /// parent's mode. A pair not both on the ladder (the empty default
+    /// included) is incomparable, so the child simply inherits its parent's
+    /// mode — never wider by construction.
+    pub mode_ladder: Vec<String>,
 }
 
 impl EngineConfig {
@@ -277,6 +283,7 @@ impl Default for EngineConfig {
             auto_compact: true,
             id_gen: Arc::new(DefaultIdGen::new()),
             unknown_session: UnknownSession::default(),
+            mode_ladder: Vec::new(),
         }
     }
 }
@@ -375,5 +382,6 @@ fn default_agent() -> Agent {
                 .into(),
         model: None,
         provider: None,
+        default_mode: None,
     }
 }

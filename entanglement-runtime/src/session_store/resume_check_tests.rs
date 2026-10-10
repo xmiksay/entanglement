@@ -159,3 +159,15 @@ fn a_forced_sub_tree_gets_research_and_the_rest_the_configured_mode() {
     let records = [started("root", None, "general")];
     assert!(injected(&check(&records), &records, Some("build")).is_empty());
 }
+
+/// #752: `--mode` beats config `mode:` and alone marks the choice explicit.
+#[test]
+fn launch_mode_prefers_the_flag_over_config() {
+    let both = LaunchMode::resolve(Some("research".into()), Some("build".into()));
+    assert_eq!(both.mode.as_deref(), Some("research"));
+    assert!(both.explicit);
+    let config = LaunchMode::resolve(None, Some("build".into()));
+    assert_eq!(config.mode.as_deref(), Some("build"));
+    assert!(!config.explicit);
+    assert_eq!(LaunchMode::resolve(None, None), LaunchMode::default());
+}

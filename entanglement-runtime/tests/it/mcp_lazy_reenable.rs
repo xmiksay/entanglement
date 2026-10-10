@@ -165,6 +165,7 @@ fn unmasked_profile(name: &str, _perm: Permission) -> AgentCatalog {
         system_prompt: String::new(),
         model: None,
         provider: None,
+        default_mode: None,
     });
     profiles
 }

@@ -447,6 +447,7 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
         system_prompt: "Review the changes.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
@@ -658,6 +659,7 @@ async fn custom_profile_is_selectable() {
         system_prompt: "Ask before anything.".into(),
         model: None,
         provider: None,
+        default_mode: None,
     });
     let holly = Holly::spawn(cfg);
     let sid = SessionId::new("s1");
