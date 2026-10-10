@@ -65,7 +65,7 @@ fn a_read_only_retired_root_is_forced_into_research_unless_mode_is_explicit() {
 #[test]
 fn a_switch_away_from_a_retired_agent_is_no_fallback() {
     let c = check(&[started("root", None, "build"), changed("root", "plan")]);
-    assert_eq!(c, ResumeCheck::default());
+    assert!(c.fallbacks.is_empty(), "{c:?}");
 }
 
 /// A switch *to* a retired agent keeps the last known one (replay skips an
@@ -105,7 +105,7 @@ fn children_are_named_and_only_live_ones_count() {
 #[test]
 fn a_user_agent_named_like_a_retired_one_is_no_fallback() {
     let c = check_for_resume(&[started("root", None, "build")], |n| n == "build").unwrap();
-    assert_eq!(c, ResumeCheck::default());
+    assert!(c.fallbacks.is_empty(), "{c:?}");
 }
 
 #[test]
@@ -113,4 +113,49 @@ fn a_gap_still_refuses() {
     let gap = LogRecord::new(SessionId::new("root"), LogPayload::Gap { dropped: 2 });
     let err = check_for_resume(&[started("root", None, "general"), gap], known).unwrap_err();
     assert!(err.to_string().contains("missing 2 record"), "{err}");
+}
+
+/// The synthetic `ModeChanged`s `paired_for_resume` appends, as `(session, mode)`.
+fn injected(c: &ResumeCheck, records: &[LogRecord], mode: Option<&str>) -> Vec<(String, String)> {
+    let base = super::super::pair_records(records).len();
+    c.paired_for_resume(records, false, mode)[base..]
+        .iter()
+        .map(|(_, ev)| match ev {
+            OutEvent::ModeChanged { session, mode } => (session.to_string(), mode.clone()),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect()
+}
+
+/// #757: with a forced child, the configured mode rides the replay for every
+/// session outside the forced sub-tree, and the forced child's own live
+/// descendants stay narrowed with it — no session is left for a cascading
+/// `SetMode` to widen.
+#[test]
+fn a_forced_sub_tree_gets_research_and_the_rest_the_configured_mode() {
+    let records = [
+        started("root", None, "general"),
+        started("kid", Some("root"), "explore"),
+        started("grandkid", Some("kid"), "general"),
+        started("sibling", Some("root"), "general"),
+    ];
+    let c = check(&records);
+    let pair = |s: &str, m: &str| (s.to_string(), m.to_string());
+    assert_eq!(
+        injected(&c, &records, Some("build")),
+        [
+            pair("root", "build"),
+            pair("kid", "research"),
+            pair("grandkid", "research"),
+            pair("sibling", "build"),
+        ]
+    );
+    // No configured mode: only the forced sub-tree is touched.
+    assert_eq!(
+        injected(&c, &records, None),
+        [pair("kid", "research"), pair("grandkid", "research")]
+    );
+    // Nothing forced: nothing injected, the head's `SetMode` cascades as usual.
+    let records = [started("root", None, "general")];
+    assert!(injected(&check(&records), &records, Some("build")).is_empty());
 }

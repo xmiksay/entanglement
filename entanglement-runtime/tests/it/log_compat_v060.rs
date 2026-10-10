@@ -349,7 +349,7 @@ async fn resume_like_the_cli(agent: &str, explicit_mode: bool) -> (Vec<String>, 
     holly
         .resume(
             sid.clone(),
-            check.paired_for_resume(&records, explicit_mode),
+            check.paired_for_resume(&records, explicit_mode, None),
         )
         .await
         .unwrap();

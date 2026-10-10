@@ -798,9 +798,17 @@ assistant/tool messages and the model appears to forget the conversation.
   replay as a synthetic `ModeChanged` (`ResumeCheck::paired_for_resume`), so
   a re-offered parked call is never graded under the wider mode first.
   `skutter run --resume` and the TUI print one `note:` line per fallback.
+  The narrowing covers the forced session's rebuilt descendants too (a mode
+  spans the spawn sub-tree, ADR-0207 §6). The CLI's own `--mode`/config
+  `mode:` must not undo it: a `SetMode` on the root cascades over the whole
+  tree and would widen a forced child until a re-narrowing landed (#757). So
+  `session_store::resume_with_mode` carries *every* mode in the replay when
+  anything is forced — `research` inside a forced sub-tree, the configured
+  mode everywhere else — and sends the ordinary cascading `SetMode` only when
+  nothing is (an explicit `--mode` disables forcing, so it always cascades).
   The logic is the pure `session_store::check_for_resume`, which also
-  refuses a gap. `load_for_resume` and `apply_forced_modes` wrap it for the
-  heads; the CLI re-sends the switch after its cascading `--mode`.
+  refuses a gap; `load_for_resume` and `resume_with_mode` wrap it for the
+  heads.
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status

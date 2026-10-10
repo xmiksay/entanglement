@@ -92,7 +92,7 @@ async fn resume_and_grade(explicit_mode: bool) -> (String, bool, usize) {
     holly
         .resume(
             SessionId::new("root"),
-            check.paired_for_resume(&records, explicit_mode),
+            check.paired_for_resume(&records, explicit_mode, None),
         )
         .await
         .expect("resume");

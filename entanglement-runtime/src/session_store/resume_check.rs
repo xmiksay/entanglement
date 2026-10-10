@@ -2,7 +2,7 @@
 //! --resume` and both TUI resume entry points): ADR-0214, refined per session
 //! with read-only narrowing by ADR-0215.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -64,30 +64,84 @@ impl Fallback {
 pub struct ResumeCheck {
     /// Sessions resume will rebuild under a fallback agent, in log order.
     pub fallbacks: Vec<Fallback>,
+    /// Every session resume will rebuild, with its parent, in log order.
+    pub resumed: Vec<(SessionId, Option<SessionId>)>,
 }
 
 impl ResumeCheck {
-    /// `records` paired for `Holly::resume`, with a synthetic
-    /// `ModeChanged` appended for each forced fallback (ADR-0215).
+    /// The rebuilt sessions forced into `research`: each read-only fallback
+    /// plus its rebuilt descendants, since a mode covers the whole spawn
+    /// sub-tree (ADR-0207 §6). Empty under an explicit `--mode`.
+    fn forced(&self, explicit_mode: bool) -> HashSet<&SessionId> {
+        let roots: HashSet<&SessionId> = self
+            .fallbacks
+            .iter()
+            .filter(|f| f.forced_mode(explicit_mode).is_some())
+            .map(|f| &f.session)
+            .collect();
+        if roots.is_empty() {
+            return roots;
+        }
+        let parents: HashMap<&SessionId, Option<&SessionId>> = self
+            .resumed
+            .iter()
+            .map(|(sid, parent)| (sid, parent.as_ref()))
+            .collect();
+        let under_forced = |sid: &SessionId| {
+            // Bounded by the map's size, so a malformed cyclic log can't spin.
+            let mut cur = Some(sid);
+            for _ in 0..=parents.len() {
+                match cur {
+                    Some(c) if roots.contains(c) => return true,
+                    Some(c) => cur = parents.get(c).copied().flatten(),
+                    None => return false,
+                }
+            }
+            false
+        };
+        self.resumed
+            .iter()
+            .map(|(sid, _)| sid)
+            .filter(|sid| under_forced(sid))
+            .collect()
+    }
+
+    /// `records` paired for `Holly::resume`, with a synthetic `ModeChanged`
+    /// appended per rebuilt session when any session is forced (ADR-0215):
+    /// `research` inside a forced sub-tree, `mode` (the head's `--mode` /
+    /// config `mode:`, when set) everywhere else.
     ///
-    /// WHY in the replay stream and not only as a later `SetMode`: a resumed
+    /// WHY in the replay stream and not as a later `SetMode`: a resumed
     /// session announces its replayed mode and re-offers a parked batch
     /// *before* it reads its inbox, so a `SetMode` sent after
     /// `Holly::resume` would let a re-offered call be graded under the wider
-    /// mode first. Appended last so replay's last-write-wins fold keeps it.
+    /// mode first. And `mode` can't follow as a `SetMode` on the root either:
+    /// that cascades over the whole tree and would widen a forced child until
+    /// a re-narrowing landed (#757). Appended last so replay's
+    /// last-write-wins fold keeps it.
     pub fn paired_for_resume(
         &self,
         records: &[LogRecord],
         explicit_mode: bool,
+        mode: Option<&str>,
     ) -> Vec<(Option<InMsg>, OutEvent)> {
         let mut paired = super::pair_records(records);
-        for fallback in &self.fallbacks {
-            if let Some(mode) = fallback.forced_mode(explicit_mode) {
+        let forced = self.forced(explicit_mode);
+        if forced.is_empty() {
+            return paired;
+        }
+        for (sid, _) in &self.resumed {
+            let target = if forced.contains(sid) {
+                Some(READ_ONLY_MODE)
+            } else {
+                mode
+            };
+            if let Some(target) = target {
                 paired.push((
                     None,
                     OutEvent::ModeChanged {
-                        session: fallback.session.clone(),
-                        mode: mode.to_string(),
+                        session: sid.clone(),
+                        mode: target.to_string(),
                     },
                 ));
             }
@@ -99,6 +153,7 @@ impl ResumeCheck {
 #[derive(Default)]
 struct Seen {
     root: bool,
+    parent: Option<SessionId>,
     live: bool,
     last_named: Option<String>,
     effective: Option<String>,
@@ -146,8 +201,9 @@ pub fn check_for_resume(
             order.push(sid.clone());
         }
         let s = seen.entry(sid.clone()).or_default();
-        if let OutEvent::SessionStarted { root, .. } = ev {
+        if let OutEvent::SessionStarted { root, parent, .. } = ev {
             s.root = *root;
+            s.parent = parent.clone();
             s.live = true;
         }
         s.last_named = Some(name.clone());
@@ -155,23 +211,29 @@ pub fn check_for_resume(
             s.effective = Some(name.clone());
         }
     }
-    let fallbacks = order
-        .into_iter()
-        .filter_map(|sid| {
-            let s = seen.remove(&sid)?;
-            // Resume rebuilds the root plus every still-live child (ADR-0112).
-            let resumed = s.root || s.live;
-            let retired = s.last_named?;
-            let is_fallback = RETIRED_AGENTS.contains(&retired.as_str()) && !known(&retired);
-            (resumed && is_fallback).then(|| Fallback {
+    let mut check = ResumeCheck::default();
+    for sid in order {
+        let Some(s) = seen.remove(&sid) else {
+            continue;
+        };
+        // Resume rebuilds the root plus every still-live child (ADR-0112).
+        if !(s.root || s.live) {
+            continue;
+        }
+        check.resumed.push((sid.clone(), s.parent));
+        let Some(retired) = s.last_named else {
+            continue;
+        };
+        if RETIRED_AGENTS.contains(&retired.as_str()) && !known(&retired) {
+            check.fallbacks.push(Fallback {
                 session: sid,
                 root: s.root,
                 retired,
                 resumed_as: s.effective.unwrap_or_else(|| DEFAULT_AGENT.to_string()),
-            })
-        })
-        .collect();
-    Ok(ResumeCheck { fallbacks })
+            });
+        }
+    }
+    Ok(check)
 }
 
 /// [`read`] + [`check_for_resume`] for root session `id`.
@@ -187,25 +249,33 @@ pub fn load_for_resume(
     Ok((records, check))
 }
 
-/// Re-narrows each read-only fallback session to `research` after a head's
-/// own `--mode`/config switch, which cascades over the whole tree and would
-/// otherwise re-widen a child that [`ResumeCheck::paired_for_resume`]
-/// already started narrowed (ADR-0215). Sent per session, so it cascades
-/// only over that session's own sub-tree.
-pub async fn apply_forced_modes(
+/// Resumes `root` from `records` under `mode` (`--mode` > config `mode:`).
+///
+/// With a forced session in the tree, every mode rides the replay
+/// ([`ResumeCheck::paired_for_resume`]) so the cascading switch never reaches
+/// it (#757). Otherwise `mode` goes out as an ordinary `SetMode` on the root,
+/// cascading as usual and keeping the model's "changed from" mode notice.
+pub async fn resume_with_mode(
     holly: &Holly,
+    root: &SessionId,
+    records: &[LogRecord],
     check: &ResumeCheck,
     explicit_mode: bool,
+    mode: Option<String>,
 ) -> Result<()> {
-    for fallback in &check.fallbacks {
-        if let Some(mode) = fallback.forced_mode(explicit_mode) {
-            holly
-                .send(InMsg::SetMode {
-                    session: fallback.session.clone(),
-                    mode: mode.to_string(),
-                })
-                .await?;
-        }
+    holly
+        .resume(
+            root.clone(),
+            check.paired_for_resume(records, explicit_mode, mode.as_deref()),
+        )
+        .await?;
+    if let Some(mode) = mode.filter(|_| check.forced(explicit_mode).is_empty()) {
+        holly
+            .send(InMsg::SetMode {
+                session: root.clone(),
+                mode,
+            })
+            .await?;
     }
     Ok(())
 }

@@ -177,7 +177,7 @@ pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
                 }
                 // The forced modes ride the replay (no later mode switch here
                 // could cascade over them, unlike the CLI's `apply_mode`).
-                let paired = check.paired_for_resume(&records, false);
+                let paired = check.paired_for_resume(&records, false, None);
                 if let Err(e) = holly.resume(id.clone(), paired).await {
                     tracing::error!("Failed to resume session {}: {}", id, e);
                 }
