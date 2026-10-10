@@ -231,3 +231,21 @@
 #  # Capture the mouse (wheel scroll, clickable blocks). false gives the
 #  # terminal back its native text selection.
 #  mouse: true
+#  # The always-visible top row: where this TUI is working. `template` is
+#  # left-aligned, `right` right-aligned on the same row. Placeholders:
+#  #   {repo} {cwd} {cwd_rel} {branch} {worktree} {session} {agent} {mode}
+#  #   {model} {cost} {context_pct} {action} {tasks}
+#  # {repo} is the git repo name (the main repo's, inside a linked worktree;
+#  # the ~-abbreviated path outside git), {cwd_rel} the path below the repo
+#  # root, {branch} the branch or short sha (? when unreadable), {worktree}
+#  # `[worktree: name]` in a linked worktree, {action} the narrated
+#  # "what it is doing now", {tasks} done/total from the task list.
+#  # An empty placeholder disappears together with the text in front of it
+#  # (and the text after the last placeholder goes with it too); an unknown
+#  # {name} is shown literally and warned about once. On a narrow terminal
+#  # the line sheds the session counters, then {tasks}/{cost}/{context_pct},
+#  # {action}/{model}/{mode}/{agent}, {session}, {worktree}, {branch}, and
+#  # finally middle-elides the path — {repo} always stays.
+#  statusline:
+#    template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"
+#    right: "{session}"

@@ -116,6 +116,7 @@ pub(super) async fn handle_event(
         }
         // The background-built `@file` index landing (#678).
         Event::FileIndexReady(index) => app.set_file_index(index),
+        Event::StatusLine(git) => app.set_status_git(git),
     }
     Ok(false)
 }

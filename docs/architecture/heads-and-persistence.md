@@ -266,7 +266,35 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   transition (#517, [ADR-0141](../adr/0141-wire-visible-throttle-transitions.md)) —
   engine-global, not per-session, since the resilience pool is per-endpoint
   (ADR-0050). `run --format text` renders it in full; `serve` relays it like
-  any other frame. **Attention signals** (issue #14, `tui::attention`):
+  any other frame. **Status line** (#762, `tui::statusline`): the top row
+  always shows where the TUI works — default `repo › cwd_rel  ⎇ branch
+  [worktree: name]` left, the session short id right, then the old bar's
+  `(N sessions)` / `⚠ N` counters. Rendered from `config.yml`
+  `tui.statusline.template` (left) and `.right` (right) — placeholders
+  `{repo} {cwd} {cwd_rel} {branch} {worktree} {session} {agent} {mode}
+  {model} {cost} {context_pct} {action} {tasks}` (`{action}` is the
+  narrate-driven `Session.action`, `{tasks}` done/total of the last
+  `TaskList`), live-reloaded through the definitions-watcher arm that
+  re-applies the `tui:` block. An empty value collapses with the literal in
+  front of it (the run after the last placeholder is its suffix); an unknown
+  `{name}` renders literally and adds one `Resolved::warnings` line. Too
+  narrow, the row sheds counters → `{tasks}/{cost}/{context_pct}` →
+  `{action}/{model}/{mode}/{agent}` → `{session}` → the worktree name →
+  `{worktree}` → `{branch}`, then middle-elides the path (`…/deep/dir`);
+  `{repo}` never goes. Git facts come from a **background probe** (the
+  `@file` index pattern, posting `Event::StatusLine` only on change) that
+  never spawns `git` or walks a tree: an ancestor search for `.git`; a
+  `.git` dir is a plain repo; a `.git` file's `gitdir:` with a `commondir`
+  is a linked worktree named after the main repo (the common dir's parent),
+  without one a submodule; `HEAD` `ref: refs/heads/x` → `x`, an object id →
+  short sha, anything else (reftable's `.invalid` stub) → `?`; no dirty flag.
+  It re-probes when a `bash`/`call`/`rhai` `ToolOutput` lands and otherwise
+  only stats `HEAD`'s mtime every 2 s. Colours are named `StatusTheme`
+  slots (`status.repo/path/branch/worktree/text/dim/attention`) for #735's
+  theme config. Approval prompts for path tools
+  (`read`/`edit`/`write`/`apply_patch`/`glob`/`grep`) add a `root: <dir>`
+  line under the header, since a relative `path:` means nothing without the
+  root it resolves against. **Attention signals** (issue #14, `tui::attention`):
   a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
   terminal bell — and, opt-in via `config.yml` `tui: {notify: true}`, emits an OSC 9
   desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core
@@ -281,7 +309,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `ask_user` question surfaces as a one-line panel directly above the input box
   — absent (a `Length(0)` layout row) while nothing waits — naming the oldest
   waiting session (short id + agent) and what it asks (`needs approval: tool
-  arg` / `question: text`), plus a count when several wait; the status bar
+  arg` / `question: text`), plus a count when several wait; the status line
   shows a matching `⚠ N` off the same aggregation (derived per frame from the
   views' pending queues, not the flappy `Status`, #273). `Ctrl+G` — or a click
   on the panel — switches to that session, where the existing
@@ -289,7 +317,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   not a second approval keymap; the active session's own pending request
   already renders as the transcript tail, so the panel covers background
   sessions only). Sessions are identifiable throughout: the sidebar, status
-  bar, and sessions modal show an **8-char short id** instead of the full
+  line, and sessions modal show an **8-char short id** instead of the full
   id (a legacy 36-char UUID or an ADR-0164 15-char `s-…` id — the truncation
   is format-agnostic); the sidebar adds a dim per-session **first-prompt description line**
   (`SessionView::first_prompt`, captured on the first recorded user message

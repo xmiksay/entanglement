@@ -23,6 +23,12 @@ use std::path::{Component, Path, PathBuf};
 /// — a command line is never a path, so it must never be rewritten.
 const PATH_ARG_TOOLS: &[&str] = &["read", "edit", "write", "apply_patch", "glob", "grep"];
 
+/// Whether `tool`'s argument is a path resolved against the project root —
+/// the tools whose approval prompt names that root (#762).
+pub fn is_path_arg_tool(tool: &str) -> bool {
+    PATH_ARG_TOOLS.contains(&tool)
+}
+
 /// Fold `.`/`..`/`//` out of `path` **lexically** — no filesystem access, so a
 /// symlink component is left exactly as written (resolving those is the
 /// escape-root gate's job, not this one, ADR-0109). A `..` that has nothing to

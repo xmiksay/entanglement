@@ -214,10 +214,19 @@ pub(crate) fn apply_tui_config(
 /// The watcher fired (any config file may have changed): re-resolve the
 /// layered config for `root` and re-apply its `tui:` block. A config that no
 /// longer parses keeps the previous settings — a mid-save edit must not
-/// break a running TUI.
-pub(crate) fn reload_tui_config(term: &mut Term, attention: &mut Attention, root: &Path) {
+/// break a running TUI. The status-line templates go to the `App`, which
+/// owns the row they render.
+pub(crate) fn reload_tui_config(
+    term: &mut Term,
+    attention: &mut Attention,
+    app: &mut App,
+    root: &Path,
+) {
     match crate::config::Config::load(root) {
-        Ok(c) => apply_tui_config(term.backend_mut(), attention, &c.tui),
+        Ok(c) => {
+            apply_tui_config(term.backend_mut(), attention, &c.tui);
+            app.set_statusline_config(c.tui.statusline);
+        }
         Err(e) => tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}"),
     }
 }
@@ -242,6 +251,7 @@ mod tests {
         let cfg = |mouse| TuiConfig {
             notify: false,
             mouse,
+            ..TuiConfig::default()
         };
         apply_tui_config(&mut out, &mut attention, &cfg(true));
         apply_tui_config(&mut out, &mut attention, &cfg(true));

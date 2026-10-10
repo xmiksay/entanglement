@@ -42,6 +42,7 @@ mod settings;
 mod settings_apply;
 mod slash;
 mod state;
+mod status_line;
 mod toast;
 mod tools_view;
 mod types;
@@ -274,6 +275,9 @@ pub struct App {
 
     // Bare `/set`'s tabbed settings dialog + the catalog its model rows use.
     settings: settings::SettingsState,
+
+    // The top-row project/path status line (#762).
+    status_line: crate::tui::statusline::StatusLineState,
 }
 
 impl App {

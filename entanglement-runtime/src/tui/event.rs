@@ -19,6 +19,8 @@ pub enum Event {
     /// The background-built `@file` completion index (#678) — the walk runs
     /// off the startup critical path so the first draw never waits on it.
     FileIndexReady(crate::tui::mention::FileIndex),
+    /// A fresh git probe for the status line (#762), posted only on change.
+    StatusLine(crate::tui::statusline::GitInfo),
 }
 
 pub fn spawn_crossterm_task(tx: tokio::sync::mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {

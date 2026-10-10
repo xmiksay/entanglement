@@ -635,6 +635,7 @@ fn approval_tail_bash_shows_full_multiline_command() {
 fn approval_tail_read_shows_structured_path_not_empty() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
+    app.init_head_context(std::path::PathBuf::from("/work/proj"));
     feed_tool_request(&mut app, &sid, 1, "t1", "read", r#"{"path":"src/main.rs"}"#);
 
     let body = render_body_lines(&mut app, 80);
@@ -645,6 +646,21 @@ fn approval_tail_read_shows_structured_path_not_empty() {
         .map(|s| s.content.as_ref())
         .collect();
     assert!(text.contains("path: src/main.rs"), "{text:?}");
+    // #762: a relative path is only meaningful against the root it resolves in.
+    assert!(text.contains("root: /work/proj"), "{text:?}");
+}
+
+#[test]
+fn approval_tail_names_the_root_only_for_path_tools() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    app.init_head_context(std::path::PathBuf::from("/work/proj"));
+    feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"ls"}"#);
+    let body = render_body_lines(&mut app, 80);
+    assert!(
+        !body.lines.iter().any(|l| line_text(l).contains("root:")),
+        "a shell command carries its own workdir, not a path root"
+    );
 }
 
 #[test]

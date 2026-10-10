@@ -44,7 +44,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
-| **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
+| **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable). |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
 Building your own head — a multi-tenant server embedding the engine as a
@@ -185,7 +185,17 @@ TUI preferences share one live-reloaded block:
 tui:
   notify: true   # OSC 9 desktop notification on top of the attention bell
   mouse: false   # give the terminal back its native text selection
+  statusline:    # the top row: where the TUI is working
+    template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"   # left-aligned
+    right: "{session}"                                      # right-aligned
 ```
+
+Status-line placeholders: `{repo} {cwd} {cwd_rel} {branch} {worktree}
+{session} {agent} {mode} {model} {cost} {context_pct} {action} {tasks}`. An
+empty value disappears with the separator in front of it; an unknown `{name}`
+renders literally and is reported once by `skutter inspect config`. Git facts
+are read from `.git` directly (no `git` process), so a detached `HEAD` shows a
+short sha and an unreadable one `?`.
 
 The few remaining environment knobs beyond provider keys/models:
 `ENTANGLEMENT_STATE_DIR` relocates every file skutter manages for you (grants,

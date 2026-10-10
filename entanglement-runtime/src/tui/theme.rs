@@ -10,6 +10,41 @@ pub(crate) struct RoleColors {
     pub bg: Color,
 }
 
+/// The status line's named colour slots (#762) — `status.repo`,
+/// `status.path`, `status.branch`, `status.worktree`, `status.text`,
+/// `status.dim`, `status.attention` — so #735's theme config can override
+/// each by name. The defaults carry over the old top bar's styling (bold app
+/// name, dim session id, yellow waiting badge).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StatusTheme {
+    /// `{repo}` — never shed, so it anchors the line.
+    pub repo: Style,
+    /// `{cwd}` / `{cwd_rel}`.
+    pub path: Style,
+    pub branch: Style,
+    pub worktree: Style,
+    /// Every other placeholder value.
+    pub text: Style,
+    /// Template literals (separators) and `{session}`.
+    pub dim: Style,
+    /// The waiting-sessions badge.
+    pub attention: Style,
+}
+
+impl Default for StatusTheme {
+    fn default() -> Self {
+        StatusTheme {
+            repo: Style::default().bold(),
+            path: Style::default(),
+            branch: Style::default().fg(Color::Cyan),
+            worktree: Style::default().fg(Color::Magenta),
+            text: Style::default(),
+            dim: Style::default().dim(),
+            attention: Style::default().fg(Color::Yellow).bold(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Theme {
     pub bar_glyph: char,
@@ -25,6 +60,7 @@ pub(crate) struct Theme {
     pub sidebar_fg: Color,
     pub input_bg: Color,
     pub chat_margin_left: u16,
+    pub status: StatusTheme,
 }
 
 impl Default for Theme {
@@ -43,6 +79,7 @@ impl Default for Theme {
             sidebar_fg: Color::Cyan,
             input_bg: Color::Rgb(26, 26, 33),
             chat_margin_left: 2,
+            status: StatusTheme::default(),
         }
     }
 }

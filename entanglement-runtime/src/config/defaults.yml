@@ -130,7 +130,12 @@ tool_advertising: null
 # Terminal-UI preferences (ADR-0213), live-reloaded by a running TUI.
 # `notify` adds an OSC 9 desktop notification to the attention bell; `mouse`
 # captures the mouse (wheel scroll, clickable blocks) — false restores the
-# terminal's native text selection.
+# terminal's native text selection. `statusline` is the always-visible top
+# row (#762): `template` renders left-aligned, `right` right-aligned. See
+# template.yml for the placeholder list and the collapse/truncation rules.
 tui:
   notify: false
   mouse: true
+  statusline:
+    template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"
+    right: "{session}"

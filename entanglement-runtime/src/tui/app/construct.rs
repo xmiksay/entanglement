@@ -195,6 +195,7 @@ impl App {
             quit_pending_at: None,
             toast: None,
             settings: super::settings::SettingsState::new(catalog),
+            status_line: Default::default(),
         }
     }
 }

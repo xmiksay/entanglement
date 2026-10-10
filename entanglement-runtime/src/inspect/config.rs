@@ -138,6 +138,11 @@ fn render_config(resolved: &Resolved) -> String {
         c.tui.mouse,
         from("tui")
     );
+    let _ = writeln!(
+        out,
+        "  tui.statusline: template={:?} right={:?}",
+        c.tui.statusline.template, c.tui.statusline.right
+    );
 
     let _ = writeln!(
         out,
@@ -306,7 +311,7 @@ mod tests {
         let user_file = dir.path().join("user-config.yml");
         std::fs::write(
             &user_file,
-            "tui: {notify: true}\ndiscovery: {zai: invoke}\n",
+            "tui: {notify: true, statusline: {right: '{mode}'}}\ndiscovery: {zai: invoke}\n",
         )
         .unwrap();
         std::env::set_var("ENTANGLEMENT_CONFIG_FILE", &user_file);
@@ -316,6 +321,10 @@ mod tests {
         let rendered = render_config(&resolved);
         assert!(
             rendered.contains("tui:      notify=true mouse=true ← user"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}""#),
             "{rendered}"
         );
         assert!(

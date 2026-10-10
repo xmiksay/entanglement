@@ -36,6 +36,7 @@ mod set_command;
 mod settings_dialog;
 mod settings_events;
 mod slash_popup;
+mod statusline;
 mod stop_command;
 mod theme;
 mod tool_render;
@@ -161,6 +162,8 @@ pub async fn tui(
     app.init_head_context(root.clone());
     let config_root = root.clone();
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
+    app.set_statusline_config(tui_config.statusline.clone());
+    app.set_status_refresh(statusline::spawn_probe(root.clone(), event_tx.clone()));
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -218,7 +221,7 @@ pub async fn tui(
                 if let Some(notice) = msg {
                     let fresh = entry_profiles_from(&agents.read().unwrap());
                     app.refresh_profiles(fresh);
-                    editor::reload_tui_config(&mut terminal, &mut attention, &config_root);
+                    editor::reload_tui_config(&mut terminal, &mut attention, &mut app, &config_root);
                     app.record_reload_status(notice);
                     app.mark_dirty();
                 }

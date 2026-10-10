@@ -203,6 +203,9 @@ pub(crate) fn render_approval_tool_body(
         ));
     }
     let mut lines = vec![theme.decorate(Line::from(header), approval_colors, available_width)];
+    if let Some(root) = tool_render::root_line(tool, app.root()) {
+        lines.push(theme.decorate(root, approval_colors, available_width));
+    }
 
     let rendered = if tool == "write" {
         tool_render::render_write_approval_body(input, app.root())
