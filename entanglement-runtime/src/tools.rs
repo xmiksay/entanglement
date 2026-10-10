@@ -87,11 +87,9 @@ pub trait Tool: Send + Sync {
         request_id: &str,
         input: &str,
     ) -> anyhow::Result<ToolRun> {
-        Ok(ToolRun {
-            content: self.run_for_session(session, request_id, input).await?,
-            exit_code: None,
-            is_error: false,
-        })
+        Ok(ToolRun::new(
+            self.run_for_session(session, request_id, input).await?,
+        ))
     }
 
     /// Definition-driven skill tools (#560 P8): a skill-declared **alias**
@@ -130,6 +128,11 @@ pub trait Tool: Send + Sync {
 /// (`bash`/`call` foreground), `None` for every other tool — and for a
 /// signal-killed or timed-out process, where no code exists (the `[exit -1]`
 /// text keeps its lossy sentinel; the field stays honest).
+///
+/// Build it with [`ToolRun::new`] plus struct-update syntax
+/// (`ToolRun { exit_code, ..ToolRun::new(content) }`) so a later metadata
+/// field doesn't break every implementor again, as `is_error` did (#727).
+#[derive(Debug, Default)]
 pub struct ToolRun {
     pub content: Vec<ContentPart>,
     pub exit_code: Option<i32>,
@@ -137,6 +140,16 @@ pub struct ToolRun {
     /// `isError: true` (#727) — so `content` is the failure text, not an
     /// answer. `false` for every built-in tool, which fails via `Err` instead.
     pub is_error: bool,
+}
+
+impl ToolRun {
+    /// A plain successful result: `content`, no exit code, not an error.
+    pub fn new(content: Vec<ContentPart>) -> Self {
+        Self {
+            content,
+            ..Self::default()
+        }
+    }
 }
 
 /// One text part for a non-empty string, none for an empty one — the same fold
@@ -448,9 +461,8 @@ mod tests {
             _input: &str,
         ) -> anyhow::Result<ToolRun> {
             Ok(ToolRun {
-                content: text_parts("[exit 7]".to_string()),
                 exit_code: Some(7),
-                is_error: false,
+                ..ToolRun::new(text_parts("[exit 7]".to_string()))
             })
         }
     }

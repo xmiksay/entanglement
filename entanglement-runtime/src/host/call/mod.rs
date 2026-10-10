@@ -266,9 +266,8 @@ impl Tool for CallTool {
     ) -> Result<crate::tools::ToolRun> {
         let (text, exit_code) = self.run_impl(Some(session), request_id, input).await?;
         Ok(crate::tools::ToolRun {
-            content: crate::tools::text_parts(text),
             exit_code,
-            is_error: false,
+            ..crate::tools::ToolRun::new(crate::tools::text_parts(text))
         })
     }
 }

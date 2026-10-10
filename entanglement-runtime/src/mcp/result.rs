@@ -1,14 +1,20 @@
 //! Mapping an MCP `tools/call` result onto a host tool result (#727).
 //!
-//! Text blocks become text, a provider-renderable `image` block becomes a real
-//! image [`ContentPart`] (the same block `read` returns for an image file,
-//! #221), and everything else — audio, embedded `resource`s, `resource_link`s,
-//! oversize or unsupported images — becomes a descriptive text line instead of
-//! vanishing. `structuredContent` is rendered as JSON only when no text block
-//! carried the answer (the spec asks servers to mirror it in text, so printing
-//! both would just duplicate it). `isError` surfaces as the structured
-//! `is_error` side channel (ADR-0176) on [`McpResult`].
+//! Text blocks become text; an embedded `resource`'s text and a
+//! `resource_link` become descriptive lines; `structuredContent` is rendered
+//! as JSON only when no text block carried the answer (the spec asks servers
+//! to mirror it in text, so printing both would just duplicate it). `isError`
+//! surfaces as the structured `is_error` side channel (ADR-0176) on
+//! [`McpResult`].
+//!
+//! **Binary is never inlined.** `image`, `audio` and a `resource` `blob`
+//! become a `[binary omitted: …]` placeholder naming mime, size and uri. WHY:
+//! binary through MCP bloats the context, and an image part the provider
+//! rejects is replayed on every later request (and on resume), poisoning the
+//! session. An agent that needs the bytes fetches them through an endpoint/API
+//! tool, not through an MCP result.
 
+use base64::Engine as _;
 use entanglement_core::ContentPart;
 use serde_json::Value;
 
@@ -19,14 +25,6 @@ use crate::host::truncate_output;
 /// carries it to the model, so the model still needs to read the failure.
 const ERROR_PREFIX: &str = "MCP tool reported an error: ";
 
-/// Media types the providers accept as an inline image block — the same set
-/// `read` recognizes. Anything else is described, not inlined.
-const INLINE_IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
-
-/// Largest decoded image inlined (Anthropic's per-image ceiling). A bigger one
-/// would fail the whole next LLM request, not just this tool call.
-const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-
 /// A rendered `tools/call` result: the content parts the model reads plus
 /// whether the server flagged it `isError`.
 #[derive(Debug, PartialEq)]
@@ -35,8 +33,7 @@ pub(crate) struct McpResult {
     pub is_error: bool,
 }
 
-/// Accumulates text lines between non-text parts so consecutive text blocks
-/// fold into one text part, keeping image parts in their original order.
+/// Accumulates the rendered lines into one text part.
 #[derive(Default)]
 struct Parts {
     parts: Vec<ContentPart>,
@@ -58,11 +55,6 @@ impl Parts {
                 .push(ContentPart::text(truncate_output(text.to_string())));
         }
         self.text.clear();
-    }
-
-    fn image(&mut self, mime: &str, data: &str) {
-        self.flush();
-        self.parts.push(ContentPart::image(mime, data));
     }
 }
 
@@ -106,26 +98,9 @@ fn render_block(block: &Value, out: &mut Parts) -> bool {
             }
             return true;
         }
-        Some("image") => {
-            let data = str_of(block, "data").unwrap_or_default();
-            let bytes = decoded_len(&data);
-            if !INLINE_IMAGE_TYPES.contains(&mime.as_str()) {
-                out.line(&format!(
-                    "[image omitted: {mime}, {bytes} bytes — not an inlinable type]"
-                ));
-            } else if bytes > MAX_INLINE_IMAGE_BYTES {
-                out.line(&format!(
-                    "[image omitted: {mime}, {bytes} bytes — over the {MAX_INLINE_IMAGE_BYTES}-byte inline cap]"
-                ));
-            } else if bytes == 0 {
-                out.line(&format!("[image omitted: {mime}, empty]"));
-            } else {
-                out.image(&mime, &data);
-            }
-        }
-        Some("audio") => {
-            let bytes = decoded_len(&str_of(block, "data").unwrap_or_default());
-            out.line(&format!("[audio omitted: {mime}, {bytes} bytes]"));
+        Some("image") | Some("audio") => {
+            let data = str_of(block, "data");
+            out.line(&binary_placeholder(&mime, data.as_deref(), None));
         }
         Some("resource") => {
             let res = block.get("resource").unwrap_or(&Value::Null);
@@ -133,10 +108,7 @@ fn render_block(block: &Value, out: &mut Parts) -> bool {
             let mime = str_of(res, "mimeType").unwrap_or_else(|| "unknown type".to_string());
             match (str_of(res, "text"), str_of(res, "blob")) {
                 (Some(text), _) => out.line(&format!("[resource {uri} ({mime})]\n{text}")),
-                (None, Some(blob)) => out.line(&format!(
-                    "[resource {uri} ({mime}): binary, {} bytes omitted]",
-                    decoded_len(&blob)
-                )),
+                (None, Some(blob)) => out.line(&binary_placeholder(&mime, Some(&blob), Some(&uri))),
                 (None, None) => out.line(&format!("[resource {uri} ({mime})]")),
             }
         }
@@ -156,10 +128,30 @@ fn render_block(block: &Value, out: &mut Parts) -> bool {
     false
 }
 
-/// Decoded size of a base64 payload, without decoding it (padding-aware).
-fn decoded_len(b64: &str) -> usize {
-    let trimmed = b64.trim_end_matches('=');
-    trimmed.len() * 3 / 4
+/// `[binary omitted: <mime>, <size>, uri=<uri>]` — the only form binary
+/// content takes (see the module docs for why). The size is measured by
+/// decoding; malformed or missing base64 reads `size unknown`, never a panic.
+fn binary_placeholder(mime: &str, b64: Option<&str>, uri: Option<&str>) -> String {
+    let size = b64
+        .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+        .map(|bytes| human_size(bytes.len()))
+        .unwrap_or_else(|| "size unknown".to_string());
+    match uri.filter(|u| !u.is_empty()) {
+        Some(uri) => format!("[binary omitted: {mime}, {size}, uri={uri}]"),
+        None => format!("[binary omitted: {mime}, {size}]"),
+    }
+}
+
+fn human_size(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KIB {
+        format!("{bytes} B")
+    } else if b < KIB * KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{:.1} MiB", b / (KIB * KIB))
+    }
 }
 
 #[cfg(test)]
@@ -190,36 +182,38 @@ mod tests {
     }
 
     #[test]
-    fn inlinable_image_becomes_an_image_part_in_order() {
+    fn image_and_audio_become_placeholders_without_a_uri() {
         let r = render_result(&json!({ "content": [
             { "type": "text", "text": "before" },
             { "type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png" },
-            { "type": "text", "text": "after" },
+            { "type": "audio", "data": "A".repeat(2048), "mimeType": "audio/wav" },
         ] }));
         assert_eq!(
-            r.content,
-            [
-                ContentPart::text("before"),
-                ContentPart::image("image/png", "iVBORw0KGgo="),
-                ContentPart::text("after"),
-            ]
+            texts(&r),
+            ["before\n[binary omitted: image/png, 8 B]\n[binary omitted: audio/wav, 1.5 KiB]"]
+        );
+        // Text only — no image part ever reaches the context.
+        assert!(r.content.iter().all(|p| p.as_text().is_some()));
+    }
+
+    #[test]
+    fn malformed_or_missing_base64_reads_size_unknown() {
+        let r = render_result(&json!({ "content": [
+            { "type": "image", "data": "%%% not base64", "mimeType": "image/png" },
+            { "type": "audio" },
+        ] }));
+        assert_eq!(
+            texts(&r),
+            ["[binary omitted: image/png, size unknown]\n[binary omitted: unknown type, size unknown]"]
         );
     }
 
     #[test]
-    fn unsupported_or_oversize_images_are_described_not_dropped() {
-        let r = render_result(&json!({ "content": [
-            { "type": "image", "data": "AAAA", "mimeType": "image/tiff" },
-        ] }));
-        assert_eq!(
-            texts(&r),
-            ["[image omitted: image/tiff, 3 bytes — not an inlinable type]"]
-        );
-        let big = "A".repeat(MAX_INLINE_IMAGE_BYTES / 3 * 4 + 8);
-        let r = render_result(&json!({ "content": [
-            { "type": "image", "data": big, "mimeType": "image/png" },
-        ] }));
-        assert!(texts(&r)[0].contains("inline cap"), "{:?}", texts(&r));
+    fn human_sizes() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1536), "1.5 KiB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MiB");
     }
 
     #[test]
@@ -232,7 +226,7 @@ mod tests {
         assert_eq!(
             texts(&r),
             ["[resource file:///a.txt (text/plain)]\nbody\n\
-              [resource file:///b.bin (unknown type): binary, 4 bytes omitted]\n\
+              [binary omitted: unknown type, 4 B, uri=file:///b.bin]\n\
               [resource link: y <https://x/y> (text/html) — a page]"]
         );
     }
