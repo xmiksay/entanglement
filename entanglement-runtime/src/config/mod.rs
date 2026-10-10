@@ -69,18 +69,24 @@
 //! ([`read_layer`]) — a no-op until a user uncomments a key.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use entanglement_core::{Discovery, PermissionProfile, ToolAdvertising, WebSearchConfig};
-use serde::Deserialize;
 use serde_yaml::Value;
 
 use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
+use layers::{
+    discover, merge_value, provenance, user_config_path, RawLayer, CONFIG_FILE_ENV, TEMPLATE_YML,
+};
+use raw::RawConfig;
+// Only `bare_config` and the sibling test suites build a bare defaults layer.
+#[cfg(test)]
+use layers::default_layer;
 
 pub mod agent_generation;
 pub mod agent_models;
@@ -90,13 +96,16 @@ mod ceiling;
 mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;
+mod layers;
 pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
 mod migrate_permissions;
 mod mode_warn;
+mod raw;
 pub mod write_key;
 
+pub use layers::{scaffold_if_missing, ConfigLayer};
 pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
 
@@ -119,15 +128,6 @@ mod tests_retention;
 mod tests_tool_advertising;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
-
-/// The commented starter file written on first run (#219). Distinct from
-/// [`DEFAULTS_YML`]: every setting here is commented *out*, so an untouched
-/// scaffold is a pure no-op that never pins a default — it only exists to be a
-/// discoverable, editable starting point.
-const TEMPLATE_YML: &str = include_str!("template.yml");
-
-/// Env var overriding the user config file path (tests + non-XDG setups).
-const CONFIG_FILE_ENV: &str = "ENTANGLEMENT_CONFIG_FILE";
 
 /// Env var overriding the session-log retention (Issue 4, Phase 4.2). Wins over
 /// the config file's `session_retention_days`, which itself wins over the
@@ -166,113 +166,6 @@ pub(crate) fn bare_config() -> Config {
     parse(&[default_layer()])
         .expect("embedded defaults.yml is valid — guarded by test")
         .config
-}
-
-/// The raw file shape. `deny_unknown_fields` makes a typo'd key a loud error
-/// rather than a silently-ignored setting, exactly like the agent/provider files.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawConfig {
-    #[serde(default)]
-    agent: Option<String>,
-    /// Default permission mode (ADR-0207 §12): `--mode` > this > the engine's
-    /// `DEFAULT_MODE`. Not validated against the table here — parsing has no
-    /// registry to build one against ([`ceiling`]'s doc); an unknown name is
-    /// caught where the table is actually built (`services.rs`, alongside
-    /// `modes:` below), the same reason `agent` above isn't validated here
-    /// either.
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    provider: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    verbose: bool,
-    /// Parsed into the config ceiling's [`entanglement_core::PermissionProfile`]
-    /// via [`ceiling::build_ceiling_profile`] (ADR-0207 stage 6c) — the same
-    /// `default`/`allow`/`deny`/`prompt` grammar a mode body uses, not the
-    /// retired free-form `tool: allow|ask|deny` map. A file still in the old
-    /// shape is self-healed by [`migrate_permissions`] before it ever
-    /// reaches this deserialize.
-    #[serde(default)]
-    permissions: Option<ceiling::RawCeiling>,
-    /// Per-mode tuning (ADR-0207 §5): each key must name one of the four
-    /// built-in modes (`research`/`plan`/`build`/`auto`) — there is no
-    /// syntax to define a fifth (§2) — and may only *add* `allow`/`deny`/
-    /// `prompt` rules, validated against a live [`crate::capability::Capability`]
-    /// resolver once the tool registry exists ([`mode::apply_tuning`],
-    /// `services.rs`). An unrecognized mode name is a loud error there, not
-    /// silently ignored here.
-    #[serde(default)]
-    modes: HashMap<String, mode::ModeTuning>,
-    /// Lifecycle hooks (#199): external commands run around tool execution and on
-    /// prompt ingress. Deserializes straight into [`Hooks`] (plain serde, unlike
-    /// `permissions`); absent ⇒ no hooks.
-    #[serde(default)]
-    hooks: Hooks,
-    /// External MCP tool servers (#198): a map of server name → spawn config. Each
-    /// server's tools are discovered and registered into the runtime tool
-    /// registry. Absent ⇒ no servers.
-    #[serde(default)]
-    mcp: HashMap<String, McpServerConfig>,
-    /// Definition-driven HTTP endpoint tools (#560 P8): a map of name →
-    /// endpoint definition, each registered as `endpoint__<name>`. Absent ⇒
-    /// no endpoint tools. See [`crate::endpoint`].
-    #[serde(default)]
-    endpoints: HashMap<String, EndpointConfig>,
-    /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
-    /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
-    /// it is consent (the server tool runs provider-side, *outside* the runtime
-    /// permission ladder).
-    #[serde(default)]
-    web_search: WebSearchConfig,
-    /// Cap on the inner LLM→tool loop within a single turn (#177). Default 200.
-    #[serde(default)]
-    max_turns: Option<usize>,
-    /// Auto-hibernate a settled root session (and its spawn sub-tree) after this
-    /// many idle seconds (#401, ADR-0090/[ADR-0105]). Absent ⇒ `None` ⇒ the
-    /// engine default: no sweep, eviction stays embedder-driven.
-    ///
-    /// [ADR-0105]: ../../../docs/adr/0105-expose-idle-ttl-via-runtime-config.md
-    #[serde(default)]
-    idle_ttl_secs: Option<u64>,
-    /// Try an LLM summary before the prune-only fallback when a turn's history
-    /// overflows the context budget (ADR-0103). Absent ⇒ `None` ⇒ the engine
-    /// default (`true`).
-    #[serde(default)]
-    auto_compact: Option<bool>,
-    /// Editor command for the TUI `$EDITOR` round-trip (`/editor`). When set it
-    /// **wins over** `$VISUAL`/`$EDITOR`, so the persisted choice is the default
-    /// regardless of the shell env; absent ⇒ fall back to `$VISUAL` → `$EDITOR`
-    /// → `vi`. Word-split like a shell command, so `"code --wait"` works.
-    #[serde(default)]
-    editor: Option<String>,
-    /// Session-log retention in days (Issue 4, Phase 4.2): on startup the TUI
-    /// prunes `.jsonl` files in the cwd's session dir whose mtime is older than
-    /// this. The embedded default (`30`) keeps the on-disk footprint bounded
-    /// without surprising a user who never configures it; `ENTANGLEMENT_SESSION_`
-    /// `RETENTION_DAYS` (env > config > default) wins over the file. Absent in a
-    /// layer ⇒ fall through to the lower layer, exactly like every other key.
-    #[serde(default)]
-    session_retention_days: Option<u64>,
-    /// Tool-advertising override (ADR-0196): `full` | `tool_search`, applied
-    /// over every model's catalog `tool_advertising:` preference. Absent ⇒
-    /// no install-wide opinion; the catalog (then the `tool_search` default)
-    /// decides per model. The env var ([`TOOL_ADVERTISING_ENV`]) is layered
-    /// on top of this at resolution time, not here — see
-    /// `tool_advertising::resolve_advertising`.
-    #[serde(default)]
-    tool_advertising: Option<ToolAdvertising>,
-    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
-    /// provider name: `discovery: {zai: native_first}`. Applied over that
-    /// provider's (and its models') catalog `discovery:` value. Absent or
-    /// empty ⇒ no install-wide opinion; the catalog decides. A key naming a
-    /// provider the session isn't on — or one no catalog lists — is inert,
-    /// never an error: a user may keep entries for providers they switch
-    /// between, or for one a future `providers.yml` adds.
-    #[serde(default)]
-    discovery: HashMap<String, Discovery>,
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -356,34 +249,6 @@ pub struct Config {
     pub discovery: HashMap<String, Discovery>,
 }
 
-/// Which of the three precedence layers a value came from. Ordered low → high so
-/// `Default < User < Project` matches discovery order and the later-wins rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConfigLayer {
-    Default,
-    User,
-    Project,
-}
-
-impl ConfigLayer {
-    /// Short label for `skutter inspect config`.
-    pub fn label(self) -> &'static str {
-        match self {
-            ConfigLayer::Default => "default",
-            ConfigLayer::User => "user",
-            ConfigLayer::Project => "project",
-        }
-    }
-}
-
-/// One discovered config layer *before* merging: its precedence, a display label
-/// for its origin (`built-in (defaults.yml)` or a file path), and the parsed doc.
-struct RawLayer {
-    layer: ConfigLayer,
-    source: String,
-    doc: Value,
-}
-
 /// The resolved config plus the provenance `skutter inspect config` reports:
 /// which layer last set each field, and every layer that was present.
 pub struct Resolved {
@@ -407,65 +272,6 @@ impl Config {
     pub fn resolve(root: &Path) -> Result<Resolved> {
         parse(&discover(root)?)
     }
-}
-
-/// Enumerate the present config layers in precedence order — embedded defaults,
-/// then the user file, then the project file. Missing files are skipped; an
-/// unreadable or malformed file is an error.
-fn discover(root: &Path) -> Result<Vec<RawLayer>> {
-    let mut layers = vec![default_layer()];
-    if let Some(path) = user_config_path() {
-        migrate_permissions::migrate_if_legacy(&path).with_context(|| {
-            format!(
-                "migrating legacy `permissions:` shape in {}",
-                path.display()
-            )
-        })?;
-        read_layer(ConfigLayer::User, &path, &mut layers)?;
-    }
-    let project_path = root.join(".entanglement").join("config.yml");
-    migrate_permissions::migrate_if_legacy(&project_path).with_context(|| {
-        format!(
-            "migrating legacy `permissions:` shape in {}",
-            project_path.display()
-        )
-    })?;
-    read_layer(ConfigLayer::Project, &project_path, &mut layers)?;
-    Ok(layers)
-}
-
-/// The always-present embedded default layer.
-fn default_layer() -> RawLayer {
-    RawLayer {
-        layer: ConfigLayer::Default,
-        source: "built-in (defaults.yml)".to_string(),
-        doc: serde_yaml::from_str(DEFAULTS_YML)
-            .expect("embedded defaults.yml is valid — guarded by test"),
-    }
-}
-
-/// Read + parse the file at `path` (if it exists) as one layer. A missing file is
-/// fine; an unreadable file or invalid YAML is a loud error.
-fn read_layer(layer: ConfigLayer, path: &Path, layers: &mut Vec<RawLayer>) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading user config {}", path.display()))?;
-    let doc: Value = serde_yaml::from_str(&text)
-        .with_context(|| format!("parsing user config {}", path.display()))?;
-    // A comment-only or empty file parses to `Null`; it sets nothing, so skip it
-    // rather than let it wipe the lower layers in the merge (the scaffolded
-    // template, #219, is exactly this until a user uncomments a key).
-    if doc.is_null() {
-        return Ok(());
-    }
-    layers.push(RawLayer {
-        layer,
-        source: path.display().to_string(),
-        doc,
-    });
-    Ok(())
 }
 
 /// Merge the layers' docs (later wins) and deserialize into a [`Config`], keeping
@@ -514,40 +320,6 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
     })
 }
 
-/// The winning layer for each top-level key any layer set, in a stable key order.
-fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> {
-    const KEYS: &[&str] = &[
-        "agent",
-        "mode",
-        "provider",
-        "model",
-        "verbose",
-        "permissions",
-        "modes",
-        "hooks",
-        "mcp",
-        "endpoints",
-        "web_search",
-        "max_turns",
-        "idle_ttl_secs",
-        "auto_compact",
-        "editor",
-        "session_retention_days",
-        "tool_advertising",
-        "discovery",
-    ];
-    KEYS.iter()
-        .filter_map(|key| {
-            // Highest layer that carries this key wins (layers are low→high).
-            raw_layers
-                .iter()
-                .rev()
-                .find(|rl| rl.doc.get(*key).is_some())
-                .map(|rl| (key.to_string(), rl.layer))
-        })
-        .collect()
-}
-
 /// Resolve [`Config::session_retention_days`]: env wins, else the merged config
 /// value, else the embedded default (30). A malformed env value is logged and
 /// ignored (falling back to config/default) — never fatal, matching how a bad
@@ -568,57 +340,4 @@ fn resolve_session_retention(config_value: Option<u64>) -> u64 {
         }
     }
     config_value.unwrap_or(DEFAULT_SESSION_RETENTION_DAYS)
-}
-
-/// Deep-merge `over` onto `base`: mappings merge key-wise recursively; scalars
-/// and sequences are replaced by `over`. (The config file has no identity-keyed
-/// sequences, so the catalog's by-`name`/`id` sequence merge isn't needed.)
-fn merge_value(base: Value, over: Value) -> Value {
-    match (base, over) {
-        (Value::Mapping(mut base_map), Value::Mapping(over_map)) => {
-            for (key, over_val) in over_map {
-                let merged = match base_map.remove(&key) {
-                    Some(base_val) => merge_value(base_val, over_val),
-                    None => over_val,
-                };
-                base_map.insert(key, merged);
-            }
-            Value::Mapping(base_map)
-        }
-        (_, over) => over,
-    }
-}
-
-/// The user config path: `${config_dir}/entanglement/config.yml`, overridable via
-/// `ENTANGLEMENT_CONFIG_FILE` (which tests point at a temp file).
-fn user_config_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(CONFIG_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("config.yml"))
-}
-
-/// First-run scaffold (#219): if the user config file does not exist yet, write a
-/// commented starter template ([`TEMPLATE_YML`]) so `${config_dir}/entanglement/`
-/// is a discoverable, editable starting point instead of an empty directory.
-///
-/// Best-effort and non-authoritative: the template is fully commented, so it
-/// changes nothing until a user edits it — the embedded defaults still drive
-/// behavior either way. Returns the written path on success, `None` if a file was
-/// already present (or the config dir is unknown). Callers treat a write error as
-/// non-fatal; startup must not fail because the home directory is read-only.
-pub fn scaffold_if_missing() -> Result<Option<PathBuf>> {
-    let Some(path) = user_config_path() else {
-        return Ok(None);
-    };
-    if path.exists() {
-        return Ok(None);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating config dir {}", parent.display()))?;
-    }
-    std::fs::write(&path, TEMPLATE_YML)
-        .with_context(|| format!("writing default config {}", path.display()))?;
-    Ok(Some(path))
 }
