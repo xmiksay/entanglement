@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use entanglement_core::{Holly, IdKind, InMsg, SessionId};
 use entanglement_provider::Catalog;
 
@@ -13,7 +13,7 @@ use crate::config;
 use crate::pipe::pipe;
 use crate::run::run_one;
 use crate::services::Head;
-use crate::session_store::{self, integrity_gap, list_sessions, pair_records, read};
+use crate::session_store::{self, list_sessions, pair_records};
 use crate::tui::tui;
 
 /// Run the head `cli.cmd` selects (`None` = bare `skutter`: the TUI with no
@@ -45,26 +45,10 @@ pub(crate) async fn dispatch(
 
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
-                let records = read(cwd, &resume_session_id).with_context(|| {
-                    format!("Failed to read session records for {}", resume_session_id)
-                })?;
-
-                if let Some(dropped) = integrity_gap(&records) {
-                    anyhow::bail!(
-                        "Refusing to resume {resume_session_id}: its session log is missing \
-                         {dropped} record(s) dropped during recording, so replay would \
-                         reconstruct an incomplete conversation. Start a fresh session instead."
-                    );
-                }
-                // ADR-0207 stage 6a: a log naming a retired agent can't resume
-                // — the profile no longer exists, and silently falling back to
-                // a different one would replay the conversation under an
-                // identity it never actually ran under.
-                if let Some((retired, replacement)) = session_store::retired_agent(&records) {
-                    anyhow::bail!(
-                        "Refusing to resume {resume_session_id}: its log names the retired \
-                         agent `{retired}` — {replacement}. Start a fresh session instead."
-                    );
+                let (records, note) = session_store::load_for_resume(cwd, &resume_session_id)?;
+                // A retired agent resumes as `general` (#720); say so once.
+                if let Some(note) = note {
+                    eprintln!("{note}");
                 }
 
                 holly

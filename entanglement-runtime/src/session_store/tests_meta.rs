@@ -2,6 +2,7 @@
 //! module because `tests_sessions.rs` sits at the 400-line file cap.
 
 use super::*;
+use entanglement_core::OutEvent;
 
 #[test]
 fn list_sessions_takes_the_last_session_meta_name() {
