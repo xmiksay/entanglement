@@ -14,7 +14,7 @@ use entanglement_core::{
     OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool, CallTool};
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use sha2::{Digest, Sha256};
 
 /// Lowercase hex SHA-256, matching the `FileChange.hash` the executor emits.
@@ -126,12 +126,14 @@ async fn read_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -203,12 +205,14 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -306,12 +310,14 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -425,12 +431,14 @@ async fn write_tool_denied_under_research_mode() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetMode {
@@ -512,12 +520,14 @@ async fn write_tool_denied_outside_plans_folder_under_plan_mode() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetMode {
@@ -590,12 +600,14 @@ async fn write_tool_allowed_in_plans_folder_under_plan_mode() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     holly
         .send(InMsg::SetMode {
@@ -672,12 +684,14 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -748,12 +762,14 @@ async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile()
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -834,12 +850,14 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

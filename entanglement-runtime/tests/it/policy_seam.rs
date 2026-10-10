@@ -13,10 +13,8 @@ use entanglement_core::{
     stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{GrantStore, PermissionResolver};
-use entanglement_runtime::skills::SkillRegistry;
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// Replays scripted LLM responses in order, then plain text.
@@ -118,7 +116,7 @@ impl GrantStore for RecordingGrants {
 }
 
 /// Spawn a Holly whose scripted LLM calls `bash` once, wired to the given custom
-/// resolver + grant store via [`spawn_tool_executor_with_policy`]. The tool
+/// resolver + grant store via [`ToolExecutor::builder`]. The tool
 /// mask is retired (ADR-0207 §8) — every advertised tool dispatches — so the
 /// grade is entirely the resolver's, whatever mode the session happens to run
 /// in.
@@ -162,32 +160,18 @@ fn spawn_with_policy(
     // is allow-all, so it never clamps the resolver.
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        reg.shared(),
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(std::sync::RwLock::new(profiles)),
-        Arc::new(std::sync::RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(profiles)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+        ))
+        .spawn();
     holly
 }
 

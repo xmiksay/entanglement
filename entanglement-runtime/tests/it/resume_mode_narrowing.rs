@@ -17,7 +17,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::capability::Capability;
 use entanglement_runtime::session_store::{check_for_resume, read_path};
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 struct DoneLlm;
@@ -82,12 +82,10 @@ async fn resume_and_grade(explicit_mode: bool) -> (String, bool, usize) {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut reg = ToolRegistry::new();
     reg.register(CountingEdit(runs.clone()));
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        agents,
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
 
     let mut sub = holly.subscribe();
     holly

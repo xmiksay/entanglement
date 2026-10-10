@@ -18,7 +18,7 @@ use entanglement_runtime::agents::load_registry;
 use entanglement_runtime::mcp::McpCapabilityIndex;
 use entanglement_runtime::session_store::SessionStore;
 use entanglement_runtime::system_prompt::PromptContext;
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
 // `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
@@ -435,12 +435,12 @@ async fn spawn_under_a_file_defined_profile() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(profiles)
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
 
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();

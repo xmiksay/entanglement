@@ -23,7 +23,7 @@ use entanglement_core::{
     stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 struct ScriptedLlm {
@@ -73,7 +73,7 @@ impl Tool for EchoEdit {
 }
 
 /// Build a Holly whose scripted LLM calls `edit` once, wired with the runtime
-/// executor over the built-in profiles + built-in modes (`spawn_tool_executor`
+/// executor over the built-in profiles + built-in modes (`ToolExecutor::builder`
 /// defaults to `ModeTable::builtin()`).
 fn spawn_with_edit_call() -> Holly {
     let scripted = Arc::new(vec![
@@ -104,12 +104,12 @@ fn spawn_with_edit_call() -> Holly {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoEdit);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     holly
 }
 
@@ -143,12 +143,10 @@ fn spawn_calling(tool: &str, agents: AgentCatalog) -> Holly {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoEdit);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        agents,
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     holly
 }
 

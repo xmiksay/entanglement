@@ -16,7 +16,7 @@ use entanglement_core::{
     stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// Replays scripted responses in order, then plain text.
@@ -98,12 +98,10 @@ fn spawn_blocking_bash(started: Arc<AtomicBool>, completed: Arc<AtomicBool>) -> 
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(BlockingTool { started, completed });
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        agents,
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     holly
 }
 

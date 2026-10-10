@@ -17,27 +17,23 @@ use entanglement_core::{
     ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{
     host_tools, host_tools_with_extra_roots, BashTool, CallTool, GlobJsonTool, GrepJsonTool,
     ReadRawTool,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::{load_registry, LoadSkillTool, SkillRegistry};
+use entanglement_runtime::skills::{load_registry, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
-use entanglement_runtime::tool_runner::{
-    spawn_tool_executor, spawn_tool_executor_with_policy, EscapeRoot,
-};
+use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool now (ADR-0207 stage 4b: `crate::script::
 /// BindingPolicy` reuses the ancestor chain + `PermissionResolver`, not the
 /// retired `Agent`-chain path) — `ModeResolver` (the seam
-/// `spawn_tool_executor_with_policy` takes) needs a mode table regardless of
+/// `ToolExecutor::builder` takes) needs a mode table regardless of
 /// which route a given test exercises. A single `"build"`-named, `default:
 /// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
 /// every test in this file
@@ -146,12 +142,12 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(GlobJsonTool::new(root.to_path_buf()));
     tools.register(GrepJsonTool::new(root.to_path_buf()));
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        agents,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(agents)
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     holly
 }
 
@@ -219,13 +215,16 @@ fn spawn_with_rhai_exec_and_base(
     if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
-    let _executor = spawn_tool_executor(&holly, tools, agents, base);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(agents)
+        .base(base)
+        .spawn();
     holly
 }
 
 /// [`spawn_with_rhai`], but wires the escape-root policy (ADR-0109) into both
 /// the host-tool registry and the executor (mirroring `main.rs`'s wiring, #446)
-/// instead of `spawn_tool_executor`'s no-escape-policy default — so a binding
+/// instead of `ToolExecutor::builder`'s no-escape-policy default — so a binding
 /// targeting a path outside `root` is gated by the approval-and-record flow
 /// instead of a hard containment refusal. Returns the `Holly` plus the
 /// in-memory [`ExtraRootStore`] so a test can pre-seed or inspect grants.
@@ -279,29 +278,16 @@ fn spawn_with_rhai_escape(
         root: root.to_path_buf(),
         store: store.clone(),
     };
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        modes,
-        resolver,
-        grants,
-        Hooks::default(),
-        Some(escape_root),
-        allow_all_table(),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(agents)
+        .base(base)
+        .active(active)
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(grants)
+        .escape_root(escape_root)
+        .mode_table(allow_all_table())
+        .spawn();
     (holly, store)
 }
 
@@ -471,7 +457,7 @@ fn spawn_with_rhai_exec_mode(
     holly
 }
 
-/// Shared `spawn_tool_executor_with_policy` wiring for
+/// Shared `ToolExecutor::builder` wiring for
 /// [`spawn_with_rhai_mode`]/[`spawn_with_rhai_exec_mode`]: a `ModeResolver`
 /// over the given `mode_table` (instead of `ModeTable::builtin()`), clamped
 /// to `base` (defaulting allow-all) — mirrors `spawn_with_rhai_escape`'s own
@@ -495,27 +481,15 @@ fn spawn_with_policy_over(
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let _executor = spawn_tool_executor_with_policy(
-        holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        modes,
-        resolver,
-        grants,
-        Hooks::default(),
-        None,
-        mode_table,
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(holly, shared_tools)
+        .agents(agents)
+        .base(base)
+        .active(active)
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(mode_table)
+        .spawn();
 }
 
 /// Collect events for `sid` until `Done`, with a safety timeout.
@@ -1479,29 +1453,16 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        skills,
-        PermissionProfile::new(Permission::Allow),
-        active,
-        modes,
-        resolver,
-        grants,
-        Hooks::default(),
-        None,
-        allow_all_table(),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(agents)
+        .live_skills(skills)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(allow_all_table())
+        .spawn();
 
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -1589,29 +1550,16 @@ fn spawn_with_rhai_background(
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let scripts = entanglement_runtime::script_ops::ScriptRegistry::new();
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        scripts.clone(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        modes,
-        resolver,
-        grants,
-        Hooks::default(),
-        None,
-        allow_all_table(),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — test callers resolve tool_search.
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .scripts(scripts.clone())
+        .agents(agents)
+        .base(base)
+        .active(active)
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(allow_all_table())
+        .spawn();
     (holly, scripts)
 }
 

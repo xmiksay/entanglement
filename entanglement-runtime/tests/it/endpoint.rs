@@ -20,7 +20,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::endpoint::{EndpointConfig, EndpointTool};
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 use tokio::net::TcpListener;
 
@@ -136,12 +136,10 @@ async fn run_call(tool: EndpointTool, name: &str, input: &str) -> Vec<(String, b
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(tool);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        profiles,
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(profiles)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();

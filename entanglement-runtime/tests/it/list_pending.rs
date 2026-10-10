@@ -4,7 +4,7 @@
 //! wire-allowed end to end.
 
 use std::borrow::Cow;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,10 +14,8 @@ use entanglement_core::{
     SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{GrantStore, ModeResolver, PermissionResolver};
-use entanglement_runtime::skills::SkillRegistry;
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 use tokio::sync::broadcast::Receiver;
 
@@ -148,27 +146,15 @@ fn spawn_engine() -> Holly {
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        Default::default(),
-        modes,
-        resolver,
-        Arc::new(NoGrants),
-        Default::default(),
-        None,
-        mode_table,
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(&holly, tools)
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(Default::default())
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(Arc::new(NoGrants))
+        .mode_table(mode_table)
+        .spawn();
     holly
 }
 

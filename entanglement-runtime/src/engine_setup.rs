@@ -58,7 +58,7 @@ use crate::{
 /// (`cfg.tool_specs`, later kept live via `cfg.tool_spec_resolver`, #372). The
 /// returned [`ToolRegistry`] stays in the runtime — wrapped into a
 /// [`entanglement_runtime::SharedRegistry`] by the caller — and is handed to
-/// [`tool_runner::spawn_tool_executor_with_policy`], which answers the
+/// [`tool_runner::ToolExecutor::builder`], which answers the
 /// [`entanglement_core::OutEvent::ToolExec`] round-trip.
 pub(crate) async fn build_config(
     catalog: &Catalog,

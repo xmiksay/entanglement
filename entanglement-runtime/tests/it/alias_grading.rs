@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,13 +21,12 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::tools::{register_skill_tools, SkillToolDef};
 use entanglement_runtime::skills::{SkillMeta, SkillRegistry};
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 struct ScriptedLlm {
@@ -179,30 +178,18 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_reg,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    let _executor = ToolExecutor::builder(&holly, shared_reg)
+        .agents(profiles)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        None,
-        None,
-    );
+        ))
+        .spawn();
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

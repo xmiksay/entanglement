@@ -13,7 +13,7 @@ use entanglement_core::{
     OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use sha2::{Digest, Sha256};
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -93,12 +93,14 @@ fn build_holly_and_executor(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     (holly, executor)
 }
 

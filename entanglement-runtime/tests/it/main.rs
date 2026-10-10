@@ -42,6 +42,7 @@ mod aux_models;
 mod compact_fork;
 #[cfg(feature = "serve")]
 mod endpoint;
+mod executor_builder;
 mod hooks;
 mod host_tools;
 mod invoke_envelope;

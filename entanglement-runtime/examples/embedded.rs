@@ -22,18 +22,15 @@
 //! provider key and produces deterministic output.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use entanglement_core::{
     AgentCatalog, ApprovalScope, EngineConfig, Holly, InMsg, OutEvent, Permission,
     PermissionProfile, SessionId,
 };
-use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::permission::permission_arg;
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{GrantStore, PermissionResolver};
-use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::{host, tool_runner};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -138,46 +135,19 @@ async fn main() -> anyhow::Result<()> {
         Vec::new(),
     );
 
-    let _executor = tool_runner::spawn_tool_executor_with_policy(
-        &holly,
-        tools.shared(),
-        host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        Arc::new(Mutex::new(HashMap::new())),
-        // `TenantResolver` above grades from its own per-tenant table, not
-        // from a session's permission mode (ADR-0207) — this map only
-        // matters to the default `ModeResolver`, which this example
-        // doesn't use, so an always-empty one is correct here.
-        Arc::new(Mutex::new(HashMap::new())),
-        resolver,
-        grants,
-        Hooks::default(),
-        None,
-        // `TenantResolver` also grades spawn bounds independent of the
-        // default `ModeResolver`'s mode table — an embedder that skips
-        // `ModeTable` entirely still needs *some* table wired here so
-        // `SpawnGuard` has depth/fan-out limits to read; the built-in four
-        // are a reasonable default even though this example's sessions
-        // never actually set a mode (an unseen session's spawn simply fails
-        // closed, mirroring `ModeResolver`'s own fail-closed default).
-        Arc::new(
-            entanglement_runtime::mode::ModeTable::builtin()
-                .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
+    // `ToolExecutor::builder` (#724): only the seams this embedder replaces
+    // are set; every other one keeps its documented default (built-in mode
+    // table for spawn bounds, allow-all ceiling, no hooks, private registries).
+    // Grants default to in-memory only — a single-user head that wants the
+    // managed `grants.yml` passes `Arc::new(DefaultGrantStore::load())`; this
+    // embedder routes them to its own store instead.
+    let _executor = tool_runner::ToolExecutor::builder(&holly, tools.shared())
+        .agents(profiles)
+        .resolver(resolver)
+        .grants(grants)
         // The per-user MCP scope seam (#684) wired above.
-        Some(scopes),
-        // No tool-advertising inputs (ADR-0196) — this example resolves tool_search.
-        None,
-        // No discovery surface (ADR-0196 §4) — this example runs no
-        // `tool_spec_resolver` of its own, so a private `explore`/`describe`
-        // state (no external reader) is fine.
-        None,
-    );
+        .mcp_scopes(scopes)
+        .spawn();
 
     let acme = SessionId::new(format!("acme:{}", SessionId::new_uuid()));
     let globex = SessionId::new(format!("globex:{}", SessionId::new_uuid()));

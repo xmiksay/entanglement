@@ -1,71 +1,40 @@
-//! The convenience entry points over [`super::spawn_tool_executor_with_policy`]
-//! (issue #712, split out of `tool_runner.rs`): the historical 4-arg
-//! [`spawn_tool_executor`] and its hook-taking sibling, which plug in the
-//! default single-user policy seams. Re-exported at their pre-split paths
-//! (`tool_runner::spawn_tool_executor`/`spawn_tool_executor_with_hooks`).
+//! The pre-#724 positional executor constructors, kept for one release (0.7)
+//! as deprecated shims over [`ToolExecutor::builder`] so an embedder upgrading
+//! gets a warning pointing at the migration instead of a compile break.
+//! Remove them in the release after 0.7.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentCatalog, Holly, PermissionProfile};
+use entanglement_core::{Agent, AgentCatalog, Holly, PermissionProfile, SessionId};
 
 use crate::hooks::Hooks;
-use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;
-use crate::policy::{DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver};
+use crate::policy::{GrantStore, PermissionResolver};
 use crate::skills::SkillRegistry;
-use crate::tools::ToolRegistry;
+use crate::tool_advertising::AdvertisingInputs;
+use crate::tools::{SharedRegistry, ToolRegistry};
 
-use super::spawn_tool_executor_with_policy;
+use super::{DiscoverySurface, EscapeRoot, ToolExecutor};
 
-/// Spawn the per-engine tool executor. Subscribes synchronously (so no
-/// `ToolExec` emitted before the task is scheduled is missed) and runs until the
-/// engine's outbox closes. `agents` is the runtime's copy of the engine's
-/// [`AgentCatalog`] — the permission *shape* stays a core type; the runtime
-/// only reads it (ADR-0003). `base` is the user config's global permission
-/// ceiling (#172): every resolved grade is clamped least-privilege against it.
-///
-/// **Grants are in-memory only** (#747): an `Always` approval never reads or
-/// writes the managed `grants.yml`, so test callers can't touch the developer's
-/// real file. A production caller wanting persisted grants uses
-/// [`spawn_tool_executor_with_policy`] with `DefaultGrantStore::load()`.
+/// Equivalent to
+/// `ToolExecutor::builder(holly, tools.shared()).agents(agents).base(base).spawn()`.
+/// Grants are in-memory only (#747).
+#[deprecated(since = "0.7.0", note = "use ToolExecutor::builder")]
 pub fn spawn_tool_executor(
     holly: &Holly,
     tools: ToolRegistry,
     agents: AgentCatalog,
     base: PermissionProfile,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_tool_executor_with_hooks(holly, tools, agents, base, Hooks::default())
+    ToolExecutor::builder(holly, tools.shared())
+        .agents(agents)
+        .base(base)
+        .spawn()
 }
 
-/// Wrap a caller's [`SkillRegistry`] for [`spawn_tool_executor_with_policy`]'s
-/// `skills` parameter, mirroring [`wrap_agents`]. The convenience wrappers
-/// below plug in an empty registry — no `load_skill` mask ever activates for
-/// their (~30, test-only) callers, matching their historical no-skill-mask
-/// behavior byte-for-byte.
-fn wrap_skills(skills: SkillRegistry) -> Arc<RwLock<Arc<SkillRegistry>>> {
-    Arc::new(RwLock::new(Arc::new(skills)))
-}
-
-/// Wrap a caller's owned [`AgentCatalog`] for [`spawn_tool_executor_with_policy`],
-/// which reads it through an `Arc<RwLock<..>>` so a live definitions watcher
-/// (#329) can swap it for a fresher one without restarting the executor. The
-/// convenience wrappers here keep their historical owned-registry signature for
-/// existing callers (and tests) that need no live reload.
-fn wrap_agents(agents: AgentCatalog) -> Arc<RwLock<AgentCatalog>> {
-    Arc::new(RwLock::new(agents))
-}
-
-/// Like [`spawn_tool_executor`] but with user-configured lifecycle hooks (#199,
-/// ADR-0066): `pre_tool_use` can veto a generic tool dispatch, `post_tool_use`
-/// runs as a side-effect after it, and `user_prompt_submit` fires on every
-/// inbound `Prompt`. The no-hook wrapper keeps the historical 4-arg signature for
-/// callers (and tests) that need no hooks.
-///
-/// **Grants are in-memory only** (#747): an `Always` approval never reads or
-/// writes the managed `grants.yml`, so test callers can't touch the developer's
-/// real file. A production caller wanting persisted grants uses
-/// [`spawn_tool_executor_with_policy`] with `DefaultGrantStore::load()`.
+/// Equivalent to [`spawn_tool_executor`] plus `.hooks(hooks)`.
+#[deprecated(since = "0.7.0", note = "use ToolExecutor::builder")]
 pub fn spawn_tool_executor_with_hooks(
     holly: &Holly,
     tools: ToolRegistry,
@@ -73,74 +42,63 @@ pub fn spawn_tool_executor_with_hooks(
     base: PermissionProfile,
     hooks: Hooks,
 ) -> tokio::task::JoinHandle<()> {
-    // The default single-user policy (#311, ADR-0207 stage 4): the executor
-    // folds lifecycle events into `active` (still needed for spawn gating
-    // and the `rhai` binding policy) and `modes` (the session→mode map
-    // `ModeResolver` grades from — sandboxing reads the identical map via
-    // `crate::policy::ModeSandboxResolver`, ADR-0207 §6, wired independently
-    // by a caller that wants it; these test-only wrappers don't). Grants are
-    // in-memory only (#747): no in-tree head uses these wrappers, and their
-    // test callers must neither read the developer's real `grants.yml` (an
-    // `Always` grant there flips an expected Ask to Allow) nor write to it.
-    let active = Arc::new(Mutex::new(HashMap::new()));
-    let modes = Arc::new(Mutex::new(HashMap::new()));
-    let mode_table = Arc::new(ModeTable::builtin().expect("built-in permission modes must parse"));
-    let shared_tools = tools.shared();
-    // No escape-root policy wired here (root: None) — the strict-containment
-    // 4-arg wrapper keeps the pre-#485 verbatim arg match (ADR-0125).
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
-        modes.clone(),
-        mode_table.clone(),
-        shared_tools.clone(),
-        base.clone(),
-        None,
-    ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    spawn_tool_executor_with_policy(
-        holly,
-        shared_tools,
-        // No job registry shared with an external `BashTool` here — the
-        // convenience wrappers' (~30, test-only) callers never wire one up
-        // either, so a `poll` of a job id from this executor's own private
-        // registry is simply unreachable, matching pre-#605 behavior where
-        // these wrappers never registered `bash_output` against a shared one.
-        crate::host::jobs::JobRegistry::new(),
-        // Same story for retained output (#608): no external `CallTool` shares
-        // this private registry either, so a truncated call from one of these
-        // wrappers' callers never mints a handle in the first place.
-        crate::retained_output::RetainedOutputRegistry::new(),
-        // And for background scripts (#637): a private registry is still
-        // reachable here — the executor's own `rhai` arm writes it and its
-        // `poll` arm reads it back, both inside this one executor.
-        crate::script_ops::ScriptRegistry::new(),
-        wrap_agents(agents),
-        wrap_skills(SkillRegistry::default()),
-        base,
-        active,
-        modes,
-        resolver,
-        grants,
-        hooks,
-        // The default 4-arg wrapper keeps strict root containment — escape-root
-        // approval is opt-in, wired only by the full head (`services.rs`).
-        None,
-        mode_table,
-        // These convenience wrappers' (~30, test-only) callers never wire up a
-        // plans-folder watch either, so a private, unshared registry is fine —
-        // matches their historical no-external-sharing behavior for `jobs`/
-        // `retained` above.
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user, like skutter itself.
-        None,
-        // No advertising-resolution inputs (ADR-0196 Phase P1): these
-        // wrappers' (~30, test-only) callers hand no catalog/config pair, so
-        // every session resolves `tool_search` — the map still folds,
-        // nothing dispatches on it yet.
-        None,
-        // No discovery surface (ADR-0196 §4): these wrappers' (~30, test-only)
-        // callers build no `tool_spec_resolver` of their own either, so a
-        // private, unshared `AdvertisingState` and an empty MCP roster (
-        // `explore` simply has nothing MCP to report) are exactly right.
-        None,
-    )
+    ToolExecutor::builder(holly, tools.shared())
+        .agents(agents)
+        .base(base)
+        .hooks(hooks)
+        .spawn()
+}
+
+/// Every seam spelled positionally; each argument maps 1:1 onto the
+/// [`ToolExecutor::builder`] setter of the same name (`agents` →
+/// `live_agents`, `skills` → `live_skills`, an `Option` → setter only when
+/// `Some`).
+#[deprecated(since = "0.7.0", note = "use ToolExecutor::builder")]
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_tool_executor_with_policy(
+    holly: &Holly,
+    tools: SharedRegistry,
+    jobs: crate::host::jobs::JobRegistry,
+    retained: crate::retained_output::RetainedOutputRegistry,
+    scripts: crate::script_ops::ScriptRegistry,
+    agents: Arc<RwLock<AgentCatalog>>,
+    skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    base: PermissionProfile,
+    active: Arc<Mutex<HashMap<SessionId, Agent>>>,
+    perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    resolver: Arc<dyn PermissionResolver>,
+    grants: Arc<dyn GrantStore>,
+    hooks: Hooks,
+    escape_root: Option<EscapeRoot>,
+    mode_table: Arc<crate::mode::ModeTable>,
+    plan_files: Arc<PlanFileRegistry>,
+    mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
+    advertising_inputs: Option<Arc<AdvertisingInputs>>,
+    discovery: Option<DiscoverySurface>,
+) -> tokio::task::JoinHandle<()> {
+    let mut b = ToolExecutor::builder(holly, tools)
+        .jobs(jobs)
+        .retained(retained)
+        .scripts(scripts)
+        .live_agents(agents)
+        .live_skills(skills)
+        .base(base)
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .hooks(hooks)
+        .mode_table(mode_table)
+        .plan_files(plan_files)
+        .discovery(discovery.unwrap_or_default());
+    if let Some(er) = escape_root {
+        b = b.escape_root(er);
+    }
+    if let Some(scopes) = mcp_scopes {
+        b = b.mcp_scopes(scopes);
+    }
+    if let Some(inputs) = advertising_inputs {
+        b = b.advertising_inputs(inputs);
+    }
+    b.spawn()
 }

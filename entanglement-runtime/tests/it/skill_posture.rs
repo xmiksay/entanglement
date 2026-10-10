@@ -19,9 +19,8 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::tool_runner::ToolExecutor;
 
 struct ScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,
@@ -187,32 +186,19 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
     let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
         entanglement_runtime::policy::DefaultGrantStore::load_from(None),
     );
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        skills,
-        PermissionProfile::new(Permission::Allow),
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(profiles)
+        .live_skills(skills)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+        ))
+        .spawn();
 
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();

@@ -1,5 +1,5 @@
 //! Integration tests for permission dispatch (#59). Core emits a `ToolExec`
-//! for every host tool; `spawn_tool_executor`/`spawn_tool_executor_with_policy`
+//! for every host tool; `ToolExecutor::builder`
 //! resolve `Allow | Ask | Deny` from the session's permission **mode**
 //! (ADR-0207 stage 4 — `ModeResolver` grades from `crate::mode::Mode`, not
 //! `Agent`) and drive the approval round-trip on `Ask`.
@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -24,12 +24,8 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::plan_files::PlanFileRegistry;
-use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
-};
-use entanglement_runtime::skills::SkillRegistry;
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// An LLM that replays scripted responses in order, then plain text (so a turn
@@ -200,11 +196,10 @@ fn spawn_with_bash_call(input: &str) -> Holly {
 }
 
 /// Shared plumbing every harness in this file uses: registers `reg` as the
-/// shared tool registry, wires a `ModeResolver` graded from `mode_table`
-/// (allow-all config ceiling), and spawns the real executor via
-/// `spawn_tool_executor_with_policy`. `root` (#485, ADR-0125) is threaded
-/// into both the resolver and (when `Some`) the executor's escape-root
-/// policy, matching `main.rs`'s production wiring.
+/// shared tool registry, grades from `mode_table` (allow-all config
+/// ceiling), and spawns the real executor via `ToolExecutor::builder`.
+/// `root` (#485, ADR-0125), when `Some`, becomes the escape-root policy and
+/// thereby the default resolver's root too, matching `services.rs`.
 fn spawn_with_policy_over(
     holly: &Holly,
     reg: ToolRegistry,
@@ -212,44 +207,20 @@ fn spawn_with_policy_over(
     mode_table: Arc<ModeTable>,
     root: Option<&Path>,
 ) {
-    let shared_tools = reg.shared();
-    let active = Arc::new(Mutex::new(HashMap::new()));
-    let modes = perm_modes();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
-        modes.clone(),
-        mode_table.clone(),
-        shared_tools.clone(),
-        PermissionProfile::new(Permission::Allow),
-        root.map(Path::to_path_buf),
-    ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let escape_root = root.map(|root| entanglement_runtime::tool_runner::EscapeRoot {
-        root: root.to_path_buf(),
-        store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
-    });
-    let _executor = spawn_tool_executor_with_policy(
-        holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        modes,
-        resolver,
-        grants,
-        Default::default(),
-        escape_root,
-        mode_table,
-        Arc::new(PlanFileRegistry::new()),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+    // The builder's default resolver is exactly the `ModeResolver` this
+    // harness wants: graded from `modes`/`mode_table`, allow-all ceiling,
+    // root-relative normalization off the escape root when one is set.
+    let mut builder = ToolExecutor::builder(holly, reg.shared())
+        .agents(agents)
+        .perm_modes(perm_modes())
+        .mode_table(mode_table);
+    if let Some(root) = root {
+        builder = builder.escape_root(entanglement_runtime::tool_runner::EscapeRoot {
+            root: root.to_path_buf(),
+            store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
+        });
+    }
+    let _executor = builder.spawn();
 }
 
 #[tokio::test]
@@ -1315,27 +1286,15 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         ceiling.clone(),
         None,
     ));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        ceiling,
-        active,
-        modes,
-        resolver,
-        Arc::new(DefaultGrantStore::load_from(None)),
-        Default::default(),
-        None,
-        builtin_modes(),
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        None,
-        None,
-    );
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(profiles)
+        .base(ceiling)
+        .active(active)
+        .perm_modes(modes)
+        .resolver(resolver)
+        .grants(Arc::new(DefaultGrantStore::load_from(None)))
+        .mode_table(builtin_modes())
+        .spawn();
 
     let sid = SessionId::new("s1");
     set_research_mode(&holly, &sid).await;

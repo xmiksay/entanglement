@@ -24,7 +24,7 @@
 
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -36,14 +36,12 @@ use entanglement_core::{
 use entanglement_runtime::config::Config;
 use entanglement_runtime::host::WriteTool;
 use entanglement_runtime::mcp::AvailableMcp;
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
 use entanglement_runtime::tool_advertising::{AdvertisingInputs, AdvertisingState};
-use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
+use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 use entanglement_runtime::{system_prompt_mode, Tool, ToolRegistry};
 
 /// One provider `inv`/model `m` pinned to `discovery: invoke` — the array
@@ -225,33 +223,23 @@ fn harness(
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let executor = spawn_tool_executor_with_policy(
-        &holly,
-        tools.clone(),
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    let executor = ToolExecutor::builder(&holly, tools.clone())
+        .agents(profiles)
+        .base(base)
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        Some(inputs),
-        Some(DiscoverySurface {
+        ))
+        .advertising_inputs(inputs)
+        .discovery(DiscoverySurface {
             advertising: advertising.clone(),
             ..Default::default()
-        }),
-    );
+        })
+        .spawn();
     Harness {
         holly,
         sid: SessionId::new("s1"),

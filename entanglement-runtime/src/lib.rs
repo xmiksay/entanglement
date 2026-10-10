@@ -107,7 +107,7 @@ pub mod request_mode;
 pub mod retained_output;
 // Wall-clock/turn-count budget enforcement for a mode's `max_turns`/
 // `max_duration` (ADR-0207 §11, stage 5c) — spawned by
-// `tool_runner::spawn_tool_executor_with_policy` alongside its other
+// `tool_runner::ToolExecutor::builder` alongside its other
 // background tasks.
 pub mod run_budget;
 // `question_timeout`/`on_timeout` unattended-run policy (ADR-0207 §11,

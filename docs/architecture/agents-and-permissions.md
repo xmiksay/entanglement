@@ -232,8 +232,8 @@ below realize one model:
   `ENTANGLEMENT_GRANTS_FILE`) — a top-level `grants:` list of `tool(arg)` rule keys,
   loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
   `DefaultGrantStore::load_from` take an explicit path, or `None` for an
-  in-memory-only store — what tests and the test-only `spawn_tool_executor*`
-  wrappers use, so they never read or write the developer's real file, #747; the
+  in-memory-only store — the `ToolExecutor::builder` default every test
+  uses, so they never read or write the developer's real file, #747; the
   real path is unreachable under `cfg(test)`). Like the provider-key env file
   (#220) it sits *beside* `config.yml`, not inside it: the runtime rewrites it
   freely, so it never clobbers the hand-edited, commented config. A missing/malformed

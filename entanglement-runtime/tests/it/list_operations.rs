@@ -12,7 +12,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     MessageRole, OperationKind, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
 fn finish(text: &str) -> LlmStream {
@@ -87,12 +87,12 @@ fn config() -> EngineConfig {
 #[tokio::test]
 async fn list_operations_returns_nothing_when_none_are_outstanding() {
     let holly = Holly::spawn(EngineConfig::default());
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     let mut sub = holly.subscribe();
     holly
         .send(InMsg::ListOperations {
@@ -121,12 +121,12 @@ async fn list_operations_returns_nothing_when_none_are_outstanding() {
 #[tokio::test]
 async fn list_operations_surfaces_a_launched_but_never_polled_agent() {
     let holly = Holly::spawn(config());
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     let parent = SessionId::new("parent");
     let mut sub = holly.subscribe();
     holly

@@ -11,7 +11,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, UserId,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
 /// The parent calls a blocking `agent`; the child (prompted `child-task`)
@@ -57,12 +57,10 @@ async fn an_agent_tool_child_keeps_the_tenant_prefix_and_owner() {
     };
     let profiles = cfg.agents.clone();
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        profiles,
-        PermissionProfile::new(Permission::Allow),
-    );
+    ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(profiles)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
 
     let parent = SessionId::new("t1:root");
     let alice = UserId::new("alice");

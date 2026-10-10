@@ -17,7 +17,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// Replays scripted responses in order, then plain text.
@@ -99,12 +99,12 @@ async fn reoffered_tool_exec_runs_only_once() {
 
     let mut reg = ToolRegistry::new();
     reg.register(SlowCountingBash { runs: runs.clone() });
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
 
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -181,12 +181,12 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
 
     let mut reg = ToolRegistry::new();
     reg.register(FastCountingBash { runs: runs.clone() });
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
 
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
