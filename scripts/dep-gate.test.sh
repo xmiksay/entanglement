@@ -152,6 +152,23 @@ fcheck "file-cap: cfg(test) helper fn counts (401)" 1
 fcheck "file-cap: one-line block with brace in string" 0
 { printf '#[cfg(test)] mod tests { fn t() { let _ = "{"; } }\n'; code 401; } >"$src"
 fcheck "file-cap: brace in string does not swallow the rest" 1
+# An escaped-quote char literal (`'\''`) must close on its real quote.
+quote_brace_block() {
+	cat <<'RS'
+#[cfg(test)]
+mod tests {
+    const Q: [char; 2] = ['\'','{'];
+}
+RS
+}
+{ quote_brace_block; code 400; } >"$src"
+fcheck "file-cap: '\\'' then '{' in test block (400)" 0
+{ quote_brace_block; code 401; } >"$src"
+fcheck "file-cap: '\\'' then '{' does not swallow the rest" 1
+{ code 399; cat <<'RS'; tests_block; } >"$src"
+fn a() { let v = ['\'','"']; }
+RS
+fcheck "file-cap: '\\'' then '\"' before a test mod does not over-count" 0
 
 if [ "$fails" -ne 0 ]; then
 	echo "$fails dep-gate self-test(s) failed" >&2

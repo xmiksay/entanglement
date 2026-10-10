@@ -5,6 +5,11 @@
 # `#[cfg(test)]` and its `mod`. Any other `#[cfg(test)]` item (helper fn,
 # impl, static, use) still counts: it is not the test module.
 #
+# Only the exact `#[cfg(test)]` form is exempt. A compound cfg
+# (`#[cfg(all(test, ...))]`) or a multi-line attribute between the
+# `#[cfg(test)]` and its `mod` is not recognized, so that module counts —
+# deliberately fail-safe: an unrecognized shape over-counts, never hides.
+#
 # The brace matcher runs a tiny lexer over the whole file so braces inside
 # strings, raw strings, char literals and (nested) comments never move the
 # depth, and a `#[cfg(test)]` inside a multi-line string is not a marker.
@@ -46,7 +51,8 @@ function lex(s,    i, n, c, j, h, p) {
 		if (c == "'") {
 			# A char literal can hold a brace; a lifetime (`'a`) cannot.
 			if (substr(s, i + 1, 1) == "\\") {
-				j = i + 2
+				# Skip the escaped char itself: in `'\''` it is the quote.
+				j = i + 3
 				while (j <= n && substr(s, j, 1) != "'") j++
 				i = j + 1; continue
 			}

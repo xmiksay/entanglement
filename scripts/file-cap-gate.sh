@@ -9,7 +9,9 @@
 # `#[cfg(test)]`-gated module — an inline `mod x { … }` block anywhere in the
 # file (brace-matched, string/char/comment-aware) or a `mod x;` declaration
 # (scripts/file-cap-count.awk). Other `#[cfg(test)]` items (helper fns,
-# impls) ship beside production code and still count. Issue #745: the old
+# impls) ship beside production code and still count, and only the exact
+# `#[cfg(test)]` form is exempt — a compound `#[cfg(all(test, …))]` or a
+# multi-line attribute before the `mod` counts (fail-safe). Issue #745: the old
 # "everything before the first `#[cfg(test)]`" rule let an early
 # `mod tests;` hide the rest of the file. A file over 400 code lines fails the gate unless listed in
 # the allowlist file (grandfathered debt, issue #451); an allowlisted file
