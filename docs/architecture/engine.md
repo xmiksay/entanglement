@@ -569,8 +569,10 @@ the inherited params as a `GenerationChanged`, which replay folds after the
 model's fresh-resolution params. That `GenerationChanged` is also recorded as
 the profile's session memory, so the persisted `generation_resolver` default
 does not override it. A resumed session's corrective `ModelChanged`
-re-announce keeps the replayed generation and does not reset it to the
-catalog's.
+re-announce keeps the replayed generation rather than resetting it to the
+catalog's. When the two differ, it also re-logs a `GenerationChanged` after
+itself. Without that, the corrective record would be the last write in the
+log, and the *next* resume would fold back to the catalog's params.
 
 **A mid-turn fork carries the turn.** The window gate runs between rounds, so
 the turn's tool batch is always drained when it fires — `drive_turn` is only

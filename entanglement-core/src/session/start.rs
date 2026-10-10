@@ -192,12 +192,22 @@ pub(super) fn start_session(
         if let Some(resolver) = cfg.model_resolver.as_ref() {
             match resolver(s.user.as_ref(), &provider, &model) {
                 Ok(resolved) => {
-                    // The re-announce must not undo replay's generation fold:
-                    // a logged `SetGeneration` (or a successor's inherited
-                    // params) sits after the `ModelChanged` it would reset.
-                    let generation = s.generation;
+                    // The re-announce must not undo replay's generation fold
+                    // (a logged `SetGeneration`, or a successor's inherited
+                    // params) — live *or* in the log: this `ModelChanged` is
+                    // persisted after that `GenerationChanged`, and replay's
+                    // fold resets to the resolution's params, so without
+                    // re-logging the live params the next resume loses them.
+                    let live = s.generation;
+                    let catalog = resolved.generation;
                     s.rebind(session, resolved, events);
-                    s.generation = generation;
+                    if let Some(generation) = live.filter(|_| live != catalog) {
+                        s.generation = live;
+                        let _ = events.send(OutEvent::GenerationChanged {
+                            session: session.clone(),
+                            generation,
+                        });
+                    }
                 }
                 Err(e) => tracing::warn!(
                     provider, model, error = %e,

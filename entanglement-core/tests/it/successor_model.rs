@@ -345,11 +345,12 @@ async fn an_unresolvable_model_does_not_lose_the_session() {
     );
 }
 
-/// Resuming the successor in a fresh engine keeps the inherited generation:
-/// the resume's corrective `ModelChanged` re-announce must not reset it to the
-/// catalog's params.
+/// Resuming the successor keeps the inherited generation — and keeps it on
+/// every *later* resume too: the resume's corrective `ModelChanged`
+/// re-announce lands in the log after the `GenerationChanged`, so it must
+/// re-log the live params or the next replay folds back to the catalog's.
 #[tokio::test]
-async fn a_resumed_successor_keeps_the_inherited_generation() {
+async fn a_twice_resumed_successor_keeps_the_inherited_generation() {
     let h = Harness::new();
     let cfg = h.config(true);
     let holly = Holly::spawn(cfg.clone());
@@ -364,16 +365,28 @@ async fn a_resumed_successor_keeps_the_inherited_generation() {
         })
         .await
         .unwrap();
-    let (successor, events) = successor_turn(&mut sub, &sid).await;
+    let (successor, mut log) = successor_turn(&mut sub, &sid).await;
 
-    let fresh = Holly::spawn(cfg);
-    let mut fresh_sub = fresh.subscribe();
-    let records = events.into_iter().map(|e| (None, e)).collect();
-    fresh.resume(successor.clone(), records).await.unwrap();
-    fresh
-        .send(InMsg::prompt(successor.clone(), "again"))
-        .await
-        .unwrap();
-    until_done(&mut fresh_sub, &successor).await;
-    assert_eq!(h.last_request(), (Some("glm-b".into()), Some(0.3)));
+    for _ in 0..2 {
+        let fresh = Holly::spawn(cfg.clone());
+        let mut fresh_sub = fresh.subscribe();
+        let records = log.iter().cloned().map(|e| (None, e)).collect();
+        fresh.resume(successor.clone(), records).await.unwrap();
+        fresh
+            .send(InMsg::prompt(successor.clone(), "again"))
+            .await
+            .unwrap();
+        // This engine's events extend the persisted log the next resume reads.
+        loop {
+            let ev = next(&mut fresh_sub).await;
+            if ev.session() == Some(&successor) {
+                let done = matches!(ev, OutEvent::Done { .. });
+                log.push(ev);
+                if done {
+                    break;
+                }
+            }
+        }
+        assert_eq!(h.last_request(), (Some("glm-b".into()), Some(0.3)));
+    }
 }
