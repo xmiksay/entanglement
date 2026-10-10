@@ -46,6 +46,7 @@ impl Llm for RecordingLlm {
         Ok(stream_from_response(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }
@@ -279,6 +280,7 @@ impl Llm for SlowLlm {
         Ok(stream_from_response(LlmResponse {
             text: "turn reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }

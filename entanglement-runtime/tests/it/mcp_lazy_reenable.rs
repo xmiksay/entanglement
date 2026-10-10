@@ -110,6 +110,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -124,6 +125,7 @@ fn tool_call_response(id: &str, name: &str) -> LlmResponse {
             input: "{}".into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -131,6 +133,7 @@ fn done_response() -> LlmResponse {
     LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 

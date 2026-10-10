@@ -48,6 +48,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -84,10 +85,12 @@ fn spawn_with_edit_call() -> Holly {
                 input: "{\"path\":\"x\"}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -122,10 +125,12 @@ fn spawn_calling(tool: &str, agents: AgentCatalog) -> Holly {
                 input: "{\"command\":\"true\"}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

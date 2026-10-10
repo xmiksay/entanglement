@@ -42,6 +42,7 @@ impl Llm for RecordingLlm {
         Ok(stream_from_response(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }

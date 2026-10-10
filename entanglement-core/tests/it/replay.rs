@@ -26,6 +26,7 @@ impl Llm for ScriptedLlm {
         let resp = self.responses.pop().unwrap_or_else(|| LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }

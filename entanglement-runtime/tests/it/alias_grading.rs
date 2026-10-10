@@ -52,6 +52,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -149,10 +150,12 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let profiles =

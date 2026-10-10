@@ -31,11 +31,13 @@ impl Llm for ToolThenText {
             LlmResponse {
                 text: String::new(),
                 tool_calls: vec![ToolCall::new("c1", "probe", "{}")],
+                ..Default::default()
             }
         } else {
             LlmResponse {
                 text: "carrying on".into(),
                 tool_calls: vec![],
+                ..Default::default()
             }
         }))
     }

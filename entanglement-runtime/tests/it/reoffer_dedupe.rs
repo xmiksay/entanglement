@@ -43,6 +43,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -77,10 +78,12 @@ async fn reoffered_tool_exec_runs_only_once() {
                 input: "echo hi".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -154,6 +157,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
             input: "echo hi".into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     // Round 1 calls bash(t1); its result comes back; round 2 reuses id t1; then
     // the turn ends.
@@ -163,6 +167,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

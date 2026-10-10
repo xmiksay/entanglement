@@ -29,6 +29,7 @@ impl Llm for CountingLlm {
             entanglement_core::LlmResponse {
                 text: "unexpected".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
         ))
     }

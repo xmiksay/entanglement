@@ -71,6 +71,7 @@ fn tools(calls: Vec<ToolCall>) -> LlmResponse {
     LlmResponse {
         text: String::new(),
         tool_calls: calls,
+        ..Default::default()
     }
 }
 
@@ -78,6 +79,7 @@ fn text(t: &str) -> LlmResponse {
     LlmResponse {
         text: t.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 

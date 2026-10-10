@@ -63,6 +63,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -88,6 +89,7 @@ impl Llm for SlowScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -109,6 +111,7 @@ fn propose_plan_call(id: &str, input: serde_json::Value) -> LlmResponse {
             input: input.to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -116,6 +119,7 @@ fn text_response(text: &str) -> LlmResponse {
     LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -131,6 +135,7 @@ fn write_call(id: &str, path: &str, content: &str) -> LlmResponse {
             input: serde_json::json!({"path": path, "content": content}).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -804,6 +809,7 @@ async fn a_path_resubmit_after_the_agents_own_edit_succeeds() {
                 .to_string(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         propose_plan_call(
             "p2",

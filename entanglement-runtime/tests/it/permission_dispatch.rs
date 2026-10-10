@@ -56,6 +56,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -168,10 +169,12 @@ fn spawn_with_bash_call_using(input: &str, mode_table: Arc<ModeTable>) -> Holly 
                 input: input.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let profiles =
@@ -571,10 +574,12 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
             input: serde_json::json!({ "command": command }).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let ok = || LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1"), ok(), call("t2"), ok()]);
     let profiles =
@@ -607,10 +612,12 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
             input: "{}".into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let ok = LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call, ok]);
     let profiles =
@@ -752,10 +759,12 @@ fn spawn_two_read_calls_rooted(
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let ok = || LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1", input1), ok(), call("t2", input2), ok()]);
     let profiles =
@@ -952,10 +961,12 @@ fn spawn_scripted_calls_rooted(
                 input: input.clone(),
                 provider_meta: None,
             }],
+            ..Default::default()
         });
         responses.push(LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
     }
     let scripted = Arc::new(responses);
@@ -1130,10 +1141,12 @@ fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTabl
                 input: input.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let profiles =
@@ -1269,10 +1282,12 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
                 input: serde_json::json!({ "command": "find ." }).to_string(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let profiles =
@@ -1451,10 +1466,12 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
             input: serde_json::json!({ "command": command }).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let ok = || LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1", "ls"), ok(), call("t2", "ls && pwd"), ok()]);
     let profiles =
@@ -1562,6 +1579,7 @@ async fn mcp_enable_and_a_namespaced_mcp_tool_run_under_an_allow_all_mode() {
                 input: r#"{"server":"testserver"}"#.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "".into(),
@@ -1571,10 +1589,12 @@ async fn mcp_enable_and_a_namespaced_mcp_tool_run_under_an_allow_all_mode() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let profiles =

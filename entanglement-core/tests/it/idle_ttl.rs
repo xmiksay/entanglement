@@ -49,6 +49,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "assistant-reply".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -231,6 +232,7 @@ async fn parked_session_never_auto_hibernates() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         }],
         Some(ttl),
     );
@@ -271,6 +273,7 @@ async fn parked_child_pins_settled_root_live() {
             LlmResponse {
                 text: "root-done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
             LlmResponse {
                 text: String::new(),
@@ -280,6 +283,7 @@ async fn parked_child_pins_settled_root_live() {
                     input: "{}".into(),
                     provider_meta: None,
                 }],
+                ..Default::default()
             },
         ],
         Some(ttl),

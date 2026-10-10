@@ -32,6 +32,7 @@ impl Llm for ScriptedLlm {
         let resp = self.responses.lock().unwrap().pop().unwrap_or(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }
@@ -59,10 +60,12 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
             input: r#"{"nme":"grep","args":"nope"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let ok = LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");

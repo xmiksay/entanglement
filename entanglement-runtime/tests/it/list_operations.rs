@@ -19,6 +19,7 @@ fn finish(text: &str) -> LlmStream {
     stream_from_response(LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     })
 }
 
@@ -31,6 +32,7 @@ fn call(id: &str, name: &str, input: String) -> LlmStream {
             input,
             provider_meta: None,
         }],
+        ..Default::default()
     })
 }
 

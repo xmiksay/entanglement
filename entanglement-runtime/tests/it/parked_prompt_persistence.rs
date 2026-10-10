@@ -45,6 +45,7 @@ fn text(t: &str) -> LlmResponse {
     LlmResponse {
         text: t.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -121,6 +122,7 @@ async fn prompt_sent_while_parked_survives_the_log_round_trip() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call],
+            ..Default::default()
         },
         text("done"),
     ]);

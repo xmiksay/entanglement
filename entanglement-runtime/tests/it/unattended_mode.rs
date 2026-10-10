@@ -52,6 +52,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -98,6 +99,7 @@ fn bash_call(id: &str, input: &str) -> LlmResponse {
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -110,6 +112,7 @@ fn ask_user_call(id: &str, input: &str) -> LlmResponse {
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -117,6 +120,7 @@ fn done_text() -> LlmResponse {
     LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -373,6 +377,7 @@ async fn ask_user_timeout_defaults_to_the_first_option() {
             LlmResponse {
                 text: "acknowledged".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
         ],
     );

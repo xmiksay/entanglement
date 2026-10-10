@@ -57,6 +57,7 @@ impl Llm for Recording {
         let resp = self.script.lock().unwrap().pop().unwrap_or(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }
@@ -251,6 +252,7 @@ pub fn call(name: &str, input: &str) -> LlmResponse {
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -258,6 +260,7 @@ pub fn text() -> LlmResponse {
     LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 

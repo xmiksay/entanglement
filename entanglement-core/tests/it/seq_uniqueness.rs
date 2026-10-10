@@ -25,6 +25,7 @@ impl Llm for ScriptedLlm {
         let resp = self.responses.lock().unwrap().pop().unwrap_or(LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }
@@ -73,10 +74,12 @@ async fn emit_for_session_mints_unique_seq_above_parked_toolexec() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let mut sub = holly.subscribe();
@@ -125,6 +128,7 @@ async fn supervisor_error_for_closed_id_carries_seq_zero() {
     let holly = engine(vec![LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let mut sub = holly.subscribe();
     let sid = SessionId::new("s1");

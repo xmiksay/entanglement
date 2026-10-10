@@ -42,6 +42,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -60,12 +61,14 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
                 input: input.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         // The turn re-prompts after the tool result; the loop's default "done"
         // response ends it. The tool output is what we assert on.
         LlmResponse {
             text: "acknowledged".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

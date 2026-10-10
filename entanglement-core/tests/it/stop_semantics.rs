@@ -45,6 +45,7 @@ impl Llm for CapturingLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -92,6 +93,7 @@ impl Llm for StallingLlm {
             Ok(stream_from_response(LlmResponse {
                 text: self.reply.clone(),
                 tool_calls: vec![],
+                ..Default::default()
             }))
         }
     }
@@ -268,10 +270,12 @@ async fn stop_while_idle_preserves_context_for_next_prompt() {
             LlmResponse {
                 text: "first-reply".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
             LlmResponse {
                 text: "second-reply".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
         ],
         seen.clone(),
@@ -353,11 +357,13 @@ async fn stop_during_tool_exec_keeps_session_alive() {
                     input: "echo hi".into(),
                     provider_meta: None,
                 }],
+                ..Default::default()
             },
             // Second turn (after Stop + new Prompt): plain text reply.
             LlmResponse {
                 text: "recovered".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
         ],
         seen.clone(),

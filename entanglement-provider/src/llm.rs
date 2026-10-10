@@ -222,15 +222,6 @@ pub enum LlmEvent {
     },
 }
 
-/// A fully-formed model reply — text plus any tool calls. Used by scripted test
-/// backends ([`DummyLlm`] ignores it); NOT part of the [`Llm`] trait, which is
-/// streaming-only.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct LlmResponse {
-    pub text: String,
-    pub tool_calls: Vec<ToolCall>,
-}
-
 /// Per-request generation knobs, resolved by the head from the effective model's
 /// catalog capabilities + agent profile (#191). This is the channel that makes
 /// the catalog's capability metadata (`supports_temperature`/`default_temperature`/
@@ -476,6 +467,15 @@ pub trait Llm: Send {
     /// connection) come back as the `Err`; mid-stream errors arrive as `Err`
     /// items in the returned stream.
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream>;
+
+    /// Non-streaming convenience (#728): run [`stream`](Llm::stream) and drain
+    /// it into one [`LlmResponse`](crate::LlmResponse), for callers with no
+    /// live display. A mid-stream error fails the whole call — a partial reply
+    /// is never returned, since without its `Finish` the tool calls may be
+    /// incomplete.
+    async fn complete(&mut self, req: LlmRequest<'_>) -> anyhow::Result<crate::LlmResponse> {
+        crate::response::collect(self.stream(req).await?).await
+    }
 }
 
 /// Factory that produces a fresh per-session LLM instance. Sessions run
@@ -706,28 +706,6 @@ fn sha8(s: &str) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-/// Build a one-shot stream from a full [`LlmResponse`] (text + tool calls then
-/// `Finish`). Convenience for scripted/test backends.
-pub fn stream_from_response(resp: LlmResponse) -> LlmStream {
-    let mut events: Vec<anyhow::Result<LlmEvent>> = Vec::with_capacity(resp.tool_calls.len() + 2);
-    let stop_reason = if resp.tool_calls.is_empty() {
-        StopReason::EndTurn
-    } else {
-        StopReason::ToolUse
-    };
-    if !resp.text.is_empty() {
-        events.push(Ok(LlmEvent::Text(resp.text)));
-    }
-    for call in resp.tool_calls {
-        events.push(Ok(LlmEvent::ToolCall(call)));
-    }
-    events.push(Ok(LlmEvent::Finish {
-        stop_reason: Some(stop_reason),
-        usage: Usage::default(),
-    }));
-    stream::iter(events).boxed()
 }
 
 #[cfg(test)]

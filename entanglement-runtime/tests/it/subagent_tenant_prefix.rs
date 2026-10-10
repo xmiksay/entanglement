@@ -30,6 +30,7 @@ impl Llm for SpawnOnce {
             LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             }
         } else {
             LlmResponse {
@@ -39,6 +40,7 @@ impl Llm for SpawnOnce {
                     "agent",
                     r#"{"agent":"general","prompt":"child-task"}"#,
                 )],
+                ..Default::default()
             }
         };
         Ok(stream_from_response(response))

@@ -48,6 +48,7 @@ impl Llm for RecordingLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -123,10 +124,12 @@ async fn tool_exec_carries_the_active_profile_name() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "read")],
+            ..Default::default()
         },
         LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -159,10 +162,12 @@ async fn batch_emits_up_front_and_resolves_out_of_order() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a"), call("b", "t_b"), call("c", "t_c")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -219,10 +224,12 @@ async fn duplicate_and_unknown_results_are_dropped() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -277,10 +284,12 @@ async fn image_tool_result_folds_into_context_and_event() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "read")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -330,10 +339,12 @@ async fn exit_code_rides_tool_result_to_tool_output() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "bash")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -377,10 +388,12 @@ async fn stop_while_parked_keeps_session_and_context() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a"), call("b", "t_b")],
+            ..Default::default()
         },
         LlmResponse {
             text: "after-stop".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -461,10 +474,12 @@ async fn parked_turn_reoffers_pending_tool_exec_on_silence() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -518,10 +533,12 @@ async fn prompt_while_parked_folds_into_live_turn() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");

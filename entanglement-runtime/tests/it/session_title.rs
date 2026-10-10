@@ -67,6 +67,7 @@ impl Llm for GatedLlm {
         Ok(stream_from_response(LlmResponse {
             text: self.title.clone(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }

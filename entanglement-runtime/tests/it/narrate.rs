@@ -65,6 +65,7 @@ impl Llm for GatedLlm {
         Ok(stream_from_response(LlmResponse {
             text: self.action.clone(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }
@@ -113,6 +114,7 @@ impl Llm for ToolCallingLlm {
         Ok(stream_from_response(LlmResponse {
             text: String::new(),
             tool_calls: vec![ToolCall::new("call-1", "read", r#"{"path":"src/main.rs"}"#)],
+            ..Default::default()
         }))
     }
 }
@@ -177,6 +179,7 @@ impl Llm for TwoToolCallingLlm {
                 ToolCall::new("call-1", "read", r#"{"path":"a.rs"}"#),
                 ToolCall::new("call-2", "read", r#"{"path":"b.rs"}"#),
             ],
+            ..Default::default()
         }))
     }
 }

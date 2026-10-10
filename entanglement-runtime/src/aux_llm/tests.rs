@@ -24,6 +24,7 @@ impl Llm for TagLlm {
         Ok(entanglement_core::stream_from_response(LlmResponse {
             text: self.0.to_string(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }

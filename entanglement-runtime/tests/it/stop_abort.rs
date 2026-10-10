@@ -42,6 +42,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -77,10 +78,12 @@ fn spawn_blocking_bash(started: Arc<AtomicBool>, completed: Arc<AtomicBool>) -> 
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let agents: AgentCatalog =

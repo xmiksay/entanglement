@@ -23,6 +23,7 @@ impl Llm for ScriptedLlm {
         let resp = self.responses.pop().unwrap_or_else(|| LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }
@@ -86,6 +87,7 @@ async fn resume_reoffers_pending_calls_and_completes() {
     let holly = engine(vec![LlmResponse {
         text: "final".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let sid = SessionId::new("resume-1");
     let mut sub = holly.subscribe();
@@ -148,6 +150,7 @@ async fn resume_of_drained_tail_continues_the_turn_without_reoffer() {
     let holly = engine(vec![LlmResponse {
         text: "continued".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let sid = SessionId::new("resume-2");
     let mut sub = holly.subscribe();

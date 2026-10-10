@@ -300,6 +300,7 @@ async fn auto_compact_disabled_falls_back_to_the_old_refuse_behavior() {
                         entanglement_core::LlmResponse {
                             text: "unexpected".into(),
                             tool_calls: vec![],
+                            ..Default::default()
                         },
                     ))
                 }

@@ -6,8 +6,8 @@
 
 The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
 `LlmEvent`/`LlmStream`, `LlmFactory`, `ToolCall`, `ToolSpec`,
-`stream_from_response`), the stub backends (`DummyLlm`/`EchoLlm`, in
-`src/llm.rs`), and the wire message types (`Message`/`MessageRole` plus the
+`stream_from_response`, the last two in `src/response.rs`), the stub backends
+(`DummyLlm`/`EchoLlm`, in `src/llm.rs`), and the wire message types (`Message`/`MessageRole` plus the
 multimodal `ContentPart`/`ImageSource`, in `src/message.rs` — a `Message`'s body
 is `content: Vec<ContentPart>`, #197/[ADR-0064](../adr/0064-message-content-blocks.md))
 — lives **in `entanglement-provider`**. Since
@@ -15,7 +15,9 @@ is `content: Vec<ContentPart>`, #197/[ADR-0064](../adr/0064-message-content-bloc
 provider is a **leaf crate** (no `entanglement-*` deps) that owns this LLM ABI;
 `entanglement-core` *depends on* provider, consumes the `Llm` trait from its turn
 loop, and re-exports these types for its heads. The provider *may* depend on
-transport crates (`reqwest`) and is usable **standalone** for raw LLM queries
+transport crates (`reqwest` 0.13 with `rustls` — aws-lc-rs and the OS trust
+store via `rustls-platform-verifier`, reqwest's own default TLS stack, so an
+embedder on stock 0.13 unifies with it; `form` for the OAuth POSTs) and is usable **standalone** for raw LLM queries
 with no engine.
 
 ```rust
@@ -26,10 +28,29 @@ enum LlmEvent {
     Reasoning(String),   // thinking/reasoning tokens, streamed distinctly
     ToolCallDelta { id, name, delta },   // streamed tool-arg fragment, before ToolCall (#194)
     ToolCall(ToolCall),
+    ContentBlock(ContentPart),   // server-minted persisted block (web search, signed thinking)
     Finish { stop_reason: StopReason?, usage: Usage },   // normalized (#192)
 }
-trait Llm: Send { async fn stream(req) -> Result<BoxStream<'static, Result<LlmEvent>>> }
+struct LlmResponse { text, tool_calls, reasoning, content_blocks, stop_reason: StopReason?, usage }
+trait Llm: Send {
+    async fn stream(req) -> Result<BoxStream<'static, Result<LlmEvent>>>;
+    async fn complete(req) -> Result<LlmResponse>   // default: drains stream() (#728)
+}
 ```
+
+- **`Llm::complete`** (#728) is a default method for embedders with a
+  non-streaming loop: it drains `stream()` into one `LlmResponse` via
+  `response::collect` / `LlmResponse::absorb` (text and reasoning chunks
+  concatenated, assembled tool calls + content blocks in arrival order, the
+  `Finish` stop reason + usage; `ToolCallDelta` fragments are dropped since the
+  assembled `ToolCall` supersedes them). A mid-stream `Err` fails the whole call
+  — never a partial reply, matching the turn loop's refusal to execute tool
+  calls from a stream that never reached `Finish`. No `Finish` leaves
+  `stop_reason: None` (the ADR-0118 "ambiguous" signal). `stream_from_response`
+  is its inverse for scripted backends (a `None` stop reason is derived from
+  the tool calls). The turn loop keeps its own fold: it interleaves display
+  events, mid-stream cancellation and the #181 retry-before-output with the
+  accumulation.
 
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.

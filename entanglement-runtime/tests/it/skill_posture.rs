@@ -42,6 +42,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -139,6 +140,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
                 "load_skill",
                 serde_json::json!({"skill_name": "restricted"}),
             )],
+            ..Default::default()
         },
         // Round 2: `edit` is outside `allowed_tools` — under ADR-0106 this was
         // refused before dispatch; ADR-0194 makes it succeed like any other
@@ -150,11 +152,13 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
                 "edit",
                 serde_json::json!({"path": target.to_string_lossy(), "oldString": "hello", "newString": "bye"}),
             )],
+            ..Default::default()
         },
         // Round 3: finish — triggers `Done`, clearing the skill-active posture.
         LlmResponse {
             text: "turn1 done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
 

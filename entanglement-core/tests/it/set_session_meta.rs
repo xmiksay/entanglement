@@ -138,6 +138,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -160,10 +161,12 @@ async fn set_session_meta_applies_immediately_while_a_turn_is_parked() {
                     input: "{}".into(),
                     provider_meta: None,
                 }],
+                ..Default::default()
             },
             LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             },
         ]
         .into(),
@@ -395,6 +398,7 @@ impl Llm for SlowLlm {
         Ok(stream_from_response(LlmResponse {
             text: "reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }
