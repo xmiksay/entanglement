@@ -45,6 +45,7 @@ impl OutEvent {
             OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
             | OutEvent::OperationList { .. }
+            | OutEvent::PendingList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
@@ -55,7 +56,7 @@ impl OutEvent {
     /// The monotonic per-session sequence number for a **content** event, or
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
-    /// `OperationList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
+    /// `OperationList`, `PendingList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
     /// `GenerationChanged`, `SessionMetaChanged`, `ModeChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
@@ -69,6 +70,7 @@ impl OutEvent {
             | OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
             | OutEvent::OperationList { .. }
+            | OutEvent::PendingList { .. }
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }

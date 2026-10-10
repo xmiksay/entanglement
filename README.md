@@ -23,10 +23,10 @@ table below.
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
-          | ListSessions | ListQuestions | ListOperations | ReplayFrom | CloseSession
+          | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | History | Status
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
           | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta

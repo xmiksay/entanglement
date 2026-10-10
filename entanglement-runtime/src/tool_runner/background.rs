@@ -51,8 +51,8 @@ pub(super) fn spawn_file_change_listener(background: &mut JoinSet<()>, ctx: &Lad
 /// (#199) off each `Prompt`, resolves every `Approve`/`Reject`/
 /// `Answer`/`RetractQuestion`/`ReplaceQuestion` (#515) to its parked
 /// waiter, and answers `InMsg::ListQuestions` (#515)/`InMsg::ListOperations`
-/// (#607) directly from `open_questions`/the job+agent registries — read-only
-/// snapshot queries, not decisions, so they don't go through `pending`.
+/// (#607)/`InMsg::ListPending` (#726) directly from `open_questions`/the
+/// job+agent registries/`pending` — read-only snapshot queries, not decisions.
 /// One light map-lookup-per-frame loop drains far faster than a park
 /// loop, so it does not lag the way the per-task subscriptions it
 /// replaced did.
@@ -102,6 +102,16 @@ pub(super) fn spawn_decision_router(
                         session.as_ref(),
                     );
                     emitter.emit_operation_list(correlation_id, operations);
+                }
+                // In order with `Approve`/`Reject` on this same loop, so a
+                // list after an answer never still shows the answered call.
+                Ok(InMsg::ListPending {
+                    correlation_id,
+                    root,
+                }) => {
+                    let approvals =
+                        crate::pending::list_pending(&pending, &op_agents, root.as_ref());
+                    emitter.emit_pending_list(correlation_id, approvals);
                 }
                 Ok(other) => {
                     if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {

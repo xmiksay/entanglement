@@ -52,7 +52,7 @@ pub struct PendingSources<'a> {
 /// can never turn this into an unbounded loop.
 const MAX_WALK_STEPS: usize = 4096;
 
-fn subtree_sessions(agents: &AgentRegistry, root: &SessionId) -> HashSet<SessionId> {
+pub(crate) fn subtree_sessions(agents: &AgentRegistry, root: &SessionId) -> HashSet<SessionId> {
     let every_child = agents.snapshot(None);
     let mut seen: HashSet<SessionId> = HashSet::from([root.clone()]);
     let mut frontier: Vec<SessionId> = vec![root.clone()];

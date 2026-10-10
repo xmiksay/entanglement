@@ -36,7 +36,7 @@
 //! cascades it over the session's live spawn sub-tree, ADR-0207 §6) and
 //! replies at once; on rejection it folds the typed reason back.
 
-use entanglement_core::{AgentState, Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{AgentState, ApprovalKind, Holly, InMsg, SessionId};
 
 use crate::pending::{self, PendingDecisions};
 use crate::seam;
@@ -159,14 +159,15 @@ pub async fn run_request_mode(
 
     // Past every refusal: force-park, always — approval is this tool's own
     // semantics, exactly like `propose_plan`.
-    let rx = pending.register(&session, &request_id, "mode", requested.clone());
-    holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
-        session: session.clone(),
-        seq,
-        request_id: request_id.clone(),
-        tool: REQUEST_MODE_TOOL.to_string(),
-        input: input.clone(),
-    });
+    let req = pending::approval(
+        &session,
+        &request_id,
+        ApprovalKind::Mode,
+        REQUEST_MODE_TOOL,
+        input.clone(),
+        format!("requests a mode switch `{current_mode}` -> `{requested}`"),
+    );
+    let rx = pending::park_approval(holly, pending, req, requested.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);
 
     match pending::await_decision(rx).await {

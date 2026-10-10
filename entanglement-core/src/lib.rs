@@ -57,9 +57,9 @@ pub use entanglement_provider::oauth::{
 pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use protocol::{
-    Agent, AgentState, ApprovalScope, CompactionMode, FileChangeKind, InMsg, McpAction,
-    McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, ModelChoice, OperationInfo,
-    OperationKind, OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile,
-    Question, QuestionOption, Questions, SessionId, SessionInfo, ToolEnvelope, ToolOverlayEntry,
-    UsagePurpose, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
+    Agent, AgentState, ApprovalKind, ApprovalScope, CompactionMode, FileChangeKind, InMsg,
+    McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, ModelChoice,
+    OperationInfo, OperationKind, OperationStatus, OutEvent, PendingApproval, PendingQuestion,
+    Permission, PermissionProfile, Question, QuestionOption, Questions, SessionId, SessionInfo,
+    ToolEnvelope, ToolOverlayEntry, UsagePurpose, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
 };

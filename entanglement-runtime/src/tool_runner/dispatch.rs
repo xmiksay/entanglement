@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentState, Holly, OutEvent, Permission, PermissionProfile, SessionId, ToolEnvelope,
+    AgentState, ApprovalKind, Holly, Permission, PermissionProfile, SessionId, ToolEnvelope,
 };
 
 use crate::capability::{self, Capability};
@@ -350,29 +350,28 @@ pub(crate) async fn dispatch(
         // Either the mode said `Ask` (an attended mode, or a collapsed
         // mode's second identical call), or an out-of-root access forced one.
         _ => {
-            // Register the waiter *before* prompting (#156) so the inbound router
-            // can never process the approval before this park exists — the
-            // lag-proof successor to the old "subscribe before prompting"
-            // discipline. The prompt mints a **fresh** per-session seq (#157) from
-            // the parked session's shared counter, so `(session, seq)` stays unique
-            // instead of reusing the `ToolExec` seq.
-            let rx = pending.register(&session, &request_id, "tool", tool.clone());
+            // `park_approval` registers before prompting (#156) and mints a
+            // fresh per-session seq (#157), not the `ToolExec` one.
             let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
-            holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
-                session: session.clone(),
-                seq,
-                request_id: request_id.clone(),
-                tool: tool.clone(),
-                input: escape_grant
-                    .as_ref()
-                    .map(|(_, abs)| {
-                        format!(
-                            "{input}\n\n⚠ accesses a path OUTSIDE the project root: {}",
-                            abs.display()
-                        )
-                    })
-                    .unwrap_or_else(|| input.clone()),
-            });
+            let (shown, reason) = match &escape_grant {
+                Some((_, abs)) => {
+                    let abs = abs.display();
+                    let shown =
+                        format!("{input}\n\n⚠ accesses a path OUTSIDE the project root: {abs}");
+                    let why = format!("accesses a path outside the project root: {abs}");
+                    (shown, why)
+                }
+                None => (input.clone(), format!("mode `{mode}` grades `{tool}` Ask")),
+            };
+            let req = crate::pending::approval(
+                &session,
+                &request_id,
+                ApprovalKind::Tool,
+                &tool,
+                shown,
+                reason,
+            );
+            let rx = crate::pending::park_approval(holly, pending, req, tool.clone());
             holly.emit_status(&session, AgentState::WaitingApproval);
             decision::await_decision(
                 holly,

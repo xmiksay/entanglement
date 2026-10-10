@@ -28,6 +28,7 @@ pub use describe::run_describe;
 pub(crate) use describe::spec_to_json;
 pub use explore::run_explore;
 pub use kinds::{peek_kind, KindsCtx};
+pub(crate) use pending::subtree_sessions;
 pub use pending::{build_pending_report, PendingSources};
 pub use sections::{index_rows, IndexRow};
 pub use tool_search::run_tool_search;

@@ -25,6 +25,8 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // `ListOperations` reply (#607, ADR-0161 §6): same shape, and the
         // one-shot head never issues it either.
         OutEvent::OperationList { .. } => {}
+        // `ListPending` reply (#726): same session-less snapshot shape.
+        OutEvent::PendingList { .. } => {}
         // MCP ops (#375) are engine-global queries/commands; the one-shot
         // head never issues them, so nothing to render.
         OutEvent::McpList { .. } => {}

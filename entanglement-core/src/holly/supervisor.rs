@@ -204,6 +204,7 @@ impl Supervisor {
 
         // Every remaining variant is session-scoped except `ListSessions`
         // (handled above), `ListQuestions` (#515), `ListOperations` (#607),
+        // `ListPending` (#726),
         // and the MCP ops `McpList`/`McpAdd`/`McpRemove` (#375): each carries
         // no session either (`ListQuestions`/`ListOperations`'s optional
         // filter is a data field, not a routing target) — they are answered

@@ -455,6 +455,30 @@ fn list_operations_is_session_less_with_an_optional_filter_and_wire_allowed() {
 }
 
 #[test]
+fn list_pending_is_session_less_with_an_optional_root_and_wire_allowed() {
+    let global = InMsg::ListPending {
+        correlation_id: "c1".into(),
+        root: None,
+    };
+    let rooted = InMsg::ListPending {
+        correlation_id: "c2".into(),
+        root: Some(SessionId::new("s1")),
+    };
+    for msg in [&global, &rooted] {
+        // `root` filters the reply; it is not a routing target (#726).
+        assert_eq!(msg.session(), None, "{msg:?} is engine-global");
+        assert!(msg.wire_allowed());
+        assert_eq!(msg.variant_name(), "list_pending");
+        let json = serde_json::to_string(msg).unwrap();
+        assert_eq!(&serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+    }
+    assert_eq!(
+        serde_json::to_string(&global).unwrap(),
+        r#"{"kind":"list_pending","correlation_id":"c1"}"#
+    );
+}
+
+#[test]
 fn retract_and_replace_question_roundtrip_and_are_wire_allowed() {
     let retract = InMsg::RetractQuestion {
         session: SessionId::new("s1"),

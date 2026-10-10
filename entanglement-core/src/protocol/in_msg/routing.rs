@@ -6,8 +6,9 @@ impl InMsg {
     /// The session this message targets, or `None` for a supervisor-global query
     /// that names no session — [`ListSessions`][InMsg::ListSessions],
     /// [`ListQuestions`][InMsg::ListQuestions] (#515) and
-    /// [`ListOperations`][InMsg::ListOperations] (#607; both carry an optional
-    /// `session` that is a result *filter*, not a routing target — a `None`
+    /// [`ListOperations`][InMsg::ListOperations] (#607), and
+    /// [`ListPending`][InMsg::ListPending] (#726; all three carry an optional
+    /// `session`/`root` that is a result *filter*, not a routing target — a `None`
     /// filter spans every session), and the MCP
     /// ops [`McpList`][InMsg::McpList]/[`McpAdd`][InMsg::McpAdd]/
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
@@ -43,6 +44,7 @@ impl InMsg {
             InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
             | InMsg::ListOperations { .. }
+            | InMsg::ListPending { .. }
             | InMsg::McpList { .. }
             | InMsg::McpAdd { .. }
             | InMsg::McpRemove { .. }
@@ -98,7 +100,8 @@ impl InMsg {
     /// like `ListSessions`/`McpList`. [`ListOperations`][InMsg::ListOperations]
     /// (#607, ADR-0161 §6) is wire-allowed for the same reason: it only reads
     /// the caller's own outstanding background jobs/sub-agents, mutating
-    /// nothing.
+    /// nothing; [`ListPending`][InMsg::ListPending] (#726) likewise only reads
+    /// the parked approvals a head is already entitled to answer.
     ///
     /// The executor submits `ToolResult`/`Spawn` over the privileged in-process
     /// [`Holly::send`][crate::Holly::send] (it holds the handle); a wire head uses
@@ -124,6 +127,7 @@ impl InMsg {
             | InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
             | InMsg::ListOperations { .. }
+            | InMsg::ListPending { .. }
             | InMsg::McpList { .. }
             | InMsg::ReplayFrom { .. }
             | InMsg::CloseSession { .. }
@@ -164,6 +168,7 @@ impl InMsg {
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::ListQuestions { .. } => "list_questions",
             InMsg::ListOperations { .. } => "list_operations",
+            InMsg::ListPending { .. } => "list_pending",
             InMsg::McpList { .. } => "mcp_list",
             InMsg::McpAdd { .. } => "mcp_add",
             InMsg::McpRemove { .. } => "mcp_remove",

@@ -85,7 +85,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use entanglement_core::{AgentState, Holly, InMsg, OutEvent, Permission, SessionId, ToolSpec};
+use entanglement_core::{
+    AgentState, ApprovalKind, Holly, InMsg, OutEvent, Permission, SessionId, ToolSpec,
+};
 
 use crate::pending::{self, PendingDecisions};
 use crate::plan_files::PlanFileRegistry;
@@ -222,10 +224,6 @@ pub async fn run_propose_plan(
         path: resolution.rel_path.clone(),
     });
 
-    // Register before emitting so the inbound router can never resolve the
-    // decision ahead of this waiter (#156).
-    let rx = pending.register(&session, &request_id, "plan", resolution.rel_path.clone());
-
     // A standard `ToolRequest` — the head renders the usual approve/reject
     // prompt. `input` carries the *resolved* content (not the model's raw
     // `content`-XOR-`path` call) so a `path`-mode approval still shows the
@@ -233,18 +231,22 @@ pub async fn run_propose_plan(
     // `propose_plan` arm reads this same JSON shape. `suggested_mode` (#560)
     // rides along purely so the head can pre-select the model's suggestion at
     // the prompt — it plays no role in what actually gets applied below.
-    holly.emit_for_session(&session, |seq| OutEvent::ToolRequest {
-        session: session.clone(),
-        seq,
-        request_id: request_id.clone(),
-        tool: PROPOSE_PLAN_TOOL.to_string(),
-        input: serde_json::json!({
-            "content": resolution.content,
-            "path": resolution.rel_path,
-            "suggested_mode": suggested_mode,
-        })
-        .to_string(),
-    });
+    // `park_approval` registers before emitting (#156).
+    let plan_input = serde_json::json!({
+        "content": resolution.content,
+        "path": resolution.rel_path,
+        "suggested_mode": suggested_mode,
+    })
+    .to_string();
+    let req = pending::approval(
+        &session,
+        &request_id,
+        ApprovalKind::Plan,
+        PROPOSE_PLAN_TOOL,
+        plan_input,
+        "propose_plan always asks for approval",
+    );
+    let rx = pending::park_approval(&holly, &pending, req, resolution.rel_path.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);
 
     match pending::await_decision(rx).await {
