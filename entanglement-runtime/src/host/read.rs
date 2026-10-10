@@ -216,7 +216,7 @@ impl ReadRawTool {
 
 /// `read_raw` — like [`ReadTool`] but returns a file's exact UTF-8 content with
 /// no line-number prefix. Never advertised to the model: registered into the
-/// `ToolRegistry` *after* `cfg.tool_specs` is snapshotted (`main.rs`'s
+/// `ToolRegistry` *after* `cfg.tool_specs` is snapshotted (`engine_setup.rs`'s
 /// `build_config`), so it's present for execution but invisible to the model's
 /// tool list. The sole reason it exists is so a `rhai` script's `parse_json`/
 /// `parse_yaml` has raw source to parse — `read`'s `"{lineno}: {line}"` format

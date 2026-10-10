@@ -145,7 +145,7 @@ mod tests {
     /// Returns the tool alongside the `SharedRegistry` it holds only a `Weak`
     /// reference to (#556) — the caller must keep this alive for as long as
     /// the tool needs a live registry, exactly like the real owner
-    /// (`main.rs`'s `tools` handle) does for the process's lifetime.
+    /// (`engine_setup.rs`'s `tools` handle) does for the process's lifetime.
     fn tool_with_empty_roster() -> (McpEnableTool, SharedRegistry) {
         let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
         let tool = McpEnableTool::new(

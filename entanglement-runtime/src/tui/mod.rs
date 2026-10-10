@@ -92,7 +92,7 @@ pub async fn tui(
     mcp_handles: crate::mcp::McpHandles,
     // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
     // P9, ADR-0199 part 3) — the same `Arc` the tool executor and the
-    // resolver closures in `main.rs` read/write. `/tools`' status column
+    // resolver closures in `boot.rs` read/write. `/tools`' status column
     // reads it; nothing else in the TUI does.
     advertising_state: std::sync::Arc<crate::tool_advertising::AdvertisingState>,
 ) -> Result<()> {
@@ -418,7 +418,7 @@ mod tests {
     /// Regression for #598: a subscribe-after-send race in the TUI bootstrap
     /// let the session task's `SessionStarted`/initial `AgentChanged` race
     /// ahead of `tui()`'s `holly.subscribe()`, permanently stranding the badge
-    /// on `SessionView`'s hardcoded `"build"` default. `main.rs` now
+    /// on `SessionView`'s hardcoded `"build"` default. `heads.rs` now
     /// subscribes before sending the bootstrap identity-binding `Spawn` (the
     /// agent-switch message this used to race did the same lazy-create thing
     /// `SetAgent` did before ADR-0207 §9 retired it) and threads that receiver

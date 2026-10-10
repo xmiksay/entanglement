@@ -46,7 +46,7 @@ const ROSTER: &[&str] = &[
     "update_tasks",
 ];
 
-/// Build the resolved mode table exactly as `main.rs` does at real startup
+/// Build the resolved mode table exactly as `services.rs` does at real startup
 /// (built-ins + `config.yml` `modes:` tuning, validated against a real
 /// capability resolver) — `inspect` has no live `ToolRegistry`, so it uses
 /// the same no-registry static resolver `BindingPolicy` grades through.

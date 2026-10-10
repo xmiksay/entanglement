@@ -191,7 +191,7 @@ pub fn spawn_tool_executor_with_policy(
     // `explore`/`describe`'s shared state (#560, ADR-0196 §4), bundled into
     // one struct so this already-large signature doesn't grow by three:
     // the session-mode map + discovered-tool set (also read by the
-    // `tool_spec_resolver`/`system_prompt_resolver` closures in `main.rs` —
+    // `tool_spec_resolver`/`system_prompt_resolver` closures in `boot.rs` —
     // this executor is one of three readers/writers, no longer the map's
     // sole owner as it was in Phase P1) plus the MCP three-state roster
     // `explore` lists. `None` (the convenience wrappers, every test-only

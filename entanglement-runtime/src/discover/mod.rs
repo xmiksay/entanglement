@@ -13,7 +13,7 @@
 //!
 //! Split into [`explore`] (the index) and [`describe`] (the schema lookup)
 //! to keep each half under the 400-line file cap; this module is just the
-//! two `ToolSpec`s plus the one piece both the resolver (`main.rs`) and
+//! two `ToolSpec`s plus the one piece both the resolver (`boot.rs`) and
 //! `describe` need — the runtime-owned pseudo-tool specs that dispatch by
 //! name rather than living in the [`crate::tools::ToolRegistry`].
 
@@ -150,7 +150,7 @@ pub fn invoke_spec() -> ToolSpec {
 /// [`crate::tool_runner`]'s interception ladder rather than living in the
 /// [`crate::tools::ToolRegistry`] — so their schema exists only as one of
 /// these pure functions. The single place that builds this list: both the
-/// `tool_spec_resolver` closure (`main.rs`) and `describe`'s by-name lookup
+/// `tool_spec_resolver` closure (`boot.rs`) and `describe`'s by-name lookup
 /// call it, replacing the vec each used to build separately (ADR-0190's
 /// original `poll`-omission bug was exactly this kind of drift).
 pub fn runtime_owned_specs() -> Vec<ToolSpec> {

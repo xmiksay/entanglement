@@ -110,7 +110,7 @@ pub fn spawn_tool_executor_with_hooks(
         grants,
         hooks,
         // The default 4-arg wrapper keeps strict root containment — escape-root
-        // approval is opt-in, wired only by the full head (`main.rs`).
+        // approval is opt-in, wired only by the full head (`services.rs`).
         None,
         mode_table,
         // These convenience wrappers' (~30, test-only) callers never wire up a

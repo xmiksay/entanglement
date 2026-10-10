@@ -11,7 +11,7 @@ use super::DIALOG_PAGE_SIZE;
 /// Records `answer` as a draft for the pending call's current question and
 /// steps forward — to its next question, or to the review/submit step once
 /// every question in the call has a draft (#518). Nothing is sent here.
-pub(crate) fn commit_current_answer(app: &mut App, answer: Vec<String>) {
+fn commit_current_answer(app: &mut App, answer: Vec<String>) {
     app.commit_question_answer(answer);
 }
 
@@ -47,7 +47,7 @@ async fn submit_pending_question(
 /// while editing a question interrupts the turn like an approval; `Esc` on
 /// the review step just steps back to revise instead (sends nothing, keeps
 /// the call parked).
-pub(crate) async fn handle_question_event(
+pub(in crate::tui) async fn handle_question_event(
     app: &mut App,
     holly: &Holly,
     key: KeyEvent,

@@ -177,7 +177,7 @@ pub(crate) fn start(
             advertising: advertising_state,
             mcp_avail: mcp_available.clone(),
             mcp_active: mcp_active.clone(),
-            validation: std::sync::Arc::new(entanglement_runtime::arg_validate::LoopBreaker::new()),
+            validation: std::sync::Arc::new(crate::arg_validate::LoopBreaker::new()),
             // ADR-0201: the same shared endpoint-pool client a dispatch-time
             // lazy MCP re-enable rides.
             http: Some(http_client.clone()),
@@ -209,15 +209,13 @@ pub(crate) fn start(
     // `session_title` LLM for a short title and sets it via `SetSessionMeta`.
     // Purely runtime-side; best-effort (a failure is logged + dropped). Aborted
     // at shutdown alongside the other responders.
-    let session_title_handle = entanglement_runtime::session_title::spawn_session_title_generator(
-        &holly,
-        aux_registry.clone(),
-    );
+    let session_title_handle =
+        crate::session_title::spawn_session_title_generator(&holly, aux_registry.clone());
     // Live action narrator (#635): on every tool call, spawns a background
     // task that asks the aux `narrate` LLM for a short "what the agent is
     // doing" phrase and sets it via `SetSessionMeta`. Same purely-runtime-side,
     // best-effort shape as the title generator above.
-    let narrate_handle = entanglement_runtime::narrate::spawn_action_narrator(&holly, aux_registry);
+    let narrate_handle = crate::narrate::spawn_action_narrator(&holly, aux_registry);
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.to_path_buf());

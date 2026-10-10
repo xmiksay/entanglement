@@ -12,7 +12,10 @@ use super::DIALOG_PAGE_SIZE;
 /// Read-only (ADR-0207 §9): navigates and closes, never sends anything — the
 /// picker lists the roster and marks the session's own agent, with no way to
 /// switch.
-pub(crate) async fn handle_profile_picker_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+pub(in crate::tui) async fn handle_profile_picker_event(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<bool> {
     match key.code {
         KeyCode::Esc | KeyCode::Enter => {
             app.close_profile_picker();
@@ -37,7 +40,7 @@ pub(crate) async fn handle_profile_picker_event(app: &mut App, key: KeyEvent) ->
     Ok(false)
 }
 
-pub(crate) async fn handle_model_picker_event(
+pub(in crate::tui) async fn handle_model_picker_event(
     app: &mut App,
     holly: &Holly,
     key: KeyEvent,
@@ -85,7 +88,7 @@ pub(crate) async fn handle_model_picker_event(
 /// Drive the `/mode` picker (#560 P12, ADR-0207 §12): `Enter` sends a live
 /// `InMsg::SetMode` for the active session — core cascades the switch over
 /// the session's whole spawn sub-tree (ADR-0207 §6).
-pub(crate) async fn handle_mode_picker_event(
+pub(in crate::tui) async fn handle_mode_picker_event(
     app: &mut App,
     holly: &Holly,
     key: KeyEvent,
@@ -127,7 +130,7 @@ pub(crate) async fn handle_mode_picker_event(
 /// Drive the two-stage `/key` dialog (#304). Stage 1 picks a provider; stage 2
 /// reads the key into a masked buffer and, on Enter, persists it (writer + prime
 /// process env + transcript status). No engine traffic — the write is head-side.
-pub(crate) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
+pub(in crate::tui) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     use crate::tui::key_dialog::KeyStage;
     match app.key_dialog_stage() {
         KeyStage::PickProvider => match key.code {
@@ -169,7 +172,7 @@ pub(crate) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent) -> Res
 /// availability for the active session, `a` toggles auto-allow on an enabled
 /// override row, `Enter` lazily connects any newly-checked available server
 /// (#555) then sends the computed overlay diff, `Esc` discards.
-pub(crate) async fn handle_session_tools_dialog_event(
+pub(in crate::tui) async fn handle_session_tools_dialog_event(
     app: &mut App,
     holly: &Holly,
     key: KeyEvent,
@@ -214,7 +217,7 @@ pub(crate) async fn handle_session_tools_dialog_event(
 /// filter, `Enter` enables the highlighted row exactly like a typed
 /// `/enable` (ADR-0199 part 4) and closes the view, `Esc` closes without
 /// acting.
-pub(crate) async fn handle_tools_view_event(
+pub(in crate::tui) async fn handle_tools_view_event(
     app: &mut App,
     holly: &Holly,
     key: KeyEvent,

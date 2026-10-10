@@ -101,7 +101,7 @@ fn diff_and_emit(
 }
 
 /// Spawns the polling task. Aborted at shutdown alongside the other runtime
-/// responders (`main.rs`) — it holds only a `Holly` clone and the shared
+/// responders (`services.rs`) — it holds only a `Holly` clone and the shared
 /// `HttpClient`, neither of which needs a graceful drain, so an abort is
 /// sufficient (unlike the persistence subscriber, which must flush).
 pub fn spawn_throttle_responder(
