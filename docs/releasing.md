@@ -15,8 +15,8 @@ lagging shipped commits, the README/`protocol.md` contract block lagging
 is **not** a release signal by itself — it proves the code compiles and tests
 pass, not that docs/ADRs/open issues reflect what actually shipped. Concretely, before the version bump below:
 
-1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol/in_msg*`
-   and `protocol/out_event*`)
+1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol/in_msg.rs`
+   and `protocol/out_event.rs`)
    against the contract blocks in `README.md` and `docs/architecture/protocol.md`.
 2. Skim `git log <last-tag>..HEAD` for any ADR that superseded/amended another
    and confirm the back-link landed on both sides.
