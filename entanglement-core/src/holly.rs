@@ -225,7 +225,16 @@ impl Holly {
     /// `CloseSession` or hibernation; `None` for an unknown, closed or
     /// hibernated id. Resuming a hibernated session (explicitly, or through
     /// the unknown-session policy, ADR-0210) restores the same lineage and
-    /// user from its log. Event routing should key on the id's tenant prefix
+    /// user from its log.
+    ///
+    /// This window is **not** [`is_live`][Self::is_live]'s: `session_info` turns
+    /// `Some` earlier (at supervisor registration, before the session task
+    /// starts and registers its seq counter) and `None` earlier (when the
+    /// supervisor processes the close/hibernate, while `is_live` stays `true`
+    /// until the task retires and emits `SessionEnded`/`SessionHibernated`).
+    /// Don't combine the two assuming they agree.
+    ///
+    /// Event routing should key on the id's tenant prefix
     /// instead (the default [`IdGen`] guarantees it across the lineage): a
     /// session's own trailing events such as `SessionEnded` arrive after its
     /// entry is gone.
@@ -315,9 +324,11 @@ impl Holly {
     /// use [`EngineConfig::unknown_session`] to decide what a message to a
     /// non-live id does, rather than check-then-send (ADR-0210).
     pub fn is_live(&self, session: &SessionId) -> bool {
+        // Recover a poisoned lock like the session directory does: a
+        // read-only membership check can't be misled by a half-done insert.
         self.seqs
             .lock()
-            .expect("seq registry mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .contains_key(session)
     }
 
