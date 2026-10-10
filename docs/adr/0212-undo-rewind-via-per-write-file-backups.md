@@ -31,9 +31,11 @@ tools wrote.
 2. **Storage is per root, beside the log.** `SessionStore::backups_dir(root)`
    = `<store>/backups/<root_id>/`: a content-addressed `blobs/<sha256>`
    (write-then-rename, deduped per root) and an append-only
-   `manifest.jsonl` of `change` lines `{id, ts, session, request_id, path
-   (absolute), display, before: absent|stored{hash,size}|skipped{reason},
-   after: sha256|null}` and `reverted{ids}` markers. A spawned child's
+   `manifest.jsonl` of `change` lines `{id, ts, session, request_id,
+   exec_seq?, path (absolute), display, before: absent|stored{hash,size}|
+   skipped{reason}, after: sha256|null, mode?}` and `reverted{ids,
+   attempted}` markers. The id counter and stored-blob set are cached in
+   memory per root, so a write never re-reads the manifest. A spawned child's
    changes resolve to its root through `SessionStarted` lineage
    (`FileBackups::track_roots`). Retention is the log's: `delete` removes the
    directory with the `.jsonl`, `prune` removes any directory whose `.jsonl`
@@ -43,22 +45,41 @@ tools wrote.
    reports "can't restore X: no backup (…)". Constants for now
    (`DEFAULT_MAX_FILE_BYTES`/`DEFAULT_MAX_ROOT_BYTES`,
    `FileBackups::with_limits` for embedders); `config.yml` knobs are #787.
-4. **Turns are user prompts.** A change belongs to the turn of the target
-   session's last `Prompt` record before its call's `ToolExec` record (a
-   `rhai` binding's `<id>:rhai:<tool>` id resolves to the outer call); the
-   tap logs a prompt ahead of everything it causes, so position is exact.
-   A call missing from the log falls back to record timestamps.
-5. **Restore is conflict-checked per file.** Reverting after turn `N` takes
-   every unreverted change of the session *and its spawn sub-tree* in turns
-   `> N`, groups them per file, and puts the file back to the **first**
-   change's `before` (rewrite; delete when the agent created it; recreate
-   when the agent deleted it) only if it still hashes to the **last**
-   change's `after`. Anything else — a user edit, a `bash` command — is
-   skipped and reported, never clobbered; its changes stay pending.
-   Restored changes get a `reverted` marker, so "undo" (`to_turn: None`)
-   steps back one turn with edits at a time. Escape-root writes are covered
-   (the manifest holds the resolved absolute path; reverting needs no new
-   grant — it only writes back bytes the agent replaced, on a trusted frame).
+4. **Turns are user prompts, placed at record time.** The executor runs each
+   dispatched call with its `ToolExec` seq in a task-local
+   (`file_backup::with_exec_seq`), and the change line records it:
+   `(session, exec_seq)` names exactly one log record, and the change belongs
+   to the turn of the target session's last `Prompt` before it (the tap logs
+   a prompt ahead of everything it causes). Request ids alone are **not** a
+   key — Gemini's `name#ordinal` ids repeat every turn and in children.
+   Without a seq (a detached `rhai` script) the change falls back to the
+   latest `(session, request_id)` call logged no later than itself (a
+   binding's `<id>:rhai:<tool>` resolves to the outer call), then to record
+   timestamps.
+5. **Restore is conflict-checked per file, atomic, and refused while the
+   tree is busy.** A revert is refused (an `Error`) while any session of the
+   target's sub-tree is mid-turn (`Status` folded by `track_roots`) or runs
+   detached work (a background job or detached script, via the
+   `BusyProbe`) — its writes would race the restore. Otherwise, reverting
+   after turn `N` takes every unreverted change of the session and its
+   sub-tree in turns `> N`, groups them per file, and puts the file back to
+   the **first** change's `before` (rewrite; delete when the agent created
+   it; recreate when the agent deleted it) only if it still hashes to the
+   **last** change's `after`. Rewrites go through a synced sibling temp file
+   renamed over the target, carrying the file's mode (or the recorded one).
+   A file already back at `before` (an earlier revert whose marker was lost)
+   counts as restored. Outcomes:
+   - restored → marked `reverted`;
+   - no backup (over a cap, blob missing) → reported once and marked
+     `reverted` too, since it can never be restored;
+   - changed since (a user edit, a `bash` command) → reported, never
+     clobbered, and marked `attempted`: it stays revertable, but "undo"
+     (`to_turn: None`) targets the turn below the latest turn with
+     *unattempted* changes, so a conflict never pins it.
+   A failed marker append is logged; the report still goes out. Escape-root
+   writes are covered (the manifest holds the resolved absolute path;
+   reverting needs no new grant — it only writes back bytes the agent
+   replaced, on a trusted frame).
 6. **Protocol: one trusted-only round trip through the session.**
    `InMsg::RevertFiles{session, to_turn?}` → `OutEvent::FilesReverted{session,
    seq, to_turn, restored, skipped:[{path,reason}]}`. It is **wire-refused**
@@ -106,5 +127,8 @@ tools wrote.
   the note and the deferral for free.
 - **Ordering changes by timestamp only** — a lagging persistence tap could
   stamp a prompt after the writes it caused; log position is exact.
+- **Locating a change by `request_id` alone** — ids repeat across turns and
+  sessions (Gemini), which attributed later edits to the first turn and made
+  one undo revert every edit since.
 - **Silently overwriting a file changed since** — loses user work; refusal
   with a reason is the only safe default.

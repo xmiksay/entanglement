@@ -385,8 +385,13 @@ let backups = FileBackups::new(store.clone());
 cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
 let tools = host_tools_with_backups(root, extra, Some(backups.clone()));
 let holly = Holly::spawn(cfg);
-backups.track_roots(&holly);                          // child → root lineage
+backups.track_roots(&holly);                          // lineage + busy sessions
+backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
 ```
+
+Wrap your own call dispatch in `file_backup::with_exec_seq(tool_exec.seq, ..)`
+if you don't use `ToolExecutor` — that is what places a change in its turn
+when request ids repeat.
 
 Without it `InMsg::RevertFiles` answers with a recoverable `Error`. With a
 custom `RecordSink` (no file log), write your own `FileReverter`.

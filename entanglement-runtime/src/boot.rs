@@ -248,6 +248,12 @@ pub(crate) async fn boot(
     let holly = Holly::spawn(engine_config);
     // Detached like the other engine subscribers: it ends when the outbox closes.
     file_backups.track_roots(&holly);
+    // A revert refuses while a background job or detached script could still
+    // write under it (ADR-0212).
+    file_backups.set_busy_probe(file_backup::detached_work_probe(
+        jobs.clone(),
+        scripts.clone(),
+    ));
     Ok(Engine {
         holly,
         model_info,

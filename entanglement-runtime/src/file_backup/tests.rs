@@ -8,20 +8,20 @@ use crate::session_store::{LogPayload, LogRecord};
 use crate::tools::Tool;
 
 /// A tempdir holding the session store and a separate working tree.
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    store: SessionStore,
-    work: PathBuf,
-    backups: FileBackups,
-    sid: SessionId,
+pub(super) struct Fixture {
+    pub(super) _tmp: tempfile::TempDir,
+    pub(super) store: SessionStore,
+    pub(super) work: PathBuf,
+    pub(super) backups: FileBackups,
+    pub(super) sid: SessionId,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with(FileBackups::new)
     }
 
-    fn with(make: impl FnOnce(SessionStore) -> FileBackups) -> Self {
+    pub(super) fn with(make: impl FnOnce(SessionStore) -> FileBackups) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let store = SessionStore::at(tmp.path().join("sessions"));
         let work = tmp.path().join("work");
@@ -37,25 +37,25 @@ impl Fixture {
 
     /// Log a user prompt for `session`, then step the clock so the changes
     /// that follow are strictly later.
-    fn prompt(&self, session: &SessionId, text: &str) {
+    pub(super) fn prompt(&self, session: &SessionId, text: &str) {
         self.log(LogRecord::new(
             session.clone(),
             LogPayload::In(InMsg::prompt(session.clone(), text)),
         ));
     }
 
-    fn log(&self, record: LogRecord) {
+    pub(super) fn log(&self, record: LogRecord) {
         tick();
         self.store.append(&self.sid, &record).unwrap();
         tick();
     }
 
-    fn path(&self, rel: &str) -> PathBuf {
+    pub(super) fn path(&self, rel: &str) -> PathBuf {
         self.work.join(rel)
     }
 
     /// Mimic a tool writing `after` (`None` = deleting) to `rel`.
-    fn change(&self, session: &SessionId, rel: &str, after: Option<&[u8]>) {
+    pub(super) fn change(&self, session: &SessionId, rel: &str, after: Option<&[u8]>) {
         let abs = self.path(rel);
         let before = std::fs::read(&abs).ok();
         match after {
@@ -70,13 +70,13 @@ impl Fixture {
         tick();
     }
 
-    fn read(&self, rel: &str) -> Option<Vec<u8>> {
+    pub(super) fn read(&self, rel: &str) -> Option<Vec<u8>> {
         std::fs::read(self.path(rel)).ok()
     }
 }
 
 /// Changes and prompts are ordered by millisecond timestamps.
-fn tick() {
+pub(super) fn tick() {
     std::thread::sleep(Duration::from_millis(3));
 }
 
@@ -170,17 +170,20 @@ fn rewind_spans_turns_and_undo_walks_backwards() {
     );
 }
 
-/// A change is placed by its call's `ToolExec` log position, not its own
-/// timestamp — here the clock says turn 1, the log says turn 2. A `rhai`
-/// binding's `:rhai:` suffix resolves to the outer call.
-#[test]
-fn a_change_is_placed_by_its_calls_log_position() {
+/// A change recorded inside a call task carries that `ToolExec`'s seq and is
+/// placed by its log record, not its own timestamp — here the clock says
+/// turn 1, the log says turn 2.
+#[tokio::test]
+async fn a_change_is_placed_by_its_calls_log_position() {
     let f = Fixture::new();
     f.prompt(&f.sid, "one");
     let abs = f.path("a.txt");
     std::fs::write(&abs, "x").unwrap();
-    f.backups
-        .record(&f.sid, "r1:rhai:write", &abs, "a.txt", None, Some(b"x"));
+    with_exec_seq(1, async {
+        f.backups
+            .record(&f.sid, "r1:rhai:write", &abs, "a.txt", None, Some(b"x"))
+    })
+    .await;
     f.prompt(&f.sid, "two");
     f.log(LogRecord::new(
         f.sid.clone(),
