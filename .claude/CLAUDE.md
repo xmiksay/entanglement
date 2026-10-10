@@ -14,7 +14,7 @@ live as GitHub issues, one each (#689).
 
 ## Stack
 
-- **Rust** (stable, `../rust-toolchain.toml`; MSRV in the workspace `Cargo.toml`).
+- **Rust** (stable, `../rust-toolchain.toml`; MSRV is the workspace `Cargo.toml` `rust-version`, CI-tested by `make msrv`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
 - No web framework in core; the runtime head's `serve` subcommand brings `axum`
@@ -51,6 +51,7 @@ make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
 make lint          # clippy --all-targets -D warnings
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + file-cap + userid + lint + test  (CI-equivalent gate)
+make msrv          # cargo check (full + lean runtime) on the declared MSRV toolchain (own CI job)
 make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)

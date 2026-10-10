@@ -35,3 +35,27 @@ jobs:
 
       - name: make verify
         run: make verify
+
+  # MSRV gate (#728): the workspace `rust-version` is a claim embedders rely on,
+  # so typecheck on exactly that toolchain. `make msrv` reads the version from
+  # Cargo.toml and installs it (rustup's `+<msrv>` override wins over the pinned
+  # rust-toolchain.toml), so this job can't drift from the manifest.
+  msrv:
+    name: make msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # .cargo/config.toml links with `-fuse-ld=lld`. Rust >= 1.90 ships its
+      # own `ld.lld` (self-contained rust-lld), so the pinned job needs nothing;
+      # the older MSRV toolchain does not, and the runner image has no lld.
+      - name: Install lld
+        run: sudo apt-get update && sudo apt-get install -y lld
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+          workspaces: ". -> target/msrv"
+
+      - name: make msrv
+        run: make msrv
