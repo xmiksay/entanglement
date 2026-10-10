@@ -9,10 +9,12 @@ use std::time::SystemTime;
 mod listing;
 mod pairing;
 mod payload;
+mod prefix;
 mod resume_check;
 pub use listing::{children_of, first_prompt_snippet, list_sessions, root_of, SessionMeta};
 pub use pairing::pair_records;
 pub use payload::LogPayload;
+pub use prefix::{resumable_prefix, ResumablePrefix, Truncation};
 pub use resume_check::{
     check_for_resume, load_for_resume, resume_with_mode, Fallback, ResumeCheck,
 };
@@ -214,11 +216,9 @@ pub fn read_path(path: &Path) -> Result<Vec<LogRecord>> {
 pub fn integrity_gap(records: &[LogRecord]) -> Option<u64> {
     let mut dropped = 0u64;
     let mut any = false;
-    for record in records {
-        if let LogPayload::Gap { dropped: n } = &record.payload {
-            any = true;
-            dropped = dropped.saturating_add(*n);
-        }
+    for n in records.iter().filter_map(|r| r.payload.gap_dropped()) {
+        any = true;
+        dropped = dropped.saturating_add(n);
     }
     any.then_some(dropped)
 }

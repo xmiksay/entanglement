@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 pub enum LogPayload {
     In(InMsg),
     Out(OutEvent),
-    /// Tombstone marking that the persistence recorder lagged and dropped a
-    /// contiguous run of `dropped` broadcast records before this point (#104).
+    /// Tombstone marking that `dropped` records were lost before this point:
+    /// the persistence recorder lagged the broadcast (#104), or its
+    /// `RecordSink` refused an append (#723).
     /// It is not a real message — a poison marker. The file stays well-formed,
     /// so without it `Session::replay` would silently fold an incomplete
     /// history (e.g. a `ToolCall` missing its `ToolOutput`) into a wrong

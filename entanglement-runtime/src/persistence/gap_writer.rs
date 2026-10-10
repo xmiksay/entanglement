@@ -1,0 +1,89 @@
+//! The tap's write path: every [`RecordSink::append`] goes through
+//! [`GapWriter`], which turns a failed append into a durable `Gap` (#723).
+
+use super::RecordSink;
+use crate::session_store::{LogPayload, LogRecord};
+use entanglement_core::SessionId;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Wraps the sink so a dropped record never leaves a silent hole.
+///
+/// A failed append is a lost record, exactly like a broadcast lag, so it is
+/// tombstoned as `Gap { dropped }` in that record's root. When the tombstone
+/// itself can't be written (the store is still down), the count is held
+/// per root and the tombstone is retried before that root's next record.
+/// Until it lands, later records for the root are counted into the pending
+/// gap rather than written: a record persisted after an unmarked hole would
+/// sit inside what `resumable_prefix` treats as the intact prefix.
+pub(super) struct GapWriter {
+    sink: Arc<dyn RecordSink>,
+    /// root → records lost but not yet tombstoned.
+    pending: HashMap<SessionId, u64>,
+}
+
+impl GapWriter {
+    pub(super) fn new(sink: Arc<dyn RecordSink>) -> Self {
+        Self {
+            sink,
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Appends `record` to `root`, first landing any pending gap there.
+    /// `what` names the record for the error log.
+    pub(super) fn append(&mut self, root: &SessionId, record: &LogRecord, what: &str) {
+        if !self.flush(root) {
+            self.add_pending(root, 1);
+            return;
+        }
+        if let Err(e) = self.sink.append(root, record) {
+            tracing::error!("Failed to persist {what} for {root}: {e:#}; recording a gap");
+            self.gap(root, 1);
+        }
+    }
+
+    /// Records `dropped` lost records in `root` (a lag or a failed append).
+    pub(super) fn gap(&mut self, root: &SessionId, dropped: u64) {
+        self.add_pending(root, dropped);
+        self.flush(root);
+    }
+
+    /// Last-chance retry of every pending tombstone, on tap shutdown.
+    pub(super) fn flush_all(&mut self) {
+        let roots: Vec<SessionId> = self.pending.keys().cloned().collect();
+        for root in roots {
+            if !self.flush(&root) {
+                let dropped = self.pending.get(&root).copied().unwrap_or_default();
+                tracing::error!(
+                    "Persistence for {root} ends with {dropped} lost record(s) and no gap \
+                     tombstone: the sink never recovered"
+                );
+            }
+        }
+    }
+
+    fn add_pending(&mut self, root: &SessionId, n: u64) {
+        let slot = self.pending.entry(root.clone()).or_default();
+        *slot = slot.saturating_add(n);
+    }
+
+    /// Writes `root`'s pending tombstone, if any. `true` when nothing is
+    /// pending any more.
+    fn flush(&mut self, root: &SessionId) -> bool {
+        let Some(&dropped) = self.pending.get(root) else {
+            return true;
+        };
+        let tombstone = LogRecord::new(root.clone(), LogPayload::Gap { dropped });
+        match self.sink.append(root, &tombstone) {
+            Ok(()) => {
+                self.pending.remove(root);
+                true
+            }
+            Err(e) => {
+                tracing::error!("Failed to persist gap tombstone for {root}: {e:#}");
+                false
+            }
+        }
+    }
+}

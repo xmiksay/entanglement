@@ -761,9 +761,23 @@ assistant/tool messages and the model appears to forget the conversation.
   contiguous run of events (`RecvError::Lagged`) — a well-formed file whose
   history is silently incomplete. On lag the tap writes a `Gap { dropped }`
   tombstone into every known root file (a lag can't say *which* session lost
-  records, so all are marked); `integrity_gap` detects it and both resume paths
+  records, so all are marked). A record the `RecordSink` *refuses* (`append`
+  returns `Err`: full backlog, failed insert) is the same kind of hole (#723):
+  the tap's `GapWriter` tombstones it as `Gap { dropped: 1 }` in its root, and
+  if the tombstone write fails too it keeps the count pending per root and
+  writes it before that root's next record — later records for the root count
+  into the pending gap rather than land after an unmarked hole — with a final
+  retry at tap shutdown. The tap owns gap-marking for every `Err` and lag; a
+  sink that loses a record after returning `Ok` must write its own `Gap`.
+  `integrity_gap` detects it and both resume paths
   (`skutter run --resume`, the TUI modal) **refuse** rather than fold an
-  incomplete context. `session_store::read` likewise distinguishes a
+  incomplete context. An embedder that prefers resuming the intact head uses
+  `session_store::resumable_prefix(rows)` instead: it takes one
+  `Result<LogRecord, _>` per stored row (`Err` = undecodable) and returns the
+  records before the first gap/corrupt row plus an `Option<Truncation>`
+  (`Retired` is not a hole); it and `integrity_gap` share
+  `LogPayload::gap_dropped` as the one definition of a hole.
+  `session_store::read` likewise distinguishes a
   crash-truncated *tail* line (tolerated with a warning) from *interior*
   corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad
   file instead of aborting the whole enumeration.
