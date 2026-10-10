@@ -873,9 +873,10 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   (`agent`/`ask_user`/`propose_plan`, which touch no host resource) and the
   self-permissioning `rhai` tool bypass hooks — matching the issue's "around
   `tool_runner::dispatch`" scope.
-- **Wiring:** `spawn_tool_executor_with_hooks(holly, tools, profiles, base, hooks)`
-  is the seam `skutter` uses (`services.rs`); the historical `spawn_tool_executor` is a no-hook
-  wrapper (existing callers/tests unchanged). The inbound subscription is hoisted
+- **Wiring:** `skutter` passes its hooks to `spawn_tool_executor_with_policy`
+  (`services.rs`); `spawn_tool_executor_with_hooks(holly, tools, profiles, base, hooks)`
+  is the convenience wrapper with the default policy seams, and the historical
+  `spawn_tool_executor` is its no-hook form. The inbound subscription is hoisted
   synchronous before the executor task spawns so a first `Prompt` can't race the
   `user_prompt_submit` watcher.
 
@@ -923,7 +924,11 @@ dispatch table without restarting the engine. The two convenience wrappers,
 `spawn_tool_executor`/`spawn_tool_executor_with_hooks`, keep their historical
 owned-`ToolRegistry` signature and `.shared()`-wrap internally (mirroring the
 existing `profiles: Arc<RwLock<AgentCatalog>>` pattern, §"Pluggable policy
-seams" above), so existing single-owner callers and tests are unaffected.
+seams" above), so existing single-owner callers keep compiling unchanged. Since
+#747 both wrappers use an **in-memory** grant store (never reading or writing the
+managed `grants.yml`) so their test callers can't touch the developer's real
+file; a production caller wanting persisted `Always` grants uses
+`spawn_tool_executor_with_policy` with `DefaultGrantStore::load()`.
 `ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
 `names` alongside `register`.
 

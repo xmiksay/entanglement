@@ -24,6 +24,11 @@ use super::spawn_tool_executor_with_policy;
 /// [`AgentCatalog`] — the permission *shape* stays a core type; the runtime
 /// only reads it (ADR-0003). `base` is the user config's global permission
 /// ceiling (#172): every resolved grade is clamped least-privilege against it.
+///
+/// **Grants are in-memory only** (#747): an `Always` approval never reads or
+/// writes the managed `grants.yml`, so test callers can't touch the developer's
+/// real file. A production caller wanting persisted grants uses
+/// [`spawn_tool_executor_with_policy`] with `DefaultGrantStore::load()`.
 pub fn spawn_tool_executor(
     holly: &Holly,
     tools: ToolRegistry,
@@ -56,6 +61,11 @@ fn wrap_agents(agents: AgentCatalog) -> Arc<RwLock<AgentCatalog>> {
 /// runs as a side-effect after it, and `user_prompt_submit` fires on every
 /// inbound `Prompt`. The no-hook wrapper keeps the historical 4-arg signature for
 /// callers (and tests) that need no hooks.
+///
+/// **Grants are in-memory only** (#747): an `Always` approval never reads or
+/// writes the managed `grants.yml`, so test callers can't touch the developer's
+/// real file. A production caller wanting persisted grants uses
+/// [`spawn_tool_executor_with_policy`] with `DefaultGrantStore::load()`.
 pub fn spawn_tool_executor_with_hooks(
     holly: &Holly,
     tools: ToolRegistry,

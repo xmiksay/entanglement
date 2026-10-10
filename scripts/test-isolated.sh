@@ -7,13 +7,17 @@
 # files would write into the sandbox instead — and be caught here, rather than
 # silently leaking `tmp-*` dirs into ~/.local/share/entanglement/sessions.
 #
-# Usage: test-isolated.sh [cargo test args...]   (default: --workspace)
+# Usage: test-isolated.sh [cargo subcommand + args...]   (default: test --workspace)
+# e.g. `test --workspace --lib`, `llvm-cov --no-report --workspace`.
 set -eu
 
-[ $# -eq 0 ] && set -- --workspace
+[ $# -eq 0 ] && set -- test --workspace
 
 sandbox=$(mktemp -d "${TMPDIR:-/tmp}/entanglement-isolated-XXXXXX")
+# dash runs no EXIT trap on a signal: exit explicitly on INT/TERM so a Ctrl-C
+# still removes the sandbox.
 trap 'rm -rf "$sandbox"' EXIT
+trap 'exit 130' INT TERM
 
 # Cargo and rustup themselves live under the real HOME; pin them before HOME
 # moves so the toolchain still resolves.
@@ -32,7 +36,7 @@ HOME=$sandbox/home \
 	XDG_CONFIG_HOME=$sandbox/config \
 	XDG_CACHE_HOME=$sandbox/cache \
 	XDG_STATE_HOME=$sandbox/state \
-	"${CARGO:-cargo}" test "$@"
+	"${CARGO:-cargo}" "$@"
 
 leaked=$(find "$sandbox" -mindepth 1 | sed "s|^$sandbox/||")
 if [ -n "$leaked" ]; then
