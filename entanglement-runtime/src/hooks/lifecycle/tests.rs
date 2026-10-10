@@ -254,3 +254,64 @@ async fn a_timed_out_observer_is_killed_and_the_next_still_runs() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(marker.exists());
 }
+
+fn ended(s: &str) -> OutEvent {
+    OutEvent::SessionEnded {
+        session: sid(s),
+        ts: 2,
+    }
+}
+
+fn refusal(s: &str) -> OutEvent {
+    OutEvent::Error {
+        session: sid(s),
+        seq: 0,
+        message: "cannot resume a closed session id".into(),
+    }
+}
+
+/// Only what core re-announces is marked: an ended child in the log is not,
+/// and a refused resume leaves nothing behind.
+#[test]
+fn resume_marks_only_reannounced_ids_and_a_refusal_clears_its_mark() {
+    let mut t = Tracker::default();
+    t.observe_in(&InMsg::Resume {
+        session: sid("root"),
+        records: vec![
+            (None, started("root", None, None)),
+            (None, started("gone", Some("root"), None)),
+            (None, started("live", Some("root"), None)),
+            (None, ended("gone")),
+        ],
+    });
+    let marked: HashSet<_> = t.resuming.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(marked, HashSet::from(["root", "live"]));
+
+    // A refused resume: the supervisor's `Error` arrives, no start follows.
+    t.observe_in(&InMsg::Resume {
+        session: sid("closed"),
+        records: vec![],
+    });
+    assert!(t.observe(&refusal("closed")).is_none());
+    assert!(!t.resuming.contains(&sid("closed")));
+
+    // Ending a marked session drops its mark too.
+    t.observe(&ended("live"));
+    assert!(!t.resuming.contains(&sid("live")));
+}
+
+#[test]
+fn errors_for_untracked_sessions_are_not_kept() {
+    let mut t = Tracker::default();
+    t.observe(&refusal("never-started"));
+    assert!(t.last_error.is_empty());
+}
+
+#[test]
+fn a_lag_forgets_pending_turn_ends() {
+    let mut t = Tracker::default();
+    t.observe(&started("a", None, None));
+    t.observe(&done("a"));
+    t.forget_pending_stops();
+    assert!(t.observe(&status("a", AgentState::Done)).is_none());
+}
