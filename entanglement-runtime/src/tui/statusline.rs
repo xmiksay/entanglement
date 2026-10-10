@@ -72,6 +72,8 @@ pub(crate) fn spawn_probe(
             // Sleep until a tool-driven wake-up or a HEAD mtime change.
             loop {
                 tokio::select! {
+                    // The TUI quit: stop polling rather than outlive it.
+                    _ = event_tx.closed() => return,
                     _ = notified.notified() => break,
                     _ = tokio::time::sleep(HEAD_POLL) => {
                         if git::head_stamp(&info) != stamp {

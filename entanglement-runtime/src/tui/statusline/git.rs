@@ -91,7 +91,7 @@ fn find_repo(cwd: &Path) -> Option<Repo> {
                 worktree: None,
             });
         }
-        let gitdir = std::fs::read_to_string(&dotgit).ok().and_then(|s| {
+        let gitdir = read_small(&dotgit).and_then(|s| {
             let target = s
                 .lines()
                 .next()?
@@ -101,7 +101,7 @@ fn find_repo(cwd: &Path) -> Option<Repo> {
             (!target.is_empty()).then(|| dir.join(target))
         });
         let common = gitdir.as_deref().and_then(|g| {
-            let rel = std::fs::read_to_string(g.join("commondir")).ok()?;
+            let rel = read_small(&g.join("commondir"))?;
             let common = g.join(rel.trim());
             Some(std::fs::canonicalize(&common).unwrap_or(common))
         });
@@ -118,6 +118,25 @@ fn find_repo(cwd: &Path) -> Option<Repo> {
     })
 }
 
+/// Every file the probe reads is a few bytes. Only a regular file is opened
+/// (opening a FIFO named `HEAD` blocks forever, wedging the blocking-pool
+/// thread and the TUI's exit), and at most [`READ_CAP`] bytes are read.
+const READ_CAP: u64 = 4096;
+
+fn read_small(path: &Path) -> Option<String> {
+    use std::io::Read;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut out = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(READ_CAP)
+        .read_to_string(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 /// The main repo's name from its common dir: the parent of a `.git`, or a
 /// bare repo's own name minus a `.git` suffix.
 fn main_repo_name(common: &Path) -> String {
@@ -131,7 +150,7 @@ fn main_repo_name(common: &Path) -> String {
 }
 
 fn read_branch(gitdir: &Path) -> String {
-    let Ok(head) = std::fs::read_to_string(gitdir.join("HEAD")) else {
+    let Some(head) = read_small(&gitdir.join("HEAD")) else {
         return "?".to_string();
     };
     let head = head.trim();
@@ -256,6 +275,44 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_head_is_read_capped_and_unrecognized() {
+        let t = tempfile::tempdir().unwrap();
+        let huge = format!("ref: refs/heads/{}", "b".repeat(1 << 20));
+        let top = repo_dir(t.path(), "p", &huge);
+        assert_eq!(read_small(&top.join(".git/HEAD")).unwrap().len(), 4096);
+        // Truncated mid-name still parses as a (long) branch — the point is
+        // the read is bounded, not that the result is pretty.
+        assert_eq!(
+            probe(&top, None).branch.len(),
+            4096 - "ref: refs/heads/".len()
+        );
+    }
+
+    /// A FIFO named `HEAD` (or `.git`) must never be opened: `open` on a
+    /// writer-less FIFO blocks forever.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_head_or_dotgit_is_skipped_not_opened() {
+        use std::os::unix::ffi::OsStrExt;
+        fn mkfifo(p: &Path) {
+            let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path for the call's duration.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+        }
+        let t = tempfile::tempdir().unwrap();
+        let top = t.path().join("p");
+        fs::create_dir_all(top.join(".git")).unwrap();
+        mkfifo(&top.join(".git/HEAD"));
+        assert_eq!(probe(&top, None).branch, "?");
+
+        let other = t.path().join("q");
+        fs::create_dir_all(&other).unwrap();
+        mkfifo(&other.join(".git"));
+        let info = probe(&other, None);
+        assert_eq!((info.repo.as_str(), info.branch.as_str()), ("q", "?"));
+    }
+
+    #[test]
     fn a_malformed_git_file_still_marks_a_repo_with_unknown_head() {
         let t = tempfile::tempdir().unwrap();
         let top = t.path().join("odd");
@@ -268,15 +325,20 @@ mod tests {
     #[test]
     fn outside_git_the_path_is_home_abbreviated() {
         let t = tempfile::tempdir().unwrap();
-        if find_repo(t.path()).is_some() {
-            return; // a TMPDIR inside a checkout can't exercise "outside git"
-        }
         let home = t.path().join("home");
         let cwd = home.join("notes/x");
         fs::create_dir_all(&cwd).unwrap();
         let info = probe(&cwd, Some(&home));
-        assert_eq!(info.repo, "~/notes/x");
+        // `cwd` is abbreviated whether or not a repo encloses the tempdir.
         assert_eq!(info.cwd, "~/notes/x");
+        if find_repo(t.path()).is_some() {
+            eprintln!(
+                "SKIP outside-git half: TMPDIR {:?} is inside a checkout",
+                t.path()
+            );
+            return;
+        }
+        assert_eq!(info.repo, "~/notes/x");
         assert_eq!((info.cwd_rel.as_str(), info.branch.as_str()), ("", ""));
         assert_eq!(info.head, None);
         assert_eq!(probe(&home, Some(&home)).repo, "~");
