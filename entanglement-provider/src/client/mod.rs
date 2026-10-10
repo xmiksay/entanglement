@@ -118,7 +118,7 @@ const RPM_LIMIT: u32 = 50;
 /// primary guard against a spawn-storm (many sub-agents) overrunning a
 /// provider's concurrency ceiling and 429-storming. A permit is held for the
 /// whole request *and its streamed body*, so this counts open streams, not just
-/// POSTs. Overridable via `ENTANGLEMENT_MAX_CONCURRENCY`.
+/// POSTs. A provider sets its own via the catalog `concurrency:` (ADR-0213).
 const DEFAULT_CONCURRENCY: usize = 3;
 
 /// Total wall-clock a single 429 will keep retrying before it gives up and

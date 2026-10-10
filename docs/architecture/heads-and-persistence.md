@@ -104,8 +104,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   user config with per-field provenance — every fallback setting in
   [`config::Config`](../../entanglement-runtime/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
-  (#558; `session_retention_days` reports `env (…)` as its source instead of a
-  file layer when `ENTANGLEMENT_SESSION_RETENTION_DAYS` actually won). Four more
+  and the `tui:` block (#558, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)), any retired key a layer still carries
+  (as a `warnings:` section), and an **advanced catalog** section listing each
+  provider/model's non-default wire facts (`thinking_*`, `effort_tiers`,
+  `discovery`, rate limits, … — [provider](provider.md) §advanced catalog). Four more
   engine-free CLI-only views round out the managed-file/live-state blind spots
   (#558): `inspect aux-models` prints the
   persisted `/aux-model` pins (`aux-models.yml`); `inspect mcp-tokens` prints
@@ -184,8 +186,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   swap) drops the whole memo and rebuilds once; the approval/question tail stays
   rendered fresh per frame after the cached body. The memo lives on
   `SessionView` beside `expanded_blocks`, so each session keeps its own. Mouse capture is on by default
-  (opt out with `ENTANGLEMENT_TUI_NO_MOUSE=1`, which restores native terminal
-  text selection): the wheel scrolls the chat (or the open modal's selection).
+  (opt out with `config.yml` `tui: {mouse: false}`, which restores native
+  terminal text selection; live-reloaded, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)): the wheel scrolls the chat (or the open modal's selection).
   **Left button drives transcript selection + copy** (`tui::selection`,
   `tui::clipboard`): a drag paints a reversed-video highlight over the selected
   span (`apply_highlight` re-splits the rendered `Line` spans at the selection
@@ -266,7 +268,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (ADR-0050). `run --format text` renders it in full; `serve` relays it like
   any other frame. **Attention signals** (issue #14, `tui::attention`):
   a `Status` transition into `WaitingApproval`, `Done`, or `Error` rings the
-  terminal bell — and, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`, emits an OSC 9
+  terminal bell — and, opt-in via `config.yml` `tui: {notify: true}`, emits an OSC 9
   desktop notification (iTerm2/kitty/WezTerm; silently dropped elsewhere). Core
   emits `Status` only on a state change, so signalling on those states *is*
   signalling on the transitions; `Done`/`Error` also arrive as their own
@@ -423,7 +425,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `config::llm_connect`): for a catalog entry carrying an `oauth:` block, it
   runs the browser-loopback (or `--device-code`) authorization against the
   entry's resolved base URL and persists the credential to the managed
-  `llm-tokens.yml` (override `ENTANGLEMENT_LLM_TOKENS_FILE`) — the same file
+  `llm-tokens.yml` (in the managed-state dir, `ENTANGLEMENT_STATE_DIR`) — the same file
   format, locking, and quarantine as `mcp-tokens.yml` (one shared
   implementation, `McpTokenStore::load_llm()`), keyed by provider name and a
   deliberately *separate* file so neither surface's writes contend with the
@@ -482,8 +484,8 @@ handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 
 Side transformations (a compaction summary, an auto session title) can run on
 a cheaper/faster model than the session's own. The pin store is a managed
-`${config_dir}/entanglement/aux-models.yml` (override
-`ENTANGLEMENT_AUX_MODELS_FILE`, sibling of `agent-models.yml`, same
+`<state dir>/aux-models.yml` (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md), sibling
+of `agent-models.yml`, same
 `with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
 (`summarize` | `session_title` | `narrate`) to a `{provider, model}` pin.
 `aux_llm::AuxLlmRegistry` resolves a `Purpose` → fresh `Box<dyn Llm>` by
@@ -846,7 +848,7 @@ assistant/tool messages and the model appears to forget the conversation.
   runs **best-effort at startup** (`main.rs`, before any head
   spawns, so the resume modal and `skutter sessions` both reflect the pruned
   set), removing root files older by mtime than the retention window from
-  **the current project's session dir only**. The window resolves env >
-  config > default: `ENTANGLEMENT_SESSION_RETENTION_DAYS` >
-  `config.yml`'s `session_retention_days` > the embedded default `30`; an
+  **the current project's session dir only**. The window resolves
+  `config.yml`'s `session_retention_days` > the embedded default `30` (the
+  env override is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)); an
   unreadable dir/entry is a warn-and-skip, never fatal.

@@ -8,9 +8,7 @@ use std::sync::{Arc, Mutex};
 use entanglement_core::GenerationParams;
 use entanglement_runtime::config::agent_generation::AgentGenerationStore;
 
-// `ENTANGLEMENT_AGENT_GENERATION_FILE` is process-global; tests that set it serialize.
-// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
-const ENV: &str = "ENTANGLEMENT_AGENT_GENERATION_FILE";
+// Every test pins its own temp file through `load_from` — no process env.
 
 fn tmp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("entanglement-agent-generation-it-{name}.yml"))
@@ -27,60 +25,49 @@ fn params(temp: f32) -> GenerationParams {
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let _g = crate::env_lock();
     let path = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AgentGenerationStore::load();
+    let mut store = AgentGenerationStore::load_from(Some(path.clone()));
     assert!(store.get("build").is_none());
     store.set("build", params(0.7)).unwrap();
 
     // A freshly loaded store (a fresh process) sees the persisted override.
-    let reloaded = AgentGenerationStore::load();
+    let reloaded = AgentGenerationStore::load_from(Some(path.clone()));
     assert_eq!(reloaded.get("build"), Some(params(0.7)));
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn env_override_selects_the_file() {
-    let _g = crate::env_lock();
+fn an_explicit_file_is_read() {
     let path = tmp_path("env");
     std::fs::write(&path, "agents:\n  plan:\n    temperature: 0.3\n").unwrap();
-    std::env::set_var(ENV, &path);
 
-    let store = AgentGenerationStore::load();
+    let store = AgentGenerationStore::load_from(Some(path.clone()));
     assert_eq!(store.get("plan"), Some(params(0.3)));
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn malformed_file_loads_empty() {
-    let _g = crate::env_lock();
     let path = tmp_path("malformed");
     std::fs::write(&path, "agents: [not-a-map\n").unwrap();
-    std::env::set_var(ENV, &path);
 
     // Fail-open: a corrupt file is ignored, not fatal.
-    let store = AgentGenerationStore::load();
+    let store = AgentGenerationStore::load_from(Some(path.clone()));
     assert!(store.get("build").is_none());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn resolver_reads_through_to_the_store() {
-    let _g = crate::env_lock();
     let path = tmp_path("resolver");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AgentGenerationStore::load();
+    let mut store = AgentGenerationStore::load_from(Some(path.clone()));
     store.set("build", params(0.9)).unwrap();
     // A profile the store carries no entry for resolves to `None`, not fatal.
     let shared = Arc::new(Mutex::new(store));
@@ -89,18 +76,17 @@ fn resolver_reads_through_to_the_store() {
     assert_eq!(resolver("build"), Some(params(0.9)));
     assert_eq!(resolver("ghost"), None);
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn resolver_observes_a_later_set_without_rebuilding() {
-    let _g = crate::env_lock();
     let path = tmp_path("resolver-live");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let store = Arc::new(Mutex::new(AgentGenerationStore::load()));
+    let store = Arc::new(Mutex::new(AgentGenerationStore::load_from(Some(
+        path.clone(),
+    ))));
     let resolver = AgentGenerationStore::resolver(store.clone());
     assert_eq!(resolver("build"), None);
 
@@ -109,33 +95,36 @@ fn resolver_observes_a_later_set_without_rebuilding() {
     // shared handle rather than snapshotting at construction time.
     assert_eq!(resolver("build"), Some(params(0.5)));
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn concurrent_set_from_two_stores_both_survive() {
-    // Two "processes" (threads, each with its own `AgentGenerationStore::load()`)
+    // Two "processes" (threads, each with its own `AgentGenerationStore::load_from(Some(path.clone()))`)
     // race to set *different* agents against the same on-disk file (#329).
     // Without the lock's read-current-then-merge, the second writer's stale
     // in-memory `self.agents` would clobber the first writer's override on write.
-    let _g = crate::env_lock();
     let path = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let a = std::thread::spawn(|| {
-        let mut store = AgentGenerationStore::load();
-        store.set("build", params(0.7)).unwrap();
+    let a = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut store = AgentGenerationStore::load_from(Some(path.clone()));
+            store.set("build", params(0.7)).unwrap();
+        }
     });
-    let b = std::thread::spawn(|| {
-        let mut store = AgentGenerationStore::load();
-        store.set("plan", params(0.1)).unwrap();
+    let b = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut store = AgentGenerationStore::load_from(Some(path.clone()));
+            store.set("plan", params(0.1)).unwrap();
+        }
     });
     a.join().unwrap();
     b.join().unwrap();
 
-    let reloaded = AgentGenerationStore::load();
+    let reloaded = AgentGenerationStore::load_from(Some(path.clone()));
     assert_eq!(
         reloaded.get("build"),
         Some(params(0.7)),
@@ -147,40 +136,34 @@ fn concurrent_set_from_two_stores_both_survive() {
         "override recorded by the second store must survive a concurrent write"
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn reload_picks_up_another_process_write() {
-    let _g = crate::env_lock();
     let path = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AgentGenerationStore::load();
+    let mut store = AgentGenerationStore::load_from(Some(path.clone()));
     assert!(store.get("build").is_none());
 
     // Another instance persists an override directly.
-    let mut other = AgentGenerationStore::load();
+    let mut other = AgentGenerationStore::load_from(Some(path.clone()));
     other.set("build", params(0.7)).unwrap();
 
     assert!(store.get("build").is_none(), "stale before reload");
     store.reload();
     assert_eq!(store.get("build"), Some(params(0.7)));
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let _g = crate::env_lock();
     let path = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AgentGenerationStore::load();
+    let mut store = AgentGenerationStore::load_from(Some(path.clone()));
     store.set("plan", params(0.1)).unwrap();
     store.set("build", params(0.7)).unwrap();
     let first = std::fs::read_to_string(&path).unwrap();
@@ -192,6 +175,5 @@ fn rewrite_is_stable_and_ordered() {
     assert_eq!(first, second);
     assert!(first.find("build").unwrap() < first.find("plan").unwrap());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }

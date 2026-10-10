@@ -4,10 +4,11 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::{Discovery, ToolAdvertising, WebSearchConfig};
+use entanglement_core::{ToolAdvertising, WebSearchConfig};
 use serde::Deserialize;
 
 use super::ceiling;
+use super::tui::TuiConfig;
 use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
@@ -96,26 +97,18 @@ pub(super) struct RawConfig {
     /// Session-log retention in days (Issue 4, Phase 4.2): on startup the TUI
     /// prunes `.jsonl` files in the cwd's session dir whose mtime is older than
     /// this. The embedded default (`30`) keeps the on-disk footprint bounded
-    /// without surprising a user who never configures it; `ENTANGLEMENT_SESSION_`
-    /// `RETENTION_DAYS` (env > config > default) wins over the file. Absent in a
-    /// layer ⇒ fall through to the lower layer, exactly like every other key.
+    /// without surprising a user who never configures it. Absent in a layer ⇒
+    /// fall through to the lower layer, exactly like every other key.
     #[serde(default)]
     pub(super) session_retention_days: Option<u64>,
     /// Tool-advertising override (ADR-0196): `full` | `tool_search`, applied
     /// over every model's catalog `tool_advertising:` preference. Absent ⇒
     /// no install-wide opinion; the catalog (then the `tool_search` default)
-    /// decides per model. The env var ([`TOOL_ADVERTISING_ENV`](super::TOOL_ADVERTISING_ENV)) is layered
-    /// on top of this at resolution time, not here — see
-    /// `tool_advertising::resolve_advertising`.
+    /// decides per model.
     #[serde(default)]
     pub(super) tool_advertising: Option<ToolAdvertising>,
-    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
-    /// provider name: `discovery: {zai: native_first}`. Applied over that
-    /// provider's (and its models') catalog `discovery:` value. Absent or
-    /// empty ⇒ no install-wide opinion; the catalog decides. A key naming a
-    /// provider the session isn't on — or one no catalog lists — is inert,
-    /// never an error: a user may keep entries for providers they switch
-    /// between, or for one a future `providers.yml` adds.
+    /// Terminal-UI preferences (ADR-0213). A retired `discovery:` key never
+    /// reaches this struct: [`super::retired`] strips it with a warning.
     #[serde(default)]
-    pub(super) discovery: HashMap<String, Discovery>,
+    pub(super) tui: TuiConfig,
 }

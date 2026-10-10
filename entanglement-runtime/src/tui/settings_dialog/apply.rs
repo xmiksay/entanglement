@@ -47,15 +47,12 @@ pub enum ApplyStep {
         mode: Option<ToolAdvertising>,
         discovery: Option<Discovery>,
     },
-    /// Write the shown advertising facts into `config.yml` as the default for
+    /// Write the shown advertising mode into `config.yml` as the default for
     /// **new** sessions (`config::write_key`, comment-preserving). Orthogonal
     /// to [`Repin`][ApplyStep::Repin], which changes the running session only.
-    /// `discovery` is `None` when the strategy doesn't apply to this session
-    /// (`full` mode, a native wire) or its provider isn't known yet.
+    /// The discovery strategy is never saved — it is catalog data (ADR-0213).
     PersistAdvertising {
         mode: ToolAdvertising,
-        provider: String,
-        discovery: Option<Discovery>,
     },
     Aux {
         purpose: Purpose,
@@ -126,16 +123,11 @@ impl ApplyStep {
                 }
                 parts.join(", ")
             }
-            ApplyStep::PersistAdvertising {
-                mode,
-                provider,
-                discovery,
-            } => {
-                let mut parts = vec![format!("tool_advertising → {}", mode.label())];
-                if let Some(d) = discovery {
-                    parts.push(format!("discovery[{provider}] → {}", discovery_label(*d)));
-                }
-                format!("saved for new sessions: {}", parts.join(", "))
+            ApplyStep::PersistAdvertising { mode } => {
+                format!(
+                    "saved for new sessions: tool_advertising → {}",
+                    mode.label()
+                )
             }
             ApplyStep::Aux {
                 purpose,

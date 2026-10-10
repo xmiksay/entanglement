@@ -147,20 +147,13 @@ impl App {
                     .unwrap_or_else(|| adv.mode(session));
                 let discovery = adv.session_discovery(session).unwrap_or_default();
                 let client_side = adv.encoding(session) == Encoding::ClientSide;
-                AdvertisingRows::new(
-                    true,
-                    client_side,
-                    mode,
-                    discovery,
-                    self.active_provider.clone(),
-                )
+                AdvertisingRows::new(true, client_side, mode, discovery)
             }
             None => AdvertisingRows::new(
                 false,
                 false,
                 ToolAdvertising::default(),
                 Discovery::default(),
-                String::new(),
             ),
         }
     }

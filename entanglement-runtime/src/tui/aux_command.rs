@@ -41,7 +41,7 @@ pub(super) fn send_aux_model(app: &mut App, text: &str) {
     let Some(store) = app.aux_models().cloned() else {
         app.record_aux_error(
             "no config directory for the managed aux-models file; \
-             set ENTANGLEMENT_AUX_MODELS_FILE to a path first"
+             set ENTANGLEMENT_STATE_DIR to a directory first"
                 .to_string(),
         );
         return;

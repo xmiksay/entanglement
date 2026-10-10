@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use ratatui::backend::CrosstermBackend;
@@ -20,7 +21,9 @@ use ratatui::crossterm::{
 };
 use ratatui::Terminal;
 
+use crate::config::TuiConfig;
 use crate::tui::app::{App, UiEffect};
+use crate::tui::attention::Attention;
 use crate::tui::export;
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
@@ -172,10 +175,51 @@ fn pick_editor(config: Option<String>, visual: Option<String>, editor: Option<St
         .unwrap_or_else(|| "vi".to_string())
 }
 
-/// Whether mouse capture should be (re-)enabled, honoring the same opt-out env
-/// var as the initial TUI setup.
+/// The live `tui.mouse` setting. Process-global like the terminal it
+/// configures: one TUI per process, and the `$EDITOR` round-trip must re-enter
+/// with whatever the setting is *now*, not what it was at launch.
+static MOUSE_CAPTURE: AtomicBool = AtomicBool::new(true);
+
+/// Whether mouse capture should be (re-)enabled.
 pub(crate) fn mouse_capture_enabled() -> bool {
-    std::env::var_os("ENTANGLEMENT_TUI_NO_MOUSE").is_none()
+    MOUSE_CAPTURE.load(Ordering::Relaxed)
+}
+
+/// Record `enabled` as the live setting; `Some(enabled)` when that is a
+/// change the terminal must be told about.
+fn set_mouse_capture(enabled: bool) -> Option<bool> {
+    (MOUSE_CAPTURE.swap(enabled, Ordering::Relaxed) != enabled).then_some(enabled)
+}
+
+/// Apply a `tui:` block to the running TUI (startup and every live reload,
+/// ADR-0213): toggle mouse capture only on an actual change, and hand
+/// `notify` to the attention signaller.
+pub(crate) fn apply_tui_config(
+    out: &mut impl std::io::Write,
+    attention: &mut Attention,
+    config: &TuiConfig,
+) {
+    match set_mouse_capture(config.mouse) {
+        Some(true) => {
+            let _ = execute!(out, EnableMouseCapture);
+        }
+        Some(false) => {
+            let _ = execute!(out, DisableMouseCapture);
+        }
+        None => {}
+    }
+    attention.set_notify(config.notify);
+}
+
+/// The watcher fired (any config file may have changed): re-resolve the
+/// layered config for `root` and re-apply its `tui:` block. A config that no
+/// longer parses keeps the previous settings — a mid-save edit must not
+/// break a running TUI.
+pub(crate) fn reload_tui_config(term: &mut Term, attention: &mut Attention, root: &Path) {
+    match crate::config::Config::load(root) {
+        Ok(c) => apply_tui_config(term.backend_mut(), attention, &c.tui),
+        Err(e) => tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}"),
+    }
 }
 
 fn unix_secs() -> u64 {
@@ -187,7 +231,30 @@ fn unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_editor, split_editor_command};
+    use super::{apply_tui_config, pick_editor, split_editor_command, Attention, TuiConfig};
+
+    /// One test owns the process-global flag, so its transitions are
+    /// deterministic.
+    #[test]
+    fn mouse_capture_toggles_only_on_a_change() {
+        let mut out = Vec::new();
+        let mut attention = Attention::new(false);
+        let cfg = |mouse| TuiConfig {
+            notify: false,
+            mouse,
+        };
+        apply_tui_config(&mut out, &mut attention, &cfg(true));
+        apply_tui_config(&mut out, &mut attention, &cfg(true));
+        assert!(out.is_empty(), "unchanged (default on) writes nothing");
+        apply_tui_config(&mut out, &mut attention, &cfg(false));
+        assert!(!out.is_empty(), "a change is sent to the terminal");
+        assert!(!super::mouse_capture_enabled());
+        out.clear();
+        apply_tui_config(&mut out, &mut attention, &cfg(false));
+        assert!(out.is_empty());
+        apply_tui_config(&mut out, &mut attention, &cfg(true));
+        assert!(!out.is_empty() && super::mouse_capture_enabled());
+    }
 
     #[test]
     fn pick_editor_config_wins_over_env() {

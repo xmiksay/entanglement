@@ -67,7 +67,11 @@ async fn main() -> Result<()> {
     // (`.entanglement/config.yml`). A malformed file is a loud error. Loaded
     // before logging so its `verbose` can raise the level for every mode,
     // including the pre-engine `inspect`/`sessions` fast paths.
-    let user_config = config::Config::load(&cwd).context("loading user config")?;
+    let config::Resolved {
+        config: user_config,
+        warnings: config_warnings,
+        ..
+    } = config::Config::resolve(&cwd).context("loading user config")?;
 
     // Session-log auto-prune on startup (Issue 4, Phase 4.2): best-effort,
     // scoped to this cwd's session dir only. A read-only data dir or a transient
@@ -192,6 +196,19 @@ async fn main() -> Result<()> {
         }
         Ok(_) => {}
         Err(e) => tracing::debug!("could not load provider env file: {e:#}"),
+    }
+
+    // ADR-0213: a retired env var or config key is ignored — say so once,
+    // naming the replacement. After the `.env` load so a retired var parked
+    // there is caught too; `eprintln!` like the scaffold notices above, so it
+    // shows without `--verbose` and stays in the scrollback after a TUI exit.
+    let provider_names: Vec<&str> = catalog.providers.iter().map(|p| p.name.as_str()).collect();
+    for warning in config_warnings
+        .iter()
+        .cloned()
+        .chain(config::retired::process_env_warnings(&provider_names))
+    {
+        eprintln!("skutter: warning: {warning}");
     }
 
     let engine = boot::boot(&cwd, &user_config, &catalog).await?;

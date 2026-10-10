@@ -5,8 +5,8 @@
 //! cheaper/faster model for side transformations like the compaction summary or
 //! an auto-generated session title. This module owns the managed file behind
 //! that:
-//! `${config_dir}/entanglement/aux-models.yml` (override
-//! `ENTANGLEMENT_AUX_MODELS_FILE`), a sibling of `agent-models.yml` (#323,
+//! `<state dir>/aux-models.yml` (relocated by
+//! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of `agent-models.yml` (#323,
 //! ADR-0081), the grants file (#174), and the provider-key env file (#220) —
 //! **managed, not layered**: the runtime rewrites it freely, so it never mixes
 //! into the hand-edited `config.yml`.
@@ -37,10 +37,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
-
-/// Env var overriding the managed aux-models file path (tests + non-XDG
-/// setups).
-const AUX_MODELS_FILE_ENV: &str = "ENTANGLEMENT_AUX_MODELS_FILE";
+use super::state_dir::{state_file, AUX_MODELS_FILE, STATE_DIR_ENV};
 
 /// A recognized auxiliary LLM purpose (Issue 5). Each one has its own persisted
 /// `(provider, model)` pin and a runtime-side call site.
@@ -125,13 +122,19 @@ pub struct AuxModelStore {
 }
 
 impl AuxModelStore {
-    /// Load the persisted pins from the managed file, resolving its path from
-    /// `ENTANGLEMENT_AUX_MODELS_FILE` or `${config_dir}/entanglement/`. A
+    /// Load the persisted pins from the managed file, resolving its path in
+    /// the managed-state dir (`ENTANGLEMENT_STATE_DIR`, ADR-0213). A
     /// missing file is an empty store; a malformed one is logged and treated as
     /// empty (fail-open — a corrupt file only reverts a purpose to the primary
     /// model).
     pub fn load() -> Self {
-        let path = aux_models_file_path();
+        Self::load_from(aux_models_file_path())
+    }
+
+    /// [`load`](Self::load) from an explicit file — or, with `None`, a purely
+    /// in-memory store. The injection seam (#747): a test pins a temp file
+    /// instead of steering process-global env.
+    pub fn load_from(path: Option<PathBuf>) -> Self {
         let aux = match &path {
             Some(p) => read_aux_models(p),
             None => BTreeMap::new(),
@@ -161,7 +164,7 @@ impl AuxModelStore {
         let Some(path) = self.path.clone() else {
             bail!(
                 "no config directory for the managed aux-models file; \
-                 set {AUX_MODELS_FILE_ENV} to a path first"
+                 set {STATE_DIR_ENV} to a directory first"
             );
         };
         let merged = super::lock::with_locked_file(&path, || {
@@ -201,7 +204,7 @@ impl AuxModelStore {
     /// Build an in-memory store from `pins` directly — no file, no env var.
     /// Lets a caller (e.g. `inspect::aux_models`'s render tests) exercise
     /// [`get`](Self::get) without mutating the process-global
-    /// `ENTANGLEMENT_AUX_MODELS_FILE` env var, which would race against
+    /// `ENTANGLEMENT_STATE_DIR` env var, which would race against
     /// [`crate::aux_llm`]'s own tests under `cargo test`'s parallel threads.
     #[cfg(test)]
     pub(crate) fn for_test(pins: &[(Purpose, &str, &str)]) -> Self {
@@ -243,14 +246,10 @@ fn persist_map(path: &Path, aux: &BTreeMap<Purpose, AuxModelPin>) -> Result<()> 
     atomic_write(path, &format!("{header}{body}"))
 }
 
-/// Resolve the managed aux-models file path: `ENTANGLEMENT_AUX_MODELS_FILE`
-/// wins, otherwise `${config_dir}/entanglement/aux-models.yml`. `None` when
-/// neither is available (persistence then silently no-ops).
-fn aux_models_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(AUX_MODELS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("aux-models.yml"))
+/// The managed `aux-models.yml` in the managed-state dir (ADR-0213). `None`
+/// when no state dir resolves (persistence then silently no-ops).
+pub(crate) fn aux_models_file_path() -> Option<PathBuf> {
+    state_file(AUX_MODELS_FILE)
 }
 
 /// Read + parse the aux-models file at `path`. A missing file, or any

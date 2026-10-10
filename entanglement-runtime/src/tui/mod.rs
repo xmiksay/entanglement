@@ -88,6 +88,7 @@ pub async fn tui(
     tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
+    tui_config: crate::config::TuiConfig,
     grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
     mcp_handles: crate::mcp::McpHandles,
     // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
@@ -110,11 +111,12 @@ pub async fn tui(
         )
     );
     // Mouse capture lets the wheel scroll the chat and blocks become clickable.
-    // The trade-off is losing native text selection (use Shift+drag), so allow
-    // opting out via `ENTANGLEMENT_TUI_NO_MOUSE`.
-    if editor::mouse_capture_enabled() {
-        let _ = execute!(stdout, EnableMouseCapture);
-    }
+    // The trade-off is losing native text selection (use Shift+drag), so
+    // `tui.mouse: false` opts out. Starts captured — the flag's default — and
+    // `apply_tui_config` below releases it on an opt-out.
+    let _ = execute!(stdout, EnableMouseCapture);
+    let mut attention = Attention::new(false);
+    editor::apply_tui_config(&mut stdout, &mut attention, &tui_config);
     // Focus reporting lets attention signals mute while the terminal is focused
     // (issue #14). Best-effort: many terminals never report it, and we default to
     // signalling in that case.
@@ -155,10 +157,9 @@ pub async fn tui(
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
     app.init_head_context(root.clone());
+    let config_root = root.clone();
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
-
-    let mut attention = Attention::from_env();
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
     let mut last_draw = Instant::now();
@@ -215,6 +216,7 @@ pub async fn tui(
                 if let Some(notice) = msg {
                     let fresh = entry_profiles_from(&agents.read().unwrap());
                     app.refresh_profiles(fresh);
+                    editor::reload_tui_config(&mut terminal, &mut attention, &config_root);
                     app.record_reload_status(notice);
                     app.mark_dirty();
                 }

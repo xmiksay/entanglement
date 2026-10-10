@@ -57,7 +57,7 @@ fn describe(state: AgentState) -> &'static str {
 
 /// Decides when to raise an attention signal and writes it to the terminal.
 pub struct Attention {
-    /// OSC 9 desktop notification, opt-in via `ENTANGLEMENT_TUI_NOTIFY=1`.
+    /// OSC 9 desktop notification, opt-in via `config.yml` `tui.notify`.
     notify: bool,
     /// Terminal focus as last reported by crossterm. `None` until the first
     /// focus event: most terminals never send one, so we default to *not*
@@ -66,14 +66,17 @@ pub struct Attention {
 }
 
 impl Attention {
-    pub fn from_env() -> Self {
-        let notify = std::env::var("ENTANGLEMENT_TUI_NOTIFY")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+    pub fn new(notify: bool) -> Self {
         Self {
             notify,
             focused: None,
         }
+    }
+
+    /// Re-apply a live-reloaded `tui.notify` (ADR-0213); the next signal
+    /// honors it.
+    pub fn set_notify(&mut self, notify: bool) {
+        self.notify = notify;
     }
 
     /// Records the terminal's focus, driven by crossterm `FocusGained`/`FocusLost`.
@@ -153,6 +156,14 @@ mod tests {
         assert_eq!(*tail.last().unwrap(), 0x07, "BEL terminator");
         let text = std::str::from_utf8(&tail[4..tail.len() - 1]).unwrap();
         assert_eq!(text, "skutter: turn failed");
+    }
+
+    #[test]
+    fn a_live_notify_change_applies_to_the_next_signal() {
+        let mut a = Attention::new(false);
+        assert_eq!(a.decide(AgentState::Done).unwrap().as_bytes(), &[0x07]);
+        a.set_notify(true);
+        assert!(a.decide(AgentState::Done).unwrap().as_bytes().len() > 1);
     }
 
     #[test]

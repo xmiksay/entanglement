@@ -8,11 +8,11 @@ use entanglement_provider::{
     Wire,
 };
 
-use crate::providers::{env_nonempty, resolve_concurrency, resolve_rpm, web_search_tool_version};
+use crate::providers::{env_nonempty, resolve_base, web_search_tool_version};
 
 /// The OAuth bearer source for a catalog entry declaring `oauth:` (#684 edge
 /// d): tokens come from the managed LLM token file
-/// (`llm-tokens.yml` / `ENTANGLEMENT_LLM_TOKENS_FILE`), keyed by the provider
+/// (`llm-tokens.yml` in the managed-state dir), keyed by the provider
 /// name, minted by `skutter config connect <provider>`. `Err` with that hint
 /// when nothing is stored yet — an OAuth endpoint without a token could only
 /// ever 401, so the miss surfaces here exactly like an unset `key_env`.
@@ -38,7 +38,7 @@ fn llm_oauth_source(
 
 /// Build a Gemini-wire [`LlmFactory`] for an explicit `(entry, model)`. Shared by
 /// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
-/// the key env is absent/unset. Base from `{NAME}_API_BASE`/`{NAME}_BASE` env else
+/// the key env is absent/unset. Base from `{NAME}_API_BASE` env else
 /// `entry.base_url` else the client's [`GEMINI_BASE`] default.
 ///
 /// `explicit_key`, when `Some`, is used verbatim instead of reading
@@ -66,18 +66,14 @@ pub(crate) fn gemini_factory_for(
             env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?
         }
     };
-    let name = entry.name.to_uppercase();
-    let base = env_nonempty(&format!("{name}_API_BASE"))
-        .or_else(|| env_nonempty(&format!("{name}_BASE")))
-        .or_else(|| entry.base_url.clone())
-        .unwrap_or_else(|| entanglement_provider::GEMINI_BASE.to_string());
+    let base = resolve_base(entry, entanglement_provider::GEMINI_BASE);
     Ok(entanglement_provider::gemini_factory(
         base,
         key,
         auth,
         model.to_string(),
-        resolve_rpm(entry),
-        resolve_concurrency(entry),
+        entry.rpm,
+        entry.concurrency,
         catalog.model_concurrency_resolver(&entry.name),
         http_client.clone(),
     ))
@@ -112,18 +108,14 @@ pub(crate) fn openai_factory_for(
             None => None, // keyless (Ollama)
         },
     };
-    let name = entry.name.to_uppercase();
-    let base = env_nonempty(&format!("{name}_API_BASE"))
-        .or_else(|| env_nonempty(&format!("{name}_BASE")))
-        .or_else(|| entry.base_url.clone())
-        .unwrap_or_else(|| entanglement_provider::OPENAI_BASE.to_string());
+    let base = resolve_base(entry, entanglement_provider::OPENAI_BASE);
     Ok(entanglement_provider::openai_factory(
         base,
         key,
         auth,
         model.to_string(),
-        resolve_rpm(entry),
-        resolve_concurrency(entry),
+        entry.rpm,
+        entry.concurrency,
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         entry.prompt_cache_key,
@@ -156,18 +148,14 @@ pub(crate) fn openai_responses_factory_for(
             None => None,
         },
     };
-    let name = entry.name.to_uppercase();
-    let base = env_nonempty(&format!("{name}_API_BASE"))
-        .or_else(|| env_nonempty(&format!("{name}_BASE")))
-        .or_else(|| entry.base_url.clone())
-        .unwrap_or_else(|| entanglement_provider::OPENAI_RESPONSES_BASE.to_string());
+    let base = resolve_base(entry, entanglement_provider::OPENAI_RESPONSES_BASE);
     Ok(entanglement_provider::openai_responses_factory(
         base,
         key,
         auth,
         model.to_string(),
-        resolve_rpm(entry),
-        resolve_concurrency(entry),
+        entry.rpm,
+        entry.concurrency,
         catalog.model_concurrency_resolver(&entry.name),
         catalog.thinking_spec_resolver(&entry.name),
         http_client.clone(),
@@ -178,7 +166,7 @@ pub(crate) fn openai_responses_factory_for(
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
 /// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
 /// selects the server-tool type (#481) when web search is enabled. Base from
-/// `{NAME}_API_BASE`/`{NAME}_BASE` env else `entry.base_url` else the client's
+/// `{NAME}_API_BASE` env else `entry.base_url` else the client's
 /// own [`entanglement_provider::ANTHROPIC_BASE`] default — mirroring
 /// [`openai_factory_for`]/[`gemini_factory_for`] (#551; before this a
 /// catalog `base_url` on an `anthropic`-wire entry was silently ignored).
@@ -209,18 +197,14 @@ pub(crate) fn anthropic_factory_for(
             env_nonempty(key_env).ok_or_else(|| format!("{key_env} is not set"))?
         }
     };
-    let name = entry.name.to_uppercase();
-    let base = env_nonempty(&format!("{name}_API_BASE"))
-        .or_else(|| env_nonempty(&format!("{name}_BASE")))
-        .or_else(|| entry.base_url.clone())
-        .unwrap_or_else(|| entanglement_provider::ANTHROPIC_BASE.to_string());
+    let base = resolve_base(entry, entanglement_provider::ANTHROPIC_BASE);
     Ok(entanglement_provider::anthropic_factory(
         base,
         key,
         auth,
         model.to_string(),
-        resolve_rpm(entry),
-        resolve_concurrency(entry),
+        entry.rpm,
+        entry.concurrency,
         catalog.model_concurrency_resolver(&entry.name),
         web_search,
         web_search_tool_version,

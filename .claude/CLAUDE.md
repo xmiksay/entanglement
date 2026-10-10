@@ -75,7 +75,7 @@ first). No key → `EchoLlm`. Full detail (clients, catalog, resilience):
 | `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.3`) | `ZAI_API_BASE` (Coding Plan endpoint) |
 | `zai_paas` | OpenAI-compat | `ZAI_API_KEY` | `ZAI_PAAS_MODEL` (`glm-5.3`) | `ZAI_PAAS_API_BASE` (pay-as-you-go endpoint) |
 | `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
-| `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` (or legacy `OLLAMA_BASE`) |
+| `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) | — |
 | `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
 | `openai_responses` (opt-in) | OpenAI Responses API — client-executed `tool_search`, ADR-0196 §3 | `OPENAI_API_KEY` | `gpt-5.4` | — |
@@ -89,24 +89,22 @@ instead of `key_env` authenticates it with a refreshed bearer token
 stays decoupled from the rotating token,
 [ADR-0189](../docs/adr/0189-oauth-for-llm-provider-endpoints.md)). `ModelEntry` carries
 capability flags, pricing, an optional per-model `concurrency` cap
-([ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)),
-generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
-[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)),
-and the two extended-thinking knobs `thinking_style` (which Anthropic request
-shape — the adaptive form is mandatory on current models, the fixed-budget form
-400s there) and `replay_thinking` (whether captured thinking blocks are sent
-back; [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)), plus
-`thinking_format` (how a model emits thinking on the OpenAI-compat wire —
-`inline_tags` for the parser-less `<think>…</think>` servers,
-[ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)), and
-`discovery` (`append`/`native_first`/`invoke`, client-side discovery,
-ADR-0204; precedence `config.yml` `discovery[<provider>]` > catalog model >
-catalog provider > `append`, no env var by design), plus the precision knobs: `effort_tiers` (the `low|medium|high|xhigh|max` tiers a model
-accepts — a request's effort is clamped to the nearest, ties downward; `[]`
-sends no effort field), `thinking_required` (never sent a thinking-off shape),
-`supports_temperature` enforced at the wire, and provider-level
-`thinking_control: zai` (z.ai's explicit `thinking` object; GLM-5.x defaults
-on at `high`). The Anthropic client binds its model facts
+([ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
+and generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
+[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
+The **wire-fact knobs** — `thinking_style`/`replay_thinking`
+([ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)), `thinking_format`
+([ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)), `effort_tiers`,
+`thinking_required`, provider `thinking_control: zai`
+([ADR-0203](../docs/adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)),
+`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`,
+per-model `tool_advertising`/`discovery` (ADR-0204), `rpm`/`concurrency` —
+describe what an endpoint accepts, so they are **catalog data only** (no env,
+no `config.yml` key; `discovery` resolves catalog model > catalog provider >
+`append`), documented in [provider](../docs/architecture/provider.md)
+§advanced catalog and listed per model by `skutter inspect config`
+([ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)). The
+Anthropic client binds its model facts
 (`AnthropicModelSpec`) at construction, so a `model:`-only pin under a
 different id uses the default model's facts. Two z.ai entries share one key:
 `zai` (Coding Plan, auto-detect winner, carries the bundled MCP servers) and
@@ -120,35 +118,36 @@ connection pool, retry/backoff, RPM + concurrency caps, adaptive AIMD pacing,
 bounded 429 park ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
 per-model caps layered on top (ADR-0140), and a file-backed **cross-process**
 gate ([ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md),
-opt-out `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1`), swept for orphaned
+opt-out `ENTANGLEMENT_DEBUG=no-shared-state`), swept for orphaned
 `.state`/`.lock` pairs on startup and on `/key` rotation (ADR-0156). Opt-in provider-side
 **web search** ([ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md)/[ADR-0131](../docs/adr/0131-web-search-post-mvp-follow-ups.md))
 runs outside the permission ladder — enabling *is* consent.
 
 Runtime env vars (the one-place index; each is documented inline at the
-feature that reads it):
+feature that reads it). [ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)
+pruned this list: a retired var still set at startup prints **one** warning
+naming its replacement (`config::retired`) for one release.
 
 | Env var | Purpose |
 | --- | --- |
 | `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`zai_paas`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
-| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base; `<NAME>` is the uppercased catalog entry name (`ZAI_PAAS_MODEL`), the key var is the entry's `key_env`; the base also accepts the legacy `<NAME>_BASE` spelling (`_API_BASE` wins) |
-| `<NAME>_RPM` / `<NAME>_CONCURRENCY` | per-provider endpoint RPM / in-flight cap (#414), overriding the catalog |
-| `ENTANGLEMENT_MAX_CONCURRENCY` | last-resort process-wide concurrency override (default 3) |
-| `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` | opt out of cross-process RPM/concurrency/cool-down sharing (#523) |
-| `ENTANGLEMENT_SHARED_STATE_DIR` | override the shared endpoint-state directory (default `${data_dir}/entanglement/endpoints`) |
-| `ENTANGLEMENT_LOG_BODIES=1` | opt-in symmetric LLM request-body logging (#165) |
+| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base; `<NAME>` is the uppercased catalog entry name (`ZAI_PAAS_MODEL`), the key var is the entry's `key_env` |
 | `ENTANGLEMENT_PROVIDERS_FILE` | override the provider-catalog user file path |
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
 | `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
-| `ENTANGLEMENT_GRANTS_FILE` / `ENTANGLEMENT_AGENT_MODELS_FILE` / `ENTANGLEMENT_AGENT_GENERATION_FILE` / `ENTANGLEMENT_AUX_MODELS_FILE` / `ENTANGLEMENT_MCP_TOKENS_FILE` / `ENTANGLEMENT_LLM_TOKENS_FILE` / `ENTANGLEMENT_EXTRA_ROOTS_FILE` | override the seven managed runtime files |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_TOOL_ADVERTISING` | `full` \| `tool_search` — per-session advertised-surface mode (env > `config.yml` `tool_advertising` > catalog `ModelEntry.tool_advertising` > default `tool_search`), ADR-0196 |
+| `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files together (`grants.yml`, `agent-models.yml`, `agent-generation.yml`, `aux-models.yml`, `extra-roots.yml`, `mcp-tokens.yml`, `llm-tokens.yml`; default `${config_dir}/entanglement`, `config::state_dir`) |
+| `ENTANGLEMENT_DEBUG` | comma list of developer diagnostics: `bodies` (LLM request-body logging, #165), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing, #523); an unknown token warns once |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide; a session's permission **mode** sets its own sandbox posture for its whole spawn sub-tree, so this only ever *tightens* the mode's choice, never loosens it (ADR-0207 §6) |
-| `ENTANGLEMENT_ECHO_FULL=1` | `EchoLlm` appends the full system text (debugging) |
-| `ENTANGLEMENT_TUI_NOTIFY=1` / `ENTANGLEMENT_TUI_NO_MOUSE` | TUI desktop-notification opt-in / mouse opt-out |
-| `ENTANGLEMENT_SESSION_RETENTION_DAYS` | session-log retention for the startup auto-prune (env > `config.yml` > `30`) |
 | `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set) |
+
+Moved to `config.yml`/catalog (ADR-0213): session retention
+(`session_retention_days`), tool advertising (`tool_advertising`), TUI
+notify/mouse (`tui: {notify, mouse}` — the `tui:` block, `config::tui`, that
+`theme`/`keybindings` (#735) and `statusline` (#762) extend), rate limits
+(`rpm`/`concurrency` in `providers.yml`). `ENTANGLEMENT_SHARED_STATE_DIR`
+survives only as an undocumented subprocess-test hook.
 
 The session's permission **mode** has no env var by design: `--mode` on
 `run`/`tui` > `config.yml` `mode:` > the engine's own `DEFAULT_MODE`
@@ -196,7 +195,7 @@ never here**; each bullet is the claim + where to read it:
   exactly what the resolver yields for the session's `ToolAdvertising` mode
   (`full`/`tool_search`, default `tool_search`, per-session, pinned by the
   tool-spec resolver at its first resolution — never off a broadcast —
-  kept across `SetModel`, re-pinnable live only via the TUI `/set` dialog — `ENTANGLEMENT_TOOL_ADVERTISING` >
+  kept across `SetModel`, re-pinnable live only via the TUI `/set` dialog —
   `config.yml` `tool_advertising` > catalog > default). Under `full`, every
   spec the config/resolver provides **at session start** (tools enabled
   later stay discoverable until described, then append once; a removed tool

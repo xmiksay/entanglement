@@ -34,7 +34,7 @@
 //! and the parent of any `ENTANGLEMENT_*_FILE` override), so a long-running
 //! head picks the change up within one debounce window — for the surfaces that
 //! re-read it, per ADR-0084's documented limit that a running session keeps
-//! what it resolved at start. Which is exactly the contract these two settings
+//! what it resolved at start. Which is exactly the contract this setting
 //! want: persisting sets the default for the **next** session, while the live
 //! re-pin changes the running one.
 //!
@@ -44,57 +44,19 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use entanglement_core::{Discovery, ToolAdvertising};
+use entanglement_core::ToolAdvertising;
 use serde_yaml::Value;
 
 use super::{atomic::atomic_write, lock, user_config_path, CONFIG_FILE_ENV, TEMPLATE_YML};
 
 const ADVERTISING_COMMENT: &str =
     "Tool advertising (ADR-0196): full | tool_search. Saved from the /set dialog.";
-const DISCOVERY_COMMENT: &str =
-    "Client-side discovery strategy per provider (ADR-0204). Saved from the /set dialog.";
-
-/// Persist the session's advertising mode and/or its provider's discovery
-/// strategy as the install-wide defaults for **new** sessions. Each key is its
-/// own locked read-modify-write; `None` skips that key entirely, so the dialog
-/// never rewrites a setting the user didn't touch.
-pub fn save_advertising_defaults(
-    mode: Option<ToolAdvertising>,
-    provider: &str,
-    discovery: Option<Discovery>,
-) -> Result<()> {
-    if let Some(mode) = mode {
-        save_tool_advertising(mode).context("saving tool_advertising")?;
-    }
-    if let Some(discovery) = discovery {
-        save_discovery(provider, discovery)
-            .with_context(|| format!("saving discovery for provider '{provider}'"))?;
-    }
-    Ok(())
-}
-
-/// Write `tool_advertising: <mode>`.
+/// Write `tool_advertising: <mode>` — the `/set` dialog's "save as default"
+/// for **new** sessions. (The per-provider `discovery:` map it once wrote too
+/// is retired, ADR-0213: the catalog decides.)
 pub fn save_tool_advertising(mode: ToolAdvertising) -> Result<PathBuf> {
     save_key("tool_advertising", ADVERTISING_COMMENT, |_| {
         Ok(Value::String(mode.label().to_string()))
-    })
-}
-
-/// Write `discovery: {<provider>: <strategy>}`, **merging** into whatever the
-/// file already holds: the map is per provider and a head only ever knows the
-/// one it is talking to, so replacing the whole map would silently drop a
-/// user's entries for their other providers.
-pub fn save_discovery(provider: &str, strategy: Discovery) -> Result<PathBuf> {
-    save_key("discovery", DISCOVERY_COMMENT, |current| {
-        let mut map = match current {
-            Some(Value::Mapping(m)) => m.clone(),
-            _ => serde_yaml::Mapping::new(),
-        };
-        map.insert(
-            Value::String(provider.to_string()),
-            Value::String(strategy.label().to_string()),
-        );
-        Ok(Value::Mapping(map))
     })
 }
 
@@ -142,8 +104,8 @@ pub fn save_key(
     })
 }
 
-/// `key` and its value as YAML lines — `tool_advertising: full` or a
-/// `discovery:` header with one indented line per provider.
+/// `key` and its value as YAML lines — `tool_advertising: full`, or a
+/// mapping header with one indented line per entry.
 fn render_block(key: &str, value: &Value) -> Result<String> {
     let mut map = serde_yaml::Mapping::new();
     map.insert(Value::String(key.to_string()), value.clone());
@@ -344,21 +306,16 @@ mod tests {
 
     #[test]
     fn a_commented_block_takes_its_example_children_with_it() {
-        let out = upsert_block(
-            TEMPLATE_YML,
-            "discovery",
-            "discovery:\n  zai: invoke\n",
-            "unused",
-        );
+        let out = upsert_block(TEMPLATE_YML, "tui", "tui:\n  notify: true\n", "unused");
 
-        assert!(out.contains("\ndiscovery:\n  zai: invoke\n"), "{out}");
-        assert!(!out.contains("#  zai: native_first"), "children replaced");
-        assert!(!out.contains("#  gemini: invoke"), "children replaced");
+        assert!(out.contains("\ntui:\n  notify: true\n"), "{out}");
+        assert!(!out.contains("#  notify: false"), "children replaced");
+        assert!(!out.contains("#  mouse: true"), "children replaced");
         // The prose above the placeholder is a one-space comment and stays.
-        assert!(out.contains("# Client-side discovery strategy, per provider"));
+        assert!(out.contains("# Terminal-UI preferences (ADR-0213)"));
         let mut want = serde_yaml::Mapping::new();
-        want.insert(Value::String("zai".into()), Value::String("invoke".into()));
-        verify(&out, "discovery", &Value::Mapping(want)).unwrap();
+        want.insert(Value::String("notify".into()), Value::Bool(true));
+        verify(&out, "tui", &Value::Mapping(want)).unwrap();
     }
 
     #[test]
@@ -373,10 +330,10 @@ mod tests {
 
     #[test]
     fn replacing_a_multi_line_block_drops_its_old_children() {
-        let text = "discovery:\n  zai: append\n  gemini: invoke\n\n# next\nverbose: true\n";
-        let out = upsert_block(text, "discovery", "discovery:\n  zai: invoke\n", "unused");
+        let text = "tui:\n  notify: false\n  mouse: false\n\n# next\nverbose: true\n";
+        let out = upsert_block(text, "tui", "tui:\n  notify: true\n", "unused");
         assert_eq!(
-            out, "discovery:\n  zai: invoke\n\n# next\nverbose: true\n",
+            out, "tui:\n  notify: true\n\n# next\nverbose: true\n",
             "the blank line and the next key's comment are untouched"
         );
     }
@@ -403,12 +360,12 @@ mod tests {
 
         // The append path keeps the file's terminator too, including for the
         // multi-line block.
-        let out = upsert_block(text, "discovery", "discovery:\n  zai: invoke\n", "why");
+        let out = upsert_block(text, "tui", "tui:\n  notify: true\n", "why");
         assert!(
-            out.ends_with("\r\n# why\r\ndiscovery:\r\n  zai: invoke\r\n"),
+            out.ends_with("\r\n# why\r\ntui:\r\n  notify: true\r\n"),
             "{out:?}"
         );
-        assert!(!out.contains("discovery:\n"), "no bare LF introduced");
+        assert!(!out.contains("tui:\n"), "no bare LF introduced");
     }
 
     #[test]
@@ -420,21 +377,21 @@ mod tests {
 
         // Appending after it completes the last line first, so the file stays
         // parseable rather than gluing two keys onto one line.
-        let out = upsert_block(text, "discovery", "discovery:\n  zai: invoke\n", "why");
+        let out = upsert_block(text, "tui", "tui:\n  notify: true\n", "why");
         assert_eq!(
             out,
-            "provider: zai\ntool_advertising: tool_search\n\n# why\ndiscovery:\n  zai: invoke\n"
+            "provider: zai\ntool_advertising: tool_search\n\n# why\ntui:\n  notify: true\n"
         );
     }
 
     #[test]
     fn a_commented_child_is_never_mistaken_for_a_key() {
-        // `#  zai: …` is an example under `#discovery:`, not a `zai:` key.
-        assert!(!commented_key("#  zai: native_first\n", "zai"));
-        assert!(commented_key("#discovery:\n", "discovery"));
-        assert!(commented_key("# discovery:\n", "discovery"));
-        assert!(commented_child("#  zai: native_first\n"));
-        assert!(!commented_child("# Client-side discovery strategy\n"));
+        // `#  notify: …` is an example under `#tui:`, not a `notify:` key.
+        assert!(!commented_key("#  notify: false\n", "notify"));
+        assert!(commented_key("#tui:\n", "tui"));
+        assert!(commented_key("# tui:\n", "tui"));
+        assert!(commented_child("#  notify: false\n"));
+        assert!(!commented_child("# Terminal-UI preferences\n"));
         // An indented `tool_advertising:` inside some other block is not the
         // top-level key.
         assert!(!live_key("  tool_advertising: full\n", "tool_advertising"));
@@ -448,16 +405,14 @@ mod tests {
         let path = dir.path().join("config.yml");
         std::env::set_var(CONFIG_FILE_ENV, &path);
 
-        // No file yet: the writer scaffolds from the template, then edits it.
-        save_advertising_defaults(Some(ToolAdvertising::Full), "zai", Some(Discovery::Invoke))
-            .unwrap();
-        // A second provider merges in rather than replacing the map, and the
-        // mode is rewritten in place.
-        save_advertising_defaults(
-            Some(ToolAdvertising::ToolSearch),
-            "gemini",
-            Some(Discovery::NativeFirst),
-        )
+        // No file yet: the writer scaffolds from the template, then edits it;
+        // a second write rewrites the key in place, and a mapping key lands
+        // beside it.
+        save_tool_advertising(ToolAdvertising::Full).unwrap();
+        save_tool_advertising(ToolAdvertising::ToolSearch).unwrap();
+        save_key("tui", "unused", |_| {
+            Ok(serde_yaml::from_str("{notify: true}")?)
+        })
         .unwrap();
 
         let resolved = Config::load(dir.path()).unwrap();
@@ -465,11 +420,7 @@ mod tests {
         std::env::remove_var(CONFIG_FILE_ENV);
 
         assert_eq!(resolved.tool_advertising, Some(ToolAdvertising::ToolSearch));
-        assert_eq!(resolved.discovery.get("zai"), Some(&Discovery::Invoke));
-        assert_eq!(
-            resolved.discovery.get("gemini"),
-            Some(&Discovery::NativeFirst)
-        );
+        assert!(resolved.tui.notify && resolved.tui.mouse);
         // Sibling settings and the scaffold's documentation are still there.
         assert!(text.contains("# entanglement — user configuration."));
         assert!(

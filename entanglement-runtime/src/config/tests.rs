@@ -56,31 +56,12 @@ fn embedded_default_agent_resolves_against_the_built_in_registry() {
 /// does, without touching the filesystem. `pub(super)` so the sibling
 /// `tests_retention` module reuses it.
 pub(super) fn merge_user(user: &str) -> Config {
-    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-    let over: Value = serde_yaml::from_str(user).unwrap();
-    let merged = merge_value(base, over);
-    let raw: RawConfig = serde_yaml::from_value(merged).unwrap();
-    let permissions = ceiling::build_ceiling_profile(raw.permissions.as_ref());
-    Config {
-        agent: raw.agent,
-        mode: raw.mode,
-        provider: raw.provider,
-        model: raw.model,
-        verbose: raw.verbose,
-        permissions,
-        modes: raw.modes,
-        hooks: raw.hooks,
-        mcp: raw.mcp,
-        endpoints: raw.endpoints,
-        web_search: raw.web_search,
-        max_turns: raw.max_turns,
-        idle_ttl: raw.idle_ttl_secs.map(std::time::Duration::from_secs),
-        auto_compact: raw.auto_compact,
-        editor: raw.editor.filter(|s| !s.trim().is_empty()),
-        session_retention_days: super::resolve_session_retention(raw.session_retention_days),
-        tool_advertising: raw.tool_advertising,
-        discovery: raw.discovery,
-    }
+    let user = RawLayer {
+        layer: ConfigLayer::User,
+        source: "user.yml".to_string(),
+        doc: serde_yaml::from_str(user).unwrap(),
+    };
+    parse(&[default_layer(), user]).unwrap().config
 }
 
 /// The ceiling's *real* resolution path (ADR-0207 stage 6c): through

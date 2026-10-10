@@ -193,7 +193,7 @@ impl SettingsDialog {
             disabled: t.adv.persist_disabled(),
             ..row(
                 RowId::AdvertisingPersist,
-                "save mode/discovery as default",
+                "save mode as default",
                 format!(
                     "{} for new sessions (config.yml)",
                     checkbox(t.adv.persist())

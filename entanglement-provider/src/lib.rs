@@ -29,6 +29,7 @@ impl ModelInfo {
 pub mod anthropic;
 pub mod catalog;
 pub mod client;
+pub mod debug;
 pub mod endpoint;
 pub mod gemini;
 pub mod llm;
@@ -56,6 +57,7 @@ pub use client::{
     prune_stale, HttpClient, RetryConfig, SharedStateLocation, StreamGuard, ThrottleStatus,
     UserBudget,
 };
+pub use debug::{DebugFlags, DEBUG_ENV};
 pub use endpoint::{
     call as call_endpoint, EndpointMethod, EndpointResponse, ENDPOINT_RESPONSE_CAP,
 };

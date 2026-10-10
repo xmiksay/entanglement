@@ -30,7 +30,7 @@
 //!   exits; a child session never inherits a parent's session grants (least
 //!   privilege, mirroring the permission clamp).
 //! - **Always** — persisted to a **managed** grants file in the config dir
-//!   (`${config_dir}/entanglement/grants.yml`, override `ENTANGLEMENT_GRANTS_FILE`),
+//!   (`<state dir>/grants.yml`, relocated by `ENTANGLEMENT_STATE_DIR`),
 //!   a sibling of the provider-key env file (#220) rather than a section of the
 //!   hand-edited `config.yml`: the runtime rewrites it freely, so it stays out of
 //!   the commented user config the way secrets do. Loaded at startup, re-written
@@ -123,7 +123,7 @@ pub struct FileGrantStore {
 
 impl FileGrantStore {
     /// Load the persisted `Always` grants from the managed file, resolving its
-    /// path from `ENTANGLEMENT_GRANTS_FILE` or `${config_dir}/entanglement/`. A
+    /// path in the managed-state dir (`ENTANGLEMENT_STATE_DIR`). A
     /// missing file is an empty store; a malformed one is logged and treated as
     /// empty (a corrupt grants file must never wedge startup, and grants only
     /// *widen* access — dropping them is the safe failure).
@@ -135,7 +135,7 @@ impl FileGrantStore {
     /// purely in-memory store whose `Always` grants live only as long as it
     /// does. The injection seam (#747): a test pins a temp file (or none)
     /// rather than reading the developer's real `grants.yml` or steering
-    /// `ENTANGLEMENT_GRANTS_FILE` through process env.
+    /// `ENTANGLEMENT_STATE_DIR` through process env.
     pub fn load_from(path: Option<PathBuf>) -> Self {
         let always = match &path {
             Some(p) => read_grants(p),

@@ -7,9 +7,7 @@ use std::path::PathBuf;
 
 use entanglement_runtime::config::aux_models::{AuxModelStore, Purpose};
 
-// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; tests that set it serialize.
-// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
-const ENV: &str = "ENTANGLEMENT_AUX_MODELS_FILE";
+// Every test pins its own temp file through `load_from` — no process env.
 
 fn tmp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("entanglement-aux-models-it-{name}.yml"))
@@ -17,40 +15,35 @@ fn tmp_path(name: &str) -> PathBuf {
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let _g = crate::env_lock();
     let path = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AuxModelStore::load();
+    let mut store = AuxModelStore::load_from(Some(path.clone()));
     assert!(store.get(Purpose::Summarize).is_none());
     store
         .set(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
 
     // A freshly loaded store (a fresh process) sees the persisted pin.
-    let reloaded = AuxModelStore::load();
+    let reloaded = AuxModelStore::load_from(Some(path.clone()));
     assert_eq!(
         reloaded.get(Purpose::Summarize),
         Some(("zai", "glm-4.5-flash"))
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn env_override_selects_the_file() {
-    let _g = crate::env_lock();
+fn an_explicit_file_is_read() {
     let path = tmp_path("env");
     std::fs::write(
         &path,
         "aux:\n  session_title:\n    provider: ollama\n    model: llama3.1\n",
     )
     .unwrap();
-    std::env::set_var(ENV, &path);
 
-    let store = AuxModelStore::load();
+    let store = AuxModelStore::load_from(Some(path.clone()));
     assert_eq!(
         store.get(Purpose::SessionTitle),
         Some(("ollama", "llama3.1"))
@@ -58,22 +51,18 @@ fn env_override_selects_the_file() {
     // The other purpose is unset.
     assert!(store.get(Purpose::Summarize).is_none());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn malformed_file_loads_empty() {
-    let _g = crate::env_lock();
     let path = tmp_path("malformed");
     std::fs::write(&path, "aux: [not-a-map\n").unwrap();
-    std::env::set_var(ENV, &path);
 
     // Fail-open: a corrupt file is ignored, not fatal.
-    let store = AuxModelStore::load();
+    let store = AuxModelStore::load_from(Some(path.clone()));
     assert!(store.get(Purpose::Summarize).is_none());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -81,16 +70,14 @@ fn malformed_file_loads_empty() {
 fn unrecognized_purpose_key_is_skipped_not_fatal() {
     // A file with a known + an unknown purpose: the known one loads, the
     // unknown one is skipped (debug-logged), and the file is not rejected.
-    let _g = crate::env_lock();
     let path = tmp_path("unknown-key");
     std::fs::write(
         &path,
         "aux:\n  summarize:\n    provider: zai\n    model: glm-4.5-flash\n  bogus_purpose:\n    provider: x\n    model: y\n",
     )
     .unwrap();
-    std::env::set_var(ENV, &path);
 
-    let store = AuxModelStore::load();
+    let store = AuxModelStore::load_from(Some(path.clone()));
     assert_eq!(
         store.get(Purpose::Summarize),
         Some(("zai", "glm-4.5-flash"))
@@ -100,54 +87,54 @@ fn unrecognized_purpose_key_is_skipped_not_fatal() {
     assert!(store.get(Purpose::SessionTitle).is_none());
     assert!(store.get(Purpose::Narrate).is_none());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn deny_unknown_fields_rejects_a_typo() {
     // A typo'd field name makes the file malformed → fail-open to empty.
-    let _g = crate::env_lock();
     let path = tmp_path("typo");
     std::fs::write(
         &path,
         "aux:\n  summarize:\n    provider: zai\n    modle: glm-4.5-flash\n",
     )
     .unwrap();
-    std::env::set_var(ENV, &path);
 
-    let store = AuxModelStore::load();
+    let store = AuxModelStore::load_from(Some(path.clone()));
     assert!(store.get(Purpose::Summarize).is_none());
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn concurrent_set_from_two_stores_both_survive() {
-    // Two "processes" (threads, each with its own `AuxModelStore::load()`)
+    // Two "processes" (threads, each with its own `AuxModelStore::load_from(Some(path.clone()))`)
     // race to pin *different* purposes against the same on-disk file (#329).
-    let _g = crate::env_lock();
     let path = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let a = std::thread::spawn(|| {
-        let mut store = AuxModelStore::load();
-        store
-            .set(Purpose::Summarize, "zai", "glm-4.5-flash")
-            .unwrap();
+    let a = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut store = AuxModelStore::load_from(Some(path.clone()));
+            store
+                .set(Purpose::Summarize, "zai", "glm-4.5-flash")
+                .unwrap();
+        }
     });
-    let b = std::thread::spawn(|| {
-        let mut store = AuxModelStore::load();
-        store
-            .set(Purpose::SessionTitle, "ollama", "llama3.1")
-            .unwrap();
+    let b = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut store = AuxModelStore::load_from(Some(path.clone()));
+            store
+                .set(Purpose::SessionTitle, "ollama", "llama3.1")
+                .unwrap();
+        }
     });
     a.join().unwrap();
     b.join().unwrap();
 
-    let reloaded = AuxModelStore::load();
+    let reloaded = AuxModelStore::load_from(Some(path.clone()));
     assert_eq!(
         reloaded.get(Purpose::Summarize),
         Some(("zai", "glm-4.5-flash")),
@@ -159,22 +146,19 @@ fn concurrent_set_from_two_stores_both_survive() {
         "pin recorded by the second store must survive a concurrent write"
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn reload_picks_up_another_process_pin() {
-    let _g = crate::env_lock();
     let path = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AuxModelStore::load();
+    let mut store = AuxModelStore::load_from(Some(path.clone()));
     assert!(store.get(Purpose::Summarize).is_none());
 
     // Another instance persists a pin directly.
-    let mut other = AuxModelStore::load();
+    let mut other = AuxModelStore::load_from(Some(path.clone()));
     other
         .set(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
@@ -189,18 +173,15 @@ fn reload_picks_up_another_process_pin() {
         Some(("zai", "glm-4.5-flash"))
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let _g = crate::env_lock();
     let path = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AuxModelStore::load();
+    let mut store = AuxModelStore::load_from(Some(path.clone()));
     store
         .set(Purpose::SessionTitle, "ollama", "llama3.1")
         .unwrap();
@@ -223,7 +204,6 @@ fn rewrite_is_stable_and_ordered() {
         "BTreeMap ordering: session_title < summarize"
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -231,12 +211,10 @@ fn rewrite_is_stable_and_ordered() {
 fn persisted_file_carries_the_header_comment() {
     // The managed file starts with the explanatory header so a user discovering
     // it knows it's managed + how to revert.
-    let _g = crate::env_lock();
     let path = tmp_path("header");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var(ENV, &path);
 
-    let mut store = AuxModelStore::load();
+    let mut store = AuxModelStore::load_from(Some(path.clone()));
     store
         .set(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
@@ -250,6 +228,5 @@ fn persisted_file_carries_the_header_comment() {
         "header must mention the /aux-model command"
     );
 
-    std::env::remove_var(ENV);
     let _ = std::fs::remove_file(&path);
 }

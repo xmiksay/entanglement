@@ -22,8 +22,6 @@ use tokio::net::{TcpListener, TcpStream};
 use entanglement_core::{AccessTokenSource, StoredAuth, StoredTokenSource, TokenSet, TokenStore};
 use entanglement_runtime::config::McpTokenStore;
 
-const TOKENS_FILE_ENV: &str = "ENTANGLEMENT_MCP_TOKENS_FILE";
-
 // ── hand-rolled mock token endpoint ─────────────────────────────────────────
 
 /// Read one HTTP request's headers + `Content-Length` body off `stream`, the
@@ -202,26 +200,17 @@ fn expired_seed(token_endpoint: &str) -> StoredAuth {
 /// token, then build two independent `McpTokenStore` handles pointed at the
 /// same path — the same shape two real `skutter` processes see, since
 /// neither the store nor `StoredTokenSource` caches anything in memory.
-///
-/// A plain sync function so the `env_lock()` guard is released on return,
-/// before the caller does anything `.await` — clippy (`await_holding_lock`)
-/// flags a lock held across an await point, and the harness convention
-/// (ADR-0180) is to scope these guards to their sync windows.
 fn seeded_stores(
     dir: &std::path::Path,
     token_endpoint: &str,
 ) -> (Box<dyn TokenStore>, Box<dyn TokenStore>) {
-    let _g = crate::env_lock();
     let path = dir.join("mcp-tokens.yml");
-    std::env::set_var(TOKENS_FILE_ENV, &path);
-
-    let seed_store = McpTokenStore::load();
+    let seed_store = McpTokenStore::at(Some(path.clone()));
     seed_store
         .save("srv", &expired_seed(token_endpoint))
         .expect("seed the token file");
-    let store_a: Box<dyn TokenStore> = Box::new(McpTokenStore::load());
-    let store_b: Box<dyn TokenStore> = Box::new(McpTokenStore::load());
-    std::env::remove_var(TOKENS_FILE_ENV);
+    let store_a: Box<dyn TokenStore> = Box::new(McpTokenStore::at(Some(path.clone())));
+    let store_b: Box<dyn TokenStore> = Box::new(McpTokenStore::at(Some(path)));
     (store_a, store_b)
 }
 

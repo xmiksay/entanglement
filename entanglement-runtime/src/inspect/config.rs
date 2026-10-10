@@ -11,13 +11,25 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::config::{Config, ConfigLayer, Resolved, SESSION_RETENTION_ENV};
+use crate::config::{Config, ConfigLayer, Resolved};
 
 /// Resolve the user config for `cwd` and print the merged values with their
-/// winning layer, the permission ceiling, and the discovered layer sources.
+/// winning layer, the permission ceiling, the discovered layer sources, and
+/// the catalog's advanced wire facts (ADR-0213).
 pub fn inspect_config(cwd: &Path) -> Result<()> {
     let resolved = Config::resolve(cwd).context("resolving user config")?;
-    print!("{}", render_config(&resolved));
+    let mut out = render_config(&resolved);
+    match entanglement_core::Catalog::load() {
+        Ok(catalog) => super::catalog_facts::render(&mut out, &catalog),
+        Err(e) => {
+            let _ = writeln!(
+                out,
+                "
+advanced catalog: (failed to load: {e:#})"
+            );
+        }
+    }
+    print!("{out}");
     Ok(())
 }
 
@@ -96,39 +108,35 @@ fn render_config(resolved: &Resolved) -> String {
         c.editor.as_deref().unwrap_or("($VISUAL → $EDITOR → vi)"),
         from("editor")
     );
-    // Precedence is env > config > embedded default (30), unlike every other
-    // field above (default < user < project file layers only) — so its
-    // winning source needs its own env check rather than `from()`'s file-layer
-    // lookup, or an active env override would be silently misreported.
-    let retention_source = retention_source(
-        std::env::var(SESSION_RETENTION_ENV).ok(),
-        from("session_retention_days"),
-    );
     let _ = writeln!(
         out,
         "  session_retention_days: {:<12} ← {}",
-        c.session_retention_days, retention_source
+        c.session_retention_days,
+        from("session_retention_days")
     );
-    // Tool advertising (ADR-0196): the global view resolves the config/env
-    // tiers only — the catalog tier is per model (`tool_advertising:` in
+    // Tool advertising (ADR-0196): the global view resolves the config tier
+    // only — the catalog tier is per model (`tool_advertising:` in
     // providers.yml), so name that fact rather than pretending this line is
-    // the whole answer. Provenance mirrors `session_retention_days`'s env
-    // check (an active, parseable env override is its own source tier).
-    let mode = crate::tool_advertising::configured_advertising(c).unwrap_or_default();
-    let mode_source = crate::tool_advertising::configured_advertising_source(c);
-    let mode_source_label = match mode_source {
-        crate::tool_advertising::AdvertisingSource::Env => {
-            format!("env ({})", crate::config::TOOL_ADVERTISING_ENV)
-        }
-        other => other.label().to_string(),
-    };
+    // the whole answer.
+    let mode = c.tool_advertising.unwrap_or_default();
     let _ = writeln!(
         out,
         "  tool_advertising: {:<12} ← {} (per-model catalog \
          `tool_advertising:` preference applies when unset; resolved per \
          session at start)",
         mode.label(),
-        mode_source_label
+        if c.tool_advertising.is_some() {
+            from("tool_advertising")
+        } else {
+            "default"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "  tui:      notify={} mouse={} ← {}",
+        c.tui.notify,
+        c.tui.mouse,
+        from("tui")
     );
 
     let _ = writeln!(
@@ -199,6 +207,16 @@ fn render_config(resolved: &Resolved) -> String {
             "  enabled (max_uses: {max}, allowed_domains: {domains})"
         );
     }
+    if !resolved.warnings.is_empty() {
+        let _ = writeln!(
+            out,
+            "
+warnings:"
+        );
+        for w in &resolved.warnings {
+            let _ = writeln!(out, "  {w}");
+        }
+    }
     out
 }
 
@@ -219,21 +237,11 @@ fn render_hook_list(out: &mut String, point: &str, hooks: &[crate::hooks::HookSp
     }
 }
 
-/// The winning source label for `session_retention_days`: the env override
-/// when it is set to a value the resolver accepts, else the file layer `from`.
-fn retention_source(env_value: Option<String>, from: &str) -> String {
-    env_value
-        .filter(|v| !v.is_empty() && v.parse::<u64>().is_ok())
-        .map(|_| format!("env ({SESSION_RETENTION_ENV})"))
-        .unwrap_or_else(|| from.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `ENTANGLEMENT_CONFIG_FILE`/`ENTANGLEMENT_SESSION_RETENTION_DAYS` are
-    /// process-global; shared with every other test in this crate that touches
+    /// `ENTANGLEMENT_CONFIG_FILE` is process-global; shared with every other test in this crate that touches
     /// them (`config::tests`, `config::tests_retention`, `extra_roots`) via
     /// `crate::config::ENV_LOCK` rather than a module-local lock.
     fn locked_resolve(root: &std::path::Path) -> Resolved {
@@ -284,17 +292,29 @@ mod tests {
     }
 
     #[test]
-    fn session_retention_env_override_reports_env_as_its_source() {
-        // Over an injected env value (#747) — never `set_var`, which unlocked
-        // `config::parse` callers elsewhere in the binary would observe.
-        assert_eq!(
-            retention_source(Some("7".into()), "default"),
-            "env (ENTANGLEMENT_SESSION_RETENTION_DAYS)"
+    fn tui_block_and_retired_key_warnings_are_rendered() {
+        let _g = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let user_file = dir.path().join("user-config.yml");
+        std::fs::write(
+            &user_file,
+            "tui: {notify: true}\ndiscovery: {zai: invoke}\n",
+        )
+        .unwrap();
+        std::env::set_var("ENTANGLEMENT_CONFIG_FILE", &user_file);
+        let resolved = Config::resolve(dir.path()).unwrap();
+        std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
+
+        let rendered = render_config(&resolved);
+        assert!(
+            rendered.contains("tui:      notify=true mouse=true ← user"),
+            "{rendered}"
         );
-        // An empty or unparseable env value is ignored by the resolver, so it
-        // must not be reported as the winning source either.
-        assert_eq!(retention_source(Some(String::new()), "user"), "user");
-        assert_eq!(retention_source(Some("soon".into()), "user"), "user");
-        assert_eq!(retention_source(None, "project"), "project");
+        assert!(
+            rendered.contains("warnings:") && rendered.contains("`discovery:`"),
+            "{rendered}"
+        );
     }
 }

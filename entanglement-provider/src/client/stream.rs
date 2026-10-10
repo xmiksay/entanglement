@@ -72,24 +72,20 @@ pub fn spawn_byte_stream(
     rx
 }
 
-/// Env flag that opts into logging full LLM request bodies. A request body
-/// carries the system prompt, the **entire conversation**, and the tool schemas
-/// — repo/user data (never API keys: those ride in headers). It is therefore off
-/// by default and only ever emitted when a human explicitly asks for it; `RUST_LOG`
-/// verbosity alone is deliberately not enough (#165).
-pub(super) const LOG_BODIES_ENV: &str = "ENTANGLEMENT_LOG_BODIES";
-
 /// Cap on how many bytes of a request body ever reach the log, even opted in —
 /// a full conversation can be megabytes; this keeps the sink bounded.
 pub(super) const MAX_LOGGED_BODY_BYTES: usize = 8 * 1024;
 
 /// Log an LLM request body at `debug!`, but **only** when
-/// `ENTANGLEMENT_LOG_BODIES=1`. Shared by every provider client so body logging
+/// `ENTANGLEMENT_DEBUG` carries `bodies` (ADR-0213). A request body carries the
+/// system prompt, the **entire conversation**, and the tool schemas — repo/user
+/// data (never API keys: those ride in headers) — so `RUST_LOG` verbosity alone
+/// is deliberately not enough (#165). Shared by every provider client so body logging
 /// is symmetric and greppable (`provider` tags the backend); the payload holds
 /// conversation + repo data, so it stays behind the explicit opt-in and is
 /// truncated to [`MAX_LOGGED_BODY_BYTES`] (#165).
 pub fn log_request_body(provider: &str, body: &serde_json::Value) {
-    if std::env::var(LOG_BODIES_ENV).as_deref() != Ok("1") {
+    if !crate::debug::DebugFlags::from_env().bodies {
         return;
     }
     let rendered = body.to_string();
@@ -99,7 +95,7 @@ pub fn log_request_body(provider: &str, body: &serde_json::Value) {
         bytes = rendered.len(),
         truncated,
         body = shown,
-        "LLM request body (conversation + repo data; gated by ENTANGLEMENT_LOG_BODIES=1)"
+        "LLM request body (conversation + repo data; gated by ENTANGLEMENT_DEBUG=bodies)"
     );
 }
 

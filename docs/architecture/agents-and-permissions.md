@@ -228,8 +228,9 @@ below realize one model:
   overrides a `Deny` (the ceiling still clamps first), is matched by exact equality
   (no pattern widening), is dropped on `SessionEnded` for `Session` scope, and is
   never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
-  **managed** file `${config_dir}/entanglement/grants.yml` (override
-  `ENTANGLEMENT_GRANTS_FILE`) — a top-level `grants:` list of `tool(arg)` rule keys,
+  **managed** file `<state dir>/grants.yml` (the managed-state dir,
+  `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
+  seven managed files, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
   loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
   `DefaultGrantStore::load_from` take an explicit path, or `None` for an
   in-memory-only store — the `ToolExecutor::builder` default every test
@@ -296,8 +297,7 @@ below realize one model:
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins). The approval is recorded in a **separate** store from the
   permission grants above — `runtime::extra_roots::ExtraRootStore`, managed file
-  `${config_dir}/entanglement/extra-roots.yml` (override
-  `ENTANGLEMENT_EXTRA_ROOTS_FILE`) — keyed by `(tool, resolved-absolute-path)`,
+  `<state dir>/extra-roots.yml` (`ENTANGLEMENT_STATE_DIR`, ADR-0213) — keyed by `(tool, resolved-absolute-path)`,
   **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use,
   additionally bound to the approving call's `request_id` so a concurrent
   in-flight call can't spend it, #449,
@@ -549,8 +549,8 @@ below realize one model:
   `ModelChanged`). A resolver failure warns and keeps the startup default; the
   `AgentChanged`/`SessionStarted` still succeed.
   **Persistence:** picking a model via the TUI `/model` picker while a profile is
-  active writes the pin to a **managed** `${config_dir}/entanglement/agent-models.yml`
-  (override `ENTANGLEMENT_AGENT_MODELS_FILE`, shape `agents: { general: { provider,
+  active writes the pin to a **managed** `<state dir>/agent-models.yml`
+  (`ENTANGLEMENT_STATE_DIR`, ADR-0213; shape `agents: { general: { provider,
   model } }`), overlaid onto matching profiles at startup — **persisted file >
   frontmatter**. Managed (not layered) like the grants + env files: the runtime
   rewrites it, so it stays out of the hand-edited `config.yml`. Missing/malformed
@@ -572,8 +572,7 @@ below realize one model:
   the partial-merge `GenerationParams::apply_overrides` a live
   `InMsg::SetGeneration` itself uses. **Persistence:** the runtime's
   `entanglement_runtime::config::agent_generation::AgentGenerationStore`
-  (`${config_dir}/entanglement/agent-generation.yml`, override
-  `ENTANGLEMENT_AGENT_GENERATION_FILE`, sibling of `agent-models.yml`) has the
+  (`<state dir>/agent-generation.yml`, sibling of `agent-models.yml`) has the
   same `load`/`get`/`set`/`reload` shape and the same fail-open/locked-write
   behavior — but **no** `apply(&mut AgentCatalog)`: there's nothing on
   `Agent` to overlay, so `AgentGenerationStore::resolver(store)` builds
@@ -596,9 +595,9 @@ below realize one model:
   is advertised up front, never what a call may do. The per-session
   `Full | ToolSearch` mode (see [engine](engine.md) §turn loop) resolves from
   the session's initial model via `ModelEntry.tool_advertising` — the same
-  `Option<Enum>` catalog pattern as `thinking_style` — with precedence **env
-  (`ENTANGLEMENT_TOOL_ADVERTISING`) > `config.yml` `tool_advertising` >
-  catalog > default `ToolSearch`**. The mode is held in a runtime-side
+  `Option<Enum>` catalog pattern as `thinking_style` — with precedence
+  **`config.yml` `tool_advertising` > catalog > default `ToolSearch`** (the
+  env tier is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)). The mode is held in a runtime-side
   session→mode map (the resolver and executor are engine-global and
   session-multiplexed; per-profile model pins mean concurrent sessions can
   differ), is **fixed at session start** — a live `SetModel` keeps it, logged
@@ -606,7 +605,8 @@ below realize one model:
   its own at spawn. `skutter inspect config` prints the resolved mode.
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
-  `${config_dir}/entanglement/` and `<root>/.entanglement/` (`notify`, debounced
+  `${config_dir}/entanglement/`, the managed-state dir (`ENTANGLEMENT_STATE_DIR`)
+  and `<root>/.entanglement/` (`notify`, debounced
   500ms so a burst of edits collapses into one reload) and, on change, re-runs the
   skill + agent loaders and swaps the result into **runtime-held mirrors**
   (`watch::LiveDefinitions { profiles, skills, agent_models, grants }`) — never

@@ -17,9 +17,6 @@ use entanglement_runtime::config::aux_models::AuxModelStore;
 use entanglement_runtime::session_title::spawn_session_title_generator;
 use tokio::sync::Notify;
 
-// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; this file's tests serialize.
-// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
-
 async fn recv_until(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     pred: impl Fn(&OutEvent) -> bool,
@@ -82,20 +79,12 @@ fn registry_with_primary(
     factory: LlmFactory,
     primary_concurrency: Option<usize>,
 ) -> AuxLlmRegistry {
-    let _g = crate::env_lock();
     let path = std::env::temp_dir().join(format!(
         "entanglement-session-title-it-{label}-{}.yml",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    // SAFETY: single-threaded within the ENV_LOCK critical section.
-    unsafe {
-        std::env::set_var("ENTANGLEMENT_AUX_MODELS_FILE", &path);
-    }
-    let store = Arc::new(Mutex::new(AuxModelStore::load()));
-    unsafe {
-        std::env::remove_var("ENTANGLEMENT_AUX_MODELS_FILE");
-    }
+    let store = Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))));
     let resolver: ModelResolver = Arc::new(|_u: Option<&UserId>, _p: &str, _m: &str| {
         Err::<ResolvedModel, String>("no catalog in this test".to_string())
     });

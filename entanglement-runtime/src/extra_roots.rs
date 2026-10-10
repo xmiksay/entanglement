@@ -57,8 +57,8 @@
 //!   lets the host tools consult it without threading a session id through every
 //!   `resolve_under_root` call site.)
 //! - **Always** — persisted to a **managed** file
-//!   (`${config_dir}/entanglement/extra-roots.yml`, override
-//!   `ENTANGLEMENT_EXTRA_ROOTS_FILE`), a sibling of the grants/env files rather
+//!   (`<state dir>/extra-roots.yml`, relocated by `ENTANGLEMENT_STATE_DIR`,
+//!   ADR-0213), a sibling of the grants/env files rather
 //!   than a section of the hand-edited `config.yml`. Loaded at startup,
 //!   re-written on each new `Always` grant. Best-effort: a write failure is
 //!   logged, never fatal.
@@ -69,9 +69,6 @@ use std::sync::Mutex;
 
 use entanglement_core::ApprovalScope;
 use serde::{Deserialize, Serialize};
-
-/// Env var overriding the managed escape-root file path (tests + non-XDG setups).
-const EXTRA_ROOTS_FILE_ENV: &str = "ENTANGLEMENT_EXTRA_ROOTS_FILE";
 
 /// A granted out-of-root access: the tool name plus the normalized absolute path
 /// it may reach. Per-tool by construction — a `read` grant never satisfies a
@@ -114,7 +111,13 @@ fn key(tool: &str, path: &Path) -> GrantKey {
 impl ExtraRootStore {
     /// Load persisted `Always` grants from the managed file (missing → empty).
     pub fn load() -> Self {
-        let path = resolve_path();
+        Self::load_from(resolve_path())
+    }
+
+    /// [`load`](Self::load) from an explicit file (`None` = nothing persists).
+    /// The injection seam (#747): tests pin a temp file instead of steering
+    /// process-global env.
+    pub fn load_from(path: Option<PathBuf>) -> Self {
         let always = path
             .as_deref()
             .and_then(read_file)
@@ -288,11 +291,8 @@ struct PersistedFile {
     always: Vec<GrantKey>,
 }
 
-fn resolve_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(EXTRA_ROOTS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|c| c.join("entanglement").join("extra-roots.yml"))
+pub(crate) fn resolve_path() -> Option<PathBuf> {
+    crate::config::state_dir::state_file(crate::config::state_dir::EXTRA_ROOTS_FILE)
 }
 
 fn read_file(path: &Path) -> Option<PersistedFile> {
@@ -530,14 +530,10 @@ mod tests {
 
     #[test]
     fn always_round_trips_through_the_file() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("extra-roots.yml");
-        std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
 
-        let s = ExtraRootStore::load();
+        let s = ExtraRootStore::load_from(Some(file.clone()));
         s.record(
             "read",
             Path::new("/opt/thing"),
@@ -545,11 +541,9 @@ mod tests {
             "req-1",
         );
 
-        let reloaded = ExtraRootStore::load();
+        let reloaded = ExtraRootStore::load_from(Some(file.clone()));
         assert!(reloaded.is_durably_allowed("read", Path::new("/opt/thing")));
         assert!(!reloaded.is_durably_allowed("read", Path::new("/opt/other")));
-
-        std::env::remove_var(EXTRA_ROOTS_FILE_ENV);
     }
 
     /// Two "processes" (threads, each with its own `ExtraRootStore::load()`)
@@ -560,25 +554,22 @@ mod tests {
     /// update. A freshly loaded third store must see both.
     #[test]
     fn concurrent_always_grants_from_two_stores_both_survive() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("extra-roots.yml");
-        std::env::set_var(EXTRA_ROOTS_FILE_ENV, &file);
 
-        let a = std::thread::spawn(|| {
-            let s = ExtraRootStore::load();
+        let (fa, fb) = (file.clone(), file.clone());
+        let a = std::thread::spawn(move || {
+            let s = ExtraRootStore::load_from(Some(fa));
             s.record("read", Path::new("/ext/a"), ApprovalScope::Always, "req-a");
         });
-        let b = std::thread::spawn(|| {
-            let s = ExtraRootStore::load();
+        let b = std::thread::spawn(move || {
+            let s = ExtraRootStore::load_from(Some(fb));
             s.record("write", Path::new("/ext/b"), ApprovalScope::Always, "req-b");
         });
         a.join().unwrap();
         b.join().unwrap();
 
-        let reloaded = ExtraRootStore::load();
+        let reloaded = ExtraRootStore::load_from(Some(file.clone()));
         assert!(
             reloaded.is_durably_allowed("read", Path::new("/ext/a")),
             "grant recorded by the first store must survive a concurrent write"
@@ -587,7 +578,5 @@ mod tests {
             reloaded.is_durably_allowed("write", Path::new("/ext/b")),
             "grant recorded by the second store must survive a concurrent write"
         );
-
-        std::env::remove_var(EXTRA_ROOTS_FILE_ENV);
     }
 }

@@ -169,6 +169,26 @@ Inside the TUI, `/key` opens the same dialog (provider list → masked input); a
 set there is picked up on the next `/model` switch with no restart. No key set →
 `skutter` falls back to the `EchoLlm` debug stub.
 
+## Configure
+
+Settings live in a layered `config.yml` (embedded < `${config_dir}/entanglement/`
+< `<repo>/.entanglement/`); `skutter inspect config` prints every resolved value
+with the layer that won it, plus the provider catalog's advanced wire facts.
+TUI preferences share one live-reloaded block:
+
+```yaml
+tui:
+  notify: true   # OSC 9 desktop notification on top of the attention bell
+  mouse: false   # give the terminal back its native text selection
+```
+
+The few remaining environment knobs beyond provider keys/models:
+`ENTANGLEMENT_STATE_DIR` relocates every file skutter manages for you (grants,
+model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens) in one go,
+and `ENTANGLEMENT_DEBUG=bodies,echo,no-shared-state` switches on developer
+diagnostics. Knobs retired in 0.7 still print one startup warning naming
+their replacement ([ADR-0213](docs/adr/0213-prune-env-vars-and-catalog-knobs.md)).
+
 ## Build & develop
 
 Requires stable Rust (pinned via `rust-toolchain.toml`). Build jobs capped at 4

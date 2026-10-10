@@ -202,29 +202,21 @@
 # files in the current project's session dir whose mtime is older than this.
 # Scope is this project's dir only — it never walks sibling project dirs, and a
 # read-only data dir is logged and skipped (never fatal). Leave commented for
-# the 30-day default, or set ENTANGLEMENT_SESSION_RETENTION_DAYS (which wins
-# over this).
+# the 30-day default.
 #session_retention_days: 30
 
 # Tool advertising (ADR-0196): "tool_search" (the default: a lean kernel
 # plus explore/describe discovery, the rest reachable after discovery) or
 # "full" (entire tool surface advertised). Leave commented to decide per
 # model via `tool_advertising:` in providers.yml (falling back to
-# tool_search); ENTANGLEMENT_TOOL_ADVERTISING wins over this. Resolved once
-# per session and fixed for its lifetime.
+# tool_search). Resolved once per session and fixed for its lifetime.
 #tool_advertising: tool_search
 
-# Client-side discovery strategy, per provider (ADR-0204). Applies only to a
-# tool_search-mode session on an OpenAI-compatible wire ("client_side"): how it
-# reaches a tool discovered through explore/describe.
-#   append       — the tool's schema joins the advertised array (one prompt-cache
-#                  miss per discovery); the default when nothing decides
-#   native_first — the array never changes; call the tool by its real name, and
-#                  fall back to the `invoke` envelope only if that fails
-#   invoke       — the array never changes; discovered tools go through `invoke`
-# Keyed by provider name; an entry here wins over that provider's (and its
-# models') catalog `discovery:` value in providers.yml. A key naming a provider
-# you never use is inert. There is no environment variable for this setting.
-#discovery:
-#  zai: native_first
-#  gemini: invoke
+# Terminal-UI preferences (ADR-0213). A running TUI picks an edit up live.
+#tui:
+#  # Also send an OSC 9 desktop notification (not just the bell) when a turn
+#  # needs your attention.
+#  notify: false
+#  # Capture the mouse (wheel scroll, clickable blocks). false gives the
+#  # terminal back its native text selection.
+#  mouse: true

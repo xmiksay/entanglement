@@ -30,7 +30,8 @@
 //!
 //! Falls back silently to pure in-process behavior (pre-#523) when the state
 //! directory can't be created or written, or when explicitly disabled via
-//! [`DISABLE_ENV`] — instances just don't coordinate, they don't break.
+//! `ENTANGLEMENT_DEBUG=no-shared-state` — instances just don't coordinate,
+//! they don't break.
 
 use std::ffi::OsString;
 use std::fs;
@@ -45,17 +46,9 @@ use super::shared_store::{self, Admission, SharedState};
 /// How often a held lease is refreshed while its request is still in flight.
 const LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Opt out of cross-process sharing entirely and revert to pure in-process
-/// gating (today's pre-#523 behavior) — e.g. an operator running unrelated
-/// workloads under the same provider key on purpose who wants neither to
-/// throttle the other. Giving each instance its own key/base URL already
-/// isolates them for free (the existing pool-key partitioning, #217/#523);
-/// this flag is for the same-key case.
-const DISABLE_ENV: &str = "ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE";
-
-/// Override the directory shared endpoint state files live under. Mainly for
-/// tests; an operator could also point it somewhere durable across a
-/// container's ephemeral `$XDG_DATA_HOME`.
+/// Override the directory shared endpoint state files live under — an
+/// undocumented hook for subprocess tests since ADR-0213 (an in-process
+/// caller injects a [`SharedStateLocation`] instead, #743).
 const STATE_DIR_ENV: &str = "ENTANGLEMENT_SHARED_STATE_DIR";
 
 /// Where an [`HttpClient`](super::HttpClient)'s cross-process endpoint state
@@ -73,8 +66,12 @@ pub enum SharedStateLocation {
 
 impl SharedStateLocation {
     /// The production resolution every env-driven constructor uses:
-    /// `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` > `ENTANGLEMENT_SHARED_STATE_DIR`
+    /// `ENTANGLEMENT_DEBUG=no-shared-state` > `ENTANGLEMENT_SHARED_STATE_DIR`
     /// > `${data_dir}/entanglement/endpoints` > disabled (no data dir).
+    ///
+    /// The opt-out exists for an operator running unrelated workloads under
+    /// the same provider key on purpose who wants neither to throttle the
+    /// other — a distinct key/base URL already isolates them (#217/#523).
     pub fn from_env() -> Self {
         Self::resolve(|name| std::env::var_os(name), default_state_dir)
     }
@@ -85,7 +82,7 @@ impl SharedStateLocation {
         env: impl Fn(&str) -> Option<OsString>,
         default_dir: impl FnOnce() -> Option<PathBuf>,
     ) -> Self {
-        if env(DISABLE_ENV).is_some_and(|v| v == "1") {
+        if crate::debug::DebugFlags::from_lookup(&env).no_shared_state {
             return Self::Disabled;
         }
         env(STATE_DIR_ENV)
@@ -316,6 +313,7 @@ impl Drop for SharedLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::DEBUG_ENV;
 
     fn tmp_state_path() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -352,14 +350,17 @@ mod tests {
 
     #[test]
     fn resolve_disable_wins_over_the_dir_override() {
-        let env = env_of(&[(DISABLE_ENV, "1"), (STATE_DIR_ENV, "/tmp/x")]);
+        let env = env_of(&[
+            (DEBUG_ENV, "bodies,no-shared-state"),
+            (STATE_DIR_ENV, "/tmp/x"),
+        ]);
         let loc = SharedStateLocation::resolve(env, || panic!("must not consult the data dir"));
         assert_eq!(loc, SharedStateLocation::Disabled);
     }
 
     #[test]
-    fn resolve_only_treats_exactly_one_as_disable() {
-        let loc = SharedStateLocation::resolve(env_of(&[(DISABLE_ENV, "0")]), data_dir);
+    fn resolve_ignores_debug_tokens_other_than_no_shared_state() {
+        let loc = SharedStateLocation::resolve(env_of(&[(DEBUG_ENV, "bodies,echo")]), data_dir);
         assert_eq!(loc, SharedStateLocation::Dir(data_dir().unwrap()));
     }
 
