@@ -47,7 +47,9 @@
 //!   posture for this rule language).
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
-//!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
+//!   (`user_prompt_submit`), plus six observe-only lifecycle points
+//!   (`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
+//!   `notification`, #734). See [`crate::hooks`]. Empty by default.
 //! - `tui` — terminal-UI preferences ([`tui::TuiConfig`], ADR-0213): one
 //!   block every TUI knob joins, live-reloaded by the TUI.
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /

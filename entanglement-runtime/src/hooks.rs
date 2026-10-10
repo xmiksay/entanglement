@@ -19,6 +19,9 @@
 //!   just-written file). It cannot rewrite the `ToolResult`.
 //! - **`user_prompt_submit`** — fires when an `InMsg::Prompt` reaches the engine.
 //!   Observational (telemetry/logging); it does not gate the prompt.
+//! - **`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
+//!   `notification`** (#734) — observe-only points derived from the `OutEvent`
+//!   stream by a runtime subscriber ([`lifecycle`]); none can block.
 //!
 //! Each hook is an `sh -c <command>` child. It receives a JSON payload on stdin
 //! (`{event, session, tool?, input?, output?, prompt?}`) and a few env vars
@@ -31,16 +34,16 @@
 //! routes (`agent`/`ask_user`/`propose_plan`) and the self-permissioning `rhai`
 //! tool bypass them, matching the issue's "around `tool_runner::dispatch`" scope.
 
-use std::process::Stdio;
-use std::time::Duration;
-
 use entanglement_core::SessionId;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
-use crate::host::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+mod invoke;
+pub(crate) mod lifecycle;
+
+use invoke::invoke;
+#[cfg(test)]
+use invoke::Outcome;
 
 /// Default per-hook wall-clock timeout. A hook that hangs must not stall the turn
 /// forever; on timeout the process group is killed (see [`invoke`]).
@@ -53,6 +56,12 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     UserPromptSubmit,
+    SessionStart,
+    SessionEnd,
+    Stop,
+    PreCompact,
+    SubagentStop,
+    Notification,
 }
 
 impl HookEvent {
@@ -61,6 +70,12 @@ impl HookEvent {
             HookEvent::PreToolUse => "pre_tool_use",
             HookEvent::PostToolUse => "post_tool_use",
             HookEvent::UserPromptSubmit => "user_prompt_submit",
+            HookEvent::SessionStart => "session_start",
+            HookEvent::SessionEnd => "session_end",
+            HookEvent::Stop => "stop",
+            HookEvent::PreCompact => "pre_compact",
+            HookEvent::SubagentStop => "subagent_stop",
+            HookEvent::Notification => "notification",
         }
     }
 }
@@ -77,6 +92,20 @@ pub struct Hooks {
     pub post_tool_use: Vec<HookSpec>,
     #[serde(default)]
     pub user_prompt_submit: Vec<HookSpec>,
+    /// The observe-only lifecycle points (#734), driven off the `OutEvent`
+    /// stream by [`lifecycle`] — see that module for when each fires.
+    #[serde(default)]
+    pub session_start: Vec<HookSpec>,
+    #[serde(default)]
+    pub session_end: Vec<HookSpec>,
+    #[serde(default)]
+    pub stop: Vec<HookSpec>,
+    #[serde(default)]
+    pub pre_compact: Vec<HookSpec>,
+    #[serde(default)]
+    pub subagent_stop: Vec<HookSpec>,
+    #[serde(default)]
+    pub notification: Vec<HookSpec>,
 }
 
 /// One configured hook command.
@@ -112,6 +141,50 @@ impl Hooks {
         self.pre_tool_use.is_empty()
             && self.post_tool_use.is_empty()
             && self.user_prompt_submit.is_empty()
+            && !self.has_lifecycle()
+    }
+
+    /// Whether any `OutEvent`-driven lifecycle point (#734) has a command —
+    /// the executor only subscribes the [`lifecycle`] watcher when one does.
+    pub fn has_lifecycle(&self) -> bool {
+        lifecycle::EVENTS.iter().any(|e| !self.specs(*e).is_empty())
+    }
+
+    /// The commands registered for `event`.
+    fn specs(&self, event: HookEvent) -> &[HookSpec] {
+        match event {
+            HookEvent::PreToolUse => &self.pre_tool_use,
+            HookEvent::PostToolUse => &self.post_tool_use,
+            HookEvent::UserPromptSubmit => &self.user_prompt_submit,
+            HookEvent::SessionStart => &self.session_start,
+            HookEvent::SessionEnd => &self.session_end,
+            HookEvent::Stop => &self.stop,
+            HookEvent::PreCompact => &self.pre_compact,
+            HookEvent::SubagentStop => &self.subagent_stop,
+            HookEvent::Notification => &self.notification,
+        }
+    }
+
+    /// Run every command registered for an observe-only lifecycle point, in
+    /// order. A failure (non-zero, timeout, spawn error) is logged, never
+    /// acted on: none of these points can veto anything (#734).
+    async fn run_observer(
+        &self,
+        event: HookEvent,
+        session: &SessionId,
+        tool: Option<&str>,
+        payload: &serde_json::Value,
+    ) {
+        for spec in self.specs(event) {
+            let outcome = invoke(spec, event, tool, session, payload.clone()).await;
+            if !outcome.succeeded() {
+                tracing::warn!(
+                    event = event.as_str(),
+                    detail = outcome.reason(),
+                    "lifecycle hook failed"
+                );
+            }
+        }
     }
 
     /// Run the `pre_tool_use` hooks for `tool` in order. Returns `Some(reason)` as
@@ -191,159 +264,6 @@ impl Hooks {
             }
         }
     }
-}
-
-/// The result of running one hook command.
-struct Outcome {
-    /// Exit code, or `None` if the process was killed / signalled.
-    code: Option<i32>,
-    /// Whether the timeout fired and the group was killed.
-    timed_out: bool,
-    /// Combined stdout+stderr, trimmed — surfaced as the block reason.
-    text: String,
-    /// A genuine I/O error reading the hook's stdout/stderr (#586) — a pipe
-    /// read failing outright, distinct from the clean EOF a process exit
-    /// produces. Unlike a stdin *write* failure (see [`invoke`], which only
-    /// logs one — a hook that never reads its input, e.g. `exit 0`, races the
-    /// pipe close against the write and legitimately sees a broken pipe on
-    /// every run), a read failure means the captured output itself is
-    /// genuinely incomplete, so it always counts as a non-success.
-    io_error: Option<String>,
-}
-
-impl Outcome {
-    /// A hook "succeeds" only on a clean exit 0 with no I/O error; a non-zero
-    /// code, a signal, a timeout, or a genuine stdout/stderr read failure all
-    /// count as a failure/veto (#586: a run with unreadable output must not
-    /// silently pass).
-    fn succeeded(&self) -> bool {
-        self.io_error.is_none() && !self.timed_out && self.code == Some(0)
-    }
-
-    /// A human-readable reason for a non-success, preferring an explicit I/O
-    /// error (the hook's own output otherwise) over a bare status.
-    fn reason(&self) -> String {
-        if let Some(e) = &self.io_error {
-            return match self.text.is_empty() {
-                true => e.clone(),
-                false => format!("{e}; hook output: {}", self.text),
-            };
-        }
-        if !self.text.is_empty() {
-            return self.text.clone();
-        }
-        if self.timed_out {
-            return "hook timed out".to_string();
-        }
-        match self.code {
-            Some(c) => format!("hook exited with code {c}"),
-            None => "hook killed by signal".to_string(),
-        }
-    }
-}
-
-/// A spawn failure (e.g. no `/bin/sh`) — reported as a non-success so a
-/// `pre_tool_use` hook that can't even launch does not silently let the tool
-/// through.
-fn spawn_failure(err: impl std::fmt::Display) -> Outcome {
-    Outcome {
-        code: None,
-        timed_out: false,
-        text: format!("could not run hook: {err}"),
-        io_error: None,
-    }
-}
-
-/// Spawn one hook command, feed it `payload` on stdin, and collect its outcome.
-/// Runs in its own process group under the spec's timeout (killing the whole
-/// tree on expiry, like the exec tools, #168).
-async fn invoke(
-    spec: &HookSpec,
-    event: HookEvent,
-    tool: Option<&str>,
-    session: &SessionId,
-    payload: serde_json::Value,
-) -> Outcome {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(&spec.command)
-        .env("ENTANGLEMENT_HOOK_EVENT", event.as_str())
-        .env("ENTANGLEMENT_SESSION_ID", &session.0)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(t) = tool {
-        cmd.env("ENTANGLEMENT_TOOL_NAME", t);
-    }
-    own_process_group(&mut cmd);
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return spawn_failure(e),
-    };
-    // Write the payload on a joined (not detached) task so a large input (a
-    // whole-file `write`) can't deadlock against an unread stdout pipe — the
-    // drain in `wait_or_kill_group` runs concurrently — while still letting us
-    // observe a failed write (#586) instead of silently discarding it.
-    // Dropping the handle closes stdin.
-    let stdin_task = child.stdin.take().map(|mut stdin| {
-        let body = payload.to_string();
-        tokio::spawn(async move { stdin.write_all(body.as_bytes()).await })
-    });
-
-    let exec_outcome = wait_or_kill_group(child, Duration::from_secs(spec.timeout_secs)).await;
-    let stdin_error = match stdin_task {
-        Some(t) => t.await.ok().and_then(|r| r.err()),
-        None => None,
-    };
-    if let Some(e) = stdin_error {
-        // Not folded into `io_error`/`succeeded()`: a hook that never reads
-        // its stdin (`exit 0`, `true`) races the pipe close against this
-        // write and legitimately sees a broken pipe on *every* run — vetoing
-        // on that would block tool calls for the common no-input hook
-        // pattern. Logged so a hook that *does* depend on stdin and got a
-        // truncated payload is still visible in the trace (#586).
-        tracing::warn!(
-            command = %spec.command,
-            error = %e,
-            "hook stdin write failed (payload may be truncated if the hook reads it)"
-        );
-    }
-
-    match exec_outcome {
-        Ok(ExecOutcome::Completed { output, io_error }) => Outcome {
-            code: output.status.code(),
-            timed_out: false,
-            text: combine(&output.stdout, &output.stderr),
-            io_error,
-        },
-        Ok(ExecOutcome::TimedOut {
-            stdout,
-            stderr,
-            io_error,
-        }) => Outcome {
-            code: None,
-            timed_out: true,
-            text: combine(&stdout, &stderr),
-            io_error,
-        },
-        Err(e) => spawn_failure(e),
-    }
-}
-
-/// Merge a hook's stdout and stderr into one trimmed diagnostic string.
-fn combine(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut s = String::from_utf8_lossy(stdout).trim().to_string();
-    let err = String::from_utf8_lossy(stderr);
-    let err = err.trim();
-    if !err.is_empty() {
-        if !s.is_empty() {
-            s.push('\n');
-        }
-        s.push_str(err);
-    }
-    s
 }
 
 /// Parse a tool's `input` (already-JSON text) into a value for the payload,

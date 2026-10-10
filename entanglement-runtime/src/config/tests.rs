@@ -405,6 +405,27 @@ fn hooks_parse_from_user_file() {
 }
 
 #[test]
+fn lifecycle_hook_points_parse_from_user_file() {
+    // #734: the six observe-only points share the tool hooks' entry shape.
+    let c = merge_user(
+        "hooks:\n  \
+         session_start: [{command: a}]\n  \
+         session_end: [{command: b}]\n  \
+         stop: [{command: c, timeout_secs: 5}]\n  \
+         pre_compact: [{command: d}]\n  \
+         subagent_stop: [{command: e}]\n  \
+         notification: [{command: notify-send}]\n",
+    );
+    assert_eq!(c.hooks.session_start[0].command, "a");
+    assert_eq!(c.hooks.session_end[0].command, "b");
+    assert_eq!(c.hooks.stop[0].timeout_secs, 5);
+    assert_eq!(c.hooks.pre_compact[0].command, "d");
+    assert_eq!(c.hooks.subagent_stop[0].command, "e");
+    assert_eq!(c.hooks.notification[0].command, "notify-send");
+    assert!(c.hooks.has_lifecycle());
+}
+
+#[test]
 fn unknown_hook_event_is_a_loud_error() {
     // `deny_unknown_fields` on `Hooks` rejects a typo'd lifecycle name.
     let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
