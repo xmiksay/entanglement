@@ -4,11 +4,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::{ContentPart, LlmEvent, Usage};
+use crate::{ContentPart, LlmEvent, ToolCall, Usage};
 use serde_json::Value;
 
 use super::think::ThinkSplitter;
-use super::PendingTool;
 
 /// The outcome of parsing one already-delimited SSE line.
 pub(super) enum SseEvent {
@@ -283,5 +282,30 @@ fn emit_web_search(value: Option<&Value>, out: &mut Vec<LlmEvent>) {
             lines.join("\n"),
             Value::Array(entries.clone()),
         )));
+    }
+}
+
+/// One tool call being assembled from per-index deltas across the stream.
+
+#[derive(Default)]
+pub(super) struct PendingTool {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) arguments: String,
+}
+
+impl PendingTool {
+    pub(super) fn into_tool_call(self) -> ToolCall {
+        let input = if self.arguments.is_empty() {
+            "{}".to_string()
+        } else {
+            self.arguments
+        };
+        ToolCall {
+            id: self.id,
+            name: self.name,
+            input,
+            provider_meta: None,
+        }
     }
 }
