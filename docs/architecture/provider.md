@@ -15,9 +15,7 @@ is `content: Vec<ContentPart>`, #197/[ADR-0064](../adr/0064-message-content-bloc
 provider is a **leaf crate** (no `entanglement-*` deps) that owns this LLM ABI;
 `entanglement-core` *depends on* provider, consumes the `Llm` trait from its turn
 loop, and re-exports these types for its heads. The provider *may* depend on
-transport crates (`reqwest` 0.13 with `rustls` — aws-lc-rs and the OS trust
-store via `rustls-platform-verifier`, reqwest's own default TLS stack, so an
-embedder on stock 0.13 unifies with it; `form` for the OAuth POSTs) and is usable **standalone** for raw LLM queries
+transport crates (`reqwest` 0.13; `form` for the OAuth POSTs) and is usable **standalone** for raw LLM queries
 with no engine.
 
 ```rust
@@ -43,15 +41,28 @@ trait Llm: Send {
   `response::collect` / `LlmResponse::absorb` (text and reasoning chunks
   concatenated, assembled tool calls + content blocks in arrival order, the
   `Finish` stop reason + usage; `ToolCallDelta` fragments are dropped since the
-  assembled `ToolCall` supersedes them). A mid-stream `Err` fails the whole call
-  — never a partial reply, matching the turn loop's refusal to execute tool
-  calls from a stream that never reached `Finish`. No `Finish` leaves
-  `stop_reason: None` (the ADR-0118 "ambiguous" signal). `stream_from_response`
+  assembled `ToolCall` supersedes them). A stream that errored mid-way fails the whole
+  call — never a partial reply, matching the turn loop, which drops a
+  mid-stream-errored round's tool calls. A stream that ends cleanly without a
+  `Finish` still returns (the turn loop likewise still executes its tool calls)
+  with `stop_reason: None` — embedders should treat that as an ambiguous stop
+  ([ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)), not a
+  confident end of turn. `stream_from_response`
   is its inverse for scripted backends (a `None` stop reason is derived from
   the tool calls). The turn loop keeps its own fold: it interleaves display
   events, mid-stream cancellation and the #181 retry-before-output with the
   accumulation.
 
+- **TLS** (#728): every outbound client — the LLM `HttpClient`, the MCP HTTP
+  transport riding it, the OAuth client — starts from `client::client_builder()`,
+  a reqwest builder preloaded with one rustls `ClientConfig`: the **ring**
+  crypto provider and the **bundled webpki roots** (no OS trust-store
+  dependency, so minimal/musl containers need no `ca-certificates`; no aws-lc C
+  build in ARM/musl cross-builds). reqwest is built with `rustls-no-provider`,
+  so a bare `reqwest::Client::new()` would panic for want of a process-wide
+  crypto provider — never build one directly. An embedder on stock reqwest
+  0.13 (aws-lc-rs) compiles a second TLS provider alongside ours; that's
+  expected.
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
 - **`LlmEvent::Reasoning`** surfaces extended-thinking output (Anthropic
