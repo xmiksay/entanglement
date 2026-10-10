@@ -140,8 +140,10 @@ fn render_config(resolved: &Resolved) -> String {
     );
     let _ = writeln!(
         out,
-        "  tui.statusline: template={:?} right={:?}",
-        c.tui.statusline.template, c.tui.statusline.right
+        "  tui.statusline: template={:?} right={:?} ← {}",
+        c.tui.statusline.template,
+        c.tui.statusline.right,
+        from("tui")
     );
 
     let _ = writeln!(
@@ -324,7 +326,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}""#),
+            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}" ← user"#),
             "{rendered}"
         );
         assert!(
