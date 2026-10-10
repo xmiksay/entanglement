@@ -274,12 +274,12 @@ pub(super) async fn run(
             // `Holly::emit_for_session`, so `(session, seq)` stays unique.
             Ok(OutEvent::ToolExec {
                 session,
+                seq,
                 request_id,
                 tool,
                 input,
                 agent,
                 envelope,
-                ..
             }) => {
                 // Idempotence for core's re-offer timer (#274, ADR-0071):
                 // skip a request id whose call is still in flight. Core
@@ -346,6 +346,7 @@ pub(super) async fn run(
                     route,
                     envelope,
                     session,
+                    seq,
                     request_id,
                     tool,
                     input,

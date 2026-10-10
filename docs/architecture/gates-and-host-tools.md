@@ -544,10 +544,13 @@ when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
   `SessionStore::backups_dir` — `<store>/backups/<root_id>/` — a
   content-addressed `blobs/<sha256>` (write-then-rename, deduped per root) and
   an append-only `manifest.jsonl`: one `change` line per mutation
-  `{id, ts, session, request_id, path (absolute, resolved), display, before:
-  absent | stored{hash,size} | skipped{reason}, after: sha256 | null}` plus
-  `reverted{ids}` markers. A spawned child's changes land in its root's
-  directory (`FileBackups::track_roots` folds `SessionStarted` lineage).
+  `{id, ts, session, request_id, exec_seq?, path (absolute, resolved),
+  display, before: absent | stored{hash,size} | skipped{reason}, after:
+  sha256 | null, mode?}` plus `reverted{ids, attempted}` markers; the id
+  counter and blob set are cached per root, so a write never re-reads the
+  manifest. A spawned child's changes land in its root's directory
+  (`FileBackups::track_roots` folds `SessionStarted` lineage, and `Status`
+  for the busy check below).
   Backups ride the log's lifecycle: `SessionStore::delete` removes them with
   the `.jsonl`, and `prune` removes any backup directory whose log is gone —
   session retention is the only retention.
@@ -555,22 +558,29 @@ when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
   budget, is recorded as `skipped` (the change is still listed, so a revert
   names it as "can't restore … no backup (…)"). A backup failure is logged,
   never a tool error — the edit already happened.
-- **Turns**: a change belongs to the turn of the session's last user
-  `Prompt` logged before its call's `ToolExec` (a `rhai` binding's
-  `<id>:rhai:<tool>` resolves to the outer call); a call missing from the log
-  falls back to timestamps.
+- **Turns**: the executor runs each permission-graded/`rhai` call task under
+  `file_backup::with_exec_seq(ToolExec.seq)`, so a change records the exact
+  `(session, seq)` of its call and belongs to the turn of the session's last
+  user `Prompt` logged before that record. Request ids are never the key
+  (Gemini's `name#ordinal` repeats every turn). Without a seq (a detached
+  `rhai` script): the latest `(session, request_id)` call logged no later
+  than the change (`<id>:rhai:<tool>` → outer call), then timestamps.
 - **Revert** (`FileBackups::revert`, behind core's `EngineConfig::file_reverter`
-  seam — see [protocol](protocol.md) `RevertFiles`/`FilesReverted`): every
-  unreverted change of the session and its spawn sub-tree after the target
-  turn is grouped per file; the file goes back to the *first* change's
-  `before` (rewritten, or deleted when the agent created it; recreated when
-  the agent deleted it) **only if** it still hashes to the *last* change's
-  `after`. Anything else — a user edit, a `bash` command's change — is
-  reported as skipped and left untouched; its changes stay pending, so the
-  revert goes through once the file is back. Restored changes get a
-  `reverted` marker, so a second undo moves on to the previous turn.
-  Out-of-root writes (an approved escape-root grant) are covered the same way
-  — the manifest holds the resolved absolute path.
+  seam — see [protocol](protocol.md) `RevertFiles`/`FilesReverted`): refused
+  with an `Error` while any session of the sub-tree is mid-turn or running
+  detached work (`file_backup::detached_work_probe` over the job and script
+  registries, wired in `boot.rs`). Otherwise every unreverted change of the
+  session and its spawn sub-tree after the target turn is grouped per file;
+  the file goes back to the *first* change's `before` (rewritten through a
+  synced temp file + rename keeping its mode, or deleted when the agent
+  created it; recreated when the agent deleted it) **only if** it still
+  hashes to the *last* change's `after` — or counts as restored if it is
+  already at `before`. A user edit or a `bash` change is reported as skipped,
+  left untouched, and marked `attempted` (still revertable, but undo steps
+  past it); a change with no backup is reported once and marked `reverted`.
+  A failed marker append is only logged. Out-of-root writes (an approved
+  escape-root grant) are covered the same way — the manifest holds the
+  resolved absolute path.
 - **Not covered**: anything `bash`, `call` or a `rhai` `exec`/`bash` binding
   does to the filesystem, plan files written by `propose_plan`, and
   `!bash` passthrough commands. Every report and the model's note say so.

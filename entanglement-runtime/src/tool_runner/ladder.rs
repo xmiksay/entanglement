@@ -199,6 +199,9 @@ pub(super) async fn route_tool_exec(
     // ignored by routes that never dispatch a call.
     envelope: Option<ToolEnvelope>,
     session: SessionId,
+    // The `ToolExec`'s own seq: the file-tool routes carry it into their
+    // call task for per-write backups (ADR-0212).
+    seq: u64,
     request_id: String,
     tool: String,
     input: String,
@@ -224,7 +227,17 @@ pub(super) async fn route_tool_exec(
         }
         #[cfg(feature = "rhai")]
         Intercept::Rhai => {
-            graded::rhai(ctx, spawn_guard, overlays, tool, session, request_id, input).await;
+            graded::rhai(
+                ctx,
+                spawn_guard,
+                overlays,
+                tool,
+                session,
+                seq,
+                request_id,
+                input,
+            )
+            .await;
         }
         Intercept::Permission => {
             graded::permission(
@@ -234,6 +247,7 @@ pub(super) async fn route_tool_exec(
                 tool,
                 envelope,
                 session,
+                seq,
                 request_id,
                 input,
             )

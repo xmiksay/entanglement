@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use entanglement_core::{content_text, FileRevertReport, InMsg, OutEvent, RevertSkip, SessionId};
 
-use super::manifest::{self, Change, Line, Prior, BLOBS, MANIFEST};
-use super::{lock, sha256_hex, FileBackups};
+use super::manifest::{self, Change, Line, MANIFEST};
+use super::restore::restore;
+use super::{lock, FileBackups};
 use crate::session_store::{first_prompt_snippet, LogPayload, LogRecord};
 
 /// One user turn that still has unreverted tracked edits — a `/rewind`
@@ -24,32 +25,59 @@ pub struct TurnEdits {
     pub prompt: String,
 }
 
-/// What a revert works from: the backup dir, the session's prompt texts in
-/// order, and its sub-tree's unreverted changes, each with its turn.
+/// What a revert works from: the backup dir, the session's sub-tree and
+/// prompt texts, and the sub-tree's unreverted changes, each with its turn.
 struct Loaded {
     dir: PathBuf,
+    subtree: HashSet<SessionId>,
     prompts: Vec<String>,
     live: Vec<(Change, u32)>,
+    attempted: HashSet<u64>,
 }
 
-/// One of the session's prompts in the log: record index, timestamp, text.
+/// One of the target session's prompts in the log: record index, timestamp.
 struct Prompt {
     pos: usize,
     ts: u64,
-    text: String,
+}
+
+/// Where each `ToolExec` sits in the log, by the two keys a change can carry.
+#[derive(Default)]
+struct ExecIndex<'a> {
+    by_seq: HashMap<(&'a SessionId, u64), usize>,
+    /// Every `(session, request_id)` occurrence as `(pos, ts)`, in log order —
+    /// ids repeat across turns (Gemini's `name#ordinal`), so a lookup takes
+    /// the latest one logged no later than the change.
+    by_call: HashMap<(&'a SessionId, &'a str), Vec<(usize, u64)>>,
+}
+
+impl ExecIndex<'_> {
+    /// The log position of the call that made `change`, if found.
+    fn position(&self, change: &Change) -> Option<usize> {
+        if let Some(&pos) = change
+            .exec_seq
+            .and_then(|seq| self.by_seq.get(&(&change.session, seq)))
+        {
+            return Some(pos);
+        }
+        // A `rhai` binding runs under `<outer request id>:rhai:<tool>`; the
+        // outer `rhai` call is the one in the log.
+        let call = change.request_id.split(":rhai:").next().unwrap_or_default();
+        self.by_call
+            .get(&(&change.session, call))?
+            .iter()
+            .rev()
+            .find(|(_, ts)| *ts <= change.ts)
+            .map(|(pos, _)| *pos)
+    }
 }
 
 /// The 1-based turn a change belongs to: how many of the session's prompts
-/// precede it (0 = before the first prompt). Placed by the log position of
-/// the `ToolExec` that made it — the tap logs a prompt ahead of everything it
-/// causes, so position is exact. A change whose call is not in the log (a
-/// lagging or gapped tap) falls back to comparing record timestamps.
-fn turn_of(change: &Change, prompts: &[Prompt], exec_pos: &HashMap<&str, usize>) -> u32 {
-    // A `rhai` binding runs under `<outer request id>:rhai:<tool>`; the outer
-    // `rhai` call is the one in the log.
-    let call = change.request_id.split(":rhai:").next().unwrap_or_default();
-    let count = match exec_pos.get(call) {
-        Some(&pos) => prompts.iter().filter(|p| p.pos < pos).count(),
+/// precede the call that made it (0 = before the first prompt). With no call
+/// found in the log (a lagging or gapped tap), record timestamps decide.
+fn turn_of(change: &Change, prompts: &[Prompt], index: &ExecIndex<'_>) -> u32 {
+    let count = match index.position(change) {
+        Some(pos) => prompts.iter().filter(|p| p.pos < pos).count(),
         None => prompts.iter().filter(|p| p.ts <= change.ts).count(),
     };
     count as u32
@@ -65,19 +93,29 @@ impl FileBackups {
             .with_context(|| format!("reading the session log of `{}`", root.0))?;
         let subtree = subtree(&records, session);
         let mut prompts = Vec::new();
-        let mut exec_pos: HashMap<&str, usize> = HashMap::new();
+        let mut texts = Vec::new();
+        let mut index = ExecIndex::default();
         for (pos, r) in records.iter().enumerate() {
             match &r.payload {
                 LogPayload::In(InMsg::Prompt {
                     session: s,
                     content,
-                }) if s == session => prompts.push(Prompt {
-                    pos,
-                    ts: r.ts,
-                    text: content_text(content),
-                }),
-                LogPayload::Out(OutEvent::ToolExec { request_id, .. }) => {
-                    exec_pos.entry(request_id.as_str()).or_insert(pos);
+                }) if s == session => {
+                    prompts.push(Prompt { pos, ts: r.ts });
+                    texts.push(content_text(content));
+                }
+                LogPayload::Out(OutEvent::ToolExec {
+                    session: s,
+                    seq,
+                    request_id,
+                    ..
+                }) => {
+                    index.by_seq.entry((s, *seq)).or_insert(pos);
+                    index
+                        .by_call
+                        .entry((s, request_id.as_str()))
+                        .or_default()
+                        .push((pos, r.ts));
                 }
                 _ => {}
             }
@@ -89,14 +127,16 @@ impl FileBackups {
             .into_iter()
             .filter(|c| !manifest.reverted.contains(&c.id) && subtree.contains(&c.session))
             .map(|c| {
-                let turn = turn_of(&c, &prompts, &exec_pos);
+                let turn = turn_of(&c, &prompts, &index);
                 (c, turn)
             })
             .collect();
         Ok(Loaded {
             dir,
-            prompts: prompts.into_iter().map(|p| p.text).collect(),
+            subtree,
+            prompts: texts,
             live,
+            attempted: manifest.attempted,
         })
     }
 
@@ -126,20 +166,23 @@ impl FileBackups {
 
     /// Revert `session`'s (and its sub-tree's) tracked changes made after
     /// turn `to_turn`; `None` reverts the latest turn that still has any.
+    /// Refused (an `Err`) while any session of the sub-tree is still working,
+    /// since its writes would race the restore.
     pub fn revert(&self, session: &SessionId, to_turn: Option<u32>) -> Result<FileRevertReport> {
-        let _guard = lock(&self.inner.lock);
+        let _guard = lock(&self.inner.manifests);
         let loaded = self.load(session)?;
-        let target = match to_turn {
-            Some(n) => n,
-            None => match loaded.live.iter().map(|(_, turn)| *turn).max() {
-                Some(latest) => latest.saturating_sub(1),
-                None => {
-                    return Ok(FileRevertReport {
-                        to_turn: loaded.prompts.len() as u32,
-                        ..Default::default()
-                    })
-                }
-            },
+        if let Some(busy) = loaded.subtree.iter().find(|s| self.is_busy(s)) {
+            anyhow::bail!(
+                "refused: session `{}` in this session's tree is still working (a turn or \
+                 background job) — revert once it is idle",
+                busy.0
+            );
+        }
+        let Some(target) = to_turn.or_else(|| undo_target(&loaded)) else {
+            return Ok(FileRevertReport {
+                to_turn: loaded.prompts.len() as u32,
+                ..Default::default()
+            });
         };
 
         // Group the selected changes per file, in record order.
@@ -157,64 +200,67 @@ impl FileBackups {
             to_turn: target,
             ..Default::default()
         };
-        let mut reverted_ids = Vec::new();
+        let (mut done, mut attempted) = (Vec::new(), Vec::new());
         for path in order {
             let group = &groups[path];
             let (first, last) = (group[0], group[group.len() - 1]);
-            match restore(&loaded.dir, path, &first.before, last.after.as_deref()) {
+            let ids = group.iter().map(|c| c.id);
+            let outcome = restore(
+                &loaded.dir,
+                path,
+                &first.before,
+                last.after.as_deref(),
+                first.mode,
+            );
+            match outcome {
                 Ok(()) => {
                     report.restored.push(last.display.clone());
-                    reverted_ids.extend(group.iter().map(|c| c.id));
+                    done.extend(ids);
                 }
-                Err(reason) => report.skipped.push(RevertSkip {
-                    path: last.display.clone(),
-                    reason,
-                }),
+                Err(skip) => {
+                    report.skipped.push(RevertSkip {
+                        path: last.display.clone(),
+                        reason: skip.reason,
+                    });
+                    if skip.consumed {
+                        done.extend(ids);
+                    } else {
+                        attempted.extend(ids);
+                    }
+                }
             }
         }
-        if !reverted_ids.is_empty() {
-            manifest::append(
-                &loaded.dir.join(MANIFEST),
-                &Line::Reverted { ids: reverted_ids },
-            )?;
+        if !done.is_empty() || !attempted.is_empty() {
+            let line = Line::Reverted {
+                ids: done,
+                attempted,
+            };
+            // The files are already restored: a lost marker must not turn
+            // that into a failure. The next revert finds them back at
+            // `before` and counts them restored again.
+            if let Err(e) = manifest::append(&loaded.dir.join(MANIFEST), &line) {
+                tracing::warn!("revert succeeded but its marker was not recorded: {e:#}");
+            }
         }
         Ok(report)
     }
 }
 
-/// Put `path` back to `before`, provided it still holds what the agent left
-/// (`expected` hash, `None` = no file). `Err` is the user-facing reason.
-fn restore(
-    dir: &Path,
-    path: &Path,
-    before: &Prior,
-    expected: Option<&str>,
-) -> std::result::Result<(), String> {
-    let current = match std::fs::read(path) {
-        Ok(bytes) => Some(sha256_hex(&bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("could not read it: {e}")),
+/// An undo's target: just below the latest turn with changes no revert has
+/// attempted yet, so a file left alone for a conflict never pins the undo
+/// to the same turn; with only attempted ones left, it retries the latest.
+fn undo_target(loaded: &Loaded) -> Option<u32> {
+    let latest = |fresh: bool| {
+        loaded
+            .live
+            .iter()
+            .filter(|(c, _)| !fresh || !loaded.attempted.contains(&c.id))
+            .map(|(_, turn)| *turn)
+            .max()
     };
-    if current.as_deref() != expected {
-        return Err("changed since the agent's edit — left as is".to_string());
-    }
-    match before {
-        Prior::Skipped { reason } => Err(format!("no backup ({reason})")),
-        Prior::Absent => match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not delete it: {e}")),
-        },
-        Prior::Stored { hash, .. } => {
-            let bytes = std::fs::read(dir.join(BLOBS).join(hash))
-                .map_err(|e| format!("backup missing: {e}"))?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("could not recreate its directory: {e}"))?;
-            }
-            std::fs::write(path, bytes).map_err(|e| format!("could not write it: {e}"))
-        }
-    }
+    latest(true)
+        .or_else(|| latest(false))
+        .map(|t| t.saturating_sub(1))
 }
 
 /// `session` plus every session spawned beneath it, from the log's

@@ -23,12 +23,14 @@ use crate::subagent::SpawnGuard;
 use super::LadderCtx;
 
 #[cfg(feature = "rhai")]
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn rhai(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
     overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     tool: String,
     session: SessionId,
+    seq: u64,
     request_id: String,
     input: String,
 ) {
@@ -113,7 +115,7 @@ pub(super) async fn rhai(
     // same `stop` flag via the script registry.
     let background = crate::script::is_background(&input);
     let cancels = ctx.cancels.clone();
-    let handle = tokio::spawn(async move {
+    let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
         let self_perm = crate::tool_runner::apply_grant(
             &*grants,
             &session,
@@ -136,7 +138,7 @@ pub(super) async fn rhai(
             scripts,
         )
         .await;
-    });
+    }));
     if !background {
         cancels.register(
             &reg_session,
@@ -156,6 +158,7 @@ pub(super) async fn permission(
     // duplicate-key re-scan; `None` for an ordinary native call.
     envelope: Option<ToolEnvelope>,
     session: SessionId,
+    seq: u64,
     request_id: String,
     input: String,
 ) {
@@ -246,7 +249,9 @@ pub(super) async fn permission(
     // firing its process-group SIGKILL guard (#167/#168).
     let reg_session = session.clone();
     let cancels = ctx.cancels.clone();
-    let handle = tokio::spawn(async move {
+    // The ToolExec seq rides the task so a file change it records names its
+    // exact log record (ADR-0212) — request ids alone repeat across turns.
+    let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
         // A scoped session's snapshot swaps its `mcp__*`
         // namespace for the scope's own tools (#684),
         // lazily connecting the called server with the
@@ -298,6 +303,6 @@ pub(super) async fn permission(
             &denials,
         )
         .await;
-    });
+    }));
     cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
 }

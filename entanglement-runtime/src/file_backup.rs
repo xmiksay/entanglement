@@ -5,7 +5,7 @@
 //! prior bytes to [`FileBackups::record`], which keeps them under the root
 //! session's [`SessionStore::backups_dir`]: a content-addressed `blobs/`
 //! directory plus an append-only `manifest.jsonl` naming each change's
-//! session, time, absolute path and before/after state. No git involved, and
+//! session, call, absolute path and before/after state. No git involved, and
 //! nothing outside the session store is written.
 //!
 //! [`FileBackups::revert`] — reached through core's `file_reverter` seam on an
@@ -19,22 +19,24 @@
 //! Backups live and die with the root's session log: [`SessionStore::delete`]
 //! and [`SessionStore::prune`] remove them alongside it.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
-use entanglement_core::{FileReverter, Holly, OutEvent, RevertSkip, SessionId};
+use entanglement_core::{FileReverter, RevertSkip, SessionId};
 use sha2::{Digest, Sha256};
 
 use crate::session_store::SessionStore;
 
 mod manifest;
+mod record;
+mod restore;
 mod revert;
+mod tracker;
 
-use manifest::{Change, Line, Prior, BLOBS, MANIFEST};
 pub use revert::TurnEdits;
+pub use tracker::{detached_work_probe, BusyProbe};
 
 /// Default per-file cap: a prior version larger than this is not backed up
 /// (its change is recorded as skipped, and a revert reports it).
@@ -43,8 +45,26 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// changes are recorded as skipped.
 pub const DEFAULT_MAX_ROOT_BYTES: u64 = 256 * 1024 * 1024;
 
+tokio::task_local! {
+    /// The `seq` of the `ToolExec` whose call task is running — set by the
+    /// executor around each dispatched call ([`with_exec_seq`]), read when a
+    /// file tool records a change so the change names its exact log record.
+    static EXEC_SEQ: u64;
+}
+
+/// Run `fut` (one dispatched tool call) with its `ToolExec` seq in scope, so
+/// any change it records is placed in the right turn even when request ids
+/// repeat across turns (Gemini's `name#ordinal`).
+pub fn with_exec_seq<F: Future>(seq: u64, fut: F) -> impl Future<Output = F::Output> {
+    EXEC_SEQ.scope(seq, fut)
+}
+
+fn current_exec_seq() -> Option<u64> {
+    EXEC_SEQ.try_with(|s| *s).ok()
+}
+
 /// Handle to one project's file backups. Cheap to clone; every clone shares
-/// the session→root map and the write lock.
+/// the session lineage/busy state and the per-root manifest cache.
 #[derive(Clone)]
 pub struct FileBackups {
     inner: Arc<Inner>,
@@ -52,12 +72,18 @@ pub struct FileBackups {
 
 struct Inner {
     store: SessionStore,
-    /// session → root, folded from `SessionStarted` (see [`FileBackups::track_roots`]),
-    /// so a spawned child's backups land under its root's directory.
+    /// session → root, folded from `SessionStarted` (see
+    /// [`FileBackups::track_roots`]), so a child's backups land under its root.
     roots: Mutex<HashMap<SessionId, SessionId>>,
-    /// Serializes manifest read-modify-append: a parallel tool batch writes
-    /// from several tasks at once.
-    lock: Mutex<()>,
+    /// Sessions whose last `Status` was not at rest — a revert refuses while
+    /// any session of the target's sub-tree is in here.
+    busy: Mutex<HashSet<SessionId>>,
+    /// Extra "still working" check for detached work no `Status` reflects
+    /// (background jobs, detached `rhai` scripts).
+    probe: OnceLock<BusyProbe>,
+    /// Per-root manifest stats, and the lock that serializes every manifest
+    /// read-modify-append: a parallel tool batch records from several tasks.
+    manifests: Mutex<HashMap<SessionId, manifest::Stats>>,
     max_file_bytes: u64,
     max_root_bytes: u64,
 }
@@ -74,134 +100,12 @@ impl FileBackups {
             inner: Arc::new(Inner {
                 store,
                 roots: Mutex::new(HashMap::new()),
-                lock: Mutex::new(()),
+                busy: Mutex::new(HashSet::new()),
+                probe: OnceLock::new(),
+                manifests: Mutex::new(HashMap::new()),
                 max_file_bytes,
                 max_root_bytes,
             }),
-        }
-    }
-
-    /// Fold `SessionStarted` lineage from `holly` into the session→root map
-    /// (the same rule the persistence tap routes records by), so backups and
-    /// reverts for a spawned child resolve to its root's directory and log.
-    pub fn track_roots(&self, holly: &Holly) -> tokio::task::JoinHandle<()> {
-        let mut events = holly.subscribe();
-        let this = self.clone();
-        tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(OutEvent::SessionStarted {
-                        session,
-                        parent,
-                        root,
-                        ..
-                    }) => {
-                        let root_id = match (root, parent) {
-                            (false, Some(p)) => this.root_of(&p),
-                            _ => session.clone(),
-                        };
-                        this.note_root(session, root_id);
-                    }
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        })
-    }
-
-    /// Record that `session` belongs to root `root`.
-    pub fn note_root(&self, session: SessionId, root: SessionId) {
-        lock(&self.inner.roots).insert(session, root);
-    }
-
-    fn root_of(&self, session: &SessionId) -> SessionId {
-        lock(&self.inner.roots)
-            .get(session)
-            .cloned()
-            .unwrap_or_else(|| session.clone())
-    }
-
-    /// Record one file change by `session`'s tool call `request_id`: the
-    /// resolved target `abs`, the path as the call named it, the content
-    /// before (`None` = no file) and after (`None` = no file). Best-effort —
-    /// the edit already happened, so a backup failure is logged, never
-    /// surfaced as a tool error; the change is then recorded as skipped when
-    /// possible, so a revert can say why it cannot restore it.
-    pub fn record(
-        &self,
-        session: &SessionId,
-        request_id: &str,
-        abs: &Path,
-        shown: &str,
-        before: Option<&[u8]>,
-        after: Option<&[u8]>,
-    ) {
-        if let Err(e) = self.try_record(session, request_id, abs, shown, before, after) {
-            tracing::warn!("file backup of `{shown}` failed: {e:#}");
-        }
-    }
-
-    fn try_record(
-        &self,
-        session: &SessionId,
-        request_id: &str,
-        abs: &Path,
-        display: &str,
-        before: Option<&[u8]>,
-        after: Option<&[u8]>,
-    ) -> Result<()> {
-        let _guard = lock(&self.inner.lock);
-        let dir = self.inner.store.backups_dir(&self.root_of(session))?;
-        let blobs = dir.join(BLOBS);
-        std::fs::create_dir_all(&blobs).with_context(|| format!("creating {}", blobs.display()))?;
-        let manifest_path = dir.join(MANIFEST);
-        let manifest = manifest::read(&manifest_path)?;
-        let before = match before {
-            None => Prior::Absent,
-            Some(bytes) => self.store_prior(&blobs, &manifest, bytes),
-        };
-        let change = Change {
-            id: manifest.next_id(),
-            ts: now_ms(),
-            session: session.clone(),
-            request_id: request_id.to_string(),
-            path: abs.to_path_buf(),
-            display: display.to_string(),
-            before,
-            after: after.map(sha256_hex),
-        };
-        manifest::append(&manifest_path, &Line::Change(change))
-    }
-
-    /// Store `bytes` as a blob unless a cap says no; a failed blob write
-    /// degrades to `Skipped` rather than losing the manifest entry.
-    fn store_prior(&self, blobs: &Path, manifest: &manifest::Manifest, bytes: &[u8]) -> Prior {
-        let size = bytes.len() as u64;
-        let hash = sha256_hex(bytes);
-        if size > self.inner.max_file_bytes {
-            return Prior::Skipped {
-                reason: format!(
-                    "larger than the {} per-file backup cap",
-                    human_bytes(self.inner.max_file_bytes)
-                ),
-            };
-        }
-        if manifest.has_blob(&hash) {
-            return Prior::Stored { hash, size };
-        }
-        if manifest.stored_bytes() + size > self.inner.max_root_bytes {
-            return Prior::Skipped {
-                reason: format!(
-                    "the session's {} backup budget is used up",
-                    human_bytes(self.inner.max_root_bytes)
-                ),
-            };
-        }
-        match write_blob(blobs, &hash, bytes) {
-            Ok(()) => Prior::Stored { hash, size },
-            Err(e) => Prior::Skipped {
-                reason: format!("backup write failed: {e:#}"),
-            },
         }
     }
 
@@ -239,18 +143,6 @@ pub fn summary(to_turn: u32, restored: &[String], skipped: &[RevertSkip]) -> Str
     out
 }
 
-fn write_blob(blobs: &Path, hash: &str, bytes: &[u8]) -> Result<()> {
-    let target = blobs.join(hash);
-    if target.exists() {
-        return Ok(());
-    }
-    // Write-then-rename: a crash mid-write must never leave a truncated blob
-    // under a hash that claims to be the whole file.
-    let tmp = blobs.join(format!("{hash}.tmp"));
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &target).with_context(|| format!("renaming {}", tmp.display()))
-}
-
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -262,21 +154,13 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn human_bytes(n: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
-    if n >= MIB {
-        format!("{} MiB", n / MIB)
-    } else {
-        format!("{n} byte")
-    }
-}
-
 /// A poisoned lock only means another backup panicked mid-update; the data
-/// it guards (a map, a unit) is still usable, and a backup must never panic
-/// a tool call.
+/// it guards is still usable, and a backup must never panic a tool call.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_safety;
