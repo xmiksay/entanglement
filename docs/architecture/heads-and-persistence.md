@@ -801,11 +801,14 @@ assistant/tool messages and the model appears to forget the conversation.
   The narrowing covers the forced session's rebuilt descendants too (a mode
   spans the spawn sub-tree, ADR-0207 §6). The CLI's own `--mode`/config
   `mode:` must not undo it: a `SetMode` on the root cascades over the whole
-  tree and would widen a forced child until a re-narrowing landed (#757). So
+  tree and would widen a forced child until a re-narrowing landed (#757,
+  [ADR-0216](../adr/0216-resume-modes-ride-the-replay.md)). So
   `session_store::resume_with_mode` carries *every* mode in the replay when
   anything is forced — `research` inside a forced sub-tree, the configured
   mode everywhere else — and sends the ordinary cascading `SetMode` only when
   nothing is (an explicit `--mode` disables forcing, so it always cascades).
+  On that replay path a non-forced session's model sees `[mode: X]` with no
+  "changed from" transition, an accepted trade-off.
   The logic is the pure `session_store::check_for_resume`, which also
   refuses a gap; `load_for_resume` and `resume_with_mode` wrap it for the
   heads.

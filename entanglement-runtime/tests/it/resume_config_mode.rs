@@ -1,4 +1,4 @@
-//! #757 (ADR-0215): on a CLI resume, the configured `mode:` must never reach
+//! #757 (ADR-0216): on a CLI resume, the configured `mode:` must never reach
 //! a session forced into `research`. A `SetMode` on the root cascades over the
 //! whole tree, so sent as one it would widen the forced child until a
 //! re-narrowing landed. `resume_with_mode` instead carries every mode in the
