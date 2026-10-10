@@ -95,12 +95,27 @@ loop {
 }
 ```
 
-`OutEvent::session()` returns `None` for the handful of supervisor-global
-query replies (`SessionList`, `History`'s correlation reply —
-[ADR-0072](adr/0072-protocol-warts-settled-before-serve.md)); those never carry
-tenant data on their own, but if your embedder answers `ListSessions` you must
-still filter its `sessions: Vec<SessionInfo>` payload by tenant before it
-reaches a client, since a raw reply lists every session in the process.
+`OutEvent::session()` returns `None` for the supervisor-global query replies
+(`SessionList`, `QuestionList`, `OperationList`, `PendingList`, `McpList` —
+[ADR-0072](adr/0072-protocol-warts-settled-before-serve.md)), so the filter
+above passes none of them. Several of these replies **do carry tenant data**,
+and an unscoped query covers every session in the process:
+
+- `SessionList.sessions`: every live session.
+- `QuestionList.questions`: every open `ask_user` question text.
+- `OperationList.operations`: every background job's command line.
+- `PendingList.approvals`: every parked tool call's full `input`, i.e. plan
+  bodies, file contents and commands
+  ([ADR-0217](adr/0217-list-pending-query-for-parked-approvals.md)).
+
+A multi-tenant head that forwards these queries over `send_from_wire` **must**:
+
+1. scope the query itself before sending it: force `ListPending.root` (or
+   `ListQuestions`/`ListOperations`' `session`) to a session the connection
+   owns, **or** filter the reply's payload by session ownership; and
+2. deliver the reply only to the connection that sent its `correlation_id`.
+   Replies are broadcast to every subscriber, so relaying one to all
+   connections leaks it even when the query was scoped.
 
 ## 2. A custom head over the ABI: the trust split
 

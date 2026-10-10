@@ -200,6 +200,30 @@ impl PendingDecisions {
         }
     }
 
+    /// Drop the entry for `(session, request_id)` without delivering anything.
+    pub fn forget(&self, session: &SessionId, request_id: &str) {
+        self.lock()
+            .remove(&(session.clone(), request_id.to_string()));
+    }
+
+    /// [`await_decision_timed`], removing the entry when the deadline elapses
+    /// (#726): nothing else ever would, and in an unattended mode expiry is
+    /// the normal path, so the map (each entry holding a full call `input`)
+    /// would otherwise grow until the session stops.
+    pub async fn await_timed(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        rx: oneshot::Receiver<Decision>,
+        timeout: Option<Duration>,
+    ) -> Option<Decision> {
+        let decision = await_decision_timed(rx, timeout).await;
+        if decision.is_none() {
+            self.forget(session, request_id);
+        }
+        decision
+    }
+
     fn lock(&self) -> MutexGuard<'_, Waiters> {
         self.inner.lock().expect("pending decisions mutex poisoned")
     }
@@ -346,6 +370,21 @@ mod tests {
         pending.resolve(&s, "req-1", Decision::Reject { reason: None });
         let decision = await_decision_timed(rx, Some(std::time::Duration::from_secs(5))).await;
         assert!(matches!(decision, Some(Decision::Reject { .. })));
+    }
+
+    #[tokio::test]
+    async fn await_timed_forgets_the_entry_on_timeout() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let rx = pending.register(&s, "req-1", "tool", "t");
+        let d = pending
+            .await_timed(&s, "req-1", rx, Some(Duration::from_millis(10)))
+            .await;
+        assert!(d.is_none());
+        assert!(
+            pending.lock().is_empty(),
+            "a timed-out entry must be removed"
+        );
     }
 
     #[tokio::test]

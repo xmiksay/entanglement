@@ -157,9 +157,11 @@ exactly like `explore(kind: "pending")`. Every approval path (permission
 `ToolRequest` from one `PendingApproval` value — so a reconnecting head gets
 the exact prompt it missed. The decision router handles `ListPending` in
 order with `Approve`/`Reject`, so a listing after a decision never shows the
-decided call; a waiter that timed out is filtered out. Ownership filtering is
-the head's job, as with `ListSessions`; the reply names no session, so it is
-never persisted.
+decided call; a timed-out park removes its entry, and one whose task was
+aborted is skipped. Ownership filtering is the head's job, as with
+`ListSessions` (a multi-tenant head must scope `root` and route the reply to
+its requesting connection only, [embedding](../embedding.md) §1); the reply
+names no session, so it is never persisted.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an

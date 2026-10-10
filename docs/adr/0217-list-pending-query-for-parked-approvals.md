@@ -45,13 +45,21 @@ by scanning their own log store (#726). `ask_user` questions already have
    (the runtime `AgentRegistry` parent links).
 4. **Wire-allowed**, like `ListQuestions`: a read-only snapshot of prompts a
    head may already answer over the wire. Ownership filtering is the head's
-   job, as for `ListSessions`; `serve` stays single-user (ADR-0048).
+   job, as for `ListSessions`; `serve` stays single-user (ADR-0048). The
+   reply carries every listed call's full `input`, so a multi-tenant head
+   must force `root` to a session it owns (or filter `approvals` by
+   ownership) and deliver the reply only to the connection that sent its
+   `correlation_id` ([embedding](../embedding.md) §1).
 5. **Not persisted.** The reply names no session, so the persistence layer
    skips it; old logs are unaffected.
 
-A waiter that gave up (a timed-out park drops its receiver without removing
-its entry) is filtered out of both this listing and `explore(kind:
-"pending")`, so neither reports a call nobody can still approve.
+A timed-out park used to drop its receiver but leave its entry in the
+registry forever; in an unattended mode expiry is the normal path, so the map
+grew until `Stop`. Now the timeout branch removes the entry
+(`PendingDecisions::await_timed`), and any entry whose waiter is gone for
+another reason (an aborted task) is skipped by both this listing and
+`explore(kind: "pending")`, so neither reports a call nobody can still
+approve.
 
 ## Consequences
 

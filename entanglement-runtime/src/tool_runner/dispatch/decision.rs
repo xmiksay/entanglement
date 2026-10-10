@@ -45,6 +45,7 @@ pub(super) async fn await_decision(
     // `invoke` envelope (ADR-0204) — carried across the approval park to
     // `execute::run_and_reply`'s duplicate-key re-scan on approval.
     envelope: Option<ToolEnvelope>,
+    pending: &crate::pending::PendingDecisions,
     rx: tokio::sync::oneshot::Receiver<seam::Decision>,
     escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
     session: SessionId,
@@ -55,7 +56,10 @@ pub(super) async fn await_decision(
     mode: String,
     question_timeout: Option<std::time::Duration>,
 ) {
-    let decision = match crate::pending::await_decision_timed(rx, question_timeout).await {
+    let decision = match pending
+        .await_timed(&session, &request_id, rx, question_timeout)
+        .await
+    {
         Some(decision) => decision,
         // Elapsed with no answer: `on_timeout` for a parked approval is
         // always `Deny` today (`crate::mode::OnTimeout`) — silence is never
