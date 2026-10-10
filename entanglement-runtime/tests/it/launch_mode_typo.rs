@@ -82,6 +82,11 @@ fn a_typo_in_the_mode_flag_stops_run() {
 fn a_typo_in_config_mode_stops_run() {
     let (out, log) = launch(&["run", "hi"], Some("mode: bild\n"));
     assert_refused(&out, log, "`bild` from config.yml");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("config.yml) — fix or remove it"),
+        "{stderr}"
+    );
 }
 
 #[test]

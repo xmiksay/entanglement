@@ -160,17 +160,21 @@ fn a_forced_sub_tree_gets_research_and_the_rest_the_configured_mode() {
     assert!(injected(&check(&records), &records, Some("build")).is_empty());
 }
 
+fn src() -> String {
+    "/x/config.yml".to_string()
+}
+
 /// #752: `--mode` beats config `mode:` and alone marks the choice explicit.
 #[test]
 fn launch_mode_prefers_the_flag_over_config() {
-    let both = LaunchMode::resolve(Some("research".into()), Some("build".into())).unwrap();
+    let both = LaunchMode::resolve(Some("research".into()), Some("build".into()), src).unwrap();
     assert_eq!(both.mode.as_deref(), Some("research"));
     assert!(both.explicit);
-    let config = LaunchMode::resolve(None, Some("build".into())).unwrap();
+    let config = LaunchMode::resolve(None, Some("build".into()), src).unwrap();
     assert_eq!(config.mode.as_deref(), Some("build"));
     assert!(!config.explicit);
     assert_eq!(
-        LaunchMode::resolve(None, None).unwrap(),
+        LaunchMode::resolve(None, None, src).unwrap(),
         LaunchMode::default()
     );
 }
@@ -178,12 +182,16 @@ fn launch_mode_prefers_the_flag_over_config() {
 /// ADR-0218: a typo'd mode stops the launch instead of falling open.
 #[test]
 fn launch_mode_rejects_an_unknown_name_from_either_source() {
-    let flag = LaunchMode::resolve(Some("reserch".into()), None).unwrap_err();
+    let flag = LaunchMode::resolve(Some("reserch".into()), None, src).unwrap_err();
     assert!(
         format!("{flag}").contains("`reserch` from --mode"),
         "{flag}"
     );
     // A bad config value fails even when the flag would have out-ranked it.
-    let config = LaunchMode::resolve(Some("plan".into()), Some("bild".into())).unwrap_err();
-    assert!(format!("{config}").contains("config.yml"), "{config}");
+    let config = LaunchMode::resolve(Some("plan".into()), Some("bild".into()), src).unwrap_err();
+    let config = format!("{config}");
+    assert!(
+        config.contains("(/x/config.yml) — fix or remove it"),
+        "{config}"
+    );
 }
