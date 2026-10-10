@@ -549,12 +549,13 @@ live with. Delivery runs on a detached task, so a session task never blocks
 while the supervisor may be waiting to route into that very session, and the
 frames go out only after the source has finished writing its own log tail.
 
-**The successor keeps the live binding** (#768). The successor is the same
-session continuing, so a live `SetModel`/`SetGeneration`/`SetMode` on the
-source survives the fork rather than the successor restarting on its agent's
+**The successor keeps the live binding** (#768/#776). The successor is the
+same session continuing, so a live `SetModel`/`SetGeneration`/`SetMode`/
+`SetToolOverlay` on the source survives the fork rather than the successor restarting on its agent's
 pin. The mode is inherited by the supervisor from the predecessor (ADR-0207
 §6). The model and generation ride beside the `Spawn` on the fork channel as
-an in-process `Inherited { model, generation }` (`session/fork.rs`), never as
+an in-process `Inherited { model, generation, mode, overlay }`
+(`session/fork.rs`), never as
 `Spawn.model`: that field is *re-resolved* and refuses the spawn on failure
 (#725 above), and by then the source is being retired, so a refusal would
 lose the session. `Inherited.model` is the source's already-bound
@@ -573,6 +574,21 @@ re-announce keeps the replayed generation rather than resetting it to the
 catalog's. When the two differ, it also re-logs a `GenerationChanged` after
 itself. Without that, the corrective record would be the last write in the
 log, and the *next* resume would fold back to the catalog's params.
+
+The **tool overlay** (ADR-0149) is mode-scoped (ADR-0207): an actual mode
+switch drops it wholesale. Core now applies that rule to `Session::tool_overlay`
+too, both live (`immediate.rs`) and in replay's `ModeChanged` fold, exactly as
+the runtime's dispatch-side mirror always did. Without it, a successor could
+inherit an entry the runtime had already forgotten. `start_session` applies
+the inherited overlay only when the successor starts in the mode it was set
+under (`Inherited.mode == initial_mode`). The two can differ only if the
+supervisor applied a `SetMode` that the source never processed before
+forking; in that case the overlay is dropped. The overlay is logged as
+`ToolOverlayChanged` after the successor's `ModeChanged`, so neither replay
+nor the runtime reads it as cleared by a switch. A later same-mode
+re-announce on resume is not a switch either. Carrying it never changes the
+successor's tools array: the overlay is consulted at dispatch only, and an
+enable never edits the advertised surface by itself (ADR-0196/0204).
 
 **A mid-turn fork carries the turn.** The window gate runs between rounds, so
 the turn's tool batch is always drained when it fires — `drive_turn` is only

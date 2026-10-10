@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 
 use super::mode::apply_set_mode;
 use super::{cap_meta_field, stash_or_reject, SessionCmd};
-use crate::protocol::{OutEvent, SessionId};
+use crate::protocol::{OutEvent, SessionId, ToolOverlayEntry};
 
 /// Apply `cmd` now if it is an apply-immediately command; otherwise hand it
 /// back. Takes `Session`'s fields rather than `&mut Session` because the
@@ -27,6 +27,13 @@ pub(super) fn try_apply(
 ) -> Result<(), SessionCmd> {
     match cmd {
         SessionCmd::SetMode(mode) => {
+            // The overlay is mode-scoped (ADR-0207): an actual switch drops
+            // it wholesale, exactly as the runtime's dispatch-side mirror
+            // does — so a compaction successor never inherits an entry the
+            // runtime already forgot (#776).
+            if mode != *s.mode {
+                s.tool_overlay.clear();
+            }
             apply_set_mode(s.mode, s.mode_transition_from, mode, session, events);
         }
         SessionCmd::SetSessionMeta(name, action, if_unset) => {
@@ -68,6 +75,7 @@ pub(super) fn try_apply(
 pub(super) struct Fields<'a> {
     pub mode: &'a mut String,
     pub mode_transition_from: &'a mut Option<String>,
+    pub tool_overlay: &'a mut Vec<ToolOverlayEntry>,
     pub name: &'a mut Option<String>,
     pub action: &'a mut Option<String>,
     pub children: &'a mut Vec<SessionId>,
@@ -78,6 +86,7 @@ macro_rules! fields {
         $crate::session::immediate::Fields {
             mode: &mut $s.mode,
             mode_transition_from: &mut $s.mode_transition_from,
+            tool_overlay: &mut $s.tool_overlay,
             name: &mut $s.name,
             action: &mut $s.action,
             children: &mut $s.children,

@@ -26,7 +26,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::emit::next_seq;
 use super::Session;
 use crate::id_gen::{IdContext, IdKind};
-use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId};
+use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 
 /// One frame on the session→supervisor fork channel: an ordinary `InMsg`
@@ -48,6 +48,10 @@ pub(crate) struct Inherited {
     pub(crate) model: Option<ResolvedModel>,
     /// The source's effective generation params.
     pub(crate) generation: Option<GenerationParams>,
+    /// The source's mode at the fork, which scopes `overlay` (ADR-0207).
+    pub(crate) mode: String,
+    /// The source's live tool overlay (#776).
+    pub(crate) overlay: Vec<ToolOverlayEntry>,
 }
 
 /// Whether a compaction forked the session away. `Yes` means this session is
@@ -141,6 +145,8 @@ pub(crate) fn fork_successor(
     let inherit = Inherited {
         model: s.live_binding(),
         generation: s.generation,
+        mode: s.mode.clone(),
+        overlay: s.tool_overlay.clone(),
     };
     Some(PendingFork {
         engine,

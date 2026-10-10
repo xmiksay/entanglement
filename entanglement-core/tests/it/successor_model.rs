@@ -20,11 +20,14 @@ use tokio::sync::broadcast::Receiver;
 
 /// Every request's `(model, temperature)`, in order, across every backend.
 type Seen = Arc<Mutex<Vec<(Option<String>, Option<f32>)>>>;
+/// Every request's advertised tool names, in the same order as `Seen`.
+type Tools = Arc<Mutex<Vec<Vec<String>>>>;
 
 /// Records each request, calls `probe` when the last message is exactly
 /// `"tool"`, and otherwise answers `"done"` (a compaction summary included).
 struct Recording {
     seen: Seen,
+    tools: Tools,
 }
 
 #[async_trait]
@@ -34,6 +37,10 @@ impl Llm for Recording {
             req.model.map(str::to_string),
             req.generation.and_then(|g| g.temperature),
         ));
+        self.tools
+            .lock()
+            .unwrap()
+            .push(req.tools.iter().map(|t| t.name.clone()).collect());
         let wants_tool = req.messages.last().is_some_and(|m| m.text() == "tool");
         Ok(stream_from_response(if wants_tool {
             LlmResponse {
@@ -51,24 +58,31 @@ impl Llm for Recording {
 
 /// The resolver plus the knobs a test turns: `fail` makes every later
 /// resolution error (a revoked key, a catalog edit), `calls` counts them.
-struct Harness {
+pub(crate) struct Harness {
     seen: Seen,
+    pub(crate) tools: Tools,
     fail: Arc<AtomicBool>,
     calls: Arc<AtomicUsize>,
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             seen: Arc::new(Mutex::new(Vec::new())),
+            tools: Arc::new(Mutex::new(Vec::new())),
             fail: Arc::new(AtomicBool::new(false)),
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn factory(&self) -> entanglement_core::LlmFactory {
-        let seen = self.seen.clone();
-        Arc::new(move || Box::new(Recording { seen: seen.clone() }) as Box<dyn Llm>)
+        let (seen, tools) = (self.seen.clone(), self.tools.clone());
+        Arc::new(move || {
+            Box::new(Recording {
+                seen: seen.clone(),
+                tools: tools.clone(),
+            }) as Box<dyn Llm>
+        })
     }
 
     fn resolver(&self) -> ModelResolver {
@@ -95,7 +109,7 @@ impl Harness {
 
     /// `general` pinned to `anthropic/claude-x` — the binding a successor
     /// must *not* fall back to.
-    fn config(&self, auto_compact: bool) -> EngineConfig {
+    pub(crate) fn config(&self, auto_compact: bool) -> EngineConfig {
         let mut agents = AgentCatalog::default();
         agents.insert(Agent {
             name: "general".into(),
@@ -125,7 +139,7 @@ impl Harness {
     }
 }
 
-async fn next(sub: &mut Receiver<OutEvent>) -> OutEvent {
+pub(crate) async fn next(sub: &mut Receiver<OutEvent>) -> OutEvent {
     loop {
         match tokio::time::timeout(Duration::from_secs(5), sub.recv())
             .await
@@ -138,12 +152,12 @@ async fn next(sub: &mut Receiver<OutEvent>) -> OutEvent {
     }
 }
 
-async fn until_done(sub: &mut Receiver<OutEvent>, sid: &SessionId) {
+pub(crate) async fn until_done(sub: &mut Receiver<OutEvent>, sid: &SessionId) {
     while !matches!(next(sub).await, OutEvent::Done { session, .. } if session == *sid) {}
 }
 
 /// One turn under the pin, then the live switches every test carries over.
-async fn start_and_switch(holly: &Holly, sub: &mut Receiver<OutEvent>, sid: &SessionId) {
+pub(crate) async fn start_and_switch(holly: &Holly, sub: &mut Receiver<OutEvent>, sid: &SessionId) {
     holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
     until_done(sub, sid).await;
     for msg in [
@@ -171,7 +185,7 @@ async fn start_and_switch(holly: &Holly, sub: &mut Receiver<OutEvent>, sid: &Ses
 
 /// Drain until `source`'s successor finishes its first turn; return its id and
 /// every event it emitted.
-async fn successor_turn(
+pub(crate) async fn successor_turn(
     sub: &mut Receiver<OutEvent>,
     source: &SessionId,
 ) -> (SessionId, Vec<OutEvent>) {
@@ -200,6 +214,86 @@ async fn successor_turn(
     }
 }
 
+/// The three ADR-0205 fork paths.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Path {
+    Manual,
+    Auto,
+    Prune,
+}
+
+impl Path {
+    pub(crate) const ALL: [Path; 3] = [Path::Manual, Path::Auto, Path::Prune];
+
+    /// Prune-only is the fallback when auto-summarize is off.
+    pub(crate) fn auto_compact(self) -> bool {
+        !matches!(self, Path::Prune)
+    }
+}
+
+/// Compact `sid` along `path` and return its successor's first turn.
+pub(crate) async fn compact(
+    holly: &Holly,
+    sub: &mut Receiver<OutEvent>,
+    sid: &SessionId,
+    path: Path,
+) -> (SessionId, Vec<OutEvent>) {
+    match path {
+        Path::Manual => {
+            holly
+                .send(InMsg::Oneshot {
+                    session: sid.clone(),
+                    op: "compact".into(),
+                    args: serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+        }
+        // The `auto_compact` suite's overflow shape: a few short turns give
+        // the summary a head, then one large prompt overflows the 4k window.
+        Path::Auto => {
+            for i in 0..3 {
+                let text = format!("turn-{i}: {}", "y".repeat(490));
+                holly.send(InMsg::prompt(sid.clone(), text)).await.unwrap();
+                until_done(sub, sid).await;
+            }
+            holly
+                .send(InMsg::prompt(sid.clone(), "x".repeat(11_000)))
+                .await
+                .unwrap();
+        }
+        // One bulky tool result overflows the window; with auto-summarize
+        // off the prune fallback forks.
+        Path::Prune => {
+            holly
+                .send(InMsg::prompt(sid.clone(), "tool"))
+                .await
+                .unwrap();
+            let request_id = loop {
+                if let OutEvent::ToolExec {
+                    session,
+                    request_id,
+                    ..
+                } = next(sub).await
+                {
+                    if session == *sid {
+                        break request_id;
+                    }
+                }
+            };
+            holly
+                .send(InMsg::tool_result(
+                    sid.clone(),
+                    request_id,
+                    "x".repeat(14_000),
+                ))
+                .await
+                .unwrap();
+        }
+    }
+    successor_turn(sub, sid).await
+}
+
 /// The successor's first round ran on the switched model and generation, it
 /// never rebound to the pin, and its own log replays to the same state.
 fn assert_continues(h: &Harness, cfg: &EngineConfig, successor: &SessionId, events: &[OutEvent]) {
@@ -225,87 +319,18 @@ fn assert_continues(h: &Harness, cfg: &EngineConfig, successor: &SessionId, even
 }
 
 #[tokio::test]
-async fn manual_compact_successor_keeps_the_live_binding() {
-    let h = Harness::new();
-    let cfg = h.config(true);
-    let holly = Holly::spawn(cfg.clone());
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    start_and_switch(&holly, &mut sub, &sid).await;
+async fn every_compaction_successor_keeps_the_live_binding() {
+    for path in Path::ALL {
+        let h = Harness::new();
+        let cfg = h.config(path.auto_compact());
+        let holly = Holly::spawn(cfg.clone());
+        let sid = SessionId::new("s1");
+        let mut sub = holly.subscribe();
+        start_and_switch(&holly, &mut sub, &sid).await;
 
-    holly
-        .send(InMsg::Oneshot {
-            session: sid.clone(),
-            op: "compact".into(),
-            args: serde_json::Value::Null,
-        })
-        .await
-        .unwrap();
-    let (successor, events) = successor_turn(&mut sub, &sid).await;
-    assert_continues(&h, &cfg, &successor, &events);
-}
-
-#[tokio::test]
-async fn auto_compact_successor_keeps_the_live_binding() {
-    let h = Harness::new();
-    let cfg = h.config(true);
-    let holly = Holly::spawn(cfg.clone());
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    start_and_switch(&holly, &mut sub, &sid).await;
-
-    // The `auto_compact` suite's overflow shape: a few short turns give the
-    // summary a head, then one large prompt overflows the 4k window.
-    for i in 0..3 {
-        let text = format!("turn-{i}: {}", "y".repeat(490));
-        holly.send(InMsg::prompt(sid.clone(), text)).await.unwrap();
-        until_done(&mut sub, &sid).await;
+        let (successor, events) = compact(&holly, &mut sub, &sid, path).await;
+        assert_continues(&h, &cfg, &successor, &events);
     }
-    holly
-        .send(InMsg::prompt(sid.clone(), "x".repeat(11_000)))
-        .await
-        .unwrap();
-    let (successor, events) = successor_turn(&mut sub, &sid).await;
-    assert_continues(&h, &cfg, &successor, &events);
-}
-
-#[tokio::test]
-async fn prune_fallback_successor_keeps_the_live_binding() {
-    let h = Harness::new();
-    let cfg = h.config(false);
-    let holly = Holly::spawn(cfg.clone());
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    start_and_switch(&holly, &mut sub, &sid).await;
-
-    // One bulky tool result overflows the window; with auto-summarize off the
-    // prune fallback forks.
-    holly
-        .send(InMsg::prompt(sid.clone(), "tool"))
-        .await
-        .unwrap();
-    let request_id = loop {
-        if let OutEvent::ToolExec {
-            session,
-            request_id,
-            ..
-        } = next(&mut sub).await
-        {
-            if session == sid {
-                break request_id;
-            }
-        }
-    };
-    holly
-        .send(InMsg::tool_result(
-            sid.clone(),
-            request_id,
-            "x".repeat(14_000),
-        ))
-        .await
-        .unwrap();
-    let (successor, events) = successor_turn(&mut sub, &sid).await;
-    assert_continues(&h, &cfg, &successor, &events);
 }
 
 /// The switched model stops resolving before the fork: the successor still
