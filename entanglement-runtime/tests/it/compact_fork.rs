@@ -286,6 +286,7 @@ impl Llm for TruncatingLlm {
             let resp = LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             };
             Ok(stream_from_response(resp))
         }

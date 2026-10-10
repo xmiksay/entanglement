@@ -21,6 +21,7 @@ impl Llm for Finisher {
         Ok(stream_from_response(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
     }
 }
@@ -237,6 +238,7 @@ async fn an_empty_prompt_spawn_starts_idle_until_a_real_prompt_arrives() {
             Ok(stream_from_response(LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             }))
         }
     }

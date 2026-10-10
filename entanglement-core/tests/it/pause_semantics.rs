@@ -57,6 +57,7 @@ impl Llm for RecordingLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -146,10 +147,12 @@ async fn pause_while_parked_holds_the_batch_but_still_folds_results() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a"), call("b", "t_b")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -212,10 +215,12 @@ async fn resume_continues_the_same_round_without_reprompting() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -280,6 +285,7 @@ async fn pause_while_idle_defers_new_prompt_until_resume() {
     let (holly, _seen) = engine(vec![LlmResponse {
         text: "final".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -326,6 +332,7 @@ async fn pause_then_stop_cancels_turn_but_keeps_paused_state() {
     let (holly, _seen) = engine(vec![LlmResponse {
         text: String::new(),
         tool_calls: vec![call("a", "t_a")],
+        ..Default::default()
     }]);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -398,6 +405,7 @@ async fn pause_with_a_prompt_flood_reports_an_error_past_the_stash_cap() {
     let (holly, _seen) = engine(vec![LlmResponse {
         text: "final".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -439,10 +447,12 @@ async fn pause_across_hibernate_drops_the_hold_on_resume() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");

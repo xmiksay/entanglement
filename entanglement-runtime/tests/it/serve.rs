@@ -167,6 +167,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -184,10 +185,12 @@ fn spawn_with_ask_user_call(question: &str) -> Holly {
                 input: format!(r#"{{"question":"{question}","allow_free_form":true}}"#),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "acknowledged".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

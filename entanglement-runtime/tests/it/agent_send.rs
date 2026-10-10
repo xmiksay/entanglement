@@ -48,6 +48,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -124,6 +125,7 @@ fn agent_call(id: &str, input: serde_json::Value) -> LlmResponse {
             input: input.to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -136,6 +138,7 @@ fn agent_send_call(id: &str, input: serde_json::Value) -> LlmResponse {
             input: input.to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -143,6 +146,7 @@ fn text_response(text: &str) -> LlmResponse {
     LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 

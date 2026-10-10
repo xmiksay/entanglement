@@ -119,6 +119,7 @@ impl Llm for ScriptLlm {
         Ok(stream_from_response(resp.unwrap_or_else(|| LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         })))
     }
 }
@@ -157,6 +158,7 @@ fn engine() -> (Holly, Requests) {
     let responses = Arc::new(Mutex::new(VecDeque::from([LlmResponse {
         text: "Published.".into(),
         tool_calls: vec![],
+        ..Default::default()
     }])));
     let requests: Requests = Arc::default();
     let r = requests.clone();

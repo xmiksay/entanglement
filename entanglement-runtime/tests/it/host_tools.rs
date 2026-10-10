@@ -44,6 +44,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -99,10 +100,12 @@ async fn read_tool_runs_through_engine_under_build_profile() {
             input: r#"{"path":"hello.txt"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     // ScriptedLlm::new reverses internally and pops from the back, so passing
     // [read_call, finish] yields read_call first, then the tool-free turn that
@@ -177,10 +180,12 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
             input: r#"{"path":"out.txt","oldString":"","newString":"created\n"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![edit_call, finish]);
     let tools = host_tools(root.clone());
@@ -270,6 +275,7 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
             input: r#"{"path":"pkg/out.txt","content":"a\nb\n"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let overwrite_call = LlmResponse {
         text: "".into(),
@@ -279,10 +285,12 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
             input: r#"{"path":"pkg/out.txt","content":"only\n"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![create_call, overwrite_call, finish]);
     let tools = host_tools(root.clone());
@@ -396,10 +404,12 @@ async fn write_tool_denied_under_research_mode() {
             input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![write_call, finish]);
     let tools = host_tools(root.clone());
@@ -481,10 +491,12 @@ async fn write_tool_denied_outside_plans_folder_under_plan_mode() {
             input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![write_call, finish]);
     let tools = host_tools(root.clone());
@@ -559,10 +571,12 @@ async fn write_tool_allowed_in_plans_folder_under_plan_mode() {
             .to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![write_call, finish]);
     let tools = host_tools(root.clone());
@@ -632,10 +646,12 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
             input: r#"{"command":"printf 'shell-ok\\n'"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![bash_call, finish]);
     // `bash` is registered at startup (ADR-0195); mirror the head's own
@@ -712,10 +728,12 @@ async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile()
             input: r#"{"command":"exit 3"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![bash_call, finish]);
     let mut tools = host_tools(root.clone());
@@ -791,10 +809,12 @@ async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
             input: serde_json::json!({ "command": "printf", "args": ["%s", payload] }).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call_call, finish]);
     // Mirror the head's registry: the sextet plus the exec pair

@@ -54,6 +54,7 @@ impl Llm for RecordingLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "assistant-reply".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -198,11 +199,13 @@ async fn hibernate_mid_approval_then_resume_reoffers_pending_call() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         // After resolution the next round answers plainly and ends the turn.
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("hib-approval");

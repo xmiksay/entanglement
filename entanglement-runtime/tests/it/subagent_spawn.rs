@@ -32,6 +32,7 @@ fn finish(text: &str) -> LlmStream {
     stream_from_response(LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     })
 }
 
@@ -44,6 +45,7 @@ fn call(id: &str, name: &str, input: String) -> LlmStream {
             input,
             provider_meta: None,
         }],
+        ..Default::default()
     })
 }
 
@@ -264,6 +266,7 @@ impl Llm for FanOutLlm {
                         provider_meta: None,
                     },
                 ],
+                ..Default::default()
             }));
         }
         Ok(finish("parent done"))
@@ -485,6 +488,7 @@ impl Llm for ParallelFanOutLlm {
                     provider_meta: None,
                 })
                 .collect(),
+            ..Default::default()
         }))
     }
 }

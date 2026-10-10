@@ -53,6 +53,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -70,6 +71,7 @@ fn spawn_calling(tool: &str, input: &str, agents: AgentCatalog) -> Holly {
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
@@ -106,6 +108,7 @@ fn spawn_calling_with_mode_table(
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }]);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {

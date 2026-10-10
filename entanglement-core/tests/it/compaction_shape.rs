@@ -78,6 +78,7 @@ fn text(t: &str) -> LlmResponse {
     LlmResponse {
         text: t.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -85,6 +86,7 @@ fn call(id: &str, n: u8) -> LlmResponse {
     LlmResponse {
         text: String::new(),
         tool_calls: vec![ToolCall::new(id, "probe", format!("{{\"n\":{n}}}"))],
+        ..Default::default()
     }
 }
 

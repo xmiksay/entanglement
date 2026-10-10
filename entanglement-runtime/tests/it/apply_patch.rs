@@ -39,6 +39,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -118,10 +119,12 @@ async fn apply_patch_multi_hunk_through_engine_emits_apply_diff() {
             input: serde_json::json!({"path": "f.txt", "patch": patch}).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let (holly, _executor) = build_holly_and_executor(root.clone(), vec![patch_call, finish]);
     let sid = SessionId::new("s1");
@@ -180,10 +183,12 @@ async fn apply_patch_context_mismatch_leaves_file_untouched_through_engine() {
             input: serde_json::json!({"path": "f.txt", "patch": patch}).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let (holly, _executor) = build_holly_and_executor(root.clone(), vec![patch_call, finish]);
     let sid = SessionId::new("s1");

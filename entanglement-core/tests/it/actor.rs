@@ -297,6 +297,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -321,6 +322,7 @@ async fn dummy_turn_streams_text_and_done() {
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "hello".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]));
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -347,6 +349,7 @@ async fn every_host_tool_round_trips_through_toolexec() {
             input: "ping".into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }]));
     spawn_tool_executor(&holly, |name, input| match name {
         "echo" => format!("echoed: {input}"),
@@ -393,6 +396,7 @@ async fn update_plan_and_update_tasks_round_trip_as_tool_exec() {
             input: r#"{"content":"- [ ] x"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }]));
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -485,10 +489,12 @@ async fn two_sessions_are_independent() {
         LlmResponse {
             text: "from-s1".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
         LlmResponse {
             text: "from-s2".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]));
     let s1 = SessionId::new("s1");
@@ -514,6 +520,7 @@ async fn spawn_starts_child_with_parent_link() {
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "child answer".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]));
     let parent = SessionId::new("parent");
     let child = SessionId::new("child");
@@ -554,6 +561,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
     let holly = Holly::spawn(factory(vec![LlmResponse {
         text: "unused".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]));
     let child = SessionId::new("ghost-child");
     let mut sub = holly.subscribe();
@@ -597,10 +605,12 @@ async fn duplicate_spawn_is_ignored() {
         LlmResponse {
             text: "first".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
         LlmResponse {
             text: "second".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]));
     let child = SessionId::new("child");

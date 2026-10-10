@@ -81,6 +81,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -121,10 +122,12 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -194,10 +197,12 @@ fn spawn_with_rhai_exec_and_base(
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -239,10 +244,12 @@ fn spawn_with_rhai_escape(
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -386,10 +393,12 @@ fn spawn_with_rhai_mode(
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -430,10 +439,12 @@ fn spawn_with_rhai_exec_mode(
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -1428,17 +1439,20 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
                 input: serde_json::json!({ "skill_name": "restricted" }).to_string(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         // Round 2: the script's `edit` binding — outside the loaded skill's
         // `allowed_tools` — must now succeed (ADR-0194).
         LlmResponse {
             text: "".into(),
             tool_calls: vec![rhai_call("r1")],
+            ..Default::default()
         },
         // Round 3: finish — triggers `Done`, clearing the skill-active posture.
         LlmResponse {
             text: "turn1 done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
 
@@ -1543,10 +1557,12 @@ fn spawn_with_rhai_background(
                 input,
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

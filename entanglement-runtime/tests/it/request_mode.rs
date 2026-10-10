@@ -50,6 +50,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -64,6 +65,7 @@ fn request_mode_call(id: &str, mode: &str) -> LlmResponse {
             input: serde_json::json!({"mode": mode, "reason": "need it"}).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -71,6 +73,7 @@ fn text_response(text: &str) -> LlmResponse {
     LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -448,6 +451,7 @@ async fn missing_mode_field_is_refused_with_no_approval_prompt() {
                 input: serde_json::json!({"reason": "need it"}).to_string(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         text_response("ok"),
     ]);

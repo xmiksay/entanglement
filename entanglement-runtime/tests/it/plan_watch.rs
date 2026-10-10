@@ -46,6 +46,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -67,6 +68,7 @@ fn propose_plan_call(id: &str, input: serde_json::Value) -> LlmResponse {
             input: input.to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -74,6 +76,7 @@ fn text_response(text: &str) -> LlmResponse {
     LlmResponse {
         text: text.into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 
@@ -240,6 +243,7 @@ async fn the_agents_own_edit_does_not_also_produce_a_plan_changed_notice() {
                 .to_string(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         text_response("done"),
     ]);

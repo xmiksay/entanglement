@@ -35,6 +35,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -123,10 +124,12 @@ async fn run_calls(calls: Vec<(&str, &str, &str)>) -> Vec<(String, bool)> {
                 input: (*input).into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         })
         .chain(std::iter::once(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         }))
         .collect();
     let scripted = Arc::new(responses);
@@ -279,10 +282,12 @@ async fn user_denial_carries_only_the_reason_no_schema() {
             input: "{}".into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![call, finish]);
     let cfg = EngineConfig {

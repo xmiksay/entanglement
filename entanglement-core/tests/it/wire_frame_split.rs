@@ -37,6 +37,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -101,10 +102,12 @@ async fn forged_wire_tool_result_is_refused_privileged_handle_resolves() {
         LlmResponse {
             text: String::new(),
             tool_calls: vec![call("a", "t_a")],
+            ..Default::default()
         },
         LlmResponse {
             text: "final".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let sid = SessionId::new("s1");
@@ -226,6 +229,7 @@ async fn wire_tool_overlay_is_deny_only() {
     let holly = engine(vec![LlmResponse {
         text: "ok".into(),
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();

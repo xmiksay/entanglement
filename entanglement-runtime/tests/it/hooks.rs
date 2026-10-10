@@ -41,6 +41,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -105,10 +106,12 @@ fn read_then_finish() -> Arc<Vec<LlmResponse>> {
                 input: r#"{"path":"hello.txt"}"#.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ])
 }
@@ -281,6 +284,7 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
         Arc::new(vec![LlmResponse {
             text: "hi".into(),
             tool_calls: vec![],
+            ..Default::default()
         }]),
     );
 

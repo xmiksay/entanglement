@@ -125,6 +125,7 @@ impl Llm for Scripted {
         let resp = self.responses.lock().unwrap().pop().unwrap_or(LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         });
         Ok(stream_from_response(resp))
     }
@@ -295,6 +296,7 @@ fn call(id: &str, name: &str, input: &str) -> LlmResponse {
             input: input.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -310,6 +312,7 @@ fn batch(calls: &[(&str, &str, &str)]) -> LlmResponse {
                 provider_meta: None,
             })
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -317,6 +320,7 @@ fn text() -> LlmResponse {
     LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 

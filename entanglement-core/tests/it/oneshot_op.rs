@@ -668,6 +668,7 @@ impl Llm for SlowScriptedLlm {
             .unwrap_or(LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -682,6 +683,7 @@ async fn oneshot_arriving_during_a_live_turn_is_deferred_until_it_ends() {
                 responses: Mutex::new(VecDeque::from(vec![LlmResponse {
                     text: "turn reply".into(),
                     tool_calls: vec![],
+                    ..Default::default()
                 }])),
                 delay,
             }) as Box<dyn Llm>

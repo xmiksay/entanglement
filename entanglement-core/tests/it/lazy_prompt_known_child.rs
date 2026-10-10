@@ -38,6 +38,7 @@ impl Llm for RecordingLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "assistant-reply".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }

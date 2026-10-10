@@ -66,6 +66,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -114,10 +115,12 @@ async fn run_call(tool: EndpointTool, name: &str, input: &str) -> Vec<(String, b
                 input: input.into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "done".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ];
     let scripted = Arc::new(responses);

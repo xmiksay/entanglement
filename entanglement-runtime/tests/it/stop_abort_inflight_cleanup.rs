@@ -43,6 +43,7 @@ impl Llm for ScriptedLlm {
             .unwrap_or_else(|| LlmResponse {
                 text: "done".into(),
                 tool_calls: vec![],
+                ..Default::default()
             });
         Ok(stream_from_response(resp))
     }
@@ -82,6 +83,7 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
                 input: "sleep".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "".into(),
@@ -91,10 +93,12 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
                 input: "sleep".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         LlmResponse {
             text: "ok".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

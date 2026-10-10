@@ -74,6 +74,7 @@ impl Llm for SlowScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -89,10 +90,12 @@ async fn prompt_arriving_during_streaming_is_stashed_and_replayed() {
         LlmResponse {
             text: "first-reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
         LlmResponse {
             text: "second-reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -150,11 +153,13 @@ async fn prompt_arriving_mid_turn_folds_into_the_live_turn() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         // Second round (post-fold): plain text, so the turn ends here.
         LlmResponse {
             text: "folded-reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {
@@ -224,6 +229,7 @@ impl Llm for LoopingLlm {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         }))
     }
 }
@@ -363,12 +369,14 @@ async fn setmode_arriving_between_tool_calls_applies_immediately() {
                 input: "{}".into(),
                 provider_meta: None,
             }],
+            ..Default::default()
         },
         // Runs in the *same* turn, once the delayed ToolResult below drains
         // the parked batch — proving the switch didn't need a fresh Prompt.
         LlmResponse {
             text: "post-setmode-reply".into(),
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let cfg = EngineConfig {

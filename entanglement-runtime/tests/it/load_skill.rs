@@ -44,6 +44,7 @@ impl Llm for ScriptedLlm {
             responses.pop().unwrap_or_else(|| LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
+                ..Default::default()
             })
         };
         Ok(stream_from_response(resp))
@@ -137,6 +138,7 @@ async fn load_skill_then_read_a_substituted_ref() {
             input: r#"{"skill_name":"demo"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     // Turn 2 reads the substituted absolute path directly — no base-guessing.
     let read_call = LlmResponse {
@@ -147,10 +149,12 @@ async fn load_skill_then_read_a_substituted_ref() {
             input: serde_json::json!({ "path": abs_ref.to_string_lossy() }).to_string(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
 
     let scripted = Arc::new(vec![load_call, read_call, finish]);
@@ -261,10 +265,12 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
             input: r#"{"skill_name":"demo"}"#.into(),
             provider_meta: None,
         }],
+        ..Default::default()
     };
     let finish = LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
+        ..Default::default()
     };
     let scripted = Arc::new(vec![load_call, finish]);
     let registry = {

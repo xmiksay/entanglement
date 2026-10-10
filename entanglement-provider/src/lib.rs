@@ -42,6 +42,7 @@ pub mod oauth;
 pub mod openai;
 pub mod openai_responses;
 pub mod provider_mcp;
+pub mod response;
 mod sse_frame;
 pub mod web_search;
 
@@ -60,11 +61,10 @@ pub use endpoint::{
 };
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
-    fixed_model_concurrency, fixed_thinking_spec, stream_from_response, AuxLlmResolver, DummyLlm,
-    EchoLlm, GenerationParams, GenerationResolver, Llm, LlmEvent, LlmFactory, LlmRequest,
-    LlmResponse, LlmStream, ModelConcurrencyResolver, ModelResolver, ReasoningEffort,
-    ResolvedModel, StopReason, ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId,
-    INVOKE_TOOL,
+    fixed_model_concurrency, fixed_thinking_spec, AuxLlmResolver, DummyLlm, EchoLlm,
+    GenerationParams, GenerationResolver, Llm, LlmEvent, LlmFactory, LlmRequest, LlmStream,
+    ModelConcurrencyResolver, ModelResolver, ReasoningEffort, ResolvedModel, StopReason,
+    ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId, INVOKE_TOOL,
 };
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather
@@ -91,4 +91,5 @@ pub use openai::{
 pub use openai_responses::{
     openai_responses_factory, OpenAiResponsesLlm, OPENAI_RESPONSES_BASE, TOOL_SEARCH_CALL_TOOL,
 };
+pub use response::{stream_from_response, LlmResponse};
 pub use web_search::WebSearchConfig;
