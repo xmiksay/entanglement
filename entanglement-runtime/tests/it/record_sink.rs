@@ -115,10 +115,20 @@ async fn custom_sink_receives_the_same_record_stream_as_the_file() {
 
 /// An embedder-style sink whose `append` fails on scripted call indices (a
 /// full backlog, a failed insert) and stores everything else in memory.
-struct FlakySink {
+pub(crate) struct FlakySink {
     fail: Vec<usize>,
     calls: Mutex<usize>,
     stored: Arc<Mutex<Vec<LogRecord>>>,
+}
+
+impl FlakySink {
+    pub(crate) fn new(fail: &[usize], stored: Arc<Mutex<Vec<LogRecord>>>) -> Arc<Self> {
+        Arc::new(Self {
+            fail: fail.to_vec(),
+            calls: Mutex::new(0),
+            stored,
+        })
+    }
 }
 
 impl RecordSink for FlakySink {
@@ -134,29 +144,21 @@ impl RecordSink for FlakySink {
     }
 }
 
-/// Drives one echo turn through a [`FlakySink`] failing `fail`, returning
-/// what it stored once the turn's `Done` landed.
-async fn turn_through_flaky_sink(sid: &SessionId, fail: &[usize]) -> Vec<LogRecord> {
-    let stored = Arc::new(Mutex::new(Vec::new()));
-    let holly = Holly::spawn(EngineConfig::default());
-    let sink = Arc::new(FlakySink {
-        fail: fail.to_vec(),
-        calls: Mutex::new(0),
-        stored: stored.clone(),
-    });
-    let _tap = spawn_persistence_subscriber_with_sink(&holly, sink);
-    holly
-        .send(InMsg::prompt(sid.clone(), "hello"))
-        .await
-        .expect("send prompt");
-
+/// Waits until `stored` holds a `Done` for `sid` at index `from` or later,
+/// returning a snapshot of it.
+pub(crate) async fn wait_for_done(
+    stored: &Mutex<Vec<LogRecord>>,
+    sid: &SessionId,
+    from: usize,
+) -> Vec<LogRecord> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let done = stored.lock().unwrap().iter().any(|r| {
+        let snapshot = stored.lock().unwrap().clone();
+        let done = snapshot.iter().skip(from).any(|r| {
             matches!(&r.payload, LogPayload::Out(OutEvent::Done { session, .. }) if session == sid)
         });
         if done {
-            return stored.lock().unwrap().clone();
+            return snapshot;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -164,6 +166,19 @@ async fn turn_through_flaky_sink(sid: &SessionId, fail: &[usize]) -> Vec<LogReco
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Drives one echo turn through a [`FlakySink`] failing `fail`, returning
+/// what it stored once the turn's `Done` landed.
+pub(crate) async fn turn_through_flaky_sink(sid: &SessionId, fail: &[usize]) -> Vec<LogRecord> {
+    let stored = Arc::new(Mutex::new(Vec::new()));
+    let holly = Holly::spawn(EngineConfig::default());
+    let _tap = spawn_persistence_subscriber_with_sink(&holly, FlakySink::new(fail, stored.clone()));
+    holly
+        .send(InMsg::prompt(sid.clone(), "hello"))
+        .await
+        .expect("send prompt");
+    wait_for_done(&stored, sid, 0).await
 }
 
 /// #723: a record the sink refuses is a hole, so the tap tombstones it —

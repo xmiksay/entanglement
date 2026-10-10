@@ -33,6 +33,10 @@ use gap_writer::GapWriter;
 /// return `Err`; one that drops a record *after* returning `Ok` (e.g. its
 /// writer task's insert fails later) has hidden the loss from the tap and
 /// must write its own `Gap` row for that root, or a resume replays a hole.
+/// That row belongs *at the hole*: once an insert fails, the writer must hold
+/// back that root's later rows (counting them into the gap) until the `Gap`
+/// row lands — the same rule the tap follows — or an async writer persists
+/// rows after an unmarked hole, inside what `resumable_prefix` keeps.
 pub trait RecordSink: Send + Sync {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()>;
 }

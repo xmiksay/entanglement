@@ -767,8 +767,11 @@ assistant/tool messages and the model appears to forget the conversation.
   if the tombstone write fails too it keeps the count pending per root and
   writes it before that root's next record — later records for the root count
   into the pending gap rather than land after an unmarked hole — with a final
-  retry at tap shutdown. The tap owns gap-marking for every `Err` and lag; a
-  sink that loses a record after returning `Ok` must write its own `Gap`.
+  retry at tap shutdown; a lasting outage logs one error at its start and one
+  warning on recovery (with the gap size), retries only at debug. The tap owns
+  gap-marking for every `Err` and lag; a sink that loses a record after
+  returning `Ok` must write its own `Gap` *at the hole*, holding that root's
+  later rows back until it lands.
   `integrity_gap` detects it and both resume paths
   (`skutter run --resume`, the TUI modal) **refuse** rather than fold an
   incomplete context. An embedder that prefers resuming the intact head uses
@@ -776,7 +779,10 @@ assistant/tool messages and the model appears to forget the conversation.
   `Result<LogRecord, _>` per stored row (`Err` = undecodable) and returns the
   records before the first gap/corrupt row plus an `Option<Truncation>`
   (`Retired` is not a hole); it and `integrity_gap` share
-  `LogPayload::gap_dropped` as the one definition of a hole.
+  `LogPayload::gap_dropped` as the one definition of a hole. Before a session
+  resumed from a truncated prefix writes again, the embedder deletes the rows
+  from `Truncation::index()` onward (or resumes into a fresh id) — else the
+  old tombstone stays the first gap and the next load drops the new work.
   `session_store::read` likewise distinguishes a
   crash-truncated *tail* line (tolerated with a warning) from *interior*
   corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad

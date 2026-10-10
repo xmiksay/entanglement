@@ -226,9 +226,13 @@ fn records_behind_an_unwritten_tombstone_count_as_lost() {
     let sink = ScriptedSink::failing(&[1, 2, 3]);
     let mut writer = GapWriter::new(sink.clone());
     let root = SessionId::new("root");
-    for label in ["a", "b", "c", "d"] {
+    for label in ["a", "b", "c"] {
         writer.append(&root, &prompt_record(label), "test");
     }
+    // One outage for the whole run of failures: logged once, not per record.
+    assert_eq!(writer.outage.len(), 1);
+    writer.append(&root, &prompt_record("d"), "test");
+    assert!(writer.outage.is_empty(), "recovery ends the outage");
     assert_eq!(labels(&sink.stored()), ["a", "gap:2", "d"]);
 }
 

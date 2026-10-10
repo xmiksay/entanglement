@@ -4,7 +4,7 @@
 use super::RecordSink;
 use crate::session_store::{LogPayload, LogRecord};
 use entanglement_core::SessionId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Wraps the sink so a dropped record never leaves a silent hole.
@@ -20,6 +20,9 @@ pub(super) struct GapWriter {
     sink: Arc<dyn RecordSink>,
     /// root → records lost but not yet tombstoned.
     pending: HashMap<SessionId, u64>,
+    /// Roots whose sink is currently failing. WHY: a persistent outage would
+    /// otherwise log an error per record; this logs its start and its end.
+    pub(super) outage: HashSet<SessionId>,
 }
 
 impl GapWriter {
@@ -27,6 +30,7 @@ impl GapWriter {
         Self {
             sink,
             pending: HashMap::new(),
+            outage: HashSet::new(),
         }
     }
 
@@ -38,7 +42,7 @@ impl GapWriter {
             return;
         }
         if let Err(e) = self.sink.append(root, record) {
-            tracing::error!("Failed to persist {what} for {root}: {e:#}; recording a gap");
+            self.failed(root, what, &e);
             self.gap(root, 1);
         }
     }
@@ -63,6 +67,19 @@ impl GapWriter {
         }
     }
 
+    /// Logs a sink failure: an error when it starts an outage for `root`,
+    /// debug while the outage lasts.
+    fn failed(&mut self, root: &SessionId, what: &str, e: &anyhow::Error) {
+        if self.outage.insert(root.clone()) {
+            tracing::error!(
+                "Failed to persist {what} for {root}: {e:#}; recording a gap and holding \
+                 this root's records until the sink recovers"
+            );
+        } else {
+            tracing::debug!("Persistence for {root} still failing ({what}): {e:#}");
+        }
+    }
+
     fn add_pending(&mut self, root: &SessionId, n: u64) {
         let slot = self.pending.entry(root.clone()).or_default();
         *slot = slot.saturating_add(n);
@@ -78,10 +95,15 @@ impl GapWriter {
         match self.sink.append(root, &tombstone) {
             Ok(()) => {
                 self.pending.remove(root);
+                if self.outage.remove(root) {
+                    tracing::warn!(
+                        "Persistence for {root} recovered; recorded a gap of {dropped} lost record(s)"
+                    );
+                }
                 true
             }
             Err(e) => {
-                tracing::error!("Failed to persist gap tombstone for {root}: {e:#}");
+                self.failed(root, "gap tombstone", &e);
                 false
             }
         }

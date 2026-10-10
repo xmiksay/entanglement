@@ -174,7 +174,10 @@ fails too it holds the gap and writes it before that root's next record
 (counting records it had to hold back as further loss). A sink that loses a
 record *after* returning `Ok` — e.g. its writer task's `INSERT` fails later —
 has hidden the loss from the tap and must write its own `Gap` row for that
-root.
+root, **at the hole**: once an insert fails, the writer holds back that root's
+later rows (counting them into the gap) until the `Gap` row lands — the same
+rule the tap follows. An async writer that keeps inserting puts rows after an
+unmarked hole, i.e. inside what `resumable_prefix` (below) keeps.
 
 **The one constraint that matters for a real (DB/network) sink:
 `append` must not block.** The tap reads `Holly`'s outbound broadcast, which is
@@ -215,6 +218,13 @@ where and why it cut. A `Retired` record (a frame an older release logged,
 choice; the in-tree heads stay strict and refuse a log with any gap
 (`check_for_resume`, #104).
 
+**After a truncated resume, remove the hole before the session writes
+again.** The resumed session appends its new rows *after* the old tombstone,
+so the next load would cut at that same first gap and silently discard
+everything done since this resume. Either delete the rows from
+`truncation.index()` onward before resuming under the same id (shown below),
+or resume the prefix into a **fresh** session id and retire the old one.
+
 ```rust
 use entanglement_runtime::session_store::{pair_records, resumable_prefix};
 
@@ -222,6 +232,8 @@ let rows = db_rows.iter().map(|row| serde_json::from_value::<LogRecord>(row.payl
 let prefix = resumable_prefix(rows);
 if let Some(cut) = prefix.truncation {
     tracing::warn!("resuming {root} from its intact prefix, cut at {cut:?}");
+    // `db_rows[cut.index()..]` — the tombstone/corrupt row and everything after.
+    db.delete_rows_from(&root, db_rows[cut.index()].id).await?;
 }
 holly.resume(root, pair_records(&prefix.records)).await?;
 ```
