@@ -129,7 +129,11 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
     register_skill_tools(
         &mut reg,
         &skills,
-        &entanglement_core::HttpClient::new().unwrap(),
+        &entanglement_core::HttpClient::with_shared_state(
+            entanglement_core::SharedStateLocation::Disabled,
+            entanglement_core::RetryConfig::default(),
+        )
+        .unwrap(),
     );
     assert!(
         reg.contains("skill__x__alias_bash"),

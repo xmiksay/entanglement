@@ -51,7 +51,10 @@ pub use catalog::{
     ProviderEntry, ProviderMcpServer, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle,
     ToolAdvertising, Wire,
 };
-pub use client::{prune_stale, HttpClient, RetryConfig, StreamGuard, ThrottleStatus, UserBudget};
+pub use client::{
+    prune_stale, HttpClient, RetryConfig, SharedStateLocation, StreamGuard, ThrottleStatus,
+    UserBudget,
+};
 pub use endpoint::{
     call as call_endpoint, EndpointMethod, EndpointResponse, ENDPOINT_RESPONSE_CAP,
 };

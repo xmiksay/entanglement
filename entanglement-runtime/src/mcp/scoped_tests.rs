@@ -49,7 +49,7 @@ impl TokenStore for EmptyStore {
 }
 
 fn http() -> entanglement_core::HttpClient {
-    entanglement_core::HttpClient::new().expect("http client")
+    crate::test_http_client()
 }
 
 fn oauth_server() -> McpServerConfig {

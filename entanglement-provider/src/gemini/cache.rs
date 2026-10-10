@@ -202,6 +202,7 @@ fn spawn_delete(http: &HttpClient, base_url: &str, auth: &(&'static str, String)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{RetryConfig, SharedStateLocation};
 
     #[test]
     fn cache_key_changes_with_system_and_tools() {
@@ -223,7 +224,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_returns_none_for_empty_prefix() {
-        let http = HttpClient::new().expect("client");
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .expect("client");
         let handle = CacheHandle::new();
         let name = handle
             .resolve(
@@ -240,7 +243,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_skips_and_remembers_a_too_small_prefix() {
-        let http = HttpClient::new().expect("client");
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .expect("client");
         let handle = CacheHandle::new();
         // Well under MIN_CACHEABLE_CHARS — never issues a network call.
         let first = handle
@@ -321,7 +326,9 @@ mod tests {
     #[tokio::test]
     async fn a_key_change_deletes_the_replaced_resource_and_a_reuse_does_not() {
         let (base, mut seen) = mock_gemini();
-        let http = HttpClient::new().expect("client");
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .expect("client");
         let handle = CacheHandle::new();
         let auth = ("x-goog-api-key", "k1".to_string());
         let sys_a = "a".repeat(MIN_CACHEABLE_CHARS);

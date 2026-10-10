@@ -24,16 +24,12 @@ use entanglement_runtime::tool_runner::spawn_tool_executor;
 use entanglement_runtime::ToolRegistry;
 use tokio::net::TcpListener;
 
-fn ensure_shared_state_disabled() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-    });
-}
-
 fn test_http_client() -> HttpClient {
-    ensure_shared_state_disabled();
-    HttpClient::new().unwrap()
+    HttpClient::with_shared_state(
+        entanglement_core::SharedStateLocation::Disabled,
+        entanglement_core::RetryConfig::default(),
+    )
+    .unwrap()
 }
 
 async fn ok_body(State(body): State<&'static str>) -> impl IntoResponse {

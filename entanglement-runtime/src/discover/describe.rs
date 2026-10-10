@@ -412,7 +412,7 @@ mod tests {
         reg.register(crate::endpoint::EndpointTool::new(
             "endpoint__weather".to_string(),
             &cfg,
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
         ));
         let advertising = AdvertisingState::new();
         let session = SessionId::new("s");
@@ -575,7 +575,7 @@ mod tests {
                     token_store: Some(Arc::new(EmptyStore)),
                 })
             }),
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
             Vec::new(),
         );
         let advertising = AdvertisingState::new();

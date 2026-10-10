@@ -332,7 +332,7 @@ mod tests {
         let mut cfg = stdio_cfg("definitely-not-a-real-binary-xyz");
         cfg.disabled = true;
 
-        let http = entanglement_core::HttpClient::new().unwrap();
+        let http = crate::test_http_client();
         let err = mcp_add("srv".into(), cfg, &registry, &active, &configs, &[], &http)
             .await
             .unwrap_err();
@@ -347,7 +347,7 @@ mod tests {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
 
-        let http = entanglement_core::HttpClient::new().unwrap();
+        let http = crate::test_http_client();
         let result = mcp_add(
             "broken".into(),
             stdio_cfg("definitely-not-a-real-binary-xyz"),

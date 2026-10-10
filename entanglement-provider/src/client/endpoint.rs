@@ -21,6 +21,9 @@ use crate::UserId;
 pub(super) struct EndpointPool {
     pub(super) endpoints: Mutex<HashMap<String, Arc<EndpointState>>>,
     pub(super) config: RetryConfig,
+    /// Where every endpoint in this pool keeps its cross-process state —
+    /// fixed at client construction (#743).
+    pub(super) shared: shared_state::SharedStateLocation,
 }
 
 /// RAII bump of an [`EndpointState::waiters`] counter — display-only queue
@@ -105,7 +108,12 @@ pub(super) struct EndpointState {
 }
 
 impl EndpointState {
-    pub(super) fn new(rpm: u32, concurrency: usize, pool_key: &str) -> Self {
+    pub(super) fn new(
+        rpm: u32,
+        concurrency: usize,
+        pool_key: &str,
+        shared: &shared_state::SharedStateLocation,
+    ) -> Self {
         let cap = concurrency.max(1);
         Self {
             limiter: RateLimiter::new(rpm),
@@ -115,7 +123,7 @@ impl EndpointState {
             retry_after: Mutex::new(None),
             model_concurrency: Mutex::new(HashMap::new()),
             user_budgets: Mutex::new(HashMap::new()),
-            shared: shared_state::SharedGate::new(pool_key),
+            shared: shared_state::SharedGate::new(pool_key, shared),
             rpm,
         }
     }
@@ -220,7 +228,9 @@ impl HttpClient {
         let concurrency = concurrency.unwrap_or(self.pool.config.concurrency);
         let mut map = self.pool.endpoints.lock().expect("endpoint pool poisoned");
         map.entry(key.to_string())
-            .or_insert_with(|| Arc::new(EndpointState::new(rpm, concurrency, key)))
+            .or_insert_with(|| {
+                Arc::new(EndpointState::new(rpm, concurrency, key, &self.pool.shared))
+            })
             .clone()
     }
 }

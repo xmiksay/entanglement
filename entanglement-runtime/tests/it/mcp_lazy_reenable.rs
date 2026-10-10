@@ -42,11 +42,11 @@ use entanglement_runtime::{Tool, ToolRegistry};
 
 fn test_http_client() -> entanglement_core::HttpClient {
     // Mirrors `mcp_http.rs`: never write real shared endpoint state from tests.
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-    });
-    entanglement_core::HttpClient::new().unwrap()
+    entanglement_core::HttpClient::with_shared_state(
+        entanglement_core::SharedStateLocation::Disabled,
+        entanglement_core::RetryConfig::default(),
+    )
+    .unwrap()
 }
 
 /// A minimal streamable-HTTP MCP server advertising one `ping` tool whose

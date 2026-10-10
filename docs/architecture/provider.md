@@ -580,6 +580,21 @@ operator who wants genuinely separate per-instance budgets already gets that
 for free by giving each instance its own key/base URL, since the pool key
 itself isolates them.
 
+**The location is injected per client, resolved from env only by default**
+(#743): an `HttpClient` carries a `SharedStateLocation` (`Disabled` |
+`Dir(path)`) fixed at construction and handed to every `EndpointState` it
+creates. `HttpClient::new`/`with_config` resolve it once via
+`SharedStateLocation::from_env()` — `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` >
+`ENTANGLEMENT_SHARED_STATE_DIR` > `${data_dir}/entanglement/endpoints` >
+`Disabled` — so production behavior is unchanged; `HttpClient::with_shared_state(location,
+config)` pins it explicitly (a per-test temp dir, `Disabled`, or an embedder
+running several isolated pools in one process). Tests never mutate the
+process env to steer it: the precedence is unit-tested over an injected env
+lookup, and in the provider crate's own `cfg(test)` build the data-dir
+fallback panics, so a test that forgets to inject a location fails instead
+of touching the developer's live endpoint state. `prune_stale` is the
+env-resolved convenience over `SharedStateLocation::prune_stale`.
+
 **Lease release is synchronous, and the TTL backstop is tighter** (#547):
 `SharedLease::drop` used to only cancel its background renewal task, which
 then asynchronously removed the lease from the shared file — a detached

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use entanglement_provider::{
     fixed_model_concurrency, fixed_thinking_spec, ContentPart, HttpClient, OpenAiLlm, RetryConfig,
-    ThinkingFormat, ThinkingSpec,
+    SharedStateLocation, ThinkingFormat, ThinkingSpec,
 };
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
 use futures::StreamExt;
@@ -21,26 +21,15 @@ use tokio::net::{TcpListener, TcpStream};
 // ── shared-state isolation (#551) ───────────────────────────────────────────
 
 /// Every test in this binary drives `execute_with_retry` against a local mock
-/// server, not a real endpoint — but without this, the cross-process shared
-/// endpoint state (#523) would still write real `.state`/`.lock` files into
-/// the developer's actual `${data_dir}/entanglement/endpoints/`. `Once`-guarded
-/// so it's cheap to call from every `HttpClient` constructor below and only
-/// ever sets the env var a single time for the whole binary.
-fn ensure_shared_state_disabled() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-    });
-}
-
+/// server, not a real endpoint — the cross-process shared endpoint state
+/// (#523) is disabled per client (#743) so nothing writes real `.state`/`.lock`
+/// files into the developer's actual `${data_dir}/entanglement/endpoints/`.
 fn test_http_client() -> HttpClient {
-    ensure_shared_state_disabled();
-    HttpClient::new().unwrap()
+    test_http_client_with(RetryConfig::default())
 }
 
 fn test_http_client_with(config: RetryConfig) -> HttpClient {
-    ensure_shared_state_disabled();
-    HttpClient::with_config(config).unwrap()
+    HttpClient::with_shared_state(SharedStateLocation::Disabled, config).unwrap()
 }
 
 // ── mock server ─────────────────────────────────────────────────────────────
