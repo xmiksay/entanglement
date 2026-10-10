@@ -1,6 +1,6 @@
 //! [`InMsg`] routing (`session`) and trust classification (`wire_allowed`).
 
-use crate::protocol::*;
+use crate::protocol::{InMsg, SessionId};
 
 impl InMsg {
     /// The session this message targets, or `None` for a supervisor-global query

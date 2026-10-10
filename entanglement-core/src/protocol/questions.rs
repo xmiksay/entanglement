@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::*;
+use crate::protocol::SessionId;
+#[cfg(doc)]
+use crate::protocol::{InMsg, OutEvent};
 
 /// One labelled choice in a model-driven [`OutEvent::UserQuestion`] prompt
 /// (ADR-0027). The `label` is what flows back as the answer when picked; the
@@ -33,7 +35,7 @@ pub struct Question {
 /// (`question`/`options`/`allow_free_form`) — `serde`'s field-level
 /// `deserialize_with` only ever sees the value already keyed under its own
 /// field name, and merging *sibling* keys into one field needs `#[serde(flatten)]`
-/// over an `untagged` shape instead (unlike [`de_prompt_content`][super::in_msg::de_prompt_content], which only
+/// over an `untagged` shape instead (unlike `de_prompt_content`, which only
 /// ever swaps one field's own shape). This newtype is that flattened field:
 /// it deserializes either the current `{"questions": [...]}` shape or the
 /// pre-#488 flat `{"question", "options", "allow_free_form"}` shape (folded

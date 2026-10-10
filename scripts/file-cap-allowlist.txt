@@ -6,10 +6,13 @@
 # This list must only shrink: split a file below the cap, delete its row in
 # the same change — the gate fails loudly if a listed file is no longer over
 # the cap and forgot to be removed. Do not add new entries for files that
-# grew past the cap after this change; split them instead.
+# grew past the cap after this change; split them instead. The one
+# exception: a single serde-tagged wire enum (`InMsg`, `OutEvent`) can't be
+# split across files without macros, so it may stay over the cap — but only
+# in its own file that holds nothing else (#737).
 #
 # Split guidance from issue #451 (natural seams to split along, once
-# attempted): protocol.rs by message family; main.rs by subcommand
+# attempted): main.rs by subcommand
 # (tool_runner.rs was split ladder vs executor, #712). The provider parser splits
 # (anthropic.rs/openai.rs) are easier after the UTF-8 chunk-boundary fix
 # rework touches the same code region.
@@ -19,6 +22,8 @@
 # drift in the interim. `host/call.rs` and `skills/mod.rs` from the original
 # table are deliberately absent: both were split below the cap in the same
 # change that added this gate.
+entanglement-core/src/protocol/in_msg.rs
+entanglement-core/src/protocol/out_event.rs
 entanglement-runtime/src/main.rs
 entanglement-runtime/src/agents/mod.rs
 entanglement-runtime/src/script.rs

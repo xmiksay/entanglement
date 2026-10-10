@@ -309,11 +309,10 @@ impl Supervisor {
         // a label the runtime grades the *next* call against, never
         // deferred like `SetAgent` used to be) — no session-loop
         // special-casing needed for the cascade to be correct. `modes` is
-        // updated for
-        // every id in the subtree, live or not, so a hibernated
-        // descendant's cache entry is fixed up defensively too (it plays
-        // no functional role until that id resumes and re-derives the
-        // truth from its own replay anyway).
+        // updated for every id in the subtree, live or not, so a hibernated
+        // descendant's cache entry is fixed up defensively too (it plays no
+        // functional role until that id resumes and re-derives the truth
+        // from its own replay anyway).
         self.modes.insert(session.clone(), mode.to_string());
         for descendant in collect_subtree(session, &self.parent_links) {
             if &descendant == session {
