@@ -14,7 +14,11 @@ ambiguous-stop retry decision, split out of `turn.rs` along that retry seam,
 (the parked-turn state), `session/invoke_envelope.rs` (the ADR-0204 `invoke`
 unwrap), and `session/emit.rs` (outbound-event helpers), with
 `session/replay.rs` holding the pure state reconstruction (its turn fold
-state machine in `session/replay_pending.rs`).
+state machine in `session/replay_pending.rs`). `session.rs` itself keeps the
+session task's command loop (`session_loop`); its start-up (announce, model
+pin, generation overlay) is `session/start.rs`, the `SessionCmd` set and the
+capped deferred-command stash are `session/cmd.rs`, and the loop's
+state-changing command handlers are `session/commands.rs`.
 
 Each session is a lazily-spawned tokio task owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
@@ -760,7 +764,7 @@ transition, not just this executor's own) so it stays current independent of
 whether `agent_send` itself was ever called. A **closed** (tombstoned) child
 refuses clearly (its id is spent, ADR-0028); a **hibernated** child refuses
 *loudly* rather than silently at this layer too — belt-and-suspenders with
-the supervisor's own refusal (`holly.rs`'s lazy-`Prompt` path knows a session
+the supervisor's own refusal (`holly/supervisor/spawn.rs`'s lazy-`Prompt` path knows a session
 id is a spawned child via `parent_links`, which survives hibernation
 specifically so it can refuse a known child instead of blank-respawning it
 under `build`, ADR-0168/#639). Only a `Live` child is ever actually sent the

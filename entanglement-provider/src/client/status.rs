@@ -6,7 +6,8 @@
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{Duration, Instant};
 
-use super::{EndpointState, HttpClient};
+use super::endpoint::EndpointState;
+use super::HttpClient;
 
 /// A snapshot of one endpoint's throttle posture at a moment in time. Purely
 /// informational — nothing here feeds back into the request path.

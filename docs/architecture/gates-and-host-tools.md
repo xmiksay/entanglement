@@ -1379,6 +1379,6 @@ touched) renders as a transcript status line via `App::handle_mcp_changed`/
 is entirely a head-side consumer of the `InMsg`/`OutEvent` pair #375 already
 shipped.
 
-[holly]: ../entanglement-core/src/holly.rs
-[profile]: ../entanglement-core/src/protocol.rs
-[perm]: ../entanglement-core/src/protocol.rs
+[holly]: ../../entanglement-core/src/holly.rs
+[profile]: ../../entanglement-core/src/protocol/permission.rs
+[perm]: ../../entanglement-core/src/protocol/permission.rs

@@ -21,8 +21,12 @@
 //! auto-compact, #398/ADR-0103) both call; [`compaction_request`] picks its
 //! request shape (ADR-0202) and [`transcript`] renders the fallback text;
 //! [`round_inputs`] resolves the system prompt + tool specs a round and a
-//! compaction share.
+//! compaction share; [`cmd`] is the supervisor→session command set and its
+//! capped stash; [`start`] builds and announces a starting session; and
+//! [`commands`] applies the loop's state-changing commands.
 
+mod cmd;
+mod commands;
 mod compaction_request;
 mod emit;
 mod fork;
@@ -34,6 +38,7 @@ mod replay;
 mod replay_pending;
 mod round;
 mod round_inputs;
+mod start;
 mod state;
 mod stream;
 mod summarize;
@@ -42,146 +47,26 @@ mod transcript;
 mod turn;
 mod turn_state;
 
+pub(crate) use cmd::SessionCmd;
 pub use state::{Session, SessionUsage};
 pub use turn_state::TurnState;
 
+use cmd::{cap_meta_field, stash_or_reject};
 use fork::Forked;
 
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
-use entanglement_provider::{ContentPart, UserId};
-use std::time::{SystemTime, UNIX_EPOCH};
+use entanglement_provider::UserId;
 
-use emit::{emit_tool_output, next_seq, reoffer_pending};
+use emit::{emit_tool_output, reoffer_pending};
 use ops::run_oneshot;
+use start::{start_session, SessionStart};
 use turn::drive_turn;
-
-/// Ceiling on the deferred-command queue (#556): while paused (or mid-turn),
-/// every wire-allowed command that arrives is stashed until the hold lifts or
-/// the live turn ends — a stuck automation retrying against a paused/busy
-/// session must not grow this without bound.
-const MAX_STASHED_COMMANDS: usize = 64;
-
-/// Push `cmd` onto `stash` unless it's already at [`MAX_STASHED_COMMANDS`], in
-/// which case `cmd` is dropped and the caller told via `OutEvent::Error`
-/// rather than the queue growing forever.
-fn stash_or_reject(
-    stash: &mut VecDeque<SessionCmd>,
-    cmd: SessionCmd,
-    session: &SessionId,
-    events: &broadcast::Sender<OutEvent>,
-    seq: &AtomicU64,
-) {
-    if stash.len() >= MAX_STASHED_COMMANDS {
-        let _ = events.send(OutEvent::Error {
-            session: session.clone(),
-            seq: next_seq(seq),
-            message: format!(
-                "too many commands queued while this session is busy/paused \
-                 (cap {MAX_STASHED_COMMANDS}) — dropped"
-            ),
-        });
-        return;
-    }
-    stash.push_back(cmd);
-}
-
-/// Ceiling on `SetSessionMeta`'s `name`/`action` (#556): both are persisted
-/// and re-broadcast on every set, so an unbounded value bloats the event log
-/// and every session listing one write at a time.
-const MAX_SESSION_META_LEN: usize = 200;
-
-/// Byte-cap `s` at [`MAX_SESSION_META_LEN`], backing off to the nearest UTF-8
-/// char boundary rather than panicking mid-character.
-fn cap_meta_field(s: String) -> String {
-    if s.len() <= MAX_SESSION_META_LEN {
-        return s;
-    }
-    let mut cut = MAX_SESSION_META_LEN;
-    while !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    s[..cut].to_string()
-}
-
-/// Commands routed to a single session by the supervisor (InMsg minus session id).
-#[derive(Debug, Clone)]
-pub(crate) enum SessionCmd {
-    Prompt(Vec<ContentPart>),
-    /// Output of a runtime-executed tool (`request_id`, multimodal `content`,
-    /// `is_error`, `duration_ms`) — resolves a pending [`OutEvent::ToolExec`]
-    /// round-trip (#58). `content` is text today, an image block when `read`
-    /// opens an image (#221). `is_error`/`duration_ms` (#636, ADR-0176) and
-    /// `exit_code` (#681, ADR-0186) ride straight through to
-    /// [`OutEvent::ToolOutput`] — the structured side channel is display-only,
-    /// so it does not feed `Context` (the model still only sees `content`'s
-    /// text). Approval (`Approve`/`Reject`) is no longer a core command: the
-    /// runtime tool executor owns it (#59) and never reaches the session loop.
-    ToolResult(String, Vec<ContentPart>, bool, Option<u64>, Option<i32>),
-    /// Switch the live permission mode by name (ADR-0207) — carried opaquely,
-    /// like the field it sets ([`Session::mode`]). Core holds no table to
-    /// validate the name against, so this always succeeds: see the handler
-    /// for the always-succeed / stash-deferred shape it shares with
-    /// [`SetGeneration`][SessionCmd::SetGeneration].
-    SetMode(String),
-    /// Switch the live model/provider (`provider`, `model`) — #218. Re-resolves
-    /// against [`EngineConfig::model_resolver`][crate::EngineConfig] and rebuilds
-    /// `Session::llm` without restarting the engine.
-    SetModel(String, String),
-    /// Live-adjust generation knobs (#374, ADR-0094): partial overrides merged
-    /// onto `Session::generation` via `GenerationParams::apply_overrides`.
-    SetGeneration(entanglement_provider::GenerationParams),
-    /// Set display metadata (`name`, `action`): `None` leaves a field
-    /// untouched, `Some("")` clears it. Applied immediately — never stashed —
-    /// like [`ChildSpawned`][SessionCmd::ChildSpawned], since `action` exists
-    /// precisely to change mid-turn. Always acks with
-    /// [`OutEvent::SessionMetaChanged`] carrying the full merged values. The
-    /// third field is `if_unset` (#553): when `true`, `name` only applies if
-    /// the session has no name yet.
-    SetSessionMeta(Option<String>, Option<String>, bool),
-    /// Replace the session's live tool overlay (#539, ADR-0149): the full
-    /// [`ToolOverlayEntry`] list whose matching tools exist for this session
-    /// regardless of the profile mask. Always succeeds and emits
-    /// [`OutEvent::ToolOverlayChanged`] with the effective list.
-    SetToolOverlay(Vec<ToolOverlayEntry>),
-    /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
-    Oneshot(String, serde_json::Value),
-    Stop,
-    /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
-    /// interrupts an in-flight round (a mid-stream arrival is stashed by the
-    /// existing generic mechanism in `stream.rs` and applied once the turn
-    /// ends — unlike `SetMode`, which applies even mid-stream). Idempotent.
-    Pause,
-    /// Lift a hold placed by `Pause` (#516, ADR-0208). A no-op if not paused.
-    Unpause,
-    /// Evict this session from memory without tombstoning its id (#318,
-    /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
-    /// seq counter, and exits — dropping `Session` (the `Context`/history). The
-    /// supervisor has already removed the map entry, so no `Prompt` reaches a dead
-    /// task; the id stays resumable via [`Holly::resume`][crate::Holly::resume].
-    /// Routed by the supervisor on [`InMsg::HibernateSession`]; the sender is
-    /// dropped alongside so a turn parked mid-stream unwinds to this teardown
-    /// (stop-then-hibernate) rather than stranding.
-    Hibernate,
-    /// A sub-agent this session spawned came to life — append it to
-    /// [`Session::children`][crate::session::Session::children]. Sent by the
-    /// supervisor on [`InMsg::Spawn`] to the *parent* task, mirroring the
-    /// `parent_links` edge it records. A pure state update: applied immediately,
-    /// never stashed, so a mid-turn spawn reflects at once.
-    ChildSpawned(SessionId),
-    /// A child of this session was retired (its sub-tree closed) — remove it from
-    /// [`Session::children`][crate::session::Session::children]. Sent by the
-    /// supervisor on the [`InMsg::CloseSession`] cascade to the (still-live)
-    /// parent of the closed sub-tree root.
-    ChildClosed(SessionId),
-}
 
 /// Runs one session until `Stop` / inbox close. Emits `SessionStarted`, `Idle` status
 /// and `AgentChanged` so a head knows the starting agent.
@@ -210,162 +95,22 @@ pub(crate) async fn session_loop(
     activity: ActivityRegistry,
     forks: mpsc::Sender<InMsg>,
 ) {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    let root = parent.is_none();
-    let agent_name = agent.name.clone();
-    let agent_model = agent.model.clone();
-    // Captured before `initial_session` is consumed below — `Session` isn't
-    // `Copy`, so this is the only place left to tell "fresh spawn" from
-    // "resumed" once `s` exists.
-    let is_resumed = initial_session.is_some();
-
-    let mut s = initial_session.unwrap_or_else(|| Session::new_empty(&cfg, agent));
-    // Lets this session fork itself into a compaction successor (ADR-0205);
-    // see `Session::engine`.
-    s.engine = Some(forks);
-    // ADR-0207 §6: a spawned child inherits its parent's mode. A resumed
-    // session's `s.mode` is already correct (replay's last-write-wins fold
-    // over its own `ModeChanged` log), so only a genuinely fresh spawn takes
-    // `initial_mode` — mirroring the resumed-takes-precedence rule the
-    // `Option`-shaped fields below use, spelled with the captured `bool`
-    // instead since `mode` has no "unset" value of its own to fall back on.
-    if !is_resumed {
-        s.mode = initial_mode;
-    }
-    // A fresh (non-resumed) successor records the session it succeeds; a resumed
-    // one already reconstructed it from its `SessionStarted` log (replay) — that
-    // takes precedence over the raw `predecessor` param, which `Holly`'s `Resume`
-    // handling intentionally passes as `None` so it can't clobber the replayed
-    // value. The *announced* event must reflect the same resolved value, or a
-    // resumed successor's re-emitted `SessionStarted` (and its persisted copy)
-    // would wrongly blank out the lineage on the next replay.
-    let effective_predecessor = s.predecessor.clone().or_else(|| predecessor.clone());
-    s.predecessor = effective_predecessor.clone();
-    // Same resumed-takes-precedence rule as `predecessor` above: a replayed
-    // session already reconstructed `s.user` from its own `SessionStarted` log
-    // record, which must win over the `user` param (`Holly::resume` passes
-    // `None`) so a resumed session's re-announced event can't blank out its
-    // multi-user identity.
-    let effective_user = s.user.clone().or_else(|| user.clone());
-    s.user = effective_user.clone();
-    // Same resumed-takes-precedence rule as `predecessor`/`user`
-    // above: a resumed session's replay already rebound `s.model` from its
-    // `ModelChanged` log (ADR-0081 — session memory wins over the static
-    // agent pin `agent_model`), so the *announced* value must reflect
-    // that resolved binding, not the pin a fresh session still falls back to.
-    // A fresh session has `s.model == None` here (the pin re-bind below hasn't
-    // run yet), so this is unchanged there.
-    let effective_model = s.model.clone().or_else(|| agent_model.clone());
-
-    let _ = events.send(OutEvent::SessionStarted {
-        session: session.clone(),
-        parent,
-        predecessor: effective_predecessor,
-        agent: agent_name,
-        model: effective_model,
-        root,
-        ts,
-        user: effective_user,
-    });
-    // Publish this session's shared seq counter so the runtime can mint a fresh
-    // seq for events it authors while the session is parked (#157). Registered
-    // before the first turn (hence before any `ToolExec`), so a runtime emit
-    // never races ahead of registration. On a resume it's the replay-seeded
-    // counter, so runtime seqs continue past the reconstructed tail.
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .insert(session.clone(), Arc::clone(&s.seq));
+    let mut s = start_session(
+        &session,
+        &events,
+        &cfg,
+        &seqs,
+        forks,
+        SessionStart {
+            agent,
+            initial_session,
+            parent,
+            predecessor,
+            user,
+            initial_mode,
+        },
+    );
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
-
-    let _ = events.send(OutEvent::Status {
-        session: session.clone(),
-        state: AgentState::Idle,
-    });
-    let _ = events.send(OutEvent::AgentChanged {
-        session: session.clone(),
-        agent: s.agent.name.clone(),
-    });
-    // Announce the starting mode unconditionally, mirroring `AgentChanged`
-    // above — a head that (re)connects learns the live posture without
-    // re-reading history. State only: the mode *notice* the model sees is
-    // built fresh every round from `s.mode` (see `stream.rs`), never pushed
-    // into `ctx` here — see `mode::mode_notice`'s doc for why a persisted
-    // push would desync live vs. replayed history.
-    let _ = events.send(OutEvent::ModeChanged {
-        session: session.clone(),
-        mode: s.mode.clone(),
-    });
-
-    // Session-start model pin (#323, ADR-0081): bind the starting agent's pin
-    // when no model is bound yet. A fresh `build`/spawned sub-agent (e.g. a
-    // cheap-model `explore`) lands straight on its pinned endpoint; a resumed
-    // session already re-bound from its `ModelChanged` log (so `s.model` is
-    // `Some`) is skipped. Best-effort: a resolver failure warns and keeps the
-    // startup default, matching replay's stance.
-    if s.model.is_none() {
-        if let Some((provider, model)) = s
-            .agent
-            .model_pin()
-            .map(|(p, m)| (p.to_string(), m.to_string()))
-        {
-            if let Some(resolver) = cfg.model_resolver.as_ref() {
-                match resolver(s.user.as_ref(), &provider, &model) {
-                    Ok(resolved) => s.rebind(&session, resolved, &events),
-                    Err(e) => tracing::warn!(
-                        provider, model, error = %e,
-                        "session start: could not apply agent model pin; keeping default"
-                    ),
-                }
-            }
-        }
-    } else if let (Some(provider), Some(model)) = (s.provider.clone(), s.model.clone()) {
-        // Resumed session, corrective announce: replay already rebound
-        // `s.provider`/`s.model` from the log's last `ModelChanged` (ADR-0081),
-        // but a freshly resumed process's heads have no prior state — they only
-        // see this session's re-emitted `SessionStarted` (now carrying the
-        // resolved model above) and, critically, the TUI status bar updates
-        // *only* on `ModelChanged`, never on `SessionStarted.model`. Re-resolve
-        // the already-bound pair once more solely to recover `context_window`
-        // (not carried on `Session` state between replay and here) and emit one
-        // corrective `ModelChanged` via the same `rebind` the live `SetModel`
-        // path uses — idempotent, it re-folds to the same binding replay
-        // already applied. Best-effort, matching the pin arm's stance.
-        if let Some(resolver) = cfg.model_resolver.as_ref() {
-            match resolver(s.user.as_ref(), &provider, &model) {
-                Ok(resolved) => s.rebind(&session, resolved, &events),
-                Err(e) => tracing::warn!(
-                    provider, model, error = %e,
-                    "session start: could not re-resolve resumed model for corrective announce"
-                ),
-            }
-        }
-    }
-
-    // Session-start persisted generation overlay (#374, ADR-0094 — mirrors the
-    // model pin above): apply the starting agent's persisted generation
-    // override via `cfg.generation_resolver` when no per-agent memory is
-    // already recorded for it. A resumed session's memory reconstructed by
-    // replay (see `Session::replay`'s `GenerationChanged` fold) skips this, same
-    // as the pin's `s.model.is_none()` guard.
-    if !s.generation_by_agent.contains_key(&s.agent.name) {
-        if let Some(generation) = cfg
-            .generation_resolver
-            .as_ref()
-            .and_then(|r| r(&s.agent.name))
-        {
-            if s.generation != Some(generation) {
-                s.generation = Some(generation);
-                let _ = events.send(OutEvent::GenerationChanged {
-                    session: session.clone(),
-                    generation,
-                });
-            }
-        }
-    }
 
     // A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending
     // call — same `request_id`, fresh `seq` — so the tool executor (or an
@@ -524,69 +269,30 @@ pub(crate) async fn session_loop(
             ) => {
                 let _ = immediate::try_apply(cmd, immediate::fields!(s), &session, &events);
             }
+            // A deferrable command (`SetModel`/`SetGeneration`/`SetToolOverlay`/
+            // `Oneshot`) arriving during a live turn or a pause is stashed and
+            // replays once the turn ends or the hold lifts (stash replay).
+            Some(
+                cmd @ (SessionCmd::SetModel(..)
+                | SessionCmd::SetGeneration(_)
+                | SessionCmd::SetToolOverlay(_)
+                | SessionCmd::Oneshot(..)),
+            ) if s.turn.is_some() || s.paused => {
+                stash_or_reject(&mut stash, cmd, &session, &events, &s.seq);
+            }
             // Live model/provider switch (#218): re-resolve against the runtime's
             // catalog-backed resolver, rebuild the backend, and retarget the
             // request model + generation + context-window budget — no restart.
             // Deferred during a live turn (stash replay), like `SetMode`.
             Some(SessionCmd::SetModel(provider, model)) => {
-                if s.turn.is_some() || s.paused {
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::SetModel(provider, model),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
-                }
-                let Some(resolver) = cfg.model_resolver.as_ref() else {
-                    let _ = events.send(OutEvent::Error {
-                        session: session.clone(),
-                        seq: next_seq(&s.seq),
-                        message: "model switching is not supported by this engine".to_string(),
-                    });
-                    continue;
-                };
-                match resolver(s.user.as_ref(), &provider, &model) {
-                    Ok(resolved) => {
-                        s.rebind(&session, resolved, &events);
-                    }
-                    Err(e) => {
-                        let _ = events.send(OutEvent::Error {
-                            session: session.clone(),
-                            seq: next_seq(&s.seq),
-                            message: format!("cannot switch model: {e}"),
-                        });
-                    }
-                }
+                commands::set_model(&mut s, &session, &events, &cfg, provider, model);
             }
             // Live generation-parameter adjustment (#374, ADR-0094): unlike
             // `SetModel`, there is no resolver to fail against, so this always
             // succeeds. Deferred during a live turn (stash replay), like
             // `SetMode`/`SetModel`.
             Some(SessionCmd::SetGeneration(overrides)) => {
-                if s.turn.is_some() || s.paused {
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::SetGeneration(overrides),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
-                }
-                let mut merged = s.generation.unwrap_or_default();
-                merged.apply_overrides(overrides);
-                s.generation = Some(merged);
-                // Recorded so a resumed session's replay-reconstructed live
-                // override survives the session-start default re-application
-                // (`EngineConfig::generation_resolver`) rather than being
-                // silently overwritten by it (#374, ADR-0094).
-                s.generation_by_agent.insert(s.agent.name.clone(), merged);
-                let _ = events.send(OutEvent::GenerationChanged {
-                    session: session.clone(),
-                    generation: merged,
-                });
+                commands::set_generation(&mut s, &session, &events, overrides);
             }
             // Live tool-overlay replacement (#539, ADR-0149): like
             // `SetGeneration` there is nothing to fail against — always
@@ -594,33 +300,9 @@ pub(crate) async fn session_loop(
             // during a live turn (stash replay) so the advertised tool surface
             // never changes under a round already in flight.
             Some(SessionCmd::SetToolOverlay(entries)) => {
-                if s.turn.is_some() || s.paused {
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::SetToolOverlay(entries),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
-                }
-                s.tool_overlay = entries.clone();
-                let _ = events.send(OutEvent::ToolOverlayChanged {
-                    session: session.clone(),
-                    entries,
-                });
+                commands::set_tool_overlay(&mut s, &session, &events, entries);
             }
             Some(SessionCmd::Oneshot(op, args)) => {
-                if s.turn.is_some() || s.paused {
-                    stash_or_reject(
-                        &mut stash,
-                        SessionCmd::Oneshot(op, args),
-                        &session,
-                        &events,
-                        &s.seq,
-                    );
-                    continue;
-                }
                 forked =
                     run_oneshot(&session, &mut s, &events, &cfg, op, args).await == Forked::Yes;
             }
@@ -667,38 +349,11 @@ pub(crate) async fn session_loop(
             // clearing its state — the committed assistant message and any
             // already-arrived outputs stay in Context. Idle Stop is a no-op
             // (a mid-stream Stop is caught inside the streamed round).
-            Some(SessionCmd::Stop) => {
-                if s.turn.take().is_some() {
-                    // A cancelled turn is still a completed interaction — `Done`
-                    // is the resting state, not `Idle` (which stays reserved for
-                    // the genuinely-never-run-yet case at session start,
-                    // ADR-0139). `Stop` always cancels regardless of a pause
-                    // (#516, ADR-0208) — but doesn't lift one: pause and cancel
-                    // are orthogonal holds, so a still-paused session reports
-                    // `Paused`, not `Done`, until an explicit `ResumeSession`.
-                    let state = if s.paused {
-                        AgentState::Paused
-                    } else {
-                        AgentState::Done
-                    };
-                    let _ = events.send(OutEvent::Status {
-                        session: session.clone(),
-                        state,
-                    });
-                }
-            }
+            Some(SessionCmd::Stop) => commands::stop(&mut s, &session, &events),
             // Hold the session at `Paused` (#516, ADR-0208) — see
             // `SessionCmd::Pause`'s doc for what this defers. Idempotent: no
             // duplicate `Status` for an already-paused session.
-            Some(SessionCmd::Pause) => {
-                if !s.paused {
-                    s.paused = true;
-                    let _ = events.send(OutEvent::Status {
-                        session: session.clone(),
-                        state: AgentState::Paused,
-                    });
-                }
-            }
+            Some(SessionCmd::Pause) => commands::pause(&mut s, &session, &events),
             // Lift a hold placed by `Pause` (#516, ADR-0208). A drained-but-
             // undriven parked batch (every `ToolResult` already folded while
             // paused) continues the turn immediately — no new prompt needed;
@@ -706,23 +361,9 @@ pub(crate) async fn session_loop(
             // now (`Working` if still parked on unresolved calls, `Done` if
             // idle — matching `Stop`'s resting-state convention, ADR-0139).
             Some(SessionCmd::Unpause) => {
-                if s.paused {
-                    s.paused = false;
-                    if s.turn.as_ref().is_some_and(TurnState::is_drained) {
-                        forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg)
-                            .await
-                            == Forked::Yes;
-                    } else {
-                        let state = if s.turn.is_some() {
-                            AgentState::Working
-                        } else {
-                            AgentState::Done
-                        };
-                        let _ = events.send(OutEvent::Status {
-                            session: session.clone(),
-                            state,
-                        });
-                    }
+                if commands::unpause(&mut s, &session, &events) {
+                    forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await
+                        == Forked::Yes;
                 }
             }
             // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`
@@ -734,17 +375,7 @@ pub(crate) async fn session_loop(
             // pops when idle) — stop-then-hibernate, discarding the uncommitted
             // round exactly as replay drops a text-only tail.
             Some(SessionCmd::Hibernate) => {
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                seqs.lock()
-                    .expect("seq registry mutex poisoned")
-                    .remove(&session);
-                activity
-                    .lock()
-                    .expect("activity registry mutex poisoned")
-                    .remove(&session);
+                let ts = commands::retire(&session, &seqs, &activity);
                 let _ = events.send(OutEvent::SessionHibernated {
                     session: session.clone(),
                     ts,
@@ -759,20 +390,7 @@ pub(crate) async fn session_loop(
     // compaction forked this session away and it is now retired (ADR-0205 —
     // the supervisor's `CloseSession` tombstones the id right behind us). Both
     // end the session identically, so the teardown lives here once.
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    // Retire the shared seq counter: no more content will be minted for this
-    // id (a late runtime emit for a gone session falls back to seq 0,
-    // harmless — there is no live content stream to collide).
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .remove(&session);
-    activity
-        .lock()
-        .expect("activity registry mutex poisoned")
-        .remove(&session);
+    let ts = commands::retire(&session, &seqs, &activity);
     let _ = events.send(OutEvent::SessionEnded {
         session: session.clone(),
         ts,

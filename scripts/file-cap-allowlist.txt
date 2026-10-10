@@ -19,12 +19,8 @@
 # drift in the interim. `host/call.rs` and `skills/mod.rs` from the original
 # table are deliberately absent: both were split below the cap in the same
 # change that added this gate.
-entanglement-core/src/protocol.rs
 entanglement-runtime/src/main.rs
-entanglement-core/src/holly.rs
 entanglement-runtime/src/agents/mod.rs
-entanglement-core/src/session.rs
-entanglement-provider/src/client/mod.rs
 entanglement-runtime/src/script.rs
 entanglement-runtime/src/session_store.rs
 entanglement-runtime/src/subagent.rs

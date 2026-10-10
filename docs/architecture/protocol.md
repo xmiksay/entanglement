@@ -2,7 +2,7 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 2. Wire protocol (`protocol.rs`) — [ADR-0002](../adr/0002-session-multiplexed-protocol.md)
+## 2. Wire protocol (`protocol.rs` + `protocol/`) — [ADR-0002](../adr/0002-session-multiplexed-protocol.md)
 
 One set of serde-tagged types crosses every transport:
 
