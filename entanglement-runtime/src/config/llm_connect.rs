@@ -20,14 +20,14 @@ use super::McpTokenStore;
 const AUTHORIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Resolve the endpoint base the OAuth discovery runs against — the same
-/// `{NAME}_API_BASE`/`{NAME}_BASE` > `entry.base_url` precedence the wire
+/// `{NAME}_API_BASE` > `entry.base_url` precedence the wire
 /// factories use, so `connect` discovers against the URL requests will
 /// actually hit.
 fn discovery_base(entry: &ProviderEntry) -> Result<String> {
     let name = entry.name.to_uppercase();
-    let env_base = [format!("{name}_API_BASE"), format!("{name}_BASE")]
-        .iter()
-        .find_map(|var| std::env::var(var).ok().filter(|v| !v.trim().is_empty()));
+    let env_base = std::env::var(format!("{name}_API_BASE"))
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     env_base
         .or_else(|| entry.base_url.clone())
         .with_context(|| {

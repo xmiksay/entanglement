@@ -37,26 +37,18 @@ fn set_agent(app: &mut App, sid: &SessionId, agent: &str) {
     });
 }
 
-/// `ENTANGLEMENT_AGENT_MODELS_FILE` is process-global; the persist tests below
-/// serialize on this so parallel runs don't clobber each other's path.
-static AGENT_MODELS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Install a store pointed at `path` (via the env override) as the app's
-/// agent-models store, so the persist-on-confirmation path writes there.
+/// Install a store pointed at `path` as the app's agent-models store, so the
+/// persist-on-confirmation path writes there.
 fn app_with_store(sid: SessionId, path: &std::path::Path) -> App {
-    std::env::set_var("ENTANGLEMENT_AGENT_MODELS_FILE", path);
     let mut app = App::new_for_test(sid);
     app.set_agent_models(std::sync::Arc::new(std::sync::Mutex::new(
-        crate::config::agent_models::AgentModelStore::load(),
+        crate::config::agent_models::AgentModelStore::load_from(Some(path.to_path_buf())),
     )));
     app
 }
 
 #[test]
 fn pending_model_persist_writes_only_on_matching_model_changed() {
-    let _g = AGENT_MODELS_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-persist-{}.yml",
@@ -87,15 +79,11 @@ fn pending_model_persist_writes_only_on_matching_model_changed() {
         "pin persisted for the active agent"
     );
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn error_clears_pending_without_writing() {
-    let _g = AGENT_MODELS_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-persist-err-{}.yml",
@@ -122,15 +110,11 @@ fn error_clears_pending_without_writing() {
     );
     assert!(!path.exists(), "no file written on error");
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn set_agent_pin_model_changed_without_pending_does_not_write() {
-    let _g = AGENT_MODELS_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-persist-noop-{}.yml",
@@ -151,31 +135,21 @@ fn set_agent_pin_model_changed_without_pending_does_not_write() {
     assert!(app.persisted_model_for("build").is_none());
     assert!(!path.exists());
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_MODELS_FILE");
     let _ = std::fs::remove_file(&path);
 }
 
-/// `ENTANGLEMENT_AGENT_GENERATION_FILE` is process-global; serialize the
-/// generation persist tests on this the same way the model ones serialize on
-/// `AGENT_MODELS_ENV_LOCK`.
-static AGENT_GENERATION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Install a store pointed at `path` (via the env override) as the app's
-/// agent-generation store, so the persist-on-confirmation path writes there.
+/// Install a store pointed at `path` as the app's agent-generation store, so
+/// the persist-on-confirmation path writes there.
 fn app_with_generation_store(sid: SessionId, path: &std::path::Path) -> App {
-    std::env::set_var("ENTANGLEMENT_AGENT_GENERATION_FILE", path);
     let mut app = App::new_for_test(sid);
     app.set_agent_generation(std::sync::Arc::new(std::sync::Mutex::new(
-        crate::config::agent_generation::AgentGenerationStore::load(),
+        crate::config::agent_generation::AgentGenerationStore::load_from(Some(path.to_path_buf())),
     )));
     app
 }
 
 #[test]
 fn pending_generation_persist_writes_only_on_matching_generation_changed() {
-    let _g = AGENT_GENERATION_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-generation-persist-{}.yml",
@@ -214,15 +188,11 @@ fn pending_generation_persist_writes_only_on_matching_generation_changed() {
         "params persisted for the active agent"
     );
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn generation_error_clears_pending_without_writing() {
-    let _g = AGENT_GENERATION_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-generation-persist-err-{}.yml",
@@ -252,15 +222,11 @@ fn generation_error_clears_pending_without_writing() {
     );
     assert!(!path.exists(), "no file written on error");
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn generation_changed_without_pending_does_not_write() {
-    let _g = AGENT_GENERATION_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let sid = SessionId::new("s1");
     let path = std::env::temp_dir().join(format!(
         "entanglement-tui-generation-persist-noop-{}.yml",
@@ -282,7 +248,6 @@ fn generation_changed_without_pending_does_not_write() {
     assert!(app.persisted_generation_for("build").is_none());
     assert!(!path.exists());
 
-    std::env::remove_var("ENTANGLEMENT_AGENT_GENERATION_FILE");
     let _ = std::fs::remove_file(&path);
 }
 

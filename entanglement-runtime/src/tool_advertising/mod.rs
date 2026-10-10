@@ -3,16 +3,13 @@
 //!
 //! One knob — `full` (today's full advertised surface) vs `tool_search`
 //! (lean kernel + `explore`/`describe` discovery pair, Phase P3, **the
-//! default**) — resolved per session. Three inputs, strict precedence (the
-//! plan's "Mode selection & plumbing"):
+//! default**) — resolved per session. Strict precedence (the plan's "Mode
+//! selection & plumbing"; the env tier was retired by ADR-0213):
 //!
-//! 1. env `ENTANGLEMENT_TOOL_ADVERTISING` (`full`/`tool_search`,
-//!    case-insensitive; a bad value warns and falls through — the
-//!    `ENTANGLEMENT_SESSION_RETENTION_DAYS` house pattern, never fatal);
-//! 2. `config.yml` `tool_advertising` (see [`crate::config`]);
-//! 3. the model's catalog entry (`ModelEntry.tool_advertising`, settable per
+//! 1. `config.yml` `tool_advertising` (see [`crate::config`]);
+//! 2. the model's catalog entry (`ModelEntry.tool_advertising`, settable per
 //!    model in `providers.yml`);
-//! 4. default `tool_search`.
+//! 3. default `tool_search`.
 //!
 //! **Per-session, pinned at first resolution.** The resolver and executor are
 //! engine-global and session-multiplexed, so the resolved mode is held in a
@@ -27,8 +24,8 @@
 //! resolve their own mode at spawn for free. No mid-session switching.
 //!
 //! Phase P1 is plumbing only: the map is threaded and observable, nothing
-//! consumes it yet beyond logging and `skutter inspect config`. With the env
-//! var unset, no `tool_advertising` in any config layer, and no catalog
+//! consumes it yet beyond logging and `skutter inspect config`. With no
+//! `tool_advertising` in any config layer, and no catalog
 //! entry setting `tool_advertising:`, every resolution is `tool_search` —
 //! this is P1's one behavior change (the default flipped from `full`), but
 //! since nothing dispatches on the mode yet it changes no observable runtime
@@ -60,10 +57,7 @@ mod precedence;
 pub mod surface;
 
 mod repin;
-pub use precedence::{
-    configured_advertising, configured_advertising_source, resolve_advertising,
-    resolve_advertising_by_id, AdvertisingSource,
-};
+pub use precedence::{configured_advertising, resolve_advertising, resolve_advertising_by_id};
 
 /// The session→mode map (ADR-0196 §2): each live session's tool-advertising
 /// mode, resolved once at session start from that session's initial model.
@@ -139,9 +133,7 @@ impl SessionToolAdvertising {
 /// (ADR-0196): the user config (its `tool_advertising` tier) and the catalog
 /// (the per-model `tool_advertising:` tier). `Arc`-wrapped and cloned into
 /// the executor's event loop once, so every session-start fold is two map
-/// lookups, no rebuilds. The env tier is read live inside
-/// [`resolve_advertising`] — same shape as `resolve_session_retention`,
-/// since the layered config loader can't see the process env either.
+/// lookups, no rebuilds.
 #[derive(Debug, Clone)]
 pub struct AdvertisingInputs {
     config: Arc<Config>,
@@ -201,11 +193,11 @@ impl AdvertisingInputs {
             // A bare model id (profile `model:` without `provider:`) still
             // carries a catalog preference if it's listed anywhere.
             (None, Some(m)) => resolve_advertising_by_id(configured, catalog, m),
-            // No model fact at all: the config/env tiers alone decide (which
+            // No model fact at all: the config tier alone decides (which
             // is `tool_search` when unset — the new default).
             _ => configured.unwrap_or_default(),
         };
-        // The encoding is wire-derived only (ADR-0196 §3) — no config/env
+        // The encoding is wire-derived only (ADR-0196 §3) — no config
         // override, unlike the mode — so it needs just the provider half
         // when one is known; a bare model id still resolves it by finding
         // which provider lists that id (mirrors `resolve_advertising_by_id`).
@@ -219,7 +211,7 @@ impl AdvertisingInputs {
         // `discovery` over its provider's; kept across a later `SetModel`.
         modes.set_discovery(
             session,
-            discovery::resolve_discovery(&self.config, catalog, provider, model),
+            discovery::resolve_discovery(catalog, provider, model),
         );
         modes.apply_pending(session);
     }
@@ -259,7 +251,7 @@ impl AdvertisingInputs {
 /// learn the session stays `tool_search` (or vice versa) until restarted.
 ///
 /// `held` is what the session runs; `new_preference` is the new model's
-/// *catalog-only* preference (`None` = no opinion), so a config/env override
+/// *catalog-only* preference (`None` = no opinion), so a config override
 /// (which applies to every model alike) never trips this notice.
 pub fn note_model_changed(
     session: &SessionId,

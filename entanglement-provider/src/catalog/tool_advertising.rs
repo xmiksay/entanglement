@@ -26,7 +26,7 @@ use serde::Deserialize;
 /// the `explore`/`describe` discovery pair — the rest of the surface stays
 /// registered but reachable only after discovery (Phase P3). Selected per
 /// model in the catalog, overridable per install via `tool_advertising` in
-/// `config.yml` / the `ENTANGLEMENT_TOOL_ADVERTISING` env var, and resolved
+/// `config.yml`, and resolved
 /// **once per session** from its initial model — never mid-session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]

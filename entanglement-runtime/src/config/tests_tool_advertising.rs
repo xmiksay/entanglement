@@ -1,12 +1,10 @@
 //! Tests for the `tool_advertising` config key (ADR-0196, Phase P1).
 //!
 //! Lives in its own module so `tests.rs` stays under the 400-line cap, mirroring
-//! `tests_retention.rs`. The env var `ENTANGLEMENT_TOOL_ADVERTISING` is
-//! process-global and read on every resolve, so every test below serializes on
-//! [`super::ENV_LOCK`] — even the ones that don't themselves touch the env — so
-//! a sibling test's set/remove can't race into another's resolve.
+//! `tests_retention.rs`. Tests that point `ENTANGLEMENT_CONFIG_FILE` at a temp
+//! file serialize on [`super::ENV_LOCK`].
 //!
-//! The full precedence chain (env > config > catalog > default) is exercised in
+//! The full precedence chain (config > catalog > default) is exercised in
 //! `crate::tool_advertising`'s unit tests against a `Config` built here; these
 //! tests cover the config *layer* itself: parse, deny-unknown, layer merge,
 //! provenance.
@@ -18,7 +16,6 @@ use super::*;
 
 #[test]
 fn tool_advertising_defaults_to_none() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // None means "no install-wide opinion" — the catalog (then tool_search)
     // decides per model, so a fresh install is behaviorally unchanged from
     // the resolver's own default.
@@ -27,7 +24,6 @@ fn tool_advertising_defaults_to_none() {
 
 #[test]
 fn tool_advertising_parses_both_values() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
         merge_user("tool_advertising: tool_search\n").tool_advertising,
         Some(ToolAdvertising::ToolSearch)
@@ -43,7 +39,6 @@ fn tool_advertising_parses_both_values() {
 
 #[test]
 fn tool_advertising_unknown_value_is_a_loud_error() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // A typo'd mode is a validation error (unknown enum variant), not a
     // silent null — same loudness as every other miskeyed config value.
     let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();

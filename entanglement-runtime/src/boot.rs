@@ -13,7 +13,7 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::engine_setup::build_config;
 use crate::factories::build_model_resolver;
-use crate::providers::{env_nonempty, web_search_config};
+use crate::providers::web_search_config;
 use crate::tool_runner::EscapeRoot;
 use crate::{
     agents, config, endpoint, host, logging, mcp, mode, policy, retained_output, script_ops,
@@ -111,19 +111,11 @@ pub(crate) async fn boot(
         config::agent_generation::AgentGenerationStore::load(),
     ));
 
-    // Per-endpoint in-flight cap: env override, else the client default (3).
-    // Bounds how many requests (incl. streaming sub-agents) hit one provider at
-    // once, so a spawn-storm queues instead of 429-storming (ADR-0111).
-    let http_client = match env_nonempty("ENTANGLEMENT_MAX_CONCURRENCY")
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-    {
-        Some(concurrency) => HttpClient::with_config(entanglement_provider::RetryConfig {
-            concurrency,
-            ..Default::default()
-        }),
-        None => HttpClient::new(),
-    }?;
+    // Per-endpoint in-flight cap: the client default (3) unless the catalog
+    // entry sets `concurrency:` (catalog data only, ADR-0213). Bounds how many
+    // requests (incl. streaming sub-agents) hit one provider at once, so a
+    // spawn-storm queues instead of 429-storming (ADR-0111).
+    let http_client = HttpClient::new()?;
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
     let (

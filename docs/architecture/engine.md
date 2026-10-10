@@ -76,9 +76,9 @@ moment the model calls it, discoverable via `explore`, schema-delivered via
 a kernel one, by its real name.
 
 The mode is **per-session, resolved at session start** from the session's
-initial model (`ModelEntry.tool_advertising`, precedence env
-`ENTANGLEMENT_TOOL_ADVERTISING` > `config.yml` `tool_advertising` > catalog >
-default `ToolSearch`) and held in a runtime-side session→mode map — the
+initial model (`ModelEntry.tool_advertising`, precedence `config.yml`
+`tool_advertising` > catalog > default `ToolSearch`; no env tier since
+[ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)) and held in a runtime-side session→mode map — the
 resolver and executor are engine-global and session-multiplexed, and
 per-profile model pins mean concurrent sessions can run different modes. A
 live `SetModel` **keeps** the session's mode (logged when the new model's

@@ -9,10 +9,6 @@ use entanglement_core::{
 };
 use std::sync::Mutex;
 
-/// `ENTANGLEMENT_AUX_MODELS_FILE` is process-global; the aux_llm tests that
-/// `set()` a pin serialize here so they don't race with each other.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
 /// A stub `Llm` that tags every reply with which factory built it, so a
 /// test can assert which path the registry took.
 #[derive(Clone)]
@@ -91,27 +87,14 @@ fn succeeding_resolver() -> ModelResolver {
     })
 }
 
-/// Build a store backed by a temp file (so `set()` works), under the
-/// `ENTANGLEMENT_AUX_MODELS_FILE` env override the store reads.
+/// Build a store backed by a temp file (so `set()` works).
 fn store_with_tmp_path(label: &str) -> Arc<Mutex<AuxModelStore>> {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = std::env::temp_dir().join(format!(
         "entanglement-aux-llm-test-{label}-{}.yml",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    // SAFETY: single-threaded test guarded by ENV_LOCK.
-    unsafe {
-        std::env::set_var("ENTANGLEMENT_AUX_MODELS_FILE", &path);
-    }
-    Arc::new(Mutex::new(AuxModelStore::load()))
-}
-
-fn cleanup_env() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    unsafe {
-        std::env::remove_var("ENTANGLEMENT_AUX_MODELS_FILE");
-    }
+    Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))))
 }
 
 /// `resolve_pin` is the core-seam counterpart: `None` means "use the
@@ -136,7 +119,6 @@ async fn resolve_pin_is_none_when_unset_or_unresolvable() {
         .set(Purpose::Summarize, "ghost", "gone")
         .unwrap();
     assert!(reg.resolve_pin(Purpose::Summarize).is_none());
-    cleanup_env();
 }
 
 #[tokio::test]
@@ -159,7 +141,6 @@ async fn resolve_pin_returns_the_catalog_resolution() {
     assert_eq!(resolved.provider, "stub");
     let mut llm = (resolved.llm_factory)();
     assert_eq!(drain(&mut *llm).await, "aux");
-    cleanup_env();
 }
 
 /// The core seam maps a purpose *string*; an unknown key is inert (falls
@@ -183,7 +164,6 @@ async fn resolver_maps_known_keys_and_ignores_unknown_ones() {
     .resolver();
     assert!(seam("summarize").is_some());
     assert!(seam("no-such-purpose").is_none());
-    cleanup_env();
 }
 
 #[tokio::test]
@@ -199,7 +179,6 @@ async fn resolve_falls_back_to_primary_when_no_pin() {
     );
     let mut llm = reg.resolve(Purpose::SessionTitle);
     assert_eq!(drain(&mut *llm).await, "primary");
-    cleanup_env();
 }
 
 #[tokio::test]
@@ -222,7 +201,6 @@ async fn resolve_falls_back_when_pin_does_not_resolve() {
     );
     let mut llm = reg.resolve(Purpose::Summarize);
     assert_eq!(drain(&mut *llm).await, "primary");
-    cleanup_env();
 }
 
 #[tokio::test]
@@ -243,7 +221,6 @@ async fn resolve_uses_the_aux_factory_when_pin_resolves() {
     );
     let mut llm = reg.resolve(Purpose::SessionTitle);
     assert_eq!(drain(&mut *llm).await, "aux");
-    cleanup_env();
 }
 
 /// #589: `concurrency_cap` must report the *pin's* effective cap when one
@@ -285,7 +262,6 @@ async fn concurrency_cap_reports_the_pins_cap_when_it_resolves() {
         primary_identity(),
     );
     assert_eq!(reg.concurrency_cap(Purpose::SessionTitle), Some(1));
-    cleanup_env();
 }
 
 /// #589: with no pin (the common case), `concurrency_cap` must report the
@@ -303,7 +279,6 @@ async fn concurrency_cap_falls_back_to_primary_when_no_pin() {
         primary_identity(),
     );
     assert_eq!(reg.concurrency_cap(Purpose::SessionTitle), Some(1));
-    cleanup_env();
 }
 
 /// #560 follow-up: `AuxCooldown` is the fail-fast storm guard —
@@ -379,7 +354,6 @@ async fn try_resolve_short_circuits_after_a_reported_failure() {
         reg.try_resolve(Purpose::Narrate).is_none(),
         "a recently-failed purpose/endpoint must short-circuit locally"
     );
-    cleanup_env();
 }
 
 /// #560 follow-up: a successful call clears a stale cooldown record, so a
@@ -409,5 +383,4 @@ async fn note_success_clears_a_recorded_failure() {
         reg.try_resolve(Purpose::SessionTitle).is_some(),
         "a cleared cooldown must let the next call through"
     );
-    cleanup_env();
 }

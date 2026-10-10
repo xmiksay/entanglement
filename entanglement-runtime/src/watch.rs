@@ -34,20 +34,16 @@ use crate::{agents, layers, mcp, skills, system_prompt};
 /// writes, or several files touched by one `git checkout`) into one reload.
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// Env vars whose managed file, if overridden, needs its parent dir watched
-/// too (the default `${config_dir}/entanglement/` catch-all below already
-/// covers the un-overridden case for all nine — this list only matters when
-/// one is relocated outside that directory, #558).
+/// Env vars whose file, if overridden, needs its parent dir watched too (the
+/// default `${config_dir}/entanglement/` catch-all below already covers the
+/// un-overridden case — this list only matters when one is relocated outside
+/// that directory, #558). The seven managed-state files move together with
+/// `ENTANGLEMENT_STATE_DIR` (ADR-0213), watched as a directory in
+/// [`watch_paths`].
 const MANAGED_FILE_ENVS: &[&str] = &[
     "ENTANGLEMENT_CONFIG_FILE",
     "ENTANGLEMENT_PROVIDERS_FILE",
-    "ENTANGLEMENT_GRANTS_FILE",
-    "ENTANGLEMENT_AGENT_MODELS_FILE",
     "ENTANGLEMENT_ENV_FILE",
-    "ENTANGLEMENT_AGENT_GENERATION_FILE",
-    "ENTANGLEMENT_AUX_MODELS_FILE",
-    "ENTANGLEMENT_MCP_TOKENS_FILE",
-    "ENTANGLEMENT_EXTRA_ROOTS_FILE",
 ];
 
 /// The runtime-held mirrors a reload swaps. See the module doc for why this is
@@ -285,9 +281,9 @@ pub(crate) fn spawn_debounced_watcher(
 /// providers.yml, config.yml, grants.yml, agent-models.yml,
 /// agent-generation.yml, aux-models.yml, mcp-tokens.yml, extra-roots.yml, .env
 /// in one recursive watch), `<root>/.entanglement/` (covers the project
-/// config.yml), and the parent dir of any `ENTANGLEMENT_*_FILE`/
-/// `ENTANGLEMENT_*_DIR` override so a non-default managed-file location is
-/// still watched (#558). Deduplicated (a `BTreeSet` — several of these overlap
+/// config.yml), the managed-state dir (`ENTANGLEMENT_STATE_DIR`, ADR-0213),
+/// and the parent dir of any `ENTANGLEMENT_*_FILE` override so a non-default
+/// location is still watched (#558). Deduplicated (a `BTreeSet` — several of these overlap
 /// by construction).
 fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut set = BTreeSet::new();
@@ -310,6 +306,9 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
         set.insert(cfg.join("entanglement"));
     }
     set.insert(cwd.join(".entanglement"));
+    if let Some(state) = crate::config::state_dir::state_dir() {
+        set.insert(state);
+    }
 
     for env in MANAGED_FILE_ENVS {
         if let Some(parent) = std::env::var_os(env)
@@ -565,27 +564,24 @@ mod tests {
         assert_eq!(paths, sorted, "watch_paths must already be deduplicated");
     }
 
-    /// #558: `MANAGED_FILE_ENVS` used to cover only 5 of the 9 managed-file env
-    /// overrides — a relocated `extra-roots.yml` (via `ENTANGLEMENT_EXTRA_ROOTS_FILE`)
-    /// got no parent-dir watch, so live reload silently missed it. Shares
-    /// `crate::config::ENV_LOCK` with `extra_roots`'s own tests (both mutate the
-    /// same process-global env var) rather than a module-local lock, so the two
-    /// suites can't race under `cargo test`'s parallel threads.
+    /// #558/ADR-0213: a relocated managed-state dir is watched itself, so
+    /// a managed file written outside `${config_dir}/entanglement/` still
+    /// live-reloads. Shares `crate::config::ENV_LOCK` with the other suites
+    /// that mutate process-global `ENTANGLEMENT_*` vars.
     #[test]
-    fn watch_paths_includes_the_parent_dir_of_every_managed_file_env_override() {
+    fn watch_paths_includes_a_relocated_state_dir() {
         let _g = crate::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let custom = dir.path().join("elsewhere");
         std::fs::create_dir_all(&custom).unwrap();
-        let file = custom.join("extra-roots.yml");
-        std::env::set_var("ENTANGLEMENT_EXTRA_ROOTS_FILE", &file);
+        std::env::set_var(crate::config::state_dir::STATE_DIR_ENV, &custom);
         let paths = watch_paths(dir.path());
-        std::env::remove_var("ENTANGLEMENT_EXTRA_ROOTS_FILE");
+        std::env::remove_var(crate::config::state_dir::STATE_DIR_ENV);
         assert!(
             paths.contains(&custom),
-            "an overridden ENTANGLEMENT_EXTRA_ROOTS_FILE's parent dir must be watched"
+            "a relocated ENTANGLEMENT_STATE_DIR must be watched"
         );
     }
 }

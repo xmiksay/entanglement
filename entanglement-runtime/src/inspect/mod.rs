@@ -38,6 +38,7 @@
 
 mod agents;
 mod aux_models;
+mod catalog_facts;
 mod config;
 mod mcp;
 mod mcp_tokens;

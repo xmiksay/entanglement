@@ -48,6 +48,8 @@
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
 //!   (`user_prompt_submit`). See [`crate::hooks`]. Empty by default.
+//! - `tui` — terminal-UI preferences ([`tui::TuiConfig`], ADR-0213): one
+//!   block every TUI knob joins, live-reloaded by the TUI.
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
 //!   `max_turns` / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an
 //!   explicit CLI flag or environment variable wins over the file (env >
@@ -73,7 +75,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{Discovery, PermissionProfile, ToolAdvertising, WebSearchConfig};
+use entanglement_core::{PermissionProfile, ToolAdvertising, WebSearchConfig};
 use serde_yaml::Value;
 
 use crate::endpoint::EndpointConfig;
@@ -103,11 +105,15 @@ pub mod mcp_tokens;
 mod migrate_permissions;
 mod mode_warn;
 mod raw;
+pub mod retired;
+pub mod state_dir;
+pub mod tui;
 pub mod write_key;
 
 pub use layers::{scaffold_if_missing, ConfigLayer};
 pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
+pub use tui::TuiConfig;
 
 /// The CLI `skutter config set-key` handler (rpassword prompt + catalog lookup).
 /// Behind `cli`+`provider`: it prompts (rpassword, a `cli`-feature dep) and looks
@@ -126,22 +132,10 @@ mod tests;
 mod tests_retention;
 #[cfg(test)]
 mod tests_tool_advertising;
+#[cfg(test)]
+mod tests_tui;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
-
-/// Env var overriding the session-log retention (Issue 4, Phase 4.2). Wins over
-/// the config file's `session_retention_days`, which itself wins over the
-/// embedded default (30). `pub(crate)` so `inspect config` (#558) can report it
-/// as the winning source without duplicating the literal.
-pub(crate) const SESSION_RETENTION_ENV: &str = "ENTANGLEMENT_SESSION_RETENTION_DAYS";
-
-/// Env var overriding tool advertising (`full` | `tool_search`, ADR-0196):
-/// wins over the config file's `tool_advertising`, which wins over the
-/// model's catalog `tool_advertising:` preference, which wins over the
-/// default (`tool_search`). `pub(crate)` so the mode resolver
-/// (`tool_advertising::mod`) and `inspect config` share the literal. An
-/// unparseable value warns and falls through, never fatal.
-pub(crate) const TOOL_ADVERTISING_ENV: &str = "ENTANGLEMENT_TOOL_ADVERTISING";
 
 /// The embedded default for [`Config::session_retention_days`]: 30 days. A
 /// session log untouched for a month is stale enough to prune without surprising
@@ -230,23 +224,17 @@ pub struct Config {
     pub editor: Option<String>,
     /// Session-log retention in days (Issue 4, Phase 4.2). The startup prune
     /// deletes `.jsonl` files in the cwd's session dir whose mtime is older
-    /// than this. Precedence: `ENTANGLEMENT_SESSION_RETENTION_DAYS` env, then
-    /// config, then the embedded default (30). Best-effort: a read-only data
-    /// dir logs and continues, never fatal.
+    /// than this. Precedence: config, then the embedded default (30) — no env
+    /// override (ADR-0213). Best-effort: a read-only data dir logs and
+    /// continues, never fatal.
     pub session_retention_days: u64,
     /// Install-wide tool-advertising override (ADR-0196): `full` |
     /// `tool_search`. `None` (the default) ⇒ per-model resolution: the
     /// catalog entry's `tool_advertising:` preference, else `tool_search`.
-    /// The env override is applied on top of this at resolution time
-    /// (`tool_advertising::resolve_advertising`), the same place the
-    /// per-model chain resolves — kept as data here so the layered file
-    /// merge and `inspect config` provenance treat it like every other key.
+    /// No env override since ADR-0213.
     pub tool_advertising: Option<ToolAdvertising>,
-    /// Per-provider client-side discovery strategy (ADR-0204), keyed by
-    /// provider name. Empty (the default) ⇒ the catalog's provider/model
-    /// `discovery:` decides. Read at resolution time by
-    /// `tool_advertising::resolve_discovery`, one tier above the catalog.
-    pub discovery: HashMap<String, Discovery>,
+    /// Terminal-UI preferences (`tui:` block, ADR-0213).
+    pub tui: TuiConfig,
 }
 
 /// The resolved config plus the provenance `skutter inspect config` reports:
@@ -257,6 +245,9 @@ pub struct Resolved {
     pub layers: Vec<(ConfigLayer, String)>,
     /// The winning layer for each top-level key that any layer defined.
     pub provenance: Vec<(String, ConfigLayer)>,
+    /// One line per retired key a layer still carried (ADR-0213) — ignored,
+    /// reported by the caller once logging/stderr is ready.
+    pub warnings: Vec<String>,
 }
 
 impl Config {
@@ -279,6 +270,9 @@ impl Config {
 /// run on the combined [`Value`], so a field override keeps its siblings and a
 /// typo in any layer is rejected.
 fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
+    let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
+    let warnings = retired::strip_retired_keys(&mut raw_layers);
+    let raw_layers = raw_layers.as_slice();
     ceiling_warn::warn_project_permission_overrides(raw_layers);
     mode_warn::warn_stale_mode_tuning_names(raw_layers);
     let mut merged = Value::Null;
@@ -303,12 +297,11 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
         auto_compact: raw.auto_compact,
         editor: raw.editor.filter(|s| !s.trim().is_empty()),
-        // Precedence: env > config > embedded default (30). Env must be the
-        // last-resort fallback `parse` itself computes (not a layer), since the
-        // layered `Value` merge can't see the process env.
-        session_retention_days: resolve_session_retention(raw.session_retention_days),
+        session_retention_days: raw
+            .session_retention_days
+            .unwrap_or(DEFAULT_SESSION_RETENTION_DAYS),
         tool_advertising: raw.tool_advertising,
-        discovery: raw.discovery,
+        tui: raw.tui,
     };
     Ok(Resolved {
         config,
@@ -317,31 +310,6 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
             .map(|r| (r.layer, r.source.clone()))
             .collect(),
         provenance: provenance(raw_layers),
+        warnings,
     })
-}
-
-/// Resolve [`Config::session_retention_days`]: env wins, else the merged config
-/// value, else the embedded default (30). A malformed env value is logged and
-/// ignored (falling back to config/default) — never fatal, matching how a bad
-/// env value elsewhere is surfaced.
-fn resolve_session_retention(config_value: Option<u64>) -> u64 {
-    session_retention_from(std::env::var(SESSION_RETENTION_ENV).ok(), config_value)
-}
-
-/// [`resolve_session_retention`] over an injected env value, so the
-/// precedence is unit-testable without `set_var` — which no lock can make safe
-/// against every unlocked `parse` caller in the binary (#747).
-fn session_retention_from(env_value: Option<String>, config_value: Option<u64>) -> u64 {
-    if let Some(raw) = env_value.filter(|s| !s.is_empty()) {
-        match raw.parse::<u64>() {
-            Ok(n) => return n,
-            Err(_) => {
-                tracing::warn!(
-                    "ignoring unparseable {SESSION_RETENTION_ENV}={raw:?}; \
-                     falling back to config/default"
-                );
-            }
-        }
-    }
-    config_value.unwrap_or(DEFAULT_SESSION_RETENTION_DAYS)
 }

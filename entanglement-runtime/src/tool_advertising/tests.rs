@@ -20,16 +20,15 @@ fn full_catalog() -> Catalog {
     .expect("test catalog parses")
 }
 
-/// The env+config tier as the resolver sees it, with the env value passed in
-/// rather than set on the process — see `precedence.rs`'s module doc.
-fn configured(env: Option<&str>, mode: Option<ToolAdvertising>) -> Option<ToolAdvertising> {
-    precedence::configured_advertising_from(env, &config_with(mode))
+/// The config tier as the resolver sees it.
+fn configured(mode: Option<ToolAdvertising>) -> Option<ToolAdvertising> {
+    configured_advertising(&config_with(mode))
 }
 
 #[test]
 fn defaults_to_tool_search_with_nothing_set() {
     assert_eq!(
-        resolve_advertising(configured(None, None), None, "any", "thing"),
+        resolve_advertising(configured(None), None, "any", "thing"),
         ToolAdvertising::ToolSearch
     );
 }
@@ -37,7 +36,7 @@ fn defaults_to_tool_search_with_nothing_set() {
 #[test]
 fn catalog_preference_wins_over_default() {
     let catalog = full_catalog();
-    let none = configured(None, None);
+    let none = configured(None);
     assert_eq!(
         resolve_advertising(none, Some(&catalog), "p", "fully_advertised"),
         ToolAdvertising::Full
@@ -55,13 +54,13 @@ fn catalog_preference_wins_over_default() {
 }
 
 #[test]
-fn config_beats_catalog_and_env_beats_config() {
+fn config_beats_catalog() {
     let catalog = full_catalog();
 
     // config (tool_search) > catalog (full).
     assert_eq!(
         resolve_advertising(
-            configured(None, Some(ToolAdvertising::ToolSearch)),
+            configured(Some(ToolAdvertising::ToolSearch)),
             Some(&catalog),
             "p",
             "fully_advertised"
@@ -71,47 +70,13 @@ fn config_beats_catalog_and_env_beats_config() {
     // config (full) > catalog (absent → tool_search).
     assert_eq!(
         resolve_advertising(
-            configured(None, Some(ToolAdvertising::Full)),
+            configured(Some(ToolAdvertising::Full)),
             Some(&catalog),
             "p",
             "plain"
         ),
         ToolAdvertising::Full
     );
-    // env beats both.
-    assert_eq!(
-        resolve_advertising(
-            configured(Some("full"), Some(ToolAdvertising::ToolSearch)),
-            Some(&catalog),
-            "p",
-            "fully_advertised"
-        ),
-        ToolAdvertising::Full,
-        "env must beat both config and catalog"
-    );
-    // Case-insensitive.
-    assert_eq!(
-        resolve_advertising(
-            configured(Some("TOOL_SEARCH"), Some(ToolAdvertising::Full)),
-            None,
-            "p",
-            "x"
-        ),
-        ToolAdvertising::ToolSearch
-    );
-    // A bad value warns and falls through to config (tool_search here).
-    assert_eq!(
-        resolve_advertising(
-            configured(Some("hybrid"), Some(ToolAdvertising::ToolSearch)),
-            Some(&catalog),
-            "p",
-            "fully_advertised"
-        ),
-        ToolAdvertising::ToolSearch,
-        "unparseable env falls back to the config tier, not the default"
-    );
-    // An empty env value is unset, not unparseable.
-    assert_eq!(configured(Some(""), None), None);
 }
 
 #[test]
@@ -124,30 +89,6 @@ fn by_id_resolution_matches_the_paired_form() {
     assert_eq!(
         resolve_advertising_by_id(None, Some(&catalog), "plain"),
         ToolAdvertising::ToolSearch
-    );
-}
-
-#[test]
-fn source_reporting_tracks_the_winning_tier() {
-    let source = precedence::configured_advertising_source_from;
-    assert_eq!(source(None, &config_with(None)), AdvertisingSource::Default);
-    assert_eq!(
-        source(None, &config_with(Some(ToolAdvertising::Full))),
-        AdvertisingSource::Config
-    );
-    assert_eq!(
-        source(
-            Some("tool_search"),
-            &config_with(Some(ToolAdvertising::Full))
-        ),
-        AdvertisingSource::Env,
-        "env beats config in the provenance view too"
-    );
-    // An unparseable env value is reported as *not* the winner — the
-    // resolution above fell through to config/default.
-    assert_eq!(
-        source(Some("banana"), &config_with(None)),
-        AdvertisingSource::Default
     );
 }
 

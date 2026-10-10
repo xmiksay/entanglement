@@ -718,8 +718,8 @@ fn truncate_on_boundary_never_splits_a_utf8_char() {
 
 #[test]
 fn log_request_body_is_silent_without_optin() {
-    // No panic and nothing emitted when the flag is unset (the default).
-    std::env::remove_var(LOG_BODIES_ENV);
+    // No panic and nothing emitted when the flag is unset (the default; the
+    // test-isolated runner strips every `ENTANGLEMENT_*` var).
     log_request_body("openai", &serde_json::json!({"messages": []}));
 }
 

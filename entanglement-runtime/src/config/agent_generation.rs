@@ -3,8 +3,8 @@
 //! Mirrors `agent_models` (#323, ADR-0081): picking generation knobs while a
 //! profile is active persists them **for that profile** so they survive a
 //! restart. This module owns the managed file behind that:
-//! `${config_dir}/entanglement/agent-generation.yml` (override
-//! `ENTANGLEMENT_AGENT_GENERATION_FILE`), a sibling of `agent-models.yml`, the
+//! `<state dir>/agent-generation.yml` (relocated by
+//! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of `agent-models.yml`, the
 //! grants file (#174), and the provider-key env file (#220) — **managed, not
 //! layered**: the runtime rewrites it freely, so it never mixes into the
 //! hand-edited `config.yml`.
@@ -46,10 +46,7 @@ use entanglement_core::{GenerationParams, GenerationResolver};
 use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
-
-/// Env var overriding the managed agent-generation file path (tests + non-XDG
-/// setups).
-const AGENT_GENERATION_FILE_ENV: &str = "ENTANGLEMENT_AGENT_GENERATION_FILE";
+use super::state_dir::{state_file, AGENT_GENERATION_FILE, STATE_DIR_ENV};
 
 /// On-disk shape of the managed agent-generation file. A single `agents:` map
 /// keeps room for future keys and lets `deny_unknown_fields` flag typos.
@@ -69,13 +66,19 @@ pub struct AgentGenerationStore {
 }
 
 impl AgentGenerationStore {
-    /// Load the persisted overrides from the managed file, resolving its path
-    /// from `ENTANGLEMENT_AGENT_GENERATION_FILE` or
-    /// `${config_dir}/entanglement/`. A missing file is an empty store; a
-    /// malformed one is logged and treated as empty (fail-open — a corrupt file
-    /// only reverts profiles to their catalog default).
+    /// Load the persisted overrides from the managed file, resolving its path in
+    /// the managed-state dir (`ENTANGLEMENT_STATE_DIR`, ADR-0213). A missing
+    /// file is an empty store; a malformed one is logged and treated as empty
+    /// (fail-open — a corrupt file only reverts profiles to their catalog
+    /// default).
     pub fn load() -> Self {
-        let path = agent_generation_file_path();
+        Self::load_from(agent_generation_file_path())
+    }
+
+    /// [`load`](Self::load) from an explicit file — or, with `None`, a purely
+    /// in-memory store. The injection seam (#747): a test pins a temp file
+    /// instead of steering process-global env.
+    pub fn load_from(path: Option<PathBuf>) -> Self {
         let agents = match &path {
             Some(p) => read_agent_generation(p),
             None => BTreeMap::new(),
@@ -99,7 +102,7 @@ impl AgentGenerationStore {
         let Some(path) = self.path.clone() else {
             bail!(
                 "no config directory for the managed agent-generation file; \
-                 set {AGENT_GENERATION_FILE_ENV} to a path first"
+                 set {STATE_DIR_ENV} to a directory first"
             );
         };
         let agent_name = agent.to_string();
@@ -153,15 +156,10 @@ fn persist_map(path: &Path, agents: &BTreeMap<String, GenerationParams>) -> Resu
     atomic_write(path, &format!("{header}{body}"))
 }
 
-/// Resolve the managed agent-generation file path:
-/// `ENTANGLEMENT_AGENT_GENERATION_FILE` wins, otherwise
-/// `${config_dir}/entanglement/agent-generation.yml`. `None` when neither is
-/// available (persistence then silently no-ops).
-fn agent_generation_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(AGENT_GENERATION_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("agent-generation.yml"))
+/// The managed `agent-generation.yml` in the managed-state dir (ADR-0213). `None`
+/// when no state dir resolves (persistence then silently no-ops).
+pub(crate) fn agent_generation_file_path() -> Option<PathBuf> {
+    state_file(AGENT_GENERATION_FILE)
 }
 
 /// Read + parse the agent-generation file at `path`. A missing file, or any

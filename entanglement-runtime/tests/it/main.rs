@@ -80,12 +80,14 @@ mod request_mode;
 mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
+mod retired_knobs;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "provider")]
 mod session_title;
 mod skill_posture;
 mod spawn_prompt_persistence;
+mod state_dir;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;
 mod subagent_spawn;

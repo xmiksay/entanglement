@@ -33,8 +33,8 @@ impl Discovery {
         !matches!(self, Discovery::Append)
     }
 
-    /// The snake_case wire/YAML spelling, shared by the catalog, the
-    /// `config.yml` `discovery:` map and every label a head renders — one
+    /// The snake_case wire/YAML spelling, shared by the catalog and every
+    /// label a head renders — one
     /// string maps one way everywhere, exactly like
     /// [`ToolAdvertising::label`][super::ToolAdvertising::label].
     pub fn label(self) -> &'static str {

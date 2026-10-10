@@ -174,8 +174,8 @@ guessing again:
   the out-of-root target (`permission::escape_root_target` + `host::escaping_path`),
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins), and records the grant in a shared `ExtraRootStore`
-  (`extra_roots.rs`; managed `extra-roots.yml`, override
-  `ENTANGLEMENT_EXTRA_ROOTS_FILE`) keyed by `(tool, resolved-absolute-path)` —
+  (`extra_roots.rs`; managed `extra-roots.yml` in the managed-state dir,
+  `ENTANGLEMENT_STATE_DIR`) keyed by `(tool, resolved-absolute-path)` —
   **per tool** (a `read` grant never unlocks `write`) at `Once`/`Session`/`Always`
   scope. `Once` is additionally bound to the approving call's `request_id`
   (#449, [ADR-0120](../adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)):
@@ -635,16 +635,14 @@ three:
 | `native_first` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each directly by its name as a normal tool call; only if you cannot, call invoke {"name": "<tool>", "args": {...}}.` | `zai`, `zai_paas` |
 | `invoke` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each through invoke {"name": "<tool>", "args": {...}}; they cannot be called directly.` | `gemini`, `openai` |
 
-**Precedence** — `config.yml` `discovery:` > the model's catalog `discovery:`
-> its provider's > `append` (`tool_advertising::resolve_discovery`). The
-config tier is a map keyed by **provider name**
-(`discovery: {zai: native_first, gemini: invoke}`), stored in the same layered
-user config as `tool_advertising` (embedded < user < project). It is looked up
-by name rather than through the catalog, so an entry for a provider only the
-user's `providers.yml` adds still wins, while an entry for a provider this
-session isn't on is inert. **There is no environment variable**, deliberately:
-unlike `ENTANGLEMENT_TOOL_ADVERTISING` the knob is per provider, so one
-process-wide scalar could only ever be right for one of them.
+**Precedence** — the model's catalog `discovery:` > its provider's > `append`
+(`tool_advertising::resolve_discovery`). **Catalog data only**: the strategy
+is a fact about what a wire accepts (does it take an undeclared function
+call?), not a preference, so the former `config.yml` `discovery:` per-provider
+override map is retired ([ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md) — a file still carrying it loads with
+one startup warning and the key ignored). A user describes a new endpoint's
+behavior in `providers.yml`; the effective value shows in `skutter inspect
+config`'s advanced-catalog section.
 
 Under the two fixed-array strategies nothing mutates `tools`:
 `tool_advertising::client_side_surface` ignores the discovered set, an
@@ -701,11 +699,11 @@ appended by its next delivery rather than retroactively — switching to
 sent before the first resolution is held and applied by the pin; hibernate
 and resume drop it.
 
-The dialog's **"save mode/discovery as default"** checkbox is the other half:
-it writes `tool_advertising` and `discovery[<the session's provider>]` into the
-user `config.yml` through `config::write_key`, so the choice is the default for
-**new** sessions while the re-pin handles the running one (a `full`-mode or
-native-wire session saves no strategy — there is none that applies). The writer
+The dialog's **"save mode as default"** checkbox is the other half: it writes
+`tool_advertising` into the user `config.yml` through `config::write_key`, so
+the choice is the default for **new** sessions while the re-pin handles the
+running one. The discovery strategy re-pins live only and is never saved —
+it is catalog data (ADR-0213). The writer
 is comment-preserving by construction: it splices only that one key's lines —
 replacing a live block, uncommenting the first-run scaffold's `#key:`
 placeholder, or appending — under the shared advisory lock and `atomic_write`
@@ -1068,7 +1066,7 @@ the same permission profiles as `read`/`bash`.
     `tokio::net` (RFC 8252, bound to `127.0.0.1`, mismatched `state` refused
     outright — never `axum`, which must not reach the leaf crate). Credentials
     live in the managed `mcp-tokens.yml` (`0600`, atomic + `fd-lock`ed like the
-    sibling managed files, override `ENTANGLEMENT_MCP_TOKENS_FILE`) **together
+    sibling managed files in the managed-state dir, `ENTANGLEMENT_STATE_DIR`) **together
     with the resolved endpoints and client id**, so a startup connect skips
     discovery/registration entirely — those run only during an explicit
     `/mcp connect`. Tokens refresh on expiry and once more on a `401`; every

@@ -47,7 +47,7 @@ impl Llm for DummyLlm {
 /// prompt (its byte length + an 8-hex SHA-256 fingerprint) and the advertised
 /// tool names — so a test (or a human in the TUI) can verify at a glance which
 /// prompt/tool set actually reached the backend, not just whether prior turns
-/// survived. Set `ENTANGLEMENT_ECHO_FULL=1` to append the full system text.
+/// survived. Set `ENTANGLEMENT_DEBUG=echo` to append the full system text.
 pub struct EchoLlm;
 
 impl EchoLlm {
@@ -65,10 +65,7 @@ impl Default for EchoLlm {
 #[async_trait]
 impl Llm for EchoLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        let reply = echo_reply(
-            &req,
-            std::env::var("ENTANGLEMENT_ECHO_FULL").as_deref() == Ok("1"),
-        );
+        let reply = echo_reply(&req, crate::debug::DebugFlags::from_env().echo);
         let events = vec![
             Ok(LlmEvent::Text(reply)),
             Ok(LlmEvent::Finish {

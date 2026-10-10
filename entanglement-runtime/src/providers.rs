@@ -138,25 +138,24 @@ pub(crate) fn web_search_config(user_config: &config::Config) -> Option<WebSearc
         .then(|| user_config.web_search.clone())
 }
 
-/// Per-minute request budget from `{NAME}_RPM` env, else the catalog entry's
-/// `rpm` (env > catalog; `None` → the client's built-in default). Mirrors the
-/// rest of the catalog's precedence for this per-endpoint bucket size (#241).
-pub(crate) fn resolve_rpm(entry: &ProviderEntry) -> Option<u32> {
-    let name = entry.name.to_uppercase();
-    env_nonempty(&format!("{name}_RPM"))
-        .and_then(|v| v.parse::<u32>().ok())
-        .or(entry.rpm)
+/// Endpoint base URL: `{NAME}_API_BASE` env > the entry's `base_url` (the
+/// embedded catalog deep-merged under the user `providers.yml`) > `fallback`,
+/// the wire client's own default. The legacy `{NAME}_BASE` spelling is
+/// retired (ADR-0213).
+pub(crate) fn resolve_base(entry: &ProviderEntry, fallback: &str) -> String {
+    base_from(env_nonempty, entry, fallback)
 }
 
-/// In-flight concurrency cap from `{NAME}_CONCURRENCY` env, else the catalog
-/// entry's `concurrency` (env > catalog; `None` → the client's built-in default,
-/// itself overridable process-wide via `ENTANGLEMENT_MAX_CONCURRENCY`). Mirrors
-/// `resolve_rpm`'s precedence for this per-endpoint storm guard (#414).
-pub(crate) fn resolve_concurrency(entry: &ProviderEntry) -> Option<usize> {
-    let name = entry.name.to_uppercase();
-    env_nonempty(&format!("{name}_CONCURRENCY"))
-        .and_then(|v| v.parse::<usize>().ok())
-        .or(entry.concurrency)
+/// [`resolve_base`] over an injected env lookup, so the precedence is
+/// unit-testable without mutating process env (#747).
+fn base_from(
+    env: impl Fn(&str) -> Option<String>,
+    entry: &ProviderEntry,
+    fallback: &str,
+) -> String {
+    env(&format!("{}_API_BASE", entry.name.to_uppercase()))
+        .or_else(|| entry.base_url.clone())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 /// Summarize the chosen model against the catalog (context window, display name).
@@ -197,7 +196,7 @@ fn pricing_map(catalog: &Catalog) -> HashMap<String, ModelPricing> {
 
 /// OpenAI-compatible provider (z.ai/OpenAI/Ollama/any proxy). Key from
 /// `entry.key_env` (absent → `None` = skip a keyed provider); base from
-/// `{NAME}_API_BASE` else `{NAME}_BASE` env else `entry.base_url`.
+/// `{NAME}_API_BASE` env else `entry.base_url`.
 fn openai_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
@@ -340,39 +339,75 @@ fn echo_config() -> (EngineConfig, ModelInfo) {
 
 #[cfg(test)]
 mod tests {
-    fn test_entry(name: &str) -> entanglement_provider::ProviderEntry {
-        entanglement_provider::ProviderEntry {
-            name: name.to_string(),
-            wire: Default::default(),
-            base_url: None,
-            key_env: None,
-            oauth: None,
-            rpm: None,
-            concurrency: None,
-            default_model: "test-model".to_string(),
-            models: Vec::new(),
-            mcp_servers: Default::default(),
-            prompt_cache_key: false,
-            thinking_control: None,
-            discovery: None,
+    use super::*;
+
+    /// A catalog of the embedded defaults deep-merged under a user
+    /// `providers.yml` — the real two-file layering.
+    fn catalog_with_user(yaml: &str) -> Catalog {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("providers.yml");
+        std::fs::write(&path, yaml).unwrap();
+        Catalog::load_from(&path).unwrap()
+    }
+
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
         }
     }
 
     #[test]
-    fn resolve_concurrency_falls_back_to_catalog_then_none() {
-        let mut entry = test_entry("resolveconcurrencyfallback");
-        assert_eq!(super::resolve_concurrency(&entry), None);
-        entry.concurrency = Some(7);
-        assert_eq!(super::resolve_concurrency(&entry), Some(7));
+    fn base_precedence_is_env_then_user_yaml_then_embedded() {
+        let embedded = Catalog::builtin();
+        let ollama = embedded.provider("ollama").unwrap();
+        // Embedded alone.
+        let builtin = base_from(env_of(&[]), ollama, "fallback");
+        assert_ne!(builtin, "http://user.example/v1");
+
+        // The user file wins over the embedded entry...
+        let user = catalog_with_user(
+            "providers:\n  - name: ollama\n    base_url: http://user.example/v1\n",
+        );
+        let ollama = user.provider("ollama").unwrap();
+        assert_eq!(
+            base_from(env_of(&[]), ollama, "fallback"),
+            "http://user.example/v1"
+        );
+        // ...and the env var wins over both.
+        assert_eq!(
+            base_from(
+                env_of(&[("OLLAMA_API_BASE", "http://env.example/v1")]),
+                ollama,
+                "fallback"
+            ),
+            "http://env.example/v1"
+        );
     }
 
     #[test]
-    fn resolve_concurrency_env_overrides_catalog() {
-        let entry_name = "resolveconcurrencyenvoverride";
-        let mut entry = test_entry(entry_name);
-        entry.concurrency = Some(7);
-        std::env::set_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()), "12");
-        assert_eq!(super::resolve_concurrency(&entry), Some(12));
-        std::env::remove_var(format!("{}_CONCURRENCY", entry_name.to_uppercase()));
+    fn the_retired_base_alias_is_not_read() {
+        let user = catalog_with_user(
+            "providers:\n  - name: ollama\n    base_url: http://user.example/v1\n",
+        );
+        let ollama = user.provider("ollama").unwrap();
+        assert_eq!(
+            base_from(
+                env_of(&[("OLLAMA_BASE", "http://legacy.example/v1")]),
+                ollama,
+                "fallback"
+            ),
+            "http://user.example/v1"
+        );
+    }
+
+    #[test]
+    fn rate_limits_are_catalog_data_from_the_user_yaml() {
+        // No env tier any more (ADR-0213): the merged entry is the answer.
+        let user = catalog_with_user("providers:\n  - name: zai\n    rpm: 7\n    concurrency: 2\n");
+        let zai = user.provider("zai").unwrap();
+        assert_eq!((zai.rpm, zai.concurrency), (Some(7), Some(2)));
     }
 }

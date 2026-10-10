@@ -95,16 +95,11 @@ impl SettingsEffects for LiveEffects<'_> {
                 adv.repin(&session, *mode, *discovery);
                 Ok(())
             }
-            ApplyStep::PersistAdvertising {
-                mode,
-                provider,
-                discovery,
-            } => crate::config::write_key::save_advertising_defaults(
-                Some(*mode),
-                provider,
-                *discovery,
-            )
-            .map_err(|e| format!("persist failed: {e:#}")),
+            ApplyStep::PersistAdvertising { mode } => {
+                crate::config::write_key::save_tool_advertising(*mode)
+                    .map(|_| ())
+                    .map_err(|e| format!("persist failed: {e:#}"))
+            }
             ApplyStep::Aux {
                 purpose,
                 provider,

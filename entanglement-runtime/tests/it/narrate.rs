@@ -75,20 +75,12 @@ impl Llm for GatedLlm {
 /// no-pin `resolve` short-circuits straight to the primary), so an
 /// always-erroring stub is a faithful stand-in.
 fn registry_with_primary(label: &str, factory: LlmFactory) -> AuxLlmRegistry {
-    let _g = crate::env_lock();
     let path = std::env::temp_dir().join(format!(
         "entanglement-narrate-it-{label}-{}.yml",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
-    // SAFETY: single-threaded within the ENV_LOCK critical section.
-    unsafe {
-        std::env::set_var("ENTANGLEMENT_AUX_MODELS_FILE", &path);
-    }
-    let store = Arc::new(Mutex::new(AuxModelStore::load()));
-    unsafe {
-        std::env::remove_var("ENTANGLEMENT_AUX_MODELS_FILE");
-    }
+    let store = Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))));
     let resolver: ModelResolver = Arc::new(|_u: Option<&UserId>, _p: &str, _m: &str| {
         Err::<ResolvedModel, String>("no catalog in this test".to_string())
     });

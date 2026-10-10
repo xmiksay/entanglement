@@ -380,7 +380,7 @@ mod tests {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         handle_event(
             &mut app,
@@ -413,7 +413,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
         app.set_approval_mode(ApprovalMode::EnteringRejectReason {
             request_id: "t1".to_string(),
@@ -440,7 +440,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
 
         handle_event(
@@ -463,7 +463,7 @@ mod tests {
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
 
         handle_event(
@@ -503,7 +503,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
         app.open_approval_pager();
 
@@ -554,7 +554,7 @@ mod tests {
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
         app.open_approval_pager();
 
@@ -591,7 +591,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_viewport_metrics(20, 5);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
         assert!(app.auto_follow());
@@ -616,7 +616,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_viewport_metrics(20, 5);
         park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
         app.set_approval_mode(ApprovalMode::EnteringRejectReason {
@@ -650,7 +650,7 @@ mod tests {
 
         let key =
             ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         handle_event(&mut app, &holly, &mut attention, Event::Key(key))
             .await
             .unwrap();
@@ -674,7 +674,7 @@ mod tests {
 
         let key =
             ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         handle_event(&mut app, &holly, &mut attention, Event::Key(key))
             .await
             .unwrap();
@@ -748,7 +748,7 @@ mod tests {
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         // Empty, single-line input → the Esc fallthrough sends `InMsg::Stop`
         // for the active session and returns `Ok(false)` (not quit). Esc used
@@ -779,7 +779,7 @@ mod tests {
         let mut app = App::new_for_test(sid);
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_multiline(true);
         assert!(app.is_input_multiline());
 
@@ -817,7 +817,7 @@ mod tests {
         app.init_head_context(dir.path().to_path_buf());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         // The index arrives via the background-build event (#678), not
         // init_head_context — deliver it through the same arm the TUI uses.
@@ -864,7 +864,7 @@ mod tests {
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/stop".to_string());
 
         let quit = handle_event(
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(app.sessions().len(), 3);
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/stop --all".to_string());
 
         let quit = handle_event(
@@ -936,7 +936,7 @@ mod tests {
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         // /pause → one PauseSession for the active session.
         let mut rx_pause = holly.subscribe_inbound();
@@ -983,7 +983,7 @@ mod tests {
         let mut app = App::new_for_test(sid.clone());
         let holly = engine();
         let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         // An idle session is not Paused, so the toggle sends PauseSession.
         let toggle =
@@ -1016,7 +1016,7 @@ mod tests {
     async fn help_with_command_arg_renders_clap_help() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/help compact".to_string());
 
         handle_event(
@@ -1040,7 +1040,7 @@ mod tests {
     async fn cmd_dash_h_renders_clap_help() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/set -h".to_string());
 
         handle_event(
@@ -1066,7 +1066,7 @@ mod tests {
         // `/help` behavior (toggle the keybindings dialog), not a status line.
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/help bogus".to_string());
 
         handle_event(
@@ -1093,7 +1093,7 @@ mod tests {
     async fn typing_slash_opens_the_popup() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
 
         handle_event(
             &mut app,
@@ -1131,7 +1131,7 @@ mod tests {
     async fn tab_accepts_the_selected_slash_command() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         // Type `/comp` → first match is Compact.
         app.set_input_text("/comp".to_string());
         app.update_popups();
@@ -1158,7 +1158,7 @@ mod tests {
     async fn esc_closes_the_slash_popup() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/comp".to_string());
         app.update_popups();
         assert!(app.slash_visible());
@@ -1179,7 +1179,7 @@ mod tests {
     async fn down_arrow_navigates_the_slash_popup() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         let holly = engine();
-        let mut attention = Attention::from_env();
+        let mut attention = Attention::new(false);
         app.set_input_text("/".to_string());
         app.update_popups();
         assert!(app.slash_visible());

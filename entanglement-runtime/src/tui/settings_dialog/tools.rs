@@ -30,12 +30,9 @@ pub struct AdvertisingRows {
     initial_mode: ToolAdvertising,
     discovery: Discovery,
     initial_discovery: Discovery,
-    /// The provider this session talks to — the key a persisted strategy is
-    /// written under, since `discovery:` is a per-provider map. Empty until a
-    /// `ModelChanged` names one, which only costs the strategy half of a save.
-    provider: String,
-    /// "Save as default": write the shown facts into `config.yml` for **new**
-    /// sessions. Orthogonal to the live re-pin, which changes this one.
+    /// "Save as default": write the shown mode into `config.yml` for **new**
+    /// sessions. Orthogonal to the live re-pin, which changes this one. The
+    /// discovery strategy re-pins live only — it is catalog data (ADR-0213).
     persist: bool,
 }
 
@@ -47,7 +44,6 @@ impl AdvertisingRows {
         client_side: bool,
         mode: ToolAdvertising,
         discovery: Discovery,
-        provider: String,
     ) -> Self {
         Self {
             available,
@@ -56,7 +52,6 @@ impl AdvertisingRows {
             initial_mode: mode,
             discovery,
             initial_discovery: discovery,
-            provider,
             persist: false,
         }
     }
@@ -91,7 +86,7 @@ impl AdvertisingRows {
 
     /// With the managed writer in place (`config::write_key`), the only thing
     /// left that can block a save is a head holding no advertising state — it
-    /// then has no mode or strategy to save.
+    /// then has no mode to save.
     pub fn persist_disabled(&self) -> Option<&'static str> {
         (!self.available).then_some(ADVERTISING_PERSIST_REASON)
     }
@@ -103,20 +98,12 @@ impl AdvertisingRows {
     }
 
     /// The config-writing step: the mode exactly as the rows show it (saving
-    /// means "make what I see the default", change or no change), plus the
-    /// strategy only when it is meaningful for this session and its provider
-    /// is known — `discovery:` is keyed by provider name.
+    /// means "make what I see the default", change or no change).
     pub fn persist_step(&self) -> Option<ApplyStep> {
         if !self.persist || self.persist_disabled().is_some() {
             return None;
         }
-        let discovery = (self.discovery_disabled().is_none() && !self.provider.is_empty())
-            .then_some(self.discovery);
-        Some(ApplyStep::PersistAdvertising {
-            mode: self.mode,
-            provider: self.provider.clone(),
-            discovery,
-        })
+        Some(ApplyStep::PersistAdvertising { mode: self.mode })
     }
 
     pub fn cycle_mode(&mut self) {

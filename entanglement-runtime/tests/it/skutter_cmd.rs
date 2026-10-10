@@ -31,6 +31,6 @@ pub fn isolated_skutter() -> (Command, TempDir) {
         .env("XDG_STATE_HOME", root.join("state"))
         // Endpoint state would land under the temp data dir anyway; disabling
         // it keeps the child's pool purely in-process (#743).
-        .env("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
+        .env("ENTANGLEMENT_DEBUG", "no-shared-state");
     (cmd, sandbox)
 }

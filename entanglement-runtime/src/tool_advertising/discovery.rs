@@ -1,32 +1,27 @@
-//! ADR-0204's client-side `discovery` strategy: config/catalog resolution, the
+//! ADR-0204's client-side `discovery` strategy: catalog resolution, the
 //! per-session pin, and the one effective read every consumer (resolver,
 //! `describe`, prompt note, declines) shares so they can never disagree.
 //!
-//! Precedence, highest first — the advertising-mode chain minus its env tier:
+//! Precedence, highest first — **catalog data only** (ADR-0213 retired the
+//! `config.yml` `discovery:` override map: the strategy is a fact about what a
+//! wire accepts, not a user preference):
 //!
-//! 1. `config.yml` `discovery:`, a map keyed by **provider name**
-//!    ([`Config::discovery`]);
-//! 2. the model's catalog `discovery:` ([`ModelEntry`][entanglement_core::ModelEntry]);
-//! 3. its provider's catalog `discovery:`;
-//! 4. `Discovery::Append`.
+//! 1. the model's catalog `discovery:` ([`ModelEntry`][entanglement_core::ModelEntry]);
+//! 2. its provider's catalog `discovery:`;
+//! 3. `Discovery::Append`.
 //!
-//! **There is no environment variable** for this knob, deliberately: unlike
-//! `ENTANGLEMENT_TOOL_ADVERTISING` it is per provider, so a single process-wide
-//! scalar could only ever be wrong for every provider but one. The config map
-//! is the per-provider surface, and the TUI `/set` dialog writes into it
-//! ([`crate::config::write_key`]).
+//! The TUI `/set` dialog can still re-pin a running session's strategy live
+//! ([`super::repin`]); that never persists.
 
 use entanglement_core::{Catalog, Discovery, SessionId, ToolAdvertising};
 
 use super::{AdvertisingState, Encoding, SessionToolAdvertising};
-use crate::config::Config;
 
-/// Resolve a session's strategy under the full chain (module doc): the user
-/// config's per-provider entry, else the model's catalog `discovery`, else its
-/// provider's, else `Append`. The provider is taken by name when known, else
-/// the one listing the bare model id (the `encoding` lookup's two tiers).
+/// Resolve a session's strategy under the chain (module doc): the model's
+/// catalog `discovery`, else its provider's, else `Append`. The provider is
+/// taken by name when known, else the one listing the bare model id (the
+/// `encoding` lookup's two tiers).
 pub(super) fn resolve_discovery(
-    config: &Config,
     catalog: Option<&Catalog>,
     provider: Option<&str>,
     model: Option<&str>,
@@ -39,15 +34,6 @@ pub(super) fn resolve_discovery(
             .find(|p| p.models.iter().any(|e| e.id == m)),
         (None, None) => None,
     });
-    // The config tier is keyed by provider *name*, so a session known only by
-    // a bare model id borrows the name from the catalog entry that lists it.
-    // Consulted before — and independently of — the catalog tiers: a user may
-    // key an entry to a provider only their own `providers.yml` adds, or to
-    // one that carries no `discovery:` at all, and it must still win.
-    let name = provider.or_else(|| entry.map(|e| e.name.as_str()));
-    if let Some(configured) = name.and_then(|n| config.discovery.get(n)) {
-        return *configured;
-    }
     let Some(entry) = entry else {
         return Discovery::default();
     };
@@ -114,23 +100,10 @@ mod tests {
         .expect("valid catalog yaml")
     }
 
-    /// A config with just the `discovery:` map set, everything else at the
-    /// embedded defaults.
-    fn config_with(entries: &[(&str, Discovery)]) -> Config {
-        Config {
-            discovery: entries
-                .iter()
-                .map(|(name, d)| (name.to_string(), *d))
-                .collect(),
-            ..crate::config::bare_config()
-        }
-    }
-
     #[test]
     fn provider_decides_and_a_model_entry_overrides_it() {
         let c = catalog();
-        let cfg = config_with(&[]);
-        let r = |p, m| resolve_discovery(&cfg, Some(&c), p, m);
+        let r = |p, m| resolve_discovery(Some(&c), p, m);
         assert_eq!(r(Some("local"), Some("x")), Discovery::Invoke);
         assert_eq!(r(Some("local"), None), Discovery::Invoke);
         assert_eq!(r(Some("local"), Some("flash")), Discovery::NativeFirst);
@@ -142,73 +115,14 @@ mod tests {
     #[test]
     fn silence_or_a_miss_resolves_append() {
         let c = catalog();
-        let cfg = config_with(&[]);
-        let r = |p, m| resolve_discovery(&cfg, Some(&c), p, m);
+        let r = |p, m| resolve_discovery(Some(&c), p, m);
         assert_eq!(r(Some("silent"), Some("y")), Discovery::Append);
         assert_eq!(r(Some("nope"), Some("x")), Discovery::Append);
         assert_eq!(r(None, Some("nope")), Discovery::Append);
         assert_eq!(r(None, None), Discovery::Append);
         assert_eq!(
-            resolve_discovery(&cfg, None, Some("local"), Some("x")),
+            resolve_discovery(None, Some("local"), Some("x")),
             Discovery::Append
-        );
-    }
-
-    #[test]
-    fn the_config_map_wins_over_both_catalog_tiers() {
-        let c = catalog();
-        // `local` is `invoke` provider-wide and `native_first` on `flash`;
-        // a config entry outranks both.
-        let cfg = config_with(&[("local", Discovery::Append)]);
-        let r = |p, m| resolve_discovery(&cfg, Some(&c), p, m);
-        assert_eq!(r(Some("local"), Some("x")), Discovery::Append);
-        assert_eq!(r(Some("local"), Some("flash")), Discovery::Append);
-        // And it supplies a strategy where the catalog is silent.
-        let cfg = config_with(&[("silent", Discovery::Invoke)]);
-        assert_eq!(
-            resolve_discovery(&cfg, Some(&c), Some("silent"), Some("y")),
-            Discovery::Invoke
-        );
-    }
-
-    #[test]
-    fn a_bare_model_id_picks_up_its_providers_config_entry() {
-        let c = catalog();
-        let cfg = config_with(&[("local", Discovery::Append)]);
-        // No provider named: `flash` is listed by `local`, whose config entry
-        // therefore applies — beating the model's own `native_first`.
-        assert_eq!(
-            resolve_discovery(&cfg, Some(&c), None, Some("flash")),
-            Discovery::Append
-        );
-    }
-
-    #[test]
-    fn an_entry_for_another_provider_is_inert() {
-        let c = catalog();
-        let cfg = config_with(&[("elsewhere", Discovery::Append)]);
-        // The session is on `local`, so the `elsewhere` key changes nothing:
-        // the catalog still decides.
-        assert_eq!(
-            resolve_discovery(&cfg, Some(&c), Some("local"), Some("flash")),
-            Discovery::NativeFirst
-        );
-    }
-
-    #[test]
-    fn a_provider_the_catalog_never_heard_of_still_reads_its_config_entry() {
-        let c = catalog();
-        let cfg = config_with(&[("home-grown", Discovery::Invoke)]);
-        // A user `providers.yml` entry this test catalog doesn't carry: the
-        // config tier is looked up by name, not via the catalog, so it wins.
-        assert_eq!(
-            resolve_discovery(&cfg, Some(&c), Some("home-grown"), Some("whatever")),
-            Discovery::Invoke
-        );
-        // Same with no catalog at all.
-        assert_eq!(
-            resolve_discovery(&cfg, None, Some("home-grown"), None),
-            Discovery::Invoke
         );
     }
 

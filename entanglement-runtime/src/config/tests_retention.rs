@@ -1,8 +1,7 @@
 //! Tests for the `session_retention_days` config key (Issue 4, Phase 4.2).
 //!
-//! Lives in its own module so `tests.rs` stays under the 400-line cap. The env
-//! precedence is tested over [`session_retention_from`]'s injected value, never
-//! by mutating `ENTANGLEMENT_SESSION_RETENTION_DAYS` (#747).
+//! Lives in its own module so `tests.rs` stays under the 400-line cap. There is
+//! no env override any more (ADR-0213): config > the embedded default.
 
 use super::tests::{defaults, merge_user};
 use super::*;
@@ -19,32 +18,6 @@ fn session_retention_parses_from_user_file_and_keeps_siblings() {
     let c = merge_user("session_retention_days: 7\n");
     assert_eq!(c.session_retention_days, 7);
     assert_eq!(c.agent.as_deref(), Some("general"));
-}
-
-#[test]
-fn session_retention_env_overrides_config() {
-    // Env > config > default.
-    assert_eq!(session_retention_from(Some("90".into()), Some(7)), 90);
-}
-
-#[test]
-fn session_retention_env_overrides_default_when_config_absent() {
-    assert_eq!(session_retention_from(Some("5".into()), None), 5);
-}
-
-#[test]
-fn session_retention_unset_or_empty_env_falls_through() {
-    assert_eq!(session_retention_from(None, Some(14)), 14);
-    assert_eq!(session_retention_from(Some(String::new()), None), 30);
-}
-
-#[test]
-fn session_retention_unparseable_env_falls_back_to_config() {
-    // A typo'd env value is logged + ignored, not fatal — config/default wins.
-    assert_eq!(
-        session_retention_from(Some("not-a-number".into()), Some(14)),
-        14
-    );
 }
 
 #[test]

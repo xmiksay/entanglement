@@ -57,13 +57,7 @@ fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialo
 }
 
 fn live_adv() -> AdvertisingRows {
-    AdvertisingRows::new(
-        true,
-        true,
-        ToolAdvertising::ToolSearch,
-        Discovery::Append,
-        "zai".to_string(),
-    )
+    AdvertisingRows::new(true, true, ToolAdvertising::ToolSearch, Discovery::Append)
 }
 
 fn dialog() -> SettingsDialog {
@@ -292,13 +286,7 @@ fn repin_needs_its_own_confirmation_step() {
 
 #[test]
 fn discovery_is_disabled_with_a_reason_off_client_side_or_under_full() {
-    let native = AdvertisingRows::new(
-        true,
-        false,
-        ToolAdvertising::ToolSearch,
-        Discovery::Append,
-        "anthropic".to_string(),
-    );
+    let native = AdvertisingRows::new(true, false, ToolAdvertising::ToolSearch, Discovery::Append);
     assert!(native.discovery_disabled().is_some());
     let mut d = dialog_on("anthropic", "claude-sonnet-5", native);
     d.set_tab(Tab::Tools);
@@ -306,13 +294,7 @@ fn discovery_is_disabled_with_a_reason_off_client_side_or_under_full() {
     d.activate(true);
     assert!(d.pending().is_empty(), "a disabled row doesn't change");
 
-    let mut full = AdvertisingRows::new(
-        true,
-        true,
-        ToolAdvertising::Full,
-        Discovery::Append,
-        "zai".to_string(),
-    );
+    let mut full = AdvertisingRows::new(true, true, ToolAdvertising::Full, Discovery::Append);
     assert_eq!(
         full.discovery_disabled(),
         Some("only applies under tool_search")
@@ -333,13 +315,8 @@ fn the_persist_checkbox_is_live_and_only_a_stateless_head_disables_it() {
     // The managed writer exists now, so a normal session can save.
     assert_eq!(persist_row(&dialog()).disabled, None);
 
-    let headless = AdvertisingRows::new(
-        false,
-        false,
-        ToolAdvertising::ToolSearch,
-        Discovery::Append,
-        String::new(),
-    );
+    let headless =
+        AdvertisingRows::new(false, false, ToolAdvertising::ToolSearch, Discovery::Append);
     assert_eq!(
         headless.persist_disabled(),
         Some(ADVERTISING_PERSIST_REASON)
@@ -355,11 +332,12 @@ fn toggle_persist(d: &mut SettingsDialog) {
 }
 
 #[test]
-fn persisting_saves_the_shown_mode_and_strategy_without_a_repin() {
+fn persisting_saves_the_shown_mode_without_a_repin() {
     let mut d = dialog();
     toggle_persist(&mut d);
     // Saving what is already pinned changes nothing live, so no confirmation
-    // step — the write is the whole plan.
+    // step — the write is the whole plan. The strategy is never persisted
+    // (ADR-0213: catalog data).
     let Confirm::Apply(plan) = d.confirm() else {
         panic!("a plan");
     };
@@ -367,19 +345,17 @@ fn persisting_saves_the_shown_mode_and_strategy_without_a_repin() {
         plan,
         vec![ApplyStep::PersistAdvertising {
             mode: ToolAdvertising::ToolSearch,
-            provider: "zai".to_string(),
-            discovery: Some(Discovery::Append),
         }]
     );
     assert!(
-        plan[0].label().contains("discovery[zai] → append"),
+        !plan[0].label().contains("discovery"),
         "{}",
         plan[0].label()
     );
 }
 
 #[test]
-fn persist_off_writes_nothing_and_full_mode_saves_no_strategy() {
+fn persist_off_writes_nothing_and_on_follows_the_repin() {
     // Off: a re-pin alone never touches config.yml.
     let mut d = dialog();
     change_mode(&mut d);
@@ -394,8 +370,8 @@ fn persist_off_writes_nothing_and_full_mode_saves_no_strategy() {
         "{plan:?}"
     );
 
-    // On, with the mode flipped to `full`: the strategy no longer applies, so
-    // only the mode is written — the re-pin still goes first.
+    // On, with the mode flipped to `full`: the re-pin goes first, then the
+    // save of the shown mode.
     let mut d = dialog();
     toggle_persist(&mut d);
     focus(&mut d, RowId::Mode);
@@ -413,36 +389,8 @@ fn persist_off_writes_nothing_and_full_mode_saves_no_strategy() {
             },
             ApplyStep::PersistAdvertising {
                 mode: ToolAdvertising::Full,
-                provider: "zai".to_string(),
-                discovery: None,
             }
         ]
-    );
-}
-
-#[test]
-fn an_unknown_provider_saves_the_mode_but_not_the_strategy() {
-    // `active_provider` is empty until a `ModelChanged` names one; the mode is
-    // provider-independent, the `discovery:` map key is not.
-    let rows = AdvertisingRows::new(
-        true,
-        true,
-        ToolAdvertising::ToolSearch,
-        Discovery::Invoke,
-        String::new(),
-    );
-    let mut d = dialog_on("zai", "glm-5.3", rows);
-    toggle_persist(&mut d);
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("a plan");
-    };
-    assert_eq!(
-        plan,
-        vec![ApplyStep::PersistAdvertising {
-            mode: ToolAdvertising::ToolSearch,
-            provider: String::new(),
-            discovery: None,
-        }]
     );
 }
 

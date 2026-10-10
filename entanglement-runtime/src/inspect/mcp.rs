@@ -119,7 +119,7 @@ mod tests {
             editor: None,
             session_retention_days: 30,
             tool_advertising: None,
-            discovery: Default::default(),
+            tui: Default::default(),
         }
     }
 
@@ -127,7 +127,7 @@ mod tests {
     fn empty_config_reports_no_startup_or_available_servers() {
         let catalog = empty_catalog();
         let config = empty_config();
-        let tokens = McpTokenStore::empty();
+        let tokens = McpTokenStore::at(None);
         let rendered = render_mcp(&catalog, &config, &tokens);
         assert!(rendered.contains("startup-connected (state: enabled):\n  (none)"));
         assert!(rendered.contains("available (state: allowed"));
@@ -152,7 +152,7 @@ mod tests {
                 state: Some(entanglement_core::McpServerState::Allowed),
             },
         );
-        let tokens = McpTokenStore::empty();
+        let tokens = McpTokenStore::at(None);
         let rendered = render_mcp(&catalog, &config, &tokens);
         assert!(rendered.contains("docs: user-defined (stdio)"));
     }

@@ -2,8 +2,8 @@
 //!
 //! The runtime's [`TokenStore`] implementation: the *policy* half of MCP OAuth,
 //! backing the mechanism that lives in `entanglement-provider::oauth`. Owns
-//! the managed file `${config_dir}/entanglement/mcp-tokens.yml` (override
-//! `ENTANGLEMENT_MCP_TOKENS_FILE`), a sibling of `aux-models.yml` (Issue 5),
+//! the managed file `<state dir>/mcp-tokens.yml` (relocated by
+//! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of `aux-models.yml` (Issue 5),
 //! `agent-models.yml` (#323), the grants file (#174), and the provider-key env
 //! file (#220) — **managed, not layered**: the runtime rewrites it freely, so it
 //! never mixes into the hand-edited `config.yml`.
@@ -66,10 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
 
-/// Env var overriding the managed token file path (tests + non-XDG setups).
-const MCP_TOKENS_FILE_ENV: &str = "ENTANGLEMENT_MCP_TOKENS_FILE";
-/// Env var overriding the managed *LLM* token file path (#684 edge d).
-const LLM_TOKENS_FILE_ENV: &str = "ENTANGLEMENT_LLM_TOKENS_FILE";
+use super::state_dir::{state_file, LLM_TOKENS_FILE, MCP_TOKENS_FILE, STATE_DIR_ENV};
 
 /// On-disk shape: a single `servers:` map.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -90,25 +87,27 @@ pub struct McpTokenStore {
 }
 
 impl McpTokenStore {
-    /// Resolve the managed file path from `ENTANGLEMENT_MCP_TOKENS_FILE` or
-    /// `${config_dir}/entanglement/mcp-tokens.yml`. A store with no resolvable
-    /// path reads empty and refuses writes with a clear error.
+    /// The managed `mcp-tokens.yml` in the managed-state dir. A store with no
+    /// resolvable path reads empty and refuses writes with a clear error.
     pub fn load() -> Self {
-        Self {
-            path: tokens_file_path(),
-        }
+        Self::at(state_file(MCP_TOKENS_FILE))
+    }
+
+    /// A store backed by an explicit file (`None` = no backing file). The
+    /// injection seam (#747): tests and embedders pin a path instead of
+    /// steering process-global env.
+    pub fn at(path: Option<PathBuf>) -> Self {
+        Self { path }
     }
 
     /// The sibling store for OAuth-protected **LLM provider endpoints** (#684
     /// edge d): same file format and locking, keyed by catalog provider name
-    /// instead of MCP server name, at `ENTANGLEMENT_LLM_TOKENS_FILE` or
-    /// `${config_dir}/entanglement/llm-tokens.yml`. A separate file — not a
+    /// instead of MCP server name, at `llm-tokens.yml` in the managed-state
+    /// dir. A separate file — not a
     /// namespace inside `mcp-tokens.yml` — so neither surface's writes ever
     /// contend with (or quarantine) the other's credentials.
     pub fn load_llm() -> Self {
-        Self {
-            path: llm_tokens_file_path(),
-        }
+        Self::at(state_file(LLM_TOKENS_FILE))
     }
 
     /// Every server with a stored credential — the `/mcp list` "authenticated"
@@ -131,21 +130,12 @@ impl McpTokenStore {
         read_tokens(path).remove(server)
     }
 
-    /// A store with no backing file — reads empty, refuses writes. Lets a
-    /// caller outside this module (e.g. `inspect::mcp`'s render tests) build a
-    /// [`McpTokenStore`] without touching the process-global
-    /// `ENTANGLEMENT_MCP_TOKENS_FILE` env var or the real filesystem.
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
-        Self { path: None }
-    }
-
     fn require_path(&self) -> Result<PathBuf> {
         match self.path.clone() {
             Some(p) => Ok(p),
             None => bail!(
                 "no config directory for the managed MCP token file; \
-                 set {MCP_TOKENS_FILE_ENV} to a path first"
+                 set {STATE_DIR_ENV} to a directory first"
             ),
         }
     }
@@ -315,61 +305,30 @@ fn quarantine(path: &Path, parse_err: &str) -> Result<()> {
     Ok(())
 }
 
-fn tokens_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(MCP_TOKENS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("mcp-tokens.yml"))
-}
-
-fn llm_tokens_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(LLM_TOKENS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("llm-tokens.yml"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use entanglement_core::TokenSet;
 
-    /// `ENTANGLEMENT_MCP_TOKENS_FILE` is process-global; tests that set it
-    /// serialize here so they don't race.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// The LLM sibling store (#684 edge d) resolves its own env var and file,
-    /// fully independent of the MCP one.
+    /// The LLM sibling store (#684 edge d) resolves its own file, fully
+    /// independent of the MCP one — both inside the managed-state dir.
     #[test]
     fn llm_store_resolves_its_own_file() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let path = std::env::temp_dir().join(format!(
-            "entanglement-llm-tokens-{}.yml",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        std::env::set_var(LLM_TOKENS_FILE_ENV, &path);
-        let llm = McpTokenStore::load_llm();
-        std::env::remove_var(LLM_TOKENS_FILE_ENV);
-        assert_eq!(llm.path.as_deref(), Some(path.as_path()));
-        // Default resolution ends in the sibling file name, never the MCP one.
-        if let Some(default_path) = super::llm_tokens_file_path() {
-            assert!(default_path.ends_with("entanglement/llm-tokens.yml"));
+        assert_ne!(LLM_TOKENS_FILE, MCP_TOKENS_FILE);
+        if let (Some(llm), Some(mcp)) = (McpTokenStore::load_llm().path, McpTokenStore::load().path)
+        {
+            assert!(llm.ends_with(LLM_TOKENS_FILE));
+            assert_eq!(llm.parent(), mcp.parent());
         }
-        let _ = std::fs::remove_file(&path);
     }
 
     fn store_at(label: &str) -> (McpTokenStore, PathBuf) {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let path = std::env::temp_dir().join(format!(
             "entanglement-mcp-tokens-{label}-{}.yml",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        std::env::set_var(MCP_TOKENS_FILE_ENV, &path);
-        let store = McpTokenStore::load();
-        std::env::remove_var(MCP_TOKENS_FILE_ENV);
-        (store, path)
+        (McpTokenStore::at(Some(path.clone())), path)
     }
 
     fn auth(access: &str) -> StoredAuth {
@@ -560,10 +519,10 @@ mod tests {
 
     #[test]
     fn a_store_with_no_path_reads_empty_and_refuses_writes() {
-        let store = McpTokenStore { path: None };
+        let store = McpTokenStore::at(None);
         assert!(store.load("srv").unwrap().is_none());
         assert!(store.servers().is_empty());
         let err = store.save("srv", &auth("x")).unwrap_err();
-        assert!(err.to_string().contains(MCP_TOKENS_FILE_ENV));
+        assert!(err.to_string().contains(STATE_DIR_ENV));
     }
 }

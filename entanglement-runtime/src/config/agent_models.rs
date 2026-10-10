@@ -3,8 +3,8 @@
 //! Picking a model via the TUI `/model` picker while a profile is active persists
 //! that `(provider, model)` **for that profile** so it survives a restart. This
 //! module owns the managed file behind that:
-//! `${config_dir}/entanglement/agent-models.yml` (override
-//! `ENTANGLEMENT_AGENT_MODELS_FILE`), a sibling of the grants file (#174) and the
+//! `<state dir>/agent-models.yml` (relocated by
+//! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of the grants file (#174) and the
 //! provider-key env file (#220) — **managed, not layered**: the runtime rewrites
 //! it freely, so it never mixes into the hand-edited `config.yml`.
 //!
@@ -32,9 +32,7 @@ use entanglement_core::AgentCatalog;
 use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
-
-/// Env var overriding the managed agent-models file path (tests + non-XDG setups).
-const AGENT_MODELS_FILE_ENV: &str = "ENTANGLEMENT_AGENT_MODELS_FILE";
+use super::state_dir::{state_file, AGENT_MODELS_FILE, STATE_DIR_ENV};
 
 /// One profile's persisted pin: the provider + model chosen for it via `/model`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,12 +60,18 @@ pub struct AgentModelStore {
 }
 
 impl AgentModelStore {
-    /// Load the persisted pins from the managed file, resolving its path from
-    /// `ENTANGLEMENT_AGENT_MODELS_FILE` or `${config_dir}/entanglement/`. A missing
+    /// Load the persisted pins from the managed file, resolving its path in
+    /// the managed-state dir (`ENTANGLEMENT_STATE_DIR`, ADR-0213). A missing
     /// file is an empty store; a malformed one is logged and treated as empty
     /// (fail-open — a corrupt file only reverts profiles to their frontmatter).
     pub fn load() -> Self {
-        let path = agent_models_file_path();
+        Self::load_from(agent_models_file_path())
+    }
+
+    /// [`load`](Self::load) from an explicit file — or, with `None`, a purely
+    /// in-memory store. The injection seam (#747): a test pins a temp file
+    /// instead of steering process-global env.
+    pub fn load_from(path: Option<PathBuf>) -> Self {
         let agents = match &path {
             Some(p) => read_agent_models(p),
             None => BTreeMap::new(),
@@ -97,7 +101,7 @@ impl AgentModelStore {
         let Some(path) = self.path.clone() else {
             bail!(
                 "no config directory for the managed agent-models file; \
-                 set {AGENT_MODELS_FILE_ENV} to a path first"
+                 set {STATE_DIR_ENV} to a directory first"
             );
         };
         let agent_name = agent.to_string();
@@ -160,14 +164,10 @@ fn persist_map(path: &Path, agents: &BTreeMap<String, AgentModelPin>) -> Result<
     atomic_write(path, &format!("{header}{body}"))
 }
 
-/// Resolve the managed agent-models file path: `ENTANGLEMENT_AGENT_MODELS_FILE`
-/// wins, otherwise `${config_dir}/entanglement/agent-models.yml`. `None` when
-/// neither is available (persistence then silently no-ops).
-fn agent_models_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(AGENT_MODELS_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("agent-models.yml"))
+/// The managed `agent-models.yml` in the managed-state dir (ADR-0213). `None`
+/// when no state dir resolves (persistence then silently no-ops).
+pub(crate) fn agent_models_file_path() -> Option<PathBuf> {
+    state_file(AGENT_MODELS_FILE)
 }
 
 /// Read + parse the agent-models file at `path`. A missing file, or any

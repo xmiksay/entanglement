@@ -218,7 +218,7 @@ pub(crate) async fn connect_client_with_store(
 ///
 /// The global store is built per call rather than held in a process-wide
 /// handle: it is only a resolved path (no I/O until a load), connects are rare,
-/// and building it here keeps `ENTANGLEMENT_MCP_TOKENS_FILE` honoured at the
+/// and building it here keeps `ENTANGLEMENT_STATE_DIR` honoured at the
 /// moment of use.
 #[cfg(feature = "mcp-http")]
 fn oauth_token_source(

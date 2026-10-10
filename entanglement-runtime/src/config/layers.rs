@@ -42,6 +42,7 @@ impl ConfigLayer {
 
 /// One discovered config layer *before* merging: its precedence, a display label
 /// for its origin (`built-in (defaults.yml)` or a file path), and the parsed doc.
+#[derive(Clone)]
 pub(super) struct RawLayer {
     pub(super) layer: ConfigLayer,
     pub(super) source: String,
@@ -131,7 +132,7 @@ pub(super) fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> 
         "editor",
         "session_retention_days",
         "tool_advertising",
-        "discovery",
+        "tui",
     ];
     KEYS.iter()
         .filter_map(|key| {

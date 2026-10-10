@@ -364,7 +364,8 @@ toolchains) since #551, because it also becomes the cross-process shared-state
 **file name** below and so must be stable across separately-built `skutter`
 processes, not merely process-local. Before #217 a single global 50-RPM
 `Semaphore` was shared across *all* providers. The bucket's RPM is **catalog data** (#241): the provider entry's
-optional `rpm` (env `{NAME}_RPM` > user `providers.yml` > embedded default),
+optional `rpm` (user `providers.yml` > embedded default — no env override
+since [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)),
 threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
 `EndpointState::new`; when unset it falls back to the client default
 (`RetryConfig::rpm`, 50).
@@ -383,13 +384,13 @@ The concurrency cap + pacing gate + 429 policy
 what makes the pool coordinate *across sessions* — the property that "spawn many
 sub-agents" needs and ADR-0050 lacked. The **primary** guard is a per-endpoint
 `concurrency` semaphore. **Also catalog data, mirroring `rpm`** (#414): the
-provider entry's optional `concurrency` (env `{NAME}_CONCURRENCY` > user
-`providers.yml` > embedded default), threaded through the same
+provider entry's optional `concurrency` (user `providers.yml` > embedded
+default, catalog data only since ADR-0213), threaded through the same
 `openai_factory`/`anthropic_factory`/`gemini_factory` → `execute_with_retry` →
 `HttpClient::endpoint` → `EndpointState::new` path as `rpm`; when unset it falls
-back to the client's default (`RetryConfig::concurrency`, 3, itself overridable
-process-wide via `ENTANGLEMENT_MAX_CONCURRENCY` — the pre-#414 pool-global
-knob, now the last-resort fallback rather than the only lever). A permit is
+back to the client's default (`RetryConfig::concurrency`, 3; the pre-#414
+process-wide `ENTANGLEMENT_MAX_CONCURRENCY` override is retired, ADR-0213). A
+permit is
 acquired before the request and returned as an opaque `StreamGuard` that
 `spawn_byte_stream` holds until the **streamed body** ends — so the cap counts
 *open streams* (a slow thinking generation included), the unit a provider really
@@ -623,7 +624,7 @@ not just this process — awaited rather than fired off as a detached
 `tokio::spawn` (#547), since a detached task can be dropped mid-flight by a
 short-lived one-shot `run` exiting right after. Falls back silently to pure
 in-process gating (today's pre-#523 behavior) when the state directory is
-unwritable or disabled via `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` — an
+unwritable or disabled via `ENTANGLEMENT_DEBUG=no-shared-state` — an
 operator who wants genuinely separate per-instance budgets already gets that
 for free by giving each instance its own key/base URL, since the pool key
 itself isolates them.
@@ -632,9 +633,9 @@ itself isolates them.
 (#743): an `HttpClient` carries a `SharedStateLocation` (`Disabled` |
 `Dir(path)`) fixed at construction and handed to every `EndpointState` it
 creates. `HttpClient::new`/`with_config` resolve it once via
-`SharedStateLocation::from_env()` — `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` >
-`ENTANGLEMENT_SHARED_STATE_DIR` > `${data_dir}/entanglement/endpoints` >
-`Disabled` — so production behavior is unchanged; `HttpClient::with_shared_state(location,
+`SharedStateLocation::from_env()` — `ENTANGLEMENT_DEBUG=no-shared-state` >
+`ENTANGLEMENT_SHARED_STATE_DIR` (an undocumented subprocess-test hook since
+ADR-0213) > `${data_dir}/entanglement/endpoints` > `Disabled` — so production behavior is unchanged; `HttpClient::with_shared_state(location,
 config)` pins it explicitly (a per-test temp dir, `Disabled`, or an embedder
 running several isolated pools in one process). Tests never mutate the
 process env to steer it: the precedence is unit-tested over an injected env
@@ -679,7 +680,7 @@ references it anymore.
 full request body — system prompt, the **entire conversation**, tool schemas
 (repo/user data; API keys never appear, they ride in headers) — is logged only
 through the shared `client::log_request_body(provider, &body)` helper, gated
-behind `ENTANGLEMENT_LOG_BODIES=1` and truncated to 8 KiB on a UTF-8 boundary.
+behind `ENTANGLEMENT_DEBUG=bodies` and truncated to 8 KiB on a UTF-8 boundary.
 Raising `RUST_LOG` verbosity alone will **not** emit it; the flag is a separate,
 explicit opt-in. Both `OpenAiLlm` and `AnthropicLlm` route through the one helper
 so body logging is identical across backends.
@@ -735,9 +736,8 @@ carries capability flags (`supports_thinking`,
 embedded defaults `zai`/`zai_paas` `native_first`, `openai`/`gemini`
 `invoke`, `ollama` `append`, none on the native Anthropic/Responses entries;
 interpreted only by the runtime, [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)
-— and outranked by the user config's per-provider `discovery:` map, which the
-TUI `/set` dialog writes: the full chain is `config.yml` > this model entry >
-this provider entry > `append`, with no env tier, see
+— catalog data only: this model entry > this provider entry > `append`; the
+former `config.yml` `discovery:` override map is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md), see
 [gates & host tools](gates-and-host-tools.md)) and **pricing**
 (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
@@ -769,6 +769,19 @@ an explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
 derives a budget from a fixed tier (`High` — shared by `XHigh`/`Max` — or
 `Medium`; `Low`/unset leaves thinking off) — conservative per-client constants, not catalog-driven, since
 the real per-model ceiling varies.
+
+### Advanced catalog (wire facts)
+
+The knobs below describe **what an endpoint or model accepts on the wire** —
+not preferences — so they are catalog data only (`providers.yml`, no env var,
+no `config.yml` key, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
+`thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
+`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, the
+model-level `tool_advertising`/`discovery`, and the `rpm`/`concurrency` caps.
+A user only touches them to describe an endpoint the embedded defaults don't
+know (or know wrongly). `skutter inspect config` lists every non-default value
+per provider/model under "advanced catalog", so the effective facts stay
+visible without reading YAML.
 
 **Anthropic thinking shapes (`ModelEntry::thinking_style`).** Anthropic replaced
 the fixed-budget form with an adaptive one and the newer models *reject*
@@ -930,9 +943,10 @@ message count, user-text snippets, the assembled system prompt (`system_len` +
 an 8-hex `system_sha` SHA-256 fingerprint) and the advertised `tools=[names]` —
 so `ENTANGLEMENT_PROVIDER=echo skutter run` doubles as a prompt-assembly smoke
 test (which prompt/tool set actually reached the backend). Set
-`ENTANGLEMENT_ECHO_FULL=1` to append the full system text.
+`ENTANGLEMENT_DEBUG=echo` to append the full system text.
 Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
-`<PROV>_MODEL`, `<PROV>_BASE`/`<PROV>_API_BASE`. Default models come from each
+`<PROV>_MODEL`, `<PROV>_API_BASE` (the legacy `<PROV>_BASE` spelling is
+retired, ADR-0213 — a still-set one only earns a startup warning). Default models come from each
 provider's `default_model` (`glm-5.3` / `gpt-4o` / `llama3.1` /
 `claude-sonnet-5`). The TUI model picker + context bar read the same catalog.
 
