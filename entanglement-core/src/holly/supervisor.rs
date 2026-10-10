@@ -125,12 +125,15 @@ pub(super) async fn supervisor(
         let msg = tokio::select! {
             biased;
             _ = outlets::requested(&mut shutdown) => None,
-            m = rx.recv() => m,
-            m = fork_rx.recv() => m,
+            // Ahead of the inbox: under `biased`, a busy inbox would otherwise
+            // starve completions and leave queued messages waiting unboundedly.
+            // Ordering stays safe — later frames for a loading id queue behind it.
             Some(done) = load_rx.recv() => {
                 sup.finish_load(done).await;
                 continue;
             }
+            m = rx.recv() => m,
+            m = fork_rx.recv() => m,
             _ = tick => {
                 if let Some(ttl) = ttl {
                     sweep_idle_sessions(ttl, &mut sup.sessions, &mut sup.session_meta, &mut sup.parent_links, &sup.activity).await;

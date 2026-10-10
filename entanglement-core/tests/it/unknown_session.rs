@@ -15,7 +15,7 @@ use entanglement_core::{
 };
 use tokio::sync::{broadcast, Semaphore};
 
-type Records = Vec<(Option<InMsg>, OutEvent)>;
+pub(crate) type Records = Vec<(Option<InMsg>, OutEvent)>;
 type Seen = Arc<Mutex<Vec<Vec<Message>>>>;
 
 struct RecordingLlm(Seen);
@@ -32,13 +32,15 @@ impl Llm for RecordingLlm {
 }
 
 /// An in-memory store: `logs` answers `load`, `fail` makes it error, and
-/// `gate` (when set) holds every load until the test releases a permit.
+/// `panic` makes it panic, and `gate` (when set) holds every load until the
+/// test releases a permit.
 #[derive(Default)]
-struct MapLoader {
-    logs: Mutex<HashMap<SessionId, Records>>,
-    calls: AtomicUsize,
-    fail: bool,
-    gate: Option<Arc<Semaphore>>,
+pub(crate) struct MapLoader {
+    pub(crate) logs: Mutex<HashMap<SessionId, Records>>,
+    pub(crate) calls: AtomicUsize,
+    pub(crate) fail: bool,
+    pub(crate) panic: bool,
+    pub(crate) gate: Option<Arc<Semaphore>>,
 }
 
 #[async_trait]
@@ -48,6 +50,7 @@ impl SessionLoader for MapLoader {
         if let Some(gate) = &self.gate {
             let _permit = gate.acquire().await?;
         }
+        assert!(!self.panic, "loader blew up");
         if self.fail {
             anyhow::bail!("store offline");
         }
@@ -55,7 +58,7 @@ impl SessionLoader for MapLoader {
     }
 }
 
-fn engine(policy: UnknownSession) -> (Holly, Seen) {
+pub(crate) fn engine(policy: UnknownSession) -> (Holly, Seen) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     let cfg = EngineConfig {
@@ -66,7 +69,7 @@ fn engine(policy: UnknownSession) -> (Holly, Seen) {
     (Holly::spawn(cfg), seen)
 }
 
-async fn recv_until(
+pub(crate) async fn recv_until(
     sub: &mut broadcast::Receiver<OutEvent>,
     pred: impl Fn(&OutEvent) -> bool,
 ) -> OutEvent {
@@ -102,18 +105,18 @@ async fn record_until_done(
 }
 
 /// A one-turn log for `sid` run on a throwaway engine, as a store would hold it.
-async fn one_turn_log(sid: &SessionId) -> Records {
+pub(crate) async fn one_turn_log(sid: &SessionId) -> Records {
     let (holly, _) = engine(UnknownSession::SpawnBlank);
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "one")).await.unwrap();
     record_until_done(&mut sub, sid, InMsg::prompt(sid.clone(), "one")).await
 }
 
-fn is_done(sid: &SessionId) -> impl Fn(&OutEvent) -> bool + '_ {
+pub(crate) fn is_done(sid: &SessionId) -> impl Fn(&OutEvent) -> bool + '_ {
     move |e| matches!(e, OutEvent::Done { session, .. } if session == sid)
 }
 
-fn error_text(ev: OutEvent) -> String {
+pub(crate) fn error_text(ev: OutEvent) -> String {
     match ev {
         OutEvent::Error { seq, message, .. } => {
             assert_eq!(seq, 0, "a refusal for a non-live id rides the seq-0 bypass");
@@ -125,7 +128,7 @@ fn error_text(ev: OutEvent) -> String {
 
 /// Assert nothing was spawned for `sid`: no `SessionStarted` arrives within a
 /// short window and the engine reports it not live.
-async fn assert_nothing_spawned(
+pub(crate) async fn assert_nothing_spawned(
     holly: &Holly,
     sub: &mut broadcast::Receiver<OutEvent>,
     sid: &SessionId,
@@ -328,30 +331,4 @@ async fn hibernated_session_resumes_with_its_user_preserved() {
     let call = seen.lock().unwrap().last().cloned().unwrap();
     assert_eq!(call.len(), 3, "resumed, not blank-respawned; got {call:?}");
     assert!(holly.is_live(&sid));
-}
-
-#[tokio::test]
-async fn close_during_an_in_flight_load_abandons_it() {
-    let sid = SessionId::new("closing");
-    let gate = Arc::new(Semaphore::new(0));
-    let loader = Arc::new(MapLoader {
-        gate: Some(gate.clone()),
-        ..MapLoader::default()
-    });
-    let log = one_turn_log(&sid).await;
-    loader.logs.lock().unwrap().insert(sid.clone(), log);
-    let (holly, _) = engine(UnknownSession::Resume(loader));
-    let mut sub = holly.subscribe();
-
-    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
-    holly
-        .send(InMsg::CloseSession {
-            session: sid.clone(),
-        })
-        .await
-        .unwrap();
-    let ev = recv_until(&mut sub, |e| matches!(e, OutEvent::Error { .. })).await;
-    assert!(error_text(ev).contains("closed"));
-    gate.add_permits(10);
-    assert_nothing_spawned(&holly, &mut sub, &sid).await;
 }
