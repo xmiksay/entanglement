@@ -23,6 +23,40 @@ use std::sync::Arc;
 
 const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
 
+/// The `bash` spec description. Its last paragraph is the **single** home of
+/// the bash-vs-`call`-vs-`rhai` decision rule (#740): `bash` is the only exec
+/// tool in the `tool_search` lean kernel (`call`/`rhai` are discover-only), so
+/// its description is the one exec guidance every agent sees in every
+/// advertising mode — and it rides the cached tools block instead of being
+/// re-sent in every agent body. The `rhai` sentence is spliced in only when
+/// that tool is compiled in, so a lean build never names a tool it lacks.
+macro_rules! bash_description {
+    ($($rhai:literal)?) => {
+        concat!(
+            "Run a shell command (`sh -c`) rooted at the working directory (or \
+             `workdir`), with the engine's full privileges (unsandboxed). Stdin is \
+             closed, not inherited — use shell-native `< file` redirection if the \
+             command needs input. Returns `[exit N]`, stdout, and a `[stderr]` \
+             block, each tailed to its last `tail` lines (default 30 — command \
+             output concentrates at the end; `tail=0` for full output, still \
+             byte-capped with a head + tail slice so the trailing error survives). \
+             Pass `background=true` to start a long job (build, dev server) \
+             detached and get a job id — poll it with `poll`. `timeout` still \
+             applies: a background job is killed once it outlives it, so pass a \
+             larger `timeout` (up to 600s) for a job that must outlive the \
+             default 120s.\n\n\
+             Choosing an exec tool: use `bash` when you need the shell itself \
+             (pipes, `&&`, redirects, globs, `$VAR`). For one fixed command, \
+             `call` runs `command` + `args` as a plain argv — nothing to quote \
+             or escape.",
+            $($rhai,)?
+            " `describe` a tool first if it is not in your tool list. All of \
+             them are graded by the same session permission mode — a prompt or \
+             refusal is that policy, and switching tools does not route around it."
+        )
+    };
+}
+
 pub struct BashTool {
     root: PathBuf,
     /// Env vars scrubbed from the child before spawn — the provider API keys
@@ -152,18 +186,14 @@ impl Tool for BashTool {
         &[Capability::Exec]
     }
     fn description(&self) -> &str {
-        "Run a shell command (`sh -c`) rooted at the working directory (or \
-         `workdir`), with the engine's full privileges (unsandboxed). Stdin is \
-         closed, not inherited — use shell-native `< file` redirection if the \
-         command needs input. Returns `[exit N]`, stdout, and a `[stderr]` \
-         block, each tailed to its last `tail` lines (default 30 — command \
-         output concentrates at the end; `tail=0` for full output, still \
-         byte-capped with a head + tail slice so the trailing error survives). \
-         Pass `background=true` to start a long job (build, dev server) \
-         detached and get a job id — poll it with `poll`. `timeout` still \
-         applies: a background job is killed once it outlives it, so pass a \
-         larger `timeout` (up to 600s) for a job that must outlive the \
-         default 120s."
+        if cfg!(feature = "rhai") {
+            bash_description!(
+                " For multi-step logic or JSON/YAML transforms in one call, \
+                 use `rhai`."
+            )
+        } else {
+            bash_description!()
+        }
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -354,6 +384,15 @@ mod tests {
             BashTool::new(std::env::temp_dir()).capabilities(),
             &[Capability::Exec]
         );
+    }
+
+    #[test]
+    fn description_carries_the_exec_rule_naming_only_compiled_tools() {
+        let tool = BashTool::new(std::env::temp_dir());
+        let desc = tool.description();
+        assert!(desc.contains("Choosing an exec tool"), "{desc}");
+        assert!(desc.contains("`call` runs"), "{desc}");
+        assert_eq!(desc.contains("`rhai`"), cfg!(feature = "rhai"), "{desc}");
     }
 
     #[test]

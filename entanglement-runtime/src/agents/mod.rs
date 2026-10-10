@@ -375,6 +375,20 @@ mod tests {
     }
 
     #[test]
+    fn built_in_bodies_leave_the_exec_rule_to_the_bash_spec() {
+        // #740: the bash-vs-call-vs-rhai rule lives once, in the `bash` tool
+        // description (cached tools block, visible in every advertising
+        // mode). A per-agent copy is re-sent per request and drifts — the old
+        // `general` one still called `call` "the" exec after ADR-0195.
+        for (file, contents) in BUILT_INS {
+            assert!(
+                !contents.contains("`rhai`") && !contents.contains("sh -c"),
+                "{file} re-explains exec-tool choice"
+            );
+        }
+    }
+
+    #[test]
     fn missing_frontmatter_is_an_error() {
         let err = parse("no frontmatter here").unwrap_err();
         assert!(err.to_string().contains("frontmatter"), "got: {err}");
