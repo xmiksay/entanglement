@@ -155,7 +155,7 @@ pub(super) async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: 
 }
 
 /// Resumes the resume modal's selected past session — shared by the `Enter`
-/// key and the mouse click. The TUI has no resume-time `--mode`, so ADR-0214's
+/// key and the mouse click. The TUI has no resume-time `--mode`, so ADR-0215's
 /// read-only fallback always applies here (the TUI ignores `--mode` today, #752).
 pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
     if let Some(meta) = app.selected_resume_session() {
@@ -175,13 +175,11 @@ pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
                 for fallback in &check.fallbacks {
                     app.record_status("resume", fallback.note(false));
                 }
-                let paired = crate::session_store::pair_records(&records);
+                // The forced modes ride the replay (no later mode switch here
+                // could cascade over them, unlike the CLI's `apply_mode`).
+                let paired = check.paired_for_resume(&records, false);
                 if let Err(e) = holly.resume(id.clone(), paired).await {
                     tracing::error!("Failed to resume session {}: {}", id, e);
-                } else if let Err(e) =
-                    crate::session_store::apply_forced_modes(holly, &check, false).await
-                {
-                    tracing::error!("Failed to set session {}'s mode: {:#}", id, e);
                 }
             }
             Err(e) => {

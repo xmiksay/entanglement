@@ -42,7 +42,7 @@ fn a_retired_build_root_resumes_as_general_in_the_default_mode() {
     assert_eq!(f.forced_mode(false), None, "build was never read-only");
     assert_eq!(
         f.note(false),
-        "note: session used retired agent `build`; resuming as `general` (ADR-0214)"
+        "note: session used retired agent `build`; resuming as `general` (ADR-0215)"
     );
 }
 
@@ -54,7 +54,7 @@ fn a_read_only_retired_root_is_forced_into_research_unless_mode_is_explicit() {
     assert_eq!(
         f.note(false),
         "note: session used retired agent `explore`; resuming as `general` in `research` mode \
-         (ADR-0214)"
+         (ADR-0215)"
     );
     assert_eq!(f.forced_mode(true), None, "an explicit --mode wins");
     assert!(!f.note(true).contains("mode"), "{}", f.note(true));
@@ -97,7 +97,7 @@ fn children_are_named_and_only_live_ones_count() {
     assert_eq!(
         notes,
         ["note: session `kid` used retired agent `explore`; resuming as `general` in `research` \
-          mode (ADR-0214)"]
+          mode (ADR-0215)"]
     );
 }
 

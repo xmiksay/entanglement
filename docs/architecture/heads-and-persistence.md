@@ -789,14 +789,18 @@ assistant/tool messages and the model appears to forget the conversation.
   so it resumes exactly).
   A log naming a retired built-in *agent* (`build`/`explore`/`research`)
   resumes too ([ADR-0214](../adr/0214-retired-agent-logs-resume-as-general.md),
-  replacing ADR-0207 stage 6a's refusal). Each rebuilt session is judged on
-  its last effective agent. One whose agent fell back resumes as the last
-  agent the catalog still carries, else `general`. If it was read-only
-  (`explore`/`research`), it is narrowed to the `research` mode unless
-  `--mode` was explicit. `skutter run --resume` and the TUI print one
-  `note:` line per fallback. The logic is the pure
-  `session_store::check_for_resume`, which also refuses a gap;
-  `load_for_resume` and `apply_forced_modes` wrap it for the heads.
+  replacing ADR-0207 stage 6a's refusal; refined by
+  [ADR-0215](../adr/0215-resume-fallback-per-session-and-read-only-narrowing.md)).
+  Each rebuilt session is judged on its last effective agent. One whose
+  agent fell back resumes as the last agent the catalog still carries, else
+  `general`. If it was read-only (`explore`/`research`), it is narrowed to
+  the `research` mode unless `--mode` was explicit. That narrowing rides the
+  replay as a synthetic `ModeChanged` (`ResumeCheck::paired_for_resume`), so
+  a re-offered parked call is never graded under the wider mode first.
+  `skutter run --resume` and the TUI print one `note:` line per fallback.
+  The logic is the pure `session_store::check_for_resume`, which also
+  refuses a gap. `load_for_resume` and `apply_forced_modes` wrap it for the
+  heads; the CLI re-sends the switch after its cascading `--mode`.
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status
