@@ -1,6 +1,6 @@
 [package]
 name = "entanglement-provider"
-description = "Concrete LLM backends for the entanglement agent engine (z.ai GLM + Anthropic SSE streaming)."
+description = "Multi-provider LLM client for the entanglement agent engine: the `Llm` trait, OpenAI-compatible / Anthropic / Gemini streaming clients, a YAML provider+model catalog, a per-endpoint pool with retry and rate limiting, and the MCP client mechanism (streamable HTTP + OAuth). Usable standalone."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
