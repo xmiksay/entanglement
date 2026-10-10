@@ -3,9 +3,10 @@
 //! `sessions` listing.
 
 use std::path::Path;
+use std::time::Duration;
 
-use anyhow::Result;
-use entanglement_core::{Holly, IdKind, InMsg, SessionId};
+use anyhow::{bail, Context, Result};
+use entanglement_core::{Holly, IdKind, InMsg, OutEvent, SessionId};
 use entanglement_provider::Catalog;
 
 use crate::args::{Cli, Cmd};
@@ -44,7 +45,7 @@ pub(crate) async fn dispatch(
             };
 
             // An explicit `--mode` wins over ADR-0215's read-only narrowing.
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
@@ -104,7 +105,7 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
             // CLI `--agent` wins; else the user config's default agent (#172).
             let agent = agent.or_else(|| user_config.agent.clone());
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
             launch_tui(
                 holly,
                 session_id,
@@ -126,7 +127,7 @@ pub(crate) async fn dispatch(
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             let session_id = SessionId::new(holly.next_id(IdKind::Session));
             let agent = user_config.agent.clone();
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone());
+            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
             if cli.prompt.is_empty() {
                 launch_tui(
                     holly,
@@ -168,6 +169,11 @@ async fn start_fresh(
     if agent.is_none() && mode.is_none() {
         return Ok(());
     }
+    // Subscribed before the send: a refusal is a seq-0 `Error` emitted
+    // before any caller listens. It must stop the launch — a prompt sent
+    // after it would lazily create a `general`/`build` root instead
+    // (ADR-0210), silently dropping the agent and the narrower mode.
+    let mut events = holly.subscribe();
     holly
         .send(InMsg::Spawn {
             session: session_id.clone(),
@@ -180,7 +186,33 @@ async fn start_fresh(
             mode,
         })
         .await?;
-    Ok(())
+    await_started(&mut events, session_id).await
+}
+
+/// How long a fresh session's `Spawn` may take to start or be refused.
+const SPAWN_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wait for `session_id`'s `SessionStarted`, failing on its supervisor
+/// `Error` (a refused `Spawn`) or on no answer within [`SPAWN_ACK_TIMEOUT`].
+async fn await_started(
+    events: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    session_id: &SessionId,
+) -> Result<()> {
+    use tokio::sync::broadcast::error::RecvError;
+    let deadline = tokio::time::Instant::now() + SPAWN_ACK_TIMEOUT;
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .with_context(|| format!("session {session_id} did not start in time"))?;
+        match event {
+            Ok(OutEvent::SessionStarted { session, .. }) if &session == session_id => return Ok(()),
+            Ok(OutEvent::Error {
+                session, message, ..
+            }) if &session == session_id => bail!("cannot start session {session_id}: {message}"),
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => bail!("engine stopped before session {session_id} started"),
+        }
+    }
 }
 
 /// Every agent name the live catalog carries (ADR-0215's fallback check).
@@ -371,20 +403,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_explicit_mode_beats_the_agents_default() {
-        let launch = LaunchMode::resolve(Some("build".into()), None);
+        let launch = LaunchMode::resolve(Some("build".into()), None).unwrap();
         assert_eq!(settled_mode(Some("plan"), launch).await, "build");
     }
 
     #[tokio::test]
     async fn a_config_mode_beats_the_agents_default() {
-        let launch = LaunchMode::resolve(None, Some("build".into()));
+        let launch = LaunchMode::resolve(None, Some("build".into())).unwrap();
         assert_eq!(settled_mode(Some("plan"), launch).await, "build");
     }
 
     #[tokio::test]
     async fn a_mode_with_no_agent_reaches_the_lazily_created_root() {
         // The bare-TUI case: no `--agent`, but `--mode research`.
-        let launch = LaunchMode::resolve(Some("research".into()), None);
+        let launch = LaunchMode::resolve(Some("research".into()), None).unwrap();
         assert_eq!(settled_mode(None, launch).await, "research");
     }
 
@@ -392,5 +424,31 @@ mod tests {
     async fn no_mode_and_no_hint_is_the_engine_default() {
         let mode = settled_mode(Some("general"), LaunchMode::default()).await;
         assert_eq!(mode, entanglement_core::DEFAULT_MODE);
+    }
+
+    #[tokio::test]
+    async fn a_refused_spawn_stops_the_launch() {
+        // A mode the engine refuses must fail `start_fresh` itself, so no
+        // prompt ever follows into a lazily created `general`/`build` root.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        let holly = Holly::spawn(EngineConfig {
+            agents: entanglement_runtime::agents::built_in_registry().expect("built-ins"),
+            mode_ladder: entanglement_runtime::mode::BUILTIN_LADDER
+                .map(String::from)
+                .to_vec(),
+            llm_factory: Arc::new(move || Box::new(NoticeLlm(seen.clone())) as Box<dyn Llm>),
+            ..EngineConfig::default()
+        });
+        let sid = SessionId::new("s1");
+        let err = start_fresh(&holly, &sid, Some("plan".into()), Some("reserch".into()))
+            .await
+            .expect_err("a refused spawn must fail the launch");
+        assert!(
+            format!("{err:#}").contains("unknown mode `reserch`"),
+            "{err:#}"
+        );
+        assert!(!holly.is_live(&sid));
+        assert!(calls.lock().unwrap().is_empty(), "no LLM request was made");
     }
 }

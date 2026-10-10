@@ -50,7 +50,11 @@ Authority lives entirely in the runtime, as the session's **permission mode**
   - With no launch mode, core starts the root in the hint
     (`holly/supervisor/starting_mode.rs`), clamped on
     `EngineConfig::mode_ladder` to no wider than `DEFAULT_MODE`.
-  - An off-ladder `Spawn.mode` refuses the spawn.
+  - A typo'd `--mode`/config `mode:` stops the launch in
+    `LaunchMode::resolve` (non-zero exit, nothing started). Behind that, an
+    off-ladder `Spawn.mode` refuses the spawn, and `start_fresh` waits for
+    `SessionStarted`-or-`Error` so a refusal is fatal rather than falling
+    through to a lazily created `general`/`build` root.
 - **Resumes in the TUI.** The TUI applies the same launch mode to the
   sessions it resumes (`LaunchMode`, `resume_with_mode`).
 - **Spawned children.** The ladder is `research` < `plan` < `build` <

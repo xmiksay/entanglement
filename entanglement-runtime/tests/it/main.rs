@@ -47,6 +47,7 @@ mod hooks;
 mod host_tools;
 mod invoke_envelope;
 mod invoke_schema_violation;
+mod launch_mode_typo;
 mod list_operations;
 mod list_pending;
 mod load_skill;
