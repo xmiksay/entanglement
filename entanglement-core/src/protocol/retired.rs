@@ -27,16 +27,20 @@ mod tests {
     use serde_json::json;
 
     /// Every listed tag really is gone — a variant re-added under the same
-    /// tag would otherwise be silently dropped from replayed logs.
+    /// tag would otherwise be silently dropped from replayed logs. Matching
+    /// the error text keeps a re-added variant with *required* fields from
+    /// passing vacuously on a missing-field error.
     #[test]
     fn retired_kinds_no_longer_decode() {
         for kind in RETIRED_IN_MSG_KINDS {
             let frame = json!({"kind": kind, "session": "s", "agent": "plan"});
-            assert!(serde_json::from_value::<InMsg>(frame).is_err(), "{kind}");
+            let err = serde_json::from_value::<InMsg>(frame).expect_err(kind);
+            assert!(err.to_string().contains("unknown variant"), "{kind}: {err}");
         }
         for kind in RETIRED_OUT_EVENT_KINDS {
             let frame = json!({"kind": kind, "enabled": true});
-            assert!(serde_json::from_value::<OutEvent>(frame).is_err(), "{kind}");
+            let err = serde_json::from_value::<OutEvent>(frame).expect_err(kind);
+            assert!(err.to_string().contains("unknown variant"), "{kind}: {err}");
         }
     }
 

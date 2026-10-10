@@ -780,10 +780,18 @@ assistant/tool messages and the model appears to forget the conversation.
   stays strict. Because `LogRecord` is the serde type, an embedder decoding
   its own rows inherits the same tolerance. `tests/fixtures/v0.6.0-session.jsonl`
   (recorded by the `v0.6.0` tag) pins it: it must load and resume its parked
-  turn with history intact. The CLI's retired-*agent* refusal
-  (`retired_agent`: a log naming `build`/`explore`/`research` won't resume
-  there) is a separate, deliberate policy; `Holly::resume` itself falls back
-  to the base agent seed for an unknown name.
+  turn with history intact. Two semantic caveats: a retired `set_agent`'s own
+  `AgentChanged` reply still folds last-write-wins, so the session resumes
+  under the last agent it switched to (if still in the catalog); and a 0.6.0
+  `Compacted { auto: true }` rewrote context in place, which replay ignores
+  like every `Compacted`, so such a log resumes with its full pre-compaction
+  history rather than the summary (a manual 0.6.0 compaction never rewrote,
+  so it resumes exactly).
+  A log naming a retired built-in *agent* (`build`/`explore`/`research`)
+  resumes too, under `general` — the base seed `Holly::resume` keeps for any
+  name the catalog lacks — and `skutter run --resume` / the TUI print one
+  `note:` line saying so (`session_store::load_for_resume`, shared by every
+  in-tree resume path; [ADR-0214](../adr/0214-retired-agent-logs-resume-as-general.md) replaced ADR-0207 stage 6a's refusal).
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status

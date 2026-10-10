@@ -31,8 +31,11 @@ pub fn pair_records(records: &[LogRecord]) -> Vec<(Option<InMsg>, OutEvent)> {
             // `integrity_gap` and refuse before reaching here; this arm only
             // keeps pairing total-ordered if a caller pairs a gapped log anyway.
             LogPayload::Gap { .. } => {}
-            // A retired frame (#720) is no hole: the engine it drove no longer
-            // has the state it changed, so there is nothing to pair or replay.
+            // A retired frame (#720) is no hole and is never paired itself, but
+            // what it caused still replays: a 0.6.0 `set_agent`'s own
+            // `AgentChanged` reply is an ordinary `Out` record, folded
+            // last-write-wins, so the session resumes under the last agent it
+            // switched to (when that agent is still in the catalog).
             LogPayload::Retired { .. } => {}
         }
     }

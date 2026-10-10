@@ -161,36 +161,20 @@ async fn resume_selected(app: &mut App, holly: &Holly) {
     if let Some(meta) = app.selected_resume_session() {
         let id = meta.id.clone();
         let cwd = app.root().to_path_buf();
-        match crate::session_store::read(&cwd, &id) {
-            Ok(records) => {
-                if let Some(dropped) = crate::session_store::integrity_gap(&records) {
-                    tracing::error!(
-                        "Refusing to resume session {}: log is missing {} dropped record(s)",
-                        id,
-                        dropped
-                    );
-                } else if let Some((retired, replacement)) =
-                    crate::session_store::retired_agent(&records)
-                {
-                    // ADR-0207 stage 6a: a log naming a retired agent can't
-                    // resume — see the matching check in `heads.rs`.
-                    tracing::error!(
-                        "Refusing to resume session {}: its log names the retired agent `{}` \
-                         — {}",
-                        id,
-                        retired,
-                        replacement
-                    );
-                } else {
-                    app.restore_session(id.clone(), &records);
-                    let paired = crate::session_store::pair_records(&records);
-                    if let Err(e) = holly.resume(id.clone(), paired).await {
-                        tracing::error!("Failed to resume session {}: {}", id, e);
-                    }
+        match crate::session_store::load_for_resume(&cwd, &id) {
+            Ok((records, note)) => {
+                app.restore_session(id.clone(), &records);
+                // A retired agent resumes as `general` (#720); say so.
+                if let Some(note) = note {
+                    app.record_status("resume", note);
+                }
+                let paired = crate::session_store::pair_records(&records);
+                if let Err(e) = holly.resume(id.clone(), paired).await {
+                    tracing::error!("Failed to resume session {}: {}", id, e);
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to read session {}: {}", id, e);
+                tracing::error!("Cannot resume session {}: {:#}", id, e);
             }
         }
     }

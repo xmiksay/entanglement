@@ -2,6 +2,7 @@
 //! (Issue 4, Phases 4.1 + 4.2).
 
 use super::*;
+use entanglement_core::OutEvent;
 use std::fs::File;
 use std::time::Duration;
 
