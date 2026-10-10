@@ -43,7 +43,10 @@ fn probe() -> Option<Probe> {
     };
     let base = env_or("ZAI_API_BASE", DEFAULT_BASE);
     Some(Probe {
-        http: reqwest::Client::new(),
+        // Never a bare `Client::new()`: under `rustls-no-provider` it panics.
+        http: entanglement_provider::client::client_builder()
+            .build()
+            .expect("reqwest client builds"),
         url: format!("{}/chat/completions", base.trim_end_matches('/')),
         key,
         model: env_or("ZAI_PROBE_MODEL", "glm-5.2"),

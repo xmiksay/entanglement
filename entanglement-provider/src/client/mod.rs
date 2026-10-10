@@ -102,7 +102,7 @@ pub use backoff::extract_retry_after_from_response;
 pub use shared_state::{prune_stale, SharedStateLocation};
 pub use status::ThrottleStatus;
 pub use stream::{log_request_body, spawn_byte_stream};
-pub use tls::client_builder;
+pub use tls::{client_builder, install_default_crypto_provider};
 pub use user_budget::UserBudget;
 
 use endpoint::EndpointPool;

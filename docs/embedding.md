@@ -516,6 +516,40 @@ seam implementations over it. Per seam:
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
 
+## TLS and the rustls crypto provider
+
+`entanglement-provider` talks TLS through rustls with the **ring** provider and
+the **bundled webpki roots**, configured explicitly on every client it builds
+(`client::client_builder()`; [provider](architecture/provider.md)). To keep
+aws-lc out of the tree it builds reqwest 0.13 with `rustls-no-provider`, and
+Cargo's feature unification carries that into *your* build. Two cases bite:
+
+- **You also enable `rustls/aws_lc_rs`** — e.g. stock reqwest 0.13 with its
+  default features. Both providers are now compiled, so rustls can no longer
+  pick one implicitly (`CryptoProvider::from_crate_features()` returns
+  `None`): any code of yours relying on that implicit provider —
+  `rustls::ClientConfig::builder()`, tokio-tungstenite's or sqlx's rustls
+  paths — panics. Your own `reqwest::Client::new()` still works (reqwest's
+  aws-lc feature names its provider explicitly).
+- **You use reqwest 0.13 with `default-features = false` and no TLS
+  feature.** Our `rustls-no-provider` unifies `__rustls` into your reqwest, so
+  your `reqwest::Client::new()` now *panics* at construction for want of a
+  provider — previously such a client only failed HTTPS at request time.
+
+The cure for both is one of:
+
+```rust
+// Early in main, before any client is built. Process-global, first caller
+// wins (returns whether this call installed it); the engine never calls it.
+entanglement_provider::client::install_default_crypto_provider();
+```
+
+or build your own clients from `entanglement_provider::client::client_builder()`
+(ring + webpki roots, no global state). An embedder on stock reqwest 0.13
+compiles a second TLS provider (aws-lc-rs) next to ours — that's expected.
+`rustls-platform-verifier` is compiled too (pulled by `rustls-no-provider`) but
+never used: our clients never consult the OS trust store.
+
 ## Pinning a dependency
 
 Until now there were no tags, so a `Cargo.toml` git dependency had nothing
