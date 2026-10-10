@@ -1,4 +1,5 @@
-//! Cross-session attention surfaces: the status bar and the attention panel.
+//! Cross-session attention surfaces: the status bar (whose row content is
+//! [`crate::tui::statusline`]) and the attention panel.
 //!
 //! A background session that parks on a permission Ask or an `ask_user`
 //! question used to be invisible — the approval/question UI reads only the
@@ -12,7 +13,7 @@
 
 use entanglement_core::SessionId;
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -112,37 +113,12 @@ pub(super) fn draw_attention_panel(f: &mut Frame, area: Rect, app: &mut App) {
     app.set_attention_area(area);
 }
 
-/// The top status bar: app name, active session, session count, and the
-/// waiting-count badge sourced from the same aggregation as the panel.
+/// The top row: the project/path status line (#762) — repo, path, branch,
+/// worktree left, session right, then the session-count and waiting-count
+/// badges (the latter sourced from the same aggregation as the panel).
 pub(super) fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let sessions = app.sessions();
-    let waiting = background_attention(app).len();
-
-    let mut spans = vec![
-        Span::styled("skutter", Style::default().bold()),
-        Span::raw(" | "),
-        Span::styled(
-            format!("Session: {}", short_id(app.active_session_id())),
-            Style::default().dim(),
-        ),
-    ];
-    if sessions.len() > 1 {
-        spans.push(Span::styled(
-            format!(" ({} sessions)", sessions.len()),
-            Style::default().dim(),
-        ));
-    }
-    if waiting > 0 {
-        spans.push(Span::styled(
-            format!(" ⚠ {waiting}"),
-            Style::default().fg(Color::Yellow).bold(),
-        ));
-    }
-    let status = Line::from(spans);
-
-    let paragraph = Paragraph::new(status).alignment(Alignment::Left);
-
-    f.render_widget(paragraph, area);
+    let line = crate::tui::statusline::status_line(app, area.width);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 #[cfg(test)]

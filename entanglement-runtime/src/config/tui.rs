@@ -13,6 +13,8 @@
 
 use serde::Deserialize;
 
+use super::statusline::StatuslineConfig;
+
 /// Resolved `tui:` settings. The defaults are the pre-#739 behavior with
 /// neither env var set.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -26,6 +28,8 @@ pub struct TuiConfig {
     /// terminal back its native text selection. Replaces
     /// `ENTANGLEMENT_TUI_NO_MOUSE`.
     pub mouse: bool,
+    /// The top-row project/path status line (#762, [`super::statusline`]).
+    pub statusline: StatuslineConfig,
 }
 
 impl Default for TuiConfig {
@@ -33,6 +37,7 @@ impl Default for TuiConfig {
         Self {
             notify: false,
             mouse: true,
+            statusline: StatuslineConfig::default(),
         }
     }
 }
@@ -51,7 +56,8 @@ mod tests {
             TuiConfig::default(),
             TuiConfig {
                 notify: false,
-                mouse: true
+                mouse: true,
+                statusline: StatuslineConfig::default(),
             }
         );
         assert_eq!(parse("{}").unwrap(), TuiConfig::default());
@@ -63,6 +69,9 @@ mod tests {
         assert!(c.notify && c.mouse);
         let c = parse("mouse: false\n").unwrap();
         assert!(!c.notify && !c.mouse);
+        let c = parse("statusline: {template: '{repo}'}\n").unwrap();
+        assert_eq!(c.statusline.template, "{repo}");
+        assert_eq!(c.statusline.right, "{session}", "sibling keeps its default");
     }
 
     #[test]

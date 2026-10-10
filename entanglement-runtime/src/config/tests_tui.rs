@@ -42,7 +42,8 @@ fn project_and_user_tui_fields_combine_and_report_provenance() {
         resolved.config.tui,
         TuiConfig {
             notify: true,
-            mouse: false
+            mouse: false,
+            statusline: Default::default(),
         }
     );
     let prov: HashMap<_, _> = resolved.provenance.iter().cloned().collect();
@@ -60,6 +61,27 @@ fn an_edited_tui_block_is_seen_on_the_next_resolve() {
     std::fs::write(&user_file, "tui: {notify: true, mouse: false}\n").unwrap();
     let tui = resolve_with_user(dir.path(), &user_file).config.tui;
     assert!(tui.notify && !tui.mouse);
+}
+
+/// A statusline template edit reaches the next resolve (the TUI reload arm),
+/// and an unknown placeholder adds exactly one warning.
+#[test]
+fn a_statusline_template_reloads_and_warns_on_an_unknown_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_file = dir.path().join("user.yml");
+    std::fs::write(&user_file, "tui: {statusline: {template: '{repo}'}}\n").unwrap();
+    let resolved = resolve_with_user(dir.path(), &user_file);
+    assert_eq!(resolved.config.tui.statusline.template, "{repo}");
+    assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
+
+    std::fs::write(
+        &user_file,
+        "tui: {statusline: {template: '{repo} {nope} {nope}'}}\n",
+    )
+    .unwrap();
+    let resolved = resolve_with_user(dir.path(), &user_file);
+    assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
+    assert!(resolved.warnings[0].contains("{nope}"));
 }
 
 #[test]

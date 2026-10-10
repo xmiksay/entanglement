@@ -16,7 +16,7 @@ mod orchestration;
 mod readable;
 mod search_output;
 
-pub use expansion::render_write_approval_body;
+pub use expansion::{render_write_approval_body, root_line};
 use search_output::{render_glob_output, render_grep_output};
 
 /// The standalone `ToolOutput` block (an output with no paired call): the

@@ -106,6 +106,12 @@ impl App {
         {
             self.follow_successor(source.clone(), successor.clone());
         }
+        // An exec call may have switched branches or created a repo (#762).
+        if let OutEvent::ToolOutput { tool, .. } = &event {
+            if crate::tui::statusline::refreshes_git(tool) {
+                self.refresh_status_line();
+            }
+        }
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
         }

@@ -51,7 +51,8 @@
 //!   (`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
 //!   `notification`, #734). See [`crate::hooks`]. Empty by default.
 //! - `tui` — terminal-UI preferences ([`tui::TuiConfig`], ADR-0213): one
-//!   block every TUI knob joins, live-reloaded by the TUI.
+//!   block every TUI knob joins, live-reloaded by the TUI. Its `statusline`
+//!   templates ([`statusline`], #762) warn once per unknown placeholder.
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
 //!   `max_turns` / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an
 //!   explicit CLI flag or environment variable wins over the file (env >
@@ -109,6 +110,7 @@ mod mode_warn;
 mod raw;
 pub mod retired;
 pub mod state_dir;
+pub mod statusline;
 pub mod tui;
 pub mod write_key;
 
@@ -273,7 +275,7 @@ impl Config {
 /// typo in any layer is rejected.
 fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
     let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
-    let warnings = retired::strip_retired_keys(&mut raw_layers);
+    let mut warnings = retired::strip_retired_keys(&mut raw_layers);
     let raw_layers = raw_layers.as_slice();
     ceiling_warn::warn_project_permission_overrides(raw_layers);
     mode_warn::warn_stale_mode_tuning_names(raw_layers);
@@ -305,6 +307,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         tool_advertising: raw.tool_advertising,
         tui: raw.tui,
     };
+    warnings.extend(config.tui.statusline.warnings());
     Ok(Resolved {
         config,
         layers: raw_layers

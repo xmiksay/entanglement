@@ -28,6 +28,15 @@ pub(super) fn location_line(tool: &str, input: &str, label: &str) -> Option<Line
     permission::permission_arg(tool, input).map(|arg| Line::from(format!("  {label}: {arg}")))
 }
 
+/// The `  root: <dir>` line a path tool's approval prompt carries (#762): a
+/// relative `path:` is only meaningful against the root it resolves under,
+/// and the user may be looking at a session started somewhere else. `None`
+/// for every non-path tool.
+pub fn root_line(tool: &str, root: &Path) -> Option<Line<'static>> {
+    entanglement_runtime::permission_path::is_path_arg_tool(tool)
+        .then(|| Line::from(format!("  root: {}", root.display())))
+}
+
 /// A `read` body: the full path (+ `offset`/`limit` when set) so the target is
 /// never left to the truncatable header alone (#519).
 pub(super) fn render_read_input(input: &str) -> Vec<Line<'static>> {
