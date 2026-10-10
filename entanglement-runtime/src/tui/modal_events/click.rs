@@ -154,23 +154,34 @@ pub(super) async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: 
     }
 }
 
-/// Runs the resume-modal's `Enter` action for the currently-selected past
-/// session — the same code path `handle_resume_modal_event`'s `Enter` arm uses,
-/// factored out so the mouse click dispatch reuses it verbatim.
-async fn resume_selected(app: &mut App, holly: &Holly) {
+/// Resumes the resume modal's selected past session — shared by the `Enter`
+/// key and the mouse click. The TUI has no resume-time `--mode`, so ADR-0214's
+/// read-only fallback always applies here (the TUI ignores `--mode` today, #752).
+pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
     if let Some(meta) = app.selected_resume_session() {
         let id = meta.id.clone();
         let cwd = app.root().to_path_buf();
-        match crate::session_store::load_for_resume(&cwd, &id) {
-            Ok((records, note)) => {
+        let known: Vec<String> = app
+            .available_profiles()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        let loaded =
+            crate::session_store::load_for_resume(&cwd, &id, |n| known.iter().any(|k| k == n));
+        match loaded {
+            Ok((records, check)) => {
+                // Visible transcript first, then engine context.
                 app.restore_session(id.clone(), &records);
-                // A retired agent resumes as `general` (#720); say so.
-                if let Some(note) = note {
-                    app.record_status("resume", note);
+                for fallback in &check.fallbacks {
+                    app.record_status("resume", fallback.note(false));
                 }
                 let paired = crate::session_store::pair_records(&records);
                 if let Err(e) = holly.resume(id.clone(), paired).await {
                     tracing::error!("Failed to resume session {}: {}", id, e);
+                } else if let Err(e) =
+                    crate::session_store::apply_forced_modes(holly, &check, false).await
+                {
+                    tracing::error!("Failed to set session {}'s mode: {:#}", id, e);
                 }
             }
             Err(e) => {
