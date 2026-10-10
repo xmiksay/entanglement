@@ -86,6 +86,12 @@ async fn an_explicit_resume_racing_a_load_keeps_queueing_and_never_resumes_twice
     let (holly, _) = engine(UnknownSession::Resume(loader.clone()));
     let mut sub = holly.subscribe();
     let started = |e: &OutEvent| matches!(e, OutEvent::SessionStarted { session, .. } if session.0 == "raced");
+    // A second resume would surface either as another `SessionStarted` or —
+    // were `finish_load`'s liveness guard gone — as `resume`'s "already-live"
+    // `Error`; both are failures here.
+    let resumed_again = |e: &OutEvent| {
+        started(e) || matches!(e, OutEvent::Error { session, .. } if session.0 == "raced")
+    };
 
     holly.send(set_name(&sid, "a")).await.unwrap();
     holly.resume(sid.clone(), log).await.unwrap();
@@ -101,20 +107,23 @@ async fn an_explicit_resume_racing_a_load_keeps_queueing_and_never_resumes_twice
     let mut names = Vec::new();
     while names.len() < 2 {
         let ev = recv_until(&mut sub, |e| {
-            started(e) || matches!(e, OutEvent::SessionMetaChanged { .. })
+            resumed_again(e) || matches!(e, OutEvent::SessionMetaChanged { .. })
         })
         .await;
         match ev {
             OutEvent::SessionMetaChanged { name, .. } => names.extend(name),
-            other => panic!("a second resume must not happen: {other:?}"),
+            other => panic!("no second resume and no error may happen: {other:?}"),
         }
     }
     assert_eq!(names, ["a", "b"], "queued frames deliver in arrival order");
     assert_eq!(loader.calls.load(Ordering::SeqCst), 1);
-    let again =
-        tokio::time::timeout(Duration::from_millis(200), recv_until(&mut sub, started)).await;
+    let again = tokio::time::timeout(
+        Duration::from_millis(200),
+        recv_until(&mut sub, resumed_again),
+    )
+    .await;
     assert!(
         again.is_err(),
-        "the loaded records are discarded, not resumed"
+        "the loaded records are discarded silently, not resumed: {again:?}"
     );
 }
