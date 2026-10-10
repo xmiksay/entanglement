@@ -73,8 +73,11 @@ trait Llm: Send {
   `__rustls` unified in, so its `Client::new()` now panics (it used to fail
   HTTPS only at request time). The opt-in cure is
   `client::install_default_crypto_provider()` (installs ring process-wide,
-  first caller wins; the engine never calls it) early in `main`, or building
-  clients from `client::client_builder()`.
+  first caller wins; the engine never calls it) early in `main`; building
+  reqwest clients from `client::client_builder()` cures only the reqwest side —
+  in case (a) other rustls users (tokio-tungstenite, sqlx,
+  `rustls::ClientConfig::builder()`) still need the install or an explicit
+  provider.
 - Streaming mirrors opencode (Vercel AI SDK `doStream`): live token-by-token
   deltas, not a buffered whole-reply. The box stream is `'static`.
 - **`LlmEvent::Reasoning`** surfaces extended-thinking output (Anthropic
