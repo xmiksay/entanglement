@@ -5,6 +5,8 @@
 #   - empty output must FAIL
 #   - a forbidden crate in the tree must FAIL
 #   - a clean tree must PASS
+# Also self-tests userid-gate.sh and file-cap-gate.sh (#745: what the
+# `#[cfg(test)]` module exclusion does and does not hide).
 # Run via `make test-gates`.
 set -eu
 
@@ -78,6 +80,78 @@ ucheck "userid: substring near-miss passes" 0 "$udir"
 printf 'use entanglement_core::UserId;\n' >"$udir/hit.rs"
 ucheck "userid: real UserId fails" 1 "$udir"
 ucheck "userid: missing dir fails (not vacuous)" 1 "$tmp/no-such-dir"
+
+# --- file-cap-gate.sh self-tests (#745) --------------------------------------
+# Each case writes one crate/src/x.rs into a fresh tree with an empty
+# allowlist; the gate runs from that tree's root.
+fgate="$here/file-cap-gate.sh"
+fdir="$tmp/fcap"
+
+code() { # code <n> — n production lines
+	i=0
+	while [ "$i" -lt "$1" ]; do echo "fn f$i() {}"; i=$((i + 1)); done
+}
+tests_block() { # an inline cfg(test) module, braces hidden in literals
+	cat <<'RS'
+#[cfg(test)]
+#[allow(clippy::all)]
+mod tests {
+    #[test]
+    fn literals() {
+        let a = "}}} {";
+        let b = '}';
+        let c = '{';
+        let d = r#"} " {{"#;
+        let e = "multi
+}
+line";
+        // } stray
+        /* } /* nested { */ } */
+        let f: &'static str = "\"}";
+    }
+}
+RS
+}
+
+fcheck() {
+	name=$1
+	want=$2
+	set +e
+	(cd "$fdir" && sh "$fgate" allow.txt) >/dev/null 2>&1
+	got=$?
+	set -e
+	if [ "$got" -eq "$want" ]; then
+		echo "ok   - $name (rc=$got)"
+	else
+		echo "FAIL - $name (want rc=$want, got rc=$got)"
+		fails=$((fails + 1))
+	fi
+}
+
+mkdir -p "$fdir/crate/src"
+: >"$fdir/allow.txt"
+src="$fdir/crate/src/x.rs"
+
+{ printf '#[cfg(test)]\nmod tests;\n'; code 400; } >"$src"
+fcheck "file-cap: early mod tests; hides nothing (400)" 0
+{ printf '#[cfg(test)]\nmod tests;\n'; code 401; } >"$src"
+fcheck "file-cap: early mod tests; hides nothing (401)" 1
+{ code 400; tests_block; } >"$src"
+fcheck "file-cap: inline tests block at end is free" 0
+{ code 401; tests_block; } >"$src"
+fcheck "file-cap: code before an end block still counts" 1
+{ code 200; tests_block; code 200; } >"$src"
+fcheck "file-cap: inline tests block in the middle is free" 0
+{ code 200; tests_block; code 201; } >"$src"
+fcheck "file-cap: code after a middle block counts" 1
+{ code 300; printf '#[cfg(test)]\nfn helper() {\n'; code 97; printf '}\n'; } >"$src"
+fcheck "file-cap: cfg(test) helper fn counts (400)" 0
+{ code 300; printf '#[cfg(test)]\nfn helper() {\n'; code 98; printf '}\n'; } >"$src"
+fcheck "file-cap: cfg(test) helper fn counts (401)" 1
+{ printf '#[cfg(test)] mod tests { fn t() { let _ = "}"; } }\n'; code 400; } >"$src"
+fcheck "file-cap: one-line block with brace in string" 0
+{ printf '#[cfg(test)] mod tests { fn t() { let _ = "{"; } }\n'; code 401; } >"$src"
+fcheck "file-cap: brace in string does not swallow the rest" 1
 
 if [ "$fails" -ne 0 ]; then
 	echo "$fails dep-gate self-test(s) failed" >&2

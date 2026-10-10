@@ -108,7 +108,7 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 # Self-test for the shared dep-gate mechanism (stubbed cargo; proves the #207
 # vacuous-pass fix). Fast, no build — kept out of `verify` (the real gates cover
 # CI) but available on demand.
-test-gates: ## run scripts/dep-gate.test.sh (dep-gate self-test)
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap self-tests)
 	@sh scripts/dep-gate.test.sh
 
 # 400-line file cap (AGENTS.md; issue #451). Grandfathered violations live in
