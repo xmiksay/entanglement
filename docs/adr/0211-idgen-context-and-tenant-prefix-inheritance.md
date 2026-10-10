@@ -68,6 +68,16 @@ resolver handling its tool call. It is not an event-routing key: a session's
 trailing `SessionEnded` arrives after its entry is gone, so routing keys on
 the inherited prefix.
 
+The window deliberately differs from `Holly::is_live`'s (the seq registry,
+ADR-0210): `session_info` turns `Some` **earlier** (at supervisor
+registration, before the session task starts and registers its counter) and
+`None` **earlier** (when the supervisor processes the close/hibernate, while
+`is_live` stays `true` until the task retires and emits
+`SessionEnded`/`SessionHibernated`). An embedder must not combine the two
+assuming they agree.
+
+An empty tenant still counts as a prefix: a parent `:abc` yields `:`.
+
 ## Consequences
 
 - With the default generator, `tenant_of(id)` holds for a root's whole
