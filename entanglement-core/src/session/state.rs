@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
+use super::fork::ForkFrame;
 use super::TurnState;
 use crate::context::Context;
 use crate::holly::DEFAULT_MODE;
-use crate::protocol::{Agent, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{Agent, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
@@ -70,6 +71,13 @@ pub struct Session {
     /// to (#323, ADR-0081). `None` until the first pin/switch (the startup
     /// default, whose provider name core is not told).
     pub provider: Option<String>,
+    /// The resolution [`llm`][Self::llm] was last bound from (a pin, a
+    /// `SetModel`, a `Spawn` model, or replay's rebind), kept so a compaction
+    /// successor can start on the very same backend without re-resolving it
+    /// (#768) — a `Box<dyn Llm>` can't be cloned, but its factory can.
+    /// `None` while on the startup default, exactly when
+    /// [`provider`][Self::provider] is.
+    pub(crate) bound: Option<ResolvedModel>,
     /// Effective generation knobs for the active model (#218). Seeded from
     /// [`EngineConfig::generation`][crate::EngineConfig] at creation and replaced
     /// on a model switch so temperature / max-output / thinking follow the model.
@@ -152,7 +160,7 @@ pub struct Session {
     /// is why the fork now works for *every* head, not just an interactive
     /// one. `None` for a `Session` built outside a running engine (a direct
     /// `new_empty`/`replay` in a test); such a session simply cannot fork.
-    pub(crate) engine: Option<mpsc::Sender<InMsg>>,
+    pub(crate) engine: Option<mpsc::Sender<ForkFrame>>,
     /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
     /// ADR-0208). Deliberately **not** persisted/replayed — like `Stop`'s
     /// cancel, a pause is ephemeral engine-loop state, not committed
@@ -188,6 +196,7 @@ impl Session {
             mode_transition_from: None,
             model: None,
             provider: None,
+            bound: None,
             generation: cfg.generation,
             generation_by_agent: HashMap::new(),
             tool_overlay: Vec::new(),
@@ -218,16 +227,35 @@ impl Session {
         resolved: ResolvedModel,
         events: &broadcast::Sender<OutEvent>,
     ) {
+        let announce = OutEvent::ModelChanged {
+            session: session.clone(),
+            provider: resolved.provider.clone(),
+            model: resolved.model.clone(),
+            context_window: resolved.context_window,
+        };
+        self.bind(resolved);
+        let _ = events.send(announce);
+    }
+
+    /// [`rebind`][Self::rebind]'s state half, without the announcement —
+    /// replay's `ModelChanged` fold applies a logged switch through this.
+    pub(super) fn bind(&mut self, resolved: ResolvedModel) {
         self.provider = Some(resolved.provider.clone());
         self.model = Some(resolved.model.clone());
         self.generation = resolved.generation;
         self.ctx.set_window(resolved.context_window);
         self.llm = (resolved.llm_factory)();
-        let _ = events.send(OutEvent::ModelChanged {
-            session: session.clone(),
-            provider: resolved.provider,
-            model: resolved.model,
-            context_window: resolved.context_window,
-        });
+        self.bound = Some(resolved);
+    }
+
+    /// The live binding a compaction successor inherits (#768): the bound
+    /// backend with the session's *current* generation, which a
+    /// `SetGeneration` may have moved off the resolution's own. `None` on the
+    /// startup default — the successor then starts the way this session did.
+    pub(super) fn live_binding(&self) -> Option<ResolvedModel> {
+        self.bound.clone().map(|bound| ResolvedModel {
+            generation: self.generation,
+            ..bound
+        })
     }
 }

@@ -43,6 +43,7 @@ mod set_session_meta;
 mod shutdown;
 mod spawn_model;
 mod stop_semantics;
+mod successor_model;
 mod system_prompt_resolver;
 mod tenant_lineage;
 mod tool_call_delta;

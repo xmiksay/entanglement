@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
-use entanglement_provider::{ResolvedModel, UserId};
+use entanglement_provider::{GenerationParams, ResolvedModel, UserId};
 use tokio::sync::{broadcast, mpsc};
 
 use super::commands::now_ms;
+use super::fork::ForkFrame;
 use super::Session;
 use crate::holly::SeqRegistry;
-use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId};
+use crate::protocol::{Agent, AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 
 /// What a session task starts from: its agent, the replayed state when
@@ -27,8 +28,11 @@ pub(crate) struct SessionStart {
     /// passes `DEFAULT_MODE` there too, mirroring the `None` it passes for
     /// `predecessor`/`user`.
     pub(crate) initial_mode: String,
-    /// An explicit `Spawn` model (#725), already resolved by the supervisor.
+    /// An explicit `Spawn` model (#725), already resolved by the supervisor —
+    /// or a compaction successor's inherited backend (#768).
     pub(crate) spawn_model: Option<ResolvedModel>,
+    /// A compaction successor's inherited effective generation (#768).
+    pub(crate) inherited_generation: Option<GenerationParams>,
 }
 
 /// Build (or adopt the resumed) [`Session`], emit its start-up lifecycle
@@ -39,7 +43,7 @@ pub(super) fn start_session(
     events: &broadcast::Sender<OutEvent>,
     cfg: &EngineConfig,
     seqs: &SeqRegistry,
-    forks: mpsc::Sender<InMsg>,
+    forks: mpsc::Sender<ForkFrame>,
     start: SessionStart,
 ) -> Session {
     let SessionStart {
@@ -50,6 +54,7 @@ pub(super) fn start_session(
         user,
         initial_mode,
         spawn_model,
+        inherited_generation,
     } = start;
     let ts = now_ms();
 
@@ -186,13 +191,35 @@ pub(super) fn start_session(
         // already applied. Best-effort, matching the pin arm's stance.
         if let Some(resolver) = cfg.model_resolver.as_ref() {
             match resolver(s.user.as_ref(), &provider, &model) {
-                Ok(resolved) => s.rebind(session, resolved, events),
+                Ok(resolved) => {
+                    // The re-announce must not undo replay's generation fold:
+                    // a logged `SetGeneration` (or a successor's inherited
+                    // params) sits after the `ModelChanged` it would reset.
+                    let generation = s.generation;
+                    s.rebind(session, resolved, events);
+                    s.generation = generation;
+                }
                 Err(e) => tracing::warn!(
                     provider, model, error = %e,
                     "session start: could not re-resolve resumed model for corrective announce"
                 ),
             }
         }
+    }
+
+    // A compaction successor continues the source's effective generation
+    // (#768). Logged as `GenerationChanged` because the `ModelChanged` above
+    // replays through a fresh resolution, which yields the catalog's params,
+    // not a live `SetGeneration`'s; recording it as this profile's session
+    // memory also keeps the persisted default below from overriding it.
+    if let Some(generation) = inherited_generation.filter(|_| !is_resumed) {
+        s.generation = Some(generation);
+        s.generation_by_agent
+            .insert(s.agent.name.clone(), generation);
+        let _ = events.send(OutEvent::GenerationChanged {
+            session: session.clone(),
+            generation,
+        });
     }
 
     // Session-start persisted generation overlay (#374, ADR-0094 — mirrors the

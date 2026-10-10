@@ -211,13 +211,7 @@ impl Session {
                 } => {
                     if let Some(resolver) = cfg.model_resolver.as_ref() {
                         match resolver(session.user.as_ref(), provider, model) {
-                            Ok(resolved) => {
-                                session.provider = Some(resolved.provider);
-                                session.llm = (resolved.llm_factory)();
-                                session.model = Some(resolved.model);
-                                session.generation = resolved.generation;
-                                session.ctx.set_window(resolved.context_window);
-                            }
+                            Ok(resolved) => session.bind(resolved),
                             Err(e) => tracing::warn!(
                                 provider, model, error = %e,
                                 "replay: could not re-resolve switched model; keeping default"
