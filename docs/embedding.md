@@ -167,6 +167,15 @@ tombstone into every known root when the tap's broadcast receiver lags —
 `RecvError::Lagged` — so a resume can never silently fold an incomplete
 history.
 
+**Gap ownership (#723): return `Err` for every record you lose.** An `Err`
+from `append` means "this record is gone", and the tap marks it for you: it
+appends a `Gap { dropped }` tombstone to that root, and if the tombstone write
+fails too it holds the gap and writes it before that root's next record
+(counting records it had to hold back as further loss). A sink that loses a
+record *after* returning `Ok` — e.g. its writer task's `INSERT` fails later —
+has hidden the loss from the tap and must write its own `Gap` row for that
+root.
+
 **The one constraint that matters for a real (DB/network) sink:
 `append` must not block.** The tap reads `Holly`'s outbound broadcast, which is
 lossy under back-pressure; a sink that awaits a slow write starves that
@@ -194,6 +203,28 @@ back (your own `pair_records`-equivalent over your DB rows, or the shared
 replays it into a fresh session task — nothing is loaded until a tenant
 actually reconnects to that session id. There is no background hydration: an
 idle tenant costs nothing beyond the rows already in your store.
+
+**Cut the hole before you resume: `session_store::resumable_prefix`.** Don't
+re-implement gap truncation over your rows. Hand the helper one item per
+stored row — `Ok(LogRecord)` for a row that decoded, `Err(_)` for one that
+didn't — and it returns a `ResumablePrefix { records, truncation }`: every
+record before the first `Gap` tombstone or undecodable row, plus
+`Option<Truncation>` (`Gap { index, dropped }` / `Corrupt { index }`) saying
+where and why it cut. A `Retired` record (a frame an older release logged,
+#720) is not a hole and stays in the prefix. Truncating is *your* policy
+choice; the in-tree heads stay strict and refuse a log with any gap
+(`check_for_resume`, #104).
+
+```rust
+use entanglement_runtime::session_store::{pair_records, resumable_prefix};
+
+let rows = db_rows.iter().map(|row| serde_json::from_value::<LogRecord>(row.payload.clone()));
+let prefix = resumable_prefix(rows);
+if let Some(cut) = prefix.truncation {
+    tracing::warn!("resuming {root} from its intact prefix, cut at {cut:?}");
+}
+holly.resume(root, pair_records(&prefix.records)).await?;
+```
 
 **Let the engine resume on demand: `EngineConfig::unknown_session`**
 ([ADR-0210](adr/0210-unknown-session-policy.md)). By default a routable
