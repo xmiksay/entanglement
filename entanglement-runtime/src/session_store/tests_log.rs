@@ -1,17 +1,18 @@
 use super::*;
 use entanglement_core::{InMsg, OutEvent};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 #[test]
-fn base_dir_returns_data_dir_entanglement_sessions() {
-    let dir = base_dir().expect("base_dir should succeed");
-    assert!(dir.ends_with("entanglement/sessions"));
-}
-
-#[test]
-fn base_dir_creates_directory_if_missing() {
-    let dir = base_dir().expect("base_dir should succeed");
-    assert!(dir.exists(), "Base directory should exist");
-    assert!(dir.is_dir(), "Base should be a directory");
+fn dir_is_created_on_first_use() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::at(temp.path().join("a/b"));
+    let dir = store.dir().expect("dir should succeed");
+    assert!(dir.is_dir(), "store dir should be created");
+    assert_eq!(
+        store.scratch_dir().expect("scratch"),
+        temp.path().join("a/b/tmp")
+    );
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn safe_cwd_name_preserves_spaces_and_unicode() {
 #[test]
 fn append_and_read_roundtrip() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let cwd = temp_dir.path();
+    let store = SessionStore::at(temp_dir.path());
     let session_id = SessionId::new("test-session");
 
     let record1 = LogRecord::new(
@@ -59,10 +60,14 @@ fn append_and_read_roundtrip() {
         }),
     );
 
-    append(cwd, &session_id, &record1).expect("append should succeed");
-    append(cwd, &session_id, &record2).expect("append should succeed");
+    store
+        .append(&session_id, &record1)
+        .expect("append should succeed");
+    store
+        .append(&session_id, &record2)
+        .expect("append should succeed");
 
-    let records = read(cwd, &session_id).expect("read should succeed");
+    let records = store.read(&session_id).expect("read should succeed");
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].session, session_id);
     assert_eq!(records[1].session, session_id);
@@ -152,7 +157,7 @@ fn pair_records_drops_trailing_inbound_without_output() {
 #[test]
 fn read_skips_corrupt_lines() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let cwd = temp_dir.path();
+    let store = SessionStore::at(temp_dir.path());
     let session_id = SessionId::new("test-corrupt");
 
     let valid_record = LogRecord::new(
@@ -160,9 +165,13 @@ fn read_skips_corrupt_lines() {
         LogPayload::In(InMsg::prompt(session_id.clone(), "valid".to_string())),
     );
 
-    append(cwd, &session_id, &valid_record).expect("append should succeed");
+    store
+        .append(&session_id, &valid_record)
+        .expect("append should succeed");
 
-    let path = session_path(cwd, &session_id).expect("session_path should succeed");
+    let path = store
+        .session_path(&session_id)
+        .expect("session_path should succeed");
     let mut file = OpenOptions::new()
         .append(true)
         .open(&path)
@@ -170,28 +179,30 @@ fn read_skips_corrupt_lines() {
     writeln!(file, "{{invalid json}}").expect("Failed to write corrupt line");
     writeln!(file).expect("Failed to write empty line");
 
-    let records = read(cwd, &session_id).expect("read should succeed");
+    let records = store.read(&session_id).expect("read should succeed");
     assert_eq!(records.len(), 1);
 }
 
 #[test]
 fn read_tolerates_truncated_tail_line() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let cwd = temp_dir.path();
+    let store = SessionStore::at(temp_dir.path());
     let session_id = SessionId::new("test-tail");
 
-    append(
-        cwd,
-        &session_id,
-        &LogRecord::new(
-            session_id.clone(),
-            LogPayload::In(InMsg::prompt(session_id.clone(), "kept".to_string())),
-        ),
-    )
-    .expect("append should succeed");
+    store
+        .append(
+            &session_id,
+            &LogRecord::new(
+                session_id.clone(),
+                LogPayload::In(InMsg::prompt(session_id.clone(), "kept".to_string())),
+            ),
+        )
+        .expect("append should succeed");
 
     // Simulate a crash mid-append: a partial final line, no trailing newline.
-    let path = session_path(cwd, &session_id).expect("session_path should succeed");
+    let path = store
+        .session_path(&session_id)
+        .expect("session_path should succeed");
     let mut file = OpenOptions::new()
         .append(true)
         .open(&path)
@@ -199,28 +210,32 @@ fn read_tolerates_truncated_tail_line() {
     write!(file, "{{\"ts\":123,\"sess").expect("Failed to write truncated line");
     drop(file);
 
-    let records = read(cwd, &session_id).expect("truncated tail is tolerated");
+    let records = store
+        .read(&session_id)
+        .expect("truncated tail is tolerated");
     assert_eq!(records.len(), 1);
 }
 
 #[test]
 fn read_rejects_interior_corruption() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let cwd = temp_dir.path();
+    let store = SessionStore::at(temp_dir.path());
     let session_id = SessionId::new("test-interior");
 
-    append(
-        cwd,
-        &session_id,
-        &LogRecord::new(
-            session_id.clone(),
-            LogPayload::In(InMsg::prompt(session_id.clone(), "one".to_string())),
-        ),
-    )
-    .expect("append should succeed");
+    store
+        .append(
+            &session_id,
+            &LogRecord::new(
+                session_id.clone(),
+                LogPayload::In(InMsg::prompt(session_id.clone(), "one".to_string())),
+            ),
+        )
+        .expect("append should succeed");
 
     // Garbage in the middle...
-    let path = session_path(cwd, &session_id).expect("session_path should succeed");
+    let path = store
+        .session_path(&session_id)
+        .expect("session_path should succeed");
     let mut file = OpenOptions::new()
         .append(true)
         .open(&path)
@@ -229,20 +244,22 @@ fn read_rejects_interior_corruption() {
     drop(file);
 
     // ...followed by a valid record → a hole, not a truncated tail.
-    append(
-        cwd,
-        &session_id,
-        &LogRecord::new(
-            session_id.clone(),
-            LogPayload::Out(OutEvent::Done {
-                session: session_id.clone(),
-                seq: 1,
-            }),
-        ),
-    )
-    .expect("append should succeed");
+    store
+        .append(
+            &session_id,
+            &LogRecord::new(
+                session_id.clone(),
+                LogPayload::Out(OutEvent::Done {
+                    session: session_id.clone(),
+                    seq: 1,
+                }),
+            ),
+        )
+        .expect("append should succeed");
 
-    let err = read(cwd, &session_id).expect_err("interior corruption must error");
+    let err = store
+        .read(&session_id)
+        .expect_err("interior corruption must error");
     assert!(
         err.to_string().contains("Interior corruption"),
         "unexpected error: {err}"

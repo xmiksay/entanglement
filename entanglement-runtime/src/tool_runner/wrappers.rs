@@ -68,8 +68,10 @@ pub fn spawn_tool_executor_with_hooks(
     // and the `rhai` binding policy) and `modes` (the session→mode map
     // `ModeResolver` grades from — sandboxing reads the identical map via
     // `crate::policy::ModeSandboxResolver`, ADR-0207 §6, wired independently
-    // by a caller that wants it; these test-only wrappers don't). "Always
-    // allow" grants persist to the managed file.
+    // by a caller that wants it; these test-only wrappers don't). Grants are
+    // in-memory only (#747): no in-tree head uses these wrappers, and their
+    // test callers must neither read the developer's real `grants.yml` (an
+    // `Always` grant there flips an expected Ask to Allow) nor write to it.
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = Arc::new(Mutex::new(HashMap::new()));
     let mode_table = Arc::new(ModeTable::builtin().expect("built-in permission modes must parse"));
@@ -83,7 +85,7 @@ pub fn spawn_tool_executor_with_hooks(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     spawn_tool_executor_with_policy(
         holly,
         shared_tools,

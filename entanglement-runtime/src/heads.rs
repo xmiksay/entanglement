@@ -13,7 +13,7 @@ use crate::config;
 use crate::pipe::pipe;
 use crate::run::run_one;
 use crate::services::Head;
-use crate::session_store::{self, list_sessions};
+use crate::session_store;
 use crate::tui::tui;
 
 /// Run the head `cli.cmd` selects (`None` = bare `skutter`: the TUI with no
@@ -49,10 +49,8 @@ pub(crate) async fn dispatch(
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
-                let (records, check) =
-                    session_store::load_for_resume(cwd, &resume_session_id, |n| {
-                        known.iter().any(|k| k == n)
-                    })?;
+                let (records, check) = session_store::SessionStore::for_cwd(cwd)
+                    .load_for_resume(&resume_session_id, |n| known.iter().any(|k| k == n))?;
                 // A retired agent resumes under a fallback (ADR-0215); say so.
                 for fallback in &check.fallbacks {
                     eprintln!("{}", fallback.note(explicit_mode));
@@ -239,7 +237,7 @@ async fn launch_tui(
 
 /// Prints past root sessions for `cwd`, most-recently-active first.
 pub(crate) fn print_sessions(cwd: &Path) -> Result<()> {
-    let mut sessions = list_sessions(cwd)?;
+    let mut sessions = session_store::SessionStore::for_cwd(cwd).list_sessions()?;
     sessions.retain(|s| s.root);
     sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
 

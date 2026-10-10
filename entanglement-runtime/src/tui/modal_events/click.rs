@@ -160,14 +160,14 @@ pub(super) async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: 
 pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
     if let Some(meta) = app.selected_resume_session() {
         let id = meta.id.clone();
-        let cwd = app.root().to_path_buf();
         let known: Vec<String> = app
             .available_profiles()
             .iter()
             .map(|a| a.name.clone())
             .collect();
-        let loaded =
-            crate::session_store::load_for_resume(&cwd, &id, |n| known.iter().any(|k| k == n));
+        let loaded = app
+            .session_store()
+            .load_for_resume(&id, |n| known.iter().any(|k| k == n));
         match loaded {
             Ok((records, check)) => {
                 // Visible transcript first, then engine context.

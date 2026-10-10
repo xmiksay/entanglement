@@ -187,6 +187,7 @@ impl App {
             inspect: Default::default(),
             approval_pager: Default::default(),
             root: PathBuf::from("."),
+            session_store: crate::session_store::SessionStore::unavailable(),
             mention: MentionPopup::new(FileIndex::default()),
             slash: crate::tui::slash_popup::SlashPopup::new(),
             quit_pending: false,

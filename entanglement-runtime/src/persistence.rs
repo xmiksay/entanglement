@@ -1,7 +1,6 @@
-use crate::session_store::{self, LogPayload, LogRecord};
+use crate::session_store::{LogPayload, LogRecord, SessionStore};
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -41,21 +40,21 @@ pub trait RecordSink: Send + Sync {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()>;
 }
 
-/// The default sink: appends to `{root_id}.jsonl` under the `session_store`
-/// layout rooted at `cwd`, preserving the original file-backed behavior.
+/// The default sink: appends to `{root_id}.jsonl` in a [`SessionStore`],
+/// preserving the original file-backed behavior.
 pub struct FileSink {
-    cwd: PathBuf,
+    store: SessionStore,
 }
 
 impl FileSink {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(store: SessionStore) -> Self {
+        Self { store }
     }
 }
 
 impl RecordSink for FileSink {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()> {
-        session_store::append(&self.cwd, root, record)
+        self.store.append(root, record)
     }
 }
 
@@ -121,8 +120,11 @@ fn record_gap(
 /// `SessionStarted` is seen the message's own session id is used as a fallback —
 /// the first prompt arrives before its `SessionStarted`, but for a root session
 /// the id is identical so the record lands in the same file either way.
-pub fn spawn_persistence_subscriber(holly: &Holly, cwd: PathBuf) -> tokio::task::JoinHandle<()> {
-    spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(cwd)))
+pub fn spawn_persistence_subscriber(
+    holly: &Holly,
+    store: SessionStore,
+) -> tokio::task::JoinHandle<()> {
+    spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(store)))
 }
 
 /// Same tap as [`spawn_persistence_subscriber`], but appends every record

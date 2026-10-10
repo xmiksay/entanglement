@@ -38,6 +38,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::session_store::SessionStore;
+
 /// Env var pointing at an explicit shared-preamble file (overrides discovery).
 const PREAMBLE_FILE_ENV: &str = "ENTANGLEMENT_PREAMBLE_FILE";
 /// Env var pointing at an explicit project-brief file (overrides discovery).
@@ -79,13 +81,14 @@ pub struct EnvBlock {
 
 impl EnvBlock {
     /// Snapshot the environment for `root` (platform/date always known; the
-    /// scratch dir is best-effort, `None` if the data dir is unavailable).
-    pub fn detect(root: &Path) -> Self {
+    /// scratch dir is `sessions`' own, best-effort — `None` if it can't be
+    /// created, e.g. the data dir is unavailable).
+    pub fn detect(root: &Path, sessions: &SessionStore) -> Self {
         Self {
             root: root.to_path_buf(),
             platform: std::env::consts::OS.to_string(),
             date: crate::date::today_utc(),
-            scratch: crate::session_store::scratch_dir(root).ok(),
+            scratch: sessions.scratch_dir().ok(),
         }
     }
 
@@ -147,6 +150,13 @@ impl PromptContext {
     /// context to the agent loader. Per-agent tool-mask filtering of that list is
     /// deferred (#116).
     pub fn load(root: &Path) -> Self {
+        Self::load_with(root, &SessionStore::for_cwd(root))
+    }
+
+    /// [`load`](Self::load) with the session store (whose scratch dir the env
+    /// block names) injected — so a test never creates a scratch dir under the
+    /// developer's real data dir (#747).
+    pub fn load_with(root: &Path, sessions: &SessionStore) -> Self {
         let preamble = load_preamble();
         let brief = load_brief(root);
         // Tie each source to actual presence: an override file that read empty
@@ -158,7 +168,7 @@ impl PromptContext {
         Self {
             preamble,
             brief,
-            env: Some(EnvBlock::detect(root)),
+            env: Some(EnvBlock::detect(root, sessions)),
             skills: Vec::new(),
             preamble_source,
             brief_path,

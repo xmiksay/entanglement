@@ -51,11 +51,18 @@ impl SandboxPolicy {
     /// confined, anything else/unset ⇒ none) and `ENTANGLEMENT_SANDBOX_NETWORK`
     /// (`1` ⇒ share the host network namespace when confined).
     pub fn from_env() -> Self {
-        let backend = match std::env::var("ENTANGLEMENT_SANDBOX").as_deref() {
-            Ok("bwrap") | Ok("bubblewrap") => SandboxBackend::Bubblewrap,
+        Self::resolve(|name| std::env::var(name).ok())
+    }
+
+    /// [`from_env`](Self::from_env) over an injected env lookup, so the
+    /// parsing is unit-testable without `set_var` — which would race every
+    /// parallel test resolving the policy for a real `bash` spawn (#747).
+    fn resolve(env: impl Fn(&str) -> Option<String>) -> Self {
+        let backend = match env("ENTANGLEMENT_SANDBOX").as_deref() {
+            Some("bwrap") | Some("bubblewrap") => SandboxBackend::Bubblewrap,
             _ => SandboxBackend::None,
         };
-        let network = std::env::var("ENTANGLEMENT_SANDBOX_NETWORK").as_deref() == Ok("1");
+        let network = env("ENTANGLEMENT_SANDBOX_NETWORK").as_deref() == Some("1");
         Self { backend, network }
     }
 
@@ -239,25 +246,39 @@ mod tests {
         assert!(!argv(&cmd).iter().any(|a| a == "--unshare-net"));
     }
 
-    // Both env-var cases live in one test (rather than two `#[test]`s) since
-    // `std::env::set_var`/`remove_var` on the same key would otherwise race
-    // across parallel test threads in this binary.
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
     #[test]
-    fn from_env_reads_backend_and_network() {
-        std::env::remove_var("ENTANGLEMENT_SANDBOX");
-        std::env::remove_var("ENTANGLEMENT_SANDBOX_NETWORK");
-        let policy = SandboxPolicy::from_env();
+    fn resolve_reads_backend_and_network() {
+        let policy = SandboxPolicy::resolve(lookup(&[]));
         assert_eq!(policy.backend, SandboxBackend::None);
         assert!(!policy.is_sandboxed());
 
-        std::env::set_var("ENTANGLEMENT_SANDBOX", "bwrap");
-        std::env::set_var("ENTANGLEMENT_SANDBOX_NETWORK", "1");
-        let policy = SandboxPolicy::from_env();
-        std::env::remove_var("ENTANGLEMENT_SANDBOX");
-        std::env::remove_var("ENTANGLEMENT_SANDBOX_NETWORK");
-        assert_eq!(policy.backend, SandboxBackend::Bubblewrap);
-        assert!(policy.is_sandboxed());
-        assert!(policy.network);
+        for backend in ["bwrap", "bubblewrap"] {
+            let policy = SandboxPolicy::resolve(lookup(&[
+                ("ENTANGLEMENT_SANDBOX", backend),
+                ("ENTANGLEMENT_SANDBOX_NETWORK", "1"),
+            ]));
+            assert_eq!(policy.backend, SandboxBackend::Bubblewrap);
+            assert!(policy.is_sandboxed());
+            assert!(policy.network);
+        }
+    }
+
+    #[test]
+    fn resolve_ignores_unknown_backends_and_non_1_network() {
+        let policy = SandboxPolicy::resolve(lookup(&[
+            ("ENTANGLEMENT_SANDBOX", "firejail"),
+            ("ENTANGLEMENT_SANDBOX_NETWORK", "true"),
+        ]));
+        assert_eq!(policy, SandboxPolicy::none());
     }
 
     #[test]

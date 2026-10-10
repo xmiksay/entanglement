@@ -181,7 +181,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants = Arc::new(DefaultGrantStore::load());
+    let grants = Arc::new(DefaultGrantStore::load_from(None));
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store,

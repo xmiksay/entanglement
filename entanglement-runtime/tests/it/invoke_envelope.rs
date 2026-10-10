@@ -104,7 +104,7 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         shared_tools,

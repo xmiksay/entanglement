@@ -15,7 +15,7 @@ use entanglement_runtime::persistence::{
     spawn_persistence_subscriber_with_sink, FileSink, RecordSink,
 };
 use entanglement_runtime::session_store::{
-    check_for_resume, read, resumable_prefix, LogPayload, LogRecord, Truncation,
+    check_for_resume, resumable_prefix, LogPayload, LogRecord, SessionStore, Truncation,
 };
 
 /// Forwards every record to the real file store *and* captures a clone, so the
@@ -34,15 +34,15 @@ impl RecordSink for TeeSink {
 
 #[tokio::test]
 async fn custom_sink_receives_the_same_record_stream_as_the_file() {
-    // A distinct cwd keys a distinct log file (session_store hashes the cwd).
+    // A temp-dir store (#747): never the real data dir.
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path().to_path_buf();
+    let store = SessionStore::at(tmp.path());
     let sid = SessionId::new("sink-root");
 
     let captured = Arc::new(Mutex::new(Vec::new()));
     let holly = Holly::spawn(EngineConfig::default());
     let sink = Arc::new(TeeSink {
-        file: FileSink::new(cwd.clone()),
+        file: FileSink::new(store.clone()),
         captured: captured.clone(),
     });
     let _tap = spawn_persistence_subscriber_with_sink(&holly, sink);
@@ -84,7 +84,7 @@ async fn custom_sink_receives_the_same_record_stream_as_the_file() {
     }
 
     // The custom sink saw the identical stream the file persisted, in order.
-    let on_disk = read(&cwd, &sid).expect("read log");
+    let on_disk = store.read(&sid).expect("read log");
     let seen = captured.lock().unwrap().clone();
     let seen_json: Vec<String> = seen
         .iter()

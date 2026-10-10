@@ -665,7 +665,7 @@ lease, no pending cool-down, no request in the trailing RPM window) — an
 endpoint still in real use always fails the "empty" check regardless of file
 age, so a live budget can never be swept out from under it. The runtime calls
 this twice: a best-effort startup sweep (`max_idle = 1h`, `main.rs`, mirroring
-`session_store::prune`'s role for session logs) and a short-`max_idle` (5s)
+`SessionStore::prune`'s role for session logs) and a short-`max_idle` (5s)
 sweep fired from the TUI's `/key` submit handler
 (`entanglement-runtime::tui::app::key`, `tokio::task::spawn_blocking` — the
 sweep locks and `fsync`s files, kept off the keypress path) so a rotated-away

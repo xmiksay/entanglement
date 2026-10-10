@@ -325,10 +325,14 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
 /// ignored (falling back to config/default) — never fatal, matching how a bad
 /// env value elsewhere is surfaced.
 fn resolve_session_retention(config_value: Option<u64>) -> u64 {
-    if let Some(raw) = std::env::var(SESSION_RETENTION_ENV)
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
+    session_retention_from(std::env::var(SESSION_RETENTION_ENV).ok(), config_value)
+}
+
+/// [`resolve_session_retention`] over an injected env value, so the
+/// precedence is unit-testable without `set_var` — which no lock can make safe
+/// against every unlocked `parse` caller in the binary (#747).
+fn session_retention_from(env_value: Option<String>, config_value: Option<u64>) -> u64 {
+    if let Some(raw) = env_value.filter(|s| !s.is_empty()) {
         match raw.parse::<u64>() {
             Ok(n) => return n,
             Err(_) => {

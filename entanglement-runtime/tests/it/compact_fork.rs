@@ -17,7 +17,7 @@ use entanglement_core::{
     LlmStream, OutEvent, SessionId, StopReason, Usage,
 };
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store;
+use entanglement_runtime::session_store::SessionStore;
 use futures::stream;
 use futures::StreamExt;
 
@@ -121,14 +121,14 @@ async fn await_successor(
 #[tokio::test]
 async fn compact_forks_a_successor_and_both_sessions_are_listed() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cwd = tmp.path().to_path_buf();
+    let store = SessionStore::at(tmp.path());
     let (cfg, seen) = scripted(vec![
         "turn reply",
         "summary of the conversation so far",
         "fork continuation",
     ]);
     let holly = Holly::spawn(cfg);
-    let _tap = spawn_persistence_subscriber(&holly, cwd.clone());
+    let _tap = spawn_persistence_subscriber(&holly, store.clone());
     let source = SessionId::new("source");
     let mut sub = holly.subscribe();
 
@@ -184,7 +184,7 @@ async fn compact_forks_a_successor_and_both_sessions_are_listed() {
     //    seed is recorded as its first prompt — so a `sessions` listing reads
     //    as a lineage instead of showing a blank successor.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let sessions = session_store::list_sessions(&cwd).expect("listing the session store");
+    let sessions = store.list_sessions().expect("listing the session store");
     let ids: Vec<&SessionId> = sessions.iter().map(|m| &m.id).collect();
     assert!(
         ids.contains(&&source) && ids.contains(&&successor),

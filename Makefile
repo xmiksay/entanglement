@@ -64,14 +64,17 @@ inspect: build ## inspect resolved prompt/agents/skills/config/aux-models/mcp-to
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace
 
-test: ## all tests (unit + integration)
-	$(CARGO) test --workspace
+# Every test target runs with HOME/XDG dirs in an empty sandbox and fails if a
+# test wrote there (#747) — a test must never touch the developer's real
+# session logs, grants, config or managed files.
+test: ## all tests (unit + integration), HOME/XDG-sandboxed: fails if any test writes there
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace
 
-test-unit: ## unit tests only
-	$(CARGO) test --workspace --lib --bins
+test-unit: ## unit tests only (HOME/XDG-sandboxed)
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace --lib --bins
 
-test-integration: ## integration tests only (tests/ dirs)
-	$(CARGO) test --workspace --test '*'
+test-integration: ## integration tests only (tests/ dirs, HOME/XDG-sandboxed)
+	@CARGO='$(CARGO)' sh scripts/test-isolated.sh --workspace --test '*'
 
 # Opt-in live z.ai probes pinning ADR-0204's provider facts (network + a real
 # ZAI_API_KEY; each test skips when it is unset). Kept out of `test`/`verify`.
@@ -108,7 +111,7 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 # Self-test for the shared dep-gate mechanism (stubbed cargo; proves the #207
 # vacuous-pass fix). Fast, no build — kept out of `verify` (the real gates cover
 # CI) but available on demand.
-test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap self-tests)
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests)
 	@sh scripts/dep-gate.test.sh
 
 # 400-line file cap (AGENTS.md; issue #451). Grandfathered violations live in

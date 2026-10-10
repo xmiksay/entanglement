@@ -184,8 +184,9 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
             PermissionProfile::new(Permission::Allow),
             None,
         ));
-    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
-        Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
+        entanglement_runtime::policy::DefaultGrantStore::load_from(None),
+    );
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         shared_tools,

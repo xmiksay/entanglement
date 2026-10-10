@@ -100,11 +100,10 @@ fn render_config(resolved: &Resolved) -> String {
     // field above (default < user < project file layers only) — so its
     // winning source needs its own env check rather than `from()`'s file-layer
     // lookup, or an active env override would be silently misreported.
-    let retention_source = std::env::var(SESSION_RETENTION_ENV)
-        .ok()
-        .filter(|v| !v.is_empty() && v.parse::<u64>().is_ok())
-        .map(|_| format!("env ({SESSION_RETENTION_ENV})"))
-        .unwrap_or_else(|| from("session_retention_days").to_string());
+    let retention_source = retention_source(
+        std::env::var(SESSION_RETENTION_ENV).ok(),
+        from("session_retention_days"),
+    );
     let _ = writeln!(
         out,
         "  session_retention_days: {:<12} ← {}",
@@ -220,6 +219,15 @@ fn render_hook_list(out: &mut String, point: &str, hooks: &[crate::hooks::HookSp
     }
 }
 
+/// The winning source label for `session_retention_days`: the env override
+/// when it is set to a value the resolver accepts, else the file layer `from`.
+fn retention_source(env_value: Option<String>, from: &str) -> String {
+    env_value
+        .filter(|v| !v.is_empty() && v.parse::<u64>().is_ok())
+        .map(|_| format!("env ({SESSION_RETENTION_ENV})"))
+        .unwrap_or_else(|| from.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,19 +285,16 @@ mod tests {
 
     #[test]
     fn session_retention_env_override_reports_env_as_its_source() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ENTANGLEMENT_SESSION_RETENTION_DAYS", "7");
-        let resolved = locked_resolve(dir.path());
-        // `render_config` re-checks the env var itself (it needs to know
-        // whether it's *still* the winning source, not just what it was at
-        // resolve time) — render before clearing it.
-        let rendered = render_config(&resolved);
-        std::env::remove_var("ENTANGLEMENT_SESSION_RETENTION_DAYS");
-
-        assert!(rendered.contains("session_retention_days: 7"));
-        assert!(rendered.contains("← env (ENTANGLEMENT_SESSION_RETENTION_DAYS)"));
+        // Over an injected env value (#747) — never `set_var`, which unlocked
+        // `config::parse` callers elsewhere in the binary would observe.
+        assert_eq!(
+            retention_source(Some("7".into()), "default"),
+            "env (ENTANGLEMENT_SESSION_RETENTION_DAYS)"
+        );
+        // An empty or unparseable env value is ignored by the resolver, so it
+        // must not be reported as the winning source either.
+        assert_eq!(retention_source(Some(String::new()), "user"), "user");
+        assert_eq!(retention_source(Some("soon".into()), "user"), "user");
+        assert_eq!(retention_source(None, "project"), "project");
     }
 }

@@ -196,7 +196,7 @@ fn spawn_with_policy(
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         shared_tools,
@@ -502,7 +502,8 @@ async fn max_duration_ends_the_run_with_a_stated_reason() {
 /// binary-level pattern for a clean, non-panicking CLI exit.
 #[test]
 fn retired_yes_flag_errors_with_a_pointer_to_mode_auto() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_skutter"))
+    let (mut cmd, _sandbox) = crate::skutter_cmd::isolated_skutter();
+    let out = cmd
         .args(["run", "hi", "--yes"])
         .output()
         .expect("failed to spawn skutter");

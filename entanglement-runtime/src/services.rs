@@ -218,14 +218,16 @@ pub(crate) fn start(
     let narrate_handle = crate::narrate::spawn_action_narrator(&holly, aux_registry);
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
-    let persistence_handle = persistence::spawn_persistence_subscriber(&holly, cwd.to_path_buf());
+    // One store for both: the log the tap writes is the one `ReplayFrom` reads.
+    let sessions = crate::session_store::SessionStore::for_cwd(cwd);
+    let persistence_handle = persistence::spawn_persistence_subscriber(&holly, sessions.clone());
     // Answer `ReplayFrom` late-subscriber history queries from that same log
     // (#160). The handle is kept so it can be aborted at shutdown — like the
     // tool executor and watcher, it holds a `Holly` clone (an inbound
     // subscriber + event emitter) that keeps the broadcast channels open until
     // every clone is dropped. Aborting it is what lets the persistence
     // subscriber see `RecvError::Closed` and flush.
-    let history_handle = history::spawn_history_responder(&holly, cwd.to_path_buf());
+    let history_handle = history::spawn_history_responder(&holly, sessions);
 
     // Live definitions watcher (#329, ADR-0084): inotify on the resolved
     // agent/skill dirs + managed files, debounced, reloading straight into the

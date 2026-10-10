@@ -640,21 +640,23 @@ fn agent_picker_lists_every_entry_agent() {
 
 // --- Issue 4: session deletion (sessions modal + resume modal) ---------------
 
-/// Helper: an `App` whose head-context root points at a temp dir, so
-/// `delete_session_from_modal` / `delete_resume_session` (which read `self.root()`)
-/// touch throwaway storage. Drops a `.jsonl` for `id` under that dir's session
-/// store so deletion has a real file to remove.
+use crate::session_store::SessionStore;
+
+/// Helper: an `App` whose session store is a temp dir, so
+/// `delete_session_from_modal` / `delete_resume_session` touch throwaway
+/// storage, never the real data dir (#747).
 fn app_in_temp_dir(sid: SessionId) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut app = App::new_for_test(sid);
     app.init_head_context(dir.path().to_path_buf());
+    app.set_session_store(SessionStore::at(dir.path()));
     (app, dir)
 }
 
-/// Seed a session `.jsonl` under `cwd`'s session dir for `id` (minimal — just
+/// Seed a session `.jsonl` in the store at `dir` for `id` (minimal — just
 /// enough that `delete` finds a real file).
-fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
-    use crate::session_store::{append, LogPayload, LogRecord};
+fn seed_session_log(dir: &std::path::Path, id: &SessionId) {
+    use crate::session_store::{LogPayload, LogRecord};
     let record = LogRecord::new(
         id.clone(),
         LogPayload::Out(OutEvent::SessionStarted {
@@ -668,7 +670,9 @@ fn seed_session_log(cwd: &std::path::Path, id: &SessionId) {
             user: None,
         }),
     );
-    append(cwd, id, &record).expect("seed append");
+    SessionStore::at(dir)
+        .append(id, &record)
+        .expect("seed append");
 }
 
 /// The sessions modal lists only the live set, so `d` on its highlighted row
@@ -689,7 +693,7 @@ fn sessions_modal_d_refuses_a_live_session() {
     // Refused: a toast surfaced (the modal covers the transcript), and the
     // file is untouched.
     assert_eq!(app.toast(), Some("cannot delete a live session"));
-    let path = crate::session_store::session_path(dir.path(), &live).unwrap();
+    let path = SessionStore::at(dir.path()).session_path(&live).unwrap();
     assert!(path.exists(), "live session's log must not be deleted");
 }
 
@@ -723,7 +727,7 @@ fn sessions_modal_delete_would_remove_a_non_live_id() {
     app.delete_resume_session();
 
     assert_eq!(app.toast(), Some("deleted session past"));
-    let path = crate::session_store::session_path(dir.path(), &past).unwrap();
+    let path = SessionStore::at(dir.path()).session_path(&past).unwrap();
     assert!(!path.exists(), "past session's log must be deleted");
 }
 
@@ -750,7 +754,9 @@ fn resume_modal_d_deletes_past_session_and_drops_it_from_list() {
         "deleted entry dropped from list"
     );
     let survivor_id = app.available_sessions()[0].id.clone();
-    let survivor_path = crate::session_store::session_path(dir.path(), &survivor_id).unwrap();
+    let survivor_path = SessionStore::at(dir.path())
+        .session_path(&survivor_id)
+        .unwrap();
     assert!(survivor_path.exists(), "survivor untouched");
 }
 

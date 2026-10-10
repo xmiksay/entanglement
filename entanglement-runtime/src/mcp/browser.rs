@@ -22,7 +22,14 @@ use std::process::Stdio;
 /// forwards the browser's chatter to stderr, which would corrupt the TUI's
 /// terminal.
 pub fn open(url: &str) -> bool {
-    for (program, args) in launchers() {
+    open_with(url, &launchers())
+}
+
+/// [`open`] over an explicit launcher list — the test seam (#747): a test
+/// passes launchers that don't exist instead of scrubbing the process-global
+/// `PATH`, which would break every parallel test spawning a process.
+fn open_with(url: &str, launchers: &[(&str, &[&str])]) -> bool {
+    for &(program, args) in launchers {
         let spawned = std::process::Command::new(program)
             .args(args)
             .arg(url)
@@ -88,16 +95,12 @@ mod tests {
     fn open_reports_failure_when_no_launcher_exists() {
         // Not a launch test (CI has no browser) — this pins the contract that a
         // missing launcher returns `false` rather than panicking, which is what
-        // makes the "print the URL anyway" fallback sound.
-        //
-        // Scrub PATH so even a present `xdg-open` can't be found.
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", "");
-        let opened = open("https://example.invalid/authorize");
-        match saved {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
-        assert!(!opened);
+        // makes the "print the URL anyway" fallback sound. Launchers that can't
+        // exist stand in for a scrubbed `PATH` (#747).
+        let missing: &[(&str, &[&str])] = &[
+            ("entanglement-test-no-such-launcher", &[]),
+            ("entanglement-test-no-such-launcher-either", &["open"]),
+        ];
+        assert!(!open_with("https://example.invalid/authorize", missing));
     }
 }

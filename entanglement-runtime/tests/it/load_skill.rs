@@ -323,8 +323,9 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
             PermissionProfile::new(Permission::Allow),
             None,
         ));
-    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
-        Arc::new(entanglement_runtime::policy::DefaultGrantStore::load());
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
+        entanglement_runtime::policy::DefaultGrantStore::load_from(None),
+    );
     let _executor = entanglement_runtime::tool_runner::spawn_tool_executor_with_policy(
         &holly,
         shared_tools,

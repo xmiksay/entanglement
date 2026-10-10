@@ -6,7 +6,8 @@
 #   - a forbidden crate in the tree must FAIL
 #   - a clean tree must PASS
 # Also self-tests userid-gate.sh and file-cap-gate.sh (#745: what the
-# `#[cfg(test)]` module exclusion does and does not hide).
+# `#[cfg(test)]` module exclusion does and does not hide), and test-isolated.sh
+# (#747).
 # Run via `make test-gates`.
 set -eu
 
@@ -169,6 +170,45 @@ fcheck "file-cap: '\\'' then '{' does not swallow the rest" 1
 fn a() { let v = ['\'','"']; }
 RS
 fcheck "file-cap: '\\'' then '\"' before a test mod does not over-count" 0
+
+# --- test-isolated.sh self-tests (#747) ---------------------------------------
+# A stubbed `cargo test` that writes `$FAKE_WRITE` (relative to the sandboxed
+# var it names, e.g. `XDG_DATA_HOME:entanglement/sessions/x`) and exits
+# `$FAKE_RC`: proves the sandbox is really where `dirs::*` would resolve, and
+# that a write there — or a red suite — fails the gate.
+igate="$here/test-isolated.sh"
+cat >"$tmp/cargo-iso" <<'STUB'
+#!/usr/bin/env sh
+if [ -n "${FAKE_WRITE:-}" ]; then
+	var=${FAKE_WRITE%%:*}
+	eval "base=\${$var}"
+	mkdir -p "$base/${FAKE_WRITE#*:}"
+fi
+exit "${FAKE_RC:-0}"
+STUB
+chmod +x "$tmp/cargo-iso"
+
+icheck() {
+	name=$1
+	want=$2
+	set +e
+	CARGO="$tmp/cargo-iso" FAKE_WRITE="$FAKE_WRITE" FAKE_RC="$FAKE_RC" \
+		sh "$igate" >/dev/null 2>&1
+	got=$?
+	set -e
+	if [ "$got" -eq "$want" ]; then
+		echo "ok   - $name (rc=$got)"
+	else
+		echo "FAIL - $name (want rc=$want, got rc=$got)"
+		fails=$((fails + 1))
+	fi
+}
+
+FAKE_WRITE=""                                       FAKE_RC=0 icheck "isolated: clean suite passes"          0
+FAKE_WRITE=""                                       FAKE_RC=1 icheck "isolated: red suite fails"             1
+FAKE_WRITE="XDG_DATA_HOME:entanglement/sessions/x"  FAKE_RC=0 icheck "isolated: data-dir write fails"        1
+FAKE_WRITE="XDG_CONFIG_HOME:entanglement"           FAKE_RC=0 icheck "isolated: config-dir write fails"      1
+FAKE_WRITE="HOME:.local/share/entanglement"         FAKE_RC=0 icheck "isolated: HOME write fails"            1
 
 if [ "$fails" -ne 0 ]; then
 	echo "$fails dep-gate self-test(s) failed" >&2

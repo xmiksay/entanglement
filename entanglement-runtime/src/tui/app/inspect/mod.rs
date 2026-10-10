@@ -162,7 +162,8 @@ impl App {
         if self.inspect.visible {
             self.close_inspect();
         } else {
-            let reports = crate::inspect::tui_reports(self.root(), self.agent());
+            let reports =
+                crate::inspect::tui_reports(self.root(), self.session_store(), self.agent());
             self.inspect.prompt = reports.prompt;
             self.inspect.agents = reports.agents;
             self.inspect.skills = reports.skills;
@@ -252,7 +253,9 @@ impl App {
             return;
         };
         let detail = match list_tab {
-            InspectListTab::Agents => crate::inspect::agent_detail(self.root(), &item.name),
+            InspectListTab::Agents => {
+                crate::inspect::agent_detail(self.root(), self.session_store(), &item.name)
+            }
             InspectListTab::Skills => crate::inspect::skill_detail(self.root(), &item.name),
         };
         self.inspect.detail = detail.or_else(|| Some(format!("(no detail for `{}`)", item.name)));

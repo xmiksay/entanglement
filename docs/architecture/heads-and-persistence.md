@@ -599,7 +599,13 @@ byte-identical.
 
 Sessions are event-sourced to disk, one JSONL file per **root** session under
 `<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl` (`session_store`).
-`spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
+That directory is a `SessionStore` value handed to every reader/writer — the
+persistence tap, the `ReplayFrom` responder, the startup prune, resume and the
+TUI resume modal — rather than re-resolved from the data dir at each call
+(#747): the in-tree heads build `SessionStore::for_cwd(cwd)` (the layout
+above), an embedder or test pins `SessionStore::at(dir)`. Under `cfg(test)` the
+data-dir resolution panics, so a unit test can never read, write or prune the
+developer's real logs. `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
 ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
 `InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
 `payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped } | Retired { kind }`
@@ -742,14 +748,14 @@ assistant/tool messages and the model appears to forget the conversation.
   `RecordSink { fn append(&self, root: &SessionId, record: &LogRecord) }`, and an
   embedder swaps in any target without forking the subscriber (and so tracks
   upstream gap/lag fixes for free). The default `FileSink` is the JSONL store
-  above; `spawn_persistence_subscriber(holly, cwd)` is just
-  `spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(cwd)))`.
+  above; `spawn_persistence_subscriber(holly, store)` is just
+  `spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(store)))`.
   `append` is **synchronous** — the file sink is one `writeln!`. A sink whose
   store can block (DB, network) must **not** block the tap: that starves the
   broadcast receiver and manufactures the very `Gap` tombstones the tap exists to
   avoid. Such a sink puts a bounded channel + writer task behind `append` and
   returns immediately, surfacing back-pressure as an `Err` (dropped past the
-  bound) rather than awaiting. `session_store::read`/`pair_records` stay the
+  bound) rather than awaiting. `SessionStore::read`/`pair_records` stay the
   file-side read helpers; resume already accepts records from anywhere
   (`Holly::resume(root, records)`), so no read-side trait is needed.
 - **One-shot flush**: a `run` invocation ends the moment the turn does, so `main`
@@ -783,7 +789,7 @@ assistant/tool messages and the model appears to forget the conversation.
   resumed from a truncated prefix writes again, the embedder deletes the rows
   from `Truncation::index()` onward (or resumes into a fresh id) — else the
   old tombstone stays the first gap and the next load drops the new work.
-  `session_store::read` likewise distinguishes a
+  `session_store::read_path` (behind `SessionStore::read`) likewise distinguishes a
   crash-truncated *tail* line (tolerated with a warning) from *interior*
   corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad
   file instead of aborting the whole enumeration.
@@ -830,14 +836,14 @@ assistant/tool messages and the model appears to forget the conversation.
   On that replay path a non-forced session's model sees `[mode: X]` with no
   "changed from" transition, an accepted trade-off.
   The logic is the pure `session_store::check_for_resume`, which also
-  refuses a gap; `load_for_resume` and `resume_with_mode` wrap it for the
+  refuses a gap; `SessionStore::load_for_resume` and `resume_with_mode` wrap it for the
   heads.
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status
   line: the modal lists the live set, and deleting under one would orphan its
-  view) — and age out automatically: `session_store::prune(cwd,
-  retention_days)` runs **best-effort at startup** (`main.rs`, before any head
+  view) — and age out automatically: `SessionStore::prune(retention_days)`
+  runs **best-effort at startup** (`main.rs`, before any head
   spawns, so the resume modal and `skutter sessions` both reflect the pruned
   set), removing root files older by mtime than the retention window from
   **the current project's session dir only**. The window resolves env >

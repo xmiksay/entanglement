@@ -222,7 +222,7 @@ fn spawn_with_policy_over(
         PermissionProfile::new(Permission::Allow),
         root.map(Path::to_path_buf),
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let escape_root = root.map(|root| entanglement_runtime::tool_runner::EscapeRoot {
         root: root.to_path_buf(),
         store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
@@ -1327,7 +1327,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         active,
         modes,
         resolver,
-        Arc::new(DefaultGrantStore::load()),
+        Arc::new(DefaultGrantStore::load_from(None)),
         Default::default(),
         None,
         builtin_modes(),

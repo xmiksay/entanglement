@@ -216,7 +216,7 @@ guessing again:
 - **The trusted scratch dir is exempt from the escape-root prompt** (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),
   amends ADR-0109): the runtime-owned per-project scratch dir
-  (`session_store::scratch_dir`, already the default `call`-output target)
+  (`SessionStore::scratch_dir`, already the default `call`-output target)
   needs no approval and no prior grant, for `read`/`edit`/`write`/
   `apply_patch`, `glob`/`grep`, and a `bash`/`call` `workdir` — in every
   profile. `ExtraRootStore` gains an optional `scratch: Option<PathBuf>`

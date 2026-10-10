@@ -274,7 +274,7 @@ fn spawn_with_rhai_escape(
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store: store.clone(),
@@ -494,7 +494,7 @@ fn spawn_with_policy_over(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = spawn_tool_executor_with_policy(
         holly,
         shared_tools,
@@ -1478,7 +1478,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = spawn_tool_executor_with_policy(
         &holly,
         shared_tools,
@@ -1587,7 +1587,7 @@ fn spawn_with_rhai_background(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load());
+    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let scripts = entanglement_runtime::script_ops::ScriptRegistry::new();
     let _executor = spawn_tool_executor_with_policy(
         &holly,

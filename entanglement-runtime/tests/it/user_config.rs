@@ -2,18 +2,17 @@
 //! through the binary — embedded default < user < repository, later wins. Guards
 //! the `main.rs` wiring the in-crate unit tests don't reach.
 
-use std::process::Command;
+use crate::skutter_cmd::isolated_skutter;
 
 /// Run `skutter inspect config` in `cwd` with the user config path env pointed at
 /// `user_config` (may be a non-existent path to exercise the embedded fallback).
 fn inspect_config(cwd: &std::path::Path, user_config: &std::path::Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_skutter"))
-        .args(["inspect", "config"])
+    // Child-only isolation (#747): the startup prune and managed-file loads
+    // stay off the developer's real data/config dirs.
+    let (mut cmd, _sandbox) = isolated_skutter();
+    cmd.args(["inspect", "config"])
         .current_dir(cwd)
         .env("ENTANGLEMENT_CONFIG_FILE", user_config)
-        // Child-only env (#743): keep the spawned binary off the real shared
-        // endpoint-state dir.
-        .env("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1")
         .output()
         .expect("failed to spawn skutter")
 }

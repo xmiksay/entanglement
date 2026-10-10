@@ -44,7 +44,7 @@ make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make sessions      # list past (resumable) sessions
 make inspect       # resolved prompt/agents/skills/config, no engine (ARGS='prompt --agent general')
 make install       # install the `skutter` binary into $CARGO_HOME/bin
-make test          # unit + integration
+make test          # unit + integration, HOME/XDG sandboxed: fails if a test writes there (#747)
 make test-unit | make test-integration
 make test-live     # opt-in live z.ai probes (ZAI_API_KEY): tool discovery + prompt cache facts
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
@@ -56,7 +56,7 @@ make tree          # entanglement-core dep hygiene gate (fails on UI/transport c
 make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
 make userid        # UserId-free entanglement-runtime gate (ADR-0181)
-make test-gates    # dep-gate + userid-gate + file-cap-gate self-tests (scripts/dep-gate.test.sh)
+make test-gates    # dep-gate + userid-gate + file-cap-gate + test-isolated self-tests (scripts/dep-gate.test.sh)
 make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify
 make build | check | clean
 ```

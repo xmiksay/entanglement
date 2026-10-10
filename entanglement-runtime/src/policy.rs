@@ -307,6 +307,15 @@ impl DefaultGrantStore {
         }
     }
 
+    /// A store over an explicit grants file — `None` keeps `Always` grants in
+    /// memory only (see [`FileGrantStore::load_from`]). Tests inject this
+    /// instead of reading the developer's real `grants.yml` (#747).
+    pub fn load_from(path: Option<std::path::PathBuf>) -> Self {
+        Self {
+            inner: Mutex::new(FileGrantStore::load_from(path)),
+        }
+    }
+
     fn grants(&self) -> std::sync::MutexGuard<'_, FileGrantStore> {
         self.inner.lock().expect("grants mutex poisoned")
     }
