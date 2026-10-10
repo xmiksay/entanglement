@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::next_seq;
 use super::Session;
-use crate::id_gen::IdKind;
+use crate::id_gen::{IdContext, IdKind};
 use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 
@@ -93,7 +93,10 @@ pub(crate) fn fork_successor(
     compaction: Compaction<'_>,
 ) -> Option<PendingFork> {
     let engine = s.engine.clone()?;
-    let successor = SessionId::new(cfg.id_gen.next(IdKind::Session));
+    // Minted in the source's lineage so the default generator keeps its
+    // tenant prefix — the successor is a root, so nothing else would (ADR-0211).
+    let ctx = IdContext::successor_of(session).with_user(s.user.as_ref());
+    let successor = SessionId::new(cfg.id_gen.next(IdKind::Session, &ctx));
 
     let _ = events.send(OutEvent::Compacted {
         session: session.clone(),

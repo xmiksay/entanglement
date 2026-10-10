@@ -43,7 +43,7 @@ impl Llm for ToolThenText {
 
 /// A session whose window is small enough that one bulky tool result overflows
 /// it, with auto-summarize off so recovery takes the prune fallback.
-fn prune_only_engine() -> Holly {
+pub(crate) fn prune_only_engine() -> Holly {
     let calls = Arc::new(AtomicUsize::new(0));
     Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || {
@@ -61,7 +61,7 @@ fn prune_only_engine() -> Holly {
 /// Drive one overflowing tool round and return the source's events, the
 /// successor's id, and the still-live subscription — handed back so a caller
 /// can keep watching the successor without racing its first turn.
-async fn prune_fork(
+pub(crate) async fn prune_fork(
     holly: &Holly,
     sid: &SessionId,
 ) -> (

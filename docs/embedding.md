@@ -51,11 +51,24 @@ fn tenant_of(session: &SessionId) -> &str {
 }
 ```
 
-A spawned sub-agent's id is minted by the runtime's `agent` tool, not by your
-head, but it stays inside the same tenant's tree — child sessions
-never cross the parent's namespace (spawn is always relative to a running
-session, `entanglement-core/src/holly/supervisor/spawn.rs`'s `Spawn` handler), so filtering by root
-prefix already covers the whole subtree.
+Two kinds of session are minted by the engine, not by your head: a sub-agent
+child (the runtime's `agent` tool) and a **compaction successor** — every
+compaction forks one, a fresh *root* (`parent: None`, `predecessor: Some(source)`,
+[ADR-0205](adr/0205-every-compaction-forks-a-successor-session.md)). Both go
+through `EngineConfig::id_gen` with an `IdContext` naming their lineage, and
+the default `DefaultIdGen` copies the parent's — else the predecessor's —
+prefix up to and including the first `:` ([ADR-0211](adr/0211-idgen-context-and-tenant-prefix-inheritance.md)):
+the child or successor of `acme:s-6a70…` is `acme:s-6a71…`. So `tenant_of`
+holds for the whole lineage **by construction, with the default generator**.
+A root with no `:` mints unprefixed descendants, as before.
+
+If you install your own `IdGen` (a DB sequence, UUIDs, a different tenant
+encoding), the prefix is yours to keep: `next(kind, ctx)` receives
+`ctx.parent`/`ctx.predecessor`/`ctx.user`, and `ctx.inherited_prefix()` gives
+the default's answer to reuse. A generator that ignores the context breaks
+prefix filtering for every child and successor. When your head mints an id in
+a lineage itself, call `Holly::next_id_in(kind, &IdContext::child_of(&parent))`
+rather than `next_id`, which mints with an empty context.
 
 **Ownership filtering on `subscribe()`.** `Holly::subscribe()` is one
 broadcast fan-out of **every** tenant's events — there is no
@@ -227,6 +240,23 @@ asking a loader; `Err` surfaces as an `Error` and spawns nothing. Messages
 that arrive while a load is in flight queue behind that one load and deliver
 in order. `Holly::is_live(&id)` answers "is it running right now" cheaply,
 for display — not for check-then-send.
+
+**Ownership of a live session: `Holly::session_info(&id)`**
+([ADR-0211](adr/0211-idgen-context-and-tenant-prefix-inheritance.md)). A
+resolver deciding whether a session's tool call belongs to a user (a
+permission seam, a per-user MCP scope) reads the engine's own directory
+synchronously — `SessionInfo { user, parent, predecessor, agent, root, .. }`
+— instead of mirroring `SessionStarted` off the broadcast, which races the
+first tool call. It is `Some` from before the session's `SessionStarted`
+until the engine processes its `CloseSession` or hibernation, `None` for an
+unknown, closed or hibernated id, and a resume (explicit or through the
+loader above) re-registers the same lineage and `user` from the log. A
+compaction successor reports its `predecessor` and the `user` it inherited
+from it, and is persisted under its **own** root id (it is a root), so your
+sink receives its records keyed by the successor id — tenant-prefixed by the
+default generator (§1), which is what lets your loader find it again. For
+routing *events*, key on the prefix rather than `session_info`: a session's
+trailing `SessionEnded` arrives after its directory entry is gone.
 
 **The loader is reachable from the wire.** `Prompt`, `SetModel` and the other
 covered frames are wire-allowed, so a client relayed via `send_from_wire`

@@ -6,9 +6,17 @@
 //! lexicographically by creation time; the trailing counter restores
 //! sub-second ordering and — because it is monotonic, not random — guarantees
 //! a process never mints the same id twice.
+//!
+//! Every mint carries an [`IdContext`] — the lineage the new id belongs to
+//! (ADR-0211). [`DefaultIdGen`] uses it to keep a tenant prefix: a child or
+//! compaction successor of `t1:s-…` is minted `t1:s-…` too.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use entanglement_provider::UserId;
+
+use crate::protocol::SessionId;
 
 /// The namespace an id belongs to — its one-character prefix. Scope is
 /// sessions/agent handles, background jobs, and runtime-minted request ids
@@ -45,13 +53,62 @@ impl IdKind {
     }
 }
 
-/// Mints ids for a given [`IdKind`]. The default ([`DefaultIdGen`]) follows
-/// ADR-0164; an embedder needing fleet-coordinated ids (a database sequence, a
-/// Snowflake-style generator, or plain UUIDs) installs its own via
-/// [`EngineConfig::id_gen`][crate::EngineConfig::id_gen] — `SessionId` staying
-/// an opaque `String` newtype is what makes any generator's output valid.
+/// What an id is minted *for* (ADR-0211): the session it is spawned under,
+/// the session it succeeds (a compaction fork, ADR-0205), and the owning user
+/// inherited along that lineage. All `None` for a fresh root, a job, or a
+/// request id. `#[non_exhaustive]` so the context can grow without breaking an
+/// embedder's [`IdGen`]; build one with [`IdContext::default`],
+/// [`child_of`][Self::child_of] or [`successor_of`][Self::successor_of].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IdContext<'a> {
+    pub parent: Option<&'a SessionId>,
+    pub predecessor: Option<&'a SessionId>,
+    pub user: Option<&'a UserId>,
+}
+
+impl<'a> IdContext<'a> {
+    /// A sub-agent spawned under `parent`.
+    pub fn child_of(parent: &'a SessionId) -> Self {
+        Self {
+            parent: Some(parent),
+            ..Self::default()
+        }
+    }
+
+    /// A compaction successor continuing `predecessor` (ADR-0205).
+    pub fn successor_of(predecessor: &'a SessionId) -> Self {
+        Self {
+            predecessor: Some(predecessor),
+            ..Self::default()
+        }
+    }
+
+    /// The same context with the lineage's owning user attached.
+    pub fn with_user(self, user: Option<&'a UserId>) -> Self {
+        Self { user, ..self }
+    }
+
+    /// The tenant prefix a new id inherits: everything up to and including
+    /// the first `:` of the parent's id, else the predecessor's (the
+    /// `{tenant}:{id}` convention, docs/embedding.md §1). `None` when there is
+    /// no lineage or its id carries no `:`.
+    pub fn inherited_prefix(&self) -> Option<&'a str> {
+        let id = &self.parent.or(self.predecessor)?.0;
+        id.find(':').map(|i| &id[..=i])
+    }
+}
+
+/// Mints ids for a given [`IdKind`] within an [`IdContext`]. The default
+/// ([`DefaultIdGen`]) follows ADR-0164 plus ADR-0211's prefix inheritance; an
+/// embedder needing fleet-coordinated ids (a database sequence, a
+/// Snowflake-style generator, or plain UUIDs) or its own tenant encoding
+/// installs its own via [`EngineConfig::id_gen`][crate::EngineConfig::id_gen] —
+/// `SessionId` staying an opaque `String` newtype is what makes any generator's
+/// output valid. An override keeping the `{tenant}:` convention can reuse
+/// [`IdContext::inherited_prefix`].
 pub trait IdGen: Send + Sync {
-    fn next(&self, kind: IdKind) -> String;
+    fn next(&self, kind: IdKind, ctx: &IdContext<'_>) -> String;
 }
 
 /// The ADR-0164 scheme. Its `(last_second, counter)` state is process-global
@@ -114,10 +171,11 @@ fn next_tick() -> (u64, u16) {
 }
 
 impl IdGen for DefaultIdGen {
-    fn next(&self, kind: IdKind) -> String {
+    fn next(&self, kind: IdKind, ctx: &IdContext<'_>) -> String {
         let (second, counter) = next_tick();
         format!(
-            "{}-{:08x}{:02x}{:03x}",
+            "{}{}-{:08x}{:02x}{:03x}",
+            ctx.inherited_prefix().unwrap_or(""),
             kind.prefix(),
             second,
             process_salt(),
@@ -141,7 +199,7 @@ mod tests {
             (IdKind::Output, 'o'),
             (IdKind::Script, 'x'),
         ] {
-            let id = gen.next(kind);
+            let id = gen.next(kind, &IdContext::default());
             assert_eq!(id.len(), 15, "unexpected length for {id}");
             assert_eq!(id.chars().next(), Some(prefix));
             assert_eq!(id.chars().nth(1), Some('-'));
@@ -157,7 +215,10 @@ mod tests {
         let gen = DefaultIdGen::new();
         let mut seen = HashSet::new();
         for _ in 0..2000 {
-            assert!(seen.insert(gen.next(IdKind::Job)), "minted a duplicate id");
+            assert!(
+                seen.insert(gen.next(IdKind::Job, &IdContext::default())),
+                "minted a duplicate id"
+            );
         }
     }
 
@@ -169,8 +230,8 @@ mod tests {
         let b = DefaultIdGen::new();
         let mut seen = HashSet::new();
         for _ in 0..1000 {
-            assert!(seen.insert(a.next(IdKind::Session)));
-            assert!(seen.insert(b.next(IdKind::Session)));
+            assert!(seen.insert(a.next(IdKind::Session, &IdContext::default())));
+            assert!(seen.insert(b.next(IdKind::Session, &IdContext::default())));
         }
     }
 
@@ -181,7 +242,45 @@ mod tests {
         let gen = DefaultIdGen::new();
         let mut seen = HashSet::new();
         for _ in 0..(COUNTER_MAX as u32 + 10) {
-            assert!(seen.insert(gen.next(IdKind::Request)));
+            assert!(seen.insert(gen.next(IdKind::Request, &IdContext::default())));
+        }
+    }
+
+    #[test]
+    fn children_and_successors_inherit_the_tenant_prefix() {
+        let gen = DefaultIdGen::new();
+        let root = SessionId::new("t1:abc");
+        let child = gen.next(IdKind::Session, &IdContext::child_of(&root));
+        assert!(child.starts_with("t1:s-"), "{child}");
+        assert_eq!(child.len(), "t1:".len() + 15);
+        let successor = gen.next(IdKind::Session, &IdContext::successor_of(&root));
+        assert!(successor.starts_with("t1:s-"), "{successor}");
+    }
+
+    #[test]
+    fn prefix_is_up_to_the_first_colon_and_parent_wins() {
+        let nested = SessionId::new("t1:t2:abc");
+        let other = SessionId::new("t9:xyz");
+        let ctx = IdContext {
+            parent: Some(&nested),
+            predecessor: Some(&other),
+            user: None,
+        };
+        assert_eq!(ctx.inherited_prefix(), Some("t1:"));
+        assert_eq!(
+            IdContext::successor_of(&other).inherited_prefix(),
+            Some("t9:")
+        );
+    }
+
+    #[test]
+    fn unprefixed_or_absent_lineage_keeps_the_plain_format() {
+        let gen = DefaultIdGen::new();
+        let plain = SessionId::new("s-6a708af0a1002");
+        for ctx in [IdContext::default(), IdContext::child_of(&plain)] {
+            let id = gen.next(IdKind::Session, &ctx);
+            assert_eq!(id.len(), 15, "{id}");
+            assert!(id.starts_with("s-"));
         }
     }
 }

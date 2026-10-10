@@ -62,8 +62,8 @@ impl SessionId {
     /// [`Holly::next_id`][crate::Holly::next_id] instead, which goes through
     /// the engine's *configured* generator rather than always the default.
     pub fn new_uuid() -> Self {
-        use crate::id_gen::{DefaultIdGen, IdGen, IdKind};
-        Self(DefaultIdGen::new().next(IdKind::Session))
+        use crate::id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
+        Self(DefaultIdGen::new().next(IdKind::Session, &IdContext::default()))
     }
 }
 
@@ -145,6 +145,11 @@ pub struct SessionInfo {
     pub session: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionId>,
+    /// The session this one succeeds — a compaction fork's source
+    /// (ADR-0205); `None` for an ordinary session. Mirrors
+    /// [`OutEvent::SessionStarted`]'s field (ADR-0211).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor: Option<SessionId>,
     /// Spelled `profile` before ADR-0207; the alias keeps 0.6.0 frames loading (#720).
     #[serde(alias = "profile")]
     pub agent: String,

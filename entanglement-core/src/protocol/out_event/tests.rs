@@ -177,6 +177,7 @@ fn session_list_event_roundtrips() {
             SessionInfo {
                 session: SessionId::new("root"),
                 parent: None,
+                predecessor: None,
                 agent: "build".into(),
                 root: true,
                 user: None,
@@ -184,6 +185,7 @@ fn session_list_event_roundtrips() {
             SessionInfo {
                 session: SessionId::new("child"),
                 parent: Some(SessionId::new("root")),
+                predecessor: None,
                 agent: "explore".into(),
                 root: false,
                 user: None,

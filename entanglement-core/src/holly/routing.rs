@@ -84,6 +84,7 @@ pub(super) fn resume_meta(
         if let OutEvent::SessionStarted {
             session: started,
             parent,
+            predecessor,
             agent,
             root,
             user,
@@ -96,6 +97,7 @@ pub(super) fn resume_meta(
             return SessionInfo {
                 session: session.clone(),
                 parent: parent.clone(),
+                predecessor: predecessor.clone(),
                 agent: agent.clone(),
                 root: *root,
                 user: user.clone(),
@@ -105,6 +107,7 @@ pub(super) fn resume_meta(
     SessionInfo {
         session: session.clone(),
         parent: None,
+        predecessor: None,
         agent: DEFAULT_AGENT.to_string(),
         root: true,
         user: None,

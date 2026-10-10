@@ -624,8 +624,8 @@ keeps applying to compaction whenever no pin is set.
 `EngineConfig.id_gen: Arc<dyn IdGen>` mints every session id, background-job
 id, and runtime-minted request/correlation id — never `Option`, unlike the
 resolver seams above, since there is always a scheme rather than an
-opt-in override. `IdGen::next(kind: IdKind) -> String` defaults to
-`DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
+opt-in override. `IdGen::next(kind: IdKind, ctx: &IdContext) -> String`
+defaults to `DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
 counter>`, 15 characters (`s-`/`j-`/`r-`/`o-`/`x-` for `Session`/`Job`/
 `Request`/`Output`/`Script` — the last per #637,
 [ADR-0185](../adr/0185-rhai-joins-background-and-poll.md)), with a
@@ -641,6 +641,32 @@ and is never run through this — reformatting it broke Gemini (#444).
 mints the `s-` scheme, not a UUID; legacy UUID-form ids coexist indefinitely
 since `SessionId` is an opaque `String` newtype and the two shapes cannot
 collide.
+
+**Lineage context and tenant prefixes** (✅ #722,
+[ADR-0211](../adr/0211-idgen-context-and-tenant-prefix-inheritance.md)). Every
+mint carries a borrowed, `#[non_exhaustive]` `IdContext { parent, predecessor,
+user }` (`IdContext::default()` / `child_of` / `successor_of` / `with_user`).
+`DefaultIdGen` prepends `ctx.inherited_prefix()` — everything up to and
+including the first `:` of the parent's id, else the predecessor's — so a
+sub-agent child (the runtime's `agent` tool, `subagent.rs`, via
+`Holly::next_id_in(kind, &IdContext::child_of(&parent))`) and a compaction
+successor (`session/fork.rs`, `IdContext::successor_of(source)` with the
+source's user) of `t1:s-…` are `t1:s-…` too; an unprefixed lineage mints the
+plain 15-char form. `Holly::next_id_in` fills a missing `user` from the
+lineage's directory entry. Jobs, scripts, retained outputs, request ids and
+fresh roots mint with an empty context. An overriding `IdGen` owns the whole
+format and may reuse `inherited_prefix`.
+
+**`Holly::session_info(&SessionId) -> Option<SessionInfo>`** reads the
+supervisor's live-session directory (`holly/directory.rs`, the same records
+`ListSessions` snapshots, now shared behind a mutex instead of owned by the
+loop): `user`, `parent`, `predecessor`, `agent`, `root`. `Some` from
+registration (before `SessionStarted`) until the supervisor processes the id's
+`CloseSession`/hibernation; `None` for unknown, closed and hibernated ids;
+resume re-registers the same lineage and user from the log's
+`SessionStarted`. It is the race-free ownership read for a resolver handling a
+live session's tool call; event routing should key on the inherited prefix,
+since a session's trailing `SessionEnded` arrives after its entry is gone.
 
 **Stop is cancel-semantics, not destroy** (ADR-0017). `InMsg::Stop` interrupts
 the in-flight turn (the streaming loop *races* it via `tokio::select!` so a

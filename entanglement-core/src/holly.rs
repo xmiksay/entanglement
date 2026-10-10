@@ -13,11 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::id_gen::IdGen;
-use crate::protocol::{InMsg, OutEvent, SessionId};
+use crate::id_gen::{IdContext, IdGen, IdKind};
+use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
 use entanglement_provider::ContentPart;
 
 mod config;
+mod directory;
 mod emit;
 mod outlets;
 mod routing;
@@ -27,6 +28,7 @@ mod unknown_session;
 pub use config::{
     AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
+pub(crate) use directory::SessionDirectory;
 use outlets::Outlets;
 use supervisor::supervisor;
 pub use unknown_session::{SessionLoader, UnknownSession};
@@ -133,6 +135,9 @@ pub struct Holly {
     /// generator the engine itself would use, instead of reaching for a
     /// hardcoded default.
     id_gen: Arc<dyn IdGen>,
+    /// The supervisor's live-session directory, read by
+    /// [`session_info`][Self::session_info] (ADR-0211).
+    directory: SessionDirectory,
 }
 
 impl Holly {
@@ -144,8 +149,10 @@ impl Holly {
         let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
         let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
         let id_gen = cfg.id_gen.clone();
+        let directory = SessionDirectory::default();
         let (supervisor_events, supervisor_inbound) = (events.clone(), inbound.clone());
         let supervisor_seqs = seqs.clone();
+        let supervisor_directory = directory.clone();
         let (outlets, shutdown) = Outlets::new(events, inbound);
         outlets.set_supervisor(tokio::spawn(async move {
             supervisor(
@@ -154,6 +161,7 @@ impl Holly {
                 supervisor_inbound,
                 supervisor_seqs,
                 activity,
+                supervisor_directory,
                 cfg,
                 shutdown,
             )
@@ -164,6 +172,7 @@ impl Holly {
             outlets: Arc::new(outlets),
             seqs,
             id_gen,
+            directory,
         }
     }
 
@@ -181,9 +190,47 @@ impl Holly {
     /// head/embedder to mint a new [`SessionId`], background-job id, or
     /// runtime request/correlation id so it goes through the same generator
     /// (and, for an embedder that overrides it, the same *policy*) the engine
-    /// itself uses internally.
-    pub fn next_id(&self, kind: crate::id_gen::IdKind) -> String {
-        self.id_gen.next(kind)
+    /// itself uses internally. Mints with an empty [`IdContext`] — a fresh
+    /// root, a job, a request id; use [`next_id_in`][Self::next_id_in] for an
+    /// id that belongs to a lineage.
+    pub fn next_id(&self, kind: IdKind) -> String {
+        self.next_id_in(kind, &IdContext::default())
+    }
+
+    /// Mint an id within `ctx` (ADR-0211) — e.g. a sub-agent child via
+    /// [`IdContext::child_of`], so the default generator keeps its parent's
+    /// tenant prefix. When `ctx` names no user, the lineage's owning user is
+    /// filled in from [`session_info`][Self::session_info] (parent first, then
+    /// predecessor), so a caller that only knows the parent still hands a
+    /// custom [`IdGen`] the whole picture.
+    pub fn next_id_in(&self, kind: IdKind, ctx: &IdContext<'_>) -> String {
+        let looked_up = match ctx.user {
+            Some(_) => None,
+            None => [ctx.parent, ctx.predecessor]
+                .into_iter()
+                .flatten()
+                .find_map(|s| self.session_info(s).and_then(|i| i.user)),
+        };
+        let ctx = ctx.with_user(ctx.user.or(looked_up.as_ref()));
+        self.id_gen.next(kind, &ctx)
+    }
+
+    /// The engine's own record of `session` — owning `user`, `parent`,
+    /// compaction `predecessor`, `agent`, whether it is a `root` — read
+    /// synchronously from the supervisor's directory (ADR-0211), so an
+    /// ownership check never races a broadcast watcher.
+    ///
+    /// `Some` from the moment the supervisor registers the session (before its
+    /// `SessionStarted` is broadcast) until it processes the session's
+    /// `CloseSession` or hibernation; `None` for an unknown, closed or
+    /// hibernated id. Resuming a hibernated session (explicitly, or through
+    /// the unknown-session policy, ADR-0210) restores the same lineage and
+    /// user from its log. Event routing should key on the id's tenant prefix
+    /// instead (the default [`IdGen`] guarantees it across the lineage): a
+    /// session's own trailing events such as `SessionEnded` arrive after its
+    /// entry is gone.
+    pub fn session_info(&self, session: &SessionId) -> Option<SessionInfo> {
+        self.directory.get(session)
     }
 
     /// Push an [`InMsg`] into the engine — the **privileged in-process** entry

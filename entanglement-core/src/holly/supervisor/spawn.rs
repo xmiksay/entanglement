@@ -68,12 +68,12 @@ impl Supervisor {
         let inherited_user = parent
             .as_ref()
             .and_then(|p| self.session_meta.get(p))
-            .and_then(|m| m.user.clone())
+            .and_then(|m| m.user)
             .or_else(|| {
                 predecessor
                     .as_ref()
                     .and_then(|p| self.session_meta.get(p))
-                    .and_then(|m| m.user.clone())
+                    .and_then(|m| m.user)
             });
         let effective_user = inherited_user.or_else(|| user.clone());
         // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
@@ -99,16 +99,14 @@ impl Supervisor {
         if let Some(source) = predecessor.as_ref() {
             self.successors.insert(source.clone(), child.clone());
         }
-        self.session_meta.insert(
-            child.clone(),
-            SessionInfo {
-                session: child.clone(),
-                parent: parent.clone(),
-                agent: resolved_agent.name.clone(),
-                root: is_root,
-                user: effective_user.clone(),
-            },
-        );
+        self.session_meta.insert(SessionInfo {
+            session: child.clone(),
+            parent: parent.clone(),
+            predecessor: predecessor.clone(),
+            agent: resolved_agent.name.clone(),
+            root: is_root,
+            user: effective_user.clone(),
+        });
         let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
         let ev = self.events.clone();
         let cfg2 = self.cfg.clone();
@@ -189,16 +187,14 @@ impl Supervisor {
         // keeps the lazy-Prompt path's single-user convenience: an unknown
         // session id auto-creates a blank root under `build`.
         let agent = self.cfg.agents.resolve(DEFAULT_AGENT);
-        self.session_meta.insert(
-            session_id.clone(),
-            SessionInfo {
-                session: session_id.clone(),
-                parent: None,
-                agent: agent.name.clone(),
-                root: true,
-                user: None,
-            },
-        );
+        self.session_meta.insert(SessionInfo {
+            session: session_id.clone(),
+            parent: None,
+            predecessor: None,
+            agent: agent.name.clone(),
+            root: true,
+            user: None,
+        });
         let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
         let ev = self.events.clone();
         let cfg2 = self.cfg.clone();
