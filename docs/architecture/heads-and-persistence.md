@@ -602,8 +602,8 @@ Sessions are event-sourced to disk, one JSONL file per **root** session under
 `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
 ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
 `InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
-`payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped }` (the last
-is a tombstone, below). Logging inbound messages is
+`payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped } | Retired { kind }`
+(a tombstone and a read-only compat marker, both below). Logging inbound messages is
 what makes a session resumable: `Session::replay` reconstructs user turns from
 the logged `InMsg::Prompt` records, so without them a resumed context holds only
 assistant/tool messages and the model appears to forget the conversation.
@@ -767,6 +767,23 @@ assistant/tool messages and the model appears to forget the conversation.
   crash-truncated *tail* line (tolerated with a warning) from *interior*
   corruption (a hole → hard error), and `list_sessions` skips-and-warns per bad
   file instead of aborting the whole enumeration.
+- **Log compatibility — logs from 0.6.0 onward load** (#720). A protocol
+  change never strands a persisted log: a renamed field keeps its old
+  spelling as a `serde(alias)` (`SessionStarted.profile` → `agent`), a removed
+  field is ignored (no protocol type denies unknown fields), and a removed
+  variant's tag is appended to core's `RETIRED_IN_MSG_KINDS`/
+  `RETIRED_OUT_EVENT_KINDS` (`set_agent`, `bash_enable`/`bash_disable`,
+  `bash_changed`). `LogPayload` decodes such a frame as `Retired { kind }` —
+  every consumer skips it and `integrity_gap` does not count it, since it is
+  an intentional retirement, not lost data; any *other* undecodable frame
+  still fails as corruption. The live enums carry no catch-all, so the wire
+  stays strict. Because `LogRecord` is the serde type, an embedder decoding
+  its own rows inherits the same tolerance. `tests/fixtures/v0.6.0-session.jsonl`
+  (recorded by the `v0.6.0` tag) pins it: it must load and resume its parked
+  turn with history intact. The CLI's retired-*agent* refusal
+  (`retired_agent`: a log naming `build`/`explore`/`research` won't resume
+  there) is a separate, deliberate policy; `Holly::resume` itself falls back
+  to the base agent seed for an unknown name.
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status

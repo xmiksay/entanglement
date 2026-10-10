@@ -1,5 +1,6 @@
 use super::listing::FIRST_PROMPT_MAX;
 use super::*;
+use entanglement_core::InMsg;
 
 #[test]
 fn list_sessions_skips_one_bad_file() {

@@ -1,0 +1,57 @@
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"session_started","session":"v060-root","parent":null,"profile":"site-editor","model":null,"root":true,"ts":1791648101697}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"in","kind":"prompt","session":"v060-root","content":[{"type":"text","text":"What does the home page say?"}]}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"idle"}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"agent_changed","session":"v060-root","agent":"site-editor","profile_detail":{"mode":"primary","tools":["read_page","publish_page"],"disallowed_tools":["bash"],"permission":{"rules":[],"default":"allow"}}}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"thinking"}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"text_delta","session":"v060-root","seq":1,"text":"Let me read the home page."}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"usage","session":"v060-root","seq":2,"input_tokens":1200,"output_tokens":40,"cached_input_tokens":600,"cache_write_tokens":0,"cost_usd":null}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"tool_call","session":"v060-root","seq":3,"request_id":"call-1","tool":"read_page","input":"{\"path\":\"home\"}"}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"tool_exec","session":"v060-root","seq":4,"request_id":"call-1","tool":"read_page","input":"{\"path\":\"home\"}","agent":"site-editor"}}
+{"ts":1791648101697,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"working"}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"in","kind":"tool_result","session":"v060-root","request_id":"call-1","content":[{"type":"text","text":"page {\"path\":\"home\"}: Welcome to the site."}]}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"tool_output","session":"v060-root","seq":5,"request_id":"call-1","tool":"read_page","output":"page {\"path\":\"home\"}: Welcome to the site."}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"thinking"}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"text_delta","session":"v060-root","seq":6,"text":"The home page says: Welcome to the site."}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"usage","session":"v060-root","seq":7,"input_tokens":1300,"output_tokens":20,"cached_input_tokens":650,"cache_write_tokens":0,"cost_usd":null}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"done","session":"v060-root","seq":8}}
+{"ts":1791648101698,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"done"}}
+{"ts":1791648101899,"session":"v060-root","payload":{"direction":"in","kind":"set_session_meta","session":"v060-root","name":"Home page review"}}
+{"ts":1791648101899,"session":"v060-root","payload":{"direction":"in","kind":"set_generation","session":"v060-root","overrides":{"temperature":0.3,"max_output_tokens":null,"thinking_budget_tokens":null,"reasoning_effort":"high"}}}
+{"ts":1791648101899,"session":"v060-root","payload":{"direction":"out","kind":"session_meta_changed","session":"v060-root","name":"Home page review"}}
+{"ts":1791648101899,"session":"v060-root","payload":{"direction":"out","kind":"generation_changed","session":"v060-root","generation":{"temperature":0.3,"max_output_tokens":null,"thinking_budget_tokens":null,"reasoning_effort":"high"}}}
+{"ts":1791648102100,"session":"v060-root","payload":{"direction":"in","kind":"set_agent","session":"v060-root","agent":"plan"}}
+{"ts":1791648102100,"session":"v060-root","payload":{"direction":"out","kind":"agent_changed","session":"v060-root","agent":"plan","profile_detail":{"mode":"primary","tools":["read","glob","grep","agent","agent_spawn","agent_poll","ask_user","load_skill","propose_plan","write","edit","call","bash"],"permission":{"rules":[["call","deny"],["rhai","deny"],["read","allow"],["grep","allow"],["glob","allow"],["edit","deny"],["write","deny"],["apply_patch","deny"],["edit(.entanglement/plans/*.md)","allow"],["write(.entanglement/plans/*.md)","allow"],["apply_patch(.entanglement/plans/*.md)","allow"],["call(*)","ask"],["bash(*)","ask"]],"default":"ask"}}}}
+{"ts":1791648102302,"session":"v060-root","payload":{"direction":"in","kind":"set_agent","session":"v060-root","agent":"site-editor"}}
+{"ts":1791648102302,"session":"v060-root","payload":{"direction":"out","kind":"agent_changed","session":"v060-root","agent":"site-editor","profile_detail":{"mode":"primary","tools":["read_page","publish_page"],"disallowed_tools":["bash"],"permission":{"rules":[],"default":"allow"}}}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"in","kind":"bash_enable","grade":{"kind":"ask"}}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"out","kind":"bash_changed","enabled":true,"grade":{"kind":"ask"}}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"in","kind":"bash_disable"}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"out","kind":"bash_changed","enabled":false}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"in","kind":"set_tool_overlay","session":"v060-root","entries":[{"pattern":"bash","deny":true}]}}
+{"ts":1791648102503,"session":"v060-root","payload":{"direction":"out","kind":"tool_overlay_changed","session":"v060-root","entries":[{"pattern":"bash","deny":true}]}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"session_started","session":"v060-child","parent":"v060-root","profile":"explore","model":null,"root":false,"ts":1791648102704}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"in","kind":"prompt","session":"v060-child","content":[{"type":"text","text":"Find the footer links."}]}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"status","session":"v060-child","state":"idle"}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"agent_changed","session":"v060-child","agent":"explore","profile_detail":{"mode":"subagent","tools":["read","glob","grep","call","bash","rhai"],"permission":{"rules":[["call","ask"],["rhai","ask"],["read","allow"],["grep","allow"],["glob","allow"],["glob","allow"],["grep","allow"],["bash","ask"],["bash","ask"],["rhai","ask"]],"default":"deny"}}}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"status","session":"v060-child","state":"thinking"}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"text_delta","session":"v060-child","seq":1,"text":"The footer links to /about and /contact."}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"usage","session":"v060-child","seq":2,"input_tokens":800,"output_tokens":15,"cached_input_tokens":400,"cache_write_tokens":0,"cost_usd":null}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"done","session":"v060-child","seq":3}}
+{"ts":1791648102705,"session":"v060-child","payload":{"direction":"out","kind":"status","session":"v060-child","state":"done"}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"in","kind":"oneshot","session":"v060-root","op":"compact","args":null}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"thinking"}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"out","kind":"compacted","session":"v060-root","seq":9,"summary":"Summary: the user asked about the home page; it says Welcome to the site.","kept":0,"auto":false}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"out","kind":"usage","session":"v060-root","seq":10,"input_tokens":1400,"output_tokens":30,"cached_input_tokens":700,"cache_write_tokens":0,"cost_usd":null}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"out","kind":"done","session":"v060-root","seq":11}}
+{"ts":1791648102906,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"done"}}
+{"ts":1791648103107,"session":"v060-root","payload":{"direction":"in","kind":"prompt","session":"v060-root","content":[{"type":"text","text":"Publish the draft."}]}}
+{"ts":1791648103107,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"thinking"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"text_delta","session":"v060-root","seq":12,"text":"Reading the draft, then publishing it."}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"usage","session":"v060-root","seq":13,"input_tokens":1500,"output_tokens":60,"cached_input_tokens":750,"cache_write_tokens":0,"cost_usd":null}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"tool_call","session":"v060-root","seq":14,"request_id":"call-2","tool":"read_page","input":"{\"path\":\"draft\"}"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"tool_exec","session":"v060-root","seq":15,"request_id":"call-2","tool":"read_page","input":"{\"path\":\"draft\"}","agent":"site-editor"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"tool_call","session":"v060-root","seq":16,"request_id":"call-3","tool":"publish_page","input":"{\"path\":\"draft\"}"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"tool_exec","session":"v060-root","seq":17,"request_id":"call-3","tool":"publish_page","input":"{\"path\":\"draft\"}","agent":"site-editor"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"status","session":"v060-root","state":"working"}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"in","kind":"tool_result","session":"v060-root","request_id":"call-2","content":[{"type":"text","text":"page {\"path\":\"draft\"}: Welcome to the site."}]}}
+{"ts":1791648103108,"session":"v060-root","payload":{"direction":"out","kind":"tool_output","session":"v060-root","seq":18,"request_id":"call-2","tool":"read_page","output":"page {\"path\":\"draft\"}: Welcome to the site."}}

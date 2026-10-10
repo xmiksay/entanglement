@@ -58,5 +58,5 @@ pub use protocol::{
     McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus, OperationInfo, OperationKind,
     OperationStatus, OutEvent, PendingQuestion, Permission, PermissionProfile, Question,
     QuestionOption, Questions, SessionId, SessionInfo, ToolEnvelope, ToolOverlayEntry,
-    UsagePurpose,
+    UsagePurpose, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
 };

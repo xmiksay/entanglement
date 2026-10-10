@@ -1,4 +1,5 @@
 use super::*;
+use entanglement_core::InMsg;
 
 #[test]
 fn base_dir_returns_data_dir_entanglement_sessions() {

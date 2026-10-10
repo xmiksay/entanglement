@@ -31,6 +31,9 @@ pub fn pair_records(records: &[LogRecord]) -> Vec<(Option<InMsg>, OutEvent)> {
             // `integrity_gap` and refuse before reaching here; this arm only
             // keeps pairing total-ordered if a caller pairs a gapped log anyway.
             LogPayload::Gap { .. } => {}
+            // A retired frame (#720) is no hole: the engine it drove no longer
+            // has the state it changed, so there is nothing to pair or replay.
+            LogPayload::Retired { .. } => {}
         }
     }
     paired

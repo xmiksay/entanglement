@@ -45,6 +45,7 @@ mod invoke_envelope;
 mod invoke_schema_violation;
 mod list_operations;
 mod load_skill;
+mod log_compat_v060;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]

@@ -43,6 +43,8 @@ pub enum OutEvent {
         /// interactive session is closed once the successor starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         predecessor: Option<SessionId>,
+        /// Spelled `profile` before ADR-0207; the alias keeps 0.6.0 logs loading (#720).
+        #[serde(alias = "profile")]
         agent: String,
         model: Option<String>,
         root: bool,

@@ -256,6 +256,8 @@ impl SessionRegistry {
                 // A gap tombstone carries no transcript content. Resume refuses a
                 // gapped log upstream, so this only guards a stray restore.
                 LogPayload::Gap { .. } => {}
+                // A retired frame (#720) predates anything the transcript renders.
+                LogPayload::Retired { .. } => {}
             }
         }
 
