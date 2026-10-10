@@ -365,3 +365,18 @@ pub enum RetryError {
 
 #[cfg(test)]
 mod tests;
+
+/// A pool client with cross-process endpoint state disabled (#743): a unit
+/// test must never touch the developer's real endpoint-state dir. Tests that
+/// exercise the shared gate itself inject a temp `SharedStateLocation::Dir`.
+#[cfg(test)]
+pub(crate) fn test_http_client() -> HttpClient {
+    test_http_client_with(RetryConfig::default())
+}
+
+/// [`test_http_client`] with a custom [`RetryConfig`].
+#[cfg(test)]
+pub(crate) fn test_http_client_with(config: RetryConfig) -> HttpClient {
+    HttpClient::with_shared_state(SharedStateLocation::Disabled, config)
+        .expect("reqwest client builds in tests")
+}

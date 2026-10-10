@@ -104,20 +104,19 @@ impl SharedStateLocation {
     }
 }
 
-#[cfg(not(test))]
 fn default_state_dir() -> Option<PathBuf> {
+    // Guard (#743): a unit test reaching the real data dir would read and
+    // write the developer's live endpoint state and race every other test
+    // doing the same — fail it loudly so the test injects a location instead.
+    // `cfg!` (not `#[cfg]` items) keeps this out of the file-cap gate's
+    // first-`#[cfg(test)]`-marker cut-off.
+    if cfg!(test) {
+        panic!(
+            "test resolved the real shared endpoint-state dir; build the client with \
+             HttpClient::with_shared_state and an explicit SharedStateLocation"
+        );
+    }
     dirs::data_dir().map(|d| d.join("entanglement").join("endpoints"))
-}
-
-/// Guard (#743): a unit test reaching the real data dir would read and write
-/// the developer's live endpoint state and race every other test doing the
-/// same — fail it loudly so the test injects a `SharedStateLocation` instead.
-#[cfg(test)]
-fn default_state_dir() -> Option<PathBuf> {
-    panic!(
-        "test resolved the real shared endpoint-state dir; build the client with \
-         HttpClient::with_shared_state and an explicit SharedStateLocation"
-    )
 }
 
 /// One endpoint's cross-process gate. Cheap to hold — the real state lives in
