@@ -50,7 +50,14 @@ That last point fixes the gates' original defect: they piped `cargo tree` throug
 `2>/dev/null` and never checked its exit status, so a *failed* `cargo tree`
 grepped clean and passed **vacuously**. `make test-gates` runs
 [`scripts/dep-gate.test.sh`](../../scripts/dep-gate.test.sh), a stubbed-`cargo`
-self-test that pins the vacuous-pass fix. `cargo-deny` bans (ADR-0006's stated
+self-test that pins the vacuous-pass fix (plus the `userid` and `file-cap`
+gates' self-tests). It runs twice — default tools, then `POSIXLY_CORRECT=1`
+(strict POSIX bash/grep/find/gawk), plus `AWK=mawk` when installed — and CI
+runs it as its own step, so a gate leaning on a GNU extension fails loudly
+(#770: `userid-gate.sh`'s trailing GNU-only `--include` became a filename
+operand under strict POSIX, grep's error exit read as "no match", and the gate
+passed vacuously; it is now POSIX `find` + `grep` with grep errors fatal).
+`cargo-deny` bans (ADR-0006's stated
 future) were considered but **not** adopted: they evaluate the whole workspace
 graph and can't scope a rule to one crate's subtree, so they cannot express
 "forbidden in core but fine in runtime" (`clap`/`crossterm`/`ratatui` live

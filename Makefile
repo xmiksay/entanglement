@@ -109,10 +109,18 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 	$(CARGO) clippy -p entanglement-runtime --no-default-features --all-targets -- -D warnings
 
 # Self-test for the shared dep-gate mechanism (stubbed cargo; proves the #207
-# vacuous-pass fix). Fast, no build — kept out of `verify` (the real gates cover
-# CI) but available on demand.
-test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests)
+# vacuous-pass fix). Fast, no build — kept out of `verify` (CI runs it as its
+# own step). Runs twice: with the default tools, then under POSIXLY_CORRECT=1
+# (strict POSIX bash/grep/find/gawk), so a gate leaning on a GNU extension
+# fails here instead of silently on another platform (#770). If `mawk` is
+# installed the file-cap counter also runs under it (CI ubuntu's default awk).
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests), default + strict POSIX
 	@sh scripts/dep-gate.test.sh
+	@echo '--- strict POSIX (POSIXLY_CORRECT=1) ---'
+	@POSIXLY_CORRECT=1 sh scripts/dep-gate.test.sh
+	@if command -v mawk >/dev/null 2>&1; then \
+		echo '--- AWK=mawk ---'; AWK=mawk sh scripts/dep-gate.test.sh; \
+	else echo '--- mawk not installed; skipping the AWK=mawk run ---'; fi
 
 # 400-line file cap (AGENTS.md; issue #451). Grandfathered violations live in
 # scripts/file-cap-allowlist.txt, which must shrink as files get split — the

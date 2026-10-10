@@ -19,6 +19,7 @@
 # shrink as files get split instead of silently going stale.
 #
 # Usage: file-cap-gate.sh [allowlist-file]  (default: scripts/file-cap-allowlist.txt)
+# `AWK` overrides the awk binary (e.g. `AWK=mawk`; `make test-gates` uses it).
 set -eu
 
 CAP=400
@@ -33,7 +34,7 @@ counter="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/file-cap-count.awk"
 
 # Lines outside the file's `#[cfg(test)]`-gated module(s); see the awk file.
 code_lines() {
-	awk -f "$counter" "$1"
+	${AWK:-awk} -f "$counter" "$1"
 }
 
 is_allowlisted() {
