@@ -247,7 +247,7 @@ on `Agent` to overlay, so its `resolver(...)` builds the
 `GenerationResolver` closure directly instead. The TUI `/set`/`/show` surface
 and its persist-on-confirmation write to that store (#376,
 [ADR-0095](../adr/0095-tui-set-show-generation-persist-on-confirmation.md))
-mirror the `/model` picker's own persist-on-confirmation logic (`tui/app/pickers.rs`).
+mirror the `/model` picker's own persist-on-confirmation logic (`tui/app/model_picker.rs`).
 
 Setup errors (the initial `stream()` call)
 surface as `Error` + `Done` with no partial to commit. A **mid-stream** failure
@@ -401,7 +401,7 @@ both rounds' `TextDelta`s into one assistant message and dropping the nudge; a
 resumed session then continues from the history the live model actually saw
 (the load-bearing "event log is the persistence seam" invariant, ADR-0061).
 Its non-delta arrival also delimits the re-streamed text, so a head (the TUI
-transcript, `subagent.rs`'s answer collector) starts a fresh segment rather
+transcript, `subagent/answer.rs`'s answer collector) starts a fresh segment rather
 than concatenating consecutive rounds. **(2) An *empty* ambiguous round commits
 nothing** — a stream that died before any text would otherwise push
 `content: []`, which the strict clients (`anthropic/request.rs`,
@@ -941,7 +941,7 @@ the model revises and re-proposes in the same turn.
 [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)). The model calls
 `rhai { script, timeout? }` to run multi-step logic in one call — the sanctioned
 replacement for shelling out to `python3`/`node`. The engine
-(`script.rs`, `rhai::Engine::new_raw()` + the IO-free `StandardPackage`) has **no**
+(`script/bindings.rs`, `rhai::Engine::new_raw()` + the IO-free `StandardPackage`) has **no**
 filesystem/network/process/env access and **no module resolver** (so `import`
 can't escape); `eval` is disabled. It is resource-bounded by construction:
 `max_operations`, `max_call_levels`, string/array/map size caps, and a wall-clock
