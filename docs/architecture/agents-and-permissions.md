@@ -414,8 +414,14 @@ below realize one model:
   and skipped ([ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
   `build`, `explore` and `research` are **retired as agent names** — their
   postures are permission modes now, not personas — so a session log naming
-  one of them resumes under `general` with a one-line note
-  ([ADR-0214](../adr/0214-retired-agent-logs-resume-as-general.md), see
+  one of them (and absent from the catalog) resumes, per session, under the
+  last catalog-known agent its log named, else `general`, with a one-line
+  note; a retired `explore`/`research` session stays read-only, resuming in
+  `research` mode unless `--mode` is explicit, and that narrowing rides the
+  replay so a re-offered call is already graded under it
+  ([ADR-0214](../adr/0214-retired-agent-logs-resume-as-general.md), amended
+  by [ADR-0215](../adr/0215-resume-fallback-per-session-and-read-only-narrowing.md);
+  [ADR-0216](../adr/0216-resume-modes-ride-the-replay.md); see
   [heads & persistence](heads-and-persistence.md)); `general` (the `build`
   body, unchanged, now the default and default spawn target) and `debug`
   (the fix-and-verify persona; what it may run is the session's mode) are

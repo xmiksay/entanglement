@@ -81,14 +81,16 @@ longest matching key wins:
 
 - `research` — read-only Q&A: `read` allowed, `write` and `plan` denied, a
   curated read-only shell set allowed, everything else asks.
-- `plan` — like `research`, but `propose_plan` is allowed and `write`/`edit`
-  succeed only under `.entanglement/plans/` (ADR-0142/ADR-0145).
+- `plan` — like `research`, but `propose_plan` is allowed and only the
+  `write` tool may create `.entanglement/plans/*.md`; `edit` and every other
+  write is denied (ADR-0142/ADR-0145).
 - `build` (the default) — `read`/`write`/`exec` allowed outright, bar a short
   destructive-command deny list (`rm -rf /`, `git push --force`,
   `git reset --hard`, …) and a publishing list that asks (`git push`,
   `gh pr create`, `cargo publish`, …).
-- `auto` — the unattended posture: read/write and `cargo`/`make` allowed,
-  publishing and destructive commands denied outright, anything else is
+- `auto` — the unattended posture: read/write, `cargo`/`make` and the same
+  curated read-only shell set as `research` allowed, publishing and
+  destructive commands denied outright, anything else is
   refused once and parks a bounded (60s) approval on an identical retry
   ([ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
 
