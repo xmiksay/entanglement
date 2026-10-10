@@ -18,20 +18,19 @@ use tokio::net::{TcpListener, TcpStream};
 use entanglement_provider::oauth::AccessTokenSource;
 use entanglement_provider::{
     fixed_thinking_spec, AnthropicLlm, GeminiLlm, HttpClient, Llm, LlmRequest, OpenAiLlm,
-    RetryConfig, ThinkingSpec,
+    RetryConfig, SharedStateLocation, ThinkingSpec,
 };
 
 fn test_http_client() -> HttpClient {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-    });
     // Unpaced + single-attempt ladder: the 401 is a *non-retryable* status for
     // the pool, so only the wire's own forced-refresh loop may retry it.
-    HttpClient::with_config(RetryConfig {
-        rpm: 1_000_000,
-        ..RetryConfig::default()
-    })
+    HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            rpm: 1_000_000,
+            ..RetryConfig::default()
+        },
+    )
     .unwrap()
 }
 

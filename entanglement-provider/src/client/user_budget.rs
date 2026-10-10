@@ -143,7 +143,7 @@ impl super::HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::HttpClient;
+    use crate::client::{HttpClient, RetryConfig, SharedStateLocation};
 
     fn budget(user: &str, rpm: Option<u32>, concurrency: Option<usize>) -> UserBudget {
         UserBudget {
@@ -155,7 +155,9 @@ mod tests {
 
     #[tokio::test]
     async fn user_slot_bounds_in_flight_per_user() {
-        let http = HttpClient::new().unwrap();
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let endpoint = http.endpoint("ep", None, Some(10));
         let slot = endpoint.user_slot(&budget("alice", None, Some(1)));
         let _held = slot.acquire().await;
@@ -169,7 +171,9 @@ mod tests {
 
     #[tokio::test]
     async fn user_slot_is_independent_across_users_on_the_same_endpoint() {
-        let http = HttpClient::new().unwrap();
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let endpoint = http.endpoint("ep", None, Some(10));
         let alice = endpoint.user_slot(&budget("alice", None, Some(1)));
         let bob = endpoint.user_slot(&budget("bob", None, Some(1)));
@@ -185,7 +189,9 @@ mod tests {
 
     #[test]
     fn user_slot_is_stable_while_the_budget_agrees() {
-        let http = HttpClient::new().unwrap();
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let endpoint = http.endpoint("ep", None, Some(10));
         let a1 = endpoint.user_slot(&budget("alice", Some(5), Some(2)));
         let a2 = endpoint.user_slot(&budget("alice", Some(5), Some(2)));
@@ -194,7 +200,9 @@ mod tests {
 
     #[test]
     fn user_slot_corrects_a_changed_budget_instead_of_latching_it_forever() {
-        let http = HttpClient::new().unwrap();
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let endpoint = http.endpoint("ep", None, Some(10));
         let wrong = endpoint.user_slot(&budget("alice", None, Some(5)));
         assert_eq!(wrong.concurrency, Some(5));
@@ -207,7 +215,9 @@ mod tests {
 
     #[test]
     fn a_user_with_no_budget_carries_no_gate() {
-        let http = HttpClient::new().unwrap();
+        let http =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let endpoint = http.endpoint("ep", None, Some(10));
         let slot = endpoint.user_slot(&budget("alice", None, None));
         assert!(slot.semaphore.is_none());
@@ -220,7 +230,9 @@ mod tests {
         // must still resolve to the *same* `EndpointState` for a shared pool
         // key — the whole point is layering a gate on top of one shared
         // endpoint, not forking a separate pool per user.
-        let base = HttpClient::new().unwrap();
+        let base =
+            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+                .unwrap();
         let alice_http = base.with_user_budget(budget("alice", None, Some(1)));
         let bob_http = base.with_user_budget(budget("bob", None, Some(1)));
         let ep_a = alice_http.endpoint("shared", None, Some(3));

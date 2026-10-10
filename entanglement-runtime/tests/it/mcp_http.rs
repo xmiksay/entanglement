@@ -32,24 +32,19 @@ const SESSION_ID: &str = "sess-abc123";
 const TOKEN: &str = "Bearer sekret-token";
 
 /// Every test here now drives its MCP calls through the shared endpoint pool
-/// (#559), which — without this — would write real `.state`/`.lock` files
-/// into the developer's actual `${data_dir}/entanglement/endpoints/`
-/// (mirrors `entanglement-provider/tests/streaming.rs`'s isolation guard).
-fn ensure_shared_state_disabled() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-    });
-}
-
+/// (#559) — shared state is disabled per client (#743) so nothing writes real
+/// `.state`/`.lock` files into `${data_dir}/entanglement/endpoints/`.
 fn test_http_client() -> PoolHttpClient {
-    ensure_shared_state_disabled();
-    PoolHttpClient::new().unwrap()
+    PoolHttpClient::with_shared_state(
+        entanglement_core::SharedStateLocation::Disabled,
+        entanglement_core::RetryConfig::default(),
+    )
+    .unwrap()
 }
 
 fn test_http_client_with(config: RetryConfig) -> PoolHttpClient {
-    ensure_shared_state_disabled();
-    PoolHttpClient::with_config(config).unwrap()
+    PoolHttpClient::with_shared_state(entanglement_core::SharedStateLocation::Disabled, config)
+        .unwrap()
 }
 
 /// The `initialize` reply carries the session id; `tools/list` answers over SSE;

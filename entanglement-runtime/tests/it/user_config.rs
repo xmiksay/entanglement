@@ -11,6 +11,9 @@ fn inspect_config(cwd: &std::path::Path, user_config: &std::path::Path) -> std::
         .args(["inspect", "config"])
         .current_dir(cwd)
         .env("ENTANGLEMENT_CONFIG_FILE", user_config)
+        // Child-only env (#743): keep the spawned binary off the real shared
+        // endpoint-state dir.
+        .env("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1")
         .output()
         .expect("failed to spawn skutter")
 }

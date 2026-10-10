@@ -152,7 +152,7 @@ mod tests {
             Arc::new(AvailableMcp::default()),
             &registry,
             Arc::new(Mutex::new(HashMap::new())),
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
         );
         (tool, registry)
     }

@@ -455,7 +455,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
         );
 
         holly
@@ -496,7 +496,7 @@ mod tests {
             configs,
             Arc::new(AvailableMcp::default()),
             Vec::new(),
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
         );
 
         holly
@@ -567,7 +567,7 @@ mod tests {
             configs,
             avail.clone(),
             Vec::new(),
-            entanglement_core::HttpClient::new().unwrap(),
+            crate::test_http_client(),
         );
 
         let parent = entanglement_core::SessionId::new("630-parent");

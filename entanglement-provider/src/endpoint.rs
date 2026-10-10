@@ -150,18 +150,12 @@ fn truncate(text: String) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{RetryConfig, SharedStateLocation};
     use std::io::{Read, Write};
 
-    fn ensure_shared_state_disabled() {
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            std::env::set_var("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1");
-        });
-    }
-
     fn test_http_client() -> HttpClient {
-        ensure_shared_state_disabled();
-        HttpClient::new().unwrap()
+        HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+            .unwrap()
     }
 
     /// Spawn a one-shot raw-socket server answering exactly one connection

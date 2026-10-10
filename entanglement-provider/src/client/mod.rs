@@ -98,7 +98,7 @@ mod status;
 mod stream;
 mod user_budget;
 pub use backoff::extract_retry_after_from_response;
-pub use shared_state::prune_stale;
+pub use shared_state::{prune_stale, SharedStateLocation};
 pub use status::ThrottleStatus;
 pub use stream::{log_request_body, spawn_byte_stream};
 pub use user_budget::UserBudget;
@@ -296,10 +296,25 @@ impl HttpClient {
         Self::with_config(RetryConfig::default())
     }
 
-    /// Create a shared HTTP client with a custom per-endpoint [`RetryConfig`].
+    /// Create a shared HTTP client with a custom per-endpoint [`RetryConfig`],
+    /// its cross-process endpoint state resolved from the environment
+    /// ([`SharedStateLocation::from_env`]).
     ///
     /// See [`HttpClient::new`] for why this is fallible.
     pub fn with_config(config: RetryConfig) -> anyhow::Result<Self> {
+        Self::with_shared_state(SharedStateLocation::from_env(), config)
+    }
+
+    /// Create a shared HTTP client whose cross-process endpoint state
+    /// (ADR-0144) lives at an explicit `shared` location instead of the
+    /// env-resolved one — a per-test temp dir, `Disabled`, or an embedder's
+    /// own directory (#743).
+    ///
+    /// See [`HttpClient::new`] for why this is fallible.
+    pub fn with_shared_state(
+        shared: SharedStateLocation,
+        config: RetryConfig,
+    ) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
@@ -311,6 +326,7 @@ impl HttpClient {
             pool: Arc::new(EndpointPool {
                 endpoints: Mutex::new(HashMap::new()),
                 config,
+                shared,
             }),
             user_budget: None,
         })

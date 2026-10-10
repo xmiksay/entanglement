@@ -14,12 +14,15 @@ use super::*;
 
 #[test]
 fn test_new_http_client() {
-    let _client = HttpClient::new().unwrap();
+    let _client =
+        HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+            .unwrap();
 }
 
 #[test]
 fn endpoints_are_isolated_and_stable_by_key() {
-    let http = HttpClient::new().unwrap();
+    let http = HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+        .unwrap();
     let a1 = http.endpoint("https://api.a/v1", None, None);
     let a2 = http.endpoint("https://api.a/v1", None, None);
     let b = http.endpoint("https://api.b/v1", None, None);
@@ -30,7 +33,8 @@ fn endpoints_are_isolated_and_stable_by_key() {
 
 #[test]
 fn endpoint_uses_provided_rpm_budget() {
-    let http = HttpClient::new().unwrap();
+    let http = HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
+        .unwrap();
     // A per-provider rpm sets the pacing gate's base interval (60s / rpm);
     // `None` falls back to the pool default (RetryConfig::rpm).
     let custom = http.endpoint("https://api.custom/v1", Some(6), None);
@@ -44,15 +48,18 @@ fn endpoint_uses_provided_rpm_budget() {
 
 #[test]
 fn endpoint_concurrency_permits_match_config() {
-    let http = HttpClient::with_config(RetryConfig {
-        concurrency: 2,
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            concurrency: 2,
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
     let ep = http.endpoint("https://api.x/v1", None, None);
     // The in-flight cap is seeded from config; the default is DEFAULT_CONCURRENCY.
     assert_eq!(ep.concurrency.available_permits(), 2);
-    let dflt = HttpClient::new()
+    let dflt = HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
         .unwrap()
         .endpoint("https://api.y/v1", None, None);
     assert_eq!(dflt.concurrency.available_permits(), DEFAULT_CONCURRENCY);
@@ -60,10 +67,13 @@ fn endpoint_concurrency_permits_match_config() {
 
 #[test]
 fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
-    let http = HttpClient::with_config(RetryConfig {
-        concurrency: 2,
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            concurrency: 2,
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
     // A per-provider concurrency override wins over the pool-wide default.
     let custom = http.endpoint("https://api.custom/v1", None, Some(5));
@@ -76,7 +86,7 @@ fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
 async fn endpoint_concurrency_bounds_in_flight() {
     // With a cap of 1, a second owned permit can't be taken until the first
     // is dropped — the property that serializes a spawn-storm.
-    let ep = EndpointState::new(RPM_LIMIT, 1, "test");
+    let ep = EndpointState::new(RPM_LIMIT, 1, "test", &SharedStateLocation::Disabled);
     let first = ep.concurrency.clone().acquire_owned().await.unwrap();
     assert!(ep.concurrency.clone().try_acquire_owned().is_err());
     drop(first);
@@ -89,7 +99,12 @@ async fn model_slot_bounds_in_flight_per_model() {
     // that same model can't be taken until the first is dropped — the property
     // that serializes calls to a model z.ai only allows one in-flight for
     // (#521).
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let ep = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     let slot = ep.model_slot("glm-4.7-flash", 1);
     let first = slot.semaphore.clone().acquire_owned().await.unwrap();
     assert!(slot.semaphore.clone().try_acquire_owned().is_err());
@@ -102,7 +117,12 @@ async fn model_slot_is_independent_across_models_on_the_same_endpoint() {
     // GLM-5.2 (cap 5) and GLM-4.7-Flash (cap 1) share one endpoint but must
     // meter independently — one saturated model must never block another
     // (#521): the mixed-model scenario ADR-0140 exists to fix.
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let ep = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     let flash = ep.model_slot("glm-4.7-flash", 1);
     let glm52 = ep.model_slot("glm-5.2", 5);
     let _flash_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
@@ -125,7 +145,7 @@ async fn model_permit_blocked_never_holds_the_endpoint_permit_hostage() {
     // the endpoint of admission, even with room to spare.
     use futures::FutureExt;
 
-    let ep = EndpointState::new(RPM_LIMIT, 2, "test");
+    let ep = EndpointState::new(RPM_LIMIT, 2, "test", &SharedStateLocation::Disabled);
     let flash = ep.model_slot("glm-4.7-flash", 1);
 
     // One in-flight Flash call: holds both its model permit and one of the
@@ -167,24 +187,17 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
     // must not sit holding one of the 3 shared leases, or it starves sibling
     // `skutter` processes sharing the same endpoint+key even though this
     // process has sent nothing.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let dir = tempfile::tempdir().expect("tempdir");
     let key = "https://api.example/v1#shared-lease-test";
-    let (http, ep) = {
-        // Held only across the env var + endpoint construction, never across
-        // an `.await` (`clippy::await_holding_lock`) — the shared-state dir
-        // is only read here, at `SharedGate::new` time.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var("ENTANGLEMENT_SHARED_STATE_DIR", dir.path());
-        let http = HttpClient::with_config(RetryConfig {
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Dir(dir.path().to_path_buf()),
+        RetryConfig {
             concurrency: 3,
             ..RetryConfig::default()
-        })
-        .unwrap();
-        let ep = http.endpoint(key, None, Some(3));
-        std::env::remove_var("ENTANGLEMENT_SHARED_STATE_DIR");
-        (http, ep)
-    };
+        },
+    )
+    .unwrap();
+    let ep = http.endpoint(key, None, Some(3));
 
     // Simulate one in-flight Flash call already holding the model's only permit.
     let model_slot = ep.model_slot("glm-4.7-flash", 1);
@@ -222,9 +235,9 @@ async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
     // the blocked caller holds none of it. Bounded by a timeout: under the
     // pre-fix ordering this would hang forever (the blocked caller holds one
     // of the 3 leases and never releases it).
-    let sibling_deadline = Instant::now() + Duration::from_secs(2);
+    let sibling_deadline = Instant::now() + Duration::from_secs(10);
     let siblings = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         futures::future::join_all(
             (0..3).map(|_| ep.shared.acquire(RPM_LIMIT, 3, sibling_deadline)),
         ),
@@ -247,7 +260,7 @@ fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
     // A model cap wider than its endpoint's own is a likely misconfiguration
     // (the narrower endpoint cap binds first, so the model cap can never
     // actually be reached) but must warn, not refuse to build the slot.
-    let ep = EndpointState::new(RPM_LIMIT, 2, "test");
+    let ep = EndpointState::new(RPM_LIMIT, 2, "test", &SharedStateLocation::Disabled);
     let slot = ep.model_slot("glm-5.2", 10);
     assert_eq!(slot.cap, 10);
     assert_eq!(slot.semaphore.available_permits(), 10);
@@ -255,7 +268,12 @@ fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
 
 #[test]
 fn model_slot_is_stable_by_model_id_while_the_cap_agrees() {
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let ep = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     let a1 = ep.model_slot("glm-5.2", 5);
     let a2 = ep.model_slot("glm-5.2", 5);
     // Same model id, same cap → the same slot (and thus the same live
@@ -273,7 +291,12 @@ fn model_slot_corrects_a_stale_cap_instead_of_latching_it_forever() {
     // #550: a wrong cap reaching `model_slot` first (e.g. resolved against the
     // wrong model before the per-request fix) must not stick for the rest of
     // the process — a later, correct caller has to be able to fix it.
-    let ep = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let ep = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     let wrong = ep.model_slot("glm-4.7-flash", 5);
     assert_eq!(wrong.cap, 5);
     let corrected = ep.model_slot("glm-4.7-flash", 1);
@@ -392,7 +415,12 @@ fn pool_key_is_stable_across_calls_within_and_across_processes() {
 
 #[test]
 fn retry_after_window_extends_never_shrinks() {
-    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let state = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     state.set_retry_after(Duration::from_secs(10));
     let long = state.retry_after.lock().unwrap().unwrap();
     // A shorter window must not overwrite a longer one.
@@ -407,7 +435,12 @@ fn retry_after_window_extends_never_shrinks() {
 async fn wait_for_retry_after_gives_up_when_the_cool_down_exceeds_the_deadline() {
     // #547: a caller must never sleep past its own `rate_limit_max_elapsed`
     // budget, regardless of how far out the endpoint's cool-down is.
-    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let state = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     state.set_retry_after(Duration::from_secs(3600));
     let deadline = Instant::now() + Duration::from_millis(50);
     let result = tokio::time::timeout(
@@ -421,7 +454,12 @@ async fn wait_for_retry_after_gives_up_when_the_cool_down_exceeds_the_deadline()
 
 #[tokio::test]
 async fn wait_for_retry_after_waits_normally_within_the_deadline() {
-    let state = EndpointState::new(RPM_LIMIT, DEFAULT_CONCURRENCY, "test");
+    let state = EndpointState::new(
+        RPM_LIMIT,
+        DEFAULT_CONCURRENCY,
+        "test",
+        &SharedStateLocation::Disabled,
+    );
     state.set_retry_after(Duration::from_millis(20));
     let deadline = Instant::now() + Duration::from_secs(5);
     let result = state.wait_for_retry_after(deadline).await;
@@ -487,17 +525,21 @@ async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
     let addr = listener.local_addr().expect("local addr");
     std::thread::spawn(move || {
         // First connection: accept, drain the request, then hold the socket
-        // open and silent — never write headers. Handled on its own thread so
-        // it can't block accepting the retry's connection below.
-        if let Ok((mut sock, _)) = listener.accept() {
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                let _ = sock.read(&mut buf);
-                std::thread::sleep(Duration::from_secs(3));
-            });
-        }
-        // Second connection (the retry): reply normally.
-        if let Ok((mut sock, _)) = listener.accept() {
+        // open and silent — never write headers. Held far longer than the
+        // test can take, so a slow host can't turn the silence into an EOF
+        // (a different, non-header-timeout failure). Every later connection
+        // (the retries) replies normally, so a retry that itself ran slow
+        // under load still lands on a live server.
+        let mut first = true;
+        while let Ok((mut sock, _)) = listener.accept() {
+            if std::mem::take(&mut first) {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf);
+                    std::thread::sleep(Duration::from_secs(60));
+                });
+                continue;
+            }
             let mut buf = [0u8; 4096];
             let _ = sock.read(&mut buf);
             let _ = sock.write_all(
@@ -507,19 +549,24 @@ async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
         }
     });
 
-    let http = HttpClient::with_config(RetryConfig {
-        max_attempts: 3,
-        initial_backoff: Duration::from_millis(10),
-        max_backoff: Duration::from_millis(10),
-        rpm: 100_000, // effectively no pacing gap between attempts
-        response_header_timeout: Duration::from_millis(80),
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(10),
+            rpm: 100_000, // effectively no pacing gap between attempts
+            // Wide enough that the retry's own (prompt) reply always beats it on a
+            // loaded host; the silent first connection still trips it.
+            response_header_timeout: Duration::from_millis(500),
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
 
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),
@@ -543,24 +590,28 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 let _ = sock.read(&mut buf);
-                std::thread::sleep(Duration::from_secs(3));
+                // Outlives the test so silence never degrades into an EOF.
+                std::thread::sleep(Duration::from_secs(60));
             });
         }
     });
 
-    let http = HttpClient::with_config(RetryConfig {
-        max_attempts: 2,
-        initial_backoff: Duration::from_millis(5),
-        max_backoff: Duration::from_millis(5),
-        rpm: 100_000,
-        response_header_timeout: Duration::from_millis(50),
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            max_attempts: 2,
+            initial_backoff: Duration::from_millis(5),
+            max_backoff: Duration::from_millis(5),
+            rpm: 100_000,
+            response_header_timeout: Duration::from_millis(200),
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
 
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),
@@ -570,7 +621,7 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
 
     match result {
         Err(RetryError::HeaderTimeout(timeout, attempts)) => {
-            assert_eq!(timeout, Duration::from_millis(50));
+            assert_eq!(timeout, Duration::from_millis(200));
             assert_eq!(attempts, 2);
         }
         Err(other) => panic!("expected RetryError::HeaderTimeout, got {other}"),
@@ -584,24 +635,28 @@ async fn minimal_retry_config_gives_up_fast_against_a_dead_endpoint() {
     // as `execute_with_retry`'s per-call `retry` override must fail a
     // connect-level failure (connection refused — the "aux-models.yml pins a
     // dead ollama endpoint" incident) in at most 2 attempts (one retry), not
-    // the 5-attempt default ladder — and well within a couple seconds, not
-    // the ~6s-plus the default backoff schedule would take.
+    // the 5-attempt default ladder. The wall-clock bound is deliberately loose
+    // (minimal's one backoff is ≤800ms; the default ladder's four sum to
+    // ≥6s), so a loaded host can't flake it while it still tells them apart.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
     drop(listener); // nothing listens now — every connect attempt is refused
 
     // The pool's own config stays the ordinary default; `minimal()` rides in
     // as the per-call override, exactly like the aux call sites do.
-    let http = HttpClient::with_config(RetryConfig {
-        rpm: 100_000, // effectively no pacing gap between attempts
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            rpm: 100_000, // effectively no pacing gap between attempts
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
 
     let url = format!("http://{addr}/");
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         http.execute_with_retry(
             &url,
             None,
@@ -622,7 +677,7 @@ async fn minimal_retry_config_gives_up_fast_against_a_dead_endpoint() {
         Ok(_) => panic!("expected an error against a dead endpoint"),
     }
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(4),
         "minimal retry must fail fast, took {:?}",
         started.elapsed()
     );
@@ -649,22 +704,25 @@ async fn header_timeout_does_not_apply_once_headers_have_arrived() {
             let _ = sock.flush();
             // Headers are already out; the body now drips slower than the
             // header-phase timeout but well inside the idle-gap one.
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(Duration::from_millis(1000));
             let _ = sock.write_all(b"hello");
             let _ = sock.flush();
         }
     });
 
-    let http = HttpClient::with_config(RetryConfig {
-        rpm: 100_000,
-        response_header_timeout: Duration::from_millis(60),
-        ..RetryConfig::default()
-    })
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Disabled,
+        RetryConfig {
+            rpm: 100_000,
+            response_header_timeout: Duration::from_millis(300),
+            ..RetryConfig::default()
+        },
+    )
     .unwrap();
 
     let url = format!("http://{addr}/");
     let (response, _guard) = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
             http.client().get(&url).send()
         }),

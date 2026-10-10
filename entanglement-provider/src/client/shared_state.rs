@@ -32,6 +32,7 @@
 //! directory can't be created or written, or when explicitly disabled via
 //! [`DISABLE_ENV`] — instances just don't coordinate, they don't break.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -57,19 +58,73 @@ const DISABLE_ENV: &str = "ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE";
 /// container's ephemeral `$XDG_DATA_HOME`.
 const STATE_DIR_ENV: &str = "ENTANGLEMENT_SHARED_STATE_DIR";
 
-fn state_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os(STATE_DIR_ENV) {
-        return Some(PathBuf::from(dir));
+/// Where an [`HttpClient`](super::HttpClient)'s cross-process endpoint state
+/// lives — injected per client (#743) rather than read from the process env
+/// at every endpoint creation, so a test (or an embedder running several
+/// isolated pools in one process) can pin its own directory, or opt out,
+/// without mutating process-global env that parallel callers also read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SharedStateLocation {
+    /// No cross-process coordination: pure in-process gating (pre-#523).
+    Disabled,
+    /// `.state`/`.lock` files live directly under this directory.
+    Dir(PathBuf),
+}
+
+impl SharedStateLocation {
+    /// The production resolution every env-driven constructor uses:
+    /// `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE=1` > `ENTANGLEMENT_SHARED_STATE_DIR`
+    /// > `${data_dir}/entanglement/endpoints` > disabled (no data dir).
+    pub fn from_env() -> Self {
+        Self::resolve(|name| std::env::var_os(name), default_state_dir)
     }
+
+    /// [`from_env`][Self::from_env] over an injected env lookup and data-dir
+    /// fallback, so the precedence is unit-testable without `set_var`.
+    fn resolve(
+        env: impl Fn(&str) -> Option<OsString>,
+        default_dir: impl FnOnce() -> Option<PathBuf>,
+    ) -> Self {
+        if env(DISABLE_ENV).is_some_and(|v| v == "1") {
+            return Self::Disabled;
+        }
+        env(STATE_DIR_ENV)
+            .map(PathBuf::from)
+            .or_else(default_dir)
+            .map_or(Self::Disabled, Self::Dir)
+    }
+
+    /// Sweep this location for idle, lease-free `.state`/`.lock` pairs — see
+    /// [`prune_stale`]. A no-op when disabled. Returns the pairs removed.
+    pub fn prune_stale(&self, max_idle: Duration) -> usize {
+        match self {
+            Self::Disabled => 0,
+            Self::Dir(dir) => shared_store::prune_orphaned(dir, max_idle),
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn default_state_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("entanglement").join("endpoints"))
+}
+
+/// Guard (#743): a unit test reaching the real data dir would read and write
+/// the developer's live endpoint state and race every other test doing the
+/// same — fail it loudly so the test injects a `SharedStateLocation` instead.
+#[cfg(test)]
+fn default_state_dir() -> Option<PathBuf> {
+    panic!(
+        "test resolved the real shared endpoint-state dir; build the client with \
+         HttpClient::with_shared_state and an explicit SharedStateLocation"
+    )
 }
 
 /// One endpoint's cross-process gate. Cheap to hold — the real state lives in
 /// the file at `path`, re-read and rewritten under lock on every admission
 /// attempt; this struct is just the resolved identity. `path` is `None` when
-/// sharing is disabled or the data directory can't be determined, in which
-/// case [`acquire`][Self::acquire] is a no-op that returns `None` and the
-/// caller falls back to in-process-only gating.
+/// sharing is disabled, in which case [`acquire`][Self::acquire] is a no-op
+/// that returns `None` and the caller falls back to in-process-only gating.
 pub(crate) struct SharedGate {
     path: Option<PathBuf>,
     pid: u32,
@@ -77,15 +132,14 @@ pub(crate) struct SharedGate {
 
 impl SharedGate {
     /// Resolve (but don't yet touch) the shared-state file for pool key
-    /// `key` — the same `(base URL, API-key hash)` identity the in-process
-    /// pool keys on. `None` when disabled via [`DISABLE_ENV`] or the data
-    /// directory can't be determined; both degrade to in-process-only
-    /// gating.
-    pub(crate) fn new(key: &str) -> Self {
-        let path = if std::env::var(DISABLE_ENV).as_deref() == Ok("1") {
-            None
-        } else {
-            state_dir().map(|dir| dir.join(format!("{}.state", shared_store::hash_key(key))))
+    /// `key` under `location` — the same `(base URL, API-key hash)` identity
+    /// the in-process pool keys on.
+    pub(crate) fn new(key: &str, location: &SharedStateLocation) -> Self {
+        let path = match location {
+            SharedStateLocation::Disabled => None,
+            SharedStateLocation::Dir(dir) => {
+                Some(dir.join(format!("{}.state", shared_store::hash_key(key))))
+            }
         };
         Self {
             path,
@@ -191,22 +245,17 @@ impl SharedGate {
     }
 }
 
-/// Sweep `${data_dir}/entanglement/endpoints/` for `.state`/`.lock` pairs
-/// that have gone idle for at least `max_idle` *and* carry no live lease,
-/// pending cool-down, or recent request (#551) — the artifact of a `/key`
-/// rotation, a catalog `base_url` edit, or a decommissioned provider, none of
-/// which ever evict the shared-state file their old pool key wrote. Intended
-/// as a best-effort startup sweep (mirrors `session_store::prune`'s role for
-/// session logs); a no-op when sharing is disabled ([`DISABLE_ENV`]) or the
-/// state directory can't be determined. Returns the number of pairs removed.
+/// Sweep the env-resolved shared-state directory
+/// ([`SharedStateLocation::from_env`]) for `.state`/`.lock` pairs that have
+/// gone idle for at least `max_idle` *and* carry no live lease, pending
+/// cool-down, or recent request (#551) — the artifact of a `/key` rotation, a
+/// catalog `base_url` edit, or a decommissioned provider, none of which ever
+/// evict the shared-state file their old pool key wrote. Intended as a
+/// best-effort startup sweep (mirrors `session_store::prune`'s role for
+/// session logs); a no-op when sharing is disabled or the state directory
+/// can't be determined. Returns the number of pairs removed.
 pub fn prune_stale(max_idle: Duration) -> usize {
-    if std::env::var(DISABLE_ENV).as_deref() == Ok("1") {
-        return 0;
-    }
-    let Some(dir) = state_dir() else {
-        return 0;
-    };
-    shared_store::prune_orphaned(&dir, max_idle)
+    SharedStateLocation::from_env().prune_stale(max_idle)
 }
 
 /// A point-in-time, cross-process view of one endpoint's shared gate — see
@@ -275,12 +324,69 @@ mod tests {
         (dir, path)
     }
 
+    /// An env lookup over a fixed table — the injected stand-in for
+    /// `std::env::var_os`, so precedence tests never touch the process env.
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| OsString::from(v))
+        }
+    }
+
+    fn data_dir() -> Option<PathBuf> {
+        Some(PathBuf::from("/data/entanglement/endpoints"))
+    }
+
     #[test]
-    fn prune_stale_sweeps_the_resolved_state_dir() {
-        // End-to-end through the public `prune_stale` entry point (rather
-        // than `shared_store::prune_orphaned` directly): resolves the state
-        // dir the same way `SharedGate::new` does, so this exercises the
-        // actual path `main.rs`'s startup sweep will call.
+    fn resolve_defaults_to_the_data_dir() {
+        let loc = SharedStateLocation::resolve(env_of(&[]), data_dir);
+        assert_eq!(loc, SharedStateLocation::Dir(data_dir().unwrap()));
+    }
+
+    #[test]
+    fn resolve_prefers_the_dir_override_over_the_data_dir() {
+        let loc = SharedStateLocation::resolve(env_of(&[(STATE_DIR_ENV, "/tmp/x")]), data_dir);
+        assert_eq!(loc, SharedStateLocation::Dir(PathBuf::from("/tmp/x")));
+    }
+
+    #[test]
+    fn resolve_disable_wins_over_the_dir_override() {
+        let env = env_of(&[(DISABLE_ENV, "1"), (STATE_DIR_ENV, "/tmp/x")]);
+        let loc = SharedStateLocation::resolve(env, || panic!("must not consult the data dir"));
+        assert_eq!(loc, SharedStateLocation::Disabled);
+    }
+
+    #[test]
+    fn resolve_only_treats_exactly_one_as_disable() {
+        let loc = SharedStateLocation::resolve(env_of(&[(DISABLE_ENV, "0")]), data_dir);
+        assert_eq!(loc, SharedStateLocation::Dir(data_dir().unwrap()));
+    }
+
+    #[test]
+    fn resolve_is_disabled_without_any_data_dir() {
+        let loc = SharedStateLocation::resolve(env_of(&[]), || None);
+        assert_eq!(loc, SharedStateLocation::Disabled);
+    }
+
+    #[test]
+    #[should_panic(expected = "real shared endpoint-state dir")]
+    fn unit_tests_may_not_resolve_the_real_data_dir() {
+        let _ = SharedStateLocation::resolve(env_of(&[]), default_state_dir);
+    }
+
+    #[test]
+    fn disabled_location_yields_no_shared_gate() {
+        let gate = SharedGate::new(
+            "https://api.example/v1#deadbeef",
+            &SharedStateLocation::Disabled,
+        );
+        assert!(gate.path.is_none());
+    }
+
+    #[test]
+    fn prune_stale_sweeps_the_location_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
         let stale_path = dir
             .path()
@@ -295,9 +401,8 @@ mod tests {
             .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
             .unwrap();
 
-        std::env::set_var(STATE_DIR_ENV, dir.path());
-        let removed = prune_stale(Duration::from_secs(3600));
-        std::env::remove_var(STATE_DIR_ENV);
+        let location = SharedStateLocation::Dir(dir.path().to_path_buf());
+        let removed = location.prune_stale(Duration::from_secs(3600));
 
         assert_eq!(removed, 1);
         assert!(!stale_path.exists());
@@ -305,33 +410,14 @@ mod tests {
 
     #[test]
     fn prune_stale_is_a_noop_when_sharing_is_disabled() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(DISABLE_ENV, "1");
-        let removed = prune_stale(Duration::from_secs(0));
-        std::env::remove_var(DISABLE_ENV);
+        let removed = SharedStateLocation::Disabled.prune_stale(Duration::from_secs(0));
         assert_eq!(removed, 0);
-    }
-
-    #[test]
-    fn env_disable_yields_no_shared_gate() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(DISABLE_ENV, "1");
-        let gate = SharedGate::new("https://api.example/v1#deadbeef");
-        std::env::remove_var(DISABLE_ENV);
-        assert!(gate.path.is_none());
     }
 
     #[tokio::test]
     async fn acquire_end_to_end_admits_then_waits_then_releases() {
         let (_dir, path) = tmp_state_path();
-        std::env::set_var(STATE_DIR_ENV, path.parent().unwrap());
-        let gate = SharedGate {
-            path: Some(path),
-            pid: std::process::id(),
-        };
-        std::env::remove_var(STATE_DIR_ENV);
+        let gate = gate_at(path);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let lease = gate
@@ -351,7 +437,7 @@ mod tests {
         // detached task to catch up before the slot is visibly free.
         drop(lease);
         let third =
-            tokio::time::timeout(Duration::from_secs(2), gate.acquire(100, 1, deadline)).await;
+            tokio::time::timeout(Duration::from_secs(10), gate.acquire(100, 1, deadline)).await;
         assert!(third.is_ok(), "slot must be released once the lease drops");
     }
 
@@ -362,12 +448,7 @@ mod tests {
         // outlives the caller's own `rate_limit_max_elapsed` budget must
         // surface as `Err(())` instead of hanging.
         let (_dir, path) = tmp_state_path();
-        std::env::set_var(STATE_DIR_ENV, path.parent().unwrap());
-        let gate = SharedGate {
-            path: Some(path),
-            pid: std::process::id(),
-        };
-        std::env::remove_var(STATE_DIR_ENV);
+        let gate = gate_at(path);
 
         // Cap of 1, held by this "instance" itself, so a second acquire can
         // never be admitted — it must instead give up at `deadline`.
@@ -378,7 +459,7 @@ mod tests {
             .expect("shared state dir is writable in this test");
 
         let deadline = Instant::now() + Duration::from_millis(100);
-        let result = tokio::time::timeout(Duration::from_secs(2), gate.acquire(100, 1, deadline))
+        let result = tokio::time::timeout(Duration::from_secs(10), gate.acquire(100, 1, deadline))
             .await
             .expect("must give up at the deadline instead of hanging");
         assert!(matches!(result, Err(())));

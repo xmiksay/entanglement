@@ -396,7 +396,7 @@ mod tests {
     }
 
     fn http() -> HttpClient {
-        HttpClient::new().unwrap()
+        crate::test_http_client()
     }
 
     #[test]

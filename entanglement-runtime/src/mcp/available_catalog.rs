@@ -83,7 +83,7 @@ mod tests {
         let registry: SharedRegistry =
             std::sync::Arc::new(std::sync::RwLock::new(crate::tools::ToolRegistry::new()));
         let active: ActiveServers = std::sync::Arc::new(Mutex::new(HashMap::new()));
-        let http = entanglement_core::HttpClient::new().unwrap();
+        let http = crate::test_http_client();
         let err = enable_for_session(
             &avail,
             "web_search_prime",

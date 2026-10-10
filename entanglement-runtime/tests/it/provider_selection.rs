@@ -31,6 +31,9 @@ fn no_managed_file(label: &str) -> std::path::PathBuf {
 fn isolated(cmd: &mut Command) -> &mut Command {
     cmd.env("ENTANGLEMENT_ENV_FILE", no_managed_file("env"))
         .env("ENTANGLEMENT_CONFIG_FILE", no_managed_file("config"))
+        // Child-only env (#743): keeps the startup `prune_stale` sweep off the
+        // developer's real shared endpoint-state dir.
+        .env("ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE", "1")
 }
 
 /// Run `skutter run hi` with `ENTANGLEMENT_PROVIDER=<provider>` set and its key

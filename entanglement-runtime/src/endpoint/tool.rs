@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn capability_is_exec() {
-        let http = HttpClient::new().unwrap();
+        let http = crate::test_http_client();
         let cfg: EndpointConfig = serde_yaml::from_str("url: https://example.com/x").unwrap();
         let tool = EndpointTool::new("weather".to_string(), &cfg, http);
         assert_eq!(tool.capabilities(), &[Capability::Exec]);
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn register_endpoints_names_tools_with_the_endpoint_prefix() {
-        let http = HttpClient::new().unwrap();
+        let http = crate::test_http_client();
         let cfg: EndpointConfig = serde_yaml::from_str("url: https://example.com/x").unwrap();
         let mut endpoints = HashMap::new();
         endpoints.insert("weather".to_string(), cfg);

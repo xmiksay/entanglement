@@ -171,3 +171,15 @@ pub use tools::{SharedRegistry, Tool, ToolRegistry};
 // available to it.
 #[cfg(feature = "cli")]
 pub mod logging;
+
+/// A pool client with cross-process endpoint state disabled (#743): a unit
+/// test must never read or write the developer's real endpoint-state dir, and
+/// steering it via process env would race every parallel test.
+#[cfg(test)]
+pub(crate) fn test_http_client() -> entanglement_core::HttpClient {
+    entanglement_core::HttpClient::with_shared_state(
+        entanglement_core::SharedStateLocation::Disabled,
+        entanglement_core::RetryConfig::default(),
+    )
+    .expect("reqwest client builds in tests")
+}
