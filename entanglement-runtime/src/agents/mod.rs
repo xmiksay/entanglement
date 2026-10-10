@@ -381,10 +381,12 @@ mod tests {
         // mode). A per-agent copy is re-sent per request and drifts — the old
         // `general` one still called `call` "the" exec after ADR-0195.
         for (file, contents) in BUILT_INS {
-            assert!(
-                !contents.contains("`rhai`") && !contents.contains("sh -c"),
-                "{file} re-explains exec-tool choice"
-            );
+            for phrase in ["`rhai`", "sh -c", "Exec is", "not a shell"] {
+                assert!(
+                    !contents.contains(phrase),
+                    "{file} re-explains exec-tool choice ({phrase:?})"
+                );
+            }
         }
     }
 
