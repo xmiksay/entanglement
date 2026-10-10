@@ -7,7 +7,7 @@
 The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
 `LlmEvent`/`LlmStream`, `LlmFactory`, `ToolCall`, `ToolSpec`,
 `stream_from_response`, the last two in `src/response.rs`), the stub backends
-(`DummyLlm`/`EchoLlm`, in `src/llm.rs`), and the wire message types (`Message`/`MessageRole` plus the
+(`DummyLlm`/`EchoLlm`, in `src/llm/stub.rs`), and the wire message types (`Message`/`MessageRole` plus the
 multimodal `ContentPart`/`ImageSource`, in `src/message.rs` — a `Message`'s body
 is `content: Vec<ContentPart>`, #197/[ADR-0064](../adr/0064-message-content-blocks.md))
 — lives **in `entanglement-provider`**. Since

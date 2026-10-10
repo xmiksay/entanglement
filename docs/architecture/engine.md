@@ -415,7 +415,7 @@ turn boundary exactly where the live engine drew it (it used to emit only the
 [ADR-0118](../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
 ends with empty `tool_calls` is classified by `StopReason::is_confident_stop`
 (#433 — an exhaustive method on `StopReason` itself, in
-`entanglement-provider/src/llm.rs`, so a new variant is a compile error until
+`entanglement-provider/src/llm/types.rs`, so a new variant is a compile error until
 it's explicitly classified, rather than a non-exhaustive `matches!` in
 `round.rs` silently defaulting it to ambiguous):
 `EndTurn`/`MaxTokens`/`StopSequence` are deliberate and end the turn as above
