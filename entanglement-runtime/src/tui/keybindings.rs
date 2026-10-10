@@ -127,7 +127,7 @@ impl Action {
             Action::Quit => "Quit (Ctrl+Q immediate; Ctrl+C clears then quits on second press)",
             Action::NewSession => "Create a new session",
             Action::ListSessions => "List and switch sessions",
-            Action::PickAgent => "Pick agent profile",
+            Action::PickAgent => "Show available agents",
             Action::PickModel => "Pick model",
             Action::ToggleSidebar => "Toggle sidebar",
             Action::OpenEditor => "Open editor",

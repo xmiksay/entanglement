@@ -163,8 +163,8 @@ below realize one model:
   hatch except the user's own `/mode`/`request_mode`; `Ask` parks an ordinary
   approval exactly as before. **Alias rewrite still happens before grading**
   (`Tool::alias_rewrite`, consulted by `tool_runner::dispatch` ahead of
-  capability resolution and every gate below it): masking, capability, grants,
-  and the escape-root gate all see the underlying tool, never the alias — an
+  capability resolution and every gate below it): the overlay, capability,
+  grants, and the escape-root gate all see the underlying tool, never the alias — an
   alias cannot launder a denied tool by presenting it under a
   differently-permissioned name. MCP tools grade like any other tool by name
   or pattern; today every `mcp__*` tool's `Capability` is hardcoded to
@@ -414,9 +414,12 @@ below realize one model:
   and skipped ([ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
   `build`, `explore` and `research` are **retired as agent names** — their
   postures are permission modes now, not personas — so a session log naming
-  one of them does not resume; `general` (the `build` body, unchanged, now
-  the default and default spawn target) and `debug` (full read/write/execute
-  body) are the only two carried forward, plus `plan` (unchanged body). A
+  one of them resumes under `general` with a one-line note
+  ([ADR-0214](../adr/0214-retired-agent-logs-resume-as-general.md), see
+  [heads & persistence](heads-and-persistence.md)); `general` (the `build`
+  body, unchanged, now the default and default spawn target) and `debug`
+  (the fix-and-verify persona; what it may run is the session's mode) are
+  the only two carried forward, plus `plan`. A
   definition naming any of the now-deleted authority keys (`tools`,
   `disallowed_tools`, `permission`, `sandbox`, `can_spawn`,
   `spawnable_agents`, `mode`) fails to parse like any other unrecognized key
@@ -970,10 +973,10 @@ below realize one model:
   allow` — out-ranking the class deny by longest match — grades every write
   outside `.entanglement/plans/*.md` as `Deny`, the opencode-style
   plans-folder exception `propose_plan`'s `content` mode writes into,
-  everything else stays physically unreachable. Exec is deliberately
-  **ungraded** in `plan` mode (falls through to `default: prompt`) rather
-  than carrying its own curated allowance the way `research`/`build`/`auto`
-  do — matching the old `plan` agent's `call(*): ask`. Because mode now
+  everything else stays physically unreachable. Exec in `plan` mode gets
+  the same shared read-only exec set as `research`/`auto` (spliced in from
+  `readonly_exec.yml`, above); any other command falls through to `default:
+  prompt`, matching the old `plan` agent's `call(*): ask`. Because mode now
   applies uniformly to the *whole* spawn sub-tree (§6) there is no more
   ancestor-clamp-intersection concern to work around: the old `plan.md` mask
   had to carry `call`/`bash` explicitly just so a spawned `explore` child's

@@ -42,7 +42,7 @@ make run-tui       # launch the terminal UI
 make pipe          # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make sessions      # list past (resumable) sessions
-make inspect       # resolved prompt/agents/skills/config, no engine (ARGS='prompt --agent build')
+make inspect       # resolved prompt/agents/skills/config, no engine (ARGS='prompt --agent general')
 make install       # install the `skutter` binary into $CARGO_HOME/bin
 make test          # unit + integration
 make test-unit | make test-integration
@@ -162,10 +162,10 @@ The session's permission **mode** has no env var by design: `--mode` on
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
@@ -277,7 +277,7 @@ never here**; each bullet is the claim + where to read it:
   [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
 - **Trusted/untrusted frame split**: `Holly::send` is privileged;
   `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
-  `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth` refused;
+  `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`, `SetMode` refused;
   `SetToolOverlay` refused only for an enable entry — a deny-only overlay,
   including the empty clearing list, is wire-allowed, #634).
   [protocol](../docs/architecture/protocol.md),

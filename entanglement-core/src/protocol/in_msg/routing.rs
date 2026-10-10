@@ -74,15 +74,14 @@ impl InMsg {
     ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
     ///   `McpList` is read-only and stays wire-allowed.
     /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
-    ///   rationale as `McpAdd`/`McpRemove`): an **enable** entry injects tools
-    ///   past the agent mask — including, per ADR-0163 (#611), live-enabling a
-    ///   lazily-registrable built-in like `bash` — optionally graded `allow`
-    ///   with no approval prompt, so it stays trusted-only. A **deny-only**
-    ///   overlay (every entry has `deny: true`) only *withdraws* tools the
-    ///   profile already advertises — it can never widen what the model may
+    ///   rationale as `McpAdd`/`McpRemove`): an **enable** entry makes tools
+    ///   usable past the session's permission mode — even over a mode `Deny`
+    ///   — optionally graded `allow` with no approval prompt, so it stays
+    ///   trusted-only. A **deny-only** overlay (every entry has `deny: true`)
+    ///   only *withdraws* tools — it can never widen what the model may
     ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
-    ///   by ADR-0177). An empty `entries` list (clearing back to the profile
-    ///   default) is vacuously deny-only and also wire-allowed.
+    ///   by ADR-0177). An empty `entries` list (clearing back to the mode's
+    ///   own grades) is vacuously deny-only and also wire-allowed.
     /// - [`SetMode`][InMsg::SetMode] (ADR-0207): a mode *is* the session's
     ///   authority — unlike the agent, which is identity fixed at session
     ///   start and carries no live switch message at all (ADR-0207 §9). A

@@ -58,7 +58,7 @@ serve: build ## WebSocket serve head — local loopback HTTP+WS on 127.0.0.1 (AR
 sessions: build ## list past (resumable) sessions
 	$(CARGO) run -p entanglement-runtime -- sessions
 
-inspect: build ## inspect resolved prompt/agents/skills/config/aux-models/mcp-tokens/mcp/session, no engine (ARGS='prompt --agent build' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
+inspect: build ## inspect resolved prompt/agents/skills/config/aux-models/mcp-tokens/mcp/session, no engine (ARGS='prompt --agent general' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
 	$(CARGO) run -p entanglement-runtime -- inspect $(ARGS)
 
 check: ## cargo check --workspace (fast typecheck)

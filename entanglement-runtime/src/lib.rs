@@ -8,9 +8,10 @@
 //! The binary head (`skutter`) and the reusable library live in the same crate,
 //! split by cargo features:
 //!
-//! - `default = ["tui", "serve"]` — the full `skutter` binary (stdio `run`/`pipe`
-//!   plus the terminal UI and the local WebSocket server), pulling clap, the LLM
-//!   providers (reqwest), the render stack (ratatui, syntect, …), and axum.
+//! - `default = ["tui", "serve", "mcp-http", "rhai"]` — the full `skutter`
+//!   binary (stdio `run`/`pipe` plus the terminal UI and the local WebSocket
+//!   server), pulling clap, the LLM providers (reqwest), the render stack
+//!   (ratatui, syntect, …), axum, the HTTP MCP transport and the `rhai` tool.
 //! - `cli` — head plumbing: clap arg parsing + log init (tracing-subscriber).
 //! - `provider` — the LLM providers (reqwest via `entanglement-provider`), split
 //!   from `cli` (#208) so the `serve`/`ws` head pulls providers without dragging
@@ -18,6 +19,9 @@
 //! - `tui` — the terminal UI head; implies `cli` + `provider`.
 //! - `serve` — the local WebSocket `serve` head (axum, #153); implies
 //!   `cli` + `provider`. Keeps axum out of the lean library (ADR-0025/ADR-0048).
+//! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the stdio MCP
+//!   transport stays in the lean library.
+//! - `rhai` — the sandboxed `rhai` scripting tool (ADR-0046, #502).
 //!
 //! With `--no-default-features` the crate is a **lean library**: the modules
 //! below import only `entanglement-core` + tokio + serde/serde_yaml/anyhow/

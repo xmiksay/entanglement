@@ -24,15 +24,16 @@ pub(crate) struct Cli {
     /// head-level, all-or-nothing, and invisible to core/the TUI — precisely
     /// what a permission mode is not. Parsed only so `skutter … --yes` fails
     /// loudly with a pointer to its replacement instead of clap's unknown-flag
-    /// error; see the startup check in `main`.
-    #[arg(long, global = true)]
+    /// error; see the startup check in `main`. Hidden from `--help` so a
+    /// retired flag is never advertised.
+    #[arg(long, global = true, hide = true)]
     pub(crate) yes: bool,
     /// Run the session under this permission mode (`research`/`plan`/`build`/
     /// `auto`, ADR-0207) instead of the engine's default (`build`). Only
     /// affects `run` heads (explicit `run` and the implicit one-shot form) —
     /// `auto` is the unattended posture `--yes` used to approximate, now with
-    /// a real deny-by-default posture, run/turn/duration budgets, and no
-    /// silent widening. Global so it may follow the subcommand:
+    /// a bounded posture (unlisted calls refuse, then park a 60s approval —
+    /// ADR-0209), run/turn/duration budgets, and no silent widening. Global so it may follow the subcommand:
     /// `skutter run … --mode auto`.
     #[arg(long, global = true)]
     pub(crate) mode: Option<String>,
@@ -130,7 +131,7 @@ pub(crate) enum InspectCmd {
     /// Print an agent's assembled system prompt (preamble + body + brief + env
     /// + skill index + preloaded skills), exactly as it ships to the model.
     Prompt {
-        /// Agent profile to resolve (build | plan | explore | custom).
+        /// Agent profile to resolve (general | plan | debug | custom).
         #[arg(long)]
         agent: String,
         /// Break the prompt into its component parts, each with its source path.
@@ -138,10 +139,11 @@ pub(crate) enum InspectCmd {
         parts: bool,
     },
     /// List resolved agents with their winning layer + provenance (no `name`), or
-    /// print one agent's full resolved profile (permission/mask/spawn/plan +
-    /// prompt length) and what lower layers it overrode.
+    /// print one agent's full resolved identity (description, model pin,
+    /// prompt length) and what lower layers it overrode. Permissions live on
+    /// the session's mode — see `inspect modes`.
     Agents {
-        /// Agent to detail (build | plan | explore | custom). Omit for the table.
+        /// Agent to detail (general | plan | debug | custom). Omit for the table.
         name: Option<String>,
     },
     /// List resolved skills with their winning layer + `root_dir` (no `name`),
@@ -175,8 +177,7 @@ pub(crate) enum InspectCmd {
     /// List the four permission modes (no `name`), or print one mode's
     /// resolved rules — built-in shape plus any `config.yml` `modes:` tuning
     /// — plus its limits, sandbox, and per-tool outcome for a known roster
-    /// (#560, ADR-0207 stage 6c). The replacement for the mask columns
-    /// `agents` lost in stage 4c.
+    /// (#560, ADR-0207 stage 6c).
     Modes {
         /// Mode to detail (research | plan | build | auto). Omit for the table.
         name: Option<String>,

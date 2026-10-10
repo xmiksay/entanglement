@@ -342,7 +342,7 @@ guessing again:
   `skutter` binary registers `CallTool` and **`BashTool` unconditionally**
   at startup — `call` because no shell means no injection surface (#386),
   `bash` because registration is not where the security story lives (the
-  permission profile, ceiling, and sandbox are; ADR-0195 reverses
+  session's permission mode, ceiling, and sandbox are; ADR-0195 reverses
   ADR-0010's opt-in). The retired opt-in machinery —
   `ENTANGLEMENT_ENABLE_BASH`, the closed lazily-registrable-built-in table
   and its `/enable tool bash` registration fold, and
@@ -354,15 +354,17 @@ guessing again:
   with the `poll` tool (#605; one registry, never minted fresh —
   ADR-0163 §3). `EngineConfig::default()` ships an
   empty registry (embedders opt in via `host_tools`).
-  **Curated read-only Allow rules (ADR-0195)** ship in the embedded
-  permission defaults — exact-prefix `tool(pattern)` entries such as
-  `bash(find *)`, `bash(grep *)`, `call(rg *)`, and ls/cat/head/tail/wc for
-  both exec tools — so read-only commands stop costing an approval
-  round-trip. Deliberately short and exact-prefix (no `git *` — it writes;
-  no `echo *` — redirection writes; no class patterns), and the config
-  ceiling still clamps least-privilege over every grade: a user ceiling of
-  `bash: ask` (or `bash(find *): ask`) forces the prompt back over any
-  curated Allow, exactly as it clamps a profile's own `Allow`. Graded per
+  **Curated read-only Allow rules (ADR-0195, relocated by ADR-0207)** ship
+  as the shared read-only exec set spliced into the `research`/`plan`/`auto`
+  modes (`mode/builtin/readonly_exec.yml` — `bash(pattern)` keys, which
+  `call` shares since both exec tools use one rule set; `build` needs none
+  of it, it class-allows `exec`) — see
+  [agents & permissions](agents-and-permissions.md) §the shared read-only
+  exec set for the list and its deliberate exclusions — so read-only
+  commands stop costing an approval round-trip. The config ceiling still
+  clamps least-privilege over every grade: a user ceiling of `bash: ask`
+  (or `bash(find *): ask`) forces the prompt back over any curated Allow,
+  exactly as it clamps a mode's own `Allow`. Graded per
   top-level segment of a compound command, not the whole raw string, since
   [ADR-0197](../adr/0197-compound-bash-commands-grade-per-segment.md). See
   [agents & permissions](agents-and-permissions.md) §permission ceiling.
@@ -376,7 +378,7 @@ guessing again:
   binding run from inside a `rhai` script grades identically to a direct
   `bash` call — the `BindingPolicy` snapshot consults the same lookup — and a
   spawned child with no overlay of its own inherits its parent's grade, not
-  just the mask that lets the tool exist for it.
+  just the enable entry that lets it use the tool.
 
 Every session is advertised the same tool set — there is no more per-agent
 mask to narrow advertisement or dispatch with

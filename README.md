@@ -22,11 +22,12 @@ table below.
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetAgent | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ReplayFrom | CloseSession
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
+          | ListSessions | ListQuestions | ListOperations | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | History | Status
-          | AgentChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | History | Status
+          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
@@ -42,7 +43,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | Head | Status | What it is |
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
-| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, mode, model, layer, source, mask) or one agent's full resolved profile + what lower layers it overrode; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
+| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels. |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
@@ -56,28 +57,45 @@ approval-across-restart semantics, backed by three compiling examples —
 [`embedded_lifecycle.rs`](entanglement-runtime/examples/embedded_lifecycle.rs),
 and [`mcp_http.rs`](entanglement-runtime/examples/mcp_http.rs).
 
-## Agent profiles (opencode-style)
+## Agents and permission modes
 
-A session runs under an **agent profile** — `{ name, description, mode, model,
-system_prompt, permission, tools, disallowed_tools, can_spawn,
-spawnable_agents }`. Switch the *primary* profile with `SetAgent`; the cycle is
-`build → plan → research` — `explore` and `debug` are `mode: subagent`, so they
-are filtered out of the primary cycle and only reachable via spawn. Built-ins:
-`build`, `plan`, `explore`, `debug`, `research`.
+A session is a pair **(agent, mode)** — two independent axes
+([ADR-0207](docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
 
-The permission profile (`Allow | Ask | Deny` per tool, name-or-`*` or
-argument-scoped `tool(pattern)`) drives the approval flow. `build` allows
-everything; `plan` **asks** by default and stays physically read-only apart
-from one carve-out — `write`/`edit` succeed only under `.entanglement/plans/`
-(#524, ADR-0142), the file a plan lives in (#513, ADR-0145) — `explore` is
-the deny profile (read-only), the default spawn target; `debug` carries
-`build`'s own allow-everything permission (read/write/execute) for a spawned
-sub-agent that actually needs to reproduce, fix, and verify a bug; `research`
-is the read-only Q&A entry agent (ADR-0167) — write denied with no carve-out,
-shell ask-graded per command, and it may spawn **only** read-only `explore`
-leaves (re-engaging one with `agent_send` rather than respawning it), so its
-delegation subtree can never widen into a write-capable profile. Permission
-resolution and approval live entirely in the runtime (#59).
+An **agent** is *identity only* — `{ name, description, system_prompt,
+model?, provider? }` (opencode-style `.md` files; frontmatter may also set
+`include_brief`/`skills`, baked into the prompt at load time). It is chosen
+once — `--agent`, `config.yml` `agent:`, or the `agent` tool's argument for a
+spawned child — and is fixed for the session's life; there is no live agent
+switch. Built-ins: `general` (the default coding agent and default spawn
+target), `plan`, and `debug`. Any agent may be a session root or a spawn
+target.
+
+A **permission mode** carries every permission fact: `research` | `plan` |
+`build` | `auto`, compiled into the runtime (tunable, add-only, via
+`config.yml` `modes:`; `skutter inspect modes` shows the resolved rules).
+Each mode grades a call `Allow`/`Ask`/`Deny` from its rule table — keys are a
+tool name, `*`, argument-scoped `tool(pattern)`, workdir-scoped
+`tool{pattern}`, or a capability class (`read`/`write`/`exec`/`plan`); the
+longest matching key wins:
+
+- `research` — read-only Q&A: `read` allowed, `write` and `plan` denied, a
+  curated read-only shell set allowed, everything else asks.
+- `plan` — like `research`, but `propose_plan` is allowed and `write`/`edit`
+  succeed only under `.entanglement/plans/` (ADR-0142/ADR-0145).
+- `build` (the default) — `read`/`write`/`exec` allowed outright, bar a short
+  destructive-command deny list (`rm -rf /`, `git push --force`,
+  `git reset --hard`, …) and a publishing list that asks (`git push`,
+  `gh pr create`, `cargo publish`, …).
+- `auto` — the unattended posture: read/write and `cargo`/`make` allowed,
+  publishing and destructive commands denied outright, anything else is
+  refused once and parks a bounded (60s) approval on an identical retry
+  ([ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
+
+Select a mode with `--mode` on `run` (or `config.yml` `mode:`) and switch it
+live with `/mode` in the TUI; a blocked model may ask to widen via
+`request_mode`. Spawning is bounded by the mode's `max_depth`/`max_agents`.
+Permission resolution and approval live entirely in the runtime.
 
 A session advertises its tool surface in one of two modes (`ToolAdvertising`,
 default `ToolSearch`, ADR-0196): `full` sends every registered spec up
@@ -88,9 +106,9 @@ router/envelope tool, every call by its native name either way.
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,
-materializes or binds one, force-parks on approval, and — on approve —
-switches the session's mode in place to the approver's pick (`build`, or
-`auto` on a bare accept) so the same turn continues into implementation
+materializes or binds one, force-parks for approval, and — on approve —
+switches the session's mode in place to the approver's pick (`build` or
+`auto`; a bare accept means `auto`) so the same turn continues into implementation
 (#513, ADR-0145; ADR-0207 §7). `OutEvent::TaskList` (markdown `content`) is a
 separate, simpler snapshot from `update_tasks`: permission-gated but carrying
 no host resource, so the runtime intercepts it out of the tool registry and
@@ -101,11 +119,13 @@ renders both natively.
 Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
 `.md` files with YAML frontmatter — drop one in and it joins the registry with
 no code change; `skutter inspect agents|skills` shows the resolved set with
-layer provenance. Beyond the root-contained quintet (`read`/`write`/`edit`/
-`glob`/`grep`), `call` (argv exec, no shell) is always registered too, and the
-sandboxed `rhai` scripting tool ships in every default build (droppable via
-`--no-default-features`, #502); only `bash` stays opt-in
-(`ENTANGLEMENT_ENABLE_BASH=1`).
+layer provenance. Beyond the root-contained sextet (`read`/`write`/`edit`/
+`glob`/`grep`/`apply_patch`), both exec tools — `bash` (a real shell) and
+`call` (argv exec, no shell) — are always registered
+([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
+and graded by the session's mode like everything else; the sandboxed `rhai`
+scripting tool ships in every default build (droppable via
+`--no-default-features`, #502).
 
 ## Crates
 

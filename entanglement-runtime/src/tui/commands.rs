@@ -76,7 +76,7 @@ impl Command {
             Command::Help => "Show help and keybindings",
             Command::New => "Create a new session",
             Command::Exit => "Quit the application",
-            Command::Agent => "Pick agent profile",
+            Command::Agent => "Show available agents (read-only: an agent is fixed per session, chosen with --agent)",
             Command::Model => "Pick model",
             Command::Mode => "Switch permission mode",
             Command::Key => "Set a provider API key",
@@ -97,10 +97,10 @@ impl Command {
                 "Allow a directory for read/grep/glob for the rest of this session"
             }
             Command::Enable => {
-                "Enable tools for this session past the agent mask (bare = checklist dialog; mcp <server> | tool <name> [--allow [<pattern>]])"
+                "Enable tools for this session past the permission mode (bare = checklist dialog; mcp <server> | tool <name> [--allow [<pattern>]])"
             }
             Command::Disable => {
-                "Disable tools for this session (mcp <server> | tool <name>; bare = reset to profile defaults)"
+                "Disable tools for this session (mcp <server> | tool <name>; bare = reset to mode defaults)"
             }
             Command::Tools => {
                 "Browse this session's tool surface — host tools, MCP servers, skills, endpoints (filter as you type, Tab cycles category, Enter enables the highlighted row)"

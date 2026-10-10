@@ -41,7 +41,7 @@ Heads depend on core, **never the reverse.**
 - **Tests ship with the change.** Pure logic → in-module `#[cfg(test)] mod tests`; actor/protocol behavior → `entanglement-core/tests/` (e.g. `actor.rs`, `turn_loop.rs`); runtime/host-tool behavior → `entanglement-runtime/tests/`.
 - **No panicking operators on I/O / user / network / config paths** in `entanglement-core`. Propagate with `?` + `.context()`. `.unwrap()`/`.expect()` only in tests or provably-unreachable spots (then `.expect("invariant …")`).
 - **Comments: WHY, not WHAT.**
-- Rust stable, edition 2021, MSRV 1.82 (`rust-version` in the workspace `Cargo.toml`; `rust-toolchain.toml` pins only `channel = "stable"`).
+- Rust stable, edition 2021, MSRV 1.82 (`rust-version` in the workspace `Cargo.toml`); the dev/CI toolchain is pinned to an exact release in `rust-toolchain.toml` (bump deliberately, fixing new lints in the same change).
 
 ## Commit & PR workflow
 
@@ -57,6 +57,6 @@ Heads depend on core, **never the reverse.**
 With no provider configured, the engine runs on an `EchoLlm` (no network) — this
 is the default and is fine for most dev loops. To hit a real backend:
 
-- `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `openai` | `ollama` | `anthropic` | `gemini` | `echo`; or auto-detected by key presence (z.ai first).
+- `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `zai_paas` | `openai` | `ollama` | `anthropic` | `gemini` | `echo`; or auto-detected by key presence (z.ai first).
 - `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_API_BASE` (legacy `<PROV>_BASE` still accepted; Ollama is keyless).
-- `ENTANGLEMENT_ENABLE_BASH=1` — **opt-in**: registers `bash`; its background jobs (`background=true`) are joined with the always-available runtime-owned `poll` tool (#605), not a paired registry tool. Off by default. `call` (argv exec, no shell) is registered **unconditionally** (ADR-0093) and shares the same `background=true`/`poll` mechanism (#606). Both run unsandboxed by default but can be bubblewrap-confined via `ENTANGLEMENT_SANDBOX=bwrap` (ADR-0104/0134). The sandboxed `rhai` script tool needs no opt-in.
+- `bash` (a real shell) and `call` (argv exec, no shell) are both registered **unconditionally** (ADR-0195; there is no opt-in env var) and graded by the session's permission mode (`--mode research|plan|build|auto`, default `build`; ADR-0207) like every other tool. Their background jobs (`background=true`) are joined with the always-available runtime-owned `poll` tool (#605/#606). Both run unsandboxed by default but can be bubblewrap-confined via `ENTANGLEMENT_SANDBOX=bwrap` (ADR-0104), which only ever tightens the mode's own sandbox posture. The sandboxed `rhai` script tool needs no opt-in either.

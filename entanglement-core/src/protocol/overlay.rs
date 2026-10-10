@@ -7,23 +7,23 @@ use super::permission::glob_match;
 use crate::protocol::InMsg;
 
 /// One entry of a session's live tool overlay (#539, ADR-0149): a `*`/`?`
-/// wildcard `pattern` (the ADR-0148 mask semantics — `mcp__chessbase__*` for a
-/// server, `bash` for one tool) a trusted head injected via
-/// [`InMsg::SetToolOverlay`] to make matching tools exist — or, with `deny:
-/// true`, **not** exist — for **this session** regardless of the active agent
-/// profile's `tools:`/`disallowed_tools:` mask. For an enable entry, `allow:
-/// false` (the default) still routes every matching call through the
-/// approval prompt; `allow: true` grants permission outright — both
-/// runtime-side and still clamped by the config ceiling (#172). A deny entry
-/// withdraws matching tools from the session (its `allow`/`arg_pattern` are
-/// meaningless and ignored); deny beats enable beats the profile, mirroring
-/// the mask's own denylist-first rule.
+/// wildcard `pattern` (`mcp__chessbase__*` for a server, `bash` for one tool)
+/// a head injected via [`InMsg::SetToolOverlay`] — the user's own direct
+/// voice, layered over the session's permission mode (ADR-0207). An
+/// **enable** entry (trusted frames only) makes matching tools usable for
+/// **this session** even where the mode grades them `Deny`: `allow: false`
+/// (the default) still routes every matching call through the approval
+/// prompt; `allow: true` grants permission outright — both runtime-side and
+/// still clamped by the config ceiling (#172). A **deny** entry withdraws
+/// matching tools from the session (its `allow`/`arg_pattern` are
+/// meaningless and ignored); deny beats enable beats the mode. The overlay
+/// is mode-scoped: a live mode change drops it wholesale.
 ///
 /// `arg_pattern` (ADR-0163, #611) narrows an enable entry's grant to matching
 /// **command arguments** rather than the whole tool — the live-bash grade
 /// this ADR absorbed (formerly `BashGrade::Allow { pattern }`). Do not
 /// confuse it with `pattern` above: `pattern` is a **tool-name** glob
-/// (ADR-0148 mask semantics, e.g. `bash`, `mcp__chessbase__*`); `arg_pattern`
+/// (e.g. `bash`, `mcp__chessbase__*`); `arg_pattern`
 /// is a **command-argument** pattern (e.g. `git *`) materializing an
 /// argument-scoped `tool(arg_pattern): allow` rule (ADR-0114/#173's
 /// `tool(pattern)` syntax) on top of a flat `Ask` default, fanned out over
@@ -61,12 +61,9 @@ impl ToolOverlayEntry {
     }
 
     /// A flat **enable** entry that also grants outright (`allow: true`, no
-    /// `arg_pattern`) — the shape the runtime's Session-scope out-of-mask
-    /// approval materializes (`entanglement-runtime::mask_request`,
-    /// ADR-0198): the tool both exists for the session *and* skips the
-    /// permission prompt on every later call, matching the "stop asking me"
-    /// semantics an ordinary Session grant (#174) already gives an in-mask
-    /// `Ask` tool.
+    /// `arg_pattern`): the tool is usable for the session *and* skips the
+    /// permission prompt on every later call — the "stop asking me"
+    /// semantics an ordinary Session grant (#174) gives an `Ask` tool.
     pub fn allow(pattern: impl Into<String>) -> Self {
         Self {
             pattern: pattern.into(),
@@ -76,20 +73,19 @@ impl ToolOverlayEntry {
         }
     }
 
-    /// Whether this entry's pattern matches `tool` (same matcher as the
-    /// ADR-0148 agent mask).
+    /// Whether this entry's pattern matches `tool` (`*`/`?` wildcards).
     pub fn matches(&self, tool: &str) -> bool {
         glob_match(&self.pattern, tool)
     }
 
     /// The overlay's opinion on `tool`: `Some(false)` — a deny entry matches
-    /// (the tool does not exist for this session, even if the profile mask
-    /// admits it); `Some(true)` — an enable entry matches (it exists even
-    /// if the profile masks it); `None` — no opinion, the profile mask stands.
+    /// (the tool is withdrawn for this session, whatever the mode grades);
+    /// `Some(true)` — an enable entry matches (usable even where the mode
+    /// denies it); `None` — no opinion, the session's permission mode stands.
     /// Deny entries win over enable entries regardless of list order.
-    /// Consulted at **dispatch** only (the runtime's `tool_mask_source`) —
-    /// the overlay does not narrow what core advertises, so toggling it leaves
-    /// the model's tools array untouched.
+    /// Consulted by the runtime at **dispatch** only — the overlay does not
+    /// narrow what core advertises, so toggling it leaves the model's tools
+    /// array untouched.
     pub fn disposition(entries: &[Self], tool: &str) -> Option<bool> {
         if entries.iter().any(|e| e.deny && e.matches(tool)) {
             return Some(false);
