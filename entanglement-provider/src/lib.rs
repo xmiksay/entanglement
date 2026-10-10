@@ -69,7 +69,10 @@ pub use llm::{
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather
 // than colliding with it at the crate root.
-pub use mcp::{jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef};
+pub use mcp::{
+    is_response, jsonrpc_payload, list_tools_paginated, parse_tool_def, server_request_reply,
+    McpHttpClient, McpToolDef,
+};
 pub use message::{
     content_has_image, content_text, tool_reference_fallback_text, ContentPart, ImageSource,
     Message, MessageRole,

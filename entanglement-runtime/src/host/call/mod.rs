@@ -268,6 +268,7 @@ impl Tool for CallTool {
         Ok(crate::tools::ToolRun {
             content: crate::tools::text_parts(text),
             exit_code,
+            is_error: false,
         })
     }
 }

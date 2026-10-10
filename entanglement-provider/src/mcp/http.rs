@@ -34,16 +34,19 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
 use crate::client::{HttpClient, RetryConfig, StreamGuard};
 
 use super::headers::build_headers;
+pub use super::headers::resource_metadata_url;
 use super::sse::{is_event_stream, read_sse_response};
-use super::{jsonrpc_payload, parse_tool_def, McpToolDef};
+use super::{jsonrpc_payload, list_tools_paginated, McpToolDef};
 use crate::oauth::{AccessTokenSource, AuthRequired};
+
+mod request;
 
 /// Protocol version we advertise on `initialize`. The server negotiates its own
 /// in the response, which we echo back on the `MCP-Protocol-Version` header of
@@ -54,10 +57,6 @@ const PROTOCOL_VERSION: &str = "2025-03-26";
 /// every later request.
 const SESSION_HEADER: &str = "Mcp-Session-Id";
 const PROTOCOL_HEADER: &str = "MCP-Protocol-Version";
-
-/// The challenge header a `401` carries, pointing at the protected-resource
-/// metadata document (RFC 9728) that bootstraps OAuth discovery.
-const WWW_AUTHENTICATE: &str = "WWW-Authenticate";
 
 /// A live streamable-HTTP session with one MCP server.
 pub struct McpHttpClient {
@@ -188,18 +187,12 @@ impl McpHttpClient {
         Ok(())
     }
 
-    /// Discover the server's tools (patient retry default — no override).
+    /// Discover the server's tools, following `nextCursor` across pages
+    /// (#727; patient retry default — no override).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let res = self
-            .request("tools/list", json!({}), None)
+        list_tools_paginated(|params| self.request("tools/list", params, None))
             .await
-            .context("tools/list")?;
-        let tools = res
-            .get("tools")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(tools.iter().filter_map(parse_tool_def).collect())
+            .context("tools/list")
     }
 
     /// Invoke one tool. Returns the raw `tools/call` result object.
@@ -233,7 +226,7 @@ impl McpHttpClient {
             return Err(self.status_error(response, method).await);
         }
         let payload = if is_event_stream(response.headers()) {
-            read_sse_response(&self.server, response, id).await?
+            read_sse_response(&self.server, response, id, |frame| self.reply(frame)).await?
         } else {
             let body: Value = response
                 .json()
@@ -284,48 +277,7 @@ impl McpHttpClient {
         force_refresh: bool,
         retry: Option<RetryConfig>,
     ) -> Result<(reqwest::Response, StreamGuard)> {
-        let mut headers = self.headers.clone();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        // Accept both shapes the streamable-HTTP server may answer with.
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/json, text/event-stream"),
-        );
-        if let Some(auth) = &self.auth {
-            // A failure here (no stored token, refresh rejected) is itself an
-            // authorization problem, not a transport one — surface it as such so
-            // the runtime reports "needs auth".
-            let token = auth.access_token(force_refresh).await.map_err(|e| {
-                anyhow::Error::new(AuthRequired {
-                    server: self.server.clone(),
-                    resource_metadata: None,
-                })
-                .context(format!("obtaining an access token: {e}"))
-            })?;
-            let value = HeaderValue::from_str(&format!("Bearer {token}"))
-                .context("building the MCP bearer header")?;
-            headers.insert(AUTHORIZATION, value);
-        }
-        if let Some(v) = self
-            .protocol_version
-            .lock()
-            .expect("MCP protocol-version mutex poisoned")
-            .clone()
-        {
-            let value =
-                HeaderValue::from_str(&v).context("building the MCP-Protocol-Version header")?;
-            headers.insert(PROTOCOL_HEADER, value);
-        }
-        if let Some(sid) = self
-            .session_id
-            .lock()
-            .expect("MCP session-id mutex poisoned")
-            .clone()
-        {
-            let value =
-                HeaderValue::from_str(&sid).context("building the Mcp-Session-Id header")?;
-            headers.insert(SESSION_HEADER, value);
-        }
+        let headers = self.request_headers(force_refresh).await?;
         self.http
             .execute_with_retry(
                 &self.url,
@@ -377,57 +329,5 @@ impl McpHttpClient {
                 .lock()
                 .expect("MCP session-id mutex poisoned") = Some(sid.to_string());
         }
-    }
-}
-
-/// Extract the `resource_metadata="…"` parameter from a `WWW-Authenticate`
-/// challenge (RFC 9728 §5.1). Returns `None` when the header is absent or
-/// carries no such parameter — discovery then falls back to the well-known path
-/// derived from the server URL.
-pub fn resource_metadata_url(headers: &HeaderMap) -> Option<String> {
-    let challenge = headers.get(WWW_AUTHENTICATE)?.to_str().ok()?;
-    let start = challenge.find("resource_metadata=")? + "resource_metadata=".len();
-    let rest = &challenge[start..];
-    let value = if let Some(unquoted) = rest.strip_prefix('"') {
-        unquoted.split('"').next()?
-    } else {
-        // Unquoted parameters run to the next comma or whitespace.
-        rest.split([',', ' ']).next()?
-    };
-    (!value.is_empty()).then(|| value.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use reqwest::header::HeaderValue;
-
-    fn challenge(v: &'static str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(WWW_AUTHENTICATE, HeaderValue::from_static(v));
-        h
-    }
-
-    #[test]
-    fn extracts_quoted_resource_metadata() {
-        let h = challenge(
-            r#"Bearer error="invalid_token", resource_metadata="https://ex.com/.well-known/oauth-protected-resource""#,
-        );
-        assert_eq!(
-            resource_metadata_url(&h).unwrap(),
-            "https://ex.com/.well-known/oauth-protected-resource"
-        );
-    }
-
-    #[test]
-    fn extracts_unquoted_resource_metadata() {
-        let h = challenge("Bearer resource_metadata=https://ex.com/meta, error=x");
-        assert_eq!(resource_metadata_url(&h).unwrap(), "https://ex.com/meta");
-    }
-
-    #[test]
-    fn absent_or_irrelevant_challenge_yields_none() {
-        assert!(resource_metadata_url(&HeaderMap::new()).is_none());
-        assert!(resource_metadata_url(&challenge("Bearer error=\"invalid_token\"")).is_none());
     }
 }

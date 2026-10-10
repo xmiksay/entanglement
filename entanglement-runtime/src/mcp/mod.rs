@@ -48,6 +48,7 @@ pub mod enable_tool;
 pub mod live;
 pub mod oauth_ops;
 pub mod responder;
+mod result;
 pub mod scoped;
 pub mod stdio;
 pub mod tool;

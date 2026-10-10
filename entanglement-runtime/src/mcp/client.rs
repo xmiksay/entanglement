@@ -30,7 +30,10 @@ use super::McpServerConfig;
 
 // Re-exported so the rest of the runtime (and existing embedders) keep importing
 // these from `mcp::client`, unchanged by the ADR-0153 relocation.
-pub use entanglement_core::{jsonrpc_payload, parse_tool_def, McpToolDef};
+pub use entanglement_core::{
+    is_response, jsonrpc_payload, list_tools_paginated, parse_tool_def, server_request_reply,
+    McpToolDef,
+};
 #[cfg(feature = "mcp-http")]
 pub use entanglement_core::{AccessTokenSource, McpHttpClient};
 

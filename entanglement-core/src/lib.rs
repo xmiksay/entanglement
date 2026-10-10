@@ -43,7 +43,10 @@ pub use entanglement_provider::{
 // own. Nothing in core calls them. `HttpClient` above (#559) is what the MCP
 // HTTP transport is handed so its traffic shares the same per-endpoint
 // pool/RPM/concurrency/retry as LLM traffic — not `McpHttpClient`'s own name.
-pub use entanglement_provider::mcp::{jsonrpc_payload, parse_tool_def, McpHttpClient, McpToolDef};
+pub use entanglement_provider::mcp::{
+    is_response, jsonrpc_payload, list_tools_paginated, parse_tool_def, server_request_reply,
+    McpHttpClient, McpToolDef,
+};
 pub use entanglement_provider::oauth::{
     auth_required_of, is_auth_required, AccessTokenSource, AuthFlow, AuthOutcome, AuthRequired,
     DeviceFlow, OauthConfig, PendingAuthorization, PendingDeviceAuthorization, StoredAuth,

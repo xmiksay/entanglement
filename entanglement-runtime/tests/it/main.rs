@@ -47,6 +47,8 @@ mod list_operations;
 mod load_skill;
 mod log_compat_v060;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
+mod mcp_compat;
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_lazy_reenable;

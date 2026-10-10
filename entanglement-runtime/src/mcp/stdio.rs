@@ -7,7 +7,8 @@
 //! Framing is newline-delimited JSON, per the MCP stdio transport: every request,
 //! response, and notification is one JSON object on its own line. A background
 //! reader task demultiplexes responses back to their callers by JSON-RPC `id`;
-//! notifications (no `id`) are ignored. The client keeps the subprocess alive for
+//! notifications (no `id`) are ignored, and a server-initiated request (`ping`,
+//! #727) is answered on stdin. The client keeps the subprocess alive for
 //! its whole lifetime (`kill_on_drop`), so the tools it registers into the
 //! [`ToolRegistry`][crate::tools::ToolRegistry] stay callable until the process
 //! exits.
@@ -24,7 +25,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
-use super::client::{parse_tool_def, McpToolDef};
+use super::client::{is_response, list_tools_paginated, server_request_reply, McpToolDef};
 
 /// Protocol version we advertise on `initialize`. `2024-11-05` is the broadly
 /// supported baseline; the server negotiates its own supported version in the
@@ -43,14 +44,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>;
+/// The server's stdin, shared by request writers and the reader task's
+/// server-request replies (#727). An async mutex so concurrent writers
+/// serialize whole JSON lines without interleaving them on the pipe.
+type Writer = Arc<AsyncMutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 /// A live JSON-RPC session with one stdio MCP server.
 pub struct StdioClient {
     /// Server name from config — carried into every error message.
     server: String,
-    /// The server's stdin. Behind an async mutex so concurrent `tools/call`s
-    /// serialize their writes without interleaving JSON lines on the pipe.
-    stdin: AsyncMutex<Box<dyn AsyncWrite + Unpin + Send>>,
+    /// The server's stdin (see [`Writer`]).
+    stdin: Writer,
     /// In-flight requests keyed by id, answered by the reader task.
     pending: Pending,
     next_id: AtomicI64,
@@ -124,10 +128,11 @@ impl StdioClient {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(server.clone(), reader, pending.clone());
+        let stdin: Writer = Arc::new(AsyncMutex::new(Box::new(writer)));
+        spawn_reader(server.clone(), reader, pending.clone(), stdin.clone());
         Self {
             server,
-            stdin: AsyncMutex::new(Box::new(writer)),
+            stdin,
             pending,
             next_id: AtomicI64::new(1),
             _child: child,
@@ -151,18 +156,11 @@ impl StdioClient {
         Ok(())
     }
 
-    /// Discover the server's tools.
+    /// Discover the server's tools, following `nextCursor` across pages (#727).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let res = self
-            .request("tools/list", json!({}))
+        list_tools_paginated(|params| self.request("tools/list", params))
             .await
-            .context("tools/list")?;
-        let tools = res
-            .get("tools")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(tools.iter().filter_map(parse_tool_def).collect())
+            .context("tools/list")
     }
 
     /// Invoke one tool. Returns the raw `tools/call` result object (`content` +
@@ -215,22 +213,27 @@ impl StdioClient {
     }
 
     async fn write_line(&self, frame: &Value) -> Result<()> {
-        let mut line = serde_json::to_string(frame).context("encoding MCP request")?;
-        line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        stdin
-            .write_all(line.as_bytes())
+        write_frame(&self.stdin, frame)
             .await
-            .with_context(|| format!("writing to MCP server `{}`", self.server))?;
-        stdin.flush().await.context("flushing MCP server stdin")?;
-        Ok(())
+            .with_context(|| format!("writing to MCP server `{}`", self.server))
     }
 }
 
+/// Write one newline-framed JSON message, holding the lock for the whole line.
+async fn write_frame(stdin: &Writer, frame: &Value) -> Result<()> {
+    let mut line = serde_json::to_string(frame).context("encoding MCP message")?;
+    line.push('\n');
+    let mut stdin = stdin.lock().await;
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.flush().await.context("flushing MCP server stdin")?;
+    Ok(())
+}
+
 /// The demultiplexer: read newline-framed JSON, route each response to its
-/// waiting caller by `id`, ignore notifications. On EOF (server exited), drain
-/// every pending request with an error so no caller hangs forever.
-fn spawn_reader<R>(server: String, reader: R, pending: Pending)
+/// waiting caller by `id`, answer server requests (`ping`, #727), ignore
+/// notifications. On EOF (server exited), drain every pending request with an
+/// error so no caller hangs forever.
+fn spawn_reader<R>(server: String, reader: R, pending: Pending, stdin: Writer)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -240,7 +243,21 @@ where
             match read_line_capped(&mut reader, MAX_LINE_BYTES).await {
                 Ok(Some(line)) if line.trim().is_empty() => continue,
                 Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => route(&msg, &pending),
+                    Ok(msg) => {
+                        if let Some(reply) = server_request_reply(&msg) {
+                            // Written from its own task: a reader blocked on a
+                            // full stdin pipe would stop draining stdout, and a
+                            // server blocked writing stdout stops reading stdin.
+                            let (stdin, server) = (stdin.clone(), server.clone());
+                            tokio::spawn(async move {
+                                if let Err(e) = write_frame(&stdin, &reply).await {
+                                    tracing::debug!(server = %server, "MCP reply failed: {e:#}");
+                                }
+                            });
+                        } else {
+                            route(&msg, &pending);
+                        }
+                    }
                     Err(e) => tracing::debug!(server = %server, "unparsable MCP line: {e}"),
                 },
                 Ok(None) => break,
@@ -300,11 +317,14 @@ where
     }
 }
 
-/// Route one parsed message: a response (has `id`) resolves its pending oneshot;
-/// a notification is dropped.
+/// Route one parsed message: a response (has `id`, no `method`) resolves its
+/// pending oneshot; a notification is dropped.
 fn route(msg: &Value, pending: &Pending) {
+    if !is_response(msg) {
+        return; // notification (server requests are answered before this)
+    }
     let Some(id) = msg.get("id").and_then(Value::as_i64) else {
-        return; // notification
+        return; // a non-integer id is never one of ours
     };
     let Some(tx) = pending
         .lock()
@@ -340,9 +360,13 @@ mod tests {
                 "initialize" => Some(
                     json!({ "protocolVersion": PROTOCOL_VERSION, "serverInfo": { "name": "fake" } }),
                 ),
-                "tools/list" => Some(json!({ "tools": [
-                    { "name": "echo", "description": "echoes back", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } } }
-                ] })),
+                // Two pages (#727): the second only reachable via the cursor.
+                "tools/list" => Some(match msg["params"].get("cursor") {
+                    None => json!({ "tools": [
+                        { "name": "echo", "description": "echoes back", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } } }
+                    ], "nextCursor": "page2" }),
+                    Some(_) => json!({ "tools": [ { "name": "second" } ] }),
+                }),
                 "tools/call" => {
                     let text = msg
                         .get("params")
@@ -380,9 +404,41 @@ mod tests {
         let client = wire();
         client.handshake().await.unwrap();
         let tools = client.list_tools().await.unwrap();
-        assert_eq!(tools.len(), 1);
+        // Both pages land: the second only via `nextCursor` (#727).
+        assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[0].description, "echoes back");
+        assert_eq!(tools[1].name, "second");
+    }
+
+    /// A server `ping` mid-call (#727) — reusing the very id our `tools/call`
+    /// is waiting on — is answered with an empty result on stdin and does not
+    /// resolve the pending call; the real response that follows does.
+    #[tokio::test]
+    async fn answers_a_server_ping_without_confusing_it_for_our_response() {
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        let (creader, cwriter) = tokio::io::split(client_end);
+        let (sreader, mut swriter) = tokio::io::split(server_end);
+        let server = tokio::spawn(async move {
+            let mut lines = IoBufReader::new(sreader).lines();
+            let call: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id = call["id"].clone();
+            let send = |v: Value| format!("{v}\n");
+            let ping = send(json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }));
+            swriter.write_all(ping.as_bytes()).await.unwrap();
+            let reply: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let result = json!({ "content": [ { "type": "text", "text": "done" } ] });
+            let answer = send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+            swriter.write_all(answer.as_bytes()).await.unwrap();
+            reply
+        });
+        let client = StdioClient::new("pinger".to_string(), cwriter, creader, None);
+        let res = client.call_tool("x", json!({})).await.unwrap();
+        assert_eq!(res["content"][0]["text"], "done");
+        let reply = server.await.unwrap();
+        assert_eq!(reply, json!({ "jsonrpc": "2.0", "id": 1, "result": {} }));
     }
 
     #[tokio::test]
