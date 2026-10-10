@@ -1,6 +1,7 @@
 //! Putting one file back (ADR-0212): conflict-checked, and atomic — the
-//! restored bytes land through a synced temp file renamed over the target,
-//! so a crash mid-restore never leaves a half-written file.
+//! restored bytes land through a synced, exclusively created temp file
+//! renamed over the target, so a crash mid-restore never leaves a
+//! half-written file and a planted symlink is never written through.
 
 use std::io::Write;
 use std::path::Path;
@@ -80,23 +81,81 @@ pub(super) fn restore(
 fn write_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.entanglement-revert.tmp"));
+    let (mut file, tmp) = create_temp(dir)?;
     let written = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
         file.write_all(bytes)?;
         set_mode(&file, mode)?;
         file.sync_all()?;
+        // `rename` replaces whatever sits at `path` — a symlink included —
+        // rather than writing through it.
         std::fs::rename(&tmp, path)
     })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    match written {
+        Ok(()) => {
+            sync_dir(dir);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
     }
-    written
 }
+
+/// A fresh temp file in `dir` under a short, unpredictable name. WHY not a
+/// fixed name: the revert runs unsandboxed, and the model (even a sandboxed
+/// `bash`) could plant a symlink at a predictable path to make the restore
+/// write backup bytes outside the project. `create_new` + `O_NOFOLLOW`
+/// refuses any pre-existing entry, symlink or not; a collision just retries.
+/// The short name also keeps a long target filename under `NAME_MAX`.
+fn create_temp(dir: &Path) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    for attempt in 0..16u32 {
+        let tmp = dir.join(format!(".er-{}.tmp", temp_suffix(attempt)));
+        match create_exclusive(&tmp) {
+            Ok(file) => return Ok((file, tmp)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free temp name for the restore",
+    ))
+}
+
+/// Create `path` only if nothing exists there, never following a symlink.
+pub(super) fn create_exclusive(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
+/// 8 hex chars from the clock, the pid and the attempt — unpredictable
+/// enough that a planted name is a miss, and `create_new` covers a hit.
+fn temp_suffix(attempt: u32) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let seed = format!("{nanos}:{}:{attempt}", std::process::id());
+    sha256_hex(seed.as_bytes())[..8].to_string()
+}
+
+/// Make the rename itself durable — best-effort, a restore already happened.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) {
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) {}
 
 #[cfg(unix)]
 fn set_mode(file: &std::fs::File, mode: Option<u32>) -> std::io::Result<()> {

@@ -171,10 +171,11 @@ impl FileBackups {
     pub fn revert(&self, session: &SessionId, to_turn: Option<u32>) -> Result<FileRevertReport> {
         let _guard = lock(&self.inner.manifests);
         let loaded = self.load(session)?;
-        if let Some(busy) = loaded.subtree.iter().find(|s| self.is_busy(s)) {
+        if let Some(busy) = loaded.subtree.iter().find(|s| self.is_busy(s, session)) {
             anyhow::bail!(
                 "refused: session `{}` in this session's tree is still working (a turn or \
-                 background job) — revert once it is idle",
+                 background job), or its state was missed — revert once it is idle and has \
+                 reported its status",
                 busy.0
             );
         }

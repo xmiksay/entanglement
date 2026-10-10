@@ -60,13 +60,24 @@ tools wrote.
    tree is busy.** A revert is refused (an `Error`) while any session of the
    target's sub-tree is mid-turn (`Status` folded by `track_roots`) or runs
    detached work (a background job or detached script, via the
-   `BusyProbe`) — its writes would race the restore. Otherwise, reverting
+   `BusyProbe`) — its writes would race the restore. The `Status` fold rides
+   a lossy broadcast, so a lagged subscription marks every known session
+   busy until it reports a fresh `Status` (the target itself is exempt: core
+   only runs the revert while it is idle). Remaining narrow window: a child
+   directly prompted *during* the revert starts writing before its `Status`
+   is folded. Otherwise, reverting
    after turn `N` takes every unreverted change of the session and its
    sub-tree in turns `> N`, groups them per file, and puts the file back to
    the **first** change's `before` (rewrite; delete when the agent created
    it; recreate when the agent deleted it) only if it still hashes to the
    **last** change's `after`. Rewrites go through a synced sibling temp file
-   renamed over the target, carrying the file's mode (or the recorded one).
+   renamed over the target (then a best-effort directory fsync), carrying the
+   file's mode (or the recorded one). The temp file has a short random name
+   and is created `create_new` + `O_NOFOLLOW`: the revert runs unsandboxed,
+   so a symlink the model planted at a predictable name must never redirect
+   the write outside the project, and a long target name must not push the
+   temp name past `NAME_MAX`. The rename replaces a symlink at the target
+   rather than writing through it.
    A file already back at `before` (an earlier revert whose marker was lost)
    counts as restored. Outcomes:
    - restored → marked `reverted`;

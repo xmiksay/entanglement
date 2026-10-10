@@ -572,7 +572,9 @@ when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
   registries, wired in `boot.rs`). Otherwise every unreverted change of the
   session and its spawn sub-tree after the target turn is grouped per file;
   the file goes back to the *first* change's `before` (rewritten through a
-  synced temp file + rename keeping its mode, or deleted when the agent
+  synced, randomly named temp file created `create_new` + `O_NOFOLLOW` — no
+  planted symlink is ever written through — then rename + directory fsync,
+  keeping its mode; or deleted when the agent
   created it; recreated when the agent deleted it) **only if** it still
   hashes to the *last* change's `after` — or counts as restored if it is
   already at `before`. A user edit or a `bash` change is reported as skipped,
