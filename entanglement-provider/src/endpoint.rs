@@ -150,13 +150,8 @@ fn truncate(text: String) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{RetryConfig, SharedStateLocation};
+    use crate::client::test_http_client;
     use std::io::{Read, Write};
-
-    fn test_http_client() -> HttpClient {
-        HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-            .unwrap()
-    }
 
     /// Spawn a one-shot raw-socket server answering exactly one connection
     /// with `response` (a full `HTTP/1.1 ...` byte string), returning its

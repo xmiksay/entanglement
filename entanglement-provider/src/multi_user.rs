@@ -325,8 +325,7 @@ fn resolve_for_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::ModelEntry;
-    use crate::client::{RetryConfig, SharedStateLocation};
+    use crate::{catalog::ModelEntry, client::test_http_client};
 
     fn zai_catalog(rpm: Option<u32>) -> Catalog {
         Catalog {
@@ -371,12 +370,7 @@ mod tests {
     #[test]
     fn resolver_errors_without_a_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(
-            store,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(store, test_http_client(), None);
         let err = resolver(None, "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("session user"));
     }
@@ -384,12 +378,7 @@ mod tests {
     #[test]
     fn resolver_errors_for_an_unregistered_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(
-            store,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(store, test_http_client(), None);
         let user = UserId::new("alice");
         let err = resolver(Some(&user), "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("alice"));
@@ -404,12 +393,7 @@ mod tests {
             UserProviderContext::new(zai_catalog(Some(7))).with_key("ZAI_API_KEY", "alice-key"),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(
-            store,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(store, test_http_client(), None);
         let resolved = resolver(Some(&alice), "zai", "glm-5.2").expect("resolves");
         assert_eq!(resolved.provider, "zai");
         assert_eq!(resolved.model, "glm-5.2");
@@ -431,12 +415,7 @@ mod tests {
             UserProviderContext::new(Catalog { providers: vec![] }),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(
-            store,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(store, test_http_client(), None);
 
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         let err = resolver(Some(&bob), "zai", "glm-5.2").err().unwrap();
@@ -464,12 +443,7 @@ mod tests {
         let alice = UserId::new("alice");
         store.set(alice.clone(), UserProviderContext::new(catalog.clone()));
         let shared: Arc<dyn UserProviderStore> = Arc::new(store.clone());
-        let resolver = build_user_model_resolver(
-            shared,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(shared, test_http_client(), None);
         let err = resolver(Some(&alice), "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("OAuth-protected"), "{err}");
         assert!(err.contains("with_token_source"), "{err}");
@@ -479,12 +453,7 @@ mod tests {
             UserProviderContext::new(catalog).with_token_source("zai", Arc::new(StaticToken)),
         );
         let shared: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(
-            shared,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(shared, test_http_client(), None);
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
     }
 
@@ -508,12 +477,7 @@ mod tests {
             UserProviderContext::new(zai_catalog(Some(2))).with_key("ZAI_API_KEY", "shared-key"),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(
-            store,
-            HttpClient::with_shared_state(SharedStateLocation::Disabled, RetryConfig::default())
-                .unwrap(),
-            None,
-        );
+        let resolver = build_user_model_resolver(store, test_http_client(), None);
 
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         assert!(resolver(Some(&bob), "zai", "glm-5.2").is_ok());
