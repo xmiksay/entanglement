@@ -17,6 +17,7 @@ use crate::id_gen::{IdContext, IdGen, IdKind};
 use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
 use entanglement_provider::ContentPart;
 
+mod agent_catalog;
 mod config;
 mod directory;
 mod emit;
@@ -25,9 +26,9 @@ mod routing;
 mod supervisor;
 mod unknown_session;
 
+pub use agent_catalog::AgentCatalog;
 pub use config::{
-    AgentCatalog, ConfigError, EngineConfig, FileReverter, SessionModel, SystemPromptResolver,
-    ToolSpecResolver,
+    ConfigError, EngineConfig, FileReverter, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
 pub(crate) use directory::SessionDirectory;
 use outlets::Outlets;
