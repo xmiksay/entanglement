@@ -5,7 +5,7 @@
 //! unknown tool. Core here has no `tool_spec_resolver`, so it never unwraps.
 
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,13 +13,11 @@ use entanglement_core::{
     stream_from_response, Discovery, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolAdvertising, ToolCall,
 };
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::{AdvertisingState, Encoding};
-use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
+use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 use entanglement_runtime::{Tool, ToolRegistry};
 
 struct ScriptedLlm {
@@ -105,34 +103,22 @@ async fn run_malformed_invoke(discovery: Discovery, agent: &str) -> Vec<OutEvent
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(profiles)
+        .base(base)
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        // No advertising inputs: nothing re-pins over the state set above.
-        None,
-        Some(DiscoverySurface {
+        ))
+        .discovery(DiscoverySurface {
             advertising,
             ..Default::default()
-        }),
-    );
+        })
+        .spawn();
 
     holly
         .send(InMsg::Spawn {

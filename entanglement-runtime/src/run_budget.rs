@@ -32,7 +32,7 @@ struct Budget {
 
 /// Run until the engine's outbox closes, ending any session whose mode's
 /// `max_turns`/`max_duration` is breached. Spawned once per executor
-/// (inside `tool_runner::spawn_tool_executor_with_policy`, alongside its
+/// (inside `tool_runner::ToolExecutorBuilder::spawn`, alongside its
 /// other background tasks) so every caller — `skutter` included — gets this
 /// for free without wiring it up itself. Tracks each session's mode itself
 /// (off `OutEvent::ModeChanged`) rather than sharing `tool_runner`'s own

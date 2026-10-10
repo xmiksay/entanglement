@@ -17,7 +17,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     SessionId,
 };
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
 /// Every request's advertised tool-name set, in arrival order.
@@ -78,12 +78,12 @@ async fn advertised_tools_are_byte_identical_across_agents() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        profiles,
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(profiles)
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
 
     // ADR-0207 §9: an agent is chosen once, at spawn, and fixed for the
     // session's whole life — so the "does the array vary by agent" question

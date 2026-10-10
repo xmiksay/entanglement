@@ -16,7 +16,7 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
 };
 use entanglement_runtime::capability::Capability;
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
 /// Calls `edit` when the last message is exactly `"edit it"`, else answers
@@ -68,12 +68,10 @@ fn engine() -> Holly {
     });
     let mut reg = ToolRegistry::new();
     reg.register(EchoEdit);
-    let _executor = spawn_tool_executor(
-        &holly,
-        reg,
-        agents,
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, reg.shared())
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     holly
 }
 

@@ -1,11 +1,11 @@
 //! Integration tests for `agent`'s `model` parameter (#560 P12, ADR-0207
 //! §12): a spawning model may pick the child's model, validated against the
 //! catalog before any child is minted. Drives the real tool executor with a
-//! real catalog wired (`spawn_tool_executor_with_policy` +
+//! real catalog wired (`ToolExecutor::builder` +
 //! `AdvertisingInputs`, mirroring `advertising_pin.rs`'s harness) so
 //! `resolve_model` sees genuine catalog data, not a stub.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,13 +14,11 @@ use entanglement_core::{
     LlmResponse, LlmStream, MessageRole, OutEvent, Permission, PermissionProfile, ResolvedModel,
     SessionId, ToolCall,
 };
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_advertising::AdvertisingInputs;
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_policy;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
 const CATALOG: &str = "providers:\n\
@@ -146,30 +144,19 @@ fn spawn_executor(
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    spawn_tool_executor_with_policy(
-        holly,
-        tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        Arc::new(
+    ToolExecutor::builder(holly, tools)
+        .agents(agents)
+        .base(base)
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        Some(inputs),
-        None,
-    )
+        ))
+        .advertising_inputs(inputs)
+        .spawn()
 }
 
 #[tokio::test]

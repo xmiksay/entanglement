@@ -5,7 +5,7 @@
 //! bound session — without waiting for another tool call.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,14 +14,12 @@ use entanglement_core::{
     OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::plan_watch::spawn_plans_watcher;
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
-use entanglement_runtime::skills::SkillRegistry;
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
-use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, EscapeRoot};
+use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {
@@ -117,32 +115,20 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         store,
     };
     let plan_files = Arc::new(PlanFileRegistry::new());
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(profiles)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        base,
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Hooks::default(),
-        Some(escape_root),
-        Arc::new(
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(profiles)
+        .base(base)
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .escape_root(escape_root)
+        .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
-        ),
-        plan_files.clone(),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
-        // No tool-advertising inputs (ADR-0196) — resolves tool_search.
-        None,
-        None,
-    );
+        ))
+        .plan_files(plan_files.clone())
+        .spawn();
     let _watcher = spawn_plans_watcher(&holly, root.to_path_buf(), plan_files)
         .expect("the pre-created plans folder must be watchable");
     holly

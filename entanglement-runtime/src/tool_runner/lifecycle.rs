@@ -16,7 +16,7 @@ use super::ladder::{self, Intercept, LadderCtx};
 
 /// Run the executor loop until the engine's outbox closes. `active` is the
 /// shared per-session agent map this loop is the sole writer of;
-/// `advertising_inputs` is `None` for the convenience wrappers and tests.
+/// `advertising_inputs` is `None` by the builder default.
 pub(super) async fn run(
     mut sub: broadcast::Receiver<OutEvent>,
     ctx: &LadderCtx,
@@ -67,7 +67,7 @@ pub(super) async fn run(
     // tool set `describe` writes into) is caller-constructed and shared
     // — Phase P1's loop-local-only map is gone; the `tool_spec_resolver`/
     // `system_prompt_resolver` closures in `boot.rs` read the same `Arc`.
-    // `advertising_inputs == None` (the convenience wrappers, tests)
+    // `advertising_inputs == None` (the builder default)
     // keeps the fold running so the shape is identical, resolving
     // `tool_search` throughout.
     loop {

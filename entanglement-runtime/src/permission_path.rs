@@ -85,9 +85,8 @@ pub fn rooted_arg(root: &Path, tool: &str, arg: &str) -> String {
 
 /// The grading-time argument for a permission/grant decision:
 /// [`permission_arg`][crate::permission::permission_arg] mapped through
-/// [`rooted_arg`] when a project `root` is wired. `root: None` — the test-only
-/// `spawn_tool_executor`/`spawn_tool_executor_with_hooks` wrappers, which pass
-/// no escape-root policy — yields the verbatim argument, byte-identical to
+/// [`rooted_arg`] when a project `root` is wired. `root: None` — a `ToolExecutor::builder`
+/// with no `.escape_root(..)` — yields the verbatim argument, byte-identical to
 /// pre-#485 behavior. This is the function every arg-scoped rule match and
 /// grant-key lookup should use; `permission_arg` itself stays reserved for
 /// display (the TUI transcript) and the escape-root/workdir extractors, which

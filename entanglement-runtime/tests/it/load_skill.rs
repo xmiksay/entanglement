@@ -20,7 +20,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::skills::{load_registry, LoadSkillTool};
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 
 /// Replays scripted responses in order, then a plain text reply so the turn loop
 /// terminates. The `read` call in turn 2 references a path captured *after* the
@@ -180,12 +180,14 @@ async fn load_skill_then_read_a_substituted_ref() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        tools,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     let mut watch = holly.subscribe();
@@ -326,29 +328,18 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
     let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
         entanglement_runtime::policy::DefaultGrantStore::load_from(None),
     );
-    let _executor = entanglement_runtime::tool_runner::spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(std::sync::RwLock::new(profiles)),
-        Arc::new(std::sync::RwLock::new(Arc::new(
+    let _executor = entanglement_runtime::tool_runner::ToolExecutor::builder(&holly, shared_tools)
+        .agents(profiles)
+        .live_skills(Arc::new(std::sync::RwLock::new(Arc::new(
             entanglement_runtime::skills::SkillRegistry::default(),
-        ))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        mode_table,
-        Arc::new(entanglement_runtime::plan_files::PlanFileRegistry::new()),
-        None,
-        None,
-        None,
-    );
+        ))))
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(mode_table)
+        .spawn();
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

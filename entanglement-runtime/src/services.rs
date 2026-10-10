@@ -2,7 +2,6 @@
 //! responders, persistence, watchers — plus the handles every head needs and
 //! the ordered shutdown that lets persistence drain.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -12,7 +11,7 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 use tokio::task::JoinHandle;
 
 use crate::boot::Engine;
-use crate::policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
+use crate::policy::DefaultGrantStore;
 use crate::tool_runner::DiscoverySurface;
 use crate::{
     capability, config, history, logging, mcp, mode, persistence, plan_files, plan_watch, throttle,
@@ -92,13 +91,6 @@ pub(crate) fn start(
     // `live_profiles`. The user config's `permissions` section is the global
     // ceiling clamped over every resolved grade (#172), and its `hooks` section
     // wires the lifecycle hooks (#199) around tool dispatch and prompt ingress.
-    // Built directly against `spawn_tool_executor_with_policy` (#311) rather
-    // than the `_with_hooks` convenience wrapper (which owns a plain
-    // `AgentCatalog`) because the head needs its own handles on `active` and
-    // `grants` — `grants` feeds the definitions watcher's `LiveDefinitions`
-    // below (#329), so a persisted "always allow" grant another skutter
-    // instance recorded is visible on the next reload.
-    let active = Arc::new(Mutex::new(HashMap::new()));
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
     // `ModeResolver` grades every call from this map, not from `active`.
@@ -123,15 +115,11 @@ pub(crate) fn start(
         })
         .context("building the permission mode table from config.yml `modes:`")?
     });
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
-        perm_modes.clone(),
-        mode_table.clone(),
-        tools.clone(),
-        user_config.permissions.clone(),
-        // Root-relative arg normalization (#485, ADR-0125): cloned before
-        // `escape_root` moves into `spawn_tool_executor_with_policy` below.
-        Some(escape_root.root.clone()),
-    ));
+    // `grants` is built here rather than left to the builder's in-memory
+    // default (#747/#775): the head persists `Always` grants to the managed
+    // `grants.yml`, and the same store feeds the definitions watcher's
+    // `LiveDefinitions` below (#329), so a grant another skutter instance
+    // recorded is visible on the next reload.
     let grants = Arc::new(DefaultGrantStore::load());
     // Per-session plan-file staleness tracking (#513): constructed here, not
     // inside the executor, so the dedicated plans-folder watch (#627, below)
@@ -139,41 +127,34 @@ pub(crate) fn start(
     // executor's staleness guard must agree on what the agent last knew.
     let plan_files = Arc::new(plan_files::PlanFileRegistry::new());
     // Cloned before `escape_root` moves into the executor below — reused for
-    // the plans watcher's own root (#627, same story as the resolver's clone
-    // just above).
+    // the plans watcher's own root (#627).
     let plan_root = escape_root.root.clone();
-    let tool_executor = tool_runner::spawn_tool_executor_with_policy(
-        &holly,
-        tools.clone(),
-        jobs,
-        retained,
-        scripts,
-        live_profiles.clone(),
-        live_skills.clone(),
-        user_config.permissions.clone(),
-        active,
-        perm_modes,
-        resolver,
-        grants.clone(),
-        user_config.hooks.clone(),
+    // The resolver is the builder's default `ModeResolver` over exactly
+    // these `perm_modes`/`mode_table`/`tools`/ceiling, with root-relative arg
+    // normalization off `escape_root` (#485, ADR-0125).
+    let tool_executor = tool_runner::ToolExecutor::builder(&holly, tools.clone())
+        .jobs(jobs)
+        .retained(retained)
+        .scripts(scripts)
+        .live_agents(live_profiles.clone())
+        .live_skills(live_skills.clone())
+        .base(user_config.permissions.clone())
+        .perm_modes(perm_modes)
+        .grants(grants.clone())
+        .hooks(user_config.hooks.clone())
         // Escape-root approval (ADR-0109): the same store the host tools read.
-        Some(escape_root),
-        // The mode table `perm_modes` resolves against (ADR-0207 §6, stage
-        // 5b) — used only to source a spawn's `max_depth`/`max_agents`
-        // bound; sandboxing itself reads `perm_modes` directly, independent
-        // of this executor (`engine_setup::register_default_tools`'s
-        // resolver).
-        mode_table,
-        plan_files.clone(),
-        // No per-user MCP scopes (#684) — single-user.
-        None,
+        .escape_root(escape_root)
+        // `mode_table` carries the `config.yml` `modes:` tuning; sandboxing
+        // reads `perm_modes` directly, independent of this executor.
+        .mode_table(mode_table)
+        .plan_files(plan_files.clone())
         // The same advertising inputs the resolver pins from; the executor
         // only logs a `SetModel` onto a model preferring another mode.
-        Some(advertising_inputs),
+        .advertising_inputs(advertising_inputs)
         // `explore`/`describe`'s shared state (#560, ADR-0196 §4): the same
         // `advertising_state` the tool-spec/system-prompt resolvers `boot`
         // wired read, plus the MCP three-state roster `explore` lists.
-        Some(DiscoverySurface {
+        .discovery(DiscoverySurface {
             advertising: advertising_state,
             mcp_avail: mcp_available.clone(),
             mcp_active: mcp_active.clone(),
@@ -181,8 +162,8 @@ pub(crate) fn start(
             // ADR-0201: the same shared endpoint-pool client a dispatch-time
             // lazy MCP re-enable rides.
             http: Some(http_client.clone()),
-        }),
-    );
+        })
+        .spawn();
 
     // Live MCP server management (#375): a runtime service answering
     // `McpList`/`McpAdd`/`McpRemove` off the inbound fan-out, since it alone

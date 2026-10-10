@@ -334,12 +334,63 @@ through `pair_records`, and drives the full round-trip end to end.
 
 ## 4. Custom tool execution / policy
 
-`spawn_tool_executor_with_policy` (#311,
-[ADR-0079](adr/0079-pluggable-permission-resolver-and-grant-store.md)) is the
-seam: it drives two trait objects instead of the CLI's file-backed defaults,
-so a per-tenant DB-backed policy plugs in without forking the ~350-line
-executor (spawn/mask gating, hooks, `rhai`, the plan/tasks tools all stay
-shared):
+### Constructing the executor — `ToolExecutor::builder`
+
+The runtime tool executor (permission dispatch, approvals, host-tool
+execution) is built with one builder (#724). The two required inputs go into
+`builder(..)` itself, so a half-configured executor can't be spawned; every
+other seam is an optional setter with a default, so a seam added in a later
+release never breaks your call site:
+
+```rust,ignore
+use entanglement_runtime::tool_runner::ToolExecutor;
+
+let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRegistry
+    .agents(catalog)
+    .resolver(Arc::new(TenantResolver { .. }))
+    .grants(Arc::new(TenantGrants { .. }))
+    .mcp_scopes(scopes)
+    .spawn(); // tokio::task::JoinHandle<()>, abort it to shut down
+```
+
+| Setter | Default when not called |
+| --- | --- |
+| `agents(AgentCatalog)` / `live_agents(Arc<RwLock<AgentCatalog>>)` | `AgentCatalog::new()` (built-in profiles) |
+| `live_skills(Arc<RwLock<Arc<SkillRegistry>>>)` | empty registry |
+| `base(PermissionProfile)` | allow-all ceiling (no clamp — same as an absent `permissions:`) |
+| `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `escape_root` is set |
+| `grants(Arc<dyn GrantStore>)` | **in-memory only** — `Always` grants never touch `grants.yml` (#747/#775) |
+| `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
+| `perm_modes(..)` / `active(..)` | private maps (pass your own only if you read them too, e.g. a mode-aware sandbox resolver) |
+| `hooks(Hooks)` | no hooks |
+| `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
+| `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |
+| `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
+| `advertising_inputs(Arc<AdvertisingInputs>)` | none — every session resolves `tool_search` |
+| `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private state, empty MCP roster) |
+
+**Persisted grants are opt-in.** A single-user head that wants `Always`
+approvals written to the managed `grants.yml` must say so —
+`.grants(Arc::new(DefaultGrantStore::load()))`, exactly as `skutter` does in
+`services.rs`. Leaving the setter out keeps grants for the executor's lifetime
+only.
+
+**Migrating from the positional constructors** (deprecated in 0.7, removed
+after): `spawn_tool_executor(h, t, a, b)` →
+`ToolExecutor::builder(h, t.shared()).agents(a).base(b).spawn()`;
+`spawn_tool_executor_with_hooks` adds `.hooks(hooks)`;
+`spawn_tool_executor_with_policy(h, t, …)` maps each positional argument onto
+the setter of the same name (`agents` → `live_agents`, `skills` →
+`live_skills`, an `Option` argument → its setter only when `Some`). Drop any
+setter whose argument was just the default above.
+
+### The policy seams
+
+`.resolver(..)` and `.grants(..)` (#311,
+[ADR-0079](adr/0079-pluggable-permission-resolver-and-grant-store.md)) are the
+seam: two trait objects instead of the CLI's file-backed defaults, so a
+per-tenant DB-backed policy plugs in without forking the executor
+(spawn bounds, hooks, `rhai`, the plan/tasks tools all stay shared):
 
 ```rust
 #[async_trait]
@@ -418,8 +469,8 @@ or a deploy. Three things follow that a custom executor/resolver must honor:
   ([ADR-0071](adr/0071-parked-turn-reoffer-timer.md)) — this is what makes the
   *in-process* re-offer timer (60s of silence on a parked turn) safe without a
   restart. A custom executor needs the equivalent: track in-flight
-  `request_id`s yourself if you don't reuse `spawn_tool_executor_with_policy`
-  as-is.
+  `request_id`s yourself if you don't reuse `ToolExecutor::builder`'s
+  executor as-is.
 - **Single-instance assumption.** Nothing in the protocol coordinates *two*
   processes racing to resolve the same parked turn — `Holly::resume` assumes
   the caller is the sole authority resuming that session id. If your deployment
@@ -550,8 +601,8 @@ seam implementations over it. Per seam:
   (replace semantics — the global MCP set disappears for scoped sessions;
   same-named servers across users stay distinct via the `(scope key, server)`
   connection cache). Close an `McpScopeResolver` over your session→user map,
-  hand the `McpScopes` to `spawn_tool_executor_with_policy` (its final
-  parameter — `None` keeps single-user behavior), and wrap your
+  hand the `McpScopes` to `ToolExecutor::builder(..).mcp_scopes(scopes)`
+  (leaving the setter out keeps single-user behavior), and wrap your
   `tool_spec_resolver` with `overlay_specs`:
 
   ```rust,ignore

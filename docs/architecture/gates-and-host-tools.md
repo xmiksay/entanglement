@@ -105,8 +105,8 @@ it with struct-update syntax so a future metadata field is non-breaking.
 method (falls back to `run_content`) so every in-tree tool is unaffected; a
 multi-tenant embedder overrides it to dispatch per-tenant MCP endpoints or scope
 a DB-backed tool's writes to the caller, since a shared `ToolRegistry` otherwise
-can't tell tenants apart at execution time even though `spawn_tool_executor_with_policy`
-(#311) already resolves *permission* per session. `Ask`
+can't tell tenants apart at execution time even though the executor's
+`.resolver(..)` seam (#311) already resolves *permission* per session. `Ask`
 emits the `ToolRequest` prompt and waits for the head's decision on
 `Holly::subscribe_inbound()` (the engine's inbound `InMsg` fan-out). The executor
 is **idempotent by `request_id`** (✅ #274,
@@ -880,17 +880,18 @@ and the inbound `InMsg::Prompt` fan-out — so no new protocol surface is added.
   (`agent`/`ask_user`/`propose_plan`, which touch no host resource) and the
   self-permissioning `rhai` tool bypass hooks — matching the issue's "around
   `tool_runner::dispatch`" scope.
-- **Wiring:** `skutter` passes its hooks to `spawn_tool_executor_with_policy`
-  (`services.rs`); `spawn_tool_executor_with_hooks(holly, tools, profiles, base, hooks)`
-  is the convenience wrapper with the default policy seams, and the historical
-  `spawn_tool_executor` is its no-hook form. The inbound subscription is hoisted
-  synchronous before the executor task spawns so a first `Prompt` can't race the
+- **Wiring:** `skutter` passes its hooks via `ToolExecutor::builder(..).hooks(..)`
+  (`services.rs`, #724 — the builder replaced the positional
+  `spawn_tool_executor*` constructors, kept deprecated for 0.7 only; every
+  unset seam takes a documented default, table in `docs/embedding.md` §4).
+  `ToolExecutorBuilder::spawn` subscribes to the inbound fan-out
+  synchronously before the executor task spawns so a first `Prompt` can't race the
   `user_prompt_submit` watcher.
 
 ### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../adr/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
 
-The executor hard-codes *no* policy source. `spawn_tool_executor_with_policy(…,
-resolver: Arc<dyn PermissionResolver>, grants: Arc<dyn GrantStore>, …)` (module
+The executor hard-codes *no* policy source. `ToolExecutor::builder(..)
+.resolver(Arc<dyn PermissionResolver>).grants(Arc<dyn GrantStore>)` (traits in
 `entanglement-runtime::policy`) drives two trait objects, so a multi-tenant
 embedder that stores rules per user in its own DB swaps both without forking the
 ~350-line executor — keeping the shared interception ladder, spawn bounds,
@@ -924,18 +925,16 @@ hooks, rhai, and plan/tasks tools.
 
 ### Dynamic `ToolRegistry` — `SharedRegistry` — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) (#372)
 
-`spawn_tool_executor_with_policy`'s `tools` parameter is a `SharedRegistry`
+`ToolExecutor::builder`'s required `tools` argument is a `SharedRegistry`
 (`Arc<std::sync::RwLock<ToolRegistry>>`, `ToolRegistry::shared()`), not an owned
-`ToolRegistry` — the seam a future live MCP add/remove (#4) needs to mutate the
-dispatch table without restarting the engine. The two convenience wrappers,
-`spawn_tool_executor`/`spawn_tool_executor_with_hooks`, keep their historical
-owned-`ToolRegistry` signature and `.shared()`-wrap internally (mirroring the
-existing `profiles: Arc<RwLock<AgentCatalog>>` pattern, §"Pluggable policy
-seams" above), so existing single-owner callers keep compiling unchanged. Since
-#747 both wrappers use an **in-memory** grant store (never reading or writing the
-managed `grants.yml`) so their test callers can't touch the developer's real
-file; a production caller wanting persisted `Always` grants uses
-`spawn_tool_executor_with_policy` with `DefaultGrantStore::load()`.
+`ToolRegistry` — the seam a live MCP add/remove (#4) needs to mutate the
+dispatch table without restarting the engine. An owned registry converts with
+`.shared()` (mirroring `.agents(catalog)` vs `.live_agents(shared)` for the
+agent catalog). The builder's grant store defaults to **in-memory** (#747/#775 —
+never reading or writing the managed `grants.yml`, so test callers can't touch
+the developer's real file); a production caller wanting persisted `Always`
+grants sets `.grants(Arc::new(DefaultGrantStore::load()))`, as `services.rs`
+does.
 `ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
 `names` alongside `register`.
 
@@ -1238,8 +1237,8 @@ the same permission profiles as `read`/`bash`.
 
 The registry `mcp::connect` populates at startup is no longer frozen:
 `entanglement_runtime::SharedRegistry` (`Arc<std::sync::RwLock<ToolRegistry>>`)
-replaces the owned `ToolRegistry` on every `tool_runner::spawn_tool_executor*`
-entry point, and `EngineConfig.tool_spec_resolver` (§ADR-0076) is wired to
+replaces the owned `ToolRegistry` as the executor's tool input
+(`ToolExecutor::builder(holly, tools)`), and `EngineConfig.tool_spec_resolver` (§ADR-0076) is wired to
 snapshot it fresh every turn — so the tools a live add/remove registers reach
 both dispatch and model-advertised schemas with no engine restart.
 

@@ -5,7 +5,7 @@
 //!
 //! The parsed [`RawCeiling`] is turned into a plain
 //! [`entanglement_core::PermissionProfile`] — the type every dispatch call
-//! site already threads (`spawn_tool_executor*`, `BindingPolicy`, ~30 test
+//! site already threads (`ToolExecutor::builder`, `BindingPolicy`, ~30 test
 //! fixtures) — by pushing each `deny`/`allow`/`prompt` entry as a rule.
 //! Declaration order no longer matters the way it used to: grading now goes
 //! through [`crate::mode::Mode::from_permission_profile`] at every real use

@@ -1,6 +1,6 @@
 //! Integration test: lifecycle hooks (#199, ADR-0066) wired through the real
 //! engine. A scripted LLM asks for a `read`; the runtime's
-//! `spawn_tool_executor_with_hooks` runs the configured `pre_tool_use` /
+//! `ToolExecutor::builder`'s `.hooks(..)` seam runs the configured `pre_tool_use` /
 //! `post_tool_use` / `user_prompt_submit` commands around the dispatch.
 //!
 //! - a non-zero `pre_tool_use` hook must **block** the tool (its output becomes
@@ -19,7 +19,7 @@ use entanglement_core::{
 use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::hooks::{HookSpec, Hooks};
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::tool_runner::spawn_tool_executor_with_hooks;
+use entanglement_runtime::tool_runner::ToolExecutor;
 
 /// Replays scripted responses, then a plain text reply so the turn loop ends.
 struct ScriptedLlm {
@@ -170,13 +170,11 @@ async fn pre_tool_use_hook_blocks_the_tool() {
         pre_tool_use: vec![spec("echo policy-veto >&2; exit 1")],
         ..Default::default()
     };
-    let _exec = spawn_tool_executor_with_hooks(
-        &holly,
-        tools,
-        built_in_registry().expect("built-in agents must parse"),
-        allow_all(),
-        hooks,
-    );
+    let _exec = ToolExecutor::builder(&holly, tools.shared())
+        .agents(built_in_registry().expect("built-in agents must parse"))
+        .base(allow_all())
+        .hooks(hooks)
+        .spawn();
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -212,13 +210,11 @@ async fn pre_tool_use_hook_exit_zero_lets_the_tool_run() {
         pre_tool_use: vec![spec("exit 0")],
         ..Default::default()
     };
-    let _exec = spawn_tool_executor_with_hooks(
-        &holly,
-        tools,
-        built_in_registry().expect("built-in agents must parse"),
-        allow_all(),
-        hooks,
-    );
+    let _exec = ToolExecutor::builder(&holly, tools.shared())
+        .agents(built_in_registry().expect("built-in agents must parse"))
+        .base(allow_all())
+        .hooks(hooks)
+        .spawn();
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -246,13 +242,11 @@ async fn post_tool_use_hook_runs_after_a_cleared_tool() {
         post_tool_use: vec![spec(&format!("touch {}", marker.display()))],
         ..Default::default()
     };
-    let _exec = spawn_tool_executor_with_hooks(
-        &holly,
-        tools,
-        built_in_registry().expect("built-in agents must parse"),
-        allow_all(),
-        hooks,
-    );
+    let _exec = ToolExecutor::builder(&holly, tools.shared())
+        .agents(built_in_registry().expect("built-in agents must parse"))
+        .base(allow_all())
+        .hooks(hooks)
+        .spawn();
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -292,13 +286,11 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
         user_prompt_submit: vec![spec(&format!("cat > {}", out.display()))],
         ..Default::default()
     };
-    let _exec = spawn_tool_executor_with_hooks(
-        &holly,
-        tools,
-        built_in_registry().expect("built-in agents must parse"),
-        allow_all(),
-        hooks,
-    );
+    let _exec = ToolExecutor::builder(&holly, tools.shared())
+        .agents(built_in_registry().expect("built-in agents must parse"))
+        .base(allow_all())
+        .hooks(hooks)
+        .spawn();
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

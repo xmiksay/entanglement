@@ -4,7 +4,7 @@
 //! so an unknown `mcp__<server>__*` call must self-heal — or, failing that,
 //! answer truthfully — rather than fall back to the generic unknown-tool
 //! hint. Drives the real permission-dispatch loop
-//! (`tool_runner::spawn_tool_executor_with_policy`) with a real
+//! (`tool_runner::ToolExecutor::builder`) with a real
 //! `AvailableMcp` and a real local streamable-HTTP MCP server (mirrors
 //! `mcp_http.rs`'s harness), never a stand-in `Tool` registered ahead of time
 //! — the whole point is that the tool does *not* exist in the registry when
@@ -15,7 +15,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -32,12 +32,10 @@ use entanglement_core::{
     SessionId, ToolCall,
 };
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig};
-use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::SkillRegistry;
-use entanglement_runtime::tool_runner::{spawn_tool_executor_with_policy, DiscoverySurface};
+use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 use entanglement_runtime::{Tool, ToolRegistry};
 
 fn test_http_client() -> entanglement_core::HttpClient {
@@ -184,7 +182,7 @@ impl Tool for EchoBash {
     }
 }
 
-/// Wire a full `spawn_tool_executor_with_policy` around `avail`/`active`, one
+/// Wire a full `ToolExecutor::builder` around `avail`/`active`, one
 /// scripted LLM turn, and `profiles`. `active` is a fresh, empty
 /// `ActiveServers` every time — the whole point of every test here is that
 /// the called tool is *not* already registered/connected.
@@ -213,32 +211,21 @@ fn spawn_executor(
         None,
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
-    let _executor = spawn_tool_executor_with_policy(
-        &holly,
-        shared_tools,
-        entanglement_runtime::host::jobs::JobRegistry::new(),
-        entanglement_runtime::retained_output::RetainedOutputRegistry::new(),
-        entanglement_runtime::script_ops::ScriptRegistry::new(),
-        Arc::new(RwLock::new(agents)),
-        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
-        PermissionProfile::new(Permission::Allow),
-        active,
-        perm_modes,
-        resolver,
-        grants,
-        Default::default(),
-        None,
-        mode_table,
-        Arc::new(PlanFileRegistry::new()),
-        None,
-        None,
-        Some(DiscoverySurface {
+    let _executor = ToolExecutor::builder(&holly, shared_tools)
+        .agents(agents)
+        .base(PermissionProfile::new(Permission::Allow))
+        .active(active)
+        .perm_modes(perm_modes)
+        .resolver(resolver)
+        .grants(grants)
+        .mode_table(mode_table)
+        .discovery(DiscoverySurface {
             mcp_avail: Arc::new(avail),
             mcp_active: Arc::new(Mutex::new(HashMap::new())),
             http: Some(test_http_client()),
             ..Default::default()
-        }),
-    );
+        })
+        .spawn();
     holly
 }
 

@@ -18,7 +18,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::serve::router;
 use entanglement_runtime::tool_names::ASK_USER_TOOL;
-use entanglement_runtime::tool_runner::spawn_tool_executor;
+use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -200,12 +200,12 @@ fn spawn_with_ask_user_call(question: &str) -> Holly {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let _executor = spawn_tool_executor(
-        &holly,
-        ToolRegistry::new(),
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        PermissionProfile::new(Permission::Allow),
-    );
+    let _executor = ToolExecutor::builder(&holly, ToolRegistry::new().shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(PermissionProfile::new(Permission::Allow))
+        .spawn();
     holly
 }
 

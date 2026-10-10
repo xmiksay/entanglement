@@ -34,10 +34,10 @@
 //! per-task `broadcast` subscription that could lag and silently drop a decision,
 //! parking the request forever.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
-use entanglement_core::{Agent, AgentCatalog, Holly, PermissionProfile, SessionId};
+use entanglement_core::SessionId;
 
 // The interception ladder (issue #451): `Intercept` classifies a `ToolExec`
 // by tool name and `route_tool_exec` is the `match` that dispatches each
@@ -49,23 +49,23 @@ use ladder::LadderCtx;
 
 // The executor shell's own seams (issue #712): the lifecycle-folding event
 // loop, the background listeners it parks alongside it, the caller-supplied
-// policy inputs, and the default-policy convenience wrappers — re-exported
+// policy inputs, the `ToolExecutor` builder, and the deprecated positional
+// constructors (#724) — re-exported
 // at their pre-split paths.
 mod background;
+mod builder;
 mod inputs;
 mod lifecycle;
 mod wrappers;
+pub use builder::{ToolExecutor, ToolExecutorBuilder};
 pub use inputs::{DiscoverySurface, EscapeRoot};
-pub use wrappers::{spawn_tool_executor, spawn_tool_executor_with_hooks};
+#[allow(deprecated)]
+pub use wrappers::{
+    spawn_tool_executor, spawn_tool_executor_with_hooks, spawn_tool_executor_with_policy,
+};
 
 use crate::cancel::{CancelAllOnDrop, CancelRegistry};
-use crate::hooks::Hooks;
-use crate::plan_files::PlanFileRegistry;
-use crate::policy::{GrantStore, PermissionResolver};
 use crate::run_limits;
-use crate::skills::SkillRegistry;
-use crate::tool_advertising;
-use crate::tools::SharedRegistry;
 
 // The generic tool-call primitives (issue #451) — `dispatch`, the parked-
 // approval tail `await_decision`, and the run-against-the-registry step
@@ -85,127 +85,60 @@ pub(crate) use dispatch::grade::resolve_effective;
 #[cfg(feature = "rhai")]
 pub(crate) use dispatch::grade::apply_grant;
 
-/// Like [`spawn_tool_executor_with_hooks`] but with pluggable policy seams (#311):
-/// a [`PermissionResolver`] decides each call's `Allow | Ask | Deny` grade and a
-/// [`GrantStore`] persists "always allow" grants, so a multi-tenant embedder can
-/// store rules per user in its own DB without forking the executor. `active` is
-/// the shared per-session agent map the executor folds lifecycle events into —
-/// still driving spawn gating (#119), the sandbox policy, and the `rhai`
-/// binding policy, which stay in the ladder on top of the resolver.
-/// `perm_modes` is the same fold for the session's permission mode
-/// (ADR-0207 stage 4), which the default [`ModeResolver`] grades every
-/// call from. The two default wrappers above plug in [`ModeResolver`] +
-/// [`DefaultGrantStore`] for the CLI.
+/// The executor body behind [`ToolExecutorBuilder::spawn`] (#724). The
+/// per-seam semantics and defaults live on the builder's setters; this only
+/// resolves the two defaults that depend on other fields (the mode table and
+/// the resolver built over it) and starts the task.
 ///
-/// `agents` is behind an `Arc<RwLock<..>>` (#329, not a plain owned
-/// [`AgentCatalog`]) so a runtime definitions watcher can swap in a
-/// freshly-reloaded registry without restarting this executor — every lookup
-/// below takes a brief read lock and clones the hit into the (already-cloning)
-/// `active`/mask/spawn-refusal call sites, so a reload mid-flight is invisible
-/// to an in-progress dispatch. Core's own copy is untouched either way
-/// (ADR-0084): it is baked into `EngineConfig` once at startup and has no
-/// live-swap seam.
-///
-/// `tools` is likewise a [`SharedRegistry`] (#372, ADR-0096, not a plain owned
-/// [`ToolRegistry`]) so a live tool-registration change — MCP add/remove (#4) —
-/// is visible to this executor without a restart: each dispatch takes a brief
-/// read lock and clones an owned snapshot *before* spawning the detached task
-/// (never held across a tool's `.await`), mirroring the `agents` pattern
-/// above.
-///
-/// `skills` (#400, ADR-0106) is the same live-reloadable handle
-/// `LoadSkillTool` resolves against: after a `load_skill` call succeeds, this
-/// executor parses the `skill_id` its result carries and emits
-/// `OutEvent::SkillActive` (posture-only since ADR-0194 — skills no longer
-/// narrow the session's tool set, so there is no mask to activate here).
-///
-/// `jobs` (#605) is the same [`crate::host::jobs::JobRegistry`] the caller
-/// wires into its `BashTool` — shared so `poll`'s job-handle path reaches the
-/// jobs `bash` actually spawned; unlike `tools`/`skills`/`agents` this isn't
-/// itself hot-swappable, only cheaply cloned (an `Arc` internally). `retained`
-/// (#608) is the same story for
-/// [`crate::retained_output::RetainedOutputRegistry`]: the caller's
-/// `CallTool` writes a truncated result's full text there, `poll`'s
-/// retained-output-handle path reads it back.
-///
-/// `plan_files` (#513) is the shared [`PlanFileRegistry`] this executor's
-/// `propose_plan` dispatch arm and its own `FileChange` listener (spawned
-/// in `background.rs`) both read/write. Taken as a param (#627) rather than
-/// constructed internally so a caller wiring up the dedicated plans-folder
-/// watch ([`crate::plan_watch::spawn_plans_watcher`]) can hand it the exact
-/// same instance — the watch's out-of-band notice and this executor's
-/// staleness guard must agree on what the agent last knew.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_tool_executor_with_policy(
-    holly: &Holly,
-    tools: SharedRegistry,
-    jobs: crate::host::jobs::JobRegistry,
-    retained: crate::retained_output::RetainedOutputRegistry,
-    // Background `rhai` scripts (#637, ADR-0185) — same shared-instance shape
-    // as `jobs`/`retained`: the `rhai` launcher writes, `poll`'s `x-` path and
-    // the `ListOperations` router read.
-    scripts: crate::script_ops::ScriptRegistry,
-    agents: Arc<RwLock<AgentCatalog>>,
-    skills: Arc<RwLock<Arc<SkillRegistry>>>,
-    base: PermissionProfile,
-    active: Arc<Mutex<HashMap<SessionId, Agent>>>,
-    // Per-session permission mode (ADR-0207 stage 4), folded from
-    // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
-    // the shared map the default `resolver` (`ModeResolver`) grades every
-    // call from. An unseen session fails closed, mirroring `active`. Named
-    // `perm_modes` (not `modes`) to stay distinct from
-    // `tool_advertising`'s unrelated session→`ToolAdvertising`-mode map.
-    perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
-    resolver: Arc<dyn PermissionResolver>,
-    grants: Arc<dyn GrantStore>,
-    hooks: Hooks,
-    escape_root: Option<EscapeRoot>,
-    // The mode table `perm_modes` names resolve against (ADR-0207 §6, stage
-    // 5b) — used here only to source a spawn's `max_depth`/`max_agents`
-    // bound (`SpawnGuard::try_spawn`) from the session's current mode.
-    // Sandbox confinement no longer folds through this executor at all: it
-    // reads the identical `perm_modes` map directly via
-    // `crate::policy::SandboxConfig`/`ModeSandboxResolver`, wired into
-    // `bash`/`call` at registration time, since a mode's sandbox posture
-    // needs no lifecycle-event bookkeeping the way the old per-agent
-    // ancestor floor did — the whole spawn sub-tree shares one mode.
-    mode_table: Arc<crate::mode::ModeTable>,
-    // Per-session plan-file staleness tracking (#513), taken as a param
-    // (rather than constructed inside, as before #627) so a caller that also
-    // wants the dedicated plans-folder watch (`plan_watch::spawn_plans_watcher`)
-    // can share the exact same registry instance with it.
-    plan_files: Arc<PlanFileRegistry>,
-    // Session-keyed per-user MCP scopes (#684): a scoped session's dispatch
-    // snapshot has its `mcp__*` namespace replaced by the scope's own tools
-    // (lazily connected with the scope's credentials) before `dispatch` runs.
-    // `None` — skutter and every in-tree caller — is byte-identical to
-    // pre-#684 behavior; only a multi-user embedder constructs an `McpScopes`.
-    mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
-    // Tool-advertising resolution inputs (ADR-0196, Phase P1): the user
-    // config (its `tool_advertising` tier) and the catalog (the per-model
-    // `tool_advertising:` tier). `None` — the convenience wrappers and test
-    // callers — keeps the session→mode map recording but always resolving
-    // `tool_search` (no catalog entry sets `tool_advertising:` yet and the
-    // config key defaults to `null`).
-    advertising_inputs: Option<Arc<tool_advertising::AdvertisingInputs>>,
-    // `explore`/`describe`'s shared state (#560, ADR-0196 §4), bundled into
-    // one struct so this already-large signature doesn't grow by three:
-    // the session-mode map + discovered-tool set (also read by the
-    // `tool_spec_resolver`/`system_prompt_resolver` closures in `boot.rs` —
-    // this executor is one of three readers/writers, no longer the map's
-    // sole owner as it was in Phase P1) plus the MCP three-state roster
-    // `explore` lists. `None` (the convenience wrappers, every test-only
-    // caller) falls back to empty/private defaults — `explore` then has
-    // nothing MCP to report, and the discovered set is unshared.
-    discovery: Option<DiscoverySurface>,
-) -> tokio::task::JoinHandle<()> {
+/// `agents`/`skills`/`tools` are live handles (#329/#400/#372): every
+/// dispatch takes a brief read lock and clones an owned snapshot *before*
+/// spawning its detached task (never held across a tool's `.await`), so a
+/// reload mid-flight is invisible to an in-progress dispatch.
+fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
+    let ToolExecutorBuilder {
+        holly,
+        tools,
+        jobs,
+        retained,
+        scripts,
+        agents,
+        skills,
+        base,
+        active,
+        perm_modes,
+        resolver,
+        grants,
+        hooks,
+        escape_root,
+        mode_table,
+        plan_files,
+        mcp_scopes,
+        advertising_inputs,
+        discovery,
+    } = b;
+    let mode_table = mode_table.unwrap_or_else(|| {
+        Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
+    });
+    let resolver = resolver.unwrap_or_else(|| {
+        Arc::new(crate::policy::ModeResolver::new(
+            perm_modes.clone(),
+            mode_table.clone(),
+            tools.clone(),
+            base.clone(),
+            escape_root.as_ref().map(|er| er.root.clone()),
+        ))
+    });
+    // In-memory only (#747/#775): an executor that didn't ask for persisted
+    // grants must never read or write the developer's real `grants.yml`.
+    let grants =
+        grants.unwrap_or_else(|| Arc::new(crate::policy::DefaultGrantStore::load_from(None)));
     let DiscoverySurface {
         advertising,
         mcp_avail,
         mcp_active,
         validation,
         http: mcp_http,
-    } = discovery.unwrap_or_default();
+    } = discovery;
     let hooks = Arc::new(hooks);
     let sub = holly.subscribe();
     // Subscribe to the inbound fan-out *synchronously*, before this function
@@ -219,7 +152,6 @@ pub fn spawn_tool_executor_with_policy(
     // race a `SessionStarted`/`Usage` broadcast sent right after this
     // function returns and silently miss it.
     let budget_sub = holly.subscribe();
-    let holly = holly.clone();
     tokio::spawn(async move {
         // Background tasks this executor spawns that must not outlive it (#545):
         // the file-change listener and the decision router below each hold

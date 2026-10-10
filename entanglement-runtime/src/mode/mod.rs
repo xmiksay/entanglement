@@ -105,7 +105,7 @@ impl Mode {
 impl Mode {
     /// Convert a legacy-shaped [`entanglement_core::PermissionProfile`] (the
     /// runtime-wide ceiling/overlay carrier type every dispatch call site —
-    /// `spawn_tool_executor*`, `BindingPolicy`, ~30 test fixtures — already
+    /// `ToolExecutor::builder`, `BindingPolicy`, ~30 test fixtures — already
     /// threads by value) into an equivalent [`Mode`]-graded ceiling, so
     /// [`crate::permission::clamp_to_base`] can grade it with real
     /// capability-class awareness instead of `PermissionProfile`'s own

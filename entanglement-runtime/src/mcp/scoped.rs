@@ -78,7 +78,7 @@ struct ScopeServer {
 
 /// The per-scope MCP connection cache + overlay entry points. Construct one
 /// per embedded engine and hand it to
-/// [`spawn_tool_executor_with_policy`][crate::tool_runner::spawn_tool_executor_with_policy];
+/// [`ToolExecutor::builder`][crate::tool_runner::ToolExecutor::builder];
 /// wrap your `tool_spec_resolver` with [`overlay_specs`][Self::overlay_specs].
 pub struct McpScopes {
     resolver: McpScopeResolver,

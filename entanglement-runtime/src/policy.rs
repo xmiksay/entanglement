@@ -1,6 +1,6 @@
 //! Pluggable policy seams for the runtime tool executor (#311).
 //!
-//! [`spawn_tool_executor_with_policy`][crate::tool_runner::spawn_tool_executor_with_policy]
+//! [`ToolExecutor::builder`][crate::tool_runner::ToolExecutor::builder]
 //! hard-codes nothing about *where* an allow/deny/ask decision or an "always
 //! allow" grant comes from: it drives two trait objects, a [`PermissionResolver`]
 //! and a [`GrantStore`]. The single-user CLI plugs in the defaults below — the
