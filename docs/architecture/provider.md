@@ -144,7 +144,8 @@ trait Llm: Send {
   Anthropic wire) overrides it end to end — the request URL *and* the pool
   key — since #551 (previously hard-coded and silently ignored). Split into
   `anthropic/{mod,request,sse}.rs` (#481)
-  the same way as `openai/` — `mod.rs` additionally owns the `pause_turn`
+  the same way as `openai/` (which since #745 also moves its response
+  decoding into `openai/stream.rs`) — `mod.rs` additionally owns the `pause_turn`
   continuation loop (below).
 - **Explicit `cache_control` breakpoints** (#566) — Anthropic caching is opt-in
   per content block, unlike z.ai/OpenAI-compat's implicit whole-prefix caching;
