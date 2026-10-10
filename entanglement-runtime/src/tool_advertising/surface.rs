@@ -1,8 +1,8 @@
 //! The runtime's [`ToolSpecResolver`] (ADR-0076 seam): the one place that
 //! shapes a session's advertised tools array per its pinned advertising mode,
 //! encoding and discovery strategy (ADR-0196 §2-3, ADR-0204). Lifted out of
-//! `skutter`'s startup wiring (now `boot.rs`) so every head and the integration tests exercise the exact
-//! resolver production runs.
+//! `skutter`'s startup wiring (now `boot.rs`) so every head and the
+//! integration tests exercise the exact resolver production runs.
 //!
 //! This resolver is the **only** thing that shapes the surface — core
 //! advertises its output verbatim, masks enforce at dispatch — so a spec
