@@ -104,8 +104,16 @@ A starting hint is a convenience default for picking a mode, like config
   announced mode and no transition notice.
 - A `general`/`build` parent that spawns `plan` gets a `plan`-mode child.
   A `research` parent that spawns `plan` gets a `research` child.
-- `--mode <typo>` on a fresh session now refuses the spawn with an `Error`
-  instead of starting under a mode no table defines.
+- A typo'd mode fails closed, before any session exists. `LaunchMode::resolve`
+  rejects a name outside the built-in modes from `--mode` or from config
+  `mode:`, on every head (`run`, `run --resume`, the TUI). It names the
+  source and the valid modes, and `skutter` exits non-zero with no turn run
+  and no session log. As a second line, `start_fresh` subscribes before
+  sending its `Spawn` and waits for that session's `SessionStarted` or
+  supervisor `Error`. A refused `Spawn` fails the launch, so a prompt never
+  follows it into ADR-0210's lazy create of a `general`/`build` root. (On
+  master before this ADR, a typo went out as an opaque `SetMode`, and the
+  runtime's grader refused every call under it.)
 - Embedders with their own mode table get inherit-only children, and roots
   that ignore every hint, unless they set `EngineConfig::mode_ladder`
   themselves. That is the safe failure mode.

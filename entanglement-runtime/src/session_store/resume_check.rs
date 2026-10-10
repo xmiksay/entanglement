@@ -262,11 +262,25 @@ pub struct LaunchMode {
 }
 
 impl LaunchMode {
-    pub fn resolve(cli: Option<String>, config: Option<String>) -> Self {
-        Self {
+    /// Resolve and validate, before anything reaches the engine: a typo'd
+    /// name must stop the launch, never fall through to the default
+    /// authority (a refused `Spawn` would otherwise leave the first prompt to
+    /// lazily create a `general`/`build` root, ADR-0210 — ADR-0218).
+    pub fn resolve(cli: Option<String>, config: Option<String>) -> Result<Self> {
+        for (source, mode) in [("--mode", &cli), ("config.yml `mode:`", &config)] {
+            if let Some(mode) = mode.as_deref() {
+                if crate::mode::ladder_rank(mode).is_none() {
+                    anyhow::bail!(
+                        "unknown permission mode `{mode}` from {source} (one of: {})",
+                        crate::mode::BUILTIN_LADDER.join(" | ")
+                    );
+                }
+            }
+        }
+        Ok(Self {
             explicit: cli.is_some(),
             mode: cli.or(config),
-        }
+        })
     }
 }
 
