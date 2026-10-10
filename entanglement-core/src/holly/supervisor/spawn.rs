@@ -23,6 +23,8 @@ impl Supervisor {
         user: &Option<UserId>,
         model: &Option<ModelChoice>,
     ) {
+        // Taken first so no early return below can leave it parked.
+        let inherited = self.inherited.remove(child);
         // A duplicate spawn for a live child is a no-op (the child already runs).
         if self.sessions.contains_key(child) {
             return;
@@ -89,7 +91,10 @@ impl Supervisor {
                     None => return,
                 }
             }
-            None => None,
+            // A compaction successor (#768) starts on its source's already
+            // bound backend: nothing to resolve, so nothing that can refuse
+            // the spawn of a session whose source is being retired.
+            None => inherited.as_ref().and_then(|i| i.model.clone()),
         };
         // ADR-0207 §6: mode applies to the whole spawn sub-tree — a
         // spawned child starts under its parent's live mode. A
@@ -145,6 +150,7 @@ impl Supervisor {
                     user: effective_user,
                     initial_mode,
                     spawn_model,
+                    inherited_generation: inherited.and_then(|i| i.generation),
                 },
                 seqs2,
                 activity2,
@@ -260,6 +266,7 @@ impl Supervisor {
                     user: None,
                     initial_mode: DEFAULT_MODE.to_string(),
                     spawn_model: None,
+                    inherited_generation: None,
                 },
                 seqs2,
                 activity2,

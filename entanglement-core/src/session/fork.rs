@@ -20,6 +20,7 @@
 //! session task never blocks while the supervisor may be waiting to route into
 //! that very session.
 
+use entanglement_provider::{GenerationParams, ResolvedModel};
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::next_seq;
@@ -27,6 +28,27 @@ use super::Session;
 use crate::id_gen::{IdContext, IdKind};
 use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
+
+/// One frame on the session→supervisor fork channel: an ordinary `InMsg`
+/// (handled, and fanned out, exactly like an inbox one) plus, on the
+/// successor's `Spawn` only, the live state it takes over from the source.
+pub(crate) struct ForkFrame {
+    pub(crate) msg: InMsg,
+    pub(crate) inherit: Option<Inherited>,
+}
+
+/// What a compaction successor continues with from its source (#768): the
+/// same session goes on, so a live `SetModel`/`SetGeneration` must survive the
+/// fork. Carried in-process rather than as `Spawn.model`, because that field
+/// is *re-resolved* and refuses the spawn when resolution fails (#725) — by
+/// then the source is being retired, so a refusal would lose the session. An
+/// already-bound backend needs no resolution and so cannot fail.
+pub(crate) struct Inherited {
+    /// The source's bound backend, `None` on the startup default.
+    pub(crate) model: Option<ResolvedModel>,
+    /// The source's effective generation params.
+    pub(crate) generation: Option<GenerationParams>,
+}
 
 /// Whether a compaction forked the session away. `Yes` means this session is
 /// retired: its log ends here and it must emit nothing further.
@@ -54,8 +76,8 @@ pub(crate) struct Compaction<'a> {
 /// starts emitting, keeping the two sessions' records unambiguously ordered.
 #[must_use = "a fork that is never dispatched leaves the successor unspawned"]
 pub(crate) struct PendingFork {
-    engine: mpsc::Sender<InMsg>,
-    spawn: InMsg,
+    engine: mpsc::Sender<ForkFrame>,
+    spawn: ForkFrame,
     close: InMsg,
 }
 
@@ -70,7 +92,11 @@ impl PendingFork {
                 tracing::error!("compaction fork: supervisor gone before the successor spawned");
                 return;
             }
-            if self.engine.send(self.close).await.is_err() {
+            let close = ForkFrame {
+                msg: self.close,
+                inherit: None,
+            };
+            if self.engine.send(close).await.is_err() {
                 tracing::error!("compaction fork: supervisor gone before the source retired");
             }
         });
@@ -112,22 +138,31 @@ pub(crate) fn fork_successor(
         "compaction forked a successor session"
     );
 
+    let inherit = Inherited {
+        model: s.live_binding(),
+        generation: s.generation,
+    };
     Some(PendingFork {
         engine,
-        spawn: InMsg::Spawn {
-            session: successor,
-            // A root, not a child: the `CloseSession` below cascades over the
-            // source's spawn sub-tree, which the successor must not be in
-            // (ADR-0110).
-            parent: None,
-            predecessor: Some(session.clone()),
-            // The successor runs under the source's current profile, so its
-            // model pin and permissions carry over.
-            agent: s.agent.name.clone(),
-            prompt: seed_prompt(compaction.mode, compaction.seed),
-            // Inherited from the predecessor by the supervisor (#522).
-            user: None,
-            model: None,
+        spawn: ForkFrame {
+            inherit: Some(inherit),
+            msg: InMsg::Spawn {
+                session: successor,
+                // A root, not a child: the `CloseSession` below cascades over the
+                // source's spawn sub-tree, which the successor must not be in
+                // (ADR-0110).
+                parent: None,
+                predecessor: Some(session.clone()),
+                // The successor runs under the source's profile; its live model
+                // and generation ride on `inherit` above, its mode and user are
+                // inherited by the supervisor (ADR-0207 §6, #522).
+                agent: s.agent.name.clone(),
+                prompt: seed_prompt(compaction.mode, compaction.seed),
+                user: None,
+                // Never set here: a `Spawn` model is re-resolved and refuses on
+                // failure (#725); see `Inherited`.
+                model: None,
+            },
         },
         close: InMsg::CloseSession {
             session: session.clone(),
@@ -260,7 +295,15 @@ mod tests {
 
         fork.dispatch();
 
-        let successor = match engine_rx.recv().await.expect("a Spawn") {
+        let frame = engine_rx.recv().await.expect("a Spawn");
+        let inherit = frame
+            .inherit
+            .expect("the successor's Spawn carries the source state");
+        assert!(
+            inherit.model.is_none(),
+            "an unbound source carries no backend"
+        );
+        let successor = match frame.msg {
             InMsg::Spawn {
                 session: successor,
                 parent,
@@ -279,9 +322,68 @@ mod tests {
         };
         assert_ne!(successor, session);
 
-        match engine_rx.recv().await.expect("a CloseSession") {
+        let frame = engine_rx.recv().await.expect("a CloseSession");
+        assert!(frame.inherit.is_none());
+        match frame.msg {
             InMsg::CloseSession { session: closed } => assert_eq!(closed, session),
             other => panic!("expected CloseSession, got {other:?}"),
         }
+    }
+
+    /// A bound source hands the successor its backend with the *live*
+    /// generation (a `SetGeneration` moves it off the resolution's own), so the
+    /// successor resolves nothing (#768).
+    #[tokio::test]
+    async fn a_bound_source_hands_over_its_backend_and_live_generation() {
+        let cfg = EngineConfig::default();
+        let profile = cfg
+            .agents
+            .get("general")
+            .cloned()
+            .expect("the general profile");
+        let mut s = Session::new_empty(&cfg, profile);
+        let (engine_tx, mut engine_rx) = mpsc::channel(8);
+        s.engine = Some(engine_tx);
+        s.bind(ResolvedModel {
+            provider: "zai".into(),
+            model: "glm-b".into(),
+            llm_factory: cfg.llm_factory.clone(),
+            generation: None,
+            context_window: Some(8_000),
+        });
+        let live = GenerationParams {
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+        s.generation = Some(live);
+        let (events, _sub) = broadcast::channel(8);
+
+        fork_successor(
+            &SessionId::new("s1"),
+            &mut s,
+            &events,
+            &cfg,
+            Compaction {
+                seed: "gist",
+                kept: 0,
+                auto: false,
+                mode: CompactionMode::Summary,
+            },
+        )
+        .expect("a fork")
+        .dispatch();
+
+        let frame = engine_rx.recv().await.expect("a Spawn");
+        assert!(
+            matches!(frame.msg, InMsg::Spawn { model: None, .. }),
+            "never a re-resolved Spawn model"
+        );
+        let inherit = frame.inherit.expect("inherited state");
+        let model = inherit.model.expect("the bound backend");
+        assert_eq!(model.provider, "zai");
+        assert_eq!(model.model, "glm-b");
+        assert_eq!(model.context_window, Some(8_000));
+        assert_eq!(model.generation, Some(live));
+        assert_eq!(inherit.generation, Some(live));
     }
 }

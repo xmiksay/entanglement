@@ -549,6 +549,29 @@ live with. Delivery runs on a detached task, so a session task never blocks
 while the supervisor may be waiting to route into that very session, and the
 frames go out only after the source has finished writing its own log tail.
 
+**The successor keeps the live binding** (#768). The successor is the same
+session continuing, so a live `SetModel`/`SetGeneration`/`SetMode` on the
+source survives the fork rather than the successor restarting on its agent's
+pin. The mode is inherited by the supervisor from the predecessor (ADR-0207
+§6). The model and generation ride beside the `Spawn` on the fork channel as
+an in-process `Inherited { model, generation }` (`session/fork.rs`), never as
+`Spawn.model`: that field is *re-resolved* and refuses the spawn on failure
+(#725 above), and by then the source is being retired, so a refusal would
+lose the session. `Inherited.model` is the source's already-bound
+`ResolvedModel` (`Session::bound`, kept by `bind`/`rebind` and replay's
+`ModelChanged` fold) with the source's live generation, so the successor
+binds it with **no resolution at all** and cannot fail, even if that model
+has stopped resolving since (it was resolvable when the source bound it). It
+takes the pin's slot, so the pin is never applied; a source on the startup
+default carries no model and the successor starts the way the source did.
+The successor's log records the binding as an ordinary `ModelChanged`, then
+the inherited params as a `GenerationChanged`, which replay folds after the
+model's fresh-resolution params. That `GenerationChanged` is also recorded as
+the profile's session memory, so the persisted `generation_resolver` default
+does not override it. A resumed session's corrective `ModelChanged`
+re-announce keeps the replayed generation and does not reset it to the
+catalog's.
+
 **A mid-turn fork carries the turn.** The window gate runs between rounds, so
 the turn's tool batch is always drained when it fires — `drive_turn` is only
 re-entered once `TurnState::pending` empties — and the successor continues the

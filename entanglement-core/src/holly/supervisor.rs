@@ -11,7 +11,7 @@ use super::outlets;
 use super::routing::{msg_to_cmd, route_to_session};
 use super::{ActivityRegistry, EngineConfig, SeqRegistry, SessionDirectory, FORK_CAPACITY};
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::session::SessionCmd;
+use crate::session::{ForkFrame, Inherited, SessionCmd};
 
 mod resume;
 mod spawn;
@@ -67,7 +67,11 @@ struct Supervisor {
     // Deliberately *not* the inbox: the supervisor holding an inbox sender
     // would keep the actor alive after every `Holly` handle dropped. This
     // channel dies with the supervisor instead.
-    fork_tx: mpsc::Sender<InMsg>,
+    fork_tx: mpsc::Sender<ForkFrame>,
+    // successor → the source state its fork's `Spawn` carried (#768), parked
+    // here between the fork frame's arrival and `spawn` consuming it, since
+    // the `InMsg` it rides beside is handled through the ordinary path.
+    inherited: HashMap<SessionId, Inherited>,
     // Ids with a `SessionLoader` call in flight (ADR-0210) → the routable
     // messages that arrived for them meanwhile, in arrival order. Presence is
     // the "one load per id" guard; the entry is drained on completion.
@@ -91,7 +95,7 @@ pub(super) async fn supervisor(
     cfg: EngineConfig,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let (fork_tx, mut fork_rx) = mpsc::channel::<InMsg>(FORK_CAPACITY);
+    let (fork_tx, mut fork_rx) = mpsc::channel::<ForkFrame>(FORK_CAPACITY);
     let (load_tx, mut load_rx) = mpsc::channel::<unknown::LoadDone>(FORK_CAPACITY);
     // Idle-TTL auto-hibernation sweep (#363). `None` (the default) leaves the
     // tick branch pending forever, so with no `idle_ttl` configured the loop
@@ -112,6 +116,7 @@ pub(super) async fn supervisor(
         activity,
         cfg,
         fork_tx,
+        inherited: HashMap::new(),
         pending_loads: HashMap::new(),
         load_tx,
     };
@@ -136,7 +141,7 @@ pub(super) async fn supervisor(
                 continue;
             }
             m = rx.recv() => m,
-            m = fork_rx.recv() => m,
+            m = fork_rx.recv() => m.map(|frame| sup.accept_fork(frame)),
             _ = tick => {
                 if let Some(ttl) = ttl {
                     sweep_idle_sessions(ttl, &mut sup.sessions, &sup.session_meta, &mut sup.parent_links, &sup.activity).await;
@@ -158,6 +163,15 @@ pub(super) async fn supervisor(
 }
 
 impl Supervisor {
+    /// Unwrap a fork-channel frame into the `InMsg` the loop handles, parking
+    /// any inherited source state for the successor's `spawn` to pick up.
+    fn accept_fork(&mut self, frame: ForkFrame) -> InMsg {
+        if let (Some(inherit), Some(successor)) = (frame.inherit, frame.msg.session()) {
+            self.inherited.insert(successor.clone(), inherit);
+        }
+        frame.msg
+    }
+
     /// Handle one inbound (or fork-channel) message.
     async fn handle(&mut self, msg: InMsg) {
         // Runtime-consumed off the inbound fan-out above, never routed to a

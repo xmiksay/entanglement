@@ -53,13 +53,14 @@ pub use turn_state::TurnState;
 
 use cmd::{cap_meta_field, stash_or_reject};
 use fork::Forked;
+pub(crate) use fork::{ForkFrame, Inherited};
 
 use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentState, InMsg, OutEvent, SessionId};
+use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 
 use emit::{emit_tool_output, reoffer_pending};
@@ -82,7 +83,7 @@ pub(crate) async fn session_loop(
     start: SessionStart,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
-    forks: mpsc::Sender<InMsg>,
+    forks: mpsc::Sender<ForkFrame>,
 ) {
     let mut s = start_session(&session, &events, &cfg, &seqs, forks, start);
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();

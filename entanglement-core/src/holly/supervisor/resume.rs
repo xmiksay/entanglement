@@ -141,6 +141,7 @@ impl Supervisor {
                     user: None,
                     initial_mode: DEFAULT_MODE.to_string(),
                     spawn_model: None,
+                    inherited_generation: None,
                 },
                 seqs2,
                 activity2,
