@@ -157,7 +157,7 @@ pub fn build_pending_report(src: &PendingSources<'_>, caller: &SessionId) -> Str
         .retained
         .snapshot(None)
         .into_iter()
-        .filter(|r| r.owner.as_ref().is_some_and(&in_subtree))
+        .filter(|r| r.owner.as_ref().is_some_and(in_subtree))
         .map(|r| {
             let kind = if r.is_file { "file" } else { "text" };
             format!(

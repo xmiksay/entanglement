@@ -24,9 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Honors rust-toolchain.toml (stable + rustfmt + clippy components).
+      # Installs exactly the pinned rust-toolchain.toml channel + components, so
+      # CI runs the same compiler and clippy as a local `make verify`.
       - name: Install Rust toolchain
-        run: rustup show
+        run: rustup toolchain install && rustup show
 
       # Caches the registry, git deps, and target/ dir. Build jobs stay capped
       # at 4 via the committed .cargo/config.toml.

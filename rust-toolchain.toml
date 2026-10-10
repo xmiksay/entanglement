@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pinned (not `stable`) so a new Rust release can't turn CI red with no code
+# change; bump deliberately, fixing any new lints in the same change.
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
