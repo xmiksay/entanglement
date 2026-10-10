@@ -33,6 +33,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | ListSessions{correlation_id}   // supervisor-global query; opaque echo token, not a session (#160, ADR-0072)
          | ListQuestions{correlation_id,session?}   // supervisor-global query; every open ask_user question, or one session's when session is set → QuestionList reply (#515, ADR-0146)
          | ListOperations{correlation_id,session?}   // supervisor-global query; every pending job/script/sub-agent, or one session's when session is set → OperationList reply (#607, ADR-0161 §6); wire-allowed — reads the caller's own outstanding work, mutates nothing
+         | ListPending{correlation_id,root?}   // supervisor-global query; every tool call parked awaiting Approve/Reject, or only root's live spawn sub-tree when root is set → PendingList reply (#726, ADR-0217); wire-allowed — read-only
          | McpList{correlation_id}   // supervisor-global query; live MCP servers → McpList reply (#375)
          | McpAdd{name,config:McpServerSpec}   // hot-connect + persist to config.yml → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
          | McpRemove{name}   // hot-disconnect + persist removal → McpChanged (#375); trusted-only, wire-refused (ADR-0124)
@@ -48,6 +49,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,predecessor?,agent,root,user?} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
+         | PendingList{correlation_id,approvals:[PendingApproval]}   // reply to InMsg::ListPending, no seq/session (#726, ADR-0217); PendingApproval = {session,request_id,kind:"tool"|"plan"|"mode"|"rhai",tool,input,reason,scopes:[ApprovalScope],since_ms} — tool/input byte-identical to the ToolRequest that prompted; ask_user parks excluded (ListQuestions lists those)
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
@@ -143,6 +145,21 @@ It is `poll`'s head-facing counterpart: called with no `handle`, `poll` itself
 answers the same question for the model (see
 [gates & host tools](gates-and-host-tools.md)), sharing this exact function
 rather than duplicating the join logic.
+
+`ListPending{correlation_id,root?}` (#726, [ADR-0217](../adr/0217-list-pending-query-for-parked-approvals.md))
+is the approval counterpart: same session-less-query shape and wire-allowed
+read-only rationale, answered by `entanglement_runtime::pending::list_pending`
+from the `PendingDecisions` registry every approval parks in. `root` (not
+`session`) scopes to a whole live spawn sub-tree, walked over `AgentRegistry`
+exactly like `explore(kind: "pending")`. Every approval path (permission
+`Ask`, `propose_plan`, `request_mode`, a rhai binding's `Ask`) parks through
+`pending::park_approval`, which registers the entry and emits the
+`ToolRequest` from one `PendingApproval` value — so a reconnecting head gets
+the exact prompt it missed. The decision router handles `ListPending` in
+order with `Approve`/`Reject`, so a listing after a decision never shows the
+decided call; a waiter that timed out is filtered out. Ownership filtering is
+the head's job, as with `ListSessions`; the reply names no session, so it is
+never persisted.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an

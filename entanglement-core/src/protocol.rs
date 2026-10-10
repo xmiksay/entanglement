@@ -26,6 +26,7 @@
 use entanglement_provider::UserId;
 use serde::{Deserialize, Serialize};
 
+mod approvals;
 mod in_msg;
 mod mcp;
 mod model_choice;
@@ -35,6 +36,7 @@ mod permission;
 mod questions;
 mod retired;
 
+pub use approvals::{ApprovalKind, PendingApproval};
 pub use in_msg::InMsg;
 pub use mcp::{McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus};
 pub use model_choice::ModelChoice;

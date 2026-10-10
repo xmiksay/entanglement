@@ -25,10 +25,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use entanglement_core::SessionId;
+use entanglement_core::{ApprovalKind, PendingApproval as WireApproval, SessionId};
 use tokio::sync::oneshot;
 
 use crate::seam::Decision;
+
+mod park;
+pub use park::{approval, list_pending, park_approval, scopes_for};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
 /// alongside the waiter so an `explore(kind: "pending")` listing can describe
@@ -39,11 +42,13 @@ use crate::seam::Decision;
 /// `pending` listing folds those into its own open-questions section instead
 /// of double-reporting them as approvals). `detail` is a short, already
 /// human-readable label — the tool name for `"tool"`/`"rhai"`, the requested
-/// mode for `"mode"` — never the full call input.
+/// mode for `"mode"` — never the full call input. `approval` is the full
+/// `InMsg::ListPending` payload (#726) for every kind but `"ask_user"`.
 #[derive(Clone)]
 pub struct Parked {
     pub kind: &'static str,
     pub detail: String,
+    pub approval: Option<WireApproval>,
 }
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
@@ -82,14 +87,61 @@ impl PendingDecisions {
         kind: &'static str,
         detail: impl Into<String>,
     ) -> oneshot::Receiver<Decision> {
+        self.insert(session, request_id, kind, detail.into(), None)
+    }
+
+    /// [`register`](Self::register) for an approval park, keeping its full
+    /// [`WireApproval`] for `InMsg::ListPending` (#726). Prefer
+    /// [`park_approval`], which also emits the matching `ToolRequest`.
+    pub fn register_approval(
+        &self,
+        approval: WireApproval,
+        detail: impl Into<String>,
+    ) -> oneshot::Receiver<Decision> {
+        let kind = match approval.kind {
+            ApprovalKind::Tool => "tool",
+            ApprovalKind::Plan => "plan",
+            ApprovalKind::Mode => "mode",
+            ApprovalKind::Rhai => "rhai",
+        };
+        let (session, request_id) = (approval.session.clone(), approval.request_id.clone());
+        self.insert(&session, &request_id, kind, detail.into(), Some(approval))
+    }
+
+    fn insert(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        kind: &'static str,
+        detail: String,
+        approval: Option<WireApproval>,
+    ) -> oneshot::Receiver<Decision> {
         let (tx, rx) = oneshot::channel();
         let parked = Parked {
             kind,
-            detail: detail.into(),
+            detail,
+            approval,
         };
         self.lock()
             .insert((session.clone(), request_id.to_string()), (tx, parked));
         rx
+    }
+
+    /// Every live parked approval whose session `in_scope` accepts, sorted by
+    /// `(session, request_id)` (#726). Skips `ask_user` parks (those are
+    /// `ListQuestions`' business) and any waiter that already gave up.
+    pub fn approvals(&self, in_scope: impl Fn(&SessionId) -> bool) -> Vec<WireApproval> {
+        let guard = self.lock();
+        let mut list: Vec<WireApproval> = guard
+            .iter()
+            .filter(|((s, _), (tx, _))| !tx.is_closed() && in_scope(s))
+            .filter_map(|(_, (_, parked))| parked.approval.clone())
+            .collect();
+        list.sort_by(|a, b| {
+            (a.session.0.as_str(), a.request_id.as_str())
+                .cmp(&(b.session.0.as_str(), b.request_id.as_str()))
+        });
+        list
     }
 
     /// Snapshot every parked decision, optionally filtered to one `session`.
@@ -100,7 +152,10 @@ impl PendingDecisions {
         let guard = self.lock();
         let mut list: Vec<PendingApproval> = guard
             .iter()
-            .filter(|((s, _), _)| session.is_none_or(|f| f == s))
+            // A closed sender means the waiter gave up — a timed-out park
+            // (`await_decision_timed` drops its receiver) or an aborted task —
+            // and nobody will ever remove its entry, so it isn't pending.
+            .filter(|((s, _), (tx, _))| !tx.is_closed() && session.is_none_or(|f| f == s))
             .map(|((s, rid), (_, parked))| PendingApproval {
                 session: s.clone(),
                 request_id: rid.clone(),

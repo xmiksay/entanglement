@@ -158,7 +158,8 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         // AnswerQuestion) like ListSessions — a runtime service answers them
         // off the inbound fan-out, never a session task. ListOperations (#607)
         // is the same shape: answered by the runtime's job/agent registries,
-        // never routed. None reach here.
+        // never routed; so is ListPending (#726, the parked-decision
+        // registry). None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
@@ -167,6 +168,7 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         | InMsg::ListSessions { .. }
         | InMsg::ListQuestions { .. }
         | InMsg::ListOperations { .. }
+        | InMsg::ListPending { .. }
         | InMsg::McpList { .. }
         | InMsg::McpAdd { .. }
         | InMsg::McpRemove { .. }

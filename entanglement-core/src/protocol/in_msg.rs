@@ -228,6 +228,26 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<SessionId>,
     },
+    /// Enumerate every tool call currently parked awaiting
+    /// [`Approve`][InMsg::Approve]/[`Reject`][InMsg::Reject] (#726) — the
+    /// approval counterpart to [`ListQuestions`][InMsg::ListQuestions]: a
+    /// reconnecting head has no other authoritative source, since a parked
+    /// [`OutEvent::ToolRequest`][crate::protocol::OutEvent::ToolRequest] it
+    /// missed leaves no trace outside the logs. `root`, when set, filters to
+    /// that session's live spawn sub-tree (itself included) — the unit a head
+    /// renders as one conversation; `None` lists every session's.
+    /// Supervisor-global like `ListQuestions` ([`session`][InMsg::session]
+    /// returns `None` regardless of the filter) and answered by the runtime
+    /// service that owns the parked-decision registry, off the inbound
+    /// fan-out, not core. Wire-allowed: a read-only snapshot; ownership
+    /// filtering is the head's job, exactly as for `ListSessions`.
+    /// `correlation_id` pairs the reply
+    /// ([`OutEvent::PendingList`][crate::protocol::OutEvent::PendingList]).
+    ListPending {
+        correlation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<SessionId>,
+    },
     /// Enumerate the engine's currently-attached MCP servers (#375). MCP config
     /// is global (not per-session), so — like [`ListSessions`][InMsg::ListSessions]
     /// — this is supervisor-global: core routes it to no session task, and it is

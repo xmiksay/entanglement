@@ -162,10 +162,10 @@ The session's permission **mode** has no env var by design: `--mode` on
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ReplayFrom | CloseSession
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
@@ -285,8 +285,8 @@ never here**; each bullet is the claim + where to read it:
 - **Session-multiplexed**: every frame carries `SessionId`; `(session, seq)` is
   unique across authored content events (shared per-session counter); the
   seq-`0` bypass renders supervisor lifecycle errors; `ListSessions`/`McpList`/
-  `ListQuestions` are correlation-id queries. [protocol](../docs/architecture/protocol.md),
-  [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0072](../docs/adr/0072-protocol-warts-settled-before-serve.md).
+  `ListQuestions`/`ListPending` (parked approvals, #726) are correlation-id queries. [protocol](../docs/architecture/protocol.md),
+  [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0072](../docs/adr/0072-protocol-warts-settled-before-serve.md)/[ADR-0217](../docs/adr/0217-list-pending-query-for-parked-approvals.md).
 - **Model/provider/generation switching is live**: `SetModel` re-resolves via
   the runtime-supplied `model_resolver` seam; agent profiles can pin models
   (rebind at session start or spawn — `SetAgent` itself is gone,

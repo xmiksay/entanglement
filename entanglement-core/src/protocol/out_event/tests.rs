@@ -239,6 +239,28 @@ fn operation_list_event_is_session_less_and_seq_less() {
 }
 
 #[test]
+fn pending_list_event_is_session_less_and_seq_less() {
+    let ev = OutEvent::PendingList {
+        correlation_id: "c1".into(),
+        approvals: vec![PendingApproval {
+            session: SessionId::new("s1"),
+            request_id: "r1".into(),
+            kind: ApprovalKind::Tool,
+            tool: "bash".into(),
+            input: r#"{"command":"ls"}"#.into(),
+            reason: "mode `build` grades `bash` Ask".into(),
+            scopes: vec![ApprovalScope::Once, ApprovalScope::Session],
+            since_ms: 1,
+        }],
+    };
+    assert_eq!(ev.seq(), None);
+    assert_eq!(ev.session(), None);
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains(r#""kind":"tool""#), "{json}");
+    assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+}
+
+#[test]
 fn mcp_list_and_changed_events_roundtrip() {
     let list_ev = OutEvent::McpList {
         correlation_id: "c1".into(),

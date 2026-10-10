@@ -78,6 +78,21 @@ impl Holly {
         });
     }
 
+    /// Broadcast a runtime-authored [`OutEvent::PendingList`] reply to an
+    /// [`InMsg::ListPending`] query (#726). Engine-global like
+    /// [`emit_question_list`][Self::emit_question_list]: no `seq`, no counter
+    /// touched.
+    pub fn emit_pending_list(
+        &self,
+        correlation_id: String,
+        approvals: Vec<crate::protocol::PendingApproval>,
+    ) {
+        self.outlets.emit(OutEvent::PendingList {
+            correlation_id,
+            approvals,
+        });
+    }
+
     /// Broadcast a runtime-authored [`OutEvent::McpList`] reply to an
     /// [`InMsg::McpList`] query (#375). Engine-global like
     /// [`emit_history`][Self::emit_history]: no `seq`, no counter touched.

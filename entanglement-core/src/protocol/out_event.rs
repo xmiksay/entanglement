@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::InMsg;
 use super::{
     AgentState, FileChangeKind, McpAction, McpAuthStatus, McpServerStatus, OperationInfo,
-    PendingQuestion, Questions, SessionId, SessionInfo, ToolOverlayEntry,
+    PendingApproval, PendingQuestion, Questions, SessionId, SessionInfo, ToolOverlayEntry,
 };
 
 mod accessors;
@@ -96,6 +96,15 @@ pub enum OutEvent {
     OperationList {
         correlation_id: String,
         operations: Vec<OperationInfo>,
+    },
+    /// Snapshot of every tool call currently parked awaiting approval
+    /// (lifecycle event, no `seq`), in reply to [`InMsg::ListPending`] (#726)
+    /// — same "session-less enumeration" shape as
+    /// [`QuestionList`][OutEvent::QuestionList]. Answered by the runtime
+    /// service that owns the parked-decision registry, not core.
+    PendingList {
+        correlation_id: String,
+        approvals: Vec<PendingApproval>,
     },
     /// Snapshot of every currently-attached MCP server (lifecycle event, no
     /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the runtime
