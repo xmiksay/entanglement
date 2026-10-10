@@ -45,7 +45,7 @@ pub(crate) async fn dispatch(
             };
 
             // An explicit `--mode` wins over ADR-0215's read-only narrowing.
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
+            let launch = launch_mode(cli.mode, user_config, cwd)?;
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
@@ -105,7 +105,7 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
             // CLI `--agent` wins; else the user config's default agent (#172).
             let agent = agent.or_else(|| user_config.agent.clone());
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
+            let launch = launch_mode(cli.mode, user_config, cwd)?;
             launch_tui(
                 holly,
                 session_id,
@@ -127,7 +127,7 @@ pub(crate) async fn dispatch(
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
             let session_id = SessionId::new(holly.next_id(IdKind::Session));
             let agent = user_config.agent.clone();
-            let launch = LaunchMode::resolve(cli.mode, user_config.mode.clone())?;
+            let launch = launch_mode(cli.mode, user_config, cwd)?;
             if cli.prompt.is_empty() {
                 launch_tui(
                     holly,
@@ -147,6 +147,27 @@ pub(crate) async fn dispatch(
             }
         }
     }
+}
+
+/// Resolve the head's launch mode, naming the config file that set a bad
+/// `mode:` so the error says what to fix (ADR-0218).
+fn launch_mode(
+    cli: Option<String>,
+    user_config: &config::Config,
+    cwd: &Path,
+) -> Result<LaunchMode> {
+    LaunchMode::resolve(cli, user_config.mode.clone(), || {
+        config::Config::resolve(cwd)
+            .ok()
+            .and_then(|r| {
+                let layer = r.provenance.iter().find(|(k, _)| k == "mode")?.1;
+                r.layers
+                    .into_iter()
+                    .find(|(l, _)| *l == layer)
+                    .map(|(_, s)| s)
+            })
+            .unwrap_or_else(|| "config.yml".to_string())
+    })
 }
 
 /// Start a fresh session the same way on every head (#752): one
@@ -186,7 +207,7 @@ async fn start_fresh(
             mode,
         })
         .await?;
-    await_started(&mut events, session_id).await
+    await_started(holly, &mut events, session_id).await
 }
 
 /// How long a fresh session's `Spawn` may take to start or be refused.
@@ -195,6 +216,7 @@ const SPAWN_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wait for `session_id`'s `SessionStarted`, failing on its supervisor
 /// `Error` (a refused `Spawn`) or on no answer within [`SPAWN_ACK_TIMEOUT`].
 async fn await_started(
+    holly: &Holly,
     events: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     session_id: &SessionId,
 ) -> Result<()> {
@@ -209,6 +231,9 @@ async fn await_started(
             Ok(OutEvent::Error {
                 session, message, ..
             }) if &session == session_id => bail!("cannot start session {session_id}: {message}"),
+            // The answer may have been among the dropped events; a live
+            // session means it started (a refusal never registers one).
+            Err(RecvError::Lagged(_)) if holly.is_live(session_id) => return Ok(()),
             Ok(_) | Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => bail!("engine stopped before session {session_id} started"),
         }
@@ -403,20 +428,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_explicit_mode_beats_the_agents_default() {
-        let launch = LaunchMode::resolve(Some("build".into()), None).unwrap();
+        let launch = LaunchMode::resolve(Some("build".into()), None, String::new).unwrap();
         assert_eq!(settled_mode(Some("plan"), launch).await, "build");
     }
 
     #[tokio::test]
     async fn a_config_mode_beats_the_agents_default() {
-        let launch = LaunchMode::resolve(None, Some("build".into())).unwrap();
+        let launch = LaunchMode::resolve(None, Some("build".into()), String::new).unwrap();
         assert_eq!(settled_mode(Some("plan"), launch).await, "build");
     }
 
     #[tokio::test]
     async fn a_mode_with_no_agent_reaches_the_lazily_created_root() {
         // The bare-TUI case: no `--agent`, but `--mode research`.
-        let launch = LaunchMode::resolve(Some("research".into()), None).unwrap();
+        let launch = LaunchMode::resolve(Some("research".into()), None, String::new).unwrap();
         assert_eq!(settled_mode(None, launch).await, "research");
     }
 

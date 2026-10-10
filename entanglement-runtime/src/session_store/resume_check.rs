@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId, DEFAULT_AGENT};
 
 use super::{integrity_gap, LogPayload, LogRecord, SessionStore};
@@ -266,16 +266,36 @@ impl LaunchMode {
     /// name must stop the launch, never fall through to the default
     /// authority (a refused `Spawn` would otherwise leave the first prompt to
     /// lazily create a `general`/`build` root, ADR-0210 — ADR-0218).
-    pub fn resolve(cli: Option<String>, config: Option<String>) -> Result<Self> {
-        for (source, mode) in [("--mode", &cli), ("config.yml `mode:`", &config)] {
-            if let Some(mode) = mode.as_deref() {
-                if crate::mode::ladder_rank(mode).is_none() {
-                    anyhow::bail!(
-                        "unknown permission mode `{mode}` from {source} (one of: {})",
-                        crate::mode::BUILTIN_LADDER.join(" | ")
-                    );
-                }
-            }
+    ///
+    /// A bad config value is refused even when a valid `--mode` would
+    /// out-rank it: the file is broken either way, and a later run without
+    /// the flag would hit it. `config_source` names the file that set
+    /// `mode:`; it is only called on that error path.
+    pub fn resolve(
+        cli: Option<String>,
+        config: Option<String>,
+        config_source: impl FnOnce() -> String,
+    ) -> Result<Self> {
+        let valid = || crate::mode::BUILTIN_LADDER.join(" | ");
+        if let Some(mode) = cli
+            .as_deref()
+            .filter(|m| crate::mode::ladder_rank(m).is_none())
+        {
+            bail!(
+                "unknown permission mode `{mode}` from --mode (one of: {})",
+                valid()
+            );
+        }
+        if let Some(mode) = config
+            .as_deref()
+            .filter(|m| crate::mode::ladder_rank(m).is_none())
+        {
+            bail!(
+                "unknown permission mode `{mode}` from config.yml `mode:` ({}) — fix or remove \
+                 it (one of: {})",
+                config_source(),
+                valid()
+            );
         }
         Ok(Self {
             explicit: cli.is_some(),
