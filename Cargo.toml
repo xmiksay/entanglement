@@ -62,10 +62,14 @@ libc = "0.2"
 # serializes a script's return value.
 rhai = { version = "1", default-features = false, features = ["std", "sync", "serde"] }
 diffy = "0.5"
-# rustls (not native-tls) so builds need no system OpenSSL headers. No
-# `charset`: every endpoint we read is UTF-8 JSON/SSE, and without the feature
-# `.text()` falls back to `from_utf8_lossy` — identical here, minus encoding_rs.
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# rustls (not native-tls) so builds need no system OpenSSL headers — 0.13's
+# `rustls` is aws-lc-rs + the OS trust store (rustls-platform-verifier), the
+# same TLS stack as reqwest's own default so an embedder on stock 0.13
+# unifies with ours instead of building a second one. `form` backs the OAuth
+# token/device/revocation POSTs (opt-in since 0.13). No `charset`: every
+# endpoint we read is UTF-8 JSON/SSE, and without the feature `.text()` falls
+# back to `from_utf8_lossy` — identical here, minus encoding_rs.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "rustls"] }
 # WebSocket `serve` head (entanglement-runtime only, behind its `serve` feature —
 # ADR-0025/ADR-0048). Loopback-bound local HTTP+WS server; the `ws` feature adds
 # the WebSocket upgrade path. tokio-tungstenite drives the serve integration
