@@ -105,6 +105,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             agent: "plan".into(),
             prompt: "go again".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -119,6 +120,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             agent: "debug".into(),
             prompt: "go once more".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

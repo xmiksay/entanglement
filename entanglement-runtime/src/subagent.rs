@@ -162,6 +162,7 @@ async fn launch(
             agent: agent.clone(),
             prompt,
             user: None,
+            model: None,
         })
         .await
         .is_err()

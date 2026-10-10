@@ -7,7 +7,7 @@ use super::Supervisor;
 use crate::holly::routing::{emit_supervisor_error, resume_meta};
 use crate::holly::{DEFAULT_MODE, SESSION_CMD_CAPACITY};
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::session::{session_loop, Session, SessionCmd};
+use crate::session::{session_loop, Session, SessionCmd, SessionStart};
 
 impl Supervisor {
     /// `Resume`: refuse a closed or live id, else replay `session_id` and
@@ -129,16 +129,19 @@ impl Supervisor {
                 srx,
                 ev,
                 cfg2,
-                profile,
-                Some(initial_session),
-                parent,
-                // Resume reconstructs `predecessor`/`user`/`mode` from
-                // the log (replay); pass `None`/`DEFAULT_MODE` for them so
-                // none is overwritten (session.rs's resumed-takes-precedence
-                // rule, ADR-0207 §6 for `mode`).
-                None,
-                None,
-                DEFAULT_MODE.to_string(),
+                SessionStart {
+                    agent: profile,
+                    initial_session: Some(initial_session),
+                    parent,
+                    // Resume reconstructs `predecessor`/`user`/`mode`/model
+                    // from the log (replay); pass `None`/`DEFAULT_MODE` for
+                    // them so none is overwritten (session.rs's
+                    // resumed-takes-precedence rule, ADR-0207 §6 for `mode`).
+                    predecessor: None,
+                    user: None,
+                    initial_mode: DEFAULT_MODE.to_string(),
+                    spawn_model: None,
+                },
                 seqs2,
                 activity2,
                 forks,

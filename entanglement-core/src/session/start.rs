@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use entanglement_provider::UserId;
+use entanglement_provider::{ResolvedModel, UserId};
 use tokio::sync::{broadcast, mpsc};
 
 use super::commands::now_ms;
@@ -13,14 +13,22 @@ use crate::protocol::{Agent, AgentState, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 
 /// What a session task starts from: its agent, the replayed state when
-/// resuming, and the spawn-time lineage/mode facts a fresh spawn applies.
-pub(super) struct SessionStart {
-    pub(super) agent: Agent,
-    pub(super) initial_session: Option<Session>,
-    pub(super) parent: Option<SessionId>,
-    pub(super) predecessor: Option<SessionId>,
-    pub(super) user: Option<UserId>,
-    pub(super) initial_mode: String,
+/// resuming, and the spawn-time lineage/mode/model facts a fresh spawn applies.
+pub(crate) struct SessionStart {
+    pub(crate) agent: Agent,
+    pub(crate) initial_session: Option<Session>,
+    pub(crate) parent: Option<SessionId>,
+    pub(crate) predecessor: Option<SessionId>,
+    pub(crate) user: Option<UserId>,
+    /// The mode a fresh spawn starts under — the parent's live mode at spawn
+    /// time (ADR-0207 §6: mode applies to the whole spawn sub-tree), or
+    /// `DEFAULT_MODE` for a root. Ignored on the resume path (a replayed
+    /// session already carries the correct value in `s.mode`) — the caller
+    /// passes `DEFAULT_MODE` there too, mirroring the `None` it passes for
+    /// `predecessor`/`user`.
+    pub(crate) initial_mode: String,
+    /// An explicit `Spawn` model (#725), already resolved by the supervisor.
+    pub(crate) spawn_model: Option<ResolvedModel>,
 }
 
 /// Build (or adopt the resumed) [`Session`], emit its start-up lifecycle
@@ -41,6 +49,7 @@ pub(super) fn start_session(
         predecessor,
         user,
         initial_mode,
+        spawn_model,
     } = start;
     let ts = now_ms();
 
@@ -88,7 +97,14 @@ pub(super) fn start_session(
     // that resolved binding, not the pin a fresh session still falls back to.
     // A fresh session has `s.model == None` here (the pin re-bind below hasn't
     // run yet), so this is unchanged there.
-    let effective_model = s.model.clone().or_else(|| agent_model.clone());
+    // An explicit `Spawn` model (#725) out-ranks the agent's pin, exactly as
+    // a `SetModel` would (ADR-0081: session memory > static pin); only a fresh
+    // spawn ever carries one, so it never meets a replayed `s.model`.
+    let effective_model = spawn_model
+        .as_ref()
+        .map(|r| r.model.clone())
+        .or_else(|| s.model.clone())
+        .or_else(|| agent_model.clone());
 
     // Publish this session's shared seq counter so the runtime can mint a fresh
     // seq for events it authors while the session is parked (#157). Registered
@@ -135,8 +151,12 @@ pub(super) fn start_session(
     // cheap-model `explore`) lands straight on its pinned endpoint; a resumed
     // session already re-bound from its `ModelChanged` log (so `s.model` is
     // `Some`) is skipped. Best-effort: a resolver failure warns and keeps the
-    // startup default, matching replay's stance.
-    if s.model.is_none() {
+    // startup default, matching replay's stance. An explicit `Spawn` model
+    // (#725) takes this slot instead: its `ModelChanged` here, right after
+    // `SessionStarted`, is what persistence logs and replay re-folds.
+    if let Some(resolved) = spawn_model {
+        s.rebind(session, resolved, events);
+    } else if s.model.is_none() {
         if let Some((provider, model)) = s
             .agent
             .model_pin()

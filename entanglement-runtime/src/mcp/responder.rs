@@ -599,6 +599,7 @@ mod tests {
                 agent: "general".into(),
                 prompt: "subtask".into(),
                 user: None,
+                model: None,
             })
             .await
             .unwrap();

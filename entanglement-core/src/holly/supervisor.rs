@@ -243,9 +243,10 @@ impl Supervisor {
             agent,
             prompt,
             user,
+            model,
         } = &msg
         {
-            self.spawn(child, parent, predecessor, agent, prompt, user)
+            self.spawn(child, parent, predecessor, agent, prompt, user, model)
                 .await;
             return;
         }

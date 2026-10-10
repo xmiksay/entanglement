@@ -475,6 +475,14 @@ seam implementations over it. Per seam:
   `EngineConfig::model_resolver`. Each user gets their own `Catalog` + keys
   (never `std::env`); two users sharing one literal key each get their own
   admission slice ([ADR-0175](adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)).
+  To start a session on a user-chosen model, put it on the session's own
+  `Spawn` — `model: Some(ModelChoice::new(provider, model))` (#725). It
+  resolves through that same resolver under the session's user before the
+  first round, wins over the agent's pin, and refuses the spawn with an
+  `Error` if it can't resolve. Don't send a follow-up `SetModel` for this (it
+  queues behind the initiating prompt, so turn one runs on the default) and
+  don't pin a sentinel agent model plus a side map keyed by session — both
+  race concurrent creates.
 - **Permission ceiling + grants** — implement the #311
   `PermissionResolver`/`GrantStore` traits directly over your session→user
   map ([`examples/embedded.rs`](../entanglement-runtime/examples/embedded.rs)

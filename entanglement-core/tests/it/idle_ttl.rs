@@ -309,6 +309,7 @@ async fn parked_child_pins_settled_root_live() {
             agent: "general".into(),
             prompt: "do the subtask".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

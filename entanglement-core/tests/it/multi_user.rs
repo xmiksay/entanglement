@@ -66,6 +66,7 @@ async fn a_root_spawn_carries_its_explicit_user() {
             agent: "general".into(),
             prompt: "hi".into(),
             user: Some(alice.clone()),
+            model: None,
         })
         .await
         .unwrap();
@@ -118,6 +119,7 @@ async fn a_spawned_child_inherits_its_parents_user_without_being_told() {
             agent: "general".into(),
             prompt: "hi".into(),
             user: Some(alice.clone()),
+            model: None,
         })
         .await
         .unwrap();
@@ -137,6 +139,7 @@ async fn a_spawned_child_inherits_its_parents_user_without_being_told() {
             agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -184,6 +187,7 @@ async fn list_sessions_surfaces_each_sessions_user() {
                 agent: "general".into(),
                 prompt: "hi".into(),
                 user: Some(user),
+                model: None,
             })
             .await
             .unwrap();
@@ -260,6 +264,7 @@ async fn an_empty_prompt_spawn_starts_idle_until_a_real_prompt_arrives() {
             agent: "general".into(),
             prompt: String::new(),
             user: Some(UserId::new("alice")),
+            model: None,
         })
         .await
         .unwrap();

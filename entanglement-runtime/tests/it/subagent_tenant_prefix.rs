@@ -75,6 +75,7 @@ async fn an_agent_tool_child_keeps_the_tenant_prefix_and_owner() {
             agent: "general".into(),
             prompt: "parent-task".into(),
             user: Some(alice.clone()),
+            model: None,
         })
         .await
         .unwrap();

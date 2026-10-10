@@ -41,6 +41,7 @@ mod set_generation;
 mod set_mode;
 mod set_session_meta;
 mod shutdown;
+mod spawn_model;
 mod stop_semantics;
 mod system_prompt_resolver;
 mod tenant_lineage;

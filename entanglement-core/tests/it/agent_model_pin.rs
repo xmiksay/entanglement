@@ -19,7 +19,7 @@ use entanglement_core::{
 };
 
 /// Every request's effective model id (`req.model`), in order.
-type Seen = Arc<Mutex<Vec<Option<String>>>>;
+pub(crate) type Seen = Arc<Mutex<Vec<Option<String>>>>;
 
 /// Records the effective model of every request, then ends the turn so the
 /// session returns to idle and can accept the next command.
@@ -51,7 +51,7 @@ fn recording_factory(seen: &Seen) -> entanglement_core::LlmFactory {
 /// binds a fresh recording backend on the *same* shared `seen`, so a switched
 /// request is observable by its `req.model`. Any unknown pair errors, mirroring
 /// an unknown provider / missing key.
-fn resolver(seen: &Seen) -> ModelResolver {
+pub(crate) fn resolver(seen: &Seen) -> ModelResolver {
     let seen = seen.clone();
     Arc::new(move |_user, provider: &str, model: &str| {
         let known = matches!(
@@ -71,7 +71,7 @@ fn resolver(seen: &Seen) -> ModelResolver {
     })
 }
 
-fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
+pub(crate) fn profile(name: &str, pin: Option<(&str, &str)>) -> Agent {
     Agent {
         name: name.to_string(),
         description: String::new(),
@@ -88,7 +88,7 @@ fn model_only_profile(name: &str, model: &str) -> Agent {
     p
 }
 
-fn registry(agents: impl IntoIterator<Item = Agent>) -> AgentCatalog {
+pub(crate) fn registry(agents: impl IntoIterator<Item = Agent>) -> AgentCatalog {
     let mut reg = AgentCatalog::default();
     for p in agents {
         reg.insert(p);
@@ -96,7 +96,7 @@ fn registry(agents: impl IntoIterator<Item = Agent>) -> AgentCatalog {
     reg
 }
 
-fn config(seen: &Seen, switch_seen: &Seen, agents: AgentCatalog) -> EngineConfig {
+pub(crate) fn config(seen: &Seen, switch_seen: &Seen, agents: AgentCatalog) -> EngineConfig {
     EngineConfig {
         llm_factory: recording_factory(seen),
         agents,
@@ -106,7 +106,7 @@ fn config(seen: &Seen, switch_seen: &Seen, agents: AgentCatalog) -> EngineConfig
 }
 
 /// Collect every event up to and including the first one matching `pred`.
-async fn drain_until(
+pub(crate) async fn drain_until(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     pred: impl Fn(&OutEvent) -> bool,
 ) -> Vec<OutEvent> {
@@ -129,7 +129,7 @@ async fn drain_until(
     }
 }
 
-fn is_done(session: &SessionId) -> impl Fn(&OutEvent) -> bool + '_ {
+pub(crate) fn is_done(session: &SessionId) -> impl Fn(&OutEvent) -> bool + '_ {
     move |e| matches!(e, OutEvent::Done { session: s, .. } if s == session)
 }
 
@@ -155,6 +155,7 @@ async fn pinned_profile_rebinds_at_spawn() {
             agent: "plan".into(),
             prompt: "one".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -217,6 +218,7 @@ async fn resolver_error_at_spawn_keeps_default_binding() {
             agent: "bad".into(),
             prompt: "one".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -300,6 +302,7 @@ async fn model_only_pin_stays_request_level() {
             agent: "legacy".into(),
             prompt: "one".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

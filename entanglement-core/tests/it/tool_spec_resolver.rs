@@ -218,6 +218,7 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             agent: "explore".into(),
             prompt: "look".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -286,6 +287,7 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             agent: "locked".into(),
             prompt: "look".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

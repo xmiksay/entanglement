@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 mod in_msg;
 mod mcp;
+mod model_choice;
 mod out_event;
 mod overlay;
 mod permission;
@@ -36,6 +37,7 @@ mod retired;
 
 pub use in_msg::InMsg;
 pub use mcp::{McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus};
+pub use model_choice::ModelChoice;
 pub use out_event::{CompactionMode, OutEvent, ToolEnvelope, UsagePurpose};
 pub use overlay::ToolOverlayEntry;
 pub use permission::{ApprovalScope, Permission, PermissionProfile};

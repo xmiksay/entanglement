@@ -1072,6 +1072,7 @@ async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
             agent: agent.into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

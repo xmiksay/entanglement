@@ -209,6 +209,7 @@ async fn close_session_cascades_to_descendants() {
             agent: "general".into(),
             prompt: "subtask".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -225,6 +226,7 @@ async fn close_session_cascades_to_descendants() {
             agent: "general".into(),
             prompt: "sub-subtask".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -457,6 +459,7 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
             agent: "reviewer".into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -533,6 +536,7 @@ async fn spawn_starts_child_with_parent_link() {
             agent: "general".into(),
             prompt: "do the subtask".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -573,6 +577,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
             agent: "does-not-exist".into(),
             prompt: "go".into(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();
@@ -624,6 +629,7 @@ async fn duplicate_spawn_is_ignored() {
                 agent: "general".into(),
                 prompt: "go".into(),
                 user: None,
+                model: None,
             })
             .await
             .unwrap();
@@ -664,6 +670,7 @@ async fn custom_profile_is_selectable() {
             agent: "paranoid".into(),
             prompt: String::new(),
             user: None,
+            model: None,
         })
         .await
         .unwrap();

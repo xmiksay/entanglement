@@ -448,6 +448,7 @@ mod tests {
                 agent: "plan".into(),
                 prompt: String::new(),
                 user: None,
+                model: None,
             })
             .await
             .unwrap();

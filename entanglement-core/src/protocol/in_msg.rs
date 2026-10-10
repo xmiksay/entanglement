@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(doc)]
 use super::{AgentState, McpAction};
 use super::{
-    ApprovalScope, McpAuthAction, McpServerSpec, OutEvent, Questions, SessionId, ToolOverlayEntry,
+    ApprovalScope, McpAuthAction, McpServerSpec, ModelChoice, OutEvent, Questions, SessionId,
+    ToolOverlayEntry,
 };
 use content::de_prompt_content;
 
@@ -455,6 +456,22 @@ pub enum InMsg {
         /// re-specify it). `None` (single-user mode) is the default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<UserId>,
+        /// The model the new session starts on (#725). Resolved through the
+        /// runtime's `model_resolver` (under the session's effective `user`)
+        /// **before** the session exists, so the very first round already
+        /// runs on it — a follow-up [`SetModel`][InMsg::SetModel] would queue
+        /// behind the initiating `prompt`. Wins over the agent profile's
+        /// model pin (ADR-0081: an explicit choice is session memory, which
+        /// out-ranks the static pin) and is announced/persisted as the
+        /// session's first `ModelChanged`, so replay rebinds it exactly. An
+        /// unresolvable choice (or an engine with no resolver) **refuses the
+        /// spawn** with a supervisor `Error`, like an unknown `agent` —
+        /// never a silent fall-back to the default model. `None` keeps the
+        /// pin-or-default start. A duplicate `Spawn` for an already-live id
+        /// is a no-op, so its `model` is ignored (use `SetModel` to switch a
+        /// live session).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<ModelChoice>,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]
