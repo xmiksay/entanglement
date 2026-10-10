@@ -492,6 +492,18 @@ pub enum InMsg {
         /// live session).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<ModelChoice>,
+        /// The permission mode the new session starts in (#763, ADR-0218),
+        /// so a head's resolved `--mode`/config `mode:` lands as the
+        /// session's one starting mode instead of a follow-up `SetMode`
+        /// transition. Wins over the agent's `default_mode` hint for a root;
+        /// a child still never starts wider than its parent (clamped on
+        /// [`EngineConfig::mode_ladder`][crate::EngineConfig::mode_ladder]);
+        /// a compaction successor ignores it and keeps its source's mode. A
+        /// name off a non-empty ladder **refuses the spawn** with a
+        /// supervisor `Error`, like an unresolvable `model`. `None` keeps the
+        /// agent-hint-or-default start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]

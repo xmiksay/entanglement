@@ -132,6 +132,7 @@ async fn persisted_override_applies_at_spawn() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -164,6 +165,7 @@ async fn profile_without_override_emits_no_generation_changed_at_spawn() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

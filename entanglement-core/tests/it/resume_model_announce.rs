@@ -240,6 +240,7 @@ async fn fresh_session_start_is_unaffected() {
             prompt: "hi".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

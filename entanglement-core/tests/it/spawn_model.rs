@@ -21,6 +21,7 @@ fn spawn(sid: &SessionId, agent: &str, model: Option<ModelChoice>) -> InMsg {
         prompt: "one".into(),
         user: None,
         model,
+        mode: None,
     }
 }
 

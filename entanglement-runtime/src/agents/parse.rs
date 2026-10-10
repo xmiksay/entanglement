@@ -195,19 +195,29 @@ pub(super) fn build_agent(
             def.name
         );
     }
-    // Unknown → warn and ignore rather than abort: the hint only picks a
-    // starting posture, so a stale name must not brick the whole catalog.
+    // Warn and ignore rather than abort: the hint only picks a starting
+    // posture, so a stale name must not brick the whole catalog. Only modes
+    // up to `DEFAULT_MODE` qualify — an agent file (a repo-committed one
+    // included) must never put a session into unattended `auto` with no
+    // human choosing it (ADR-0218); core clamps a root hint the same way.
+    let ceiling = ladder_rank(entanglement_core::DEFAULT_MODE);
     let default_mode = def.default_mode.filter(|mode| {
-        let known = ladder_rank(mode).is_some();
-        if !known {
+        let allowed = ladder_rank(mode).is_some_and(|r| Some(r) <= ceiling);
+        if !allowed {
             tracing::warn!(
                 agent = %def.name,
                 default_mode = %mode,
-                "ignoring unknown `default_mode` (expected one of {})",
-                BUILTIN_LADDER.join("/"),
+                "ignoring `default_mode`: a starting hint must be one of {} \
+                 (`auto` is only ever chosen by a human, via --mode/config/mode:)",
+                BUILTIN_LADDER
+                    .iter()
+                    .filter(|m| ladder_rank(m) <= ceiling)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("/"),
             );
         }
-        known
+        allowed
     });
     let agent = Agent {
         name: def.name,

@@ -304,6 +304,7 @@ async fn hibernated_session_resumes_with_its_user_preserved() {
         prompt: "one".into(),
         user: Some(alice.clone()),
         model: None,
+        mode: None,
     };
     holly.send(spawn).await.unwrap();
     // The runtime's tap synthesizes a spawn's prompt as an `In` Prompt (ADR-0113).

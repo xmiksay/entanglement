@@ -123,6 +123,7 @@ async fn lazy_prompt_refuses_a_known_hibernated_child() {
             prompt: "write a page".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

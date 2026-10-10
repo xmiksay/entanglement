@@ -157,6 +157,7 @@ async fn pinned_profile_rebinds_at_spawn() {
             prompt: "one".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -220,6 +221,7 @@ async fn resolver_error_at_spawn_keeps_default_binding() {
             prompt: "one".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -304,6 +306,7 @@ async fn model_only_pin_stays_request_level() {
             prompt: "one".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

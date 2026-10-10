@@ -121,6 +121,7 @@ async fn restrictive_profile_still_advertises_the_full_set() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -172,6 +173,7 @@ async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
             prompt: "before the overlay".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -275,6 +277,7 @@ async fn spawned_explore_child_advertises_the_same_set_as_its_parent() {
             prompt: "explore the tree".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

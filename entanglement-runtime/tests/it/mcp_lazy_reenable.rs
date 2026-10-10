@@ -299,6 +299,7 @@ async fn allowed_tier_self_heals_and_the_ladder_still_runs() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -369,6 +370,7 @@ async fn disabled_tier_gets_a_truthful_decline_not_unknown_tool() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -423,6 +425,7 @@ async fn genuinely_unknown_tool_keeps_the_unknown_tool_hint() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -478,6 +481,7 @@ async fn enable_failure_is_distinguishable_and_a_repeat_call_is_guarded() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

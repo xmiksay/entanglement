@@ -170,6 +170,7 @@ async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>)
                 prompt: "go".into(),
                 user: None,
                 model: None,
+                mode: None,
             })
             .await
             .unwrap();

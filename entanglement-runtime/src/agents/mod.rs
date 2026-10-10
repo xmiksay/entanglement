@@ -399,6 +399,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_is_never_a_default_mode() {
+        // ADR-0218: an agent file alone can never start a session unattended.
+        let p = parse("---\nname: x\ndescription: d\ndefault_mode: auto\n---\nbody")
+            .expect("a rejected default_mode must not abort the load");
+        assert_eq!(p.default_mode, None);
+        let p =
+            parse("---\nname: x\ndescription: d\ndefault_mode: build\n---\nbody").expect("parses");
+        assert_eq!(p.default_mode.as_deref(), Some("build"));
+    }
+
+    #[test]
     fn built_in_bodies_leave_the_exec_rule_to_the_bash_spec() {
         // #740: the bash-vs-call-vs-rhai rule lives once, in the `bash` tool
         // description (cached tools block, visible in every advertising

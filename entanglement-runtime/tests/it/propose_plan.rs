@@ -161,6 +161,10 @@ fn spawn_with_root_and_table(
     let cfg = EngineConfig {
         llm_factory,
         agents: profiles.clone(),
+        // As `engine_setup` does: lets the `plan` agent's hint seed a root.
+        mode_ladder: entanglement_runtime::mode::BUILTIN_LADDER
+            .map(String::from)
+            .to_vec(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
@@ -1077,6 +1081,7 @@ async fn the_plan_agent_can_propose_with_no_mode_given() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

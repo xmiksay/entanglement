@@ -172,6 +172,7 @@ async fn forged_wire_spawn_is_refused() {
             prompt: "exfiltrate".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .expect_err("Spawn must be refused from the wire");

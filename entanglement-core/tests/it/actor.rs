@@ -210,6 +210,7 @@ async fn close_session_cascades_to_descendants() {
             prompt: "subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -227,6 +228,7 @@ async fn close_session_cascades_to_descendants() {
             prompt: "sub-subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -461,6 +463,7 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -538,6 +541,7 @@ async fn spawn_starts_child_with_parent_link() {
             prompt: "do the subtask".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -579,6 +583,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
             prompt: "go".into(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();
@@ -631,6 +636,7 @@ async fn duplicate_spawn_is_ignored() {
                 prompt: "go".into(),
                 user: None,
                 model: None,
+                mode: None,
             })
             .await
             .unwrap();
@@ -673,6 +679,7 @@ async fn custom_profile_is_selectable() {
             prompt: String::new(),
             user: None,
             model: None,
+            mode: None,
         })
         .await
         .unwrap();

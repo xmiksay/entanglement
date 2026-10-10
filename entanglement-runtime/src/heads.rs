@@ -148,38 +148,36 @@ pub(crate) async fn dispatch(
     }
 }
 
-/// Start a fresh session the same way on every head (#752): bind its agent —
-/// core seeds the starting mode from that agent's `default_mode` (#763) —
-/// then land the head's `--mode`/config `mode:` on top, so the precedence is
-/// `--mode` > config `mode:` > agent `default_mode` > `DEFAULT_MODE`. The
-/// bind goes first: a `SetMode` to a still-nonexistent id would lazily
-/// create it under the default agent instead (see `holly.rs`'s
-/// unknown-session-id path). `None` agent leaves that lazy path to create it.
+/// Start a fresh session the same way on every head (#752): one
+/// empty-prompt `Spawn` binds its agent — fixed for the session's whole life
+/// (ADR-0207 §9) — and carries the head's `--mode`/config `mode:`, so the
+/// session announces exactly one starting mode, with no follow-up `SetMode`
+/// transition for the model to read as a change. With no launch mode, core
+/// starts it in the agent's `default_mode` (clamped to `DEFAULT_MODE`), else
+/// `DEFAULT_MODE`: precedence `--mode` > config `mode:` > agent hint >
+/// `build` (#763, ADR-0218). The bind must precede the first prompt, which
+/// would otherwise lazily create the id under the default agent (see
+/// `holly.rs`'s unknown-session-id path). With neither an agent nor a mode
+/// there is nothing to bind, so that lazy path creates it on first use.
 async fn start_fresh(
     holly: &Holly,
     session_id: &SessionId,
     agent: Option<String>,
     mode: Option<String>,
 ) -> Result<()> {
-    if let Some(agent) = agent {
-        bind_agent(holly, session_id, agent).await?;
+    if agent.is_none() && mode.is_none() {
+        return Ok(());
     }
-    apply_mode(holly, session_id, mode).await
-}
-
-/// Bind a fresh session's identity with an empty-prompt `Spawn` — the agent
-/// is fixed for the session's whole life from here (ADR-0207 §9); the real
-/// first prompt arrives afterwards.
-async fn bind_agent(holly: &Holly, session_id: &SessionId, agent: String) -> Result<()> {
     holly
         .send(InMsg::Spawn {
             session: session_id.clone(),
             parent: None,
             predecessor: None,
-            agent,
+            agent: agent.unwrap_or_else(|| entanglement_core::DEFAULT_AGENT.to_string()),
             prompt: String::new(),
             user: None,
             model: None,
+            mode,
         })
         .await?;
     Ok(())
@@ -192,25 +190,6 @@ fn known_agents(head: &Head) -> Vec<String> {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     catalog.iter().map(|a| a.name.clone()).collect()
-}
-
-/// `--mode` (ADR-0207 §11/§12) for a fresh session: `SetMode` is
-/// trusted-only (a mode *is* the session's authority), so this direct
-/// `Holly::send` — not the wire — is exactly the surface it's meant for.
-/// Callers resolve `--mode` > `config.yml` `mode:`; `None` sends nothing,
-/// leaving the session at its agent's `default_mode` (else the engine's
-/// `DEFAULT_MODE`) as seeded at spawn. A resume goes
-/// through `session_store::resume_with_mode` instead (ADR-0216).
-async fn apply_mode(holly: &Holly, session_id: &SessionId, mode: Option<String>) -> Result<()> {
-    if let Some(mode) = mode {
-        holly
-            .send(InMsg::SetMode {
-                session: session_id.clone(),
-                mode,
-            })
-            .await?;
-    }
-    Ok(())
 }
 
 /// Bootstrap `session_id` under `agent` (when set) and the launch mode, then
@@ -317,17 +296,42 @@ mod tests {
     //! `start_fresh` is the one launch path `run`, the implicit one-shot and
     //! the TUI share (#752), so the starting-mode precedence (#763,
     //! ADR-0218) is proven here once for every head.
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use entanglement_core::{EngineConfig, OutEvent};
+    use async_trait::async_trait;
+    use entanglement_core::{
+        stream_from_response, EngineConfig, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent,
+    };
 
     use super::*;
 
-    /// Starts `sid` the way a head does, then returns the mode it settled in
-    /// (the last `ModeChanged` before a barrier turn's `Done`).
+    /// Records each request's model-visible mode notice.
+    struct NoticeLlm(Arc<Mutex<Vec<String>>>);
+    #[async_trait]
+    impl Llm for NoticeLlm {
+        async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+            let notice = req.trailing_notice.clone().unwrap_or_default();
+            self.0.lock().unwrap().push(notice);
+            Ok(stream_from_response(LlmResponse {
+                text: "done".into(),
+                ..Default::default()
+            }))
+        }
+    }
+
+    /// Starts `sid` the way a head does and runs one barrier turn. Asserts
+    /// it announced exactly one starting mode (no follow-up switch) and that
+    /// the model never read a "changed from" transition; returns that mode.
     async fn settled_mode(agent: Option<&str>, launch: LaunchMode) -> String {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let seen = notices.clone();
         let holly = Holly::spawn(EngineConfig {
             agents: entanglement_runtime::agents::built_in_registry().expect("built-ins"),
+            mode_ladder: entanglement_runtime::mode::BUILTIN_LADDER
+                .map(String::from)
+                .to_vec(),
+            llm_factory: Arc::new(move || Box::new(NoticeLlm(seen.clone())) as Box<dyn Llm>),
             ..EngineConfig::default()
         });
         let sid = SessionId::new("s1");
@@ -336,19 +340,25 @@ mod tests {
             .await
             .expect("start");
         holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-        let mut last = None;
+        let mut modes = Vec::new();
         loop {
             let ev = tokio::time::timeout(Duration::from_secs(5), sub.recv())
                 .await
                 .expect("turn never finished")
                 .expect("broadcast closed");
             match ev {
-                OutEvent::ModeChanged { session, mode } if session == sid => last = Some(mode),
+                OutEvent::ModeChanged { session, mode } if session == sid => modes.push(mode),
                 OutEvent::Done { session, .. } if session == sid => break,
                 _ => {}
             }
         }
-        last.expect("no mode announced")
+        assert_eq!(modes.len(), 1, "one starting mode, no switch: {modes:?}");
+        let notices = notices.lock().unwrap();
+        assert!(
+            notices.iter().all(|n| !n.contains("changed from")),
+            "{notices:?}"
+        );
+        modes.remove(0)
     }
 
     #[tokio::test]

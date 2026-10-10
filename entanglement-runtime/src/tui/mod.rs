@@ -455,6 +455,7 @@ mod tests {
                 prompt: String::new(),
                 user: None,
                 model: None,
+                mode: None,
             })
             .await
             .unwrap();
