@@ -1,7 +1,7 @@
 //! The supervisor actor: routes inbound messages to per-session tasks and owns
 //! the session directory (liveness, spawn tree, tombstones, mode cache). The
-//! `Spawn`/lazy-root, `Resume` and sub-tree/idle-sweep paths live in the child
-//! modules.
+//! `Spawn`/lazy-root, `Resume`, unknown-session policy (ADR-0210) and
+//! sub-tree/idle-sweep paths live in the child modules.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,6 +16,7 @@ use crate::session::SessionCmd;
 mod resume;
 mod spawn;
 mod subtree;
+mod unknown;
 
 use subtree::{
     collect_subtree, hibernate_subtree, successor_of, sweep_idle_sessions, sweep_period,
@@ -66,6 +67,13 @@ struct Supervisor {
     // would keep the actor alive after every `Holly` handle dropped. This
     // channel dies with the supervisor instead.
     fork_tx: mpsc::Sender<InMsg>,
+    // Ids with a `SessionLoader` call in flight (ADR-0210) → the routable
+    // messages that arrived for them meanwhile, in arrival order. Presence is
+    // the "one load per id" guard; the entry is drained on completion.
+    pending_loads: HashMap<SessionId, Vec<InMsg>>,
+    // Load completions flow back here rather than through the inbox, for the
+    // same keep-the-actor-alive reason as `fork_tx`.
+    load_tx: mpsc::Sender<unknown::LoadDone>,
 }
 
 /// Route inbound messages to per-session tasks, lazily spawning one per new
@@ -81,15 +89,14 @@ pub(super) async fn supervisor(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let (fork_tx, mut fork_rx) = mpsc::channel::<InMsg>(FORK_CAPACITY);
-    // Idle-TTL auto-hibernation sweep (#363). `None` (the default) makes this
-    // branch never armed, so a `select!` with no `idle_ttl` configured takes the
-    // exact same path as the old bare `rx.recv().await` — byte-identical
-    // behavior when the feature is off. A coarse interval, not a per-session
+    let (load_tx, mut load_rx) = mpsc::channel::<unknown::LoadDone>(FORK_CAPACITY);
+    // Idle-TTL auto-hibernation sweep (#363). `None` (the default) leaves the
+    // tick branch pending forever, so with no `idle_ttl` configured the loop
+    // only ever wakes for messages. A coarse interval, not a per-session
     // timer: sweeping is O(sessions) and cheap, and a quarter of the TTL (floored
     // at 30s) is plenty precise for an eviction policy, not a scheduler.
-    let mut sweep = cfg
-        .idle_ttl
-        .map(|ttl| (ttl, tokio::time::interval(sweep_period(ttl))));
+    let ttl = cfg.idle_ttl;
+    let mut sweep = ttl.map(|ttl| tokio::time::interval(sweep_period(ttl)));
     let mut sup = Supervisor {
         sessions: HashMap::new(),
         successors: HashMap::new(),
@@ -102,28 +109,34 @@ pub(super) async fn supervisor(
         activity,
         cfg,
         fork_tx,
+        pending_loads: HashMap::new(),
+        load_tx,
     };
 
     loop {
-        let msg = match sweep.as_mut() {
-            Some((ttl, timer)) => {
-                tokio::select! {
-                    biased;
-                    _ = outlets::requested(&mut shutdown) => None,
-                    m = rx.recv() => m,
-                    m = fork_rx.recv() => m,
-                    _ = timer.tick() => {
-                        sweep_idle_sessions(*ttl, &mut sup.sessions, &mut sup.session_meta, &mut sup.parent_links, &sup.activity).await;
-                        continue;
-                    }
+        let tick = async {
+            match sweep.as_mut() {
+                Some(timer) => {
+                    timer.tick().await;
                 }
+                None => std::future::pending::<()>().await,
             }
-            None => tokio::select! {
-                biased;
-                _ = outlets::requested(&mut shutdown) => None,
-                m = rx.recv() => m,
-                m = fork_rx.recv() => m,
-            },
+        };
+        let msg = tokio::select! {
+            biased;
+            _ = outlets::requested(&mut shutdown) => None,
+            m = rx.recv() => m,
+            m = fork_rx.recv() => m,
+            Some(done) = load_rx.recv() => {
+                sup.finish_load(done).await;
+                continue;
+            }
+            _ = tick => {
+                if let Some(ttl) = ttl {
+                    sweep_idle_sessions(ttl, &mut sup.sessions, &mut sup.session_meta, &mut sup.parent_links, &sup.activity).await;
+                }
+                continue;
+            }
         };
         let Some(msg) = msg else { break };
         // Fan the message out to inbound subscribers (runtime services) before
@@ -214,17 +227,6 @@ impl Supervisor {
             return;
         }
 
-        if let InMsg::SetMode { session, mode } = &msg {
-            // Deliberately **no `return`**: this only cascades onto the
-            // target's *other* descendants. The target session itself still
-            // falls through to the ordinary routing below, unchanged — that
-            // is what preserves `SetMode`'s existing lazy-create-if-unseen
-            // behavior (a `SetMode` sent before a session's first prompt
-            // pre-seeds its mode, same as every other session-scoped `InMsg`
-            // already could before this cascade existed).
-            self.cascade_mode(session, mode).await;
-        }
-
         if let InMsg::Resume { records, .. } = &msg {
             self.resume(&session_id, records).await;
             return;
@@ -244,6 +246,28 @@ impl Supervisor {
             return;
         }
 
+        // Every variant still here is routable to a session task. A non-live
+        // target — or one whose queue is still draining behind a load —
+        // goes through the unknown-session policy (ADR-0210).
+        let msg = if !self.sessions.contains_key(&session_id)
+            || self.pending_loads.contains_key(&session_id)
+        {
+            match self.admit_unknown(&session_id, msg) {
+                Some(msg) => msg,
+                None => return,
+            }
+        } else {
+            msg
+        };
+
+        if let InMsg::SetMode { session, mode } = &msg {
+            // Only cascades onto the target's *other* descendants; the target
+            // itself takes the ordinary routing below. Runs after the policy
+            // above so a `SetMode` to a not-yet-live id pre-seeds its mode the
+            // same way any other session-scoped `InMsg` creates it.
+            self.cascade_mode(session, mode).await;
+        }
+
         // Non-routable variants are all handled/returned above; a stray one
         // maps to `None` and is dropped rather than crashing the supervisor
         // (#160 — the former `unreachable!` would have taken down every session).
@@ -254,10 +278,6 @@ impl Supervisor {
             );
             return;
         };
-
-        if !self.sessions.contains_key(&session_id) && !self.spawn_lazy_root(&session_id) {
-            return;
-        }
 
         if let Some(tx) = self.sessions.get(&session_id) {
             route_to_session(tx, cmd, &session_id, &self.events, &self.seqs).await;
@@ -285,6 +305,12 @@ impl Supervisor {
             }
             self.parent_links.remove(&victim);
             self.modes.remove(&victim);
+            // A load still in flight (ADR-0210) is abandoned: its queued
+            // messages are refused like any frame racing a close, and the
+            // completion finds no queue and applies nothing.
+            if let Some(queued) = self.pending_loads.remove(&victim) {
+                self.refuse_queued(&victim, queued.len(), unknown::CLOSED_ID);
+            }
             // Tombstone the id regardless of liveness: it is spent
             // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
             // can't respawn it blank.

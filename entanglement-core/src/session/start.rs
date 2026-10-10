@@ -90,6 +90,17 @@ pub(super) fn start_session(
     // run yet), so this is unchanged there.
     let effective_model = s.model.clone().or_else(|| agent_model.clone());
 
+    // Publish this session's shared seq counter so the runtime can mint a fresh
+    // seq for events it authors while the session is parked (#157). Registered
+    // before the first turn (hence before any `ToolExec`), so a runtime emit
+    // never races ahead of registration. On a resume it's the replay-seeded
+    // counter, so runtime seqs continue past the reconstructed tail. Also
+    // registered before `SessionStarted` is announced: this registry backs
+    // `Holly::is_live`, which must already read `true` once a head sees it.
+    seqs.lock()
+        .expect("seq registry mutex poisoned")
+        .insert(session.clone(), Arc::clone(&s.seq));
+
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
         parent,
@@ -100,15 +111,6 @@ pub(super) fn start_session(
         ts,
         user: effective_user,
     });
-    // Publish this session's shared seq counter so the runtime can mint a fresh
-    // seq for events it authors while the session is parked (#157). Registered
-    // before the first turn (hence before any `ToolExec`), so a runtime emit
-    // never races ahead of registration. On a resume it's the replay-seeded
-    // counter, so runtime seqs continue past the reconstructed tail.
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .insert(session.clone(), Arc::clone(&s.seq));
-
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
         state: AgentState::Idle,

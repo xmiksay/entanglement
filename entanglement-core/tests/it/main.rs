@@ -47,5 +47,6 @@ mod tool_call_delta;
 mod tool_mask;
 mod tool_spec_resolver;
 mod turn_loop;
+mod unknown_session;
 mod usage;
 mod wire_frame_split;

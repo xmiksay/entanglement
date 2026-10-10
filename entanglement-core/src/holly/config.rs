@@ -13,7 +13,7 @@ use entanglement_provider::{
     ModelResolver, ToolSpec,
 };
 
-use super::DEFAULT_AGENT;
+use super::{UnknownSession, DEFAULT_AGENT};
 
 /// Resolves the base tool schemas advertised to the model for a specific
 /// session (#308). Its output **replaces** the engine-global
@@ -237,6 +237,11 @@ pub struct EngineConfig {
     /// there is always a scheme, mirroring the runtime's `SandboxResolver`
     /// always-a-policy default (ADR-0134).
     pub id_gen: Arc<dyn IdGen>,
+    /// What a routable message addressed to a session with no live task does
+    /// ([ADR-0210](../../docs/adr/0210-unknown-session-policy.md)): spawn a
+    /// blank root (the default — every in-tree single-user head), refuse with
+    /// an `Error`, or resume it through the embedder's [`SessionLoader`][super::SessionLoader].
+    pub unknown_session: UnknownSession,
 }
 
 impl EngineConfig {
@@ -270,6 +275,7 @@ impl Default for EngineConfig {
             idle_ttl: None,
             auto_compact: true,
             id_gen: Arc::new(DefaultIdGen::new()),
+            unknown_session: UnknownSession::default(),
         }
     }
 }
