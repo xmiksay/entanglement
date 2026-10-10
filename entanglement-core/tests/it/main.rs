@@ -48,5 +48,6 @@ mod tool_mask;
 mod tool_spec_resolver;
 mod turn_loop;
 mod unknown_session;
+mod unknown_session_races;
 mod usage;
 mod wire_frame_split;

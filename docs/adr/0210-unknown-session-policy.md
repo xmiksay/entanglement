@@ -67,6 +67,11 @@ messages; the loaded records are then discarded. `CloseSession` abandons the
 load: queued messages are refused as closed and the completion applies
 nothing. A panicking loader surfaces as `Err`; a loader that never returns
 strands its id's queue, so the trait docs tell embedders to bound their I/O.
+The per-id queue is **unbounded**: a slow loader plus a burst of frames for
+that id grows memory until the load completes — another reason to bound the
+loader. Load completions are polled ahead of the inbox in the supervisor's
+`biased` `select!`, so a busy inbox can't starve them (ordering stays safe:
+later frames for a loading id queue behind it).
 A refusal emits one `Error` per dropped message so a head can account for
 each send.
 
@@ -85,6 +90,19 @@ address a possibly-evicted session.
   queued `Prompt` before the resumed session re-announces `SessionStarted`.
   Replay scopes a prompt by its own session, not its paired event, so the log
   still folds correctly.
+- **Security: the loader is reachable from the wire.** Every covered frame is
+  wire-allowed (`Prompt`, `SetModel`, …), so under `Resume` a client relayed
+  through `send_from_wire` triggers embedder loader I/O for **any** id it
+  names: (a) each distinct id spawns its own loader task, with no concurrency
+  cap in core; (b) cross-tenant — a resumed session restores its `user` from
+  its own log, so a frame naming another tenant's **evicted** session revives
+  it with *that* tenant's history and provider key (under `SpawnBlank` the
+  same frame got a blank session with `user = None`). This widens
+  [embedding.md](../embedding.md) §2's tenant-prefix caveat from live to
+  evicted sessions. Rule: the head **must** validate tenant ownership of the
+  id before `send_from_wire`. The loader receives no provenance and needs
+  none when the head does; an embedder that wants a backstop can also rate-
+  or tenant-check inside `load`.
 - `entanglement-core` now depends on `async-trait` (previously dev-only) — the
   same shape as `Llm`.
 

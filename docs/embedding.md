@@ -126,7 +126,10 @@ it to either `send` method — the trust split stops a client from forging
 addressing tenant B's session id if your head doesn't check. That check belongs
 to your auth layer, not to `entanglement-core`, for the same reason the tenant
 convention above is a naming idiom and not a core type: core has no concept of
-"tenant" to enforce.
+"tenant" to enforce. With `UnknownSession::Resume` (§3) this check also guards
+**evicted** sessions: an unchecked frame naming another tenant's hibernated id
+would revive it — with that tenant's history and `user` (hence provider key) —
+so validate ownership before `send_from_wire`, not only for live ids.
 
 ## 3. Custom persistence: tap → sink → lazy `resume`
 
@@ -191,8 +194,13 @@ check and your send. Install a loader instead and keep sending plain
 `Prompt`s:
 
 ```rust
+use std::{sync::Arc, time::Duration};
+
 use async_trait::async_trait;
 use entanglement_core::{InMsg, OutEvent, SessionId, SessionLoader, UnknownSession};
+// `pair_records` lives in entanglement-runtime; a core-only embedder pairs its
+// own rows into the same `(Option<InMsg>, OutEvent)` shape.
+use entanglement_runtime::session_store::pair_records;
 
 struct DbLoader { db: Db }
 
@@ -219,6 +227,18 @@ asking a loader; `Err` surfaces as an `Error` and spawns nothing. Messages
 that arrive while a load is in flight queue behind that one load and deliver
 in order. `Holly::is_live(&id)` answers "is it running right now" cheaply,
 for display — not for check-then-send.
+
+**The loader is reachable from the wire.** `Prompt`, `SetModel` and the other
+covered frames are wire-allowed, so a client relayed via `send_from_wire`
+triggers your `load` for **any** id it names — one loader task per distinct
+id, no concurrency cap in core, and the per-id queue of frames waiting on a
+load is unbounded. Worse, a resumed session restores its `user` from its own
+log: a frame naming another tenant's *evicted* session would bring it back with
+that tenant's history and provider key (under `SpawnBlank` it got a blank
+session with `user = None`). The rule from §2 therefore applies to evicted ids
+too: **validate tenant ownership of the id in your head before
+`send_from_wire`.** The loader gets no provenance and needs none if the head
+does; bound its I/O (and rate-limit, if your store needs it) inside `load`.
 
 [`examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
 wires a `RecordSink` (an in-memory stand-in for a DB), reads its own log back
