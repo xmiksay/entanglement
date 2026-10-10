@@ -20,7 +20,8 @@ pin, generation overlay) is `session/start.rs`, the `SessionCmd` set and the
 capped deferred-command stash are `session/cmd.rs`, and the loop's
 state-changing command handlers are `session/commands.rs`.
 
-Each session is a lazily-spawned tokio task owning: `Context` (message history +
+Each session is a tokio task — created by `Spawn`/`Resume`, or on first
+message per the unknown-session policy below — owning: `Context` (message history +
 token estimate), an LLM backend `llm: Box<dyn Llm>` (from
 `EngineConfig::llm_factory`), the
 active `Agent`, a per-session `seq`, and `turn: Option<TurnState>` — the
@@ -356,6 +357,27 @@ seconds, copied onto `EngineConfig.idle_ttl` in `build_config` alongside
 runs once before the subcommand match), mainly useful for a long-lived
 multi-session `skutter serve`. Unset (the default) stays `None`, byte-identical
 to before this config surface existed.
+
+**Unknown-session policy** (✅ #721,
+[ADR-0210](../adr/0210-unknown-session-policy.md)). A routable message
+(`Prompt`, `ToolResult`, `Stop`, `Pause`/`ResumeSession`, `SetMode`,
+`SetModel`, `SetGeneration`, `SetSessionMeta`, `SetToolOverlay`, `Oneshot`)
+addressed to an id with no live task goes through
+`EngineConfig.unknown_session` (`holly/supervisor/unknown.rs`):
+`SpawnBlank` (default) lazily creates a blank root under the default agent —
+the single-user convenience, still refusing a closed id and a known
+hibernated sub-agent child (#639); `Refuse` emits a seq-`0` `Error` naming the
+session and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
+embedder's async loader for the records `Holly::resume` consumes and runs the
+ordinary resume path (sub-tree cascade included) before delivering, `None`
+refusing and `Err` erroring. The load runs on its own task and reports back
+over a supervisor-owned channel, so a slow store never stalls routing;
+`pending_loads[id]` queues every further message for that id behind the one
+in-flight load and replays them through the normal handler in arrival order;
+`CloseSession` abandons it. `Holly::is_live` reads the per-session seq
+registry (registered before `SessionStarted`, retired before
+`SessionEnded`/`SessionHibernated`) — advisory; the policy is the race-free
+way to address a possibly-evicted id.
 
 **Loop bounds — `max_turns` and context-over-limit** (`session/round.rs` for
 the per-attempt cap, `session/turn.rs` for the once-per-round context-window

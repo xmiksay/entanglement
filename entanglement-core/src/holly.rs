@@ -22,12 +22,14 @@ mod emit;
 mod outlets;
 mod routing;
 mod supervisor;
+mod unknown_session;
 
 pub use config::{
     AgentCatalog, ConfigError, EngineConfig, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
 use outlets::Outlets;
 use supervisor::supervisor;
+pub use unknown_session::{SessionLoader, UnknownSession};
 
 /// Per-session monotonic seq counters, shared between each session task (which
 /// owns the same `Arc<AtomicU64>` as its `Session::seq`) and the supervisor +
@@ -255,6 +257,21 @@ impl Holly {
             exit_code,
         })
         .await
+    }
+
+    /// Whether `session` has a running task: `true` from its
+    /// [`SessionStarted`][OutEvent::SessionStarted] through its
+    /// [`SessionEnded`][OutEvent::SessionEnded]/[`SessionHibernated`][OutEvent::SessionHibernated].
+    /// A cheap synchronous read of the engine's own registry, so an embedder
+    /// need not mirror liveness by folding the broadcast. Advisory only: a
+    /// message already in the inbox may change the answer before it is routed —
+    /// use [`EngineConfig::unknown_session`] to decide what a message to a
+    /// non-live id does, rather than check-then-send (ADR-0210).
+    pub fn is_live(&self, session: &SessionId) -> bool {
+        self.seqs
+            .lock()
+            .expect("seq registry mutex poisoned")
+            .contains_key(session)
     }
 
     /// Subscribe to the outbound event stream (every session, fan-out).

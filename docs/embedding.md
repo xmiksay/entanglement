@@ -30,8 +30,9 @@ process, covered in order below. Part of #307/#315.
 
 Run **one `Holly`**, not one per tenant. `Holly::spawn` is a supervisor task
 plus two broadcast channels ([`entanglement-core/src/holly.rs`](../entanglement-core/src/holly.rs));
-sessions are cheap, lazily-spawned tasks keyed by `SessionId`
-(`entanglement-core/src/holly/supervisor.rs`, the `supervisor` loop). Spinning up a whole
+sessions are cheap tasks keyed by `SessionId`
+(`entanglement-core/src/holly/supervisor.rs`, the `supervisor` loop), created
+on first message per the unknown-session policy (§3). Spinning up a whole
 engine per user buys you nothing the session key doesn't already give you, and
 it multiplies every piece of shared state (the provider connection pool,
 [ADR-0050](adr/0050-per-endpoint-connection-pool-retry-rate-limit.md); the
@@ -177,6 +178,47 @@ back (your own `pair_records`-equivalent over your DB rows, or the shared
 replays it into a fresh session task — nothing is loaded until a tenant
 actually reconnects to that session id. There is no background hydration: an
 idle tenant costs nothing beyond the rows already in your store.
+
+**Let the engine resume on demand: `EngineConfig::unknown_session`**
+([ADR-0210](adr/0210-unknown-session-policy.md)). By default a routable
+message (`Prompt`, `ToolResult`, `Stop`, `SetModel`, …) for an id with no live
+task lazily spawns a **blank** root (`UnknownSession::SpawnBlank`) — right for
+a single-user CLI, wrong for you: after an idle-TTL hibernation (or a
+restart) the tenant's next `Prompt` would run on an empty context with
+`user = None`. Don't mirror liveness off the broadcast and call
+`Holly::resume` before every send — the idle sweep can evict between your
+check and your send. Install a loader instead and keep sending plain
+`Prompt`s:
+
+```rust
+use async_trait::async_trait;
+use entanglement_core::{InMsg, OutEvent, SessionId, SessionLoader, UnknownSession};
+
+struct DbLoader { db: Db }
+
+#[async_trait]
+impl SessionLoader for DbLoader {
+    async fn load(&self, id: &SessionId)
+        -> anyhow::Result<Option<Vec<(Option<InMsg>, OutEvent)>>> {
+        // Bound your I/O: every message for `id` queues behind this call.
+        let rows = tokio::time::timeout(Duration::from_secs(5), self.db.log_for(id)).await??;
+        Ok(rows.map(|rows| pair_records(&rows)))  // None = no such session
+    }
+}
+
+let cfg = EngineConfig {
+    unknown_session: UnknownSession::Resume(Arc::new(DbLoader { db })),
+    ..cfg
+};
+```
+
+`Some(records)` resumes the session (its spawn sub-tree too, ADR-0112, with
+its `user` intact) and then delivers the message; `None` refuses with a
+seq-`0` `Error` naming the session, as does `UnknownSession::Refuse` without
+asking a loader; `Err` surfaces as an `Error` and spawns nothing. Messages
+that arrive while a load is in flight queue behind that one load and deliver
+in order. `Holly::is_live(&id)` answers "is it running right now" cheaply,
+for display — not for check-then-send.
 
 [`examples/embedded_lifecycle.rs`](../entanglement-runtime/examples/embedded_lifecycle.rs)
 wires a `RecordSink` (an in-memory stand-in for a DB), reads its own log back

@@ -28,9 +28,9 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
+# `SessionLoader` (ADR-0210) — the same object-safe async-trait shape as `Llm`.
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
-# Only the integration-test mock `Llm`s derive `#[async_trait]`; src/ has no use.
-async-trait = { workspace = true }

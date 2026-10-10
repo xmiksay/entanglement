@@ -1,5 +1,5 @@
 //! Session creation: an explicit `Spawn` (child or compaction-successor root)
-//! and the lazy-`Prompt` path's fresh-root auto-create.
+//! and the `SpawnBlank` unknown-session policy's fresh-root auto-create.
 
 use entanglement_provider::UserId;
 use tokio::sync::mpsc;
@@ -157,21 +157,10 @@ impl Supervisor {
         }
     }
 
-    /// The lazy-`Prompt` path for an id with no live task: auto-create a blank
-    /// root, or refuse (emitting a supervisor `Error`) and return `false`.
+    /// The [`UnknownSession::SpawnBlank`][crate::UnknownSession::SpawnBlank]
+    /// path for a non-closed id with no live task: auto-create a blank root, or
+    /// refuse (emitting a supervisor `Error`) and return `false`.
     pub(super) fn spawn_lazy_root(&mut self, session_id: &SessionId) -> bool {
-        // A closed id is spent (ADR-0028): a `Prompt` that raced behind its
-        // `CloseSession` must not lazily respawn a blank session under it
-        // (issue #105). Refuse with feedback instead of silently resurrecting.
-        if self.closed.contains(session_id) {
-            emit_supervisor_error(
-                &self.events,
-                &self.seqs,
-                session_id,
-                "session id is closed (ids are single-use); mint a fresh session id",
-            );
-            return false;
-        }
         // A `parent_links` entry with a real parent means this id is a
         // known sub-agent child, not a fresh id — hibernation deliberately
         // leaves this map entry in place (unlike `session_meta`) so this
