@@ -152,9 +152,9 @@ impl PendingDecisions {
         let guard = self.lock();
         let mut list: Vec<PendingApproval> = guard
             .iter()
-            // A closed sender means the waiter gave up — a timed-out park
-            // (`await_decision_timed` drops its receiver) or an aborted task —
-            // and nobody will ever remove its entry, so it isn't pending.
+            // A closed sender means the waiter is gone. A timeout removes its
+            // own entry (`await_timed`); this filter remains for an aborted
+            // task, whose entry nothing removes until `Stop`.
             .filter(|((s, _), (tx, _))| !tx.is_closed() && session.is_none_or(|f| f == s))
             .map(|((s, rid), (_, parked))| PendingApproval {
                 session: s.clone(),
