@@ -78,13 +78,16 @@ pub(super) fn stale_mode_tuning_names(layers: &[RawLayer]) -> Vec<(String, Strin
 ///
 /// Logs only a finding new since this root's previous load
 /// ([`super::warn_once`], #785/#813). Returns how many it logged.
-pub(super) fn warn_stale_mode_tuning_names(layers: &[RawLayer]) -> usize {
+pub(super) fn warn_stale_mode_tuning_names(
+    layers: &[RawLayer],
+    root: Option<&std::path::Path>,
+) -> usize {
     let stale = stale_mode_tuning_names(layers);
     let keys: Vec<String> = stale
         .iter()
         .map(|(s, m, e)| format!("{s}\0{m}\0{e}"))
         .collect();
-    let fresh = super::warn_once::fresh(super::warn_once::scope("mode", layers), &keys);
+    let fresh = super::warn_once::fresh(super::warn_once::scope("mode", root, layers), &keys);
     let mut logged = 0;
     for ((source, mode, entry), _) in stale.into_iter().zip(fresh).filter(|(_, f)| *f) {
         logged += 1;
@@ -135,13 +138,13 @@ mod tests {
     fn a_repeated_load_warns_once_per_finding() {
         let yaml = "modes:\n  research:\n    allow: [\"dedupe_785_bogus\"]\n";
         let layers = vec![layer(ConfigLayer::Project, yaml)];
-        assert_eq!(warn_stale_mode_tuning_names(&layers), 1);
-        assert_eq!(warn_stale_mode_tuning_names(&layers), 0);
+        assert_eq!(warn_stale_mode_tuning_names(&layers, None), 1);
+        assert_eq!(warn_stale_mode_tuning_names(&layers, None), 0);
         let changed = vec![layer(
             ConfigLayer::Project,
             "modes:\n  research:\n    allow: [\"dedupe_785_other\"]\n",
         )];
-        assert_eq!(warn_stale_mode_tuning_names(&changed), 1);
+        assert_eq!(warn_stale_mode_tuning_names(&changed, None), 1);
     }
 
     #[test]

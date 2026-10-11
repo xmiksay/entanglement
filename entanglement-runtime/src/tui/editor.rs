@@ -234,9 +234,7 @@ pub(crate) fn apply_reload(
         }
         Err(e) => {
             tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}");
-            Some(format!(
-                "config not reloaded, keeping previous TUI settings: {e:#}"
-            ))
+            Some(format!("{e:#}"))
         }
     };
     let outcome = reload_outcome(notice, config_err);
@@ -259,15 +257,25 @@ struct ReloadOutcome {
     warning: Option<String>,
 }
 
+/// `config_err` is the raw `config.yml` load error. When the definitions
+/// error already quotes it (the same malformed file broke both), it is named
+/// once, not twice.
 fn reload_outcome(notice: crate::watch::ReloadNotice, config_err: Option<String>) -> ReloadOutcome {
     use crate::watch::ReloadNotice;
     let (refresh, toast, definitions_err) = match notice {
         ReloadNotice::Reloaded(summary) => (true, Some(summary), None),
         ReloadNotice::Failed(error) => (false, None, Some(error)),
     };
+    let config_warning =
+        |c: &str| format!("config not reloaded, keeping previous TUI settings: {c}");
     let warning = match (config_err, definitions_err) {
-        (Some(c), Some(d)) => Some(format!("{c}; {d}")),
-        (c, d) => c.or(d),
+        (Some(c), Some(d)) if d.contains(&c) => Some(format!(
+            "{}; definitions reload failed too",
+            config_warning(&c)
+        )),
+        (Some(c), Some(d)) => Some(format!("{}; {d}", config_warning(&c))),
+        (Some(c), None) => Some(config_warning(&c)),
+        (None, d) => d,
     };
     ReloadOutcome {
         refresh,
@@ -305,12 +313,13 @@ mod tests {
                 warning: None
             }
         );
+        let cfg_warning = "config not reloaded, keeping previous TUI settings: cfg bad";
         assert_eq!(
             reload_outcome(ok(), Some("cfg bad".into())),
             ReloadOutcome {
                 refresh: true,
                 toast: None,
-                warning: Some("cfg bad".into())
+                warning: Some(cfg_warning.into())
             }
         );
         assert_eq!(
@@ -322,11 +331,15 @@ mod tests {
             }
         );
         assert_eq!(
-            reload_outcome(bad(), Some("cfg bad".into()))
-                .warning
-                .as_deref(),
-            Some("cfg bad; defs bad")
+            reload_outcome(bad(), Some("cfg bad".into())).warning,
+            Some(format!("{cfg_warning}; defs bad"))
         );
+        // The same parse error in both is shown once.
+        let same = ReloadNotice::Failed("definitions reload failed: x.yml: cfg bad".into());
+        let warning = reload_outcome(same, Some("cfg bad".into()))
+            .warning
+            .unwrap();
+        assert_eq!(warning.matches("cfg bad").count(), 1, "{warning}");
     }
 
     /// One test owns the process-global flag, so its transitions are

@@ -162,5 +162,5 @@ fn a_retired_discovery_key_is_ignored_with_one_warning() {
 
 #[test]
 fn the_shipped_defaults_carry_no_retired_key() {
-    assert!(parse(&[default_layer()]).unwrap().warnings.is_empty());
+    assert!(parse(&[default_layer()], None).unwrap().warnings.is_empty());
 }

@@ -183,8 +183,9 @@ async fn compact_forks_a_successor_and_both_sessions_are_listed() {
     // 5. Both land on disk as separate resumable roots, and the successor's
     //    seed is recorded as its first prompt — so a `sessions` listing reads
     //    as a lineage instead of showing a blank successor.
-    // Wait for the persistence tap to have written both (#815), not a sleep.
-    let persisted = crate::eventually(|| {
+    // Wait for the persistence tap to have written both (#815), not a sleep;
+    // the detailed assertions below report a timeout.
+    crate::eventually(|| {
         store.list_sessions().is_ok_and(|s| {
             s.iter().any(|m| m.id == source)
                 && s.iter().any(|m| {
@@ -196,7 +197,6 @@ async fn compact_forks_a_successor_and_both_sessions_are_listed() {
         })
     })
     .await;
-    assert!(persisted, "both sessions persisted in time");
     let sessions = store.list_sessions().expect("listing the session store");
     let ids: Vec<&SessionId> = sessions.iter().map(|m| &m.id).collect();
     assert!(
