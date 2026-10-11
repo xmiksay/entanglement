@@ -574,7 +574,8 @@ when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
   the file goes back to the *first* change's `before` (rewritten through a
   synced, randomly named temp file created `create_new` + `O_NOFOLLOW` — no
   planted symlink is ever written through — then rename + directory fsync,
-  keeping its mode; or deleted when the agent
+  keeping its mode; a file whose directory was since swapped for a symlink
+  is refused as "its directory moved"; or deleted when the agent
   created it; recreated when the agent deleted it) **only if** it still
   hashes to the *last* change's `after` — or counts as restored if it is
   already at `before`. A user edit or a `bash` change is reported as skipped,
