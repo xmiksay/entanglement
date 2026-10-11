@@ -81,7 +81,7 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
             eprintln!("{line}");
             continue;
         }
-        if ev.session() != Some(&session) {
+        if !relays(&ev, &session) {
             continue;
         }
         if json {
@@ -150,6 +150,17 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
     Ok(())
 }
 
+/// Whether the relay loop prints `ev` for the run bound to `session`: its own
+/// events, plus an endpoint `Throttle` transition (#794) — engine-global
+/// (`session()` is `None`, the pool is per-endpoint, ADR-0141), yet it is the
+/// only signal telling a headless run why its turn has gone quiet. It rides
+/// the normal output (a text line, or an NDJSON frame under `--format json`)
+/// like `Status`, unlike a persistence outage, which is an operational fault
+/// and goes to stderr.
+fn relays(ev: &OutEvent, session: &SessionId) -> bool {
+    matches!(ev, OutEvent::Throttle { .. }) || ev.session() == Some(session)
+}
+
 /// The auto-reject reason for a `ToolRequest` this one-shot head has no
 /// interactive user to answer. `propose_plan` gets its own message (accepting
 /// a plan is a mode switch this head can't observe or drive either way);
@@ -180,6 +191,28 @@ mod tests {
         let reason = reject_reason(crate::tool_names::PROPOSE_PLAN_TOOL);
         assert!(reason.contains("cannot accept a plan"), "{reason}");
         assert!(!reason.contains("--mode auto"), "{reason}");
+    }
+
+    #[test]
+    fn throttle_is_relayed_though_it_names_no_session() {
+        let mine = SessionId::new("s-1");
+        let throttle = OutEvent::Throttle {
+            endpoint: "https://api.example/v1".into(),
+            throttled: true,
+            in_flight: 1,
+            cap: 1,
+            retry_in_ms: Some(2000),
+            pacing_in_ms: None,
+            waiters: 0,
+            shared_leases: None,
+        };
+        assert_eq!(throttle.session(), None);
+        assert!(relays(&throttle, &mine));
+        let other = OutEvent::Status {
+            session: SessionId::new("s-2"),
+            state: entanglement_core::AgentState::Thinking,
+        };
+        assert!(!relays(&other, &mine), "another session stays filtered");
     }
 
     #[test]
