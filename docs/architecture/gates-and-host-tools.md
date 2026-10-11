@@ -248,7 +248,9 @@ guessing again:
   That grant is process-wide (ADR-0109): any session, model-spawned
   children included, may then run `bash`/`call` there unasked. `call`'s
   `input_file`/`output_file` outside the root resolve under a durable `call`
-  grant on the path or an ancestor (`call::output::resolve_call_file`).
+  grant on the path or an ancestor (`call::output::resolve_call_file`) —
+  except a sandboxed call's `output_file`, which the unsandboxed host process
+  writes, so it keeps strict root containment under bubblewrap.
   File tools keep their per-path escape-root rules outside the root.
 - **The trusted scratch dir is exempt from the escape-root prompt** (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),

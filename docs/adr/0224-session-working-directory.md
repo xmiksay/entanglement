@@ -63,6 +63,13 @@ not the TUI root.
    `input_file`/`output_file` there ride the same `call` grant (a durable
    grant on the path or an ancestor), since a `call` allowed to run in that
    directory can already read and write its files through the command.
+   Except under bubblewrap: the host process writes `output_file`, outside
+   the sandbox, so a sandboxed call's `output_file` keeps strict root
+   containment whatever the grants — otherwise a grant would let a confined
+   command write anywhere the sandbox mounts read-only. Nothing else a
+   sandboxed exec reaches is written host-side: job and retained output stay
+   in memory, and the rhai file bindings are the file tools, unsandboxed and
+   gated per path.
 4. **Containment is re-checked at use.** The workdir is not trusted after
    validation. Every exec and path call resolves through the same
    `resolve_under_root_or_grant`/`resolve_workdir_or_grant` as before
