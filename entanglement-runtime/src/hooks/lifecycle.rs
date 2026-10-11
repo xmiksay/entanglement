@@ -73,7 +73,8 @@ impl Tracker {
     /// the supervisor handles it, so it is always seen ahead of the
     /// `SessionStarted`s it causes (see [`spawn_watch`]).
     pub(crate) fn observe_in(&mut self, msg: &InMsg) {
-        self.resuming.observe(msg);
+        let sessions = &self.sessions;
+        self.resuming.observe(msg, |id| sessions.contains_key(id));
     }
 
     /// Fold one outbound event; returns the hook point it completes, if any.
@@ -203,9 +204,12 @@ impl Tracker {
         }
     }
 
-    /// After a broadcast lag the `Done`/`Status` pairing can't be trusted.
-    pub(crate) fn forget_pending_stops(&mut self) {
+    /// After a broadcast lag the `Done`/`Status` pairing can't be trusted,
+    /// and a pending resume whose `SessionStarted` was among the dropped
+    /// events would otherwise keep its mark forever.
+    pub(crate) fn forget_after_lag(&mut self) {
         self.ended_turn.clear();
+        self.resuming = ResumeMarks::default();
     }
 
     /// A finished turn: `stop` for a root, `subagent_stop` for a spawned child.
@@ -291,7 +295,7 @@ pub(crate) fn spawn_watch(
                 // classified off a `Status` whose `Done` may have been lost.
                 Err(RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "lifecycle hook watcher lagged");
-                    tracker.forget_pending_stops();
+                    tracker.forget_after_lag();
                     continue;
                 }
                 Err(RecvError::Closed) => break,
