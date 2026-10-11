@@ -115,16 +115,20 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 # of silently on another platform (#770). mawk ignores POSIXLY_CORRECT, so the
 # file-cap counter's strict-POSIX awk coverage is a separate `gawk --posix` run
 # (#779), plus an `AWK=mawk` run (CI ubuntu's default awk); each is skipped
-# when that awk isn't installed (CI installs both).
-test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests), default + strict POSIX
+# when that awk isn't installed — unless REQUIRE_AWKS=1 (set by CI, which
+# installs both), where a missing awk fails instead of silently dropping the
+# coverage after a runner-image change.
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests), default + strict POSIX (REQUIRE_AWKS=1: missing gawk/mawk fails)
 	@sh scripts/dep-gate.test.sh
 	@echo '--- strict POSIX (POSIXLY_CORRECT=1) ---'
 	@POSIXLY_CORRECT=1 sh scripts/dep-gate.test.sh
 	@if command -v gawk >/dev/null 2>&1; then \
 		echo "--- AWK='gawk --posix' ---"; AWK='gawk --posix' sh scripts/dep-gate.test.sh; \
+	elif [ "$(REQUIRE_AWKS)" = 1 ]; then echo 'FAIL: gawk not installed (REQUIRE_AWKS=1)' >&2; exit 1; \
 	else echo '--- gawk not installed; skipping the strict-POSIX awk run ---'; fi
 	@if command -v mawk >/dev/null 2>&1; then \
 		echo '--- AWK=mawk ---'; AWK=mawk sh scripts/dep-gate.test.sh; \
+	elif [ "$(REQUIRE_AWKS)" = 1 ]; then echo 'FAIL: mawk not installed (REQUIRE_AWKS=1)' >&2; exit 1; \
 	else echo '--- mawk not installed; skipping the AWK=mawk run ---'; fi
 
 # 400-line file cap (AGENTS.md; issue #451). Grandfathered violations live in
