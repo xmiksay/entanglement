@@ -11,6 +11,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::config::undo::format_size;
 use crate::config::{Config, ConfigLayer, Resolved};
 
 /// Resolve the user config for `cwd` and print the merged values with their
@@ -175,6 +176,14 @@ fn render_config(resolved: &Resolved) -> String {
         keys.join(", "),
         from("tui")
     );
+    let _ = writeln!(
+        out,
+        "  undo:     enabled={} max_file_bytes={} max_root_bytes={} ← {}",
+        c.undo.enabled,
+        format_size(c.undo.max_file_bytes),
+        format_size(c.undo.max_root_bytes),
+        from("undo")
+    );
 
     let _ = writeln!(
         out,
@@ -295,6 +304,28 @@ mod tests {
         assert!(rendered.contains("auto_compact: true"));
         assert!(rendered.contains("editor:   ($VISUAL → $EDITOR → vi)"));
         assert!(rendered.contains("session_retention_days: 30") && rendered.contains("← default"));
+        assert!(
+            rendered.contains(
+                "undo:     enabled=true max_file_bytes=8 MiB max_root_bytes=256 MiB ← default"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn undo_block_renders_effective_sizes_and_its_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_file = dir.path().join("user-config.yml");
+        std::fs::write(&user_file, "undo: {enabled: false, max_root_bytes: 1GiB}\n").unwrap();
+        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
+
+        let rendered = render_config(&resolved);
+        assert!(
+            rendered.contains(
+                "undo:     enabled=false max_file_bytes=8 MiB max_root_bytes=1 GiB ← user"
+            ),
+            "{rendered}"
+        );
     }
 
     #[test]

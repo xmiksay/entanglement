@@ -35,7 +35,7 @@ impl Llm for Scripted {
     }
 }
 
-fn write_call(id: &str, path: &str, content: &str) -> LlmResponse {
+pub(crate) fn write_call(id: &str, path: &str, content: &str) -> LlmResponse {
     LlmResponse {
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -50,10 +50,19 @@ fn write_call(id: &str, path: &str, content: &str) -> LlmResponse {
 /// An engine wired the way `skutter` wires it: backups on the file tools,
 /// the reverter seam on core, lineage tracking, and the persistence tap.
 fn spawn(work: &Path, store: &SessionStore, script: Vec<LlmResponse>) -> Holly {
+    spawn_with(work, store, FileBackups::new(store.clone()), script)
+}
+
+/// [`spawn`] around a caller-built `backups` (e.g. with config limits).
+pub(crate) fn spawn_with(
+    work: &Path,
+    store: &SessionStore,
+    backups: FileBackups,
+    script: Vec<LlmResponse>,
+) -> Holly {
     let mut script = script;
     script.reverse();
     let script = Arc::new(Mutex::new(script));
-    let backups = FileBackups::new(store.clone());
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(Scripted(script.clone())) as Box<dyn Llm>),
         agents: entanglement_runtime::agents::built_in_registry().unwrap(),
@@ -90,7 +99,7 @@ fn spawn(work: &Path, store: &SessionStore, script: Vec<LlmResponse>) -> Holly {
 }
 
 /// Send `msg` and wait for the first event matching `done` for `sid`.
-async fn send_until(
+pub(crate) async fn send_until(
     holly: &Holly,
     sid: &SessionId,
     msg: InMsg,
@@ -109,11 +118,11 @@ async fn send_until(
     }
 }
 
-fn is_done(ev: &OutEvent) -> bool {
+pub(crate) fn is_done(ev: &OutEvent) -> bool {
     matches!(ev, OutEvent::Done { .. })
 }
 
-fn is_reverted(ev: &OutEvent) -> bool {
+pub(crate) fn is_reverted(ev: &OutEvent) -> bool {
     matches!(ev, OutEvent::FilesReverted { .. })
 }
 

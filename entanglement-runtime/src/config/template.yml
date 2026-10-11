@@ -223,6 +223,18 @@
 # tool_search). Resolved once per session and fixed for its lifetime.
 #tool_advertising: tool_search
 
+# File backups behind /undo and /rewind (ADR-0212): before write/edit/
+# apply_patch replace a file, its prior content is kept beside the session
+# log. A prior version over max_file_bytes, or past a root session's
+# max_root_bytes stored budget, is recorded as skipped (undo reports it as not
+# restorable). Sizes are bytes or a string with a unit: B, KB/MB/GB (x1000)
+# or KiB/MiB/GiB (x1024), at most 64GiB. enabled: false records nothing new;
+# backups already taken stay restorable. Picked up live for the next write.
+#undo:
+#  enabled: true
+#  max_file_bytes: 8MiB
+#  max_root_bytes: 256MiB
+
 # Terminal-UI preferences (ADR-0213). A running TUI picks an edit up live.
 #tui:
 #  # Also send an OSC 9 desktop notification (not just the bell) when a turn

@@ -74,6 +74,7 @@ pub(crate) fn start(
         jobs,
         retained,
         scripts,
+        file_backups,
         live_skills,
         live_profiles,
         live_agent_models,
@@ -231,6 +232,7 @@ pub(crate) fn start(
         agent_models: live_agent_models.clone(),
         grants: grants.clone(),
         mcp_capabilities: mcp_capabilities.clone(),
+        file_backups: Some(file_backups),
     };
     let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watcher_handle = watch::spawn_watcher(cwd.to_path_buf(), live, Some(reload_tx));

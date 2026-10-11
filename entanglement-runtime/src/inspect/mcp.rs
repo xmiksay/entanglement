@@ -120,6 +120,7 @@ mod tests {
             session_retention_days: 30,
             tool_advertising: None,
             tui: Default::default(),
+            undo: Default::default(),
         }
     }
 

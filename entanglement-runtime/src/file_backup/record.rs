@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use entanglement_core::SessionId;
 
 use super::manifest::{self, Change, Line, Prior, Stats, BLOBS, MANIFEST};
-use super::{current_exec_seq, lock, now_ms, sha256_hex, FileBackups};
+use super::{current_exec_seq, lock, now_ms, sha256_hex, BackupLimits, FileBackups};
+use crate::config::undo::format_size;
 
 impl FileBackups {
     /// Record one file change by `session`'s tool call `request_id`: the
@@ -39,6 +40,10 @@ impl FileBackups {
         before: Option<&[u8]>,
         after: Option<&[u8]>,
     ) -> Result<()> {
+        let limits = self.limits();
+        if !limits.enabled {
+            return Ok(());
+        }
         let root = self.root_of(session);
         let dir = self.inner.store.backups_dir(&root)?;
         let blobs = dir.join(BLOBS);
@@ -55,7 +60,7 @@ impl FileBackups {
             .context("backup stats vanished under the lock")?;
         let before = match before {
             None => Prior::Absent,
-            Some(bytes) => self.store_prior(&blobs, stats, bytes),
+            Some(bytes) => store_prior(&limits, &blobs, stats, bytes),
         };
         let change = Change {
             id: stats.next_id,
@@ -73,37 +78,37 @@ impl FileBackups {
         stats.note(&change);
         Ok(())
     }
+}
 
-    /// Store `bytes` as a blob unless a cap says no; a failed blob write
-    /// degrades to `Skipped` rather than losing the manifest entry.
-    fn store_prior(&self, blobs: &Path, stats: &Stats, bytes: &[u8]) -> Prior {
-        let size = bytes.len() as u64;
-        let hash = sha256_hex(bytes);
-        if size > self.inner.max_file_bytes {
-            return Prior::Skipped {
-                reason: format!(
-                    "larger than the {} per-file backup cap",
-                    human_bytes(self.inner.max_file_bytes)
-                ),
-            };
-        }
-        if stats.blobs.contains_key(&hash) {
-            return Prior::Stored { hash, size };
-        }
-        if stats.stored_bytes() + size > self.inner.max_root_bytes {
-            return Prior::Skipped {
-                reason: format!(
-                    "the session's {} backup budget is used up",
-                    human_bytes(self.inner.max_root_bytes)
-                ),
-            };
-        }
-        match write_blob(blobs, &hash, bytes) {
-            Ok(()) => Prior::Stored { hash, size },
-            Err(e) => Prior::Skipped {
-                reason: format!("backup write failed: {e:#}"),
-            },
-        }
+/// Store `bytes` as a blob unless a cap in `limits` says no; a failed blob
+/// write degrades to `Skipped` rather than losing the manifest entry.
+fn store_prior(limits: &BackupLimits, blobs: &Path, stats: &Stats, bytes: &[u8]) -> Prior {
+    let size = bytes.len() as u64;
+    let hash = sha256_hex(bytes);
+    if size > limits.max_file_bytes {
+        return Prior::Skipped {
+            reason: format!(
+                "larger than the {} per-file backup cap",
+                format_size(limits.max_file_bytes)
+            ),
+        };
+    }
+    if stats.blobs.contains_key(&hash) {
+        return Prior::Stored { hash, size };
+    }
+    if stats.stored_bytes().saturating_add(size) > limits.max_root_bytes {
+        return Prior::Skipped {
+            reason: format!(
+                "the session's {} backup budget is used up",
+                format_size(limits.max_root_bytes)
+            ),
+        };
+    }
+    match write_blob(blobs, &hash, bytes) {
+        Ok(()) => Prior::Stored { hash, size },
+        Err(e) => Prior::Skipped {
+            reason: format!("backup write failed: {e:#}"),
+        },
     }
 }
 
@@ -144,13 +149,4 @@ pub(super) fn file_mode(path: &Path) -> Option<u32> {
 #[cfg(not(unix))]
 pub(super) fn file_mode(_path: &Path) -> Option<u32> {
     None
-}
-
-fn human_bytes(n: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
-    if n >= MIB {
-        format!("{} MiB", n / MIB)
-    } else {
-        format!("{n} byte")
-    }
 }

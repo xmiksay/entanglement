@@ -179,7 +179,19 @@ impl FileBackups {
                 busy.0
             );
         }
+        // Backups recorded before `undo.enabled: false` still revert; only an
+        // empty revert says why, so "nothing to undo" isn't mistaken for
+        // "no edits were made".
+        let disabled = || {
+            anyhow::anyhow!(
+                "undo disabled: file backups are off (`undo.enabled: false` in config.yml) \
+                 and no earlier tracked edits are left to revert"
+            )
+        };
         let Some(target) = to_turn.or_else(|| undo_target(&loaded)) else {
+            if !self.limits().enabled {
+                return Err(disabled());
+            }
             return Ok(FileRevertReport {
                 to_turn: loaded.prompts.len() as u32,
                 ..Default::default()
@@ -195,6 +207,9 @@ impl FileBackups {
                 order.push(&c.path);
             }
             group.push(c);
+        }
+        if order.is_empty() && !self.limits().enabled {
+            return Err(disabled());
         }
 
         let mut report = FileRevertReport {
