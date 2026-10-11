@@ -118,7 +118,8 @@ pub(super) fn apply_or_stash_mid_stream(
         | SessionCmd::SetGeneration(_)
         | SessionCmd::SetToolOverlay(_)
         | SessionCmd::Oneshot(..)
-        | SessionCmd::RevertFiles(_) => stash_or_reject(stash, cmd, session, events, seq),
+        | SessionCmd::RevertFiles(_)
+        | SessionCmd::Fork(_) => stash_or_reject(stash, cmd, session, events, seq),
         other => stash.push_back(other),
     }
 }

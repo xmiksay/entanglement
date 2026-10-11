@@ -14,6 +14,7 @@ mod enable_command;
 mod event;
 mod event_loop;
 mod export;
+mod fork_command;
 mod format;
 mod hit_test;
 mod init_command;

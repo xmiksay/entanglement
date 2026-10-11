@@ -107,6 +107,8 @@ impl App {
             // Same shape again (ADR-0212): `/undo`/`/rewind` need `holly` (and
             // `/rewind` the trailing turn) — both call sites intercept them.
             Command::Undo | Command::Rewind => false,
+            // Same shape (#786): `/fork` needs `holly` and the trailing turn.
+            Command::Fork => false,
             // Same shape again (#732): `/init` needs `holly`, the index and
             // the trailing text — both call sites intercept it.
             Command::Init => false,

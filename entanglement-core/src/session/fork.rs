@@ -24,6 +24,7 @@ use entanglement_provider::{GenerationParams, ResolvedModel};
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::next_seq;
+use super::user_fork::ForkSeed;
 use super::Session;
 use crate::id_gen::{IdContext, IdKind};
 use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId, ToolOverlayEntry};
@@ -52,6 +53,9 @@ pub(crate) struct Inherited {
     pub(crate) mode: String,
     /// The source's live tool overlay (#776).
     pub(crate) overlay: Vec<ToolOverlayEntry>,
+    /// A user fork's verbatim history (#786); `None` for a compaction
+    /// successor, whose history is its seed prompt.
+    pub(crate) seed: Option<ForkSeed>,
 }
 
 /// Whether a compaction forked the session away. `Yes` means this session is
@@ -142,16 +146,10 @@ pub(crate) fn fork_successor(
         "compaction forked a successor session"
     );
 
-    let inherit = Inherited {
-        model: s.live_binding(),
-        generation: s.generation,
-        mode: s.mode.clone(),
-        overlay: s.tool_overlay.clone(),
-    };
     Some(PendingFork {
         engine,
         spawn: ForkFrame {
-            inherit: Some(inherit),
+            inherit: Some(Inherited::of(s)),
             msg: InMsg::Spawn {
                 session: successor,
                 // A root, not a child: the `CloseSession` below cascades over the

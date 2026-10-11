@@ -170,7 +170,12 @@ pub fn spawn_persistence_subscriber_with_sink(
                         // `roots` can't resolve the child until its
                         // `SessionStarted` arrives (see the doc comment above).
                         if let InMsg::Spawn { session: child, prompt, .. } = &msg {
-                            pending_spawn_prompts.insert(child.clone(), prompt.clone());
+                            // An empty prompt queues no turn (a fork #786, an
+                            // identity-binding spawn): logging it would replay
+                            // a blank user message the live session never had.
+                            if !prompt.is_empty() {
+                                pending_spawn_prompts.insert(child.clone(), prompt.clone());
+                            }
                             continue;
                         }
                         // Resume is skipped (recursion/bloat); the

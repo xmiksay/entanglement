@@ -463,6 +463,29 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_turn: Option<u32>,
     },
+    /// Fork `session` into a new, independent **root** session without
+    /// compacting anything (#786, ADR-0223). The fork starts from a verbatim
+    /// copy of the source's `Context` — every message, tool round-trip and
+    /// reasoning block — or, with `at_turn: Some(n)`, of turns `1..=n` only
+    /// (the source's own prompts, 1-based, ADR-0212's numbering; `Some(0)`
+    /// keeps nothing but a fork's own seed). It gets a fresh id minted in
+    /// the source's lineage (tenant prefix kept, ADR-0211), the same agent,
+    /// and the source's live model, generation, mode and tool overlay. The
+    /// source stays live and untouched — nothing is logged against it.
+    /// Announced by the fork's own `SessionStarted` followed by
+    /// [`OutEvent::SessionForked`], which carries the seed history so the
+    /// fork's log replays exactly. Deferred while a turn is live or the
+    /// session is paused (stash replay), like `RevertFiles`, so a fork is
+    /// always cut at rest: it never carries a parked tool batch or a
+    /// half-streamed round, and it starts idle. Spawned children are not
+    /// cloned (the fork is a root with none), and file backups are per root,
+    /// so the fork's `/undo` history starts empty. **Trusted-only** (not
+    /// wire-allowed), like [`Spawn`][InMsg::Spawn]: it mints a session.
+    ForkSession {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_turn: Option<u32>,
+    },
     /// Spawn a session running `prompt` beneath the named `agent` profile (#60,
     /// ADR-0021). `session` is the new session's id. With `parent = Some(p)` it is
     /// a **child** sub-agent under `p` (the common case): the supervisor records

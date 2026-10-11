@@ -25,14 +25,14 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+          | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
           | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | FilesReverted | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock (engine → harness)
+          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock (engine → harness)
 ```
 
 Every frame is **session-scoped** (one connection multiplexes many sessions via
@@ -111,6 +111,13 @@ latest turn's file edits and `/rewind <N>` everything after turn `N` (bare
 changed since the agent did is never overwritten — it is reported as skipped.
 Changes made by `bash`, `call` or `rhai` commands are **not** tracked. Other
 heads send the trusted-only `InMsg::RevertFiles` and get `FilesReverted` back.
+
+**Fork** (ADR-0223): `/fork` copies the active session into a new one with the
+same history, model, mode and tool overlay, and moves you into it; `/fork <N>`
+keeps only turns `1..N`. The original keeps running untouched. A fork starts
+with an empty `/undo` history, since file backups belong to the session that
+made the edit. Other trusted heads send `InMsg::ForkSession` and get the fork's
+`SessionForked` back.
 
 A session advertises its tool surface in one of two modes (`ToolAdvertising`,
 default `ToolSearch`, ADR-0196): `full` sends every registered spec up

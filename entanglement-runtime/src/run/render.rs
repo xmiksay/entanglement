@@ -18,6 +18,9 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Memory eviction (#318); the one-shot head never hibernates, so nothing
         // to render.
         OutEvent::SessionHibernated { .. } => {}
+        // A fork (#786) is minted only by a trusted head's `ForkSession`;
+        // the one-shot head never sends one.
+        OutEvent::SessionForked { .. } => {}
         OutEvent::SessionList { .. } => {}
         // `ListQuestions` reply (#515): a session-less snapshot query; the
         // one-shot head never issues it, so nothing to render.

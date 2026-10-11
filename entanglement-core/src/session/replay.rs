@@ -298,6 +298,9 @@ impl Session {
                 // matches what the live model saw, instead of merging both
                 // rounds' text.
                 OutEvent::AmbiguousRetry { nudge, .. } => fold.ambiguous_retry(ctx, nudge),
+                // A user fork's inherited history (#786, ADR-0223): the
+                // verbatim copy the live fork started from.
+                OutEvent::SessionForked { context, .. } => ctx.seed(context.clone()),
                 // `FilesReverted` was folded above, ahead of its paired prompt.
                 _ => {}
             }

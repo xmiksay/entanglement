@@ -130,7 +130,7 @@ impl Harness {
         }
     }
 
-    fn last_request(&self) -> (Option<String>, Option<f32>) {
+    pub(crate) fn last_request(&self) -> (Option<String>, Option<f32>) {
         self.seen
             .lock()
             .unwrap()

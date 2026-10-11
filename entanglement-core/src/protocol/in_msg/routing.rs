@@ -40,6 +40,7 @@ impl InMsg {
             | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::RevertFiles { session, .. }
+            | InMsg::ForkSession { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. }
@@ -96,6 +97,9 @@ impl InMsg {
     ///   deletes files on disk from the session's backups — an
     ///   unauthenticated wire frame must not be able to roll back the user's
     ///   working tree.
+    /// - [`ForkSession`][InMsg::ForkSession] (#786, ADR-0223): it mints a
+    ///   session, exactly as `Spawn` does — session creation stays a
+    ///   trusted head's call.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -153,7 +157,8 @@ impl InMsg {
             | InMsg::McpRemove { .. }
             | InMsg::McpAuth { .. }
             | InMsg::SetMode { .. }
-            | InMsg::RevertFiles { .. } => false,
+            | InMsg::RevertFiles { .. }
+            | InMsg::ForkSession { .. } => false,
         }
     }
 
@@ -189,6 +194,7 @@ impl InMsg {
             InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::RevertFiles { .. } => "revert_files",
+            InMsg::ForkSession { .. } => "fork_session",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
         }

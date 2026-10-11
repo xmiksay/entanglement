@@ -164,12 +164,12 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | HibernateSession (trusted-only) | Resume (internal, not serialized)
+          | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | FilesReverted | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
 Load-bearing invariants — **the detail lives in the linked architecture doc,
@@ -280,7 +280,7 @@ never here**; each bullet is the claim + where to read it:
 - **Trusted/untrusted frame split**: `Holly::send` is privileged;
   `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
   `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`, `SetMode`,
-  `RevertFiles` refused;
+  `RevertFiles`, `ForkSession` refused;
   `SetToolOverlay` refused only for an enable entry — a deny-only overlay,
   including the empty clearing list, is wire-allowed, #634).
   [protocol](../docs/architecture/protocol.md),
@@ -424,6 +424,14 @@ never here**; each bullet is the claim + where to read it:
   changes are never tracked; replay never touches the disk.
   [gates & host tools](../docs/architecture/gates-and-host-tools.md),
   [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md).
+- **`/fork` is a non-compacting copy**: trusted-only `ForkSession{at_turn?}`
+  mints a fresh root (tenant prefix kept) seeded with the source's verbatim
+  `Context` (or turns `1..=n`), announced and persisted as the fork's own
+  `SessionForked{context}` so its log replays exactly. It inherits the live
+  model, generation, mode and overlay. The source stays live, and the fork is
+  deferred to idle (no parked batch), has no children, and starts with an empty
+  undo history. [engine](../docs/architecture/engine.md),
+  [ADR-0223](../docs/adr/0223-non-compacting-session-fork.md).
 - **Plans**: `propose_plan` is the sole plan-authorship tool (`Capability::Plan`,
   allowed only in `plan` mode — a mode denying it flat-declines before any
   file is touched), file-backed under `.entanglement/plans/`, force-parked on

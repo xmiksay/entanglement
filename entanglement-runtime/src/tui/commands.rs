@@ -38,6 +38,7 @@ pub enum Command {
     AuxModel,
     Undo,
     Rewind,
+    Fork,
     Init,
     /// A user-defined prompt template (#733). Never in [`all_commands`]: the
     /// TUI appends the live registry's entries via
@@ -77,6 +78,7 @@ impl Command {
             Command::AuxModel => "aux-model",
             Command::Undo => "undo",
             Command::Rewind => "rewind",
+            Command::Fork => "fork",
             Command::Init => "init",
             Command::User(c) => &c.name,
         }
@@ -135,6 +137,9 @@ impl Command {
             Command::Rewind => {
                 "Revert every file edit after turn <N> (bare = list turns with edits; not bash changes)"
             }
+            Command::Fork => {
+                "Fork this session into a new one with the same history (/fork <N> keeps turns 1..N)"
+            }
             Command::Init => {
                 "Ask the model to write an AGENTS.md brief for this repo (--update to improve an existing one)"
             }
@@ -178,6 +183,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::AuxModel,
         Command::Undo,
         Command::Rewind,
+        Command::Fork,
         Command::Init,
     ]
 }

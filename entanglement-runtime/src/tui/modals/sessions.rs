@@ -119,6 +119,13 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
             if view.is_asking() {
                 spans.push(Span::styled(" ❓ question", theme.fg(Slot::Accent)));
             }
+            // `/fork` lineage (#786): a fork is a root, so the tree shows no edge.
+            if let Some(source) = view.forked_from() {
+                spans.push(Span::styled(
+                    format!(" ⑂ forked from {}", crate::tui::format::short_id(source)),
+                    theme.fg(Slot::Muted),
+                ));
+            }
             // Inline description, dimmed (#327's resume-list idiom): the live
             // action when set, else the first-prompt snippet.
             if let Some(desc) = view.action().or_else(|| view.first_prompt()) {

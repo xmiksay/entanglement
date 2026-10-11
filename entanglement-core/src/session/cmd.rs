@@ -107,6 +107,10 @@ pub(crate) enum SessionCmd {
     /// `EngineConfig::file_reverter`. Deferred mid-turn/paused like
     /// `SetModel`: a revert must not race the turn's own tool writes.
     RevertFiles(Option<u32>),
+    /// Fork this session into a new root (#786, ADR-0223), whole or cut after
+    /// a turn. Deferred mid-turn/paused like `RevertFiles`, so the fork is
+    /// always taken at rest and never carries a parked batch.
+    Fork(Option<u32>),
     Stop,
     /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the

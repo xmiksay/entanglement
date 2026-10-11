@@ -396,6 +396,13 @@ when request ids repeat.
 Without it `InMsg::RevertFiles` answers with a recoverable `Error`. With a
 custom `RecordSink` (no file log), write your own `FileReverter`.
 
+**Forking needs no wiring** ([ADR-0223](adr/0223-non-compacting-session-fork.md)).
+Send `InMsg::ForkSession { session, at_turn }` over `Holly::send` (it is
+wire-refused). The fork announces itself with `SessionStarted` and then
+`SessionForked`, which carries its seed history, so whatever sink you use
+already persists a fork log that replays exactly. A `{tenant}:` prefix carries
+over through `IdContext::successor_of`.
+
 **Migrating from the positional constructors** (deprecated in 0.7, removed
 after): `spawn_tool_executor(h, t, a, b)` →
 `ToolExecutor::builder(h, t.shared()).agents(a).base(b).spawn()`;

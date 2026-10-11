@@ -72,6 +72,7 @@ pub const RESERVED_NAMES: &[&str] = &[
     "aux-model",
     "undo",
     "rewind",
+    "fork",
     "init",
 ];
 

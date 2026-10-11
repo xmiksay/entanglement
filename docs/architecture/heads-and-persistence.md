@@ -468,7 +468,17 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
   changes are not tracked). Bare `/rewind` is the picker: it lists the
   turns that still have revertable edits (turn, file count, prompt snippet)
-  read straight from the backup store — no engine traffic. `/init [--update]
+  read straight from the backup store — no engine traffic. `/fork [N]`
+  (`tui/fork_command.rs`, #786,
+  [ADR-0223](../adr/0223-non-compacting-session-fork.md)) sends
+  `InMsg::ForkSession` for the active session. A `SessionForked` whose source
+  is the active session moves the user into the fork (`app/out_event.rs`). The
+  reducer (`session_view/reducer/fork.rs`) opens the fork's view on a lineage
+  notice plus the inherited transcript rebuilt from the event's `context`, the
+  same path a restored fork log takes. The sessions modal tags the row
+  "⑂ forked from …". The persistence tap logs no record for an empty `Spawn`
+  prompt (the fork's, or an identity-binding spawn's), so the fork's log
+  replays with no blank user message. `/init [--update]
   [instructions…]` (`tui/init_command.rs`, ✅ #732,
   [ADR-0222](../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)) sends
   a built-in prompt plus a bounded repo snapshot (the `@file` index — the capped

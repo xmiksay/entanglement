@@ -126,6 +126,8 @@ pub struct SessionView {
     /// description line prefers it over `first_prompt` when set.
     action: Option<String>,
     parent: Option<SessionId>,
+    /// The session this one is a `/fork` of (#786), for the lineage label.
+    forked_from: Option<SessionId>,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
     /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
@@ -177,6 +179,7 @@ impl SessionView {
             name: None,
             action: None,
             parent: None,
+            forked_from: None,
             started_ms: None,
             ended_ms: None,
             expanded_blocks: HashSet::new(),
@@ -366,6 +369,10 @@ impl SessionView {
 
     pub fn parent(&self) -> Option<&SessionId> {
         self.parent.as_ref()
+    }
+
+    pub fn forked_from(&self) -> Option<&SessionId> {
+        self.forked_from.as_ref()
     }
 
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,
