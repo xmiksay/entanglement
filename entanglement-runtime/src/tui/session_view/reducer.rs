@@ -102,6 +102,9 @@ impl SessionView {
             // the TUI already renders them directly via `HttpClient::throttle_status()`
             // polling (`input_panel.rs`), never through this per-session fold.
             OutEvent::Throttle { .. } => false,
+            // Session-log outage transitions (#767) are engine-global: the
+            // App folds them into the status-line badge, not a session view.
+            OutEvent::PersistenceDegraded { .. } | OutEvent::PersistenceRecovered { .. } => false,
             OutEvent::History { .. } => false,
             OutEvent::Status { state, .. } => {
                 // Known cosmetic flap (#273): with two parked Asks, resolving

@@ -28,7 +28,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
           | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | McpAuthChanged | Throttle
+          | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged

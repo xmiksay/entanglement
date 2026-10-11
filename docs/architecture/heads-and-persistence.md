@@ -273,7 +273,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   any other frame. **Status line** (#762, `tui::statusline`): the top row
   always shows where the TUI works — default `repo › cwd_rel  ⎇ branch
   [worktree: name]` left, the session short id right, then the old bar's
-  `(N sessions)` / `⚠ N` counters. Rendered from `config.yml`
+  `(N sessions)` / `⚠ N` / `⚠ log` (session-log outage, #767) counters. Rendered from `config.yml`
   `tui.statusline.template` (left) and `.right` (right) — placeholders
   `{repo} {cwd} {cwd_rel} {branch} {worktree} {session} {agent} {mode}
   {model} {cost} {context_pct} {action} {tasks}` (`{action}` is the
@@ -942,7 +942,21 @@ assistant/tool messages and the model appears to forget the conversation.
   writes it before that root's next record — later records for the root count
   into the pending gap rather than land after an unmarked hole — with a final
   retry at tap shutdown; a lasting outage logs one error at its start and one
-  warning on recovery (with the gap size), retries only at debug. The tap owns
+  warning on recovery (with the gap size), retries only at debug. Those same
+  two transitions reach the heads (#767), on ADR-0141's `Throttle` model:
+  `OutEvent::PersistenceDegraded{root,error}` on an outage's first failure and
+  `PersistenceRecovered{root,lost}` when its tombstone lands — one pair per
+  outage per root, none while the sink is healthy (a lag whose tombstone lands
+  first try is loss, not an outage). Both are engine-global (no `seq`,
+  `session()` is `None`, `root` is payload), so the tap — which skips
+  session-less events — never writes its own signal into the failing sink.
+  The tap emits through a `PersistenceSignal` (`Holly::persistence_signal`), a
+  *weak* hold on the outbox rather than a `Holly` clone, so it never keeps the
+  engine's channels open past shutdown. Heads: the TUI raises a `⚠ log`
+  status-line counter (`status.attention`, `⚠ log×N` for several roots) until
+  every root recovers, plus one transcript line per transition; `run` prints
+  one stderr line per transition (any format — stdout's NDJSON stays clean);
+  `pipe`/`serve` forward both like any event (read-only, wire-allowed). The tap owns
   gap-marking for every `Err` and lag; a sink that loses a record after
   returning `Ok` must write its own `Gap` *at the hole*, holding that root's
   later rows back until it lands.

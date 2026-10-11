@@ -220,6 +220,34 @@ fn question_list_event_is_session_less_and_seq_less() {
 }
 
 #[test]
+fn persistence_transitions_are_session_less_seq_less_and_wire_stable() {
+    // `session()` is `None` on purpose (#767): the persistence tap skips
+    // session-less events, so its own outage signal is never persisted.
+    let degraded = OutEvent::PersistenceDegraded {
+        root: SessionId::new("r1"),
+        error: "disk full".into(),
+    };
+    let recovered = OutEvent::PersistenceRecovered {
+        root: SessionId::new("r1"),
+        lost: 3,
+    };
+    for ev in [&degraded, &recovered] {
+        assert_eq!(ev.seq(), None);
+        assert_eq!(ev.session(), None);
+        let json = serde_json::to_string(ev).unwrap();
+        assert_eq!(&serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    }
+    assert_eq!(
+        serde_json::to_value(&degraded).unwrap(),
+        serde_json::json!({"kind": "persistence_degraded", "root": "r1", "error": "disk full"})
+    );
+    assert_eq!(
+        serde_json::to_value(&recovered).unwrap(),
+        serde_json::json!({"kind": "persistence_recovered", "root": "r1", "lost": 3})
+    );
+}
+
+#[test]
 fn operation_list_event_is_session_less_and_seq_less() {
     let ev = OutEvent::OperationList {
         correlation_id: "c1".into(),

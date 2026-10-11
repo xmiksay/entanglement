@@ -77,6 +77,7 @@ mod narrate;
 mod overlay_resume;
 mod parked_prompt_persistence;
 mod permission_dispatch;
+mod persistence_signal;
 mod plan_tasks;
 mod plan_watch;
 mod policy_seam;

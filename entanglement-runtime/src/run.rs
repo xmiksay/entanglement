@@ -74,6 +74,13 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
                 session = successor.clone();
             }
         }
+        // A session-log outage (#767) names no session, so it is printed
+        // before the filter below — whatever the root: everything this
+        // one-shot process logs belongs to this run.
+        if let Some(line) = render::persistence_notice(&ev) {
+            eprintln!("{line}");
+            continue;
+        }
         if ev.session() != Some(&session) {
             continue;
         }

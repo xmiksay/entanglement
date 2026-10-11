@@ -10,6 +10,23 @@ use entanglement_core::{AgentState, CompactionMode, OutEvent};
 
 use super::summary;
 
+/// The one stderr line `run` prints for a session-log outage transition
+/// (#767), or `None` for any other event. Stderr, not stdout: the notice is
+/// about this process's log, not the conversation, and must not corrupt the
+/// `--format json` NDJSON stream.
+pub(crate) fn persistence_notice(ev: &OutEvent) -> Option<String> {
+    match ev {
+        OutEvent::PersistenceDegraded { root, error } => Some(format!(
+            "⚠ session log {root} is not being written ({error}); \
+             the run continues, but its log now has a gap"
+        )),
+        OutEvent::PersistenceRecovered { root, lost } => Some(format!(
+            "✓ session log {root} recovered; {lost} record(s) lost in the gap"
+        )),
+        _ => None,
+    }
+}
+
 /// Human-friendly rendering of a single event.
 pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
     match ev {
@@ -221,6 +238,9 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Captured extended-thinking block: the persistence rail for reasoning
         // already rendered live via `ReasoningDelta` — nothing new to show.
         OutEvent::ReasoningBlock { .. } => {}
+        // Session-log outage (#767): engine-global, so `run_one` prints it to
+        // stderr via `persistence_notice` before its session filter.
+        OutEvent::PersistenceDegraded { .. } | OutEvent::PersistenceRecovered { .. } => {}
         // LLM endpoint throttle transition (#517, ADR-0141): the wire-visible
         // counterpart to the TUI's `throttle_status()` poll — this is the
         // signal that reaches a non-TUI head, so it renders in full.
@@ -304,5 +324,42 @@ mod tests {
             envelope: None,
         });
         assert_eq!(text, "= moves:\n    - e4\n  ok: true\n");
+    }
+
+    #[test]
+    fn persistence_transitions_get_one_stderr_line_each() {
+        let degraded = persistence_notice(&OutEvent::PersistenceDegraded {
+            root: SessionId::new("r1"),
+            error: "disk full".into(),
+        })
+        .expect("degraded notice");
+        assert!(degraded.starts_with("⚠ session log r1"), "{degraded}");
+        assert!(degraded.contains("disk full"), "{degraded}");
+        assert!(!degraded.contains('\n'), "one line: {degraded}");
+        let recovered = persistence_notice(&OutEvent::PersistenceRecovered {
+            root: SessionId::new("r1"),
+            lost: 3,
+        })
+        .expect("recovered notice");
+        assert!(
+            recovered.starts_with("✓ session log r1 recovered"),
+            "{recovered}"
+        );
+        assert!(recovered.contains("3 record(s) lost"), "{recovered}");
+        // The stdout renderer leaves them to the stderr line.
+        let ev = OutEvent::PersistenceRecovered {
+            root: SessionId::new("r1"),
+            lost: 3,
+        };
+        assert_eq!(render(&ev), "");
+    }
+
+    #[test]
+    fn other_events_get_no_persistence_notice() {
+        let ev = OutEvent::Status {
+            session: SessionId::new("s"),
+            state: AgentState::Idle,
+        };
+        assert_eq!(persistence_notice(&ev), None);
     }
 }

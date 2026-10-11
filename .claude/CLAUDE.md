@@ -166,7 +166,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | McpList | McpAdd | McpRemove | McpAuth
           | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | McpAuthChanged | Throttle
+          | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
@@ -470,6 +470,10 @@ never here**; each bullet is the claim + where to read it:
 - **Endpoint throttle transitions are wire-visible** (`OutEvent::Throttle`,
   engine-global, transition-only). [provider](../docs/architecture/provider.md),
   [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md).
+  A session-log write outage is too, on the same model
+  (`PersistenceDegraded`/`PersistenceRecovered`, one pair per outage per
+  root, never persisted — #767).
+  [heads & persistence](../docs/architecture/heads-and-persistence.md).
 - **Reasoning has two rails**: `ReasoningDelta` renders (never folded into
   `Context`), `ContentPart::Reasoning` + `ReasoningBlock` replays. Anthropic
   requires the signed thinking block back on a parked turn's final assistant

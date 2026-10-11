@@ -66,6 +66,9 @@ impl App {
         if let OutEvent::McpAuthChanged { status } = &event {
             self.handle_mcp_auth_changed(status);
         }
+        // Session-log outage transitions (#767) — engine-global, folded into
+        // the status-line badge.
+        self.handle_persistence(&event);
         // A session's live tool overlay changed (#539): track the head-side
         // mirror + render the confirmation (the per-session reducer folds no
         // view state for it).

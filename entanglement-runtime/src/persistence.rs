@@ -140,9 +140,11 @@ pub fn spawn_persistence_subscriber_with_sink(
 ) -> tokio::task::JoinHandle<()> {
     let mut events = holly.subscribe();
     let mut inbound = holly.subscribe_inbound();
+    // Weak, so the tap still ends when the engine does (see `PersistenceSignal`).
+    let signal = holly.persistence_signal();
 
     tokio::spawn(async move {
-        let mut writer = GapWriter::new(sink);
+        let mut writer = GapWriter::new(sink, signal);
         // session id → its root session id.
         let mut roots: HashMap<SessionId, SessionId> = HashMap::new();
         // child session id → its spawn-initiating prompt text, cached from
@@ -209,8 +211,11 @@ pub fn spawn_persistence_subscriber_with_sink(
 
                 out = events.recv(), if out_open => match out {
                     Ok(ev) => {
-                        // A session-less query reply (SessionList/History, #160)
-                        // is transient — never persisted.
+                        // A session-less event — a query reply (SessionList,
+                        // #160) or an engine-global transition — is transient,
+                        // never persisted. That includes this tap's own
+                        // `PersistenceDegraded`/`Recovered` (#767), so an outage
+                        // signal never feeds back into the failing sink.
                         let Some(session_id) = ev.session().cloned() else {
                             continue;
                         };

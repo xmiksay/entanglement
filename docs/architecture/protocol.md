@@ -56,6 +56,8 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
          | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
+         | PersistenceDegraded{root,error}   // the persistence tap can't append to root's session log, no seq/session — root is payload, not routing (#767, ADR-0141's model); once per outage, on its first failure
+         | PersistenceRecovered{root,lost}   // root's outage ended: its gap tombstone landed recording `lost` records, no seq/session (#767); none if the outage never ends
          | History{correlation_id,session,events:[OutEvent]}   // reply to ReplayFrom; content past the cursor, no seq (#160, ADR-0072)
          | Status{session,state}              // point-in-time, no seq
          | ModeChanged{session,mode}   // point-in-time, no seq; reply to SetMode and, unconditionally, once at session start mirroring AgentChanged — core carries mode as an opaque String and never evaluates it (#560, ADR-0207 §2/§9)
