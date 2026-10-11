@@ -113,21 +113,62 @@ impl App {
     /// transcript line with the detail. Other events are ignored.
     pub(crate) fn handle_persistence(&mut self, event: &OutEvent) {
         let outages = &mut self.status_line.log_outages;
-        let message = match event {
-            OutEvent::PersistenceDegraded { root, error } if outages.insert(root.clone()) => {
+        let (root, message) = match event {
+            OutEvent::PersistenceDegraded { root, error } if outages.insert(root.clone()) => (
+                root,
                 format!(
                     "session log {root} is not being written ({error}); the session continues, \
                      but its log now has a gap"
+                ),
+            ),
+            OutEvent::PersistenceRecovered { root, lost } if outages.remove(root) => (
+                root,
+                format!("session log {root} recovered; {lost} record(s) lost"),
+            ),
+            // WHY: a root that is gone writes no more records, so its gap
+            // tombstone only lands on another root's append — or never. The
+            // live badge is about sessions still running; the note keeps it.
+            OutEvent::SessionEnded { session, .. }
+            | OutEvent::SessionHibernated { session, .. }
+                if outages.remove(session) =>
+            {
+                (
+                    session,
+                    format!(
+                        "session {session} stopped while its log was not being written; \
+                         the log may end without a gap marker"
+                    ),
                 )
-            }
-            OutEvent::PersistenceRecovered { root, lost } if outages.remove(root) => {
-                format!("session log {root} recovered; {lost} record(s) lost")
             }
             _ => return,
         };
-        self.sessions
-            .active_view_mut()
-            .record_status("log", message);
+        // The root's own transcript if the TUI holds one, else the focused
+        // one (the message names the root either way).
+        let root = root.clone();
+        match self.sessions.view_for_mut(&root) {
+            Some(view) => view.record_status("log", message),
+            None => self
+                .sessions
+                .active_view_mut()
+                .record_status("log", message),
+        }
+        self.mark_dirty();
+    }
+
+    /// The engine stream lagged: a `PersistenceRecovered` may be among the
+    /// missed events, and there is no query to re-derive the state from, so
+    /// a raised badge is cleared rather than left possibly stuck.
+    pub(crate) fn engine_events_lagged(&mut self) {
+        if self.status_line.log_outages.is_empty() {
+            return;
+        }
+        self.status_line.log_outages.clear();
+        self.sessions.active_view_mut().record_status(
+            "log",
+            "missed engine events: the ⚠ log badge may have been stale and was cleared; \
+             see the tracing log for persistence errors"
+                .to_string(),
+        );
         self.mark_dirty();
     }
 

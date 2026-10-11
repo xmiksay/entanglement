@@ -328,6 +328,66 @@ mod tests {
         assert!(!healthy.contains("⚠ log"), "{healthy}");
     }
 
+    fn log_lines(app: &App, id: &SessionId) -> usize {
+        use crate::tui::session_view::TranscriptEntry;
+        let sessions = app.sessions();
+        let (_, view) = sessions.iter().find(|(s, _)| *s == id).expect("view");
+        view.transcript()
+            .iter()
+            .filter(
+                |e| matches!(e, TranscriptEntry::ToolOutput { tool: Some(t), .. } if t == "log"),
+            )
+            .count()
+    }
+
+    #[test]
+    fn a_root_that_stops_mid_outage_or_a_lag_clears_the_badge() {
+        let mut app = app_in_repo();
+        let focused = app.active_session_id().clone();
+        let other = SessionId::new("other-root");
+        // The other root's view exists (it started), so its notes go there.
+        app.handle_out_event(OutEvent::SessionStarted {
+            session: other.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "build".into(),
+            model: None,
+            root: true,
+            ts: 0,
+            user: None,
+        });
+        app.handle_out_event(OutEvent::PersistenceDegraded {
+            root: other.clone(),
+            error: "down".into(),
+        });
+        assert!(row(&app, 80).contains("⚠ log"));
+        assert_eq!((log_lines(&app, &other), log_lines(&app, &focused)), (1, 0));
+        app.handle_out_event(OutEvent::SessionEnded {
+            session: other.clone(),
+            ts: 1,
+        });
+        assert!(!row(&app, 80).contains("⚠ log"));
+        assert_eq!(log_lines(&app, &other), 2, "the stop leaves a note");
+        // A late Recovered for it is now a no-op.
+        app.handle_out_event(OutEvent::PersistenceRecovered {
+            root: other.clone(),
+            lost: 1,
+        });
+        assert_eq!(log_lines(&app, &other), 2);
+
+        // An unknown root's notes land in the focused view; a lag clears.
+        app.handle_out_event(OutEvent::PersistenceDegraded {
+            root: SessionId::new("unseen"),
+            error: "down".into(),
+        });
+        assert_eq!(log_lines(&app, &focused), 1);
+        app.engine_events_lagged();
+        assert!(!row(&app, 80).contains("⚠ log"));
+        assert_eq!(log_lines(&app, &focused), 2);
+        app.engine_events_lagged(); // nothing raised: no further note
+        assert_eq!(log_lines(&app, &focused), 2);
+    }
+
     #[test]
     fn task_counts_reads_checkbox_lines_only() {
         assert_eq!(task_counts("- [x] a\n* [ ] b\nplain"), Some((1, 2)));

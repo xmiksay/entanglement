@@ -45,9 +45,32 @@ impl GapWriter {
             self.add_pending(root, 1);
             return;
         }
-        if let Err(e) = self.sink.append(root, record) {
-            self.failed(root, what, &e);
-            self.gap(root, 1);
+        match self.sink.append(root, record) {
+            Ok(()) => self.flush_others(root),
+            Err(e) => {
+                self.failed(root, what, &e);
+                self.gap(root, 1);
+            }
+        }
+    }
+
+    /// The sink just took a record, so it may have healed: retry every
+    /// *other* root's pending tombstone too. WHY: a root that ended or
+    /// hibernated mid-outage writes no further record of its own, so its
+    /// tombstone (and its `PersistenceRecovered`) would otherwise wait for
+    /// tap shutdown. Bounded by the pending roots; free when none are.
+    fn flush_others(&mut self, root: &SessionId) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let others: Vec<SessionId> = self
+            .pending
+            .keys()
+            .filter(|r| *r != root)
+            .cloned()
+            .collect();
+        for other in others {
+            self.flush(&other);
         }
     }
 
@@ -79,7 +102,9 @@ impl GapWriter {
                 "Failed to persist {what} for {root}: {e:#}; recording a gap and holding \
                  this root's records until the sink recovers"
             );
-            self.signal.degraded(root, format!("{e:#}"));
+            // The full chain stays in the log above; the wire gets the sink's
+            // public summary (it is broadcast to every connected head).
+            self.signal.degraded(root, self.sink.public_error(e));
         } else {
             tracing::debug!("Persistence for {root} still failing ({what}): {e:#}");
         }

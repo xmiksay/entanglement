@@ -947,14 +947,22 @@ assistant/tool messages and the model appears to forget the conversation.
   `OutEvent::PersistenceDegraded{root,error}` on an outage's first failure and
   `PersistenceRecovered{root,lost}` when its tombstone lands — one pair per
   outage per root, none while the sink is healthy (a lag whose tombstone lands
-  first try is loss, not an outage). Both are engine-global (no `seq`,
+  first try is loss, not an outage). A successful append also retries every
+  *other* root's pending tombstone, so a root that ended or hibernated
+  mid-outage still recovers once the sink heals. `error` is the sink's
+  `RecordSink::public_error` (default: top-level message, control chars
+  stripped, ≤200 chars; the full chain stays in `tracing`). Both are engine-global (no `seq`,
   `session()` is `None`, `root` is payload), so the tap — which skips
   session-less events — never writes its own signal into the failing sink.
   The tap emits through a `PersistenceSignal` (`Holly::persistence_signal`), a
   *weak* hold on the outbox rather than a `Holly` clone, so it never keeps the
   engine's channels open past shutdown. Heads: the TUI raises a `⚠ log`
   status-line counter (`status.attention`, `⚠ log×N` for several roots) until
-  every root recovers, plus one transcript line per transition; `run` prints
+  every root recovers, plus one transcript line per transition (in that
+  root's view if open, else the focused one). A root that ends or hibernates
+  while degraded leaves the badge with a "may end without a gap marker" note,
+  and a lagged TUI receiver clears the badge with a note, since a missed
+  `Recovered` cannot be re-derived; `run` prints
   one stderr line per transition (any format — stdout's NDJSON stays clean);
   `pipe`/`serve` forward both like any event (read-only, wire-allowed). The tap owns
   gap-marking for every `Err` and lag; a sink that loses a record after

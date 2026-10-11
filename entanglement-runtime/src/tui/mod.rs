@@ -223,6 +223,7 @@ pub async fn tui(
                 Ok(Ok(event)) => dispatch_engine_event(&mut app, &mut attention, event),
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
                     tracing::warn!("TUI lagged, skipped {n} engine events");
+                    app.engine_events_lagged();
                 }
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
                 Err(_) => {}
@@ -365,8 +366,13 @@ fn drain_engine_events(
     app: &mut App,
     attention: &mut Attention,
 ) {
-    while let Ok(event) = holly_sub.try_recv() {
-        dispatch_engine_event(app, attention, event);
+    use tokio::sync::broadcast::error::TryRecvError;
+    loop {
+        match holly_sub.try_recv() {
+            Ok(event) => dispatch_engine_event(app, attention, event),
+            Err(TryRecvError::Lagged(_)) => app.engine_events_lagged(),
+            Err(_) => break,
+        }
     }
 }
 
