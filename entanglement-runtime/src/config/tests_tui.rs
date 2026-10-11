@@ -84,6 +84,34 @@ fn a_statusline_template_reloads_and_warns_on_an_unknown_placeholder() {
     assert!(resolved.warnings[0].contains("{nope}"));
 }
 
+/// #762 part B: `command:` is honoured from the project layer (ADR-0047 —
+/// the repo is trusted, like its hooks), and an edit reaches the next
+/// resolve with provenance pointing at the layer that set it.
+#[test]
+fn a_project_statusline_command_loads_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let user_file = root.join("user.yml");
+    std::fs::write(&user_file, "{}\n").unwrap();
+    let repo = root.join(".entanglement");
+    std::fs::create_dir_all(&repo).unwrap();
+    let project = repo.join("config.yml");
+    std::fs::write(&project, "tui: {statusline: {command: 'echo a'}}\n").unwrap();
+    let resolved = resolve_with_user(root, &user_file);
+    let sl = &resolved.config.tui.statusline;
+    assert_eq!((sl.command(), sl.timeout_ms), (Some("echo a"), 1000));
+    let prov: HashMap<_, _> = resolved.provenance.iter().cloned().collect();
+    assert_eq!(prov.get("tui"), Some(&ConfigLayer::Project));
+
+    std::fs::write(
+        &project,
+        "tui: {statusline: {command: 'echo b', timeout_ms: 300}}\n",
+    )
+    .unwrap();
+    let sl = resolve_with_user(root, &user_file).config.tui.statusline;
+    assert_eq!((sl.command(), sl.timeout_ms), (Some("echo b"), 300));
+}
+
 /// #735: a theme/keybinding edit reaches the next resolve; a bad slot colour
 /// and a key conflict each add exactly one warning, while an unknown key
 /// inside the `theme:` object stays a hard error like the rest of the file.

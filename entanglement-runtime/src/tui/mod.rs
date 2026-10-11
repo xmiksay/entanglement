@@ -150,6 +150,7 @@ pub async fn tui(
     // a spawn target, never a manual entry agent. The mode is carried through so
     // the Tab cycle can narrow to `primary` only (#322). Ordered by the
     // registry's stable `iter` (name-sorted).
+    let secret_env = catalog.key_envs(); // scrubbed from the status command (#164)
     let entry_profiles = entry_profiles_from(&agents.read().unwrap());
     let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
     app.set_model_info(model_info);
@@ -170,6 +171,10 @@ pub async fn tui(
     app.set_statusline_config(tui_config.statusline.clone());
     app.apply_appearance(&tui_config, app::appearance::no_color_env(), true);
     app.set_status_refresh(statusline::spawn_probe(root.clone(), event_tx.clone()));
+    app.set_status_command_runner(statusline::command::spawn_runner(
+        event_tx.clone(),
+        secret_env,
+    ));
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 
     const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -193,6 +198,7 @@ pub async fn tui(
             if !wait.is_zero() {
                 tokio::time::sleep(wait).await;
             }
+            app.sync_status_command(); // a no-op unless the payload changed
             terminal.draw(|f| ui::draw(f, &mut app))?;
             if !first_frame_drawn {
                 first_frame_drawn = true;

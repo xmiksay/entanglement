@@ -21,6 +21,8 @@ pub enum Event {
     FileIndexReady(crate::tui::mention::FileIndex),
     /// A fresh git probe for the status line (#762), posted only on change.
     StatusLine(crate::tui::statusline::GitInfo),
+    /// A finished `tui.statusline.command` run (#762 part B).
+    StatusCommand(crate::tui::statusline::command::Outcome),
 }
 
 pub fn spawn_crossterm_task(tx: tokio::sync::mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
