@@ -10,6 +10,18 @@ use crate::mcp;
 use crate::policy::DefaultGrantStore;
 use crate::skills::SkillRegistry;
 
+/// What the watcher tells a head after a content change (#785). A head that
+/// renders config of its own (the TUI's `tui:` block) re-applies it on
+/// *either* variant: a malformed agent/skill file failing the definitions
+/// reload must not also block an unrelated `config.yml` edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReloadNotice {
+    /// The definitions were swapped in; the one-line summary.
+    Reloaded(String),
+    /// The definitions reload failed and the previous state is kept; why.
+    Failed(String),
+}
+
 /// The runtime-held mirrors a reload swaps. See the [`super`] module doc for
 /// why this is deliberately *not* core's `EngineConfig.agents`.
 #[derive(Clone)]

@@ -37,9 +37,29 @@ pub(super) fn project_permission_overrides(layers: &[RawLayer]) -> Vec<(String, 
     out
 }
 
-/// Log one warning per overridden ceiling key. Called once per config load.
-pub(super) fn warn_project_permission_overrides(layers: &[RawLayer]) {
+/// Whether `key` is new to this process. Every config load runs the config
+/// warnings, and the TUI reloads on any watched write (a `grants.yml` write
+/// after an "Always" approval included), so without this the same lines
+/// repeat in the log on every reload (#785). A changed finding is a new key
+/// and still warns.
+pub(super) fn first_time(key: String) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key)
+}
+
+/// Log one warning per overridden ceiling key, once per process per finding.
+/// Returns how many it logged.
+pub(super) fn warn_project_permission_overrides(layers: &[RawLayer]) -> usize {
+    let mut logged = 0;
     for (key, earlier, project) in project_permission_overrides(layers) {
+        if !first_time(format!("ceiling\0{key}\0{earlier}\0{project}")) {
+            continue;
+        }
+        logged += 1;
         tracing::warn!(
             %key,
             %earlier,
@@ -48,6 +68,7 @@ pub(super) fn warn_project_permission_overrides(layers: &[RawLayer]) {
              earlier layer (trusted per ADR-0047) — verify the change is intended"
         );
     }
+    logged
 }
 
 fn permissions_of(doc: &Value) -> Option<&serde_yaml::Mapping> {
@@ -82,6 +103,17 @@ mod tests {
             project_permission_overrides(&layers),
             vec![("bash".to_string(), "ask".to_string(), "allow".to_string())]
         );
+    }
+
+    /// #785: the TUI's reload path re-runs the load; the warning doesn't repeat.
+    #[test]
+    fn a_repeated_load_warns_once_per_override() {
+        let layers = vec![
+            layer(ConfigLayer::User, "permissions:\n  dedupe_785: ask\n"),
+            layer(ConfigLayer::Project, "permissions:\n  dedupe_785: allow\n"),
+        ];
+        assert_eq!(warn_project_permission_overrides(&layers), 1);
+        assert_eq!(warn_project_permission_overrides(&layers), 0);
     }
 
     #[test]

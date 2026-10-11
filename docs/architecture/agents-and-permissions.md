@@ -658,6 +658,12 @@ below realize one model:
   `/agent` picker all read through these live handles, so a
   definitions edit lands for the *next* new session or spawn — a
   turn already in flight keeps its already-resolved system prompt unchanged.
+  Every content change sends the head a `watch::ReloadNotice` —
+  `Reloaded(summary)`, or `Failed(error)` when a malformed definition kept
+  the previous state — and the TUI re-applies its `tui:` block on either, so
+  a bad agent file never blocks a `config.yml` edit (#785). The config
+  warnings each load re-runs (project ceiling overrides, stale `modes:` tool
+  names) log once per process per finding, not on every reload.
   The permission-mode table is **not** part of this live reload: like the old
   `EngineConfig.profiles`, `ModeTable` is built once at startup
   (`services.rs`, built-ins + `config.yml` `modes:` tuning validated against the

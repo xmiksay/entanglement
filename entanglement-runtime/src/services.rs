@@ -29,7 +29,7 @@ pub(crate) struct Head {
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
     pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
-    pub(crate) reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    pub(crate) reload_rx: tokio::sync::mpsc::UnboundedReceiver<watch::ReloadNotice>,
     pub(crate) tool_names: Vec<String>,
     pub(crate) http_client: HttpClient,
     pub(crate) grants: Arc<DefaultGrantStore>,
@@ -234,7 +234,7 @@ pub(crate) fn start(
         mcp_capabilities.clone(),
     )
     .with_file_backups(file_backups);
-    let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<watch::ReloadNotice>();
     let watcher_handle = watch::spawn_watcher(cwd.to_path_buf(), live, Some(reload_tx));
 
     // Dedicated plans-folder watch (#627, ADR-0145 "Consequences"): notifies a

@@ -75,8 +75,15 @@ pub(super) fn stale_mode_tuning_names(layers: &[RawLayer]) -> Vec<(String, Strin
 /// vouch for is *suspicious*, not *provably wrong* (the compile-time
 /// vocabulary itself can lag a brand-new tool), so it degrades the one rule
 /// loudly rather than aborting startup.
-pub(super) fn warn_stale_mode_tuning_names(layers: &[RawLayer]) {
+/// Log each stale tuning name once per process per finding (#785, see
+/// [`super::ceiling_warn::first_time`]). Returns how many it logged.
+pub(super) fn warn_stale_mode_tuning_names(layers: &[RawLayer]) -> usize {
+    let mut logged = 0;
     for (source, mode, entry) in stale_mode_tuning_names(layers) {
+        if !super::ceiling_warn::first_time(format!("mode\0{source}\0{mode}\0{entry}")) {
+            continue;
+        }
+        logged += 1;
         tracing::warn!(
             %source,
             %mode,
@@ -85,6 +92,7 @@ pub(super) fn warn_stale_mode_tuning_names(layers: &[RawLayer]) {
              stale or typo'd name; it will silently never match anything"
         );
     }
+    logged
 }
 
 #[cfg(test)]
@@ -115,6 +123,21 @@ mod tests {
                 "totally_bogus_tool".to_string(),
             )]
         );
+    }
+
+    /// #785: a reload re-running the same load logs nothing new; a changed
+    /// finding still warns.
+    #[test]
+    fn a_repeated_load_warns_once_per_finding() {
+        let yaml = "modes:\n  research:\n    allow: [\"dedupe_785_bogus\"]\n";
+        let layers = vec![layer(ConfigLayer::Project, yaml)];
+        assert_eq!(warn_stale_mode_tuning_names(&layers), 1);
+        assert_eq!(warn_stale_mode_tuning_names(&layers), 0);
+        let changed = vec![layer(
+            ConfigLayer::Project,
+            "modes:\n  research:\n    allow: [\"dedupe_785_other\"]\n",
+        )];
+        assert_eq!(warn_stale_mode_tuning_names(&changed), 1);
     }
 
     #[test]

@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use crate::{agents, layers, skills, system_prompt};
 
 mod live;
-pub use live::LiveDefinitions;
+pub use live::{LiveDefinitions, ReloadNotice};
 
 /// Debounce window collapsing a burst of edits (e.g. an editor's save-as-two-
 /// writes, or several files touched by one `git checkout`) into one reload.
@@ -47,15 +47,16 @@ const MANAGED_FILE_ENVS: &[&str] = &[
 ];
 
 /// Start the watcher for `cwd`'s resolved definition dirs + managed files.
-/// `notice` receives a one-line human-readable message after each successful
-/// reload (e.g. for a TUI status line); `None` sink is fine for headless heads
-/// (the reload is still `tracing::info!`-logged either way). Returns `None`
+/// `notice` receives a [`ReloadNotice`] after each reload attempt a content
+/// change triggers — the summary on success, the error on failure (e.g. for a
+/// TUI status line); `None` sink is fine for headless heads (the outcome is
+/// still `tracing`-logged either way). Returns `None`
 /// when there is nothing to watch (no resolvable paths at all — should not
 /// happen in practice since the project root always yields candidate dirs).
 pub fn spawn_watcher(
     cwd: PathBuf,
     live: LiveDefinitions,
-    notice: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    notice: Option<tokio::sync::mpsc::UnboundedSender<ReloadNotice>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let paths = watch_paths(&cwd);
     // Baseline captured *before* the first debounced firing can land, so even
@@ -88,16 +89,26 @@ pub fn spawn_watcher(
         if let Some(backups) = &live.file_backups {
             crate::config::undo::reapply(backups, crate::config::Config::load(&cwd));
         }
-        match reload(&cwd, &live) {
-            Ok(msg) => {
-                tracing::info!("{msg}");
-                if let Some(tx) = &notice {
-                    let _ = tx.send(msg);
-                }
-            }
-            Err(e) => tracing::warn!("definitions reload failed, keeping previous state: {e:#}"),
+        let outcome = reload_notice(reload(&cwd, &live));
+        if let Some(tx) = &notice {
+            let _ = tx.send(outcome);
         }
     })
+}
+
+/// Log a [`reload`] outcome and turn it into the notice a head receives.
+fn reload_notice(outcome: anyhow::Result<String>) -> ReloadNotice {
+    match outcome {
+        Ok(msg) => {
+            tracing::info!("{msg}");
+            ReloadNotice::Reloaded(msg)
+        }
+        Err(e) => {
+            let msg = format!("definitions reload failed, keeping previous state: {e:#}");
+            tracing::warn!("{msg}");
+            ReloadNotice::Failed(msg)
+        }
+    }
 }
 
 /// Per-file stamp: `(mtime, size, sha256-hex)`. The stat pair is a cheap cache
@@ -371,6 +382,23 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// #785: a failed definitions reload still yields a notice, so the TUI
+    /// re-applies its `tui:` block instead of being blocked by a bad agent.
+    #[test]
+    fn a_failed_reload_still_notifies() {
+        let notice = reload_notice(Err(anyhow::anyhow!("bad agent file")));
+        assert_eq!(
+            notice,
+            ReloadNotice::Failed(
+                "definitions reload failed, keeping previous state: bad agent file".into()
+            )
+        );
+        assert_eq!(
+            reload_notice(Ok("reloaded".into())),
+            ReloadNotice::Reloaded("reloaded".into())
+        );
+    }
 
     /// The watch set with no env overrides and no home/config dirs: the
     /// project layer only, so tests never see the real user dirs.
