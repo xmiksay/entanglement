@@ -202,25 +202,39 @@ async fn undo_and_rewind_restore_files_and_resume_never_reverts_again() {
     // file the user wrote since stays exactly as it is.
     std::fs::write(&file, "user wrote this").unwrap();
     holly.shutdown().await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let records = store.read(&sid).unwrap();
-    let reverts = records
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.payload,
-                entanglement_runtime::session_store::LogPayload::Out(
-                    OutEvent::FilesReverted { .. }
+    let reverts_in = |records: &[entanglement_runtime::session_store::LogRecord]| {
+        records
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.payload,
+                    entanglement_runtime::session_store::LogPayload::Out(
+                        OutEvent::FilesReverted { .. }
+                    )
                 )
-            )
-        })
-        .count();
-    assert_eq!(reverts, 2, "both reverts are logged");
+            })
+            .count()
+    };
+    // The persistence tap writes on its own task: wait for the fact (#815).
+    crate::eventually(|| store.read(&sid).is_ok_and(|r| reverts_in(&r) == 2)).await;
+    let records = store.read(&sid).unwrap();
+    assert_eq!(reverts_in(&records), 2, "both reverts are logged");
     let resumed = spawn(&work, &store, vec![]);
+    let mut resumed_sub = resumed.subscribe();
     resumed
         .resume(sid.clone(), pair_records(&records))
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Barrier (#815): the resumed `SessionStarted` is emitted only after the
+    // replay that would have re-run a revert has finished.
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(10), resumed_sub.recv())
+            .await
+            .expect("the resumed session starts")
+            .unwrap();
+        if matches!(&ev, OutEvent::SessionStarted { session, .. } if *session == sid) {
+            break;
+        }
+    }
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "user wrote this");
 }

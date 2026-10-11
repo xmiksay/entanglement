@@ -69,7 +69,13 @@ async fn a_fork_at_a_turn_persists_its_own_exactly_replayable_log() {
     // The source is still live: another turn of its own runs.
     turn(&holly, &mut sub, &src, "four").await;
     holly.shutdown().await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The persistence tap writes on its own task: wait for both final turns
+    // to be on disk (#815) instead of sleeping.
+    let persisted = crate::eventually(|| {
+        replayed_texts(&store, &cfg, &fork) == 4 && replayed_texts(&store, &cfg, &src) == 6
+    })
+    .await;
+    assert!(persisted, "both logs persisted in time");
 
     let fork_log = store.read(&fork).unwrap();
     let prompts: Vec<String> = fork_log
@@ -98,6 +104,15 @@ async fn a_fork_at_a_turn_persists_its_own_exactly_replayable_log() {
     let src_texts = texts(&replayed_src);
     assert_eq!(src_texts.len(), 6, "{src_texts:?}");
     assert!(!src_texts.iter().any(|t| t == "three"));
+}
+
+/// How many texts `id`'s on-disk log replays to so far (0 if unreadable).
+fn replayed_texts(store: &SessionStore, cfg: &EngineConfig, id: &SessionId) -> usize {
+    store
+        .read(id)
+        .ok()
+        .and_then(|log| Session::replay(&pair_records(&log), cfg, id).ok())
+        .map_or(0, |s| texts(&s).len())
 }
 
 fn logged_prompts(log: &[LogRecord]) -> Vec<String> {
@@ -142,7 +157,8 @@ async fn an_empty_spawn_prompt_logs_no_prompt_record() {
     .await;
     turn(&holly, &mut sub, &sid, "hi").await;
     holly.shutdown().await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let persisted = crate::eventually(|| replayed_texts(&store, &cfg, &sid) >= 2).await;
+    assert!(persisted, "the turn persisted in time");
 
     let log = store.read(&sid).unwrap();
     assert_eq!(logged_prompts(&log), ["hi"]);
