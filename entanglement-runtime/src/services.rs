@@ -225,15 +225,15 @@ pub(crate) fn start(
     let live_commands: crate::slash_commands::LiveCommands = Arc::new(RwLock::new(Arc::new(
         crate::slash_commands::load_registry(cwd).context("loading slash commands")?,
     )));
-    let live = watch::LiveDefinitions {
-        agents: live_profiles.clone(),
-        skills: live_skills.clone(),
-        commands: live_commands.clone(),
-        agent_models: live_agent_models.clone(),
-        grants: grants.clone(),
-        mcp_capabilities: mcp_capabilities.clone(),
-        file_backups: Some(file_backups),
-    };
+    let live = watch::LiveDefinitions::new(
+        live_profiles.clone(),
+        live_skills.clone(),
+        live_commands.clone(),
+        live_agent_models.clone(),
+        grants.clone(),
+        mcp_capabilities.clone(),
+    )
+    .with_file_backups(file_backups);
     let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watcher_handle = watch::spawn_watcher(cwd.to_path_buf(), live, Some(reload_tx));
 
