@@ -45,6 +45,33 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// changes are recorded as skipped.
 pub const DEFAULT_MAX_ROOT_BYTES: u64 = 256 * 1024 * 1024;
 
+/// What a [`FileBackups`] records: whether it records at all, and its size
+/// caps in bytes. `skutter` reads it from `config.yml`'s `undo:` block (#787)
+/// and re-applies it on a config reload ([`FileBackups::set_limits`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BackupLimits {
+    /// `false` records nothing new; backups already on disk stay restorable.
+    pub enabled: bool,
+    /// A prior version larger than this is recorded as skipped.
+    #[serde(deserialize_with = "crate::config::undo::de_size")]
+    pub max_file_bytes: u64,
+    /// Per-root budget for stored prior versions; past it, further changes
+    /// are recorded as skipped.
+    #[serde(deserialize_with = "crate::config::undo::de_size")]
+    pub max_root_bytes: u64,
+}
+
+impl Default for BackupLimits {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            max_root_bytes: DEFAULT_MAX_ROOT_BYTES,
+        }
+    }
+}
+
 tokio::task_local! {
     /// The `seq` of the `ToolExec` whose call task is running — set by the
     /// executor around each dispatched call ([`with_exec_seq`]), read when a
@@ -84,18 +111,30 @@ struct Inner {
     /// Per-root manifest stats, and the lock that serializes every manifest
     /// read-modify-append: a parallel tool batch records from several tasks.
     manifests: Mutex<HashMap<SessionId, manifest::Stats>>,
-    max_file_bytes: u64,
-    max_root_bytes: u64,
+    /// Read at every record, so a config reload applies to the next write.
+    limits: Mutex<BackupLimits>,
 }
 
 impl FileBackups {
     /// Backups kept under `store`, with the default size caps.
     pub fn new(store: SessionStore) -> Self {
-        Self::with_limits(store, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_ROOT_BYTES)
+        Self::with_backup_limits(store, BackupLimits::default())
     }
 
     /// Backups kept under `store` with explicit caps (bytes).
     pub fn with_limits(store: SessionStore, max_file_bytes: u64, max_root_bytes: u64) -> Self {
+        Self::with_backup_limits(
+            store,
+            BackupLimits {
+                enabled: true,
+                max_file_bytes,
+                max_root_bytes,
+            },
+        )
+    }
+
+    /// Backups kept under `store`, recording per `limits`.
+    pub fn with_backup_limits(store: SessionStore, limits: BackupLimits) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
@@ -103,10 +142,21 @@ impl FileBackups {
                 busy: Mutex::new(HashSet::new()),
                 probe: OnceLock::new(),
                 manifests: Mutex::new(HashMap::new()),
-                max_file_bytes,
-                max_root_bytes,
+                limits: Mutex::new(limits),
             }),
         }
+    }
+
+    /// The limits the next recorded change is held to.
+    pub fn limits(&self) -> BackupLimits {
+        *lock(&self.inner.limits)
+    }
+
+    /// Replace the limits for every clone of this handle. Changes already
+    /// recorded keep their outcome: a skip stays a skip, and a stored backup
+    /// stays restorable even once recording is disabled.
+    pub fn set_limits(&self, limits: BackupLimits) {
+        *lock(&self.inner.limits) = limits;
     }
 
     /// The [`FileReverter`] seam core calls for `InMsg::RevertFiles`; runs
@@ -162,5 +212,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_limits;
 #[cfg(test)]
 mod tests_safety;

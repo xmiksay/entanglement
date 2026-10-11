@@ -55,6 +55,11 @@
 //!   templates ([`statusline`], #762) warn once per unknown placeholder; its
 //!   `theme` ([`theme`]) warns per bad slot/colour and `keybindings`
 //!   ([`keybindings`]) once per rejected remap (#735).
+//! - `undo` — per-write file backups behind `/undo`/`/rewind` (#787,
+//!   ADR-0212): `enabled`, `max_file_bytes`, `max_root_bytes` in the size
+//!   grammar of [`undo`]. Live-reloaded by the definitions watcher; caps
+//!   apply to the next write, and disabling keeps existing backups
+//!   restorable.
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
 //!   `max_turns` / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an
 //!   explicit CLI flag or environment variable wins over the file (env >
@@ -113,6 +118,7 @@ pub mod state_dir;
 pub mod statusline;
 pub mod theme;
 pub mod tui;
+pub mod undo;
 pub mod write_key;
 
 pub use layers::{scaffold_if_missing, user_config_path, ConfigLayer};
@@ -229,6 +235,10 @@ pub struct Config {
     pub tool_advertising: Option<ToolAdvertising>,
     /// Terminal-UI preferences (`tui:` block, ADR-0213).
     pub tui: TuiConfig,
+    /// Per-write file backups (`undo:` block, #787): on/off and size caps,
+    /// handed to [`crate::file_backup::FileBackups`] at boot and re-applied
+    /// on a config reload.
+    pub undo: crate::file_backup::BackupLimits,
 }
 
 /// The resolved config plus the provenance `skutter inspect config` reports:
@@ -317,6 +327,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
             .unwrap_or(DEFAULT_SESSION_RETENTION_DAYS),
         tool_advertising: raw.tool_advertising,
         tui: raw.tui,
+        undo: raw.undo,
     };
     warnings.extend(config.tui.warnings());
     Ok(Resolved {

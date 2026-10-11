@@ -279,6 +279,21 @@ renders literally and is reported once by `skutter inspect config`. Git facts
 are read from `.git` directly (no `git` process), so a detached `HEAD` shows a
 short sha and an unreadable one `?`.
 
+**Undo backups.** `/undo` and `/rewind` restore files from per-write
+backups (`write`/`edit`/`apply_patch` only — never `bash`). Their caps and
+an off switch live in one block, picked up live for the next write:
+
+```yaml
+undo:
+  enabled: true          # false: record nothing new; existing backups still restore
+  max_file_bytes: 8MiB   # a bigger prior version is skipped (undo says so)
+  max_root_bytes: 256MiB # stored budget per root session
+```
+
+A size is plain bytes or `<n><unit>` — `B`, `KB`/`MB`/`GB` (×1000),
+`KiB`/`MiB`/`GiB` (×1024) — between 1 byte and 64 GiB; anything else is a
+config error.
+
 The few remaining environment knobs beyond provider keys/models:
 `ENTANGLEMENT_STATE_DIR` relocates every file skutter manages for you (grants,
 model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens) in one go,

@@ -65,6 +65,9 @@ pub struct LiveDefinitions {
     /// agent/skill definition re-parse below is live. A config edit to
     /// `capabilities:` needs a restart to take effect, same as a ceiling edit.
     pub mcp_capabilities: mcp::McpCapabilityIndex,
+    /// Per-write file backups (#787): unlike the ceiling, `config.yml`'s
+    /// `undo:` block *is* re-applied on every reload.
+    pub file_backups: Option<crate::file_backup::FileBackups>,
 }
 
 /// Start the watcher for `cwd`'s resolved definition dirs + managed files.
@@ -103,6 +106,11 @@ pub fn spawn_watcher(
                  changed — skipping reload"
             );
             return;
+        }
+        // Independent of the definitions below: a bad skill must not pin
+        // stale backup caps, nor a bad config block a definitions reload.
+        if let Some(backups) = &live.file_backups {
+            crate::config::undo::reapply(backups, crate::config::Config::load(&cwd));
         }
         match reload(&cwd, &live) {
             Ok(msg) => {

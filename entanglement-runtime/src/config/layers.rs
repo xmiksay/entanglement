@@ -136,6 +136,7 @@ pub(super) fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> 
         "session_retention_days",
         "tool_advertising",
         "tui",
+        "undo",
     ];
     KEYS.iter()
         .filter_map(|key| {

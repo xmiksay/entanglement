@@ -39,6 +39,7 @@ pub(crate) struct Engine {
     pub(crate) jobs: host::JobRegistry,
     pub(crate) retained: retained_output::RetainedOutputRegistry,
     pub(crate) scripts: script_ops::ScriptRegistry,
+    pub(crate) file_backups: file_backup::FileBackups,
     pub(crate) live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     pub(crate) live_profiles: Arc<RwLock<AgentCatalog>>,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
@@ -119,8 +120,11 @@ pub(crate) async fn boot(
     let http_client = HttpClient::new()?;
     // Per-write file backups (ADR-0212), kept beside the session logs in the
     // same store the persistence tap writes — a revert reads that log's turns.
-    let file_backups =
-        file_backup::FileBackups::new(crate::session_store::SessionStore::for_cwd(cwd));
+    // Limits from `config.yml` `undo:` (#787); the watcher re-applies them.
+    let file_backups = file_backup::FileBackups::with_backup_limits(
+        crate::session_store::SessionStore::for_cwd(cwd),
+        user_config.undo,
+    );
     // The skill registry is shared: its tier-1 disclosures fed the system prompt
     // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
     let (
@@ -270,6 +274,7 @@ pub(crate) async fn boot(
         jobs,
         retained,
         scripts,
+        file_backups,
         live_skills,
         live_profiles,
         live_agent_models,

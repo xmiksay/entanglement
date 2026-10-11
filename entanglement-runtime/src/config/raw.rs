@@ -10,6 +10,7 @@ use serde::Deserialize;
 use super::ceiling;
 use super::tui::TuiConfig;
 use crate::endpoint::EndpointConfig;
+use crate::file_backup::BackupLimits;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
@@ -111,4 +112,8 @@ pub(super) struct RawConfig {
     /// reaches this struct: [`super::retired`] strips it with a warning.
     #[serde(default)]
     pub(super) tui: TuiConfig,
+    /// Per-write file backups behind `/undo`/`/rewind` (#787, ADR-0212):
+    /// `enabled` + size caps, each field optional ([`super::undo`]).
+    #[serde(default)]
+    pub(super) undo: BackupLimits,
 }

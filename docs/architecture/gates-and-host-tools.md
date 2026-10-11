@@ -554,10 +554,25 @@ when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
   Backups ride the log's lifecycle: `SessionStore::delete` removes them with
   the `.jsonl`, and `prune` removes any backup directory whose log is gone —
   session retention is the only retention.
-- **Caps**: a prior version over 8 MiB, or past a root's 256 MiB stored
-  budget, is recorded as `skipped` (the change is still listed, so a revert
-  names it as "can't restore … no backup (…)"). A backup failure is logged,
-  never a tool error — the edit already happened.
+- **Caps**: a prior version over `max_file_bytes` (default 8 MiB), or past a
+  root's `max_root_bytes` stored budget (default 256 MiB), is recorded as
+  `skipped` (the change is still listed, so a revert names it as "can't
+  restore … no backup (…)"). A backup failure is logged, never a tool error —
+  the edit already happened.
+- **Configuration** (#787): `config.yml` `undo: {enabled, max_file_bytes,
+  max_root_bytes}` (`config/undo.rs` owns the size grammar: bytes or
+  `B`/`KB`/`MB`/`GB`/`KiB`/`MiB`/`GiB`, 1 byte – 64 GiB, `0` rejected in
+  favor of `enabled: false`) deserializes into
+  `file_backup::BackupLimits`; `boot.rs` builds `FileBackups::with_backup_limits`
+  from it, and the definitions watcher re-applies it on every config change
+  via `FileBackups::set_limits` (a config that no longer parses keeps the
+  previous limits). Limits are read per record, so a change applies to the
+  next write; nothing already recorded is re-evaluated. `enabled: false`
+  stops recording (no manifest line at all — a later revert treats such a
+  file as "changed since"), while backups taken before stay restorable; a
+  revert that finds nothing left to restore while disabled fails with
+  "undo disabled" instead of an empty report. `skutter inspect config` shows
+  the effective block and its winning layer.
 - **Turns**: the executor runs each permission-graded/`rhai` call task under
   `file_backup::with_exec_seq(ToolExec.seq)`, so a change records the exact
   `(session, seq)` of its call and belongs to the turn of the session's last
