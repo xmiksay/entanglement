@@ -26,6 +26,8 @@
 //!   its persisted log — closes the one blind spot the four views above can't
 //!   reach, the per-session tool overlay (ADR-0149), which has no managed file
 //!   of its own.
+//! - [`commands`] (#733): the user slash commands (prompt templates) with the
+//!   layer + file each name resolved to, and any built-in clash that hides one.
 //! - [`modes`] (#560, ADR-0207 stage 6c): the four permission modes' resolved
 //!   rules (built-in + `config.yml` `modes:` tuning), limits, sandbox, and
 //!   per-tool outcome for a known roster — the replacement for the mask
@@ -39,6 +41,7 @@
 mod agents;
 mod aux_models;
 mod catalog_facts;
+mod commands;
 mod config;
 mod mcp;
 mod mcp_tokens;
@@ -50,6 +53,7 @@ mod tui;
 
 pub use agents::inspect_agents;
 pub use aux_models::inspect_aux_models;
+pub use commands::inspect_commands;
 pub use config::inspect_config;
 pub use mcp::inspect_mcp;
 pub use mcp_tokens::inspect_mcp_tokens;

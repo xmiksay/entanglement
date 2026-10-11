@@ -8,10 +8,18 @@
 //!
 //! Tab/Enter inserts the selected command (replacing the `/…` text with
 //! `/<command> `); Up/Down navigate; Esc or losing the `/` hides it.
+//!
+//! The popup also owns the live user-command handle (#733), so the roster it
+//! filters is always the built-ins plus whatever the definitions watcher last
+//! loaded — every other roster consumer (palette, whisper, `/help <cmd>`,
+//! submit) asks the popup for it.
+
+use std::sync::{Arc, PoisonError};
 
 use ratatui::widgets::ListState;
 
-use crate::tui::commands::{all_commands, filter_commands, Command};
+use crate::slash_commands::{CommandRegistry, LiveCommands, UserCommand};
+use crate::tui::commands::{all_commands, filter_in, Command};
 
 /// If the text immediately before the cursor is a `/`-prefixed token with no
 /// spaces after it, return the prefix (chars after `/`). Returns `None` for a
@@ -51,6 +59,8 @@ pub struct SlashPopup {
     prefix: String,
     matches: Vec<Command>,
     state: ListState,
+    /// `None` until the head injects it (and in unit tests): built-ins only.
+    user: Option<LiveCommands>,
 }
 
 impl SlashPopup {
@@ -60,7 +70,33 @@ impl SlashPopup {
             prefix: String::new(),
             matches: Vec::new(),
             state: ListState::default(),
+            user: None,
         }
+    }
+
+    pub fn set_user_commands(&mut self, live: LiveCommands) {
+        self.user = Some(live);
+    }
+
+    fn user_registry(&self) -> Arc<CommandRegistry> {
+        self.user
+            .as_ref()
+            .map(|live| live.read().unwrap_or_else(PoisonError::into_inner).clone())
+            .unwrap_or_default()
+    }
+
+    /// Built-ins first, then the live user commands (name-sorted). The
+    /// registry already dropped any user command named like a built-in.
+    pub fn roster(&self) -> Vec<Command> {
+        let mut roster = all_commands();
+        roster.extend(self.user_registry().iter().cloned().map(Command::User));
+        roster
+    }
+
+    /// Expand `text` when it invokes a user command: the command and the
+    /// prompt to send in place of `text`.
+    pub fn expand_user(&self, text: &str) -> Option<(Arc<UserCommand>, String)> {
+        self.user_registry().expand(text)
     }
 
     pub fn visible(&self) -> bool {
@@ -92,15 +128,15 @@ impl SlashPopup {
 
     /// Recompute from the input line up to the cursor. Shows the popup iff an
     /// active `/prefix` token is present. Empty prefix → all commands; a
-    /// non-empty prefix narrows via [`filter_commands`].
+    /// non-empty prefix narrows via [`filter_in`].
     pub fn update(&mut self, line_before_cursor: &str) {
         match active_slash_prefix(line_before_cursor) {
             Some(prefix) => {
                 self.prefix = prefix.to_string();
                 self.matches = if prefix.is_empty() {
-                    all_commands()
+                    self.roster()
                 } else {
-                    filter_commands(prefix)
+                    filter_in(self.roster(), prefix)
                 };
                 self.visible = !self.matches.is_empty();
                 self.state.select((!self.matches.is_empty()).then_some(0));
@@ -173,7 +209,7 @@ mod tests {
         assert!(names.contains(&"compact"), "names={names:?}");
         assert!(names.contains(&"continue"), "names={names:?}");
         // Every match's name or description contains "co" — case-insensitively,
-        // matching `filter_commands`' own lowercasing (`resume` matches on
+        // matching `filter_in`'s own lowercasing (`resume` matches on
         // "Continue a past session").
         for cmd in popup.matches() {
             let hit = cmd.name().to_lowercase().contains("co")
@@ -219,6 +255,33 @@ mod tests {
         // is > 2 long, one prev from index 1 wraps to the last.
         popup.select_prev();
         // After next+prev we're back at the same position (wrap is modular).
+    }
+
+    fn live_review() -> LiveCommands {
+        let registry: CommandRegistry = [UserCommand {
+            name: "review".into(),
+            description: "Review a file".into(),
+            argument_hint: Some("<file>".into()),
+            body: "Review $1".into(),
+            layer: entanglement_runtime::layers::Layer::Project,
+            source: "review.md".into(),
+        }]
+        .into_iter()
+        .collect();
+        Arc::new(std::sync::RwLock::new(Arc::new(registry)))
+    }
+
+    #[test]
+    fn user_commands_join_the_roster_and_filter() {
+        let mut popup = SlashPopup::new();
+        popup.set_user_commands(live_review());
+        assert_eq!(popup.roster().len(), all_commands().len() + 1);
+        popup.update("/rev");
+        let names: Vec<&str> = popup.matches().iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"review"), "names={names:?}");
+        let (_, prompt) = popup.expand_user("/review a.rs").unwrap();
+        assert_eq!(prompt, "Review a.rs");
+        assert!(popup.expand_user("/compact").is_none());
     }
 
     #[test]

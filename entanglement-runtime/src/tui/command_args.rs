@@ -90,6 +90,14 @@ impl Command {
                     .trim_end()
                     .to_string()
             }
+            // First line is the whisper's usage hint; the rest is `/help <cmd>`.
+            Command::User(c) => format!(
+                "{} — {}\n(user command, {}: {})",
+                c.usage(),
+                c.description,
+                c.layer.label(),
+                c.source
+            ),
             // Arg-less commands have nothing for clap to render; the static
             // description is the whole usage hint.
             _ => self.description().to_string(),

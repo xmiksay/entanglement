@@ -11,7 +11,7 @@ use tracing::debug;
 use super::actions::run_action;
 use super::slash_send::{
     run_bash_passthrough, send_compact, send_help_if_requested, send_name, send_pause, send_resume,
-    send_show, send_stop,
+    send_show, send_stop, send_user_command,
 };
 use crate::tui::app::App;
 
@@ -213,6 +213,9 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                     if app.execute_command(cmd) {
                         return Ok(true);
                     }
+                    return Ok(false);
+                }
+                if send_user_command(app, holly, &text).await {
                     return Ok(false);
                 }
             }

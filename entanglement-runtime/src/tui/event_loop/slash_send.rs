@@ -24,11 +24,7 @@ pub(super) async fn send_help_if_requested(
             .strip_prefix("/help")
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .and_then(|name| {
-                crate::tui::commands::all_commands()
-                    .into_iter()
-                    .find(|c| c.name() == name)
-            });
+            .and_then(|name| app.slash().roster().into_iter().find(|c| c.name() == name));
         if let Some(target) = target {
             let help = target.help_text();
             app.record_notice("help", help);
@@ -241,4 +237,32 @@ pub(super) async fn run_bash_passthrough(app: &mut App, command: &str) {
         Err(e) => format!("[bash error] {e:#}"),
     };
     app.record_bash_passthrough(command.to_string(), output);
+}
+
+/// Expand and send a user slash command (#733) as an ordinary `Prompt`.
+/// Returns `false` (nothing sent) when `text` names no user command, so an
+/// unknown `/word` still goes to the model as typed. The transcript shows a
+/// one-line notice naming the command's file, then the **expanded** prompt —
+/// the exact text the model receives and the session log replays, so a
+/// resumed session reads the same as the live one.
+pub(super) async fn send_user_command(app: &mut App, holly: &Holly, text: &str) -> bool {
+    let Some((command, prompt)) = app.slash().expand_user(text) else {
+        return false;
+    };
+    app.record_notice(
+        &format!("/{}", command.name),
+        format!(
+            "expanded from {} ({})",
+            command.source,
+            command.layer.label()
+        ),
+    );
+    app.record_user_message(prompt.clone());
+    if let Err(e) = holly
+        .send(InMsg::prompt(app.active_session_id().clone(), prompt))
+        .await
+    {
+        tracing::debug!("Failed to send user command prompt: {e}");
+    }
+    true
 }

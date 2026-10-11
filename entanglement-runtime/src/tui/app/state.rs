@@ -206,6 +206,8 @@ impl App {
         if self.command_palette.visible() {
             self.command_palette.hide();
         } else {
+            let roster = self.slash.roster();
+            self.command_palette.set_commands(roster);
             self.command_palette.show();
         }
         self.mark_dirty();

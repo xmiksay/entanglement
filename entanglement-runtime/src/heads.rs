@@ -10,12 +10,12 @@ use entanglement_core::{Holly, IdKind, InMsg, OutEvent, SessionId};
 use entanglement_provider::Catalog;
 
 use crate::args::{Cli, Cmd};
-use crate::config;
 use crate::pipe::pipe;
 use crate::run::run_one;
 use crate::services::Head;
 use crate::session_store::{self, LaunchMode};
 use crate::tui::tui;
+use crate::{config, slash_commands};
 
 /// Run the head `cli.cmd` selects (`None` = bare `skutter`: the TUI with no
 /// prompt, an implicit one-shot `run` with one). The engine-free subcommands
@@ -85,7 +85,8 @@ pub(crate) async fn dispatch(
                     "--agent is ignored with --resume: a resumed session's agent is fixed"
                 );
             }
-            let prompt = prompt.join(" ");
+            // `/name args` expands a user slash command, as in the TUI (#733).
+            let prompt = slash_commands::expand_or_literal(&head.live_commands, prompt.join(" "));
             run_one(holly, &session_id, &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => {
@@ -142,7 +143,8 @@ pub(crate) async fn dispatch(
                 .await
             } else {
                 start_fresh(holly, &session_id, agent, launch.mode).await?;
-                let prompt = cli.prompt.join(" ");
+                let prompt =
+                    slash_commands::expand_or_literal(&head.live_commands, cli.prompt.join(" "));
                 run_one(holly, &session_id, &prompt, "text").await
             }
         }
@@ -291,6 +293,7 @@ async fn launch_tui(
         head.mcp,
         head.advertising_state,
         launch,
+        head.live_commands,
     )
     .await
 }

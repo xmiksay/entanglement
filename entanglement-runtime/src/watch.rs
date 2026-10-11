@@ -1,6 +1,6 @@
 //! Runtime-side file watcher for live-reloading definition dirs + managed
 //! files (#329). Watches the same directories `layers.rs` resolves for
-//! agents/skills, plus the provider catalog, user config, and the three
+//! agents/skills/commands, plus the provider catalog, user config, and the three
 //! managed files (grants/agent-models/.env). On a debounced change it re-runs
 //! the relevant loaders and swaps the result into the **runtime's own**
 //! mirrors of the profile/skill registries — never core's `EngineConfig`,
@@ -52,6 +52,9 @@ const MANAGED_FILE_ENVS: &[&str] = &[
 pub struct LiveDefinitions {
     pub agents: Arc<RwLock<AgentCatalog>>,
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    /// User slash commands (#733) — read by the heads on every use, so a
+    /// reload is live in the very next popup or `/name` invocation.
+    pub commands: crate::slash_commands::LiveCommands,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
     pub grants: Arc<DefaultGrantStore>,
     /// The MCP capability index (#426), captured once at startup like the
@@ -276,7 +279,7 @@ pub(crate) fn spawn_debounced_watcher(
     }))
 }
 
-/// The resolved set of paths to watch: every candidate agent/skill dir
+/// The resolved set of paths to watch: every candidate agent/skill/command dir
 /// `layers.rs` would read, plus `${config_dir}/entanglement/` (covers
 /// providers.yml, config.yml, grants.yml, agent-models.yml,
 /// agent-generation.yml, aux-models.yml, mcp-tokens.yml, extra-roots.yml, .env
@@ -293,6 +296,7 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
     for (kind, env) in [
         ("agents", "ENTANGLEMENT_AGENTS_DIR"),
         ("skills", "ENTANGLEMENT_SKILLS_DIR"),
+        ("commands", crate::slash_commands::COMMANDS_DIR_ENV),
     ] {
         let env_override = std::env::var_os(env).map(PathBuf::from);
         for (_, dir, _) in
@@ -333,6 +337,7 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
 /// changed, so every call here is expected to produce a real notice.
 fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = skills::load_registry(cwd)?;
+    let new_commands = crate::slash_commands::load_registry(cwd)?;
     let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
     prompt_ctx.skills = new_skills.disclosures();
     let mut new_profiles =
@@ -350,12 +355,14 @@ fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
 
     let agent_count = new_profiles.iter().count();
     let skill_count = new_skills.disclosures().len();
+    let command_count = new_commands.len();
     *live.skills.write().unwrap() = Arc::new(new_skills);
+    *live.commands.write().unwrap() = Arc::new(new_commands);
     *live.agents.write().unwrap() = new_profiles;
 
     Ok(format!(
-        "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) — \
-         new sessions and the next agent switch see the update"
+        "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s), \
+         {command_count} command(s) — new sessions see the update"
     ))
 }
 
@@ -470,6 +477,16 @@ mod tests {
             definitions_changed(&fp2, &fp3),
             "removing a definition is a change"
         );
+
+        // A slash-command file under a foreign dir is a definition too (#733).
+        let commands = cwd.path().join(".claude").join("commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::write(commands.join("review.md"), "Review $1").unwrap();
+        let fp4 = fingerprint(cwd.path(), &fp3);
+        assert!(
+            definitions_changed(&fp3, &fp4),
+            "adding a command file is a change"
+        );
     }
 
     /// A debounce window generous enough that five back-to-back synchronous
@@ -558,6 +575,9 @@ mod tests {
         // The project `.entanglement` dir is always a candidate, so the set is
         // never empty even on a bare tempdir with no home/config layers.
         assert!(paths.contains(&dir.path().join(".entanglement")));
+        // User slash commands live-reload too (#733), opencode's dir included.
+        assert!(paths.contains(&dir.path().join(".entanglement").join("commands")));
+        assert!(paths.contains(&dir.path().join(".opencode").join("command")));
         let mut sorted = paths.clone();
         sorted.sort();
         sorted.dedup();

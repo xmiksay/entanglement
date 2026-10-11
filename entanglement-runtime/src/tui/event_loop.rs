@@ -1291,4 +1291,62 @@ mod tests {
             "Ctrl+B ? opens help under the new leader"
         );
     }
+
+    /// #733: Enter on `/review a.rs` sends the expanded template as an
+    /// ordinary prompt and shows it (after a provenance notice); a built-in
+    /// name still dispatches the built-in, and an unknown `/word` goes out
+    /// as typed.
+    #[tokio::test]
+    async fn submitting_a_user_command_sends_the_expanded_prompt() {
+        use entanglement_runtime::slash_commands::{CommandRegistry, UserCommand};
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let registry: CommandRegistry = [UserCommand {
+            name: "review".into(),
+            description: "Review a file".into(),
+            argument_hint: None,
+            body: "Review $1 carefully".into(),
+            layer: entanglement_runtime::layers::Layer::Project,
+            source: "review.md".into(),
+        }]
+        .into_iter()
+        .collect();
+        app.slash_mut()
+            .set_user_commands(std::sync::Arc::new(std::sync::RwLock::new(
+                std::sync::Arc::new(registry),
+            )));
+        let holly = engine();
+        let mut inbound = holly.subscribe_inbound();
+
+        app.set_input_text("/review a.rs".into());
+        super::normal_keys::submit(&mut app, &holly).await.unwrap();
+
+        let sent = loop {
+            let msg = inbound.recv().await.unwrap();
+            if matches!(msg, InMsg::Prompt { .. }) {
+                break msg;
+            }
+        };
+        assert_eq!(sent, InMsg::prompt(sid.clone(), "Review a.rs carefully"));
+        let user_texts: Vec<&str> = app
+            .transcript()
+            .iter()
+            .filter_map(|e| match e {
+                TranscriptEntry::User { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(user_texts, vec!["Review a.rs carefully"]);
+
+        // An unknown `/word` is not a user command: sent literally.
+        app.set_input_text("/nope x".into());
+        super::normal_keys::submit(&mut app, &holly).await.unwrap();
+        let sent = loop {
+            let msg = inbound.recv().await.unwrap();
+            if matches!(msg, InMsg::Prompt { .. }) {
+                break msg;
+            }
+        };
+        assert_eq!(sent, InMsg::prompt(sid.clone(), "/nope x"));
+    }
 }

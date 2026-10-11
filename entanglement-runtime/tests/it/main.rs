@@ -89,6 +89,7 @@ mod serve;
 #[cfg(feature = "provider")]
 mod session_title;
 mod skill_posture;
+mod slash_commands;
 mod spawn_prompt_persistence;
 mod state_dir;
 mod stop_abort;

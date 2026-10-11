@@ -88,53 +88,15 @@ fn discover_dir(
     Ok(())
 }
 
-/// Recursively collect `SKILL.md` paths under `dir`. `seen` holds canonicalized
-/// paths of already-visited files *and* directories: it dedupes symlinked
-/// duplicate files and breaks symlink directory cycles. `std::fs::metadata`
-/// follows symlinks so a linked directory is still traversed once.
+/// Recursively collect `SKILL.md` paths under `dir` — the shared
+/// [`crate::layers::walk_files`] walker (symlink dedupe + cycle break)
+/// filtered to the marker file.
 pub(super) fn walk(
     dir: &Path,
     found: &mut Vec<PathBuf>,
     seen: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("reading skills dir {}", dir.display()))?;
-    let mut subdirs: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let path = entry
-            .with_context(|| format!("reading an entry under {}", dir.display()))?
-            .path();
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            // A broken symlink (or a racing removal) is skipped, not fatal — but
-            // no longer silent (#186): a dangling link to a skill dir would drop
-            // the skill with zero signal, so log it at `warn!`.
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "skipping unreadable skills entry (broken symlink or racing removal)",
-                );
-                continue;
-            }
-        };
-        if meta.is_dir() {
-            subdirs.push(path);
-        } else if meta.is_file() && path.file_name().and_then(|n| n.to_str()) == Some(SKILL_FILE) {
-            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if seen.insert(canon) {
-                found.push(path);
-            }
-        }
-    }
-    subdirs.sort();
-    for sub in subdirs {
-        let canon = std::fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
-        // A directory already seen (a symlink pointing back into the tree) is
-        // not re-entered, so a cycle cannot loop forever.
-        if seen.insert(canon) {
-            walk(&sub, found, seen)?;
-        }
-    }
-    Ok(())
+    crate::layers::walk_files(dir, found, seen, &|p| {
+        p.file_name().and_then(|n| n.to_str()) == Some(SKILL_FILE)
+    })
 }

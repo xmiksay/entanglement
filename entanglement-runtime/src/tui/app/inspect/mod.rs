@@ -1,6 +1,7 @@
-//! In-session inspection overlay state (#214, drill-down #331): a three-tab
+//! In-session inspection overlay state (#214, drill-down #331): a four-tab
 //! read-only view over the **active session's** resolved prompt / agent registry
-//! / skill registry — the same data `skutter inspect prompt|agents|skills`
+//! / skill registry / slash commands — the same data `skutter inspect
+//! prompt|agents|skills|commands`
 //! exposes on the CLI, but reachable mid-session via `/inspect` without leaving
 //! the TUI.
 //!
@@ -16,23 +17,31 @@ use crate::inspect::{InspectItem, InspectListTab};
 
 use super::App;
 
-/// The three inspection tabs, in display order.
+/// The inspection tabs, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InspectTab {
     #[default]
     Prompt,
     Agents,
     Skills,
+    /// User slash commands (#733) — scroll-only, like Prompt.
+    Commands,
 }
 
 impl InspectTab {
-    const ORDER: [InspectTab; 3] = [InspectTab::Prompt, InspectTab::Agents, InspectTab::Skills];
+    pub(crate) const ORDER: [InspectTab; 4] = [
+        InspectTab::Prompt,
+        InspectTab::Agents,
+        InspectTab::Skills,
+        InspectTab::Commands,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             InspectTab::Prompt => "Prompt",
             InspectTab::Agents => "Agents",
             InspectTab::Skills => "Skills",
+            InspectTab::Commands => "Commands",
         }
     }
 
@@ -53,7 +62,7 @@ impl InspectTab {
     /// overlay renderer can pick the level-appropriate hint line.
     pub fn list_tab(self) -> Option<InspectListTab> {
         match self {
-            InspectTab::Prompt => None,
+            InspectTab::Prompt | InspectTab::Commands => None,
             InspectTab::Agents => Some(InspectListTab::Agents),
             InspectTab::Skills => Some(InspectListTab::Skills),
         }
@@ -82,6 +91,7 @@ pub struct InspectState {
     prompt: String,
     agents: String,
     skills: String,
+    commands: String,
     /// Two-level list rows per tab (#331). Empty for the Prompt tab.
     agent_items: Vec<InspectItem>,
     skill_items: Vec<InspectItem>,
@@ -104,12 +114,13 @@ impl InspectState {
             InspectTab::Prompt => &self.prompt,
             InspectTab::Agents => &self.agents,
             InspectTab::Skills => &self.skills,
+            InspectTab::Commands => &self.commands,
         }
     }
 
     fn items(&self) -> &[InspectItem] {
         match self.tab {
-            InspectTab::Prompt => &[],
+            InspectTab::Prompt | InspectTab::Commands => &[],
             InspectTab::Agents => &self.agent_items,
             InspectTab::Skills => &self.skill_items,
         }
@@ -167,6 +178,7 @@ impl App {
             self.inspect.prompt = reports.prompt;
             self.inspect.agents = reports.agents;
             self.inspect.skills = reports.skills;
+            self.inspect.commands = reports.commands;
             self.inspect.agent_items = reports.agent_items;
             self.inspect.skill_items = reports.skill_items;
             self.inspect.tab = InspectTab::Prompt;

@@ -38,6 +38,10 @@ pub enum Command {
     AuxModel,
     Undo,
     Rewind,
+    /// A user-defined prompt template (#733). Never in [`all_commands`]: the
+    /// TUI appends the live registry's entries via
+    /// [`crate::tui::slash_popup::SlashPopup::roster`].
+    User(std::sync::Arc<crate::slash_commands::UserCommand>),
 }
 
 impl Command {
@@ -72,6 +76,7 @@ impl Command {
             Command::AuxModel => "aux-model",
             Command::Undo => "undo",
             Command::Rewind => "rewind",
+            Command::User(c) => &c.name,
         }
     }
 
@@ -128,6 +133,7 @@ impl Command {
             Command::Rewind => {
                 "Revert every file edit after turn <N> (bare = list turns with edits; not bash changes)"
             }
+            Command::User(c) => &c.description,
         }
     }
 
@@ -271,9 +277,11 @@ pub fn parse_command(input: &str) -> Option<Command> {
         .find(|cmd| cmd.name() == command_part)
 }
 
-pub fn filter_commands(query: &str) -> Vec<Command> {
+/// Name-or-description substring match over a roster — the built-ins plus
+/// the live user commands the popup, palette and whisper match against (#733).
+pub fn filter_in(commands: Vec<Command>, query: &str) -> Vec<Command> {
     let query = query.to_lowercase();
-    all_commands()
+    commands
         .into_iter()
         .filter(|cmd| {
             let name = cmd.name().to_lowercase();
@@ -372,21 +380,38 @@ mod tests {
 
     #[test]
     fn test_filter_commands_empty() {
-        let filtered = filter_commands("");
+        let filtered = filter_in(all_commands(), "");
         assert_eq!(filtered.len(), all_commands().len());
     }
 
     #[test]
     fn test_filter_commands_by_name() {
-        let filtered = filter_commands("hel");
+        let filtered = filter_in(all_commands(), "hel");
         assert!(filtered.iter().any(|c| matches!(c, Command::Help)));
         assert!(!filtered.iter().any(|c| matches!(c, Command::New)));
     }
 
     #[test]
     fn test_filter_commands_by_description() {
-        let filtered = filter_commands("session");
+        let filtered = filter_in(all_commands(), "session");
         assert!(filtered.iter().any(|c| matches!(c, Command::New)));
+    }
+
+    /// The runtime refuses a user command under any built-in name (#733);
+    /// that list must be exactly this roster or a clash slips through.
+    #[test]
+    fn reserved_names_match_the_builtin_roster() {
+        let mut builtins: Vec<String> = all_commands()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        let mut reserved: Vec<String> = crate::slash_commands::RESERVED_NAMES
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        builtins.sort();
+        reserved.sort();
+        assert_eq!(builtins, reserved);
     }
 
     #[test]
@@ -484,11 +509,11 @@ mod tests {
             .iter()
             .any(|c| matches!(c, Command::Continue)));
         assert!(all_commands().iter().any(|c| matches!(c, Command::Stop)));
-        // `filter_commands` is what the palette uses.
-        assert!(filter_commands("pause")
+        // `filter_in` is what the palette uses.
+        assert!(filter_in(all_commands(), "pause")
             .iter()
             .any(|c| matches!(c, Command::Pause)));
-        assert!(filter_commands("stop")
+        assert!(filter_in(all_commands(), "stop")
             .iter()
             .any(|c| matches!(c, Command::Stop)));
     }
