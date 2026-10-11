@@ -19,6 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::layers::UserLayer;
 use crate::session_store::SessionStore;
 use crate::skills;
 use crate::system_prompt::PromptContext;
@@ -86,14 +87,22 @@ pub enum InspectListTab {
 /// The two-level list rows for the Agents/Skills tabs are resolved here too:
 /// each registry is walked once for the flat table *and* the list items, so a
 /// single registry pass drives both presentations.
-pub fn tui_reports(cwd: &Path, sessions: &SessionStore, agent: &str) -> InspectReports {
-    let (agent_items, agent_summary) = tui_agent_views(cwd, sessions, agent);
-    let (skill_items, skill_summary) = tui_skill_views(cwd);
+///
+/// `user` is the user definitions layer agents, skills and commands resolve
+/// from — [`UserLayer::FromEnv`] in the live TUI, an empty dir in tests.
+pub fn tui_reports(
+    cwd: &Path,
+    user: &UserLayer,
+    sessions: &SessionStore,
+    agent: &str,
+) -> InspectReports {
+    let (agent_items, agent_summary) = tui_agent_views(cwd, user, sessions, agent);
+    let (skill_items, skill_summary) = tui_skill_views(cwd, user);
     InspectReports {
-        prompt: tui_prompt(cwd, sessions, agent),
+        prompt: tui_prompt(cwd, user, sessions, agent),
         agents: agent_summary,
         skills: skill_summary,
-        commands: tui_commands(cwd),
+        commands: tui_commands(cwd, user),
         agent_items,
         skill_items,
     }
@@ -104,12 +113,18 @@ pub fn tui_reports(cwd: &Path, sessions: &SessionStore, agent: &str) -> InspectR
 /// and the CLI agree byte-for-byte. `None` if no agent of that name resolves.
 /// The active `agent` is not needed here: agent resolution is name-driven and
 /// does not depend on which agent the live session is running.
-pub fn agent_detail(cwd: &Path, sessions: &SessionStore, name: &str) -> Option<String> {
+pub fn agent_detail(
+    cwd: &Path,
+    user: &UserLayer,
+    sessions: &SessionStore,
+    name: &str,
+) -> Option<String> {
     let build = || -> Result<Option<String>> {
-        let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
+        let skill_registry =
+            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
         let mut ctx = PromptContext::load_with(cwd, sessions);
         ctx.skills = skill_registry.disclosures();
-        let resolved = crate::agents::resolve_registry(cwd, &ctx, &skill_registry)
+        let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
             .context("resolving agent registry")?;
         Ok(resolved
             .iter()
@@ -124,9 +139,10 @@ pub fn agent_detail(cwd: &Path, sessions: &SessionStore, name: &str) -> Option<S
 /// Render the detail for one skill by name (#331) — the same
 /// `inspect skills <name>` dry-run output the CLI prints. `None` if no skill of
 /// that name resolves. Skill resolution does not need `agent`, so it is omitted.
-pub fn skill_detail(cwd: &Path, name: &str) -> Option<String> {
+pub fn skill_detail(cwd: &Path, user: &UserLayer, name: &str) -> Option<String> {
     let build = || -> Result<Option<String>> {
-        let resolved = skills::resolve_registry(cwd).context("resolving skill registry")?;
+        let resolved =
+            skills::resolve_registry_in(cwd, user).context("resolving skill registry")?;
         Ok(resolved
             .iter()
             .find(|r| r.meta.name == name)
@@ -137,12 +153,13 @@ pub fn skill_detail(cwd: &Path, name: &str) -> Option<String> {
 
 /// The active agent's assembled prompt, always broken into parts (the `--parts`
 /// view) — the breakdown is what makes a wrong brief/preamble pick visible.
-fn tui_prompt(cwd: &Path, sessions: &SessionStore, agent: &str) -> String {
+fn tui_prompt(cwd: &Path, user: &UserLayer, sessions: &SessionStore, agent: &str) -> String {
     let build = || -> Result<String> {
-        let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
+        let skill_registry =
+            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
         let mut ctx = PromptContext::load_with(cwd, sessions);
         ctx.skills = skill_registry.disclosures();
-        let report = crate::agents::prompt_report(cwd, agent, &ctx, &skill_registry)
+        let report = crate::agents::prompt_report_in(cwd, user, agent, &ctx, &skill_registry)
             .context("assembling agent prompt")?
             .with_context(|| format!("unknown agent `{agent}` (no matching definition found)"))?;
         Ok(render_prompt_parts(agent, &ctx, &report))
@@ -154,12 +171,18 @@ fn tui_prompt(cwd: &Path, sessions: &SessionStore, agent: &str) -> String {
 /// the flat table (with the active-agent detail appended, for the not-yet-
 /// drilled-in summary) and the selectable list rows. Returning both from one
 /// registry pass avoids a second walk when the user drills into the list.
-fn tui_agent_views(cwd: &Path, sessions: &SessionStore, agent: &str) -> (Vec<InspectItem>, String) {
+fn tui_agent_views(
+    cwd: &Path,
+    user: &UserLayer,
+    sessions: &SessionStore,
+    agent: &str,
+) -> (Vec<InspectItem>, String) {
     let build = || -> Result<(Vec<InspectItem>, String)> {
-        let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
+        let skill_registry =
+            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
         let mut ctx = PromptContext::load_with(cwd, sessions);
         ctx.skills = skill_registry.disclosures();
-        let resolved = crate::agents::resolve_registry(cwd, &ctx, &skill_registry)
+        let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
             .context("resolving agent registry")?;
 
         // List rows: name + one-line description + winning layer.
@@ -186,18 +209,19 @@ fn tui_agent_views(cwd: &Path, sessions: &SessionStore, agent: &str) -> (Vec<Ins
 }
 
 /// The user slash-command table (#733) — the same `inspect commands` output.
-fn tui_commands(cwd: &Path) -> String {
-    crate::slash_commands::resolve_registry(cwd)
+fn tui_commands(cwd: &Path, user: &UserLayer) -> String {
+    crate::slash_commands::resolve_registry_in(cwd, user)
         .map(|resolved| render_command_table(&resolved))
         .unwrap_or_else(|e| format!("error: {e:#}"))
 }
 
 /// Resolve the skill registry once and derive both presentations (#331): the
 /// flat summary (disclosures + full table) and the selectable list rows.
-fn tui_skill_views(cwd: &Path) -> (Vec<InspectItem>, String) {
+fn tui_skill_views(cwd: &Path, user: &UserLayer) -> (Vec<InspectItem>, String) {
     let build = || -> Result<(Vec<InspectItem>, String)> {
-        let registry = skills::load_registry(cwd).context("loading skill definitions")?;
-        let resolved = skills::resolve_registry(cwd).context("resolving skill registry")?;
+        let registry = skills::load_registry_in(cwd, user).context("loading skill definitions")?;
+        let resolved =
+            skills::resolve_registry_in(cwd, user).context("resolving skill registry")?;
 
         // List rows: name + one-line description + winning layer. A `user_only`
         // skill is marked so the list signals it was withheld from the model.
@@ -236,12 +260,13 @@ mod tests {
     fn detail_matches_cli_renderer_for_built_in_agent_and_skill() {
         // The built-in `general` agent / `rhai` skill are always present
         // (embedded), so this is cwd-independent — but resolve against a temp
-        // root with no overrides so a user-layer definition can't perturb it.
+        // root and an empty user layer so a user definition can't perturb it.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let user = UserLayer::Dir(root.join("no-user"));
 
         let sessions = SessionStore::at(root.join("sessions"));
-        let agent = agent_detail(root, &sessions, "general");
+        let agent = agent_detail(root, &user, &sessions, "general");
         assert!(
             agent
                 .as_ref()
@@ -249,7 +274,7 @@ mod tests {
             "agent_detail should render the built-in `general` profile, got: {agent:?}"
         );
 
-        let skill = skill_detail(root, "rhai");
+        let skill = skill_detail(root, &user, "rhai");
         assert!(
             skill
                 .as_ref()
@@ -265,7 +290,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let sessions = SessionStore::at(root.join("sessions"));
-        assert_eq!(agent_detail(root, &sessions, "no-such-agent"), None);
-        assert_eq!(skill_detail(root, "no-such-skill"), None);
+        let user = UserLayer::Dir(root.join("no-user"));
+        assert_eq!(agent_detail(root, &user, &sessions, "no-such-agent"), None);
+        assert_eq!(skill_detail(root, &user, "no-such-skill"), None);
     }
 }

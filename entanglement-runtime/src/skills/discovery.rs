@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::SkillLayer;
-use crate::layers::Strictness;
+use crate::layers::{Strictness, UserLayer};
 
 /// Embedded stock skills, parsed through the same loader as user/project files.
 /// `(filename, contents)` — the filename only feeds parse-error messages; the
@@ -38,7 +38,7 @@ pub(super) struct RawSkill {
 /// `name` collision, so consumers keep the last match. A missing dir is fine; an
 /// unreadable dir or file is an error. A missing *explicit*
 /// `ENTANGLEMENT_SKILLS_DIR` override is warned by [`crate::layers::load_layers`].
-pub(super) fn discover(root: &Path) -> Result<Vec<RawSkill>> {
+pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawSkill>> {
     let built_ins: Vec<RawSkill> = BUILT_INS
         .iter()
         .map(|(file, contents)| RawSkill {
@@ -51,7 +51,14 @@ pub(super) fn discover(root: &Path) -> Result<Vec<RawSkill>> {
             content: (*contents).to_string(),
         })
         .collect();
-    crate::layers::load_layers(root, "skills", SKILLS_DIR_ENV, built_ins, discover_dir)
+    crate::layers::load_layers(
+        root,
+        "skills",
+        SKILLS_DIR_ENV,
+        user,
+        built_ins,
+        discover_dir,
+    )
 }
 
 /// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to

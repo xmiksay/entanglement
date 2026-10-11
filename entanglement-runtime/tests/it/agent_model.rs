@@ -115,12 +115,9 @@ fn engine_config(model_arg: &'static str) -> EngineConfig {
 /// — this test only cares about `agent`'s `model` validation, not what gets
 /// advertised.
 fn load_config() -> entanglement_runtime::config::Config {
-    let _env = crate::env_lock();
+    // No user layer: never the real `config.yml` of whoever runs the test.
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("ENTANGLEMENT_CONFIG_FILE", dir.path().join("absent.yml"));
-    let config = entanglement_runtime::config::Config::load(dir.path()).expect("config loads");
-    std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
-    config
+    entanglement_runtime::config::Config::load_with(dir.path(), None).expect("config loads")
 }
 
 fn spawn_executor(

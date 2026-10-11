@@ -20,7 +20,7 @@ impl App {
     /// hardcoded primary-profile roster.
     #[cfg(test)]
     pub(crate) fn new_for_test(initial_session: SessionId) -> Self {
-        Self::new(
+        let mut app = Self::new(
             initial_session,
             Catalog::builtin(),
             vec![
@@ -41,7 +41,11 @@ impl App {
                 "write".to_string(),
                 "bash".to_string(),
             ],
-        )
+        );
+        // Never the developer's real user agents/skills/commands (#773).
+        app.inspect.user_layer =
+            crate::layers::UserLayer::Dir("/nonexistent-entanglement-user-layer".into());
+        app
     }
 
     /// `entry_profiles` are every registered agent (ADR-0207 §4 retires the

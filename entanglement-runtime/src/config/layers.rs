@@ -4,6 +4,7 @@
 //! the first-run user-file scaffold (#219). Split out of `mod.rs` (#745),
 //! which keeps the schema ([`super::Config`]) and its validation.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -52,16 +53,18 @@ pub(super) struct RawLayer {
 /// Enumerate the present config layers in precedence order — embedded defaults,
 /// then the user file, then the project file. Missing files are skipped; an
 /// unreadable or malformed file is an error.
-pub(super) fn discover(root: &Path) -> Result<Vec<RawLayer>> {
+/// `user_file` is the user layer's path — production passes
+/// [`user_config_path`]; `None` reads no user layer.
+pub(super) fn discover(root: &Path, user_file: Option<&Path>) -> Result<Vec<RawLayer>> {
     let mut layers = vec![default_layer()];
-    if let Some(path) = user_config_path() {
-        migrate_permissions::migrate_if_legacy(&path).with_context(|| {
+    if let Some(path) = user_file {
+        migrate_permissions::migrate_if_legacy(path).with_context(|| {
             format!(
                 "migrating legacy `permissions:` shape in {}",
                 path.display()
             )
         })?;
-        read_layer(ConfigLayer::User, &path, &mut layers)?;
+        read_layer(ConfigLayer::User, path, &mut layers)?;
     }
     let project_path = root.join(".entanglement").join("config.yml");
     migrate_permissions::migrate_if_legacy(&project_path).with_context(|| {
@@ -168,10 +171,18 @@ pub(super) fn merge_value(base: Value, over: Value) -> Value {
 /// The user config path: `${config_dir}/entanglement/config.yml`, overridable via
 /// `ENTANGLEMENT_CONFIG_FILE` (which tests point at a temp file).
 pub fn user_config_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(CONFIG_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join("config.yml"))
+    resolve_user_config_path(|name| std::env::var_os(name), crate::user_dirs::config_dir)
+}
+
+/// [`user_config_path`] over an injected env lookup and config dir, so the
+/// precedence is unit-testable without mutating process env (#773).
+pub(super) fn resolve_user_config_path(
+    env: impl Fn(&str) -> Option<OsString>,
+    config_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    env(CONFIG_FILE_ENV)
+        .map(PathBuf::from)
+        .or_else(|| config_dir().map(|d| d.join("entanglement").join("config.yml")))
 }
 
 /// First-run scaffold (#219): if the user config file does not exist yet, write a
@@ -184,9 +195,11 @@ pub fn user_config_path() -> Option<PathBuf> {
 /// already present (or the config dir is unknown). Callers treat a write error as
 /// non-fatal; startup must not fail because the home directory is read-only.
 pub fn scaffold_if_missing() -> Result<Option<PathBuf>> {
-    let Some(path) = user_config_path() else {
-        return Ok(None);
-    };
+    user_config_path().map_or(Ok(None), scaffold_at)
+}
+
+/// [`scaffold_if_missing`] at an explicit `path`.
+pub(super) fn scaffold_at(path: PathBuf) -> Result<Option<PathBuf>> {
     if path.exists() {
         return Ok(None);
     }
@@ -197,4 +210,36 @@ pub fn scaffold_if_missing() -> Result<Option<PathBuf>> {
     std::fs::write(&path, TEMPLATE_YML)
         .with_context(|| format!("writing default config {}", path.display()))?;
     Ok(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_env_override_wins_over_the_config_dir() {
+        let path = resolve_user_config_path(
+            |n| (n == CONFIG_FILE_ENV).then(|| "/srv/config.yml".into()),
+            || panic!("the default must not be consulted"),
+        );
+        assert_eq!(path, Some(PathBuf::from("/srv/config.yml")));
+    }
+
+    /// ADR-0213: `ENTANGLEMENT_STATE_DIR` relocates managed files only, never
+    /// this hand-edited input.
+    #[test]
+    fn the_state_dir_never_moves_config_yml() {
+        let path = resolve_user_config_path(
+            |n| (n == super::super::state_dir::STATE_DIR_ENV).then(|| "/state".into()),
+            || Some(PathBuf::from("/cfg")),
+        );
+        assert_eq!(path, Some(PathBuf::from("/cfg/entanglement/config.yml")));
+    }
+
+    #[test]
+    fn unset_falls_back_to_the_config_dir() {
+        let path = resolve_user_config_path(|_| None, || Some(PathBuf::from("/cfg")));
+        assert_eq!(path, Some(PathBuf::from("/cfg/entanglement/config.yml")));
+        assert_eq!(resolve_user_config_path(|_| None, || None), None);
+    }
 }

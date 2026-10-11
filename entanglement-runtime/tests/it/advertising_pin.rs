@@ -98,12 +98,9 @@ pub struct Harness {
 }
 
 fn load_config() -> Config {
-    let _env = crate::env_lock();
+    // No user layer: never the real `config.yml` of whoever runs the test.
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("ENTANGLEMENT_CONFIG_FILE", dir.path().join("absent.yml"));
-    let config = Config::load(dir.path()).expect("config loads");
-    std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
-    config
+    Config::load_with(dir.path(), None).expect("config loads")
 }
 
 pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness {

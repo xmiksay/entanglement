@@ -24,12 +24,24 @@ fn fallback_directive(verbose: bool) -> &'static str {
 }
 
 /// Builds the log filter: `RUST_LOG` if present and valid, else the
-/// verbosity-derived default. `try_from_default_env` keeps `trace` and
-/// per-target directives reachable, which the plain `--verbose` string never
-/// allowed (issue #187).
+/// verbosity-derived default. Parsing `RUST_LOG` as directives keeps `trace`
+/// and per-target directives reachable, which the plain `--verbose` string
+/// never allowed (issue #187).
 fn build_filter(verbose: bool) -> EnvFilter {
-    EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(fallback_directive(verbose)))
+    filter_from(
+        std::env::var(EnvFilter::DEFAULT_ENV).ok().as_deref(),
+        verbose,
+    )
+}
+
+/// [`build_filter`] over an injected `RUST_LOG` value, so the precedence is
+/// unit-testable without mutating process env (#773). Mirrors
+/// `EnvFilter::try_from_default_env`: an unset, non-UTF-8 or unparseable
+/// value falls back.
+fn filter_from(rust_log: Option<&str>, verbose: bool) -> EnvFilter {
+    rust_log
+        .and_then(|directives| EnvFilter::try_new(directives).ok())
+        .unwrap_or_else(|| EnvFilter::new(fallback_directive(verbose)))
 }
 
 /// Initializes the global tracing subscriber.
@@ -57,7 +69,7 @@ pub fn init(verbose: bool, tui: bool) -> Result<()> {
 /// The TUI log file: `<data_dir>/entanglement/logs/skutter.log`, creating the
 /// directory if it doesn't exist.
 fn log_file_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir().context("Failed to determine data directory")?;
+    let data_dir = crate::user_dirs::data_dir().context("Failed to determine data directory")?;
     let dir = data_dir.join("entanglement").join("logs");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating log directory {}", dir.display()))?;
@@ -88,22 +100,14 @@ mod tests {
 
     #[test]
     fn rust_log_overrides_verbose_and_reaches_trace() {
-        // `RUST_LOG` is process-global; keep the whole set/assert/restore in one
-        // test so no other test races on it.
-        let prev = std::env::var("RUST_LOG").ok();
-
-        std::env::set_var("RUST_LOG", "entanglement_core::host=trace");
         // Even with verbose=false (which would otherwise be `warn`), the env
         // directive wins and a trace target is reachable.
-        assert!(build_filter(false).to_string().contains("trace"));
+        let filter = filter_from(Some("entanglement_core::host=trace"), false);
+        assert!(filter.to_string().contains("trace"));
 
-        std::env::remove_var("RUST_LOG");
-        assert_eq!(build_filter(false).to_string(), "warn");
-        assert_eq!(build_filter(true).to_string(), "debug");
-
-        match prev {
-            Some(v) => std::env::set_var("RUST_LOG", v),
-            None => std::env::remove_var("RUST_LOG"),
-        }
+        assert_eq!(filter_from(None, false).to_string(), "warn");
+        assert_eq!(filter_from(None, true).to_string(), "debug");
+        // An unparseable value falls back rather than failing startup.
+        assert_eq!(filter_from(Some("=[bad"), true).to_string(), "debug");
     }
 }

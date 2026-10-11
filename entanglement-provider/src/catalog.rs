@@ -305,7 +305,12 @@ impl Catalog {
     /// that does not exist — the default `${config_dir}` path being absent stays
     /// the normal "no user override" case (#204).
     pub fn load() -> Result<Catalog> {
-        match providers_file_path() {
+        Catalog::load_located(providers_file_path())
+    }
+
+    /// [`load`](Self::load) for an already-resolved user-file location.
+    fn load_located(location: Option<merge::CatalogFile>) -> Result<Catalog> {
+        match location {
             Some(loc) if loc.path.exists() => Catalog::load_from(&loc.path),
             Some(loc) if loc.explicit => bail!(
                 "{PROVIDERS_FILE_ENV} points at a missing provider catalog: {}",
@@ -394,13 +399,7 @@ impl Catalog {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
-
-    /// `load()` reads a process-global env var (`PROVIDERS_FILE_ENV`); tests that
-    /// set it must not race under cargo's parallel test threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// An `oauth:` block on a provider entry parses (with the same override
     /// fields the MCP blocks use) and no embedded default carries one (#684
@@ -648,13 +647,30 @@ mod tests {
     fn explicit_env_override_at_missing_path_is_a_loud_error() {
         // A user who sets ENTANGLEMENT_PROVIDERS_FILE and mistypes it should not
         // silently get the embedded defaults — that override must be honored or
-        // loudly rejected (#204). `load()` reads a process-global env var, so
-        // serialize against any other env-touching test in this binary.
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(PROVIDERS_FILE_ENV, "/no/such/providers.yml");
-        let err = Catalog::load().unwrap_err();
-        std::env::remove_var(PROVIDERS_FILE_ENV);
+        // loudly rejected (#204).
+        let location = merge::resolve_providers_file(
+            |n| (n == PROVIDERS_FILE_ENV).then(|| "/no/such/providers.yml".into()),
+            || panic!("the config dir must not be consulted under an override"),
+        );
+        let err = Catalog::load_located(location).unwrap_err();
         assert!(err.to_string().contains(PROVIDERS_FILE_ENV), "got: {err:#}");
+    }
+
+    #[test]
+    fn a_missing_default_providers_file_is_the_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        // `ENTANGLEMENT_STATE_DIR` (ADR-0213) never moves this hand-edited input.
+        let location = merge::resolve_providers_file(
+            |n| (n == "ENTANGLEMENT_STATE_DIR").then(|| "/state".into()),
+            || Some(dir.path().into()),
+        );
+        let loc = location
+            .as_ref()
+            .expect("a config dir yields a default path");
+        assert!(!loc.explicit);
+        assert!(loc.path.ends_with("entanglement/providers.yml"));
+        let catalog = Catalog::load_located(location).unwrap();
+        assert_eq!(catalog.providers.len(), Catalog::builtin().providers.len());
     }
 
     #[test]

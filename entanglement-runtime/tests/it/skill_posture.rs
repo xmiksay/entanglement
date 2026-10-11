@@ -19,8 +19,10 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::skills::{load_registry, LoadSkillTool};
+use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_runner::ToolExecutor;
+
+use crate::no_user;
 
 struct ScriptedLlm {
     responses: Mutex<Vec<LlmResponse>>,
@@ -118,13 +120,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
     let target = root.join("target.txt");
     std::fs::write(&target, "hello").unwrap();
 
-    let skill_registry = {
-        let _guard = crate::env_lock();
-        std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-        let skill_registry = Arc::new(load_registry(&root).unwrap());
-        std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
-        skill_registry
-    };
+    let skill_registry = Arc::new(load_registry_in(&root, &no_user(&root)).unwrap());
     let skills = Arc::new(RwLock::new(skill_registry));
 
     let mut tools = host_tools(root.clone());

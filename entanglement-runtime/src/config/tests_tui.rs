@@ -1,16 +1,13 @@
 //! Tests for the `tui:` block and the retired `discovery:` key (ADR-0213)
-//! through the real layered loader. Tests that point `ENTANGLEMENT_CONFIG_FILE`
-//! at a temp file serialize on [`super::ENV_LOCK`].
+//! through the real layered loader, with the user layer injected via
+//! [`Config::resolve_with`].
 
 use super::tests::{defaults, merge_user};
 use super::*;
 
 /// Resolve `root` with the user layer at `user_file`.
 fn resolve_with_user(root: &Path, user_file: &Path) -> Resolved {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, user_file);
-    let resolved = Config::resolve(root);
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let resolved = Config::resolve_with(root, Some(user_file));
     resolved.unwrap()
 }
 
@@ -147,10 +144,7 @@ fn theme_and_keybinding_edits_reload_and_warn() {
         .any(|w| w.contains("`jump_attention`")));
 
     std::fs::write(&user_file, "tui: {theme: {bsae: light}}\n").unwrap();
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let result = Config::resolve(dir.path());
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let result = Config::resolve_with(dir.path(), Some(&user_file));
     assert!(result.is_err(), "an unknown key inside `theme:` stays loud");
 }
 

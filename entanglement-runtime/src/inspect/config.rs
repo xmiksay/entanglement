@@ -284,23 +284,10 @@ fn render_hook_list(out: &mut String, point: &str, hooks: &[crate::hooks::HookSp
 mod tests {
     use super::*;
 
-    /// `ENTANGLEMENT_CONFIG_FILE` is process-global; shared with every other test in this crate that touches
-    /// them (`config::tests`, `config::tests_retention`, `extra_roots`) via
-    /// `crate::config::ENV_LOCK` rather than a module-local lock.
-    fn locked_resolve(root: &std::path::Path) -> Resolved {
-        std::env::set_var("ENTANGLEMENT_CONFIG_FILE", root.join("nope.yml"));
-        let resolved = Config::resolve(root).unwrap();
-        std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
-        resolved
-    }
-
     #[test]
     fn embedded_defaults_report_the_default_layer_and_engine_fallback_text() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let resolved = locked_resolve(dir.path());
+        let resolved = Config::resolve_with(dir.path(), None).unwrap();
         let rendered = render_config(&resolved);
 
         assert!(rendered.contains("max_turns: 200") && rendered.contains("← default"));
@@ -312,9 +299,6 @@ mod tests {
 
     #[test]
     fn user_layer_overrides_report_their_winning_layer() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let user_file = dir.path().join("user-config.yml");
         std::fs::write(
@@ -323,9 +307,7 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_var("ENTANGLEMENT_CONFIG_FILE", &user_file);
-        let resolved = Config::resolve(dir.path()).unwrap();
-        std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
+        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
 
         let rendered = render_config(&resolved);
         assert!(rendered.contains("max_turns: 50") && rendered.contains("← user"));
@@ -336,9 +318,6 @@ mod tests {
 
     #[test]
     fn tui_block_and_retired_key_warnings_are_rendered() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let user_file = dir.path().join("user-config.yml");
         std::fs::write(
@@ -349,9 +328,7 @@ mod tests {
              discovery: {zai: invoke}\n",
         )
         .unwrap();
-        std::env::set_var("ENTANGLEMENT_CONFIG_FILE", &user_file);
-        let resolved = Config::resolve(dir.path()).unwrap();
-        std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
+        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
 
         let rendered = render_config(&resolved);
         assert!(

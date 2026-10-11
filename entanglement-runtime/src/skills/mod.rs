@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::layers::Strictness;
+use crate::layers::{Strictness, UserLayer};
 use crate::system_prompt::SkillDisclosure;
 
 mod alias_tool;
@@ -214,12 +214,17 @@ fn parse_raw(raw: &RawSkill) -> Result<Option<SkillMeta>> {
 /// collision (project > user > built-in). A malformed file in a native layer
 /// aborts; a malformed foreign file is warned and skipped.
 pub fn load_registry(root: &Path) -> Result<SkillRegistry> {
+    load_registry_in(root, &UserLayer::FromEnv)
+}
+
+/// [`load_registry`] with an explicit user layer (#773).
+pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> {
     let mut reg = SkillRegistry::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
     // longer silent (#186): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect skills` surfaces.
     let mut winning: HashMap<String, (SkillLayer, String)> = HashMap::new();
-    for raw in discovery::discover(root)? {
+    for raw in discovery::discover(root, user)? {
         let Some(skill) = parse_raw(&raw)? else {
             continue;
         };
@@ -260,9 +265,14 @@ pub struct SkillResolution {
 /// exactly as at load (native aborts, foreign warns and skips) — mirrors
 /// [`crate::agents::resolve_registry`].
 pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
+    resolve_registry_in(root, &UserLayer::FromEnv)
+}
+
+/// [`resolve_registry`] with an explicit user layer (#773).
+pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<SkillResolution>> {
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
-    for raw in discovery::discover(root)? {
+    for raw in discovery::discover(root, user)? {
         let Some(meta) = parse_raw(&raw)? else {
             continue;
         };
@@ -350,14 +360,14 @@ fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Skill
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::sync::Mutex;
 
-    use super::discovery::{walk, BUILT_INS, SKILLS_DIR_ENV, SKILL_FILE};
+    use super::discovery::{walk, BUILT_INS, SKILL_FILE};
     use super::*;
 
-    /// `load_registry` reads a process-global env var (`SKILLS_DIR_ENV`); tests
-    /// that set it must not race under cargo's parallel test threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// An empty user layer: the injected stand-in for the real user dirs.
+    fn no_user(root: &Path) -> UserLayer {
+        UserLayer::Dir(root.join("no-such-user-dir"))
+    }
 
     fn parse(content: &str) -> Result<SkillMeta> {
         parse_skill(content, None)
@@ -481,12 +491,9 @@ mod tests {
             "group/nested",
             "---\nname: nested\ndescription: a nested skill\n---\nbody",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Point the user layer at a non-existent dir so a real ~/.config skill
         // can't leak into the assertion.
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         let s = reg.get("nested").expect("nested skill discovered");
         assert_eq!(s.description, "a nested skill");
@@ -509,10 +516,7 @@ mod tests {
             "dup",
             "---\nname: dup\ndescription: from project\n---\np",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, &user);
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
 
         assert_eq!(reg.get("dup").unwrap().description, "from project");
     }
@@ -527,10 +531,7 @@ mod tests {
             "rhai",
             "---\nname: rhai\ndescription: my override\n---\nx",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, &user);
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
 
         assert_eq!(reg.get("rhai").unwrap().description, "my override");
     }
@@ -547,10 +548,7 @@ mod tests {
             "rhai",
             "---\nname: rhai\ndescription: user rhai\n---\nx",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, &user);
-        let resolved = resolve_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let resolved = resolve_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
 
         let rhai = resolved
             .iter()
@@ -569,10 +567,7 @@ mod tests {
         let root = dir.path();
         let project = root.join(".entanglement").join("skills");
         write_skill(&project, "zzz", "---\nname: zzz\ndescription: last\n---\nb");
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let resolved = resolve_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let resolved = resolve_registry_in(root, &no_user(root)).unwrap();
 
         // Name-sorted: the built-in `rhai` sorts before the project `zzz`.
         let names: Vec<&str> = resolved.iter().map(|r| r.meta.name.as_str()).collect();
@@ -608,10 +603,7 @@ mod tests {
         let root = dir.path();
         let skills = root.join(".entanglement").join("skills");
         write_skill(&skills, "bad", "no frontmatter at all");
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let err = load_registry(root).unwrap_err();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let err = load_registry_in(root, &no_user(root)).unwrap_err();
         assert!(format!("{err:#}").contains("bad"), "got: {err:#}");
     }
 
@@ -625,10 +617,7 @@ mod tests {
             "arch",
             "---\nname: arch\ndescription: from claude\nallowed-tools: Bash(git:*), Read\nlicense: MIT\n---\nbody",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         let s = reg.get("arch").expect("foreign skill discovered");
         assert_eq!(s.description, "from claude");
@@ -649,10 +638,7 @@ mod tests {
             "with-tools",
             "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         let s = reg.get("with-tools").expect("foreign skill still loads");
         assert!(
@@ -671,10 +657,7 @@ mod tests {
             "with-tools",
             "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         let s = reg.get("with-tools").expect("native skill loads");
         assert_eq!(s.tools.len(), 1);
@@ -690,10 +673,7 @@ mod tests {
             "deploy",
             "---\nname: deploy\ndescription: d\ndisable-model-invocation: true\n---\nb",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         assert!(reg.get("deploy").unwrap().user_only);
     }
@@ -705,10 +685,7 @@ mod tests {
         let claude = root.join(".claude").join("skills");
         write_skill(&claude, "bad", "no frontmatter at all");
         write_skill(&claude, "good", "---\nname: good\ndescription: ok\n---\nb");
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
 
         assert!(reg.get("bad").is_none(), "malformed foreign skill skipped");
         assert_eq!(reg.get("good").unwrap().description, "ok");
@@ -733,30 +710,21 @@ mod tests {
             "only-agents",
             "---\nname: only-agents\ndescription: cross-vendor\n---\nb",
         );
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg = load_registry(root).unwrap();
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
         // Native `.entanglement` beats both foreign project dirs.
         write_skill(
             &root.join(".entanglement").join("skills"),
             "dup",
             "---\nname: dup\ndescription: from native\n---\nn",
         );
-        std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-        let reg2 = load_registry(root).unwrap();
-        std::env::remove_var(SKILLS_DIR_ENV);
+        let reg2 = load_registry_in(root, &no_user(root)).unwrap();
 
         assert_eq!(reg.get("only-agents").unwrap().description, "cross-vendor");
         // `.agents` (cross-vendor) beats `.claude` (vendor-specific)…
         assert_eq!(reg.get("dup").unwrap().description, "from .agents");
         // …and `.entanglement` (native) beats both.
         assert_eq!(reg2.get("dup").unwrap().description, "from native");
-        let resolved = {
-            std::env::set_var(SKILLS_DIR_ENV, root.join("no-such-user-dir"));
-            let r = resolve_registry(root).unwrap();
-            std::env::remove_var(SKILLS_DIR_ENV);
-            r
-        };
+        let resolved = resolve_registry_in(root, &no_user(root)).unwrap();
         let dup = resolved.iter().find(|r| r.meta.name == "dup").unwrap();
         assert_eq!(dup.layer, SkillLayer::Project);
         assert_eq!(dup.shadowed.len(), 2, "both foreign defs recorded");

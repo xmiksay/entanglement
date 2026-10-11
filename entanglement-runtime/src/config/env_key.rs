@@ -159,7 +159,7 @@ pub fn set_key_at(path: PathBuf, key_name: &str, value: &str) -> Result<PathBuf>
 
 #[cfg(test)]
 mod tests {
-    use super::super::env_file::{parse, ENV_LOCK};
+    use super::super::env_file::parse;
     use super::*;
 
     #[test]
@@ -236,18 +236,19 @@ mod tests {
 
     #[test]
     fn set_key_rejects_empty_and_newline_values() {
-        assert!(set_key("K", "").is_err());
-        assert!(set_key("K", "line1\nline2").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        assert!(set_key_at(path.clone(), "K", "").is_err());
+        assert!(set_key_at(path.clone(), "K", "line1\nline2").is_err());
+        assert!(!path.exists(), "a rejected value writes nothing");
     }
 
     #[test]
     fn set_key_creates_file_round_trips_and_is_0600() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join(".env");
-        std::env::set_var(ENV_FILE_ENV, &path);
 
-        let written = set_key("ZAI_API_KEY", "secret-value").unwrap();
+        let written = set_key_at(path.clone(), "ZAI_API_KEY", "secret-value").unwrap();
         assert_eq!(written, path);
 
         // The value round-trips through the same parser `load()` uses.
@@ -263,22 +264,16 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "managed env file must be user-only");
         }
-
-        std::env::remove_var(ENV_FILE_ENV);
     }
 
     #[test]
     fn set_key_updates_existing_key_and_preserves_others() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "ZAI_API_KEY=old\nOPENAI_API_KEY=keep\n").unwrap();
-        std::env::set_var(ENV_FILE_ENV, &path);
 
-        set_key("ZAI_API_KEY", "new").unwrap();
+        set_key_at(path.clone(), "ZAI_API_KEY", "new").unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         assert_eq!(body, "ZAI_API_KEY=new\nOPENAI_API_KEY=keep\n");
-
-        std::env::remove_var(ENV_FILE_ENV);
     }
 }

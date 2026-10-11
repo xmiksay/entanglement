@@ -149,15 +149,11 @@ fn expand_or_literal_reads_the_live_handle() {
     assert_eq!(expand_or_literal(&live, "plain".into()), "plain");
 }
 
-/// The real `discover` path under an explicit user-layer override: proves the
-/// env var + project dirs are wired through `layers::load_layers`. The
-/// override points into a temp dir, so the real user dirs are never read;
-/// the shared env lock serializes it with every other env-mutating suite.
+/// The real `discover` path under an injected user layer: proves the user +
+/// project dirs are wired through `layers::load_layers`. The user layer is a
+/// temp dir, so the real user dirs are never read.
 #[test]
 fn load_registry_reads_override_and_project_dirs() {
-    let _g = crate::config::ENV_LOCK
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
     let root = tempfile::tempdir().unwrap();
     let user = root.path().join("user-commands");
     write(&user, "a.md", "user a");
@@ -168,10 +164,7 @@ fn load_registry_reads_override_and_project_dirs() {
     );
     write(root.path(), ".entanglement/commands/a.md", "project a");
 
-    std::env::set_var(COMMANDS_DIR_ENV, &user);
-    let reg = load_registry(root.path());
-    std::env::remove_var(COMMANDS_DIR_ENV);
-    let reg = reg.unwrap();
+    let reg = registry_from(resolve_registry_in(root.path(), &UserLayer::Dir(user)).unwrap());
 
     assert_eq!(reg.get("a").unwrap().body, "project a");
     assert_eq!(reg.get("b").unwrap().body, "oc b");

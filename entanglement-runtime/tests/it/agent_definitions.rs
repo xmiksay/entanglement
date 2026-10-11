@@ -14,39 +14,35 @@ use entanglement_core::{
     MessageRole, OutEvent, SessionId, ToolCall,
 };
 
-use entanglement_runtime::agents::load_registry;
+use entanglement_runtime::agents::load_registry_in;
+use entanglement_runtime::layers::UserLayer;
 use entanglement_runtime::mcp::McpCapabilityIndex;
 use entanglement_runtime::session_store::SessionStore;
 use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
-// `ENTANGLEMENT_AGENTS_DIR` is process-global; every test that sets it must
-// serialize through this lock so parallel runs don't clobber each other's dir.
-// Serialized via the harness-wide `crate::env_lock()` (ADR-0180).
+// Every loader call injects its user layer (`UserLayer::Dir`) instead of
+// steering the process-global `ENTANGLEMENT_AGENTS_DIR`, so these tests need
+// no env lock and never read the host's real user agents (#773).
 
-/// Point the loader's user + project dirs at temp dirs, run `load_registry`, and
-/// restore the env. Serialized via a mutex because env vars are process-global.
+/// Point the loader's user + project dirs at temp dirs and run `load_registry`.
 fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
 ) -> entanglement_core::AgentCatalog {
-    let _guard = crate::env_lock();
-    match user {
-        Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
-        None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
-    }
+    let user =
+        UserLayer::Dir(user.map_or_else(|| project_root.join("no-such-user-dir"), Into::into));
     // Identity context + empty skill registry: assert the raw file bodies, not
     // composed prompts (composition is covered by `system_prompt_assembly.rs`).
-    let reg = load_registry(
+    load_registry_in(
         project_root,
+        &user,
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
         &McpCapabilityIndex::new(),
     )
-    .expect("load_registry");
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-    reg
+    .expect("load_registry")
 }
 
 fn write_agent(dir: &std::path::Path, file: &str, contents: &str) {
@@ -156,17 +152,20 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
         "---\nname: coder\ndescription: a coder\nskills: [git]\n---\nBe careful.",
     );
 
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", "/nonexistent-user-skills-dir");
-    let skills = entanglement_runtime::skills::load_registry(root).expect("load skills");
+    let skills = entanglement_runtime::skills::load_registry_in(root, &crate::no_user(root))
+        .expect("load skills");
     let ctx = PromptContext {
         skills: skills.disclosures(),
         ..Default::default()
     };
-    let reg = load_registry(root, &ctx, &skills, &McpCapabilityIndex::new()).expect("load agents");
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+    let reg = load_registry_in(
+        root,
+        &crate::no_user(root),
+        &ctx,
+        &skills,
+        &McpCapabilityIndex::new(),
+    )
+    .expect("load agents");
 
     let coder = reg.get("coder").expect("coder agent");
     let prompt = &coder.system_prompt;
@@ -189,15 +188,13 @@ fn malformed_project_file_aborts_load() {
         "---\nname: broken\n---\nno description field",
     );
     // The missing `description` must surface as an error, not a silent skip.
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let result = load_registry(
+    let result = load_registry_in(
         project.path(),
+        &crate::no_user(project.path()),
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
         &McpCapabilityIndex::new(),
     );
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("malformed file must error");
     let msg = format!("{err:#}");
     assert!(msg.contains("broken.md"), "error names the file: {msg}");
@@ -250,15 +247,13 @@ fn prompt_report_tolerates_broken_foreign_file() {
         "not even frontmatter",
     );
 
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let report = entanglement_runtime::agents::prompt_report(
+    let report = entanglement_runtime::agents::prompt_report_in(
         root,
+        &crate::no_user(root),
         "general",
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
     );
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
 
     let report = report.expect("broken foreign file must not abort");
     assert!(report.is_some(), "built-in general still resolves");
@@ -306,15 +301,13 @@ fn provider_without_model_is_a_loud_error() {
         "broken.md",
         "---\nname: broken\ndescription: provider only\nprovider: zai\n---\nbody",
     );
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let result = load_registry(
+    let result = load_registry_in(
         project.path(),
+        &crate::no_user(project.path()),
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
         &McpCapabilityIndex::new(),
     );
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
     let err = result.err().expect("provider-without-model must error");
     let msg = format!("{err:#}");
     assert!(
@@ -491,26 +484,23 @@ async fn spawn_under_a_file_defined_profile() {
 // `inspect prompt` support: prompt_report (#184)
 // ---------------------------------------------------------------------------
 
-use entanglement_runtime::agents::prompt_report;
+use entanglement_runtime::agents::prompt_report_in;
 
 /// Resolve `agent` via `prompt_report` under a temp project root, isolating from
-/// any host user-agents dir. Serialized on `ENV_LOCK` like `load_with_dirs`.
+/// any host user-agents dir like `load_with_dirs`.
 fn report_for(
     project_root: &std::path::Path,
     agent: &str,
     ctx: &PromptContext,
 ) -> Option<entanglement_runtime::agents::AgentPromptReport> {
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-    let report = prompt_report(
+    prompt_report_in(
         project_root,
+        &crate::no_user(project_root),
         agent,
         ctx,
         &entanglement_runtime::skills::SkillRegistry::default(),
     )
-    .expect("prompt_report");
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-    report
+    .expect("prompt_report")
 }
 
 #[test]
@@ -523,22 +513,15 @@ fn prompt_report_reports_builtin_source_and_prompt() {
     let report = report_for(empty.path(), "general", &ctx).expect("general resolves");
     assert_eq!(report.source, "built-in (general.md)");
     // The report's prompt matches the registry-assembled one for the same inputs.
-    // `load_registry` reads the process-global `ENTANGLEMENT_AGENTS_DIR`, so it
-    // must run under `ENV_LOCK` with the user dir isolated — exactly as
-    // `report_for` does — or a parallel test's temp user-agents dir can leak in.
-    let reg = {
-        let _guard = crate::env_lock();
-        std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-        let reg = load_registry(
-            empty.path(),
-            &ctx,
-            &entanglement_runtime::skills::SkillRegistry::default(),
-            &McpCapabilityIndex::new(),
-        )
-        .expect("load_registry");
-        std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-        reg
-    };
+    // Same empty user layer as `report_for`, so only the built-in competes.
+    let reg = load_registry_in(
+        empty.path(),
+        &crate::no_user(empty.path()),
+        &ctx,
+        &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
+    )
+    .expect("load_registry");
     assert_eq!(
         report.agent.system_prompt,
         reg.get("general").unwrap().system_prompt
@@ -606,27 +589,23 @@ fn prompt_report_includes_env_and_skill_index_for_every_agent() {
 // `inspect agents` support: resolve_registry provenance (#185)
 // ---------------------------------------------------------------------------
 
-use entanglement_runtime::agents::{resolve_registry, AgentLayer};
+use entanglement_runtime::agents::{resolve_registry_in, AgentLayer};
 
 /// Resolve the full registry with provenance under temp user + project dirs,
-/// isolating from the host user-agents dir. Serialized on `ENV_LOCK`.
+/// isolating from the host user-agents dir.
 fn resolve_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
 ) -> Vec<entanglement_runtime::agents::AgentResolution> {
-    let _guard = crate::env_lock();
-    match user {
-        Some(p) => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", p),
-        None => std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir"),
-    }
-    let resolved = resolve_registry(
+    let user =
+        UserLayer::Dir(user.map_or_else(|| project_root.join("no-such-user-dir"), Into::into));
+    resolve_registry_in(
         project_root,
+        &user,
         &PromptContext::default(),
         &entanglement_runtime::skills::SkillRegistry::default(),
     )
-    .expect("resolve_registry");
-    std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-    resolved
+    .expect("resolve_registry")
 }
 
 #[test]

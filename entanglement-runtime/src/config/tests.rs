@@ -1,9 +1,8 @@
 //! Unit tests for the layered user config (#172).
 //!
-//! Layer discovery reads a process-global env var (`ENTANGLEMENT_CONFIG_FILE`)
-//! and the repo file under `root`, so tests that exercise the file layers set the
-//! env var under a shared lock and point it at a temp file, mirroring the
-//! agents/skills discovery tests.
+//! Tests that exercise the user file layer inject its path through
+//! [`Config::resolve_with`] / [`Config::load_with`] — never the process-global
+//! `ENTANGLEMENT_CONFIG_FILE` or the real config dir (#773).
 
 use entanglement_core::Permission;
 
@@ -267,10 +266,7 @@ fn project_layer_wins_over_user() {
     )
     .unwrap();
 
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let resolved = Config::resolve(root).unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let resolved = Config::resolve_with(root, Some(&user_file)).unwrap();
 
     let c = &resolved.config;
     // Repo wins on the overlapping `provider`; the user's `verbose` (repo silent)
@@ -294,11 +290,7 @@ fn project_layer_wins_over_user() {
 fn missing_files_fall_back_to_embedded() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    // Point the env at a path that does not exist; no repo file either.
-    std::env::set_var(CONFIG_FILE_ENV, root.join("nope.yml"));
-    let c = Config::load(root).unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let c = Config::load_with(root, Some(root.join("nope.yml").as_path())).unwrap();
     assert_eq!(c.agent.as_deref(), Some("general"));
     assert_eq!(c.provider, None);
 }
@@ -313,10 +305,7 @@ fn comment_only_user_file_is_a_no_op() {
     let user_file = root.join("scaffold.yml");
     std::fs::write(&user_file, TEMPLATE_YML).unwrap();
 
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let resolved = Config::resolve(root).unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let resolved = Config::resolve_with(root, Some(&user_file)).unwrap();
 
     let c = &resolved.config;
     assert_eq!(c.agent.as_deref(), Some("general"));
@@ -332,18 +321,14 @@ fn scaffold_writes_template_when_missing_then_leaves_it_alone() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("nested").join("config.yml");
 
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, &target);
-
     // First run creates the file (and its parent dir) with the template.
-    let written = scaffold_if_missing().unwrap();
+    let written = layers::scaffold_at(target.clone()).unwrap();
     assert_eq!(written.as_deref(), Some(target.as_path()));
     assert_eq!(std::fs::read_to_string(&target).unwrap(), TEMPLATE_YML);
 
     // A subsequent run must not overwrite a user's edits.
     std::fs::write(&target, "provider: openai\n").unwrap();
-    let again = scaffold_if_missing().unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let again = layers::scaffold_at(target.clone()).unwrap();
     assert_eq!(again, None);
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
@@ -370,10 +355,7 @@ fn malformed_user_file_is_a_loud_error() {
     let root = dir.path();
     let user_file = root.join("bad.yml");
     std::fs::write(&user_file, "provider: [unterminated\n").unwrap();
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let err = Config::load(root).unwrap_err();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let err = Config::load_with(root, Some(&user_file)).unwrap_err();
     assert!(
         format!("{err:#}").contains("parsing user config"),
         "got: {err:#}"

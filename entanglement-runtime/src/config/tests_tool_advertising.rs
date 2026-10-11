@@ -1,8 +1,8 @@
 //! Tests for the `tool_advertising` config key (ADR-0196, Phase P1).
 //!
 //! Lives in its own module so `tests.rs` stays under the 400-line cap, mirroring
-//! `tests_retention.rs`. Tests that point `ENTANGLEMENT_CONFIG_FILE` at a temp
-//! file serialize on [`super::ENV_LOCK`].
+//! `tests_retention.rs`. The user layer is injected via
+//! [`Config::resolve_with`].
 //!
 //! The full precedence chain (config > catalog > default) is exercised in
 //! `crate::tool_advertising`'s unit tests against a `Config` built here; these
@@ -49,7 +49,6 @@ fn tool_advertising_unknown_value_is_a_loud_error() {
 
 #[test]
 fn tool_advertising_project_layer_wins_over_user() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let user_file = root.join("user.yml");
@@ -58,9 +57,7 @@ fn tool_advertising_project_layer_wins_over_user() {
     std::fs::create_dir_all(repo_file.parent().unwrap()).unwrap();
     std::fs::write(&repo_file, "tool_advertising: full\n").unwrap();
 
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let resolved = Config::resolve(root).unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let resolved = Config::resolve_with(root, Some(&user_file)).unwrap();
 
     assert_eq!(
         resolved.config.tool_advertising,

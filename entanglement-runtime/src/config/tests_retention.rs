@@ -24,15 +24,12 @@ fn session_retention_parses_from_user_file_and_keeps_siblings() {
 fn session_retention_provenance_reports_winning_layer() {
     // A user-file override surfaces in `Resolved::provenance` like every other
     // top-level key — the inspect-config surface must not miss it.
-    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let user_file = root.join("user.yml");
     std::fs::write(&user_file, "session_retention_days: 21\n").unwrap();
 
-    std::env::set_var(CONFIG_FILE_ENV, &user_file);
-    let resolved = Config::resolve(root).unwrap();
-    std::env::remove_var(CONFIG_FILE_ENV);
+    let resolved = Config::resolve_with(root, Some(&user_file)).unwrap();
 
     let prov: std::collections::HashMap<_, _> = resolved.provenance.iter().cloned().collect();
     assert_eq!(prov.get("session_retention_days"), Some(&ConfigLayer::User));

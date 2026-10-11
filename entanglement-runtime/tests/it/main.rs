@@ -15,6 +15,13 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// An empty user definitions layer under `root`: loaders take it instead of
+/// the process-global `ENTANGLEMENT_*_DIR` env, so a test never reads the
+/// host's real user agents/skills (#773).
+pub fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
+    entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
+}
+
 // A single-mode `ModeTable` (ADR-0207 stage 4) most test modules in this
 // harness wire in for `ModeResolver`: they exercise something *other*
 // than permission grading (spawn plumbing, MCP lazy re-enable, invoke-

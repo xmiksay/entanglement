@@ -1,5 +1,7 @@
 //! `ENTANGLEMENT_STATE_DIR` (ADR-0213): one directory relocates all seven
-//! managed-state files — and none of the hand-edited inputs.
+//! managed-state files. (That it moves none of the hand-edited inputs is
+//! unit-tested on each input's pure path resolver — `config.yml`, `.env`,
+//! `providers.yml` — without touching process env or the real config dir.)
 //!
 //! Each store is seeded through its own injection seam at
 //! `<dir>/<managed file name>`, then re-loaded through the **production**
@@ -15,7 +17,7 @@ use entanglement_runtime::config::agent_generation::AgentGenerationStore;
 use entanglement_runtime::config::agent_models::AgentModelStore;
 use entanglement_runtime::config::aux_models::{AuxModelStore, Purpose};
 use entanglement_runtime::config::state_dir::{self, STATE_DIR_ENV};
-use entanglement_runtime::config::{Config, McpTokenStore};
+use entanglement_runtime::config::McpTokenStore;
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::grants::FileGrantStore;
 
@@ -96,26 +98,4 @@ fn the_state_dir_relocates_all_seven_managed_files() {
     assert!(extra_roots.is_durably_allowed("read", Path::new("/state-dir-probe")));
     assert_eq!(mcp.servers(), vec![PROBE.to_string()]);
     assert_eq!(llm.servers(), vec![PROBE.to_string()]);
-}
-
-#[test]
-fn the_state_dir_never_moves_a_hand_edited_input() {
-    let state = tempfile::tempdir().unwrap();
-    // A `config.yml` (and a broken `providers.yml`) parked in the state dir
-    // must be invisible: those files keep their own locations/overrides.
-    std::fs::write(state.path().join("config.yml"), "agent: state-dir-probe\n").unwrap();
-    std::fs::write(state.path().join("providers.yml"), "providers: [oops\n").unwrap();
-    let root = tempfile::tempdir().unwrap();
-
-    let _g = crate::env_lock();
-    std::env::set_var(STATE_DIR_ENV, state.path());
-    std::env::set_var("ENTANGLEMENT_CONFIG_FILE", root.path().join("absent.yml"));
-    let config = Config::load(root.path());
-    let catalog = entanglement_core::Catalog::load();
-    std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
-    std::env::remove_var(STATE_DIR_ENV);
-    drop(_g);
-
-    assert_ne!(config.unwrap().agent.as_deref(), Some(PROBE));
-    assert!(catalog.is_ok(), "the state dir's providers.yml is not read");
 }
