@@ -204,3 +204,63 @@ async fn deeply_nested_html_falls_back_to_plain_text_without_crashing() {
         .unwrap();
     assert!(out.contains("nested too deeply"), "{out}");
 }
+
+/// #808: a redirect hop grades exactly like the initial URL, through the
+/// executor's in-call grader.
+#[tokio::test]
+async fn redirect_hops_grade_against_the_session_rules() {
+    use crate::mode::{Limits, Mode, Rules};
+    use crate::tool_runner::call_grader::{scope, test_support::grader_for};
+    use entanglement_core::Permission;
+
+    let mode = |default, deny: &[&str], allow: &[&str]| Mode {
+        name: "research".into(),
+        default,
+        rules: Rules::from_lists(
+            &deny.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &allow.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &[],
+        ),
+        limits: Limits::default(),
+        sandbox: None,
+        sandbox_network: false,
+    };
+    let tools = || {
+        let mut reg = crate::tools::ToolRegistry::new();
+        reg.register(WebFetchTool::new().unwrap());
+        reg
+    };
+    let rules = mode(
+        Permission::Ask,
+        &["web_fetch(https://evil.example/*)"],
+        &[
+            "web_fetch(https://docs.rs/*)",
+            "web_fetch(https://crates.io/*)",
+        ],
+    );
+    let grader = grader_for(rules, tools());
+    let (allowed, denied, ask) = scope(grader, async {
+        (
+            check_hop("https://crates.io/x".into()).await,
+            check_hop("https://evil.example/x".into()).await,
+            check_hop("https://elsewhere.example/".into()).await,
+        )
+    })
+    .await;
+    assert!(allowed.is_ok(), "redirect to an allowed host continues");
+    let denied = denied.unwrap_err().to_string();
+    assert!(denied.contains("denied by mode `research`"), "{denied}");
+    let ask = ask.unwrap_err().to_string();
+    assert!(
+        ask.contains("needs approval") && ask.contains("directly"),
+        "{ask}"
+    );
+
+    // A class allow (`build`'s `exec`) lets every hop through.
+    let build = grader_for(mode(Permission::Ask, &[], &["exec"]), tools());
+    let hop = scope(build, check_hop("https://anywhere.example/".into())).await;
+    assert!(hop.is_ok());
+
+    // No executor scope: nothing graded the initial call either — follow.
+    assert!(check_hop("https://evil.example/x".into()).await.is_ok());
+}

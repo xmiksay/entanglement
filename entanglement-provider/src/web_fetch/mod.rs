@@ -92,13 +92,40 @@ impl WebFetcher {
     /// re-validated), reading at most `max_bytes` (clamped to
     /// [`HARD_MAX_BYTES`]) of a textual body.
     pub async fn fetch(&self, url: &str, max_bytes: usize) -> Result<FetchOutcome> {
+        self.fetch_checked(url, max_bytes, |_| async { Ok(()) })
+            .await
+    }
+
+    /// [`fetch`][Self::fetch], with `check_hop` consulted on every redirect
+    /// target (its [`normalize_url`] form) *before* it is requested — the
+    /// caller's policy seam (#808: the runtime grades each hop against the
+    /// session's permission rules). An `Err` stops the fetch with that error.
+    pub async fn fetch_checked<F, Fut>(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        check_hop: F,
+    ) -> Result<FetchOutcome>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         let max_bytes = max_bytes.clamp(1, HARD_MAX_BYTES);
-        tokio::time::timeout(TOTAL_TIMEOUT, self.fetch_inner(url, max_bytes))
+        tokio::time::timeout(TOTAL_TIMEOUT, self.fetch_inner(url, max_bytes, check_hop))
             .await
             .map_err(|_| anyhow::anyhow!("fetch timed out after {TOTAL_TIMEOUT:?}"))?
     }
 
-    async fn fetch_inner(&self, url: &str, max_bytes: usize) -> Result<FetchOutcome> {
+    async fn fetch_inner<F, Fut>(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        mut check_hop: F,
+    ) -> Result<FetchOutcome>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         let mut url = parse_normalized(url)?;
         for _ in 0..=MAX_REDIRECTS {
             ssrf::validate_url(&url, &self.guard)?;
@@ -120,6 +147,7 @@ impl WebFetcher {
                 .map_err(|e| anyhow::anyhow!("fetching {url}: {}", error_chain(&e)))?;
             if response.status().is_redirection() {
                 if let Some(next) = redirect_target(&url, &response)? {
+                    check_hop(next.to_string()).await?;
                     url = next;
                     continue;
                 }

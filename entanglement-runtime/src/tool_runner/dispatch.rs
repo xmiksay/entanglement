@@ -22,8 +22,6 @@ use entanglement_core::{
 use crate::capability::{self, Capability};
 use crate::hooks::Hooks;
 use crate::mcp::{ActiveServers, AvailableMcp};
-use crate::permission::clamp_to_base;
-use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::skills::SkillRegistry;
 use crate::tool_names::REQUEST_MODE_TOOL;
@@ -276,30 +274,18 @@ pub(crate) async fn dispatch(
     // threaded into `await_decision` below instead of recomputed there, so the
     // grant lookup (`apply_grant`) and grant record (on approval) provably
     // share one key.
-    let arg = grading_arg(&tool, &input, escape_root.map(|er| er.root.as_path()));
-    let workdir = crate::permission::permission_workdir(&tool, &input);
-    let base_perm = match overlay_entry {
-        Some(entry) => {
-            let overlay_profile = crate::permission::overlay_entry_grade(&tool, &entry);
-            let grade = crate::permission_bash::resolve_scoped_bash_aware(
-                &overlay_profile,
-                &tool,
-                arg.as_deref(),
-                workdir.as_deref(),
-            );
-            let capabilities = crate::capability::capability_of(&tool, tools).unwrap_or(&[]);
-            clamp_to_base(
-                grade,
-                ceiling,
-                &tool,
-                capabilities,
-                arg.as_deref(),
-                workdir.as_deref(),
-            )
-        }
-        None => grade::resolve_effective(resolver, chain, &tool, &input).await,
+    let inputs = grade::GradeInputs {
+        tools,
+        resolver,
+        chain,
+        grants,
+        session: &session,
+        mode: &mode,
+        overlay_entry: overlay_entry.as_ref(),
+        ceiling,
+        root: escape_root.map(|er| er.root.as_path()),
     };
-    let perm = grade::apply_grant(grants, &session, &tool, arg.as_deref(), base_perm, &mode);
+    let (perm, arg) = grade::grade_call(&inputs, &tool, &input).await;
     if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
         seam::reply(holly, session, request_id, reason, true).await;
         return;

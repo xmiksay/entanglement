@@ -564,7 +564,7 @@ script tool (table above) is intercepted the same way but is **not** a bypass:
 it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
 (#122, [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)).
 
-### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736)
+### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736), [ADR-0225](../adr/0225-web-fetch-grades-redirect-hops.md) (redirect grading, #808)
 
 `web_fetch { url, format?: markdown|text|raw, max_bytes?, offset? }`
 (`host::web_fetch`, behind the default-on `web-fetch` feature) fetches one
@@ -584,8 +584,24 @@ fetcher requests. So `modes: research: allow:
 ["web_fetch(https://docs.rs/*)"]` widens it for one site, and a deny cannot be
 dodged with `HTTPS://`, a trailing dot, or `:443`. Write rules as a literal
 `scheme://host/` prefix: rule globs let `*` match `/`, so a host wildcard
-(`https://*.example.com/*`) is unsafe. Redirect hops are SSRF-checked but not
-re-graded against the rules.
+(`https://*.example.com/*`) is unsafe.
+
+**Redirect hops are graded like the initial URL**
+([ADR-0225](../adr/0225-web-fetch-grades-redirect-hops.md), #808). The
+executor scopes the call's own grading context around every graded dispatch.
+It is a tokio task-local, `tool_runner::call_grader`, and holds the same
+resolver, ancestor chain, grants, overlay and ceiling as `dispatch`, sharing
+one `grade::grade_call`. `web_fetch` grades each normalized hop through it
+before following the hop (`WebFetcher::fetch_checked`):
+
+- `Allow` follows the hop.
+- `Deny` stops the fetch with an error naming the mode.
+- `Ask` stops the fetch with a hint to call `web_fetch` on the target
+  directly, which goes through ordinary approval. Nothing parks mid-fetch.
+
+`tool_runner::grade_in_scope` is the public seam for any tool that reaches
+targets beyond its own argument. Outside an executor no grader is in scope,
+and hops are followed under the SSRF guard alone.
 
 **Hostile HTML.** `htmd` recurses without a depth limit, and html5ever's
 tree builder is quadratic in nesting depth. The conversion is guarded in

@@ -6,10 +6,68 @@
 //! resolve_effective}` — `ladder::graded` and (for `resolve_effective`
 //! alone) `propose_plan`/`script::binding_policy` call them by that path.
 
-use entanglement_core::{Permission, SessionId};
+use std::path::Path;
 
-use crate::permission::min_permission;
+use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
+
+use crate::permission::{clamp_to_base, min_permission};
+use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
+use crate::tools::ToolRegistry;
+
+/// Everything a call's grade depends on besides the call itself — what
+/// [`grade_call`] composes. Borrowed so `dispatch` builds it from its own
+/// arguments; [`crate::tool_runner::call_grader::CallGrader`] (#808) owns
+/// the same set and lends it out, so a redirect hop grades *exactly* like a
+/// dispatched call.
+pub(crate) struct GradeInputs<'a> {
+    pub tools: &'a ToolRegistry,
+    pub resolver: &'a dyn PermissionResolver,
+    pub chain: &'a [SessionId],
+    pub grants: &'a dyn GrantStore,
+    pub session: &'a SessionId,
+    pub mode: &'a str,
+    pub overlay_entry: Option<&'a ToolOverlayEntry>,
+    pub ceiling: &'a PermissionProfile,
+    pub root: Option<&'a Path>,
+}
+
+/// The grade `(tool, input)` resolves to, plus the argument it was graded
+/// on: the nearest overlay enable entry's grade (ceiling-clamped) when one
+/// matched, else the mode grade clamped across the ancestor chain — then
+/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Hooks, the
+/// escape-root gate and the overlay *deny* stay with the caller.
+pub(crate) async fn grade_call(
+    g: &GradeInputs<'_>,
+    tool: &str,
+    input: &str,
+) -> (Permission, Option<String>) {
+    let arg = grading_arg(tool, input, g.root);
+    let workdir = crate::permission::permission_workdir(tool, input);
+    let base = match g.overlay_entry {
+        Some(entry) => {
+            let overlay_profile = crate::permission::overlay_entry_grade(tool, entry);
+            let grade = crate::permission_bash::resolve_scoped_bash_aware(
+                &overlay_profile,
+                tool,
+                arg.as_deref(),
+                workdir.as_deref(),
+            );
+            let capabilities = crate::capability::capability_of(tool, g.tools).unwrap_or(&[]);
+            clamp_to_base(
+                grade,
+                g.ceiling,
+                tool,
+                capabilities,
+                arg.as_deref(),
+                workdir.as_deref(),
+            )
+        }
+        None => resolve_effective(g.resolver, g.chain, tool, input).await,
+    };
+    let perm = apply_grant(g.grants, g.session, tool, arg.as_deref(), base, g.mode);
+    (perm, arg)
+}
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
 /// granted under `mode` (#174, ADR-0207 §8: a grant matches only the mode it

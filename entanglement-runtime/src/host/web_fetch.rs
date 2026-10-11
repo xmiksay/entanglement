@@ -12,6 +12,11 @@
 //! `web_fetch` exactly like `curl` with no new rule entries: `build` allows
 //! it, every other mode prompts. A user who wants unprompted docs lookups
 //! adds an argument-scoped rule such as `web_fetch(https://docs.rs/*)`.
+//!
+//! Every redirect hop is graded exactly like the initial URL (#808,
+//! ADR-0225) through the executor's in-call grader ([`check_hop`]): a hop
+//! that would be denied, or would need approval, stops the fetch — an
+//! allow-listed site's open redirect can't reach a host the rules exclude.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -22,6 +27,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use entanglement_core::web_fetch::{FetchBody, FetchOutcome, WebFetcher, DEFAULT_MAX_BYTES};
+use entanglement_core::Permission;
 
 use crate::capability::Capability;
 use crate::host::MAX_OUTPUT_BYTES;
@@ -113,9 +119,32 @@ impl Tool for WebFetchTool {
         let input: Input = serde_json::from_str(input).context("invalid web_fetch arguments")?;
         let outcome = self
             .fetcher
-            .fetch(&input.url, input.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
+            .fetch_checked(
+                &input.url,
+                input.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
+                check_hop,
+            )
             .await?;
         render(outcome, input.format, input.offset.unwrap_or(0)).await
+    }
+}
+
+/// Grade a redirect target as if the model had called `web_fetch` on it.
+/// `Ask` stops rather than parking an approval mid-fetch (KISS): the model
+/// is told to fetch the target directly, which goes through the ordinary
+/// approval. No grader in scope (a direct, un-dispatched call) means the
+/// initial URL wasn't graded either — follow, still SSRF-guarded.
+async fn check_hop(url: String) -> Result<()> {
+    let input = serde_json::json!({ "url": url }).to_string();
+    match crate::tool_runner::grade_in_scope(WEB_FETCH_TOOL, &input).await {
+        None | Some((Permission::Allow, _)) => Ok(()),
+        Some((Permission::Deny, mode)) => bail!(
+            "redirect to {url} not followed: `web_fetch` of that URL is denied by mode `{mode}`"
+        ),
+        Some((Permission::Ask, _)) => bail!(
+            "redirect to {url} not followed: fetching that URL needs approval — call \
+             web_fetch on it directly to request it"
+        ),
     }
 }
 
