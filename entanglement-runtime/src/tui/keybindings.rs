@@ -215,9 +215,14 @@ impl KeyMap {
     pub fn direct_action(&self, event: &KeyEvent) -> Option<Action> {
         let seq = KeySequence::from_event(event);
         self.direct.get(&seq).copied().or_else(|| {
-            // Scrolling keeps working under any modifier (Shift+PageUp…) unless
-            // that exact chord is bound to something else.
+            // PageUp/PageDown keep scrolling under any modifier (Shift+PageUp…)
+            // unless that exact chord is bound to something else. Only those
+            // two (#795): a `scroll_up` remapped to Home or an arrow must not
+            // swallow Ctrl+Home/Ctrl+Left, the fixed document/word jumps.
             let (key, _) = seq.keys.first()?;
+            if !matches!(key, Key::Code(KeyCode::PageUp | KeyCode::PageDown)) {
+                return None;
+            }
             let bare = KeySequence {
                 keys: vec![(key.clone(), KeyModifiers::empty())],
             };

@@ -191,6 +191,26 @@ fn scrolling_ignores_modifiers_unless_the_chord_is_bound() {
     );
 }
 
+/// #795: the modifier fallback is PageUp/PageDown only — scroll remapped to
+/// Home/an arrow still scrolls on the bare key, but its modified chords
+/// (Ctrl+Home, Ctrl+Left) stay free for the fixed document/word jumps.
+#[test]
+fn scroll_modifier_fallback_is_limited_to_page_keys() {
+    let ctrl = KeyModifiers::CONTROL;
+    let km = remapped("{scroll_up: home, scroll_down: left}");
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::Home, KeyModifiers::NONE)),
+        Some(Action::ScrollUp)
+    );
+    assert_eq!(km.direct_action(&ev(KeyCode::Home, ctrl)), None);
+    assert_eq!(km.direct_action(&ev(KeyCode::Left, ctrl)), None);
+    let km = remapped("{scroll_up: pageup}");
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::PageUp, ctrl)),
+        Some(Action::ScrollUp)
+    );
+}
+
 /// The one-line fields (reject reason, free-text answer) submit on the
 /// `submit` action, and on plain Enter unless `newline` took Enter.
 #[test]
