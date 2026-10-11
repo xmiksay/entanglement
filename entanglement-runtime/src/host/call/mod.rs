@@ -498,6 +498,44 @@ mod tests {
         assert!(out.contains("truncated"), "byte-cap notice expected: {out}");
     }
 
+    /// An out-of-root `output_file` under an ancestor `call` grant (#764) is
+    /// written by the host process, outside any sandbox — so a sandboxed call
+    /// must fall back to strict containment, while an unsandboxed one may use
+    /// the grant.
+    #[tokio::test]
+    async fn sandboxed_output_file_never_rides_an_escape_grant() {
+        let dir = TempDir::new();
+        let base = dir.path.canonicalize().unwrap();
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let store = std::sync::Arc::new(crate::extra_roots::ExtraRootStore::ephemeral());
+        store.record("call", &base, entanglement_core::ApprovalScope::Session, "");
+        let target = outside.join("x.txt");
+        let input = serde_json::json!({
+            "command": "true",
+            "output_file": target.to_string_lossy(),
+        })
+        .to_string();
+
+        let confined = CallTool::new(root.clone())
+            .with_extra_roots(store.clone())
+            .with_sandbox(sandbox::SandboxPolicy {
+                backend: sandbox::SandboxBackend::Bubblewrap,
+                network: false,
+            });
+        let err = confined.run(&input).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+        assert!(!target.exists(), "nothing written outside the sandbox");
+
+        let open = CallTool::new(root).with_extra_roots(store);
+        open.run(&input).await.expect("unsandboxed rides the grant");
+        assert!(target.exists());
+    }
+
     #[tokio::test]
     async fn workdir_runs_in_subdirectory() {
         let dir = TempDir::new();

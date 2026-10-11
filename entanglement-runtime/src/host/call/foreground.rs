@@ -50,9 +50,14 @@ pub(super) async fn run_foreground(
         }
         None => None,
     };
-    let output_target = resolve_output_target(root, extra, output_file)?;
-
+    // Resolved before the output target: the host process writes that file,
+    // outside any sandbox, so a confined call must not reach past the root
+    // through it — an out-of-root `output_file` falls back to strict
+    // containment under bubblewrap, grant or not (#764). `input_file` may
+    // stay granted: the sandbox can read `/` anyway.
     let policy = sandbox_resolver.resolve(session);
+    let write_grants = extra.filter(|_| !policy.is_sandboxed());
+    let output_target = resolve_output_target(root, write_grants, output_file)?;
     let mut cmd = sandbox::command(&policy, root, command, args);
     cmd.current_dir(cwd)
         .stdout(std::process::Stdio::piped())
