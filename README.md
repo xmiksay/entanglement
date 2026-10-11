@@ -222,7 +222,8 @@ open_editor export command_palette interrupt quit help`. A key is
 `[ctrl+][alt+][shift+]<key>` (a character or `enter`, `tab`, `esc`,
 `pageup`, `space`, `f5`, …) or `leader <key>`; `[]` unbinds. `Ctrl+C`
 (interrupt / two-stage quit), `Ctrl+Q` (quit) and `Esc` are fixed, and a bare
-printable key can't be bound directly. Two actions on one key in the same
+printable key can't be bound directly (nor a dialog navigation key to the
+`jump_attention`/`list_sessions` actions, which fire over open dialogs). Two actions on one key in the same
 context (direct or after the leader), an unknown action or a bad key rejects
 the whole remap with one warning naming the culprits, and the previous map
 stays. Both blocks live-reload; the help dialog (`Ctrl+X ?`) shows the keys in

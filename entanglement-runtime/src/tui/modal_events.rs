@@ -362,6 +362,43 @@ mod tests {
         }
     }
 
+    /// #735 review: with `{submit: ctrl+s, newline: enter}` a free-text answer
+    /// must still be givable — Enter adds a line, Ctrl+S commits the draft.
+    #[tokio::test]
+    async fn a_free_text_answer_submits_on_the_remapped_submit_key() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let cfg: crate::config::TuiConfig =
+            serde_yaml::from_str("{keybindings: {submit: ctrl+s, newline: enter}}").unwrap();
+        app.apply_appearance(&cfg, false, true);
+        let holly = engine();
+        app.handle_out_event(two_question_call("q1", &sid));
+        app.question_begin_free_form();
+        for k in [
+            key(KeyCode::Char('a')),
+            key(KeyCode::Enter),
+            key(KeyCode::Char('b')),
+        ] {
+            handle_question_event(&mut app, &holly, k).await.unwrap();
+        }
+        assert_eq!(app.input().lines(), &["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            app.pending_question().unwrap().current,
+            0,
+            "not committed yet"
+        );
+
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        handle_question_event(&mut app, &holly, ctrl_s)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.pending_question().unwrap().current,
+            1,
+            "Ctrl+S committed the answer and moved on"
+        );
+    }
+
     /// #518: answers are drafts across the batch — revising the first question
     /// after stepping back changes what the eventual `AnswerQuestion` carries,
     /// and nothing is sent to the engine until the explicit Submit at the

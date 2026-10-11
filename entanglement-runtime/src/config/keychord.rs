@@ -65,6 +65,27 @@ impl KeyChord {
     }
 
     /// Would typing this key insert text (so binding it would stop typing)?
+    /// A key every list/text dialog handles itself, whatever the modifiers.
+    pub(crate) fn is_dialog_navigation(&self) -> bool {
+        use KeyName::*;
+        matches!(
+            self.key,
+            Enter
+                | Tab
+                | BackTab
+                | Up
+                | Down
+                | Left
+                | Right
+                | PageUp
+                | PageDown
+                | Home
+                | End
+                | Backspace
+                | Delete
+        )
+    }
+
     pub(crate) fn is_printable(&self) -> bool {
         matches!(self.key, KeyName::Char(_)) && !self.ctrl && !self.alt
     }

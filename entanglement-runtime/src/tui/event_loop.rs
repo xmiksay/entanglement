@@ -405,6 +405,44 @@ mod tests {
         );
     }
 
+    /// #735 review: the reject reason stays sendable under a valid remap that
+    /// moves `newline` onto Enter.
+    #[tokio::test]
+    async fn a_reject_reason_sends_on_the_remapped_submit_key() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        let cfg: crate::config::TuiConfig =
+            serde_yaml::from_str("{keybindings: {submit: ctrl+s, newline: enter}}").unwrap();
+        app.apply_appearance(&cfg, false, true);
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::new(false);
+        park_request(&mut app, &sid, "t1", "bash", r#"{"command":"ls"}"#);
+        app.set_approval_mode(ApprovalMode::EnteringRejectReason {
+            request_id: "t1".to_string(),
+        });
+        for k in [key(KeyCode::Char('n')), key(KeyCode::Enter)] {
+            handle_event(&mut app, &holly, &mut attention, Event::Key(k))
+                .await
+                .unwrap();
+        }
+        assert!(
+            drain_inbound(&mut rx).await.is_empty(),
+            "Enter is a newline now"
+        );
+        let ctrl_s =
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        handle_event(&mut app, &holly, &mut attention, Event::Key(ctrl_s))
+            .await
+            .unwrap();
+        let sent = drain_inbound(&mut rx).await;
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, InMsg::Reject { request_id, .. } if request_id == "t1")),
+            "{sent:?}"
+        );
+    }
+
     #[tokio::test]
     async fn paste_in_reject_reason_collapses_newlines_to_spaces() {
         let sid = SessionId::new("s1");

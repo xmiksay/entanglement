@@ -127,7 +127,7 @@ pub(super) async fn handle_reject_reason(
     request_id: String,
 ) {
     // Shared input-edit keys (Ctrl+arrows, Home/End, doc
-    // jumps, Alt+Enter newline) — Enter stays = send.
+    // jumps, the `newline` action) — `submits_field` sends.
     if apply_input_edit_key(app, &key) {
         return;
     }
@@ -141,7 +141,7 @@ pub(super) async fn handle_reject_reason(
                 app.input().insert_str(&text);
             }
         }
-        KeyCode::Enter => {
+        _ if app.keymap().submits_field(&key) => {
             let text = app.take_input_text();
             let tool = app.pending_tool_request().map(|(_, tool, _)| tool.clone());
             let reason = if text.is_empty() { None } else { Some(text) };

@@ -136,6 +136,17 @@ fn a_conflict_names_both_actions_and_rejects_the_map() {
     );
 }
 
+/// Only the two pre-dialog actions are kept off navigation keys; a normal
+/// action may take one (it only fires in Normal mode), and a leader key is
+/// always fine.
+#[test]
+fn navigation_keys_are_refused_only_for_global_actions() {
+    assert!(parse("{pick_model: f5, scroll_up: [pageup, up]}")
+        .resolve()
+        .is_ok());
+    assert!(parse("{jump_attention: leader enter}").resolve().is_ok());
+}
+
 #[test]
 fn the_same_key_in_different_contexts_is_not_a_conflict() {
     // `leader l` and a direct `l`-chord live in separate contexts.
@@ -153,6 +164,13 @@ fn reserved_printable_and_malformed_keys_are_rejected() {
         ("{export: esc}", "reserved"),
         ("{export: leader esc}", "reserved"),
         ("{export: x}", "stop that key typing"),
+        (
+            "{jump_attention: enter, submit: ctrl+s}",
+            "dialog navigation key",
+        ),
+        ("{list_sessions: down}", "dialog navigation key"),
+        ("{jump_attention: ctrl+pageup}", "dialog navigation key"),
+        ("{list_sessions: home}", "dialog navigation key"),
         ("{export: shift+x}", "stop that key typing"),
         ("{export: ctrl+nope}", "unknown key"),
         ("{exprot: ctrl+o}", "unknown action `exprot`"),

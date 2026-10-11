@@ -138,6 +138,21 @@ mod tests {
         assert!(contrast(light(Slot::SelectionBg), Color::Rgb(0, 0, 0)) >= 7.0);
     }
 
+    /// Hashed profile colours (mode badge, user bar, session list) hold the
+    /// same 4.5:1 bar on `light` for every hue the hash can produce (the hue
+    /// is a `u8`).
+    #[test]
+    fn light_profile_colours_are_readable_for_every_hue() {
+        use crate::tui::theme::{hsv_to_rgb, LIGHT_PROFILE_VALUE};
+        for hue in 0..=u8::MAX {
+            let fg = hsv_to_rgb(hue, 70, LIGHT_PROFILE_VALUE);
+            for bg in [Slot::MessageBg, Slot::InputBg, Slot::SidebarBg] {
+                let ratio = contrast(fg, light(bg));
+                assert!(ratio >= 4.5, "hue {hue} on {}: {ratio:.2}", bg.name());
+            }
+        }
+    }
+
     #[test]
     fn every_slot_has_a_light_value_distinct_from_dark_where_dark_is_unreadable() {
         // Dark's named colours (`White` input text, `Yellow` warnings) vanish on

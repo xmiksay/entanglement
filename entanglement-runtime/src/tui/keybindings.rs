@@ -213,7 +213,31 @@ impl KeyMap {
 
     /// The action a direct keypress is bound to, if any.
     pub fn direct_action(&self, event: &KeyEvent) -> Option<Action> {
-        self.direct.get(&KeySequence::from_event(event)).copied()
+        let seq = KeySequence::from_event(event);
+        self.direct.get(&seq).copied().or_else(|| {
+            // Scrolling keeps working under any modifier (Shift+PageUp…) unless
+            // that exact chord is bound to something else.
+            let (key, _) = seq.keys.first()?;
+            let bare = KeySequence {
+                keys: vec![(key.clone(), KeyModifiers::empty())],
+            };
+            match self.direct.get(&bare) {
+                Some(a @ (Action::ScrollUp | Action::ScrollDown)) => Some(*a),
+                _ => None,
+            }
+        })
+    }
+
+    /// Does `event` submit a one-line field (reject reason, free-text
+    /// answer)? The `submit` action does, and so does plain Enter unless the
+    /// user moved `newline` onto it — those fields must stay submittable
+    /// under any valid remap.
+    pub fn submits_field(&self, event: &KeyEvent) -> bool {
+        match self.direct_action(event) {
+            Some(Action::Submit) => true,
+            Some(Action::Newline) => false,
+            _ => event.code == KeyCode::Enter && event.modifiers.is_empty(),
+        }
     }
 
     pub fn get_candidates(&self, prefix: &KeySequence) -> Vec<(&KeySequence, &Action)> {

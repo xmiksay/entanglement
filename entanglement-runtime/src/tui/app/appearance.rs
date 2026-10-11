@@ -28,8 +28,19 @@ impl App {
             Ok(keys) => self.leader_handler.set_keymap(KeyMap::from_resolved(&keys)),
             Err(e) => warnings.push(e),
         }
+        self.note_tui_warnings(warnings, !startup);
+    }
+
+    /// A reload whose config no longer parses at all (a shape error such as
+    /// `theme: {bsae: …}`): the previous settings stay, and the error is
+    /// reported once, deduplicated like the per-slot/conflict warnings.
+    pub(crate) fn report_config_error(&mut self, error: String) {
+        self.note_tui_warnings(vec![error], true);
+    }
+
+    fn note_tui_warnings(&mut self, warnings: Vec<String>, show: bool) {
         if warnings != self.tui_warnings {
-            if !startup {
+            if show {
                 for w in &warnings {
                     self.record_status("config", format!("⚠ {w}"));
                 }
@@ -112,6 +123,19 @@ mod tests {
         // The same problem on an unrelated reload is not re-reported.
         app.apply_appearance(&config("{keybindings: {export: ctrl+g}}"), false, false);
         assert_eq!(notices(&app), 1);
+    }
+
+    #[test]
+    fn a_reload_load_error_is_reported_once() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.apply_appearance(&TuiConfig::default(), false, true);
+        app.report_config_error("bad shape".into());
+        app.report_config_error("bad shape".into());
+        assert_eq!(notices(&app), 1, "deduplicated across watcher fires");
+        // Fixing the file clears the remembered error, so a recurrence shows.
+        app.apply_appearance(&TuiConfig::default(), false, false);
+        app.report_config_error("bad shape".into());
+        assert_eq!(notices(&app), 2);
     }
 
     #[test]

@@ -317,13 +317,17 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `event_loop::actions::run_action`, so a remapped key behaves exactly like
   the default one. All-or-nothing validation: a key bound to two actions in
   one context, an unknown action, an unparseable key, a bare printable key as
-  a direct chord, or a reserved key (`ctrl+c` two-stage interrupt/quit,
+  a direct chord, a dialog navigation key for the pre-dialog `jump_attention`/`list_sessions`, or a reserved key (`ctrl+c` two-stage interrupt/quit,
   `ctrl+q` immediate quit, `esc` cancel — also as `leader esc`) rejects the
   whole override with one warning naming every culprit, and the TUI keeps the
   map it had (the defaults at startup). Dialog-local keys (approval
   `y/s/a/d/n/e/v`, list navigation) and readline editing stay fixed. The help
   dialog lists the effective bindings plus the fixed keys; the input
-  placeholder and the attention panel's jump hint read the live map. Both
+  placeholder and the attention panel's jump hint read the live map. The
+  reject-reason and free-text answer fields submit on `submit` (plain Enter
+  too unless `newline` took it); scrolling also fires on a modified
+  PageUp/PageDown when that exact chord is unbound; a reload whose config
+  no longer parses is reported once the same way. Both
   blocks re-apply on the watcher's reload arm (`App::apply_appearance`), which
   records each *changed* set of theme/keybinding warnings once as a transcript
   notice (startup warnings go to stderr); `skutter inspect config` prints both
