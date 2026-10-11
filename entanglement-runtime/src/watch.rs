@@ -14,7 +14,11 @@
 //! Known v1 limitation: only directories that exist at watch-start are
 //! registered (`notify` can't watch a path that isn't there yet). A dir
 //! created after startup (e.g. the first `~/.claude/skills` on a machine that
-//! never had one) needs a restart to be picked up.
+//! never had one) needs a restart to be picked up. Likewise the env
+//! overrides that choose those paths (`ENTANGLEMENT_*_DIR`, the state dir,
+//! the `ENTANGLEMENT_*_FILE` parents) are read **once, at watcher spawn**: a
+//! later change to the process env — e.g. a future live `.env` reload — moves
+//! nothing here until a restart.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
