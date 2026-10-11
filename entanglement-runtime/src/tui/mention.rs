@@ -179,6 +179,12 @@ impl MentionPopup {
         self.index = index;
     }
 
+    /// The background-built index (empty until it lands) — `/init` reuses it
+    /// rather than walking the tree a second time.
+    pub fn index(&self) -> &FileIndex {
+        &self.index
+    }
+
     pub fn visible(&self) -> bool {
         self.visible
     }

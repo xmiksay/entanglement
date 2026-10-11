@@ -188,8 +188,22 @@ URL — select it with `ENTANGLEMENT_PROVIDER=zai_paas` (or `provider: zai_paas`
 in `config.yml`).
 
 Inside the TUI, `/key` opens the same dialog (provider list → masked input); a key
-set there is picked up on the next `/model` switch with no restart. No key set →
-`skutter` falls back to the `EchoLlm` debug stub.
+set there is picked up on the next `/model` switch with no restart.
+
+**First run, no provider configured** ([ADR-0222](docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)):
+bare `skutter` opens a setup dialog before the TUI starts — pick a provider
+(keyless `ollama` asks for its base URL instead of a key), type the key
+(masked, saved to the managed `.env`), pick a model (the catalog default is
+preselected); the choice is saved as `provider:`/`model:` in `config.yml`.
+`Esc` continues in a clearly labeled echo mode for that run. `run`, `pipe` and
+`serve` never fall back silently: they print which key variables to set (or
+`skutter config set-key <provider>`) and exit 2. The `EchoLlm` debug stub is
+explicit-only — `ENTANGLEMENT_PROVIDER=echo`.
+
+Once a provider is set, `/init` in the TUI asks the model to write an
+`AGENTS.md` brief for the repo (a normal turn, so the write goes through the
+session's permission mode); with an `AGENTS.md` already present it refuses
+unless you pass `/init --update`, which improves the existing file.
 
 ## Configure
 

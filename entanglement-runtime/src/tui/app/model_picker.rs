@@ -6,6 +6,10 @@ use ratatui::widgets::ListState;
 
 use super::{AgentInfo, App};
 
+/// The transcript notice for a session on the echo stub (#732).
+pub(crate) const ECHO_NOTICE: &str = "no provider configured — echo mode: replies only echo \
+     the request back. Add a key with /key, then pick a model with /model.";
+
 impl App {
     pub fn showing_model_picker(&self) -> bool {
         self.showing_model_picker
@@ -42,6 +46,10 @@ impl App {
     /// Seed the active provider name at head startup (the catalog's resolved
     /// entry). `ModelChanged` keeps it current afterwards.
     pub fn set_active_provider(&mut self, provider: String) {
+        // Echo is never silent (#732, ADR-0222): say so where the replies land.
+        if provider == "echo" {
+            self.record_notice("provider", ECHO_NOTICE.to_string());
+        }
         self.active_provider = provider;
     }
 
@@ -239,5 +247,30 @@ impl App {
                 .select(Some(selected.saturating_sub(n)));
             self.mark_dirty();
         }
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    use super::*;
+    use crate::tui::session_view::TranscriptEntry;
+
+    #[test]
+    fn an_echo_session_is_labeled_in_the_transcript() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.set_active_provider("echo".into());
+        assert!(matches!(
+            app.transcript().last(),
+            Some(TranscriptEntry::ToolOutput { tool: Some(t), output })
+                if t == "provider" && output.starts_with("no provider configured — echo mode")
+        ));
+    }
+
+    #[test]
+    fn a_real_provider_records_no_notice() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let before = app.transcript().len();
+        app.set_active_provider("zai".into());
+        assert_eq!(app.transcript().len(), before);
     }
 }

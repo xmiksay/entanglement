@@ -113,18 +113,24 @@ fn placeholder_key_matches(segment: &str, key: &str) -> bool {
 /// and no `ENTANGLEMENT_ENV_FILE`) is a loud error, as are empty / newline-bearing
 /// values (they cannot be represented in the single-line `KEY=VALUE` format).
 pub fn set_key(key_name: &str, value: &str) -> Result<PathBuf> {
+    let path = env_file_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no config directory for the managed env file; set {ENV_FILE_ENV} to a path first"
+        )
+    })?;
+    set_key_at(path, key_name, value)
+}
+
+/// [`set_key`] against an explicit env-file `path` — the same validation,
+/// lock and atomic write. Lets a caller (and its tests) target a file without
+/// steering the process-global `ENTANGLEMENT_ENV_FILE`.
+pub fn set_key_at(path: PathBuf, key_name: &str, value: &str) -> Result<PathBuf> {
     if value.is_empty() {
         bail!("refusing to write an empty value for {key_name}");
     }
     if value.contains('\n') {
         bail!("refusing to write a value containing a newline for {key_name}");
     }
-
-    let path = env_file_path().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no config directory for the managed env file; set {ENV_FILE_ENV} to a path first"
-        )
-    })?;
 
     // Locked (#329): a concurrent `set_key` / TUI `/key` dialog call must
     // re-read the latest on-disk text before upserting, not race on a stale

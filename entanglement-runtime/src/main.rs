@@ -24,6 +24,7 @@ mod engine_setup;
 mod factories;
 mod heads;
 mod pipe;
+mod provider_setup;
 mod providers;
 mod run;
 mod services;
@@ -69,7 +70,7 @@ async fn main() -> Result<()> {
     // before logging so its `verbose` can raise the level for every mode,
     // including the pre-engine `inspect`/`sessions` fast paths.
     let config::Resolved {
-        config: user_config,
+        config: mut user_config,
         warnings: config_warnings,
         ..
     } = config::Config::resolve(&cwd).context("loading user config")?;
@@ -211,6 +212,17 @@ async fn main() -> Result<()> {
         .chain(config::retired::process_env_warnings(&provider_names))
     {
         eprintln!("skutter: warning: {warning}");
+    }
+
+    // First-run onboarding (#732, ADR-0222): the TUI asks for a provider
+    // before boot when none is usable; other heads hit `select_provider`'s
+    // hint-and-exit instead of a silent echo fallback.
+    if launches_tui && !provider_setup::provider_configured(&catalog, &user_config) {
+        if let tui::onboarding::Next::Quit =
+            tui::onboarding::run(&catalog, &mut user_config).await?
+        {
+            return Ok(());
+        }
     }
 
     let engine = boot::boot(&cwd, &user_config, &catalog).await?;

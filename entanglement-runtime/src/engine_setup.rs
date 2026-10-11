@@ -29,8 +29,9 @@ use crate::{
 ///    (explicit; errors loudly if the matching key is missing).
 /// 2. Auto-detect by key presence, z.ai first (the project's primary), then
 ///    OpenAI, then Anthropic.
-/// 3. Fall back to `EchoLlm` so `skutter` always runs end-to-end and history
-///    propagation is observable.
+/// 3. Nothing configured: the TUI onboards first (or the user picks echo);
+///    every other head prints a hint and exits 2 — no silent `EchoLlm`
+///    fallback (#732, ADR-0222).
 ///
 /// Set `ENTANGLEMENT_PROVIDER=ollama` to use a local keyless Ollama (it has no key to
 /// auto-detect on). Set `ENTANGLEMENT_PROVIDER=echo` to use the EchoLlm stub,

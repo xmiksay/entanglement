@@ -67,7 +67,8 @@ dev-profile tuning lives in the workspace `../Cargo.toml`.
 ## Providers (`skutter`)
 
 Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai
-first). No key → `EchoLlm`. Full detail (clients, catalog, resilience):
+first). No key → the TUI's first-run dialog, every other head a hint + exit 2;
+`EchoLlm` only via `ENTANGLEMENT_PROVIDER=echo` ([ADR-0222](../docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)). Full detail (clients, catalog, resilience):
 [provider](../docs/architecture/provider.md).
 
 | `ENTANGLEMENT_PROVIDER` | wire | key env | model env (default) | base env |

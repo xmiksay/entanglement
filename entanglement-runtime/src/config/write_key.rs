@@ -78,6 +78,18 @@ pub fn save_key(
     let path = user_config_path().ok_or_else(|| {
         anyhow!("no config directory available; set {CONFIG_FILE_ENV} to a path first")
     })?;
+    save_key_at(path, key, comment, value)
+}
+
+/// [`save_key`] against an explicit config `path` (same lock, scaffold,
+/// splice and verify), so a caller's tests needn't steer the process-global
+/// `ENTANGLEMENT_CONFIG_FILE`.
+pub fn save_key_at(
+    path: PathBuf,
+    key: &str,
+    comment: &str,
+    value: impl FnOnce(Option<&Value>) -> Result<Value>,
+) -> Result<PathBuf> {
     lock::with_locked_file(&path, || {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,

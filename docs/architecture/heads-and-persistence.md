@@ -437,7 +437,15 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
   changes are not tracked). Bare `/rewind` is the picker: it lists the
   turns that still have revertable edits (turn, file count, prompt snippet)
-  read straight from the backup store — no engine traffic. **User slash
+  read straight from the backup store — no engine traffic. `/init [--update]
+  [instructions…]` (`tui/init_command.rs`, ✅ #732,
+  [ADR-0222](../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)) sends
+  a built-in prompt plus a bounded repo snapshot (the `@file` index — the capped
+  `glob` walk, built once if not yet landed — summarized as notable files,
+  top-level entries, a type histogram and ≤ 200 shallowest paths) as an ordinary
+  `Prompt`; the model writes `AGENTS.md` with its own `write`/`edit`, graded by
+  the session's mode. An existing `AGENTS.md` refuses a bare `/init`;
+  `--update` asks for an in-place improvement. **User slash
   commands** (#733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)): the slash popup, `Ctrl+P` palette,
   input whisper and `/help <cmd>` list the built-ins plus the live
   `slash_commands` registry (description + `argument-hint`; `SlashPopup` holds
@@ -569,6 +577,27 @@ Result<PathBuf>` (loud error with no managed path; create from `template` when
 missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
 values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
 handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
+`set_key_at(path, …)` is the same write against an explicit path.
+
+**First-run onboarding** (✅ #732,
+[ADR-0222](../adr/0222-no-silent-echo-first-run-onboarding-and-init.md),
+`tui::onboarding` + `provider_setup`): `main` checks
+`provider_setup::provider_configured` (an `ENTANGLEMENT_PROVIDER`, a config
+`provider:`, or a non-empty catalog `key_env` after the `.env` load) before
+`boot`. Unconfigured, the TUI head runs a standalone raw-mode dialog
+(`onboarding::state` is the pure key-driven state machine, `draw` the
+render): provider (catalog order, OAuth-only entries excluded, keyless ones
+included) → masked key, or a base URL prefilled from the catalog for a keyless
+provider → model (catalog default preselected). `persist` writes the key (or an
+edited `<NAME>_API_BASE`) through `env_key::set_key_at` and `provider:`/`model:`
+through `write_key::save_key_at`; each failure is a stderr warning without the
+key. `apply` then primes the process env (as `/key` does) and the in-memory
+config, so `boot`'s `select_provider` simply binds the choice. `Esc` pins the
+in-memory provider to `echo` for this run only; `App::set_active_provider("echo")`
+records a "no provider configured — echo mode" transcript notice and the echo
+model is displayed as `echo mode (no provider)`. `Ctrl+C` quits. The other
+heads never onboard: with nothing configured, `select_provider` prints the hint
+and exits 2.
 
 ## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 

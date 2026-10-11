@@ -87,13 +87,9 @@ use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
-use layers::{
-    discover, merge_value, provenance, user_config_path, RawLayer, CONFIG_FILE_ENV, TEMPLATE_YML,
-};
-use raw::RawConfig;
-// Only `bare_config` and the sibling test suites build a bare defaults layer.
-#[cfg(test)]
 use layers::default_layer;
+use layers::{discover, merge_value, provenance, RawLayer, CONFIG_FILE_ENV, TEMPLATE_YML};
+use raw::RawConfig;
 
 pub mod agent_generation;
 pub mod agent_models;
@@ -119,7 +115,7 @@ pub mod theme;
 pub mod tui;
 pub mod write_key;
 
-pub use layers::{scaffold_if_missing, ConfigLayer};
+pub use layers::{scaffold_if_missing, user_config_path, ConfigLayer};
 pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
 pub use tui::TuiConfig;
@@ -166,9 +162,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// field-by-field via struct update syntax.
 #[cfg(test)]
 pub(crate) fn bare_config() -> Config {
-    parse(&[default_layer()])
-        .expect("embedded defaults.yml is valid — guarded by test")
-        .config
+    Config::embedded_defaults().expect("embedded defaults.yml is valid — guarded by test")
 }
 
 /// Resolved user configuration — the merged, validated values every head reads.
@@ -260,6 +254,13 @@ pub struct Resolved {
 }
 
 impl Config {
+    /// The embedded defaults alone — no user or project layer read. A base an
+    /// embedder (or a test) can override field by field without touching any
+    /// file on disk.
+    pub fn embedded_defaults() -> Result<Config> {
+        Ok(parse(&[default_layer()])?.config)
+    }
+
     /// Resolve the user config for `root`: embedded defaults, deep-merged with the
     /// user file (if present) and the repository file (if present). A malformed or
     /// unreadable file in any layer is a loud error, never a silent fallback.

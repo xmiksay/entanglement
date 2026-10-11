@@ -195,6 +195,10 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                         crate::tui::undo_command::send_rewind(app, holly, &text).await;
                         return Ok(false);
                     }
+                    if cmd == crate::tui::commands::Command::Init {
+                        crate::tui::init_command::send_init(app, holly, &text).await;
+                        return Ok(false);
+                    }
                     // Lifecycle commands (#6): `/stop`,
                     // `/pause`, `/continue` need `holly`
                     // and the optional `--all` text.

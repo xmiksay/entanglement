@@ -170,6 +170,8 @@ pub(super) async fn handle_command_palette_event(
                 } else if cmd == crate::tui::commands::Command::Rewind {
                     // No trailing turn: a picked `/rewind` lists the turns.
                     super::undo_command::list_turns(app);
+                } else if cmd == crate::tui::commands::Command::Init {
+                    super::init_command::send_init(app, holly, "/init").await;
                 } else if app.execute_command(cmd) {
                     return Ok(true);
                 }
