@@ -211,7 +211,8 @@ pub enum UserLayer {
     FromEnv,
     /// Exactly this dir (strict), as the env override would — the seam tests
     /// and embedders use to stay off process env and the real user dirs
-    /// (#773). A missing dir is an empty layer.
+    /// (#773). A missing dir is an empty layer, `warn!`ed like a missing
+    /// env override (#803) — a typo'd embedder path must not go silent.
     Dir(PathBuf),
 }
 
@@ -230,7 +231,10 @@ pub fn load_layers<T>(
     mut read_dir: impl FnMut(Layer, &Path, Strictness, &mut Vec<T>) -> Result<()>,
 ) -> Result<Vec<T>> {
     let dirs = match user {
-        UserLayer::Dir(dir) => candidate_dirs(root, kind, Some(dir.clone()), None, None),
+        UserLayer::Dir(dir) => {
+            warn_if_missing_override(kind, "UserLayer::Dir", dir);
+            candidate_dirs(root, kind, Some(dir.clone()), None, None)
+        }
         UserLayer::FromEnv => env_candidate_dirs(
             root,
             kind,
@@ -256,20 +260,28 @@ fn env_candidate_dirs(
     user_dirs: impl FnOnce() -> (Option<PathBuf>, Option<PathBuf>),
 ) -> Vec<(Layer, PathBuf, Strictness)> {
     if let Some(over) = lookup(env).map(PathBuf::from) {
-        // A default path that isn't there is the normal "no user layer" case;
-        // an explicit override that isn't there is a user mistake.
-        if !over.exists() {
-            tracing::warn!(
-                kind,
-                env,
-                path = %over.display(),
-                "explicit definitions-dir override points at a missing path; treating the user layer as empty",
-            );
-        }
+        warn_if_missing_override(kind, env, &over);
         return candidate_dirs(root, kind, Some(over), None, None);
     }
     let (home, config) = user_dirs();
     candidate_dirs(root, kind, None, home.as_deref(), config.as_deref())
+}
+
+/// A default user path that isn't there is the normal "no user layer" case;
+/// an *explicit* one (`source`: the env var, or the embedder's
+/// `UserLayer::Dir`) that isn't there is a mistake worth a warning. Returns
+/// whether it warned.
+fn warn_if_missing_override(kind: &str, source: &str, path: &Path) -> bool {
+    if path.exists() {
+        return false;
+    }
+    tracing::warn!(
+        kind,
+        source,
+        path = %path.display(),
+        "explicit definitions-dir override points at a missing path; treating the user layer as empty",
+    );
+    true
 }
 
 #[cfg(test)]
@@ -288,6 +300,34 @@ mod tests {
     ) -> Result<()> {
         acc.push((layer, dir.to_path_buf(), strictness));
         Ok(())
+    }
+
+    /// #803: an embedder's missing `UserLayer::Dir` warns like a missing env
+    /// override, and still loads as an empty user layer.
+    #[test]
+    fn a_missing_user_layer_dir_warns_and_is_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("typo-agents");
+        assert!(warn_if_missing_override(
+            "agents",
+            "UserLayer::Dir",
+            &missing
+        ));
+        assert!(!warn_if_missing_override(
+            "agents",
+            "UserLayer::Dir",
+            root.path()
+        ));
+        let out = load_layers(
+            root.path(),
+            "agents",
+            TEST_ENV,
+            &UserLayer::Dir(missing.clone()),
+            Vec::new(),
+            record,
+        )
+        .unwrap();
+        assert_eq!(out[0], (Layer::User, missing, Strictness::Strict));
     }
 
     #[test]
