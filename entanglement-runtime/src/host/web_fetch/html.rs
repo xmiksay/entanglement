@@ -30,6 +30,7 @@
 //!    recursion, no tree).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -46,6 +47,11 @@ use tokio::sync::Semaphore;
 /// Tree depth above which `htmd` is not attempted. Real pages sit well
 /// under 100.
 pub(super) const MAX_DEPTH: usize = 256;
+/// Start tags above which the tree builder is not attempted at all. Its
+/// cost is superlinear in more shapes than plain depth (scope checks walk
+/// the open-element stack), so size alone is a second gate; real pages sit
+/// in the low thousands.
+pub(super) const MAX_ELEMENTS: usize = 50_000;
 /// Covers several times [`MAX_DEPTH`] of `htmd` recursion (a test pins 4×).
 const CONVERT_STACK: usize = 64 * 1024 * 1024;
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -135,6 +141,12 @@ fn convert(html: &str) -> Converted {
             fallback: Some("HTML nested too deeply to convert"),
         };
     }
+    if scan.elements > MAX_ELEMENTS {
+        return Converted {
+            text: scan.text,
+            fallback: Some("HTML has too many elements to convert"),
+        };
+    }
     let converter = htmd::HtmlToMarkdown::builder()
         .skip_tags(SKIPPED.to_vec())
         .build();
@@ -218,16 +230,63 @@ pub(super) fn tree_text(root: &Rc<Node>) -> String {
 /// readable text.
 pub(super) struct Scan {
     pub depth: usize,
+    /// Start tags seen (void ones included).
+    pub elements: usize,
     pub text: String,
 }
 
-/// Token sink: an open-element stack (an end tag pops back to its matching
-/// open element and is otherwise ignored, so stray end tags can't hide
-/// nesting) plus the text outside skipped elements.
+/// The sink's open-element stack. Every operation is amortized O(1) — the
+/// scan must stay linear on exactly the inputs it exists to reject, so no
+/// per-tag walk of the stack: `counts` answers "is `name` open at all?" and
+/// `foreign` "is any svg/math open?" without one, and an end tag's search
+/// only covers elements it then pops.
+#[derive(Default)]
+struct OpenElements {
+    stack: Vec<String>,
+    counts: HashMap<String, usize>,
+    foreign: usize,
+}
+
+impl OpenElements {
+    fn push(&mut self, name: &str) {
+        *self.counts.entry(name.to_string()).or_default() += 1;
+        if is_foreign(name) {
+            self.foreign += 1;
+        }
+        self.stack.push(name.to_string());
+    }
+
+    /// Pop back to (and including) the nearest open `name`; ignored when
+    /// nothing by that name is open, so stray end tags can't hide nesting.
+    fn close(&mut self, name: &str) {
+        if self.counts.get(name).copied().unwrap_or(0) == 0 {
+            return;
+        }
+        while let Some(top) = self.stack.pop() {
+            if let Some(c) = self.counts.get_mut(&top) {
+                *c -= 1;
+            }
+            if is_foreign(&top) {
+                self.foreign -= 1;
+            }
+            if top == name {
+                break;
+            }
+        }
+    }
+}
+
+fn is_foreign(name: &str) -> bool {
+    name == "svg" || name == "math"
+}
+
+/// Token sink: the open-element model plus the text outside skipped
+/// elements.
 #[derive(Default)]
 struct ScanSink {
-    stack: RefCell<Vec<String>>,
+    open: RefCell<OpenElements>,
     depth: Cell<usize>,
+    elements: Cell<usize>,
     text: RefCell<String>,
 }
 
@@ -239,18 +298,27 @@ impl ScanSink {
         } else {
             self.text.borrow_mut().push(' ');
         }
-        let mut stack = self.stack.borrow_mut();
+        let mut open = self.open.borrow_mut();
         if tag.kind == TagKind::EndTag {
-            if let Some(i) = stack.iter().rposition(|n| n == name) {
-                stack.truncate(i);
-            }
+            open.close(name);
             return TokenSinkResult::Continue;
         }
+        self.elements.set(self.elements.get() + 1);
         if VOID.contains(&name) {
             return TokenSinkResult::Continue;
         }
-        stack.push(name.to_string());
-        self.depth.set(self.depth.get().max(stack.len()));
+        // Inside `<svg>`/`<math>` the tree builder never switches the
+        // tokenizer to raw text (an svg `<title>` is an HTML integration
+        // point holding real markup). Mirroring that matters: switching here
+        // would hide every tag after it from the scan while the tree builder
+        // still builds them. Staying foreign too long only over-counts —
+        // the safe direction.
+        let foreign = open.foreign > 0;
+        open.push(name);
+        self.depth.set(self.depth.get().max(open.stack.len()));
+        if foreign {
+            return TokenSinkResult::Continue;
+        }
         // The tokenizer alone doesn't know which elements hold raw text;
         // the tree builder normally tells it, so the sink must.
         match name {
@@ -273,8 +341,9 @@ impl TokenSink for ScanSink {
             Token::TagToken(tag) => return self.tag(&tag),
             Token::CharacterTokens(chars) => {
                 let skipped = self
-                    .stack
+                    .open
                     .borrow()
+                    .stack
                     .last()
                     .is_some_and(|top| SKIPPED.contains(&top.as_str()) || top == "title");
                 if !skipped {
@@ -298,6 +367,7 @@ pub(super) fn token_scan(html: &str) -> Scan {
     let sink = tokenizer.sink;
     Scan {
         depth: sink.depth.get(),
+        elements: sink.elements.get(),
         text: collapse_whitespace(&sink.text.into_inner()),
     }
 }

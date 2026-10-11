@@ -119,8 +119,17 @@ parser:
 
 1. html5ever's spec tokenizer runs first. It is linear and builds no tree.
    An open-element stack, in which an end tag pops only back to its match,
-   estimates the depth and collects the page text. Above 256 levels the page
-   is answered with that text and never reaches the tree builder.
+   estimates the depth and collects the page text. Every operation is
+   amortized O(1), so the scan stays linear on the hostile inputs it exists
+   to reject.
+   - **Foreign content:** inside `<svg>`/`<math>` the sink never switches
+     the tokenizer into raw-text state, mirroring the tree builder. An svg
+     `<title>` is an HTML integration point, so switching there would hide
+     every later tag from the scan while the tree is still built.
+   - **Gates:** a page above 256 levels, or with more than 50,000 start tags
+     (a second gate, because the build cost is superlinear in more shapes
+     than depth alone), is answered with that text and never reaches the
+     tree builder.
 2. Otherwise the rcdom tree is built and its real depth is measured with an
    iterative walk. Above the limit, `htmd` never sees the tree and its text
    is extracted iteratively. rcdom's `Drop` is iterative, so teardown is

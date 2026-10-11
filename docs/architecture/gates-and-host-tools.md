@@ -565,8 +565,10 @@ layers:
 
 - **Tokenizer pre-scan.** html5ever's linear spec tokenizer runs first and
   builds no tree. An open-element stack estimates the nesting and collects
-  the page text. A quoted `>` can't fool it. Above 256 levels the page is
-  answered with that text and is never parsed into a tree.
+  the page text. A quoted `>` can't fool it. Inside `<svg>`/`<math>` it
+  never switches to raw text, just as the tree builder doesn't. The scan is
+  amortized O(1) per tag. A page above 256 levels, or with more than 50,000
+  start tags, is answered with that text and is never parsed into a tree.
 - **Real-tree check.** Otherwise the rcdom tree is built and its real depth
   is measured with an iterative walk. Above the limit, its text is extracted
   iteratively instead of handing the tree to `htmd`.
