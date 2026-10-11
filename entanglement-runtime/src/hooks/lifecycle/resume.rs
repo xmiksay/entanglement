@@ -17,6 +17,11 @@ struct Pending {
     ids: HashSet<SessionId>,
 }
 
+/// Backstop on pending resumes: a mark only clears on its start, a refusal,
+/// the session ending, or a lag, so a start core never emits (a cascade child
+/// core skips silently) could otherwise pin an entry forever.
+const MAX_PENDING: usize = 64;
+
 /// Pending resumes in arrival order.
 #[derive(Debug, Default)]
 pub(super) struct ResumeMarks(Vec<Pending>);
@@ -30,7 +35,10 @@ impl ResumeMarks {
     /// `SessionHibernated` — are re-announced, so only those are marked.
     /// Marking the rest (the root's other branches, when a non-root target
     /// replays the root's whole log) would leak them until they end.
-    pub(super) fn observe(&mut self, msg: &InMsg) {
+    ///
+    /// A child already `is_live` is skipped too: core's cascade skips a live
+    /// id without any event, so its mark would never clear.
+    pub(super) fn observe(&mut self, msg: &InMsg, is_live: impl Fn(&SessionId) -> bool) {
         let InMsg::Resume { session, records } = msg else {
             return;
         };
@@ -53,10 +61,14 @@ impl ResumeMarks {
         }
         let mut ids: HashSet<SessionId> = live
             .into_iter()
-            .filter(|id| descends_from(id, session, &parents))
+            .filter(|id| descends_from(id, session, &parents) && !is_live(id))
             .cloned()
             .collect();
         ids.insert(session.clone());
+        if self.0.len() >= MAX_PENDING {
+            tracing::warn!("lifecycle hook tracker: too many pending resumes, dropping the oldest");
+            self.0.remove(0);
+        }
         self.0.push(Pending {
             target: session.clone(),
             ids,

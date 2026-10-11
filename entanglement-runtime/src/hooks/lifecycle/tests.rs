@@ -363,6 +363,49 @@ fn a_lag_forgets_pending_turn_ends() {
     let mut t = Tracker::default();
     t.observe(&started("a", None, None));
     t.observe(&done("a"));
-    t.forget_pending_stops();
+    t.forget_after_lag();
     assert!(t.observe(&status("a", AgentState::Done)).is_none());
+}
+
+/// A lag may have dropped a resumed `SessionStarted`: its mark goes too.
+#[test]
+fn a_lag_forgets_pending_resume_marks() {
+    let mut t = Tracker::default();
+    t.observe_in(&InMsg::Resume {
+        session: sid("a"),
+        records: vec![(None, started("a", None, None))],
+    });
+    t.forget_after_lag();
+    assert!(t.resuming.marked().is_empty());
+}
+
+/// Core's cascade skips an already-live child without any event, so such a
+/// child is never marked (its mark could never clear).
+#[test]
+fn an_already_live_cascade_child_is_not_marked() {
+    let mut t = Tracker::default();
+    t.observe(&started("kid", Some("root"), None));
+    t.observe_in(&InMsg::Resume {
+        session: sid("root"),
+        records: vec![
+            (None, started("root", None, None)),
+            (None, started("kid", Some("root"), None)),
+        ],
+    });
+    assert_eq!(t.resuming.marked(), HashSet::from(["root"]));
+}
+
+/// Backstop: pending resumes are capped, the oldest dropped first.
+#[test]
+fn pending_resumes_are_capped() {
+    let mut t = Tracker::default();
+    for i in 0..100 {
+        t.observe_in(&InMsg::Resume {
+            session: sid(&format!("s{i}")),
+            records: vec![],
+        });
+    }
+    let marked = t.resuming.marked();
+    assert_eq!(marked.len(), 64);
+    assert!(marked.contains("s99") && !marked.contains("s0"));
 }
