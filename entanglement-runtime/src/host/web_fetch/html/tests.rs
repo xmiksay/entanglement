@@ -122,3 +122,64 @@ async fn conversions_are_capped_and_a_held_slot_falls_back() {
     assert_eq!(result.err(), Some("HTML converter busy"));
     drop(held);
 }
+
+/// Foreign content: the tree builder never switches to raw text inside
+/// `<svg>`/`<math>`, so the scan mustn't either — or every following tag is
+/// hidden from it while the quadratic tree build still happens.
+#[test]
+fn raw_text_elements_inside_svg_and_math_do_not_hide_nesting() {
+    for prefix in [
+        "<svg><title>",
+        "<svg><style>",
+        "<svg><desc><textarea>",
+        "<math><mi><title>",
+        "<math><style>",
+        "<svg><foreignObject><noscript>",
+    ] {
+        let html = format!("{prefix}{}", "<div>".repeat(1000));
+        assert!(
+            token_scan(&html).depth >= 1000,
+            "{prefix}: nesting hidden from the scan"
+        );
+    }
+    // Outside foreign content a real `<style>` still holds raw text.
+    assert_eq!(token_scan("<style><div><div></style>").depth, 1);
+}
+
+#[test]
+fn the_svg_title_payload_falls_back_without_a_tree_build() {
+    let html = format!("<svg><title>{}tail", "<div>".repeat(80_000));
+    let started = std::time::Instant::now();
+    let out = on_converter_stack(move || convert(&html));
+    assert_eq!(out.fallback, Some("HTML nested too deeply to convert"));
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn too_many_elements_falls_back_without_a_tree_build() {
+    // Shallow but huge: past the element cap, never built into a tree.
+    let html = "<p>x</p>".repeat(MAX_ELEMENTS + 1);
+    assert!(token_scan(&html).depth <= MAX_DEPTH);
+    let out = on_converter_stack(move || convert(&html));
+    assert_eq!(out.fallback, Some("HTML has too many elements to convert"));
+    assert!(out.text.starts_with("x\nx\n"));
+}
+
+/// The scan itself must stay linear on the inputs it rejects: deep nesting
+/// plus stray end tags plus foreign content, at the download cap.
+#[test]
+fn the_scan_is_linear_on_hostile_shapes() {
+    let html = format!("<svg>{}", "<div></span>".repeat(150_000));
+    let started = std::time::Instant::now();
+    let scan = token_scan(&html);
+    assert!(scan.depth > MAX_DEPTH);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
