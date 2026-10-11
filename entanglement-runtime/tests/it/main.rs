@@ -110,3 +110,5 @@ mod tool_mask;
 mod unattended_mode;
 mod undo_config;
 mod user_config;
+#[cfg(feature = "web-fetch")]
+mod web_fetch;

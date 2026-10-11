@@ -29,6 +29,7 @@ mod dispatch;
 mod enable;
 mod generation;
 mod hit;
+pub(crate) mod image_paste;
 mod input;
 mod inspect;
 mod key;

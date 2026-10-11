@@ -62,6 +62,10 @@ libc = "0.2"
 # serializes a script's return value.
 rhai = { version = "1", default-features = false, features = ["std", "sync", "serde"] }
 diffy = "0.5"
+# HTML -> Markdown for the `web_fetch` host tool (#736, ADR-0220). Pulls
+# html5ever + markup5ever_rcdom (pure Rust, no transport), so the runtime
+# gates it behind its own default-on `web-fetch` feature like `rhai`.
+htmd = "0.5"
 # rustls (not native-tls) so builds need no system OpenSSL headers. 0.13's
 # stock `rustls` feature is aws-lc-rs + the OS trust store; we keep ring + the
 # bundled webpki roots instead (no OS trust-store reliance, no aws-lc C build in

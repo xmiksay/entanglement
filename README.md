@@ -156,7 +156,14 @@ clash; `skutter inspect commands` lists what resolved. Beyond the root-contained
 ([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
 and graded by the session's mode like everything else; the sandboxed `rhai`
 scripting tool ships in every default build (droppable via
-`--no-default-features`, #502).
+`--no-default-features`, #502). `web_fetch` reads a public http(s) page as
+Markdown behind an SSRF guard: private, loopback, link-local and metadata
+addresses are refused, DNS answers are pinned, and every redirect is checked
+again. It is graded like `curl` (allowed in `build`, prompted elsewhere) and
+can be dropped with the `web-fetch` feature
+([ADR-0220](docs/adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
+In the TUI, `Ctrl+V` pastes a clipboard image into the prompt when the model's
+catalog entry sets `supports_vision`.
 
 ## Crates
 
@@ -167,7 +174,7 @@ is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic + native Gemini clients (#309); connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai` (`default = ["tui", "serve", "mcp-http", "rhai"]`, #502); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch` (`default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]`, #502, #736); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Install
 
@@ -258,7 +265,7 @@ backgrounds; code blocks follow the base (`base16-ocean` dark/light).
 `NO_COLOR` (set, non-empty) turns all colour off — bold/dim/reverse still
 mark emphasis and selection.
 
-**Keys.** Actions: `leader submit newline cycle_mode cycle_mode_back
+**Keys.** Actions: `leader submit newline cycle_mode cycle_mode_back paste_image
 scroll_up scroll_down toggle_reasoning jump_attention new_session
 list_sessions pause_toggle pick_agent pick_model inspect toggle_sidebar
 open_editor export command_palette interrupt quit help`. A key is

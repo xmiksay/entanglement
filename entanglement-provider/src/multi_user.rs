@@ -347,6 +347,7 @@ mod tests {
                     display_name: None,
                     context_window: Some(128_000),
                     supports_thinking: false,
+                    supports_vision: false,
                     supports_temperature: true,
                     default_temperature: None,
                     max_output_tokens: None,

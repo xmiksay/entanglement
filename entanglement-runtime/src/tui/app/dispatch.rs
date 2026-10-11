@@ -197,7 +197,8 @@ impl App {
             | Action::Newline
             | Action::CycleMode
             | Action::CycleModeBack
-            | Action::PauseToggle => false,
+            | Action::PauseToggle
+            | Action::PasteImage => false,
         }
     }
 }

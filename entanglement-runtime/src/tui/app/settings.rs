@@ -33,6 +33,12 @@ impl SettingsState {
             body_rect: Rect::default(),
         }
     }
+
+    /// The model catalog — also the source of per-model capability flags
+    /// (`supports_vision`, read by image paste).
+    pub(super) fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
 }
 
 impl App {

@@ -11,10 +11,11 @@ boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
 ADR-0010).
 
 The heads (and the `skutter` binary that carries them) need the crate's
-**default features** — `default = ["tui", "serve", "mcp-http", "rhai"]` pulls
+**default features** — `default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]` pulls
 clap + the providers + the render stack + the axum WS server + the
 streamable-HTTP MCP transport (ADR-0080) + the sandboxed script tool
-([ADR-0135](../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)),
+([ADR-0135](../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md))
++ the `web_fetch` tool ([ADR-0220](../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)),
 and `[[bin]] skutter` declares
 `required-features = ["cli","provider","tui"]` (the `provider` feature was split
 out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
@@ -176,7 +177,17 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   pulldown-cmark + syntect (ADR-0015). The input box enables crossterm's
   bracketed paste so a multi-line paste lands as one buffer edit (each
   embedded newline starts a new `SimpleInput` row) instead of a flood of key
-  events whose embedded newlines each fire the Enter-to-send binding. Event
+  events whose embedded newlines each fire the Enter-to-send binding.
+  **Clipboard image paste** (#736, [ADR-0220](../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)):
+  `Ctrl+V`, or an empty bracketed paste, reads the clipboard image by shelling
+  out to `wl-paste` (Wayland), `xclip` (X11) or `osascript` (macOS). There is
+  no clipboard crate. A headless session or a missing tool shows a toast. The
+  image must be PNG, JPEG, GIF or WebP (checked by magic bytes) and at most
+  5 MiB once base64-encoded. It is parked on the input buffer as an
+  `[Image #n]` chip. On submit, every image whose chip is still in the text
+  is sent as a `ContentPart::Image`. Only a model whose catalog entry sets
+  `supports_vision` accepts a paste; any other model is refused at paste time
+  and again at submit. Event
   buffering and
   multiplexed-session rendering follow ADR-0012. The transcript body is rendered
   through a **per-block render cache** (#342, `tui::transcript::cache`): a redraw
@@ -342,7 +353,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `MarkdownRenderer` and the render cache's palette fingerprint drops the
   memo. **Keybindings** (#735, `config::keybindings` + `config::keychord` + `tui::keybindings`):
   `tui.keybindings` maps a `KeyAction` — exactly the pre-#735 configurable
-  bindings: `leader submit newline cycle_mode cycle_mode_back scroll_up
+  bindings (plus #736's `paste_image`): `leader submit newline cycle_mode cycle_mode_back paste_image scroll_up
   scroll_down toggle_reasoning jump_attention new_session list_sessions
   pause_toggle pick_agent pick_model inspect toggle_sidebar open_editor export
   command_palette interrupt quit help` — to one spec or a list replacing its

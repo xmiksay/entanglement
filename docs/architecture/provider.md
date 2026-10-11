@@ -727,7 +727,8 @@ default `McpServerState` (`None` ⇒ `allowed`). The embedded defaults ship
 z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
 `ZAI_API_KEY`; the runtime (`entanglement-runtime::mcp::available`) owns all
 interpretation — the provider crate only carries the data. `ModelEntry`
-carries capability flags (`supports_thinking`,
+carries capability flags (`supports_thinking`, `supports_vision` (image input;
+gates TUI image paste, #736),
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
 `thinking_budget_tokens`, `thinking_style`, `thinking_format`,
 `replay_thinking`, `effort_tiers`, `thinking_required`; provider-level

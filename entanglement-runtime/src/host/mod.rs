@@ -47,6 +47,8 @@ pub mod sandbox;
 pub mod search_json;
 pub mod unified_diff;
 mod walk;
+#[cfg(feature = "web-fetch")]
+pub mod web_fetch;
 pub mod write;
 
 pub use apply_patch::ApplyPatchTool;
@@ -61,6 +63,8 @@ pub use sandbox::{SandboxBackend, SandboxPolicy};
 pub use search_json::{GlobJsonTool, GrepJsonTool};
 pub(crate) use walk::MAX_RESULTS;
 pub use walk::{list_files, list_files_with_extra_roots, FileList};
+#[cfg(feature = "web-fetch")]
+pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
 /// Hard cap on a single tool's textual output, in bytes. Larger output is

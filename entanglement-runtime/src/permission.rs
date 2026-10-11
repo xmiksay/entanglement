@@ -301,6 +301,8 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             Some(crate::host::glob::joined_pattern(base, pattern))
         }
         "grep" => value.get("path").and_then(|p| p.as_str()).map(String::from),
+        // #736: the URL, so `web_fetch(https://docs.rs/*)` can allow a site.
+        "web_fetch" => value.get("url")?.as_str().map(String::from),
         _ => None,
     }
 }
@@ -763,6 +765,11 @@ mod tests {
             )
             .as_deref(),
             Some("src/lib.rs")
+        );
+        // web_fetch → the URL (#736).
+        assert_eq!(
+            permission_arg("web_fetch", r#"{"url":"https://docs.rs/x"}"#).as_deref(),
+            Some("https://docs.rs/x")
         );
         // glob → the pattern itself, since a glob pattern is a path.
         assert_eq!(

@@ -94,6 +94,9 @@ pub(super) async fn handle_event(
         Event::FocusGained => attention.set_focused(true),
         Event::FocusLost => attention.set_focused(false),
         Event::Paste(s) => match app.approval_mode() {
+            // An empty bracketed paste is what terminals send when the
+            // clipboard holds only an image (#736): fetch it ourselves.
+            ApprovalMode::Normal if s.is_empty() => app.paste_clipboard_image().await,
             ApprovalMode::Normal => {
                 app.input().insert_str(&s);
                 app.update_popups();
@@ -1349,5 +1352,77 @@ mod tests {
             }
         };
         assert_eq!(sent, InMsg::prompt(sid.clone(), "/nope x"));
+    }
+
+    // --- #736: clipboard image paste -------------------------------------
+
+    fn on_model(app: &mut App, sid: &SessionId, provider: &str, model: &str) {
+        app.handle_out_event(OutEvent::ModelChanged {
+            session: sid.clone(),
+            provider: provider.into(),
+            model: model.into(),
+            context_window: None,
+        });
+    }
+
+    #[tokio::test]
+    async fn empty_paste_and_ctrl_v_on_a_text_model_attach_nothing() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        on_model(&mut app, &sid, "zai", "glm-5.3");
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::new(false);
+
+        let ctrl_v =
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        for ev in [Event::Paste(String::new()), Event::Key(ctrl_v)] {
+            handle_event(&mut app, &holly, &mut attention, ev)
+                .await
+                .unwrap();
+            assert!(app.toast().is_some_and(|t| t.contains("no image input")));
+        }
+        assert_eq!(app.input_text(), "", "Ctrl+V must not insert a literal v");
+        assert!(drain_inbound(&mut rx).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submitting_with_an_image_chip_sends_an_image_part() {
+        let sid = SessionId::new("s1");
+        let mut app = App::new_for_test(sid.clone());
+        on_model(&mut app, &sid, "anthropic", "claude-sonnet-5");
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::new(false);
+
+        app.input().insert_str("what is this? ");
+        app.attach_image(crate::tui::app::image_paste::prepare(
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+        ));
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Enter)),
+        )
+        .await
+        .unwrap();
+
+        let sent = drain_inbound(&mut rx).await;
+        let content = sent
+            .iter()
+            .find_map(|m| match m {
+                InMsg::Prompt { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("a prompt was sent");
+        assert_eq!(
+            content[0],
+            entanglement_core::ContentPart::text("what is this? [Image #1]")
+        );
+        assert!(matches!(
+            content.get(1),
+            Some(entanglement_core::ContentPart::Image { .. })
+        ));
     }
 }
