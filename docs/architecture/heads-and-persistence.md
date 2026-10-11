@@ -269,8 +269,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   emits a wire-visible `OutEvent::Throttle` on each one's own enter/exit
   transition (#517, [ADR-0141](../adr/0141-wire-visible-throttle-transitions.md)) —
   engine-global, not per-session, since the resilience pool is per-endpoint
-  (ADR-0050). `run --format text` renders it in full; `serve` relays it like
-  any other frame. **Status line** (#762, `tui::statusline`): the top row
+  (ADR-0050). `run` relays it past its own-session filter (#794) — `--format
+  text` renders it in full on stdout, `--format json` emits it as an NDJSON
+  frame; `serve` relays it like any other frame. **Status line** (#762, `tui::statusline`): the top row
   always shows where the TUI works — default `repo › cwd_rel  ⎇ branch
   [worktree: name]` left, the session short id right, then the old bar's
   `(N sessions)` / `⚠ N` / `⚠ log` (session-log outage, #767) counters. Rendered from `config.yml`
