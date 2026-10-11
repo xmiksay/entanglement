@@ -164,7 +164,7 @@ impl Theme {
         match (self.no_color, self.base) {
             (true, _) => Color::Reset,
             (false, ThemeBase::Dark) => hash_profile_color(name),
-            (false, ThemeBase::Light) => hashed_color(name, 55),
+            (false, ThemeBase::Light) => hashed_color(name, LIGHT_PROFILE_VALUE),
         }
     }
 
@@ -242,6 +242,10 @@ pub(crate) fn darken(color: Color, factor: f32) -> Color {
     }
 }
 
+/// HSV value of a hashed profile colour on `light`: at 40 every hue keeps
+/// WCAG ≥ 4.5:1 on the light backgrounds (tested over all hues).
+pub(crate) const LIGHT_PROFILE_VALUE: u8 = 40;
+
 /// The dark theme's hashed profile colour.
 pub(crate) fn hash_profile_color(name: &str) -> Color {
     hashed_color(name, 90)
@@ -256,7 +260,7 @@ fn hashed_color(name: &str, value: u8) -> Color {
     hsv_to_rgb(hue, 70, value)
 }
 
-fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
+pub(crate) fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
     let h = h as f64 / 360.0;
     let s = s as f64 / 100.0;
     let v = v as f64 / 100.0;

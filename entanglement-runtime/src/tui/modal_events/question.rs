@@ -94,7 +94,7 @@ pub(in crate::tui) async fn handle_question_event(
 
     if entering {
         // Shared input-edit keys (Ctrl+arrows, Home/End, doc jumps, Alt+Enter
-        // newline) — Enter stays = submit below.
+        // the `newline` action) — `submits_field` submits below.
         if crate::tui::event_loop::apply_input_edit_key(app, &key) {
             return Ok(false);
         }
@@ -103,7 +103,7 @@ pub(in crate::tui) async fn handle_question_event(
                 let _ = app.take_input_text();
                 app.question_cancel_free_form();
             }
-            KeyCode::Enter => {
+            _ if app.keymap().submits_field(&key) => {
                 let text = app.take_input_text();
                 if !text.is_empty() {
                     commit_current_answer(app, vec![text]);

@@ -228,7 +228,12 @@ pub(crate) fn reload_tui_config(
             app.apply_appearance(&c.tui, crate::tui::app::appearance::no_color_env(), false);
             app.set_statusline_config(c.tui.statusline);
         }
-        Err(e) => tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}"),
+        Err(e) => {
+            tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}");
+            app.report_config_error(format!(
+                "config not reloaded, keeping previous TUI settings: {e:#}"
+            ));
+        }
     }
 }
 

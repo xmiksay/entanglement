@@ -17,7 +17,10 @@
 //! external SIGINT lands), `ctrl+q` (immediate quit, the escape hatch in every
 //! dialog) and `esc` (cancel/close everywhere, and the leader-chord cancel) —
 //! a remap must never be able to trap the user. Dialog-local keys (approval
-//! `y/s/a/n/e/v`, list navigation) and readline editing keys stay fixed too.
+//! `y/s/a/d/n/e/v`, list navigation) and readline editing keys stay fixed too.
+//! `jump_attention`/`list_sessions` are checked ahead of every dialog, so
+//! they may not take a dialog navigation key (enter, tab, arrows, page,
+//! home/end, backspace/delete) as a direct chord.
 
 use std::collections::BTreeMap;
 
@@ -86,6 +89,9 @@ impl KeyAction {
         KeyAction::ALL.iter().copied().find(|a| a.name() == name)
     }
 }
+/// Actions the event loop checks ahead of every open dialog.
+const GLOBAL_ACTIONS: [KeyAction; 2] = [KeyAction::JumpAttention, KeyAction::ListSessions];
+
 /// Keys no action may take (see the module docs for why).
 const RESERVED: [(KeyChord, &str); 3] = [
     (
@@ -191,6 +197,14 @@ impl KeybindingsConfig {
                     continue;
                 }
                 if let KeyBinding::Direct(c) = binding {
+                    if GLOBAL_ACTIONS.contains(action) && c.is_dialog_navigation() {
+                        problems.push(format!(
+                            "{}: `{spec}` is a dialog navigation key, and this action is \
+                             checked before every dialog — it would break them",
+                            action.name()
+                        ));
+                        continue;
+                    }
                     if c.is_printable() {
                         problems.push(format!(
                             "{}: `{spec}` would stop that key typing — add a modifier or \

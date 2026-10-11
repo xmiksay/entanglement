@@ -159,6 +159,56 @@ fn direct_defaults_match_the_pre_735_keys() {
     assert_eq!(km.get(&leader_e), Some(&Action::Export));
 }
 
+/// A modified PageUp/PageDown still scrolls (no exact binding needed), but
+/// an exact binding for the modified chord wins.
+#[test]
+fn scrolling_ignores_modifiers_unless_the_chord_is_bound() {
+    let shift = KeyModifiers::SHIFT;
+    let km = KeyMap::new();
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::PageUp, shift)),
+        Some(Action::ScrollUp)
+    );
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::PageDown, KeyModifiers::CONTROL)),
+        Some(Action::ScrollDown)
+    );
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::Enter, KeyModifiers::CONTROL)),
+        None,
+        "Enter stays exact"
+    );
+    let km = remapped("{pick_model: shift+pageup}");
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::PageUp, shift)),
+        Some(Action::PickModel)
+    );
+    let km = remapped("{scroll_up: []}");
+    assert_eq!(
+        km.direct_action(&ev(KeyCode::PageUp, shift)),
+        None,
+        "unbound stays unbound"
+    );
+}
+
+/// The one-line fields (reject reason, free-text answer) submit on the
+/// `submit` action, and on plain Enter unless `newline` took Enter.
+#[test]
+fn field_submit_follows_the_remap() {
+    let none = KeyModifiers::NONE;
+    let km = KeyMap::new();
+    assert!(km.submits_field(&ev(KeyCode::Enter, none)));
+    assert!(!km.submits_field(&ev(KeyCode::Enter, KeyModifiers::SHIFT)));
+    let km = remapped("{submit: ctrl+s, newline: enter}");
+    assert!(km.submits_field(&ev(KeyCode::Char('s'), KeyModifiers::CONTROL)));
+    assert!(!km.submits_field(&ev(KeyCode::Enter, none)));
+    let km = remapped("{submit: ctrl+s}");
+    assert!(
+        km.submits_field(&ev(KeyCode::Enter, none)),
+        "Enter is a fallback when free"
+    );
+}
+
 #[test]
 fn a_remap_moves_the_leader_and_direct_keys() {
     let km = remapped("{leader: ctrl+b, submit: ctrl+s, pick_model: [ctrl+o, leader o]}");

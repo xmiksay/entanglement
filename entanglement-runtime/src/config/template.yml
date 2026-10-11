@@ -284,7 +284,8 @@
 #  #   command_palette [leader p, ctrl+p]  interrupt leader c  quit leader q
 #  #   help [leader ?, leader h]
 #  # ctrl+c (interrupt / quit), ctrl+q (quit) and esc (cancel) are fixed, and
-#  # a bare printable key can't be bound directly. Two actions on one key, an
+#  # a bare printable key can't be bound directly (jump_attention and
+#  # list_sessions can't take enter/tab/arrows/page/home/end either). Two actions on one key, an
 #  # unknown action or a bad key rejects the whole remap with one warning and
 #  # the previous key map stays.
 #  keybindings:

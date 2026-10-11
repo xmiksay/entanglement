@@ -58,7 +58,10 @@ conflicts.
    cancel). A remap must never be able to trap the user. Dialog-local keys
    (approval `y/s/a/d/n/e/v`, list navigation) and readline editing also
    stay fixed. They are context-bound, and remapping them would multiply the
-   conflict contexts for little gain.
+   conflict contexts for little gain. `jump_attention` and `list_sessions`
+   are checked ahead of every open dialog. As direct chords, they therefore
+   may not take a dialog navigation key (enter, tab, arrows, page up/down,
+   home/end, backspace/delete, under any modifier).
 6. **One dispatch path.** Leader chords and direct chords both resolve to a
    `KeyAction` and run through `event_loop::actions::run_action`. Any action
    may be bound in either context, and a remapped key behaves exactly like
@@ -66,7 +69,10 @@ conflicts.
 7. **Live reload and reporting.** Startup warnings go to stderr, as for
    every config warning. On a reload, each *changed* set of theme/keybinding
    warnings is recorded once as a transcript notice. The watcher fires on any
-   config-dir change, so an unchanged problem must not repeat.
+   config-dir change, so an unchanged problem must not repeat. A reload
+   whose config no longer parses at all (a shape error such as
+   `theme: {bsae: …}`) keeps every previous TUI setting. The error is
+   reported the same way, once.
    `skutter inspect config` prints both raw blocks with the layer that won
    them.
 
@@ -78,9 +84,20 @@ conflicts.
   parallel tests, and the codebase already threaded `Theme` by value.
 - The input placeholder, the attention panel's jump hint and the help dialog
   read the live key map, so a remap is reflected everywhere it is named.
-- Small behaviour change: direct keys now match their modifiers exactly.
-  `Ctrl+Shift+Enter` no longer inserts a newline unless bound, and a
-  modified `PageUp` no longer scrolls.
+- Small behaviour change: direct keys now match their modifiers exactly,
+  except that `scroll_up`/`scroll_down` also fire on any modified form of
+  their key (`Shift+PageUp` still scrolls) unless that exact chord is bound
+  to something else. Enter stays exact on purpose: `Ctrl+Shift+Enter` no
+  longer inserts a newline unless bound, and on kitty-protocol terminals,
+  which report `Ctrl+Enter` with its modifier, `Ctrl+Enter` is now a dead key
+  (it used to submit). Bind it (`submit: [enter, ctrl+enter]`) to restore
+  that. A guessed modifier fallback for Enter could silently swallow a key
+  the user meant for `newline`.
+- The one-line fields (reject reason, free-text answer) submit on the
+  `submit` action, and on plain Enter unless `newline` was moved onto Enter.
+  Every valid remap therefore keeps them submittable.
+- Light-theme hashed profile colours use HSV value 40, so every hue the hash
+  can produce keeps ≥ 4.5:1 on the light backgrounds (tested over all hues).
 
 ## Alternatives considered
 
