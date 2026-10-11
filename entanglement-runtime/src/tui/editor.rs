@@ -211,29 +211,68 @@ pub(crate) fn apply_tui_config(
     attention.set_notify(config.notify);
 }
 
-/// The watcher fired (any config file may have changed): re-resolve the
-/// layered config for `root` and re-apply its `tui:` block. A config that no
-/// longer parses keeps the previous settings — a mid-save edit must not
-/// break a running TUI. The status-line templates go to the `App`, which
-/// owns the row they render.
-pub(crate) fn reload_tui_config(
+/// The watcher fired with `notice` (any config file may have changed):
+/// re-resolve the layered config for `root`, re-apply its `tui:` block, and
+/// surface the outcome as **one** notice (#813). A config that no longer
+/// parses keeps the previous settings — a mid-save edit must not break a
+/// running TUI. The status-line templates go to the `App`, which owns the row
+/// they render. Returns whether the definitions reloaded, i.e. whether the
+/// caller should refresh its agent roster.
+pub(crate) fn apply_reload(
     term: &mut Term,
     attention: &mut Attention,
     app: &mut App,
     root: &Path,
-) {
-    match crate::config::Config::load(root) {
+    notice: crate::watch::ReloadNotice,
+) -> bool {
+    let config_err = match crate::config::Config::load(root) {
         Ok(c) => {
             apply_tui_config(term.backend_mut(), attention, &c.tui);
             app.apply_appearance(&c.tui, crate::tui::app::appearance::no_color_env(), false);
             app.set_statusline_config(c.tui.statusline);
+            None
         }
         Err(e) => {
             tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}");
-            app.report_config_error(format!(
+            Some(format!(
                 "config not reloaded, keeping previous TUI settings: {e:#}"
-            ));
+            ))
         }
+    };
+    let outcome = reload_outcome(notice, config_err);
+    if let Some(toast) = outcome.toast {
+        app.record_reload_status(toast);
+    }
+    if let Some(warning) = outcome.warning {
+        app.report_config_error(warning);
+    }
+    outcome.refresh
+}
+
+/// What one watcher firing shows: a toast on a clean reload, else a single
+/// warning naming every failure — a malformed `config.yml` used to add its
+/// own line next to the definitions notice (#813).
+#[derive(Debug, PartialEq, Eq)]
+struct ReloadOutcome {
+    refresh: bool,
+    toast: Option<String>,
+    warning: Option<String>,
+}
+
+fn reload_outcome(notice: crate::watch::ReloadNotice, config_err: Option<String>) -> ReloadOutcome {
+    use crate::watch::ReloadNotice;
+    let (refresh, toast, definitions_err) = match notice {
+        ReloadNotice::Reloaded(summary) => (true, Some(summary), None),
+        ReloadNotice::Failed(error) => (false, None, Some(error)),
+    };
+    let warning = match (config_err, definitions_err) {
+        (Some(c), Some(d)) => Some(format!("{c}; {d}")),
+        (c, d) => c.or(d),
+    };
+    ReloadOutcome {
+        refresh,
+        toast: toast.filter(|_| warning.is_none()),
+        warning,
     }
 }
 
@@ -246,7 +285,49 @@ fn unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_tui_config, pick_editor, split_editor_command, Attention, TuiConfig};
+    use super::{
+        apply_tui_config, pick_editor, reload_outcome, split_editor_command, Attention,
+        ReloadOutcome, TuiConfig,
+    };
+    use crate::watch::ReloadNotice;
+
+    /// #813: each firing yields at most one notice — a malformed config.yml
+    /// replaces the "reloaded" toast, and two failures share one line.
+    #[test]
+    fn a_reload_firing_shows_a_single_notice() {
+        let ok = || ReloadNotice::Reloaded("reloaded".into());
+        let bad = || ReloadNotice::Failed("defs bad".into());
+        assert_eq!(
+            reload_outcome(ok(), None),
+            ReloadOutcome {
+                refresh: true,
+                toast: Some("reloaded".into()),
+                warning: None
+            }
+        );
+        assert_eq!(
+            reload_outcome(ok(), Some("cfg bad".into())),
+            ReloadOutcome {
+                refresh: true,
+                toast: None,
+                warning: Some("cfg bad".into())
+            }
+        );
+        assert_eq!(
+            reload_outcome(bad(), None),
+            ReloadOutcome {
+                refresh: false,
+                toast: None,
+                warning: Some("defs bad".into())
+            }
+        );
+        assert_eq!(
+            reload_outcome(bad(), Some("cfg bad".into()))
+                .warning
+                .as_deref(),
+            Some("cfg bad; defs bad")
+        );
+    }
 
     /// One test owns the process-global flag, so its transitions are
     /// deterministic.

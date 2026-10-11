@@ -119,6 +119,7 @@ pub mod statusline;
 pub mod theme;
 pub mod tui;
 pub mod undo;
+mod warn_once;
 pub mod write_key;
 
 pub use layers::{scaffold_if_missing, user_config_path, ConfigLayer};

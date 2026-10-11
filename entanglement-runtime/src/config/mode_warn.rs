@@ -75,14 +75,18 @@ pub(super) fn stale_mode_tuning_names(layers: &[RawLayer]) -> Vec<(String, Strin
 /// vouch for is *suspicious*, not *provably wrong* (the compile-time
 /// vocabulary itself can lag a brand-new tool), so it degrades the one rule
 /// loudly rather than aborting startup.
-/// Log each stale tuning name once per process per finding (#785, see
-/// [`super::ceiling_warn::first_time`]). Returns how many it logged.
+///
+/// Logs only a finding new since this root's previous load
+/// ([`super::warn_once`], #785/#813). Returns how many it logged.
 pub(super) fn warn_stale_mode_tuning_names(layers: &[RawLayer]) -> usize {
+    let stale = stale_mode_tuning_names(layers);
+    let keys: Vec<String> = stale
+        .iter()
+        .map(|(s, m, e)| format!("{s}\0{m}\0{e}"))
+        .collect();
+    let fresh = super::warn_once::fresh(super::warn_once::scope("mode", layers), &keys);
     let mut logged = 0;
-    for (source, mode, entry) in stale_mode_tuning_names(layers) {
-        if !super::ceiling_warn::first_time(format!("mode\0{source}\0{mode}\0{entry}")) {
-            continue;
-        }
+    for ((source, mode, entry), _) in stale.into_iter().zip(fresh).filter(|(_, f)| *f) {
         logged += 1;
         tracing::warn!(
             %source,
