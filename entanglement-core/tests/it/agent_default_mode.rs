@@ -48,6 +48,7 @@ fn spawn(session: &str, parent: Option<&str>, agent: &str, mode: Option<&str>) -
         user: None,
         model: None,
         mode: mode.map(String::from),
+        workdir: None,
     }
 }
 

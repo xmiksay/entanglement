@@ -311,6 +311,7 @@ async fn parked_child_pins_settled_root_live() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

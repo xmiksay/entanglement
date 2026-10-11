@@ -41,6 +41,7 @@ impl InMsg {
             | InMsg::Oneshot { session, .. }
             | InMsg::RevertFiles { session, .. }
             | InMsg::ForkSession { session, .. }
+            | InMsg::SetWorkdir { session, .. }
             | InMsg::Spawn { session, .. }
             | InMsg::Resume { session, .. } => Some(session),
             InMsg::ListSessions { .. }
@@ -100,6 +101,9 @@ impl InMsg {
     /// - [`ForkSession`][InMsg::ForkSession] (#786, ADR-0223): it mints a
     ///   session, exactly as `Spawn` does — session creation stays a
     ///   trusted head's call.
+    /// - [`SetWorkdir`][InMsg::SetWorkdir] (#764, ADR-0224): its `approve`
+    ///   records an escape-root grant (ADR-0109), which only the user's own
+    ///   trusted head may give.
     ///
     /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
     /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
@@ -158,7 +162,8 @@ impl InMsg {
             | InMsg::McpAuth { .. }
             | InMsg::SetMode { .. }
             | InMsg::RevertFiles { .. }
-            | InMsg::ForkSession { .. } => false,
+            | InMsg::ForkSession { .. }
+            | InMsg::SetWorkdir { .. } => false,
         }
     }
 
@@ -195,6 +200,7 @@ impl InMsg {
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::RevertFiles { .. } => "revert_files",
             InMsg::ForkSession { .. } => "fork_session",
+            InMsg::SetWorkdir { .. } => "set_workdir",
             InMsg::Spawn { .. } => "spawn",
             InMsg::Resume { .. } => "resume",
         }

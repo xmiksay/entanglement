@@ -135,6 +135,7 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
                 user: None,
                 model: None,
                 mode: None,
+                workdir: None,
             })
             .await
             .unwrap();

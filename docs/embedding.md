@@ -378,6 +378,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
+| `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |
 | `advertising_inputs(Arc<AdvertisingInputs>)` | none — every session resolves `tool_search` |
 | `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private state, empty MCP roster) |
 
@@ -395,7 +396,7 @@ from that log):
 ```rust,ignore
 let backups = FileBackups::new(store.clone());
 cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
-let tools = host_tools_with_backups(root, extra, Some(backups.clone()));
+let tools = host_tools_with_backups(root, extra, Some(backups.clone()), None);
 let holly = Holly::spawn(cfg);
 backups.track_roots(&holly);                          // lineage + busy sessions
 backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
@@ -408,6 +409,18 @@ max_root_bytes })` — or pass `Config::load(root)?.undo` to honor a
 `config.yml` `undo:` block — and call `backups.set_limits(..)` on any clone to
 change them live; the next recorded write sees the new limits, and backups
 already taken stay restorable even with `enabled: false`.
+
+**Session working directories are opt-in too** ([ADR-0224](adr/0224-session-working-directory.md)).
+Give core the runtime's resolver and share one `SessionWorkdirs` between the
+search tools and the executor; with no resolver every `SetWorkdir`/
+`Spawn.workdir` is refused:
+
+```rust,ignore
+cfg.workdir_resolver = Some(workdir::resolver(root.clone(), Some(store.clone())));
+let workdirs = SessionWorkdirs::default();
+let tools = host_tools_with_backups(root, Some(store), backups, Some(workdirs.clone()));
+ToolExecutor::builder(&holly, tools.shared()).workdirs(workdirs) /* … */;
+```
 
 Wrap your own call dispatch in `file_backup::with_exec_seq(tool_exec.seq, ..)`
 if you don't use `ToolExecutor` — that is what places a change in its turn

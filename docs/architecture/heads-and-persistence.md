@@ -288,14 +288,14 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `(N sessions)` / `⚠ N` / `⚠ log` (session-log outage, #767) counters. Rendered from `config.yml`
   `tui.statusline.template` (left) and `.right` (right) — placeholders
   `{repo} {cwd} {cwd_rel} {branch} {worktree} {session} {agent} {mode}
-  {model} {cost} {context_pct} {action} {tasks}` (`{action}` is the
+  {model} {cost} {context_pct} {action} {tasks} {workdir}` (`{action}` is the
   narrate-driven `Session.action`, `{tasks}` done/total of the last
   `TaskList`), live-reloaded through the definitions-watcher arm that
   re-applies the `tui:` block. An empty value collapses with the literal in
   front of it (the run after the last placeholder is its suffix); an unknown
   `{name}` renders literally and adds one `Resolved::warnings` line. Too
   narrow, the row sheds counters → `{tasks}/{cost}/{context_pct}` →
-  `{action}/{model}/{mode}/{agent}` → `{session}` → the worktree name →
+  `{action}/{model}/{mode}/{agent}/{workdir}` → `{session}` → the worktree name →
   `{worktree}` → `{branch}`, then middle-elides the path (`…/deep/dir`);
   `{repo}` never goes. Git facts come from a **background probe** (the
   `@file` index pattern, posting `Event::StatusLine` only on change) that
@@ -313,7 +313,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   hooks) replaces the *left* template with its first stdout line; `right`
   and the counters stay template-driven. It reads a versioned JSON payload
   on stdin (`tui::statusline::payload`, `{"v":1, session, cwd, root, repo,
-  branch, worktree, agent, mode, model:{id,name}, cost_usd, context_pct,
+  branch, worktree, agent, mode, model:{id,name}, cost_usd, context_pct, workdir,
   action, tasks:{done,total}}`, unknown facts `null`; fields are only added
   under the same `v`). One background task runs it the hooks' way — own
   process group, SIGKILLed after `timeout_ms` (default 1000) and reaped —
@@ -480,7 +480,17 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
   changes are not tracked). Bare `/rewind` is the picker: it lists the
   turns that still have revertable edits (turn, file count, prompt snippet)
-  read straight from the backup store — no engine traffic. `/fork [N]`
+  read straight from the backup store — no engine traffic.
+  `/cd [--session|--always] [<dir>]` (`tui/cd_command.rs`, #764,
+  [ADR-0224](../adr/0224-session-working-directory.md)) sends
+  `InMsg::SetWorkdir` for the active session (bare = the project root, `~`
+  expanded); the flag is the escape-root approval for a directory outside the
+  root, so a plain `/cd` there is refused with that hint. The reducer folds
+  `WorkdirChanged` into the view; the status line shows `{workdir}` (relative
+  to the TUI root, absolute outside it) and a fixed `⚠ cd <dir>` attention
+  counter whenever the focused session's workdir differs from the TUI root,
+  compared against the root canonicalized once at startup. `!bash` runs in the
+  focused session's workdir. `/fork [N]`
   (`tui/fork_command.rs`, #786,
   [ADR-0223](../adr/0223-non-compacting-session-fork.md)) sends
   `InMsg::ForkSession` for the active session. A `SessionForked` whose source

@@ -31,7 +31,7 @@ pub(crate) struct ForkSeed {
 
 impl Inherited {
     /// Everything a session hands a session continuing from it: its live
-    /// backend, generation, mode and overlay (#768/#776). `seed` is the
+    /// backend, generation, mode, overlay and workdir (#768/#776/#764). `seed` is the
     /// caller's: only a user fork carries history this way.
     pub(crate) fn of(s: &Session) -> Self {
         Self {
@@ -39,6 +39,7 @@ impl Inherited {
             generation: s.generation,
             mode: s.mode.clone(),
             overlay: s.tool_overlay.clone(),
+            workdir: s.workdir.clone(),
             seed: None,
         }
     }
@@ -86,6 +87,8 @@ pub(super) fn fork_session(
             user: s.user.clone(),
             model: None,
             mode: Some(s.mode.clone()),
+            // Carried on `inherit` (already validated), like a successor's.
+            workdir: None,
         },
     };
     tracing::info!(%session, %fork, ?at_turn, "forking session");

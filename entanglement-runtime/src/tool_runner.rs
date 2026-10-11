@@ -115,6 +115,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         mcp_scopes,
         advertising_inputs,
         discovery,
+        workdirs,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -261,6 +262,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             catalog: advertising_inputs
                 .as_ref()
                 .and_then(|i| i.catalog().cloned()),
+            workdirs,
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);

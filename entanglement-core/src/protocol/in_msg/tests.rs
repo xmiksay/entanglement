@@ -18,6 +18,7 @@ fn wire_allowlist_refuses_the_privileged_frames() {
         user: None,
         model: None,
         mode: None,
+        workdir: None,
     }
     .wire_allowed());
     assert!(!InMsg::Resume {
@@ -580,4 +581,36 @@ fn revert_files_roundtrips_and_is_wire_refused() {
             to_turn: None,
         }
     );
+}
+
+/// #764 (ADR-0224): `SetWorkdir` carries an escape-root approval, so it is
+/// trusted-only; a bare one omits `approve`, and `Spawn.workdir` is additive.
+#[test]
+fn set_workdir_shape_and_trust() {
+    let msg = InMsg::SetWorkdir {
+        session: SessionId::new("s1"),
+        dir: "sub".into(),
+        approve: None,
+    };
+    assert!(!msg.wire_allowed());
+    assert_eq!(msg.variant_name(), "set_workdir");
+    assert_eq!(msg.session(), Some(&SessionId::new("s1")));
+    let json = serde_json::to_string(&msg).unwrap();
+    assert_eq!(json, r#"{"kind":"set_workdir","session":"s1","dir":"sub"}"#);
+    let approved: InMsg = serde_json::from_str(
+        r#"{"kind":"set_workdir","session":"s1","dir":"/x","approve":"always"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        approved,
+        InMsg::SetWorkdir {
+            approve: Some(ApprovalScope::Always),
+            ..
+        }
+    ));
+    let spawn: InMsg = serde_json::from_str(
+        r#"{"kind":"spawn","session":"c","agent":"general","prompt":"","workdir":"sub"}"#,
+    )
+    .unwrap();
+    assert!(matches!(spawn, InMsg::Spawn { workdir: Some(w), .. } if w == "sub"));
 }

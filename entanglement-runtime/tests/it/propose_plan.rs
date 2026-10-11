@@ -1082,6 +1082,7 @@ async fn the_plan_agent_can_propose_with_no_mode_given() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

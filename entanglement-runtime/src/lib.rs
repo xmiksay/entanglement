@@ -171,6 +171,9 @@ pub mod tools;
 // live-reloads the runtime's own profile/skill registry mirrors — never
 // core's `EngineConfig`, which stays pinned for the process lifetime.
 pub mod watch;
+// Session working directories (#764, ADR-0224): the core resolver seam, the
+// executor's per-session view, and the relative-path rewrite.
+pub mod workdir;
 
 pub use tools::{SharedRegistry, Tool, ToolRegistry};
 

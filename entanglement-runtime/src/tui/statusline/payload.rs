@@ -13,7 +13,8 @@
 //!  "agent": "build", "mode": "build",
 //!  "model": {"id": "glm-5.3", "name": "GLM-5.3"} | null,
 //!  "cost_usd": 0.0123 | null, "context_pct": 42 | null,
-//!  "action": "running tests" | null, "tasks": {"done": 1, "total": 3} | null}
+//!  "action": "running tests" | null, "tasks": {"done": 1, "total": 3} | null,
+//!  "workdir": "/abs/session/workdir" | null}
 //! ```
 
 use serde::Serialize;
@@ -43,6 +44,8 @@ pub(crate) struct Payload {
     pub context_pct: Option<u32>,
     pub action: Option<String>,
     pub tasks: Option<Tasks>,
+    /// The focused session's working directory (#764), `null` until one is set.
+    pub workdir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -87,6 +90,7 @@ pub(crate) fn payload(app: &App) -> Payload {
             .task_list()
             .and_then(|t| task_counts(t))
             .map(|(done, total)| Tasks { done, total }),
+        workdir: app.workdir().map(str::to_string),
     }
 }
 
@@ -137,6 +141,7 @@ mod tests {
             "context_pct",
             "action",
             "tasks",
+            "workdir",
         ];
         expected.sort_unstable();
         let mut keys = keys;
@@ -152,6 +157,7 @@ mod tests {
         assert_eq!(json["tasks"], serde_json::json!({"done": 1, "total": 2}));
         // Facts not yet known are null, not empty strings.
         assert!(json["cost_usd"].is_null() && json["action"].is_null());
+        assert!(json["workdir"].is_null(), "no workdir set yet");
     }
 
     #[test]

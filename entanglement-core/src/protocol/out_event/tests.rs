@@ -450,6 +450,7 @@ fn tool_events_carry_an_optional_envelope() {
         input: r#"{"path":"x"}"#.into(),
         agent: "build".into(),
         envelope: envelope.clone(),
+        workdir: None,
     };
     let json = serde_json::to_string(&exec).unwrap();
     assert!(
@@ -549,5 +550,46 @@ fn files_reverted_roundtrips_with_seq_and_compact_empty_lists() {
     assert_eq!(
         serde_json::to_string(&empty).unwrap(),
         r#"{"kind":"files_reverted","session":"s1","seq":1,"to_turn":0}"#
+    );
+}
+
+/// #764 (ADR-0224): `WorkdirChanged` is a point-in-time state event, and a
+/// `ToolExec` from a session that never set a workdir is byte-identical to
+/// the pre-#764 shape.
+#[test]
+fn workdir_events_roundtrip_and_stay_additive() {
+    let ev = OutEvent::WorkdirChanged {
+        session: SessionId::new("s1"),
+        dir: "/p/sub".into(),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    assert_eq!(
+        json,
+        r#"{"kind":"workdir_changed","session":"s1","dir":"/p/sub"}"#
+    );
+    assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    assert_eq!(
+        (ev.seq(), ev.session()),
+        (None, Some(&SessionId::new("s1")))
+    );
+
+    let exec = |workdir: Option<&str>| OutEvent::ToolExec {
+        session: SessionId::new("s1"),
+        seq: 1,
+        request_id: "r".into(),
+        tool: "bash".into(),
+        input: "{}".into(),
+        agent: String::new(),
+        envelope: None,
+        workdir: workdir.map(String::from),
+    };
+    assert!(!serde_json::to_string(&exec(None))
+        .unwrap()
+        .contains("workdir"));
+    let json = serde_json::to_string(&exec(Some("/p/sub"))).unwrap();
+    assert!(json.contains(r#""workdir":"/p/sub""#), "{json}");
+    assert_eq!(
+        serde_json::from_str::<OutEvent>(&json).unwrap(),
+        exec(Some("/p/sub"))
     );
 }

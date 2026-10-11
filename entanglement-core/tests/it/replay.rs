@@ -545,6 +545,7 @@ fn tool_exec_record(
             input: "{}".to_string(),
             agent: String::new(),
             envelope: None,
+            workdir: None,
         },
     )
 }

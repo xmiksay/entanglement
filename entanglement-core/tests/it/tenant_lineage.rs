@@ -50,6 +50,7 @@ async fn spawn_root(holly: &Holly, id: &SessionId, user: Option<UserId>) {
             user,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -77,6 +78,7 @@ async fn a_child_of_a_tenant_root_keeps_its_prefix_and_reports_its_lineage() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -173,6 +175,7 @@ async fn session_info_is_live_only_and_survives_a_hibernate_resume_cycle() {
             user: Some(alice.clone()),
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

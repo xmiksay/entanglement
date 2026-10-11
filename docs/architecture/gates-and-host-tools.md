@@ -224,6 +224,28 @@ guessing again:
   profile may `Allow` `call` while keeping `bash` at `Ask`/`Deny` — and, since
   [ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md),
   `call` is registered regardless of whether `bash` is even opted in.
+- **Session working directory** (#764,
+  [ADR-0224](../adr/0224-session-working-directory.md), `workdir.rs`): a
+  session's `/cd` directory (core's `ToolExec.workdir`) is the default cwd of
+  `bash`/`call`/`rhai` exec and the base of relative path arguments. The
+  executor applies it as a **rewrite of the call's input** on each `ToolExec`,
+  before alias rewrite, grading, hooks, the escape-root gate and execution
+  (`workdir::rewrite`; rhai bindings through `BindingPolicy::rewrite`):
+  `read`/`read_raw`/`edit`/`write`/`apply_patch` join a relative `path`;
+  `glob`/`grep` (+ `_json`) join `path` or default it to the workdir;
+  `bash` joins or defaults `workdir`; `call` also joins `input_file`/
+  `output_file`. Inside the root the result is root-relative, outside it
+  absolute — so ADR-0125 normalization, argument- and workdir-scoped rules,
+  grants and containment see exactly what they would without a workdir, and
+  containment is re-checked at every use (a workdir later swapped for a
+  symlink out of the root trips the escape-root gate). `glob`/`grep` list
+  matches relative to the workdir (absolute outside it) via the shared
+  `SessionWorkdirs` view the executor fills from each `ToolExec`. The
+  runtime's `workdir::resolver` (core's `workdir_resolver` seam) canonicalizes
+  a `/cd` target, requires a directory inside the root, or — outside it — a
+  durable `bash`+`call` grant in the `ExtraRootStore`, which a
+  `Session`/`Always` approval on `SetWorkdir` records (`Once` is refused).
+  File tools keep their per-path escape-root rules outside the root.
 - **The trusted scratch dir is exempt from the escape-root prompt** (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),
   amends ADR-0109): the runtime-owned per-project scratch dir

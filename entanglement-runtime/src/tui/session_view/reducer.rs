@@ -5,6 +5,11 @@ mod notices;
 mod tools;
 
 impl SessionView {
+    /// The session's working directory (#764), `None` for the project root.
+    pub fn workdir(&self) -> Option<&str> {
+        self.workdir.as_deref()
+    }
+
     /// Records the user's outgoing prompt into the transcript so it shows up
     /// in the chat scrollback. Unlike engine `OutEvent`s, user prompts carry
     /// no `seq` and bypass the dedupe guard — they originate here, not the
@@ -137,6 +142,11 @@ impl SessionView {
             // display/switching is a later change.
             OutEvent::ModeChanged { mode, .. } => {
                 self.mode = mode;
+                true
+            }
+            // The session's workdir (#764): the status line names it.
+            OutEvent::WorkdirChanged { dir, .. } => {
+                self.workdir = Some(dir);
                 true
             }
             // The model switch (#218) shows in the app-global context bar, not the

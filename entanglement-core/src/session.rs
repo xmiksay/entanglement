@@ -48,6 +48,7 @@ mod transcript;
 mod turn;
 mod turn_state;
 mod user_fork;
+mod workdir;
 
 pub(crate) use cmd::SessionCmd;
 pub use state::{Session, SessionUsage};
@@ -65,7 +66,7 @@ use crate::holly::{ActivityRegistry, SeqRegistry};
 use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 
-use emit::{emit_tool_output, reoffer_pending};
+use emit::{emit_tool_output, reoffer_pending, Caller};
 use ops::run_oneshot;
 use start::start_session;
 pub(crate) use start::SessionStart;
@@ -108,7 +109,7 @@ pub(crate) async fn session_loop(
                 session: session.clone(),
                 state: AgentState::Thinking,
             });
-            reoffer_pending(&events, &session, turn, &s.agent.name, &s.seq);
+            reoffer_pending(&events, &session, turn, Caller::of(&s), &s.seq);
         }
     }
 
@@ -158,7 +159,7 @@ pub(crate) async fn session_loop(
                     Ok(cmd) => cmd,
                     Err(_elapsed) => {
                         if let Some(turn) = s.turn.as_ref() {
-                            reoffer_pending(&events, &session, turn, &s.agent.name, &s.seq);
+                            reoffer_pending(&events, &session, turn, Caller::of(&s), &s.seq);
                         }
                         continue;
                     }
@@ -256,7 +257,8 @@ pub(crate) async fn session_loop(
                 | SessionCmd::SetToolOverlay(_)
                 | SessionCmd::Oneshot(..)
                 | SessionCmd::RevertFiles(_)
-                | SessionCmd::Fork(_)),
+                | SessionCmd::Fork(_)
+                | SessionCmd::SetWorkdir(_)),
             ) if s.turn.is_some() || s.paused => {
                 stash_or_reject(&mut stash, cmd, &session, &events, &s.seq);
             }
@@ -291,6 +293,9 @@ pub(crate) async fn session_loop(
             }
             Some(SessionCmd::Fork(at_turn)) => {
                 let _ = user_fork::fork_session(&session, &s, &events, &cfg, at_turn);
+            }
+            Some(SessionCmd::SetWorkdir(dir)) => {
+                workdir::set_workdir(&mut s, &session, &events, dir)
             }
             // A result for the parked batch (#270): fold it into context on
             // arrival — arrival order, matching replay's `ToolOutput`-order

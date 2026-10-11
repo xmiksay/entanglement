@@ -38,7 +38,7 @@ use entanglement_runtime::{
     persistence, plan_files, plan_tasks, plan_watch, policy, poll, propose_plan, request_mode,
     retained_output, script_ops, session_store, session_title, skills, slash_commands, subagent,
     system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch,
-    SharedRegistry, ToolRegistry,
+    workdir, SharedRegistry, ToolRegistry,
 };
 
 use anyhow::{Context, Result};

@@ -48,7 +48,10 @@ pub(super) async fn service_bindings(
 ) -> bool {
     let mut approved: HashSet<String> = HashSet::new();
     let mut stopped = false;
-    while let Some(call) = rx.recv().await {
+    while let Some(mut call) = rx.recv().await {
+        if let Some(input) = policy.rewrite(call.tool, &call.input) {
+            call.input = input;
+        }
         let (result, was_stopped) = service_binding(
             tools,
             policy,

@@ -58,3 +58,4 @@ mod unknown_session_races;
 mod usage;
 mod user_fork;
 mod wire_frame_split;
+mod workdir;

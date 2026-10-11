@@ -453,6 +453,7 @@ async fn spawned_child_inherits_the_parents_live_mode() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -501,6 +502,7 @@ async fn set_mode_cascades_to_live_descendants() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -577,6 +579,7 @@ async fn cascaded_set_mode_gives_the_descendant_its_own_transition_notice() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

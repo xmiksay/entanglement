@@ -147,6 +147,7 @@ async fn an_empty_spawn_prompt_logs_no_prompt_record() {
             user: None,
             model: None,
             mode: Some("plan".into()),
+            workdir: None,
         })
         .await
         .unwrap();

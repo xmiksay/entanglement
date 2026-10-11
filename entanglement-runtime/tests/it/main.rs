@@ -112,6 +112,7 @@ mod serve;
 mod session_fork;
 #[cfg(feature = "provider")]
 mod session_title;
+mod session_workdir;
 mod skill_posture;
 mod slash_commands;
 mod spawn_prompt_persistence;

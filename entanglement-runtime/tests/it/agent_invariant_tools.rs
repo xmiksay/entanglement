@@ -107,6 +107,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -123,6 +124,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

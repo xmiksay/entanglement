@@ -282,6 +282,7 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

@@ -200,6 +200,10 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                         crate::tui::fork_command::send_fork(app, holly, &text).await;
                         return Ok(false);
                     }
+                    if cmd == crate::tui::commands::Command::Cd {
+                        crate::tui::cd_command::send_cd(app, holly, &text).await;
+                        return Ok(false);
+                    }
                     if cmd == crate::tui::commands::Command::Init {
                         crate::tui::init_command::send_init(app, holly, &text).await;
                         return Ok(false);

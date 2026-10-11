@@ -241,6 +241,7 @@ async fn fresh_session_start_is_unaffected() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

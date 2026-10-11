@@ -24,6 +24,7 @@ impl Supervisor {
         user: &Option<UserId>,
         model: &Option<ModelChoice>,
         mode: &Option<String>,
+        workdir: Option<&str>,
     ) {
         // Taken first so no early return below can leave it parked.
         let mut inherited = self.inherited.remove(child);
@@ -114,6 +115,12 @@ impl Supervisor {
                 return;
             }
         }
+        // Refused before any state is recorded too, like `model`/`mode`.
+        let Ok(initial_workdir) =
+            self.spawn_workdir(child, parent.as_ref(), workdir, inherited.as_ref())
+        else {
+            return;
+        };
         // ADR-0207 §6: mode applies to the whole spawn sub-tree — a child
         // starts under its parent's live mode, narrowed (never widened) by
         // its requested mode or agent's `default_mode`; a compaction
@@ -183,6 +190,7 @@ impl Supervisor {
                     initial_mode,
                     spawn_model,
                     inherited,
+                    initial_workdir,
                 },
                 seqs2,
                 activity2,
@@ -305,6 +313,7 @@ impl Supervisor {
                     initial_mode,
                     spawn_model: None,
                     inherited: None,
+                    initial_workdir: None,
                 },
                 seqs2,
                 activity2,

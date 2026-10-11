@@ -58,6 +58,7 @@ impl ToolExecutor {
             mcp_scopes: None,
             advertising_inputs: None,
             discovery: DiscoverySurface::default(),
+            workdirs: crate::workdir::SessionWorkdirs::default(),
         }
     }
 }
@@ -86,9 +87,18 @@ pub struct ToolExecutorBuilder {
     pub(super) mcp_scopes: Option<Arc<McpScopes>>,
     pub(super) advertising_inputs: Option<Arc<AdvertisingInputs>>,
     pub(super) discovery: DiscoverySurface,
+    pub(super) workdirs: crate::workdir::SessionWorkdirs,
 }
 
 impl ToolExecutorBuilder {
+    /// The per-session workdir view (#764, ADR-0224) this executor writes
+    /// from each `ToolExec` — share it with the `glob`/`grep` tools so they
+    /// print paths relative to the session's workdir. Default: private.
+    pub fn workdirs(mut self, workdirs: crate::workdir::SessionWorkdirs) -> Self {
+        self.workdirs = workdirs;
+        self
+    }
+
     /// The background-job registry (#605) the caller's `BashTool` writes, so
     /// `poll`'s job-handle path reaches the jobs `bash` actually spawned.
     /// Default: a private registry — fine when no external `BashTool` shares it.

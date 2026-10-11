@@ -22,6 +22,7 @@ fn spawn(sid: &SessionId, agent: &str, model: Option<ModelChoice>) -> InMsg {
         user: None,
         model,
         mode: None,
+        workdir: None,
     }
 }
 

@@ -226,6 +226,7 @@ impl Session {
                     }
                     session.mode = mode.clone();
                 }
+                OutEvent::WorkdirChanged { dir, .. } => session.workdir = Some(dir.clone()),
                 // Re-bind a resumed session to the model it was switched to
                 // (#218) so the continued turn runs under the same provider/model
                 // + generation + context budget the user picked. Best-effort: an

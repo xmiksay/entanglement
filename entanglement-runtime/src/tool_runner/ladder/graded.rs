@@ -79,6 +79,11 @@ pub(super) async fn rhai(
         ctx.resolver.clone(),
         call_mode.clone(),
         escape_root.as_ref().map(|er| er.root.as_path()),
+    )
+    .with_workdir(
+        ctx.workdirs
+            .get(&session)
+            .map(|w| (ctx.plan_root.clone(), w)),
     );
     let resolver = ctx.resolver.clone();
     let grants = ctx.grants.clone();

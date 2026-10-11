@@ -34,6 +34,9 @@ pub(crate) struct SessionStart {
     /// What a compaction successor continues from its source (#768/#776);
     /// its `model` has already moved into `spawn_model`.
     pub(crate) inherited: Option<Inherited>,
+    /// The validated working directory a fresh spawn starts in (#764) — its
+    /// own `Spawn.workdir`, else its source's or parent's. Ignored on resume.
+    pub(crate) initial_workdir: Option<String>,
 }
 
 /// Build (or adopt the resumed) [`Session`], emit its start-up lifecycle
@@ -56,6 +59,7 @@ pub(super) fn start_session(
         initial_mode,
         spawn_model,
         inherited,
+        initial_workdir,
     } = start;
     let ts = now_ms();
 
@@ -79,6 +83,7 @@ pub(super) fn start_session(
     // instead since `mode` has no "unset" value of its own to fall back on.
     if !is_resumed {
         s.mode = initial_mode;
+        s.workdir = initial_workdir;
     }
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
     // one already reconstructed it from its `SessionStarted` log (replay) — that
@@ -151,6 +156,9 @@ pub(super) fn start_session(
         session: session.clone(),
         mode: s.mode.clone(),
     });
+    // The workdir, fresh or replayed: the runtime reads it off each
+    // `ToolExec`, but a head only learns it here (#764).
+    super::workdir::announce(&s, session, events);
     // Re-announce a resumed session's replayed overlay, after the mode, for
     // the same reason. The runtime grades dispatch off its own copy, built
     // only from `ToolOverlayChanged` and forgotten on hibernate/end. If it is
@@ -319,8 +327,10 @@ mod tests {
                     generation: None,
                     mode: source_mode.into(),
                     overlay: vec![ToolOverlayEntry::allow("bash")],
+                    workdir: None,
                     seed: None,
                 }),
+                initial_workdir: None,
             },
         );
         let mut out = Vec::new();

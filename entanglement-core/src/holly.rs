@@ -29,6 +29,7 @@ mod unknown_session;
 pub use agent_catalog::AgentCatalog;
 pub use config::{
     ConfigError, EngineConfig, FileReverter, SessionModel, SystemPromptResolver, ToolSpecResolver,
+    WorkdirResolver,
 };
 pub(crate) use directory::SessionDirectory;
 pub use emit::PersistenceSignal;

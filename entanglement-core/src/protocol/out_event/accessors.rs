@@ -18,6 +18,7 @@ impl OutEvent {
             | OutEvent::Status { session, .. }
             | OutEvent::AgentChanged { session, .. }
             | OutEvent::ModeChanged { session, .. }
+            | OutEvent::WorkdirChanged { session, .. }
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
             | OutEvent::SessionMetaChanged { session, .. }
@@ -62,7 +63,7 @@ impl OutEvent {
     /// `None` for a point-in-time lifecycle/query event that carries no `seq`
     /// (`SessionStarted`, `SessionEnded`, `SessionList`, `QuestionList`,
     /// `OperationList`, `PendingList`, `History`, `Status`, `AgentChanged`, `ModelChanged`,
-    /// `GenerationChanged`, `SessionMetaChanged`, `ModeChanged`). Returning `Option`
+    /// `GenerationChanged`, `SessionMetaChanged`, `ModeChanged`, `WorkdirChanged`). Returning `Option`
     /// instead of a fake `0`
     /// (#160, ADR-0072) lets a head tell "seq 0" apart from "no seq" — the
     /// supervisor-shed `Error` sentinel (seq `0`) is a real `Some(0)`, distinct
@@ -86,6 +87,7 @@ impl OutEvent {
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }
             | OutEvent::ModeChanged { .. }
+            | OutEvent::WorkdirChanged { .. }
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
             | OutEvent::SessionMetaChanged { .. }

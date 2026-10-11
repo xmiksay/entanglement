@@ -246,12 +246,13 @@
 #  # The always-visible top row: where this TUI is working. `template` is
 #  # left-aligned, `right` right-aligned on the same row. Placeholders:
 #  #   {repo} {cwd} {cwd_rel} {branch} {worktree} {session} {agent} {mode}
-#  #   {model} {cost} {context_pct} {action} {tasks}
+#  #   {model} {cost} {context_pct} {action} {tasks} {workdir}
 #  # {repo} is the git repo name (the main repo's, inside a linked worktree;
 #  # the ~-abbreviated path outside git), {cwd_rel} the path below the repo
 #  # root, {branch} the branch or short sha (? when unreadable), {worktree}
 #  # `[worktree: name]` in a linked worktree, {action} the narrated
-#  # "what it is doing now", {tasks} done/total from the task list.
+#  # "what it is doing now", {tasks} done/total from the task list,
+#  # {workdir} the session's /cd directory (empty at the project root).
 #  # An empty placeholder disappears together with the text in front of it
 #  # (and the text after the last placeholder goes with it too); an unknown
 #  # {name} is shown literally and warned about once. On a narrow terminal
@@ -266,7 +267,7 @@
 #    # stripped; `right` stays). Payload (v1, unknown facts are null):
 #    #   {"v":1, "session", "cwd", "root", "repo", "branch", "worktree",
 #    #    "agent", "mode", "model":{"id","name"}, "cost_usd", "context_pct",
-#    #    "action", "tasks":{"done","total"}}
+#    #    "action", "tasks":{"done","total"}, "workdir"}
 #    # Runs at most once a second, when something in the payload changes or
 #    # a bash/call/rhai call finishes; killed after timeout_ms. A failure
 #    # shows the template again (one toast). Provider API keys are removed

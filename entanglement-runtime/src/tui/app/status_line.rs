@@ -19,6 +19,12 @@ impl App {
         &self.status_line
     }
 
+    /// The focused session's working directory (#764), `None` while it
+    /// works in the project root.
+    pub(crate) fn workdir(&self) -> Option<&str> {
+        self.sessions.active_view().workdir()
+    }
+
     /// A probe result landed ([`crate::tui::event::Event::StatusLine`]).
     pub(crate) fn set_status_git(&mut self, git: GitInfo) {
         self.status_line.git = git;
@@ -38,6 +44,11 @@ impl App {
         }
         self.status_line.config = config;
         self.mark_dirty();
+    }
+
+    /// The canonical TUI root the session workdir is compared against (#764).
+    pub(crate) fn set_status_root(&mut self, root: Option<std::path::PathBuf>) {
+        self.status_line.root = root;
     }
 
     pub(crate) fn set_status_refresh(&mut self, wake: Arc<Notify>) {

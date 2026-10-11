@@ -31,7 +31,7 @@ pub(crate) type Vars = HashMap<&'static str, String>;
 /// line exists to show.
 const SHED: &[&[&str]] = &[
     &["tasks", "cost", "context_pct"],
-    &["action", "model", "mode", "agent"],
+    &["action", "model", "mode", "agent", "workdir"],
     &["session"],
 ];
 
@@ -42,6 +42,7 @@ fn slot_for(name: &str) -> Slot {
         "branch" => Slot::Branch,
         "worktree" => Slot::Worktree,
         "session" => Slot::Dim,
+        "workdir" => Slot::Attention,
         _ => Slot::Text,
     }
 }

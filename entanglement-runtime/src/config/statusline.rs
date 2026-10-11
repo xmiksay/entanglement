@@ -35,6 +35,7 @@ pub const PLACEHOLDERS: &[&str] = &[
     "context_pct",
     "action",
     "tasks",
+    "workdir",
 ];
 
 const DEFAULT_TEMPLATE: &str = "{repo} › {cwd_rel}  ⎇ {branch} {worktree}";

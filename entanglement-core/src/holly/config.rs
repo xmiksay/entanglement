@@ -258,7 +258,25 @@ pub struct EngineConfig {
     /// applies the request (idle, never mid-turn) and never on replay. `None`
     /// (the default) answers every `RevertFiles` with a recoverable `Error`.
     pub file_reverter: Option<FileReverter>,
+    /// Validates a session working directory (#764, ADR-0224) — an
+    /// [`InMsg::SetWorkdir`][crate::protocol::InMsg::SetWorkdir] `dir` or an
+    /// `InMsg::Spawn.workdir`. Core does no file I/O, so the canonicalize /
+    /// is-a-directory / containment / escape-root-grant checks are the
+    /// runtime's; called by the supervisor on arrival, never on replay.
+    /// `None` (the default) refuses every workdir change.
+    pub workdir_resolver: Option<WorkdirResolver>,
 }
+
+/// The [`EngineConfig::workdir_resolver`] seam: `(current, dir, approve)` →
+/// the validated absolute directory, or a message for an `OutEvent::Error`.
+/// `current` is the session's (or, for a spawn, its parent's) workdir that a
+/// relative `dir` resolves against — `None` means the project root; `approve`
+/// is the escape-root approval a trusted head sent with it (ADR-0109).
+pub type WorkdirResolver = Arc<
+    dyn Fn(Option<&str>, &str, Option<crate::protocol::ApprovalScope>) -> Result<String, String>
+        + Send
+        + Sync,
+>;
 
 /// The [`EngineConfig::file_reverter`] seam: `(session, to_turn)` →
 /// the revert's outcome, or a message for an `OutEvent::Error` when the
@@ -307,6 +325,7 @@ impl Default for EngineConfig {
             unknown_session: UnknownSession::default(),
             mode_ladder: Vec::new(),
             file_reverter: None,
+            workdir_resolver: None,
         }
     }
 }

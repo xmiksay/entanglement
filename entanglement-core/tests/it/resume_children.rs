@@ -127,6 +127,7 @@ async fn resume_cascades_over_a_live_spawned_child() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

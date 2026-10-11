@@ -111,6 +111,10 @@ pub(crate) enum SessionCmd {
     /// a turn. Deferred mid-turn/paused like `RevertFiles`, so the fork is
     /// always taken at rest and never carries a parked batch.
     Fork(Option<u32>),
+    /// Set the working directory (#764, ADR-0224) — already validated and
+    /// absolute. Deferred mid-turn/paused like `SetModel`, so every call of
+    /// one turn runs under one workdir.
+    SetWorkdir(String),
     Stop,
     /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
     /// interrupts an in-flight round (a mid-stream arrival is stashed by the

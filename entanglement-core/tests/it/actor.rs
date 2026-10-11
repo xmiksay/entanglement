@@ -211,6 +211,7 @@ async fn close_session_cascades_to_descendants() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -229,6 +230,7 @@ async fn close_session_cascades_to_descendants() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -464,6 +466,7 @@ async fn spawn_under_a_non_default_agent_emits_its_agent_changed() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -542,6 +545,7 @@ async fn spawn_starts_child_with_parent_link() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -584,6 +588,7 @@ async fn spawn_of_unknown_agent_errors_instead_of_falling_back_to_build() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -637,6 +642,7 @@ async fn duplicate_spawn_is_ignored() {
                 user: None,
                 model: None,
                 mode: None,
+                workdir: None,
             })
             .await
             .unwrap();
@@ -680,6 +686,7 @@ async fn custom_profile_is_selectable() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

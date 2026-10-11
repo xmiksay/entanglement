@@ -171,6 +171,7 @@ async fn collect_until_done(holly: &Holly, sid: &SessionId, agent: Option<&str>)
                 user: None,
                 model: None,
                 mode: None,
+                workdir: None,
             })
             .await
             .unwrap();

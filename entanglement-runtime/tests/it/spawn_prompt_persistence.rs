@@ -33,6 +33,7 @@ async fn spawned_child_prompt_is_persisted_and_replayable() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .expect("send spawn");

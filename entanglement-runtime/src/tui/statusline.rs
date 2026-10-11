@@ -47,6 +47,9 @@ pub(crate) fn refreshes_git(tool: &str) -> bool {
 #[derive(Default)]
 pub(crate) struct StatusLineState {
     pub git: GitInfo,
+    /// The TUI root, canonical (#764): what a session workdir — always
+    /// canonical — is compared against without touching the disk per frame.
+    pub root: Option<PathBuf>,
     pub config: StatuslineConfig,
     pub refresh: Option<Arc<Notify>>,
     pub command: command::CommandState,
@@ -113,6 +116,9 @@ fn vars(app: &App) -> Vars {
     v.insert("session", short_id(app.active_session_id()));
     v.insert("agent", app.agent().to_string());
     v.insert("mode", app.mode().to_string());
+    if let Some(dir) = workdir_shown(app) {
+        v.insert("workdir", dir);
+    }
     let model = app.model_info();
     if !model.id.is_empty() {
         v.insert("model", model.display_name.clone());
@@ -137,6 +143,18 @@ fn vars(app: &App) -> Vars {
         v.insert("tasks", format!("{done}/{total}"));
     }
     v
+}
+
+/// The focused session's workdir when it differs from the TUI root (#764):
+/// relative to the root, absolute outside it; `None` while they agree.
+fn workdir_shown(app: &App) -> Option<String> {
+    let dir = std::path::Path::new(app.workdir()?);
+    let root = app.status_line().root.as_deref().unwrap_or(app.root());
+    match dir.strip_prefix(root) {
+        Ok(rel) if rel.as_os_str().is_empty() => None,
+        Ok(rel) => Some(rel.display().to_string()),
+        Err(_) => Some(dir.display().to_string()),
+    }
 }
 
 /// The last turn's prompt as a share of the model's context window.
@@ -175,6 +193,10 @@ fn counters(app: &App) -> Vec<Piece> {
     let sessions = app.sessions().len();
     if sessions > 1 {
         out.push((format!(" ({sessions} sessions)"), Slot::Dim));
+    }
+    // Commands and relative paths no longer run where this TUI does (#764).
+    if let Some(dir) = workdir_shown(app) {
+        out.push((format!(" ⚠ cd {dir}"), Slot::Attention));
     }
     let waiting = crate::tui::ui::alerts::background_attention(app).len();
     if waiting > 0 {
@@ -386,6 +408,37 @@ mod tests {
         assert_eq!(log_lines(&app, &focused), 2);
         app.engine_events_lagged(); // nothing raised: no further note
         assert_eq!(log_lines(&app, &focused), 2);
+    }
+
+    #[test]
+    fn a_session_workdir_away_from_the_root_warns() {
+        let mut app = app_in_repo();
+        app.set_status_root(Some("/w/proj".into()));
+        let sid = app.active_session_id().clone();
+        assert!(!row(&app, 80).contains('⚠'), "no workdir, no warning");
+        app.handle_out_event(OutEvent::WorkdirChanged {
+            session: sid.clone(),
+            dir: "/w/proj/crates/x".into(),
+        });
+        let text = row(&app, 80);
+        assert!(text.contains("⚠ cd crates/x"), "{text}");
+        app.set_statusline_config(StatuslineConfig {
+            template: "{repo} [{workdir}]".into(),
+            right: String::new(),
+            ..StatuslineConfig::default()
+        });
+        assert!(row(&app, 80).starts_with("proj [crates/x]"));
+        app.handle_out_event(OutEvent::WorkdirChanged {
+            session: sid.clone(),
+            dir: "/elsewhere".into(),
+        });
+        assert!(row(&app, 80).contains("⚠ cd /elsewhere"));
+        app.handle_out_event(OutEvent::WorkdirChanged {
+            session: sid,
+            dir: "/w/proj".into(),
+        });
+        let back = row(&app, 80);
+        assert!(!back.contains('⚠') && back.starts_with("proj"), "{back}");
     }
 
     #[test]

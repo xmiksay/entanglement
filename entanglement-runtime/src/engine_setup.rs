@@ -19,7 +19,7 @@ use crate::tool_runner::EscapeRoot;
 use crate::{
     ask_user, config, endpoint, extra_roots, file_backup, host, mcp, plan_tasks, policy, poll,
     propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
-    SharedRegistry, ToolRegistry,
+    workdir, SharedRegistry, ToolRegistry,
 };
 
 /// Pick a provider and build the engine config.
@@ -81,6 +81,7 @@ pub(crate) async fn build_config(
     host::JobRegistry,
     retained_output::RetainedOutputRegistry,
     script_ops::ScriptRegistry,
+    workdir::SessionWorkdirs,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -154,6 +155,14 @@ pub(crate) async fn build_config(
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
     let extra_root_store = Arc::new(extra_root_store);
+    // Session working directories (#764, ADR-0224): core validates a
+    // `/cd` through this seam (same root + escape-root store the host tools
+    // check), and the executor's per-session view feeds the search tools.
+    cfg.workdir_resolver = Some(workdir::resolver(
+        root.clone(),
+        Some(extra_root_store.clone()),
+    ));
+    let workdirs = workdir::SessionWorkdirs::default();
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
     // `bash` (registered at startup alongside every other built-in, ADR-0195)
     // and `poll`'s job-handle path, so a background job is always pollable
@@ -180,6 +189,7 @@ pub(crate) async fn build_config(
         jobs.clone(),
         retained.clone(),
         Some(file_backups),
+        workdirs.clone(),
     );
     let escape_root = EscapeRoot {
         root: root.clone(),
@@ -258,11 +268,11 @@ pub(crate) async fn build_config(
     tools
         .write()
         .unwrap()
-        .register(GlobJsonTool::new(root.clone()));
+        .register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
     tools
         .write()
         .unwrap()
-        .register(GrepJsonTool::new(root.clone()));
+        .register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
     // The `agent_*` family is orchestration, not registry tools (#60, #120): the
     // runtime executor handles them directly, so they only need advertising to
     // the model. Spawning is unconditional now (ADR-0207 §6/§9) — the roster
@@ -323,6 +333,7 @@ pub(crate) async fn build_config(
         jobs,
         retained,
         scripts,
+        workdirs,
     )
 }
 
@@ -341,6 +352,7 @@ pub(crate) async fn build_config(
 /// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
 /// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_default_tools(
     root: std::path::PathBuf,
     extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
@@ -349,8 +361,14 @@ pub(crate) fn register_default_tools(
     jobs: host::JobRegistry,
     retained: retained_output::RetainedOutputRegistry,
     file_backups: Option<file_backup::FileBackups>,
+    workdirs: workdir::SessionWorkdirs,
 ) -> ToolRegistry {
-    let mut tools = host::host_tools_with_backups(root.clone(), extra_roots.clone(), file_backups);
+    let mut tools = host::host_tools_with_backups(
+        root.clone(),
+        extra_roots.clone(),
+        file_backups,
+        Some(workdirs),
+    );
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
@@ -398,6 +416,7 @@ mod tests {
             crate::host::JobRegistry::new(),
             retained_output::RetainedOutputRegistry::new(),
             None,
+            crate::workdir::SessionWorkdirs::default(),
         )
         .specs()
         .into_iter()

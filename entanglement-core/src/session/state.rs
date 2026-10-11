@@ -61,6 +61,13 @@ pub struct Session {
     /// plain notice; reconstructing this on replay would invent a semantics
     /// nothing calls for.
     pub mode_transition_from: Option<String>,
+    /// The session's working directory (#764, ADR-0224): an absolute path the
+    /// runtime's workdir resolver validated, stamped on every `ToolExec` and
+    /// named in the per-round trailing notice. `None` until one is set — the
+    /// project root. Reconstructed on replay from
+    /// [`WorkdirChanged`][crate::protocol::OutEvent::WorkdirChanged]
+    /// records (last write wins).
+    pub workdir: Option<String>,
     /// Effective model id when the user switched model/provider mid-session
     /// (#218), overriding the agent's pinned [`Agent::model`] on every
     /// request and in pricing. `None` keeps the agent's model (the startup
@@ -194,6 +201,7 @@ impl Session {
             agent,
             mode: DEFAULT_MODE.to_string(),
             mode_transition_from: None,
+            workdir: None,
             model: None,
             provider: None,
             bound: None,

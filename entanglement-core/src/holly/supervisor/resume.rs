@@ -114,6 +114,12 @@ impl Supervisor {
         // child of its own.
         self.modes
             .insert(target.clone(), initial_session.mode.clone());
+        // Same for the workdir cache (#764): a resumed parent's new children
+        // inherit the workdir its replay restored.
+        match initial_session.workdir.clone() {
+            Some(dir) => self.workdirs.insert(target.clone(), dir),
+            None => self.workdirs.remove(target),
+        };
         let children = initial_session.children.clone();
         let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
         let ev = self.events.clone();
@@ -142,6 +148,7 @@ impl Supervisor {
                     initial_mode: DEFAULT_MODE.to_string(),
                     spawn_model: None,
                     inherited: None,
+                    initial_workdir: None,
                 },
                 seqs2,
                 activity2,
