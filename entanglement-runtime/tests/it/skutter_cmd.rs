@@ -13,7 +13,8 @@ use tempfile::TempDir;
 /// A `skutter` [`Command`] whose `HOME` and XDG base dirs point into a fresh
 /// temp dir (so `dirs::data_dir()`/`config_dir()` resolve there on every
 /// platform), with every inherited `ENTANGLEMENT_*` override scrubbed so a
-/// developer's shell can't steer the child back at a real file. Keep the
+/// developer's shell can't steer the child back at a real file, and the
+/// provider pinned to the explicit `echo` stub. Keep the
 /// returned [`TempDir`] alive until the child has exited.
 pub fn isolated_skutter() -> (Command, TempDir) {
     let sandbox = tempfile::tempdir().expect("temp dir for an isolated skutter");
@@ -31,6 +32,10 @@ pub fn isolated_skutter() -> (Command, TempDir) {
         .env("XDG_STATE_HOME", root.join("state"))
         // Endpoint state would land under the temp data dir anyway; disabling
         // it keeps the child's pool purely in-process (#743).
-        .env("ENTANGLEMENT_DEBUG", "no-shared-state");
+        .env("ENTANGLEMENT_DEBUG", "no-shared-state")
+        // No silent echo fallback any more (#732, ADR-0222): a test that wants
+        // the stub asks for it, and a developer's real key never leaks a live
+        // call into the suite. Tests of selection itself override or remove it.
+        .env("ENTANGLEMENT_PROVIDER", "echo");
     (cmd, sandbox)
 }

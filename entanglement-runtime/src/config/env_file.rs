@@ -27,7 +27,7 @@ pub(super) const ENV_FILE_ENV: &str = "ENTANGLEMENT_ENV_FILE";
 /// The managed env-file path: `${config_dir}/entanglement/.env`, overridable via
 /// `ENTANGLEMENT_ENV_FILE` (which tests point at a temp file). `None` when the
 /// platform has no config dir and no override is set.
-pub(super) fn env_file_path() -> Option<PathBuf> {
+pub fn env_file_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(ENV_FILE_ENV) {
         return Some(PathBuf::from(p));
     }

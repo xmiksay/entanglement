@@ -122,3 +122,43 @@ fn malformed_user_catalog_errors() {
         "got: {stderr}"
     );
 }
+
+/// No silent echo (#732, ADR-0222): `run` with no provider selected and no
+/// catalog key anywhere prints an actionable hint and exits 2 instead of
+/// answering from `EchoLlm`.
+#[test]
+fn no_provider_prints_a_hint_and_exits() {
+    let (mut cmd, _sandbox) = isolated_skutter();
+    cmd.args(["run", "hi"]).env_remove("ENTANGLEMENT_PROVIDER");
+    for key in entanglement_core::Catalog::builtin().key_envs() {
+        cmd.env_remove(key);
+    }
+    let out = cmd.output().expect("failed to spawn skutter");
+    assert_eq!(out.status.code(), Some(2), "expected clean exit code 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for needle in [
+        "no LLM provider configured",
+        "ZAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "skutter config set-key <",
+        "ENTANGLEMENT_PROVIDER=echo",
+    ] {
+        assert!(stderr.contains(needle), "missing {needle}: {stderr}");
+    }
+    assert!(!stderr.contains("panicked"), "got: {stderr}");
+    assert!(out.stdout.is_empty(), "no turn may run: {:?}", out.stdout);
+}
+
+/// Echo stays available — only explicitly.
+#[test]
+fn the_explicit_echo_stub_still_runs() {
+    let (mut cmd, _sandbox) = isolated_skutter();
+    let out = cmd
+        .args(["run", "hi"])
+        .env("ENTANGLEMENT_PROVIDER", "echo")
+        .output()
+        .expect("failed to spawn skutter");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("provider=echo"), "got: {stderr}");
+}

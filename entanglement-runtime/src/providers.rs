@@ -21,7 +21,8 @@ use crate::factories::{
 ///   stays a built-in stub. A missing key for the named provider exits cleanly.
 /// - neither set → auto-detect by iterating catalog order and picking the first
 ///   provider whose `key_env` is set and non-empty (keyless Ollama is skipped),
-///   else fall back to `EchoLlm`.
+///   else print an actionable hint and exit 2 — `EchoLlm` is never a silent
+///   fallback (#732, ADR-0222).
 ///
 /// Precedence is env > config > auto-detect, mirroring every other setting.
 pub(crate) fn select_provider(
@@ -66,12 +67,10 @@ pub(crate) fn select_provider(
                     }
                 }
             }
-            eprintln!(
-                "skutter: no provider key set — using EchoLlm \
-                 (set ENTANGLEMENT_PROVIDER=ollama for local, or a *_API_KEY, or echo)"
-            );
-            let (cfg, info) = echo_config();
-            (cfg, info, "echo".to_string())
+            // No silent echo (#732, ADR-0222): echo is explicit-only. The TUI
+            // never gets here unconfigured — it onboards (or the user picks
+            // echo) before boot.
+            crate::provider_setup::exit_no_provider(catalog)
         }
     }
 }
@@ -327,7 +326,7 @@ fn openai_responses_wire_config(
 fn echo_model_info() -> ModelInfo {
     ModelInfo {
         id: "echo".to_string(),
-        display_name: "Echo (debug)".to_string(),
+        display_name: "echo mode (no provider)".to_string(),
         context_window: None,
     }
 }

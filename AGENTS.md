@@ -54,8 +54,10 @@ Heads depend on core, **never the reverse.**
 
 ## Runtime env (for `make run`/`skutter`)
 
-With no provider configured, the engine runs on an `EchoLlm` (no network) — this
-is the default and is fine for most dev loops. To hit a real backend:
+With no provider configured, `run`/`pipe`/`serve` print a hint and exit 2 and
+the TUI opens its first-run setup dialog (ADR-0222). For an offline dev loop
+set `ENTANGLEMENT_PROVIDER=echo` (the `EchoLlm` stub, no network). To hit a
+real backend:
 
 - `ENTANGLEMENT_PROVIDER` = `zai` (primary) | `zai_paas` | `openai` | `ollama` | `anthropic` | `gemini` | `echo`; or auto-detected by key presence (z.ai first).
 - `<PROV>_API_KEY` / `<PROV>_MODEL` / `<PROV>_API_BASE` (legacy `<PROV>_BASE` still accepted; Ollama is keyless).

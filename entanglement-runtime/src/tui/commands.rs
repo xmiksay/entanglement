@@ -38,6 +38,7 @@ pub enum Command {
     AuxModel,
     Undo,
     Rewind,
+    Init,
     /// A user-defined prompt template (#733). Never in [`all_commands`]: the
     /// TUI appends the live registry's entries via
     /// [`crate::tui::slash_popup::SlashPopup::roster`].
@@ -76,6 +77,7 @@ impl Command {
             Command::AuxModel => "aux-model",
             Command::Undo => "undo",
             Command::Rewind => "rewind",
+            Command::Init => "init",
             Command::User(c) => &c.name,
         }
     }
@@ -133,6 +135,9 @@ impl Command {
             Command::Rewind => {
                 "Revert every file edit after turn <N> (bare = list turns with edits; not bash changes)"
             }
+            Command::Init => {
+                "Ask the model to write an AGENTS.md brief for this repo (--update to improve an existing one)"
+            }
             Command::User(c) => &c.description,
         }
     }
@@ -173,6 +178,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::AuxModel,
         Command::Undo,
         Command::Rewind,
+        Command::Init,
     ]
 }
 

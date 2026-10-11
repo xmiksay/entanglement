@@ -167,7 +167,7 @@ pub(super) fn merge_value(base: Value, over: Value) -> Value {
 
 /// The user config path: `${config_dir}/entanglement/config.yml`, overridable via
 /// `ENTANGLEMENT_CONFIG_FILE` (which tests point at a temp file).
-pub(super) fn user_config_path() -> Option<PathBuf> {
+pub fn user_config_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(CONFIG_FILE_ENV) {
         return Some(PathBuf::from(p));
     }

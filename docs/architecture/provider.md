@@ -935,8 +935,14 @@ override no longer silently yields the embedded defaults, #204; the *default*
 looks `<name>` up **in the catalog** (so custom providers work; `echo` stays a
 built-in stub), erroring loudly if its key env is missing; if unset, auto-detect
 by iterating catalog order and picking the first provider whose `key_env` is set
-and non-empty (keyless Ollama is skipped) — preserving z.ai → OpenAI → Anthropic;
-else `EchoLlm`. Precedence overall is **env > user YAML > embedded defaults**.
+and non-empty (keyless Ollama is skipped) — preserving z.ai → OpenAI → Anthropic.
+Nothing found is **never** a silent `EchoLlm` fallback
+([ADR-0222](../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)):
+`run`/`pipe`/`serve` print `provider_setup::no_provider_hint` (the catalog key
+vars, `skutter config set-key <keyed providers>`, `ENTANGLEMENT_PROVIDER=ollama`
+/ `=echo`) and exit 2, and the TUI runs its pre-boot onboarding dialog
+(`tui::onboarding`) so `select_provider` never reaches that branch from it.
+`echo` is explicit-only. Precedence overall is **env > user YAML > embedded defaults**.
 
 The `EchoLlm` stub echoes a one-line summary of the request it received —
 message count, user-text snippets, the assembled system prompt (`system_len` +
