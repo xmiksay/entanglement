@@ -41,7 +41,7 @@ path = "tests/rhai.rs"
 required-features = ["rhai"]
 
 [features]
-default = ["tui", "serve", "mcp-http", "rhai"]
+default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]
 # Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber)
 # + hidden key prompt (rpassword, for `config set-key` — #304).
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
@@ -74,6 +74,11 @@ mcp-http = []
 # `--no-default-features` (no `rhai` in that build's feature list). Every
 # existing default-feature build (incl. the `skutter` binary) is unaffected.
 rhai = ["dep:rhai"]
+# The SSRF-guarded `web_fetch` host tool (#736, ADR-0220; default-on). The
+# fetch mechanism itself is provider-owned and always compiled; this gate
+# carries only the tool and its HTML->Markdown converter (`htmd`, which pulls
+# html5ever), so a lean embedder that never fetches pages can drop both.
+web-fetch = ["dep:htmd"]
 
 [dependencies]
 entanglement-core = { workspace = true }
@@ -129,6 +134,8 @@ base64 = { workspace = true }
 # always-compiled deps, so a lean embedder can opt out via
 # `--no-default-features`.
 rhai = { workspace = true, optional = true }
+# HTML -> Markdown for `web_fetch` (behind the `web-fetch` feature, #736).
+htmd = { workspace = true, optional = true }
 # Advisory cross-process file lock for the managed read-modify-write writes
 # (grants.yml / agent-models.yml / the env file, #329).
 fd-lock = { workspace = true }

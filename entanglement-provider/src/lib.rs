@@ -45,6 +45,7 @@ pub mod openai_responses;
 pub mod provider_mcp;
 pub mod response;
 mod sse_frame;
+pub mod web_fetch;
 pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};

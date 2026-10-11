@@ -91,7 +91,8 @@ pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
     match name {
         "read" | "glob" | "grep" | "load_skill" => Some(&[Capability::Read]),
         "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
-        "bash" | "call" => Some(&[Capability::Exec]),
+        // `web_fetch` is outbound network, graded like `curl` (#736, ADR-0220).
+        "bash" | "call" | "web_fetch" => Some(&[Capability::Exec]),
         _ => None,
     }
 }

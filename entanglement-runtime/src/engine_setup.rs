@@ -368,6 +368,14 @@ pub(crate) fn register_default_tools(
         bash = bash.with_extra_roots(e.clone());
     }
     tools.register(bash);
+    // `web_fetch` (#736) is not in the tool-search kernel: under
+    // `tool_search` it surfaces through `explore`/`describe` like any other
+    // registered tool, so registering it never changes the advertised array.
+    #[cfg(feature = "web-fetch")]
+    match host::WebFetchTool::new() {
+        Ok(tool) => tools.register(tool),
+        Err(e) => tracing::warn!("web_fetch unavailable: {e:#}"),
+    }
     tools
 }
 
@@ -406,6 +414,8 @@ mod tests {
         let names = tool_names();
         assert!(names.contains(&"call".to_string()), "{names:?}");
         assert!(names.contains(&"bash".to_string()), "{names:?}");
+        #[cfg(feature = "web-fetch")]
+        assert!(names.contains(&"web_fetch".to_string()), "{names:?}");
         // The sextet is still there alongside them.
         for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
             assert!(names.contains(&expected.to_string()), "{names:?}");

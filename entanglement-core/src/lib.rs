@@ -55,8 +55,12 @@ pub use entanglement_provider::oauth::{
 };
 // Renamed on the way through: bare `check`/`disconnect` would be far too
 // generic at the core crate root, where they sit beside the engine's own API.
+// The SSRF-guarded `web_fetch` mechanism (#736, ADR-0220) — same
+// pass-through as the MCP transport above: the runtime's tool reaches it here
+// in the lean build too, and never names `reqwest`.
 pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
+pub use entanglement_provider::web_fetch;
 pub use protocol::{
     Agent, AgentState, ApprovalKind, ApprovalScope, CompactionMode, FileChangeKind,
     FileRevertReport, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerSpec,

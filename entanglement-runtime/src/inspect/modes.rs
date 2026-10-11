@@ -34,6 +34,7 @@ const ROSTER: &[&str] = &[
     "apply_patch",
     "bash",
     "call",
+    "web_fetch",
     "load_skill",
     "propose_plan",
     "request_mode",

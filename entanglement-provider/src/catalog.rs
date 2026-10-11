@@ -168,6 +168,10 @@ pub struct ModelEntry {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub supports_thinking: bool,
+    /// Accepts image input (#736). Gates the TUI's clipboard image paste;
+    /// off by default so an unknown model is never sent an image it would 400 on.
+    #[serde(default)]
+    pub supports_vision: bool,
     /// Extended-thinking budget in tokens to request when thinking is enabled for
     /// this model (#191). Only meaningful with `supports_thinking`; left unset in
     /// the embedded defaults so thinking stays off until a user opts in — the

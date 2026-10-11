@@ -50,7 +50,7 @@ and [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md)): provider now
   host tools + their execution, permission dispatch +
   approval, user sessions, every transport (§6, §8). Feature-gated
   ([ADR-0025](../adr/0025-runtime-cargo-feature-gates.md)): `default = ["tui",
-  "serve", "mcp-http", "rhai"]` is
+  "serve", "mcp-http", "rhai", "web-fetch"]` is
   the full `skutter` binary, while `--no-default-features` is a **lean library**
   — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
   `session_store` (+ `config` + `inspect`, #208) over core + tokio + glob/regex,

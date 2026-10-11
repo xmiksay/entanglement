@@ -536,6 +536,52 @@ script tool (table above) is intercepted the same way but is **not** a bypass:
 it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
 (#122, [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md)).
 
+### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736)
+
+`web_fetch { url, format?: markdown|text|raw, max_bytes?, offset? }`
+(`host::web_fetch`, behind the default-on `web-fetch` feature) fetches one
+http(s) URL. HTML becomes Markdown (`htmd`; script/style/head/svg dropped),
+`text` also strips link/image targets, `raw` is verbatim. Output is paged at
+the 32 KiB host-tool cap with an `offset=` pointer. A non-text body is never
+inlined: `[binary omitted: mime, size, url]`. Registered at startup, not in the
+`tool_search` kernel, so it is reached via `explore`/`describe` and never
+changes the advertised array.
+
+**Grading.** It declares `Capability::Exec`: outbound network to a
+model-chosen URL is graded like `curl`, not like a host `read`. The shipped
+modes give `build` → allow and `research`/`plan`/`auto` → prompt. The
+permission argument is the URL, so `modes: research: allow:
+["web_fetch(https://docs.rs/*)"]` widens it for one site.
+
+**SSRF policy** (`entanglement_provider::web_fetch`, re-exported as
+`entanglement_core::web_fetch`):
+
+- Only `http`/`https`. URLs with userinfo credentials are refused.
+- Blocked: unspecified, `0/8`, loopback, RFC 1918, CGNAT `100.64/10`,
+  link-local `169.254/16` (cloud metadata), `192.0.0/24`, documentation and
+  benchmarking ranges, multicast, broadcast, `240/4`, `::`, `::1`, ULA
+  `fc00::/7`, `fe80::/10`, `fec0::/10`, `2001:db8::/32` and Teredo. An
+  IPv4-mapped, IPv4-compatible, NAT64 or 6to4 IPv6 address is judged by the
+  IPv4 address it embeds.
+- An IP-literal host is checked after WHATWG parsing, so `2130706433`,
+  `0x7f.1` and `[::ffff:127.0.0.1]` are all caught. `localhost` and
+  `*.localhost` are refused by name.
+- The client's own DNS resolver refuses the whole answer if any address is
+  blocked. The addresses it vets are exactly the addresses the connector
+  dials, so DNS rebinding has no second lookup to exploit.
+- Redirects are followed manually, at most 5, and every hop is validated
+  again.
+- No proxy is ever used, and proxy environment variables are ignored: a
+  proxy would resolve the name itself and bypass the guard.
+- Timeouts are 10 s to connect, 30 s per request and 60 s for the whole
+  chain. The byte cap defaults to 2 MiB and is clamped to 10 MiB.
+- The client is built from `client_builder()` (shared TLS) but is not the
+  pooled `HttpClient`, because the resolver is a client-wide setting. The
+  endpoint pool would also create a persisted state entry for every site
+  fetched.
+- Tests reach `127.0.0.1` fixtures through a `#[cfg(test)]`-only guard
+  field. No production build has a bypass.
+
 ### Undo / rewind — per-write file backups — [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md) (#731)
 
 `write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`

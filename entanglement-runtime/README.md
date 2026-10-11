@@ -65,8 +65,9 @@ provider/model list is YAML data — see
 | `serve` | the WebSocket head (axum; implies `cli` + `provider`) |
 | `mcp-http` | the streamable-HTTP MCP transport + its OAuth flow |
 | `rhai` | the sandboxed `rhai` scripting tool |
+| `web-fetch` | the SSRF-guarded `web_fetch` tool + its HTML→Markdown converter (`htmd`) |
 
-`default = ["tui", "serve", "mcp-http", "rhai"]` builds the full binary. With
+`default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]` builds the full binary. With
 `--no-default-features` the crate is a **lean embeddable library** — tool
 execution, permission dispatch, spawn, persistence — with no CLI/TUI/transport
 deps.

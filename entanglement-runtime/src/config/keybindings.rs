@@ -65,6 +65,7 @@ actions! {
     Newline => "newline" ["shift+enter", "alt+enter", "ctrl+j"] "Input" "Insert a newline",
     CycleMode => "cycle_mode" ["tab"] "Input" "Next permission mode (or accept the open popup)",
     CycleModeBack => "cycle_mode_back" ["shift+tab"] "Input" "Previous permission mode",
+    PasteImage => "paste_image" ["ctrl+v"] "Input" "Paste a clipboard image (vision models, #736)",
     ScrollUp => "scroll_up" ["pageup"] "Navigation" "Scroll the transcript up",
     ScrollDown => "scroll_down" ["pagedown"] "Navigation" "Scroll the transcript down",
     ToggleReasoning => "toggle_reasoning" ["leader t"] "Navigation" "Toggle the most recent thinking or tool block",

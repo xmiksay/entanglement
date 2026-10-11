@@ -12,6 +12,11 @@ pub struct SimpleInput {
     /// UTF-8 char boundary. All movement/edit helpers step by whole `char`s so
     /// multibyte input (`é`, emoji, CJK) never splits a code point (issue #101).
     cursor_col: usize,
+    /// Clipboard images pasted into this buffer (#736), in chip order:
+    /// `[Image #n]` refers to `images[n - 1]`. Lives on the buffer so that
+    /// replacing it (history recall, `$EDITOR`, submit) drops them with
+    /// their chips.
+    images: Vec<crate::tui::app::image_paste::PastedImage>,
 }
 
 /// Largest char boundary `<= idx` in `s` (clamps `idx` into range first). Lets
@@ -158,6 +163,16 @@ impl SimpleInput {
             *line = format!("{}{}", new_before, after);
             self.cursor_col = col - removed;
         }
+    }
+
+    /// Park a pasted image; returns its 1-based chip number.
+    pub fn push_image(&mut self, image: crate::tui::app::image_paste::PastedImage) -> usize {
+        self.images.push(image);
+        self.images.len()
+    }
+
+    pub fn take_images(&mut self) -> Vec<crate::tui::app::image_paste::PastedImage> {
+        std::mem::take(&mut self.images)
     }
 
     #[allow(dead_code)]

@@ -134,6 +134,7 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
     } else if app.slash_visible() {
         app.accept_slash();
     } else {
+        let images = app.input().take_images();
         let text = app.take_input_text();
         if !text.is_empty() {
             if text.starts_with('/') {
@@ -236,11 +237,13 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                 }
                 return Ok(false);
             }
-            app.record_user_message(text.clone());
-            if let Err(e) = holly
-                .send(InMsg::prompt(app.active_session_id().clone(), text))
-                .await
-            {
+            let content = app.prompt_content(&text, images);
+            app.record_user_message(text);
+            let prompt = InMsg::Prompt {
+                session: app.active_session_id().clone(),
+                content,
+            };
+            if let Err(e) = holly.send(prompt).await {
                 debug!("Failed to send prompt: {}", e);
             }
         }
