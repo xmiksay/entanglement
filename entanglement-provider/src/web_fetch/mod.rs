@@ -99,7 +99,7 @@ impl WebFetcher {
     }
 
     async fn fetch_inner(&self, url: &str, max_bytes: usize) -> Result<FetchOutcome> {
-        let mut url = Url::parse(url).with_context(|| format!("invalid URL `{url}`"))?;
+        let mut url = parse_normalized(url)?;
         for _ in 0..=MAX_REDIRECTS {
             ssrf::validate_url(&url, &self.guard)?;
             let response = self
@@ -154,7 +154,7 @@ fn redirect_target(current: &Url, response: &reqwest::Response) -> Result<Option
     let next = current
         .join(location)
         .with_context(|| format!("invalid redirect target `{location}`"))?;
-    Ok(Some(next))
+    Ok(Some(strip_root_dot(next)?))
 }
 
 async fn read_body(
@@ -217,6 +217,34 @@ async fn read_body(
             truncated,
         },
     })
+}
+
+/// The URL exactly as [`WebFetcher::fetch`] will request it: WHATWG-parsed
+/// (scheme/host lowercased, default port dropped, surrounding whitespace and
+/// embedded tabs/newlines removed) with a trailing root dot stripped from the
+/// host. Permission rules must grade *this* string, not the raw model text —
+/// otherwise `HTTPS://PASTEBIN.COM./x` slips past a `web_fetch(https://pastebin.com/*)`
+/// deny while fetching the same page. `None` if it doesn't parse (the fetch
+/// would fail the same way).
+pub fn normalize_url(raw: &str) -> Option<String> {
+    parse_normalized(raw).ok().map(String::from)
+}
+
+fn parse_normalized(raw: &str) -> Result<Url> {
+    let url = Url::parse(raw).with_context(|| format!("invalid URL `{raw}`"))?;
+    strip_root_dot(url)
+}
+
+fn strip_root_dot(mut url: Url) -> Result<Url> {
+    let trimmed = url
+        .host_str()
+        .filter(|h| h.len() > 1 && h.ends_with('.'))
+        .map(|h| h.trim_end_matches('.').to_string());
+    if let Some(host) = trimmed {
+        url.set_host(Some(&host))
+            .with_context(|| format!("invalid host `{host}`"))?;
+    }
+    Ok(url)
 }
 
 /// Whether a media type is text a model can read. Everything else is

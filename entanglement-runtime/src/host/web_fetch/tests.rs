@@ -18,12 +18,14 @@ fn capability_is_exec_so_modes_grade_it_like_curl() {
     assert_eq!(tool.capabilities(), &[Capability::Exec]);
 }
 
-#[test]
-fn html_becomes_markdown_without_scripts_or_styles() {
+#[tokio::test]
+async fn html_becomes_markdown_without_scripts_or_styles() {
     let html = "<html><head><title>t</title><style>p{}</style></head><body>\
                 <h1>Title</h1><script>alert(1)</script>\
                 <p>Hello <a href=\"https://x.test/a\">link</a></p></body></html>";
-    let out = render(text_outcome("text/html", html), Format::Markdown, 0).unwrap();
+    let out = render(text_outcome("text/html", html), Format::Markdown, 0)
+        .await
+        .unwrap();
     assert!(out.contains("# Title"), "{out}");
     assert!(out.contains("[link](https://x.test/a)"), "{out}");
     assert!(!out.contains("alert"), "{out}");
@@ -34,51 +36,56 @@ fn html_becomes_markdown_without_scripts_or_styles() {
     );
 }
 
-#[test]
-fn text_format_drops_link_and_image_targets() {
+#[tokio::test]
+async fn text_format_drops_link_and_image_targets() {
     let html = "<p>See <a href=\"https://x.test/a\">docs</a> <img src=\"i.png\" alt=\"pic\"></p>";
-    let out = render(text_outcome("text/html", html), Format::Text, 0).unwrap();
+    let out = render(text_outcome("text/html", html), Format::Text, 0)
+        .await
+        .unwrap();
     assert!(out.contains("See docs pic"), "{out}");
     assert!(!out.contains("x.test"), "{out}");
 }
 
-#[test]
-fn raw_format_and_non_html_text_pass_through() {
+#[tokio::test]
+async fn raw_format_and_non_html_text_pass_through() {
     let html = "<p>x</p>";
-    let raw = render(text_outcome("text/html", html), Format::Raw, 0).unwrap();
+    let raw = render(text_outcome("text/html", html), Format::Raw, 0)
+        .await
+        .unwrap();
     assert!(raw.ends_with("<p>x</p>"), "{raw}");
     let json = render(
         text_outcome("application/json", "{\"a\":1}"),
         Format::Markdown,
         0,
     )
+    .await
     .unwrap();
     assert!(json.ends_with("{\"a\":1}"), "{json}");
 }
 
-#[test]
-fn binary_body_is_a_placeholder_never_inlined() {
+#[tokio::test]
+async fn binary_body_is_a_placeholder_never_inlined() {
     let outcome = FetchOutcome {
         final_url: "https://example.com/logo.png".into(),
         status: 200,
         mime: Some("image/png".into()),
         body: FetchBody::Binary { size: Some(1234) },
     };
-    let out = render(outcome, Format::Markdown, 0).unwrap();
+    let out = render(outcome, Format::Markdown, 0).await.unwrap();
     assert_eq!(
         out,
         "[binary omitted: image/png, 1234 bytes, https://example.com/logo.png] (HTTP 200)"
     );
 }
 
-#[test]
-fn download_truncation_is_flagged_in_the_header() {
+#[tokio::test]
+async fn download_truncation_is_flagged_in_the_header() {
     let mut outcome = text_outcome("text/plain", "abc");
     outcome.body = FetchBody::Text {
         text: "abc".into(),
         truncated: true,
     };
-    let out = render(outcome, Format::Markdown, 0).unwrap();
+    let out = render(outcome, Format::Markdown, 0).await.unwrap();
     assert!(out.contains("byte cap"), "{out}");
 }
 
@@ -137,4 +144,63 @@ fn builtin_modes_grade_web_fetch_like_an_outbound_command() {
     assert_eq!(grade("research"), Permission::Ask);
     assert_eq!(grade("plan"), Permission::Ask);
     assert_eq!(grade("auto"), Permission::Ask);
+}
+
+#[test]
+fn grading_uses_the_normalized_url_so_spelling_tricks_cannot_dodge_a_deny() {
+    use crate::mode::{Limits, Mode, Rules};
+    use entanglement_core::Permission;
+    let mode = Mode {
+        name: "build".into(),
+        default: Permission::Ask,
+        rules: Rules::from_lists(
+            &["web_fetch(https://pastebin.com/*)".to_string()],
+            &["web_fetch".to_string()],
+            &[],
+        ),
+        limits: Limits::default(),
+        sandbox: None,
+        sandbox_network: false,
+    };
+    let caps = [Capability::Exec];
+    for raw in [
+        "HTTPS://PASTEBIN.COM/x",
+        "https://pastebin.com./x",
+        "https://pastebin.com:443/x",
+        " https://pastebin.com/x",
+    ] {
+        let input = serde_json::json!({ "url": raw }).to_string();
+        let arg = crate::permission::permission_arg(WEB_FETCH_TOOL, &input);
+        let grade = mode.resolve(WEB_FETCH_TOOL, &caps, arg.as_deref(), None);
+        assert_eq!(grade, Permission::Deny, "{raw:?} must stay denied");
+    }
+}
+
+#[tokio::test]
+async fn deeply_nested_html_falls_back_to_plain_text_without_crashing() {
+    // ~100 KB of nesting: overflowed the stack and aborted the process
+    // before the depth gate.
+    let html = format!(
+        "{}deep text{}",
+        "<div>".repeat(20_000),
+        "</div>".repeat(20_000)
+    );
+    let out = render(text_outcome("text/html", &html), Format::Markdown, 0)
+        .await
+        .unwrap();
+    assert!(
+        out.contains("nested too deeply"),
+        "{}",
+        &out[..200.min(out.len())]
+    );
+    assert!(out.contains("deep text"));
+
+    // 200k levels: must come back fast (the scan is linear), not burn a minute.
+    let started = std::time::Instant::now();
+    let html = "<div>".repeat(200_000);
+    let out = render(text_outcome("text/html", &html), Format::Text, 0)
+        .await
+        .unwrap();
+    assert!(out.contains("nested too deeply"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }

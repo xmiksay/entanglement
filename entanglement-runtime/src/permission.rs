@@ -301,8 +301,10 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             Some(crate::host::glob::joined_pattern(base, pattern))
         }
         "grep" => value.get("path").and_then(|p| p.as_str()).map(String::from),
-        // #736: the URL, so `web_fetch(https://docs.rs/*)` can allow a site.
-        "web_fetch" => value.get("url")?.as_str().map(String::from),
+        // #736: the URL *as it will be fetched* (WHATWG-normalized), so a
+        // `web_fetch(https://pastebin.com/*)` rule can't be dodged by
+        // `HTTPS://PASTEBIN.COM./x`. Unparseable → no argument (it can't fetch).
+        "web_fetch" => entanglement_core::web_fetch::normalize_url(value.get("url")?.as_str()?),
         _ => None,
     }
 }
@@ -771,6 +773,12 @@ mod tests {
             permission_arg("web_fetch", r#"{"url":"https://docs.rs/x"}"#).as_deref(),
             Some("https://docs.rs/x")
         );
+        // …normalized exactly as the fetcher will request it.
+        assert_eq!(
+            permission_arg("web_fetch", r#"{"url":" HTTPS://PASTEBIN.COM.:443/x"}"#).as_deref(),
+            Some("https://pastebin.com/x")
+        );
+        assert_eq!(permission_arg("web_fetch", r#"{"url":"nope"}"#), None);
         // glob → the pattern itself, since a glob pattern is a path.
         assert_eq!(
             permission_arg("glob", r#"{"pattern":"src/*.rs"}"#).as_deref(),
