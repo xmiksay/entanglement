@@ -37,7 +37,7 @@ mod expand;
 mod parse;
 
 pub use discovery::COMMANDS_DIR_ENV;
-pub use expand::{parse_invocation, render, split_args};
+pub use expand::{parse_invocation, quote_argv, render, split_args};
 
 /// Built-in TUI slash commands. A user command can never shadow one; the TUI
 /// asserts this list matches its own roster in a unit test, so the two can't
@@ -153,6 +153,18 @@ pub fn expand_or_literal(live: &LiveCommands, input: String) -> String {
     match registry.expand(&input) {
         Some((_, prompt)) => prompt,
         None => input,
+    }
+}
+
+/// [`expand_or_literal`] for a CLI argv (`skutter run /review "a b"`): the
+/// tokens are rejoined with [`quote_argv`] so the shell's quoting survives
+/// into `$1`..`$9`; a non-command prompt is sent as the plain space-joined
+/// text, exactly as before (#798).
+pub fn expand_argv_or_literal(live: &LiveCommands, argv: &[String]) -> String {
+    let registry = live.read().unwrap_or_else(PoisonError::into_inner).clone();
+    match registry.expand(&quote_argv(argv)) {
+        Some((_, prompt)) => prompt,
+        None => argv.join(" "),
     }
 }
 

@@ -1199,7 +1199,9 @@ below realize one model:
   `.claude/commands`, `.agents/commands`, `.opencode/command(s)` (lenient) <
   `.entanglement/commands` (strict); later wins by name, no embedded
   built-ins. A file's path relative to its dir is its name, subdirectories as
-  `:` namespaces (`frontend/review.md` → `/frontend:review`). Frontmatter is
+  `:` namespaces (`frontend/review.md` → `/frontend:review`); a file or
+  directory whose own name contains `:` is skipped with a load warning, since
+  `a:b.md` would collide with `a/b.md` (#798). Frontmatter is
   optional: `description` (default: the body's first non-empty line) and
   `argument-hint`; `agent`, `model` and `allowed-tools` parse but are ignored
   (a native file carrying one gets a load warning) — a command runs in the
@@ -1209,7 +1211,9 @@ below realize one model:
   group; missing → empty); with no placeholder, non-empty args are appended
   as `ARGUMENTS: …`; Claude Code's `` !`cmd` `` and `@file` are **not**
   supported and go out literally. **Expansion is head-side**: the TUI (Enter
-  on `/name args`) and `skutter run "/name args"` send the expanded text as
+  on `/name args`) and `skutter run "/name args"` (or unquoted, `skutter run
+  /name "a b"` — later argv tokens are re-quoted so `"a b"` stays one `$1`,
+  #798) send the expanded text as
   an ordinary `InMsg::Prompt`, so core, the protocol and the session log
   never see a command; `pipe`/`serve` carry frames, not typed text, and do
   not expand. A user command named like a built-in TUI command

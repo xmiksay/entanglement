@@ -149,6 +149,30 @@ fn expand_or_literal_reads_the_live_handle() {
     assert_eq!(expand_or_literal(&live, "plain".into()), "plain");
 }
 
+/// #798: `skutter run /review "a b"` keeps `"a b"` as one positional arg; a
+/// plain prompt is still the space-joined text.
+#[test]
+fn argv_expansion_keeps_the_shell_quoting() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "review.md", "[$1] [$2]");
+    let reg =
+        registry_from(resolve(raws(&[(Layer::Project, dir.path(), Strictness::Strict)])).unwrap());
+    let live: LiveCommands = Arc::new(RwLock::new(Arc::new(reg)));
+    let argv = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["/review", "a b", "c"])),
+        "[a b] [c]"
+    );
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["/review a b"])),
+        "[a] [b]"
+    );
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["it's", "a b"])),
+        "it's a b"
+    );
+}
+
 /// The real `discover` path under an injected user layer: proves the user +
 /// project dirs are wired through `layers::load_layers`. The user layer is a
 /// temp dir, so the real user dirs are never read.
