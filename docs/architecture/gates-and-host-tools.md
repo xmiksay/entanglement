@@ -559,12 +559,24 @@ dodged with `HTTPS://`, a trailing dot, or `:443`. Write rules as a literal
 (`https://*.example.com/*`) is unsafe. Redirect hops are SSRF-checked but not
 re-graded against the rules.
 
-**Hostile HTML.** `htmd` recurses without a depth limit. A linear tag scan
-estimates nesting first, and above 256 the page gets flat plain-text
-extraction instead. Conversion runs on its own 64 MiB-stack thread (never a
-tokio worker) under a 5 s timeout that also falls back to plain text. A
-deeply nested page therefore cannot overflow the stack and abort the process
-(`host/web_fetch/html.rs`).
+**Hostile HTML.** `htmd` recurses without a depth limit, and html5ever's
+tree builder is quadratic in nesting depth. The conversion is guarded in
+layers:
+
+- **Tokenizer pre-scan.** html5ever's linear spec tokenizer runs first and
+  builds no tree. An open-element stack estimates the nesting and collects
+  the page text. A quoted `>` can't fool it. Above 256 levels the page is
+  answered with that text and is never parsed into a tree.
+- **Real-tree check.** Otherwise the rcdom tree is built and its real depth
+  is measured with an iterative walk. Above the limit, its text is extracted
+  iteratively instead of handing the tree to `htmd`.
+- **Isolation and limits.** Everything runs on its own 64 MiB-stack thread,
+  never on a tokio worker. At most 2 conversions run at once, and each holds
+  its slot until its thread really exits, even after a timeout. Waiting for
+  a slot and converting share one 5 s budget. When that budget runs out, the
+  tool falls back to the tokenizer text.
+
+The code is in `host/web_fetch/html.rs`.
 
 **SSRF policy** (`entanglement_provider::web_fetch`, re-exported as
 `entanglement_core::web_fetch`):

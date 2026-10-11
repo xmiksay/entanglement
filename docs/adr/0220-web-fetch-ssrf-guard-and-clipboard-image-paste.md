@@ -107,16 +107,31 @@ and persists it across processes (ADR-0144), so every arbitrary site would
 create its own entry and state file. A fetch is a single attempt, with a 10 s
 connect timeout, 30 s per request and 60 s for the whole redirect chain.
 
-**HTML conversion is hardened.** `htmd` recurses over the DOM with no depth
-limit. A ~100 KB page of nested `<div>`s overflows the stack and aborts the
-whole process, and very deep pages burn minutes of CPU. Three guards apply:
+**HTML conversion is hardened.** Two problems drive this design. First,
+`htmd` recurses over the DOM with no depth limit, so a deeply nested page
+overflows the stack and aborts the whole process. Second, html5ever's tree
+builder does O(depth) scope checks per element, so building a deep tree is
+quadratic. 110k nested elements (1.9 MB) cost minutes of CPU.
 
-1. A linear tag scan estimates nesting depth. Its stack ignores stray end
-   tags, so it can only over-count. Above 256, `htmd` is skipped and the page
-   gets flat plain-text extraction.
-2. Conversion runs on a dedicated thread with a 64 MiB stack, never on a
+A hand-rolled lexical scan can't be trusted to see the nesting: a `>` inside
+a quoted attribute fools it. The guards are therefore built on the real
+parser:
+
+1. html5ever's spec tokenizer runs first. It is linear and builds no tree.
+   An open-element stack, in which an end tag pops only back to its match,
+   estimates the depth and collects the page text. Above 256 levels the page
+   is answered with that text and never reaches the tree builder.
+2. Otherwise the rcdom tree is built and its real depth is measured with an
+   iterative walk. Above the limit, `htmd` never sees the tree and its text
+   is extracted iteratively. rcdom's `Drop` is iterative, so teardown is
+   safe.
+3. All of this runs on a dedicated thread with a 64 MiB stack, never on a
    tokio worker. A test pins 4× the gate as safe.
-3. A 5 s timeout falls back to plain text.
+4. At most 2 conversions run at once. The permit moves into the thread and
+   is released only when the thread actually finishes, so a timed-out
+   conversion still holds its slot and pathological pages can't pile up
+   threads. Waiting for a slot shares the 5 s budget. Busy or timed out, the
+   tool answers with the tokenizer text.
 
 The tool output says when it fell back.
 

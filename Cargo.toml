@@ -66,6 +66,12 @@ diffy = "0.5"
 # html5ever + markup5ever_rcdom (pure Rust, no transport), so the runtime
 # gates it behind its own default-on `web-fetch` feature like `rhai`.
 htmd = "0.5"
+# The parser stack `htmd` sits on, named directly so `web_fetch` can run
+# the spec tokenizer (linear depth pre-scan) and walk the rcdom tree
+# iteratively before `htmd`'s recursive walk ever sees it (#796 review).
+# Same versions `htmd` pins — no second copy.
+markup5ever_rcdom = "0.38"
+html5ever = "0.38"
 # rustls (not native-tls) so builds need no system OpenSSL headers. 0.13's
 # stock `rustls` feature is aws-lc-rs + the OS trust store; we keep ring + the
 # bundled webpki roots instead (no OS trust-store reliance, no aws-lc C build in

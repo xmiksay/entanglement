@@ -1,41 +1,69 @@
 //! HTML → Markdown for `web_fetch`, hardened against hostile pages.
 //!
-//! `htmd` walks the DOM recursively with no depth limit, synchronously: a
-//! ~100 KB page of `<div>` × 20 000 overflows the stack and **aborts the
-//! whole process** (TUI, `serve`), and a few hundred thousand levels burn a
-//! minute of CPU. So conversion is guarded three ways:
+//! `htmd` walks the DOM recursively with no depth limit: a page of a few
+//! hundred KB of nested elements overflows the stack and **aborts the whole
+//! process** (TUI, `serve`). Building a deep tree is itself expensive:
+//! html5ever's tree builder checks element scope by walking its stack of
+//! open elements, so N nested elements cost O(N²) — 110k of them (1.9 MB)
+//! is minutes of CPU. A hand-rolled lexical scan can't be trusted to see the
+//! nesting (a `>` inside a quoted attribute fools one), so the guard uses
+//! html5ever's own spec tokenizer, then the real tree:
 //!
-//! 1. A cheap linear tag scan ([`nesting_depth`]) estimates DOM depth first;
-//!    above [`MAX_DEPTH`] the page skips `htmd` entirely and gets
-//!    [`plain_text`] extraction instead (a flat loop, no recursion).
-//! 2. Conversion runs on its own thread with a generous stack
-//!    ([`CONVERT_STACK`]), never on a tokio worker — the scan is an estimate,
-//!    so the stack leaves room for the DOM to come out deeper than counted.
-//! 3. A [`CONVERT_TIMEOUT`] bounds the wait; on timeout (or any failure) the
-//!    result is again [`plain_text`]. The thread can't be killed, but with the
-//!    depth gate in front it is bounded work that finishes on its own.
+//! 1. [`token_scan`] runs the real tokenizer (linear, no tree) and tracks
+//!    nesting with an open-element stack, collecting the page's text as it
+//!    goes. Above [`MAX_DEPTH`] the page is answered with that text and
+//!    never reaches the tree builder.
+//! 2. Otherwise html5ever builds the rcdom (`htmd`'s own parser) and
+//!    [`max_depth`] measures the **real tree** iteratively — the safety net
+//!    for any nesting the token-level stack model misses (implicit elements,
+//!    reconstructed formatting). Above the limit, `htmd` never sees it and
+//!    [`tree_text`] extracts text iteratively. rcdom's own `Drop` is
+//!    iterative, so tearing a deep tree down is safe too.
+//! 3. All of that runs on a dedicated thread with a generous stack
+//!    ([`CONVERT_STACK`]), never on a tokio worker.
+//! 4. At most [`MAX_CONVERSIONS`] such threads exist at once. The permit
+//!    moves into the thread and is released only when the thread *finishes*
+//!    — so a page that times out (its thread can't be killed) still holds
+//!    its slot, and pathological pages can't pile up threads. Waiting for a
+//!    slot shares the [`CONVERT_TIMEOUT`] budget; on timeout the result is
+//!    the [`token_scan`] text, computed on the caller (linear, no
+//!    recursion, no tree).
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-/// Estimated nesting depth above which `htmd` is not attempted. Real pages
-/// sit well under 100.
+use htmd::Node;
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{
+    BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer,
+};
+use markup5ever_rcdom::NodeData;
+use tokio::sync::Semaphore;
+
+/// Tree depth above which `htmd` is not attempted. Real pages sit well
+/// under 100.
 pub(super) const MAX_DEPTH: usize = 256;
-/// Stack for the conversion thread: covers several times [`MAX_DEPTH`] of
-/// `htmd` recursion (pinned by a test at 4×), so an underestimate of the
-/// DOM's real depth still can't overflow.
+/// Covers several times [`MAX_DEPTH`] of `htmd` recursion (a test pins 4×).
 const CONVERT_STACK: usize = 64 * 1024 * 1024;
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONVERSIONS: usize = 2;
 
-/// Elements whose content is raw text, never markup.
-const RAW_TEXT: [&str; 8] = [
-    "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes",
+static CONVERSIONS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONVERSIONS)));
+
+/// Element bodies that carry no reading value (mirrors `htmd`'s skip list).
+const SKIPPED: [&str; 7] = [
+    "script", "style", "noscript", "svg", "head", "iframe", "template",
 ];
 /// Elements that never take children.
 const VOID: [&str; 15] = [
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
     "wbr", "param", "keygen",
 ];
-/// Tags rendered as a line break in [`plain_text`].
+/// Elements rendered as a line break in plain text.
 const BLOCK: [&str; 14] = [
     "br",
     "p",
@@ -60,168 +88,223 @@ pub(super) struct Converted {
 }
 
 pub(super) async fn to_markdown(html: String) -> Converted {
-    if nesting_depth(&html) > MAX_DEPTH {
-        return Converted {
-            text: plain_text(&html),
-            fallback: Some("HTML nested too deeply to convert"),
-        };
-    }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let input = html.clone();
-    let spawned = std::thread::Builder::new()
-        .name("web_fetch-html".into())
-        .stack_size(CONVERT_STACK)
-        .spawn(move || {
-            let _ = tx.send(convert(&input));
-        });
-    let fallback = match spawned {
-        Err(_) => "could not start the HTML converter",
-        Ok(_) => match tokio::time::timeout(CONVERT_TIMEOUT, rx).await {
-            Ok(Ok(Some(markdown))) => {
-                return Converted {
-                    text: markdown,
-                    fallback: None,
-                }
-            }
-            Ok(_) => "HTML conversion failed",
-            Err(_) => "HTML conversion timed out",
-        },
+    let deadline = tokio::time::Instant::now() + CONVERT_TIMEOUT;
+    let fallback = match run_converter(html.clone(), deadline).await {
+        Ok(converted) => return converted,
+        Err(why) => why,
     };
     Converted {
-        text: plain_text(&html),
+        text: token_scan(&html).text,
         fallback: Some(fallback),
     }
 }
 
-/// The `htmd` conversion itself — call only on a thread with
-/// [`CONVERT_STACK`].
-fn convert(html: &str) -> Option<String> {
-    htmd::HtmlToMarkdown::builder()
-        // Page chrome and code that carries no reading value but would eat
-        // the context budget.
-        .skip_tags(vec![
-            "script", "style", "noscript", "svg", "head", "iframe", "template",
-        ])
-        .build()
-        .convert(html)
-        .ok()
+async fn run_converter(
+    html: String,
+    deadline: tokio::time::Instant,
+) -> Result<Converted, &'static str> {
+    let permit = tokio::time::timeout_at(deadline, CONVERSIONS.clone().acquire_owned())
+        .await
+        .map_err(|_| "HTML converter busy")?
+        .map_err(|_| "HTML converter unavailable")?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("web_fetch-html".into())
+        .stack_size(CONVERT_STACK)
+        .spawn(move || {
+            let _ = tx.send(convert(&html));
+            // Released only now: an abandoned (timed-out) conversion keeps
+            // its slot until it has really stopped burning CPU.
+            drop(permit);
+        })
+        .map_err(|_| "could not start the HTML converter")?;
+    match tokio::time::timeout_at(deadline, rx).await {
+        Ok(Ok(converted)) => Ok(converted),
+        Ok(Err(_)) => Err("HTML conversion failed"),
+        Err(_) => Err("HTML conversion timed out"),
+    }
 }
 
-enum Token<'a> {
-    Text(&'a str),
-    Open(String),
-    Close(String),
-}
-
-/// A forgiving, linear HTML tokenizer: comments/doctypes skipped, raw-text
-/// element content skipped (an `Open` with no body), a `<` that never
-/// closes kept as text. Precision isn't the goal — both consumers only need
-/// a safe approximation.
-fn tokens(html: &str) -> impl Iterator<Item = Token<'_>> {
-    let mut rest = html;
-    std::iter::from_fn(move || loop {
-        if rest.is_empty() {
-            return None;
-        }
-        let Some(lt) = rest.find('<') else {
-            let text = rest;
-            rest = "";
-            return Some(Token::Text(text));
+/// Parse once, measure the real tree, and only hand a shallow one to
+/// `htmd`. Call only on a thread with [`CONVERT_STACK`].
+fn convert(html: &str) -> Converted {
+    let scan = token_scan(html);
+    if scan.depth > MAX_DEPTH {
+        return Converted {
+            text: scan.text,
+            fallback: Some("HTML nested too deeply to convert"),
         };
-        if lt > 0 {
-            let text = &rest[..lt];
-            rest = &rest[lt..];
-            return Some(Token::Text(text));
-        }
-        let after = &rest[1..];
-        if let Some(comment) = after.strip_prefix("!--") {
-            rest = comment.find("-->").map_or("", |i| &comment[i + 3..]);
-            continue;
-        }
-        let Some(gt) = after.find('>') else {
-            // A `<` that never closes is just text (`a < b`).
-            let text = rest;
-            rest = "";
-            return Some(Token::Text(text));
+    }
+    let converter = htmd::HtmlToMarkdown::builder()
+        .skip_tags(SKIPPED.to_vec())
+        .build();
+    let Ok(tree) = converter.html_to_tree(html) else {
+        return Converted {
+            text: scan.text,
+            fallback: Some("HTML conversion failed"),
         };
-        let tag = &after[..gt];
-        rest = &after[gt + 1..];
-        let (closing, body) = match tag.strip_prefix('/') {
-            Some(b) => (true, b),
-            None => (false, tag),
+    };
+    if max_depth(&tree) > MAX_DEPTH {
+        return Converted {
+            text: tree_text(&tree),
+            fallback: Some("HTML nested too deeply to convert"),
         };
-        let name: String = body
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .collect::<String>()
-            .to_ascii_lowercase();
-        if name.is_empty() || !body.starts_with(|c: char| c.is_ascii_alphabetic()) {
-            continue; // `<!doctype>`, `<?xml>`, a stray `<`
-        }
-        if closing {
-            return Some(Token::Close(name));
-        }
-        if RAW_TEXT.contains(&name.as_str()) {
-            let end = format!("</{name}");
-            rest = find_ascii_ci(rest, &end).map_or("", |i| &rest[i..]);
-        }
-        return Some(Token::Open(name));
-    })
+    }
+    Converted {
+        text: converter.tree_to_markdown(&tree),
+        fallback: None,
+    }
 }
 
-/// Byte index of `needle` (ASCII) in `hay`, case-insensitively.
-fn find_ascii_ci(hay: &str, needle: &str) -> Option<usize> {
-    hay.as_bytes()
-        .windows(needle.len())
-        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+fn element_name(node: &Node) -> Option<&str> {
+    match &node.data {
+        NodeData::Element { name, .. } => Some(name.local.as_ref()),
+        _ => None,
+    }
 }
 
-/// Estimated maximum element nesting. An end tag pops back to its matching
-/// open element and is otherwise ignored — so `</span>` junk can't hide
-/// unclosed `<div>`s — and implicit closes (`<p>`, `<li>`) are not modelled,
-/// which only over-counts. Overestimating is the safe direction: it sends a
-/// page to plain text, never to a stack overflow.
-pub(super) fn nesting_depth(html: &str) -> usize {
-    let mut stack: Vec<String> = Vec::new();
+/// Deepest element nesting in the tree, walked with an explicit stack.
+pub(super) fn max_depth(root: &Rc<Node>) -> usize {
+    let mut stack = vec![(root.clone(), 0usize)];
     let mut max = 0;
-    for token in tokens(html) {
-        match token {
-            Token::Open(name) if !VOID.contains(&name.as_str()) => {
-                stack.push(name);
-                max = max.max(stack.len());
-            }
-            Token::Close(name) => {
-                if let Some(i) = stack.iter().rposition(|n| *n == name) {
-                    stack.truncate(i);
-                }
-            }
-            _ => {}
+    while let Some((node, depth)) = stack.pop() {
+        max = max.max(depth);
+        let next = depth + usize::from(element_name(&node).is_some());
+        for child in node.children.borrow().iter() {
+            stack.push((child.clone(), next));
         }
     }
     max
 }
 
-/// Text content with tags removed, script/style bodies dropped, block tags
-/// as line breaks, the common entities decoded, and whitespace collapsed.
-/// A flat loop — safe on any input.
-pub(super) fn plain_text(html: &str) -> String {
+/// Plain text of the tree — skipped elements dropped, block elements as
+/// line breaks — walked with an explicit stack, so any depth is safe.
+pub(super) fn tree_text(root: &Rc<Node>) -> String {
+    enum Step {
+        Visit(Rc<Node>),
+        Break,
+    }
     let mut out = String::new();
-    for token in tokens(html) {
-        match token {
-            Token::Text(t) => out.push_str(t),
-            Token::Open(n) | Token::Close(n) if BLOCK.contains(&n.as_str()) => out.push('\n'),
-            _ => out.push(' '),
+    let mut stack = vec![Step::Visit(root.clone())];
+    while let Some(step) = stack.pop() {
+        let node = match step {
+            Step::Break => {
+                out.push('\n');
+                continue;
+            }
+            Step::Visit(node) => node,
+        };
+        if let NodeData::Text { contents } = &node.data {
+            out.push_str(&contents.borrow());
+            continue;
+        }
+        let name = element_name(&node);
+        if name.is_some_and(|n| SKIPPED.contains(&n)) {
+            continue;
+        }
+        let block = name.is_some_and(|n| BLOCK.contains(&n));
+        if block {
+            out.push('\n');
+            stack.push(Step::Break);
+        }
+        for child in node.children.borrow().iter().rev() {
+            stack.push(Step::Visit(child.clone()));
         }
     }
-    let decoded = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    let mut text = String::with_capacity(decoded.len());
-    for line in decoded.lines() {
+    collapse_whitespace(&out)
+}
+
+/// What [`token_scan`] learned: the estimated nesting depth and the page's
+/// readable text.
+pub(super) struct Scan {
+    pub depth: usize,
+    pub text: String,
+}
+
+/// Token sink: an open-element stack (an end tag pops back to its matching
+/// open element and is otherwise ignored, so stray end tags can't hide
+/// nesting) plus the text outside skipped elements.
+#[derive(Default)]
+struct ScanSink {
+    stack: RefCell<Vec<String>>,
+    depth: Cell<usize>,
+    text: RefCell<String>,
+}
+
+impl ScanSink {
+    fn tag(&self, tag: &Tag) -> TokenSinkResult<()> {
+        let name: &str = tag.name.as_ref();
+        if BLOCK.contains(&name) {
+            self.text.borrow_mut().push('\n');
+        } else {
+            self.text.borrow_mut().push(' ');
+        }
+        let mut stack = self.stack.borrow_mut();
+        if tag.kind == TagKind::EndTag {
+            if let Some(i) = stack.iter().rposition(|n| n == name) {
+                stack.truncate(i);
+            }
+            return TokenSinkResult::Continue;
+        }
+        if VOID.contains(&name) {
+            return TokenSinkResult::Continue;
+        }
+        stack.push(name.to_string());
+        self.depth.set(self.depth.get().max(stack.len()));
+        // The tokenizer alone doesn't know which elements hold raw text;
+        // the tree builder normally tells it, so the sink must.
+        match name {
+            "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+            "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" => {
+                TokenSinkResult::RawData(RawKind::Rawtext)
+            }
+            "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+            "plaintext" => TokenSinkResult::Plaintext,
+            _ => TokenSinkResult::Continue,
+        }
+    }
+}
+
+impl TokenSink for ScanSink {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
+        match token {
+            Token::TagToken(tag) => return self.tag(&tag),
+            Token::CharacterTokens(chars) => {
+                let skipped = self
+                    .stack
+                    .borrow()
+                    .last()
+                    .is_some_and(|top| SKIPPED.contains(&top.as_str()) || top == "title");
+                if !skipped {
+                    self.text.borrow_mut().push_str(&chars);
+                }
+            }
+            _ => {}
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+/// Run html5ever's spec tokenizer over `html` — linear, no tree — for the
+/// nesting estimate and the plain text. Safe on any input.
+pub(super) fn token_scan(html: &str) -> Scan {
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+    let tokenizer = Tokenizer::new(ScanSink::default(), Default::default());
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    let sink = tokenizer.sink;
+    Scan {
+        depth: sink.depth.get(),
+        text: collapse_whitespace(&sink.text.into_inner()),
+    }
+}
+
+fn collapse_whitespace(s: &str) -> String {
+    let mut text = String::with_capacity(s.len());
+    for line in s.lines() {
         let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
         if !line.is_empty() {
             text.push_str(&line);
