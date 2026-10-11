@@ -1,8 +1,18 @@
+//! The TUI's resolved theme: glyphs plus one colour per named
+//! [`Slot`] (#735). Every colour a widget draws comes from [`Theme::c`] /
+//! [`Theme::fg`] — the palettes themselves live in [`palette`], the slot names
+//! and the `tui.theme` grammar in [`crate::config::theme`].
+
 use ratatui::{
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
 };
 use std::hash::Hasher;
+
+pub(crate) use crate::config::theme::Slot;
+use crate::config::theme::{ResolvedTheme, ThemeBase};
+
+mod palette;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RoleColors {
@@ -10,11 +20,9 @@ pub(crate) struct RoleColors {
     pub bg: Color,
 }
 
-/// The status line's named colour slots (#762) — `status.repo`,
-/// `status.path`, `status.branch`, `status.worktree`, `status.text`,
-/// `status.dim`, `status.attention` — so #735's theme config can override
-/// each by name. The defaults carry over the old top bar's styling (bold app
-/// name, dim session id, yellow waiting badge).
+/// The status line's styles (#762), one per `status.*` slot. Emphasis
+/// (bold repo, dim separators, bold badge) is fixed; only the colour is
+/// themeable, so it survives `NO_COLOR`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StatusTheme {
     /// `{repo}` — never shed, so it anchors the line.
@@ -31,114 +39,174 @@ pub(crate) struct StatusTheme {
     pub attention: Style,
 }
 
-impl Default for StatusTheme {
-    fn default() -> Self {
+impl StatusTheme {
+    fn from_palette(p: &[Color; Slot::COUNT]) -> Self {
+        // `Reset` leaves `fg` unset, so the dark default compares equal to the
+        // pre-#735 hardcoded styles.
+        let with = |style: Style, slot: Slot| match p[slot as usize] {
+            Color::Reset => style,
+            c => style.fg(c),
+        };
         StatusTheme {
-            repo: Style::default().bold(),
-            path: Style::default(),
-            branch: Style::default().fg(Color::Cyan),
-            worktree: Style::default().fg(Color::Magenta),
-            text: Style::default(),
-            dim: Style::default().dim(),
-            attention: Style::default().fg(Color::Yellow).bold(),
+            repo: with(Style::default().bold(), Slot::StatusRepo),
+            path: with(Style::default(), Slot::StatusPath),
+            branch: with(Style::default(), Slot::StatusBranch),
+            worktree: with(Style::default(), Slot::StatusWorktree),
+            text: with(Style::default(), Slot::StatusText),
+            dim: with(Style::default().dim(), Slot::StatusDim),
+            attention: with(Style::default().bold(), Slot::StatusAttention),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+impl Default for StatusTheme {
+    fn default() -> Self {
+        Theme::default().status
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Theme {
     pub bar_glyph: char,
     pub ship_right: char,
     pub ship_left: char,
     pub trail_glyph: char,
-    pub assistant_fg: Color,
-    pub tool_req_fg: Color,
-    pub tool_out_fg: Color,
-    pub error_fg: Color,
-    pub message_bg: Color,
-    pub sidebar_bg: Color,
-    pub sidebar_fg: Color,
-    pub input_bg: Color,
     pub chat_margin_left: u16,
     pub status: StatusTheme,
+    palette: [Color; Slot::COUNT],
+    base: ThemeBase,
+    no_color: bool,
 }
 
 impl Default for Theme {
     fn default() -> Self {
+        Theme::resolve(
+            &ResolvedTheme {
+                base: ThemeBase::Dark,
+                overrides: Vec::new(),
+                warnings: Vec::new(),
+            },
+            false,
+        )
+    }
+}
+
+impl Theme {
+    /// Build the palette: the base's colours, then the valid overrides. With
+    /// `no_color` (the `NO_COLOR` convention) every slot is the terminal
+    /// default and only modifiers carry emphasis.
+    pub fn resolve(cfg: &ResolvedTheme, no_color: bool) -> Theme {
+        let mut palette = [Color::Reset; Slot::COUNT];
+        if !no_color {
+            for slot in Slot::ALL {
+                palette[*slot as usize] = palette::base_color(cfg.base, *slot);
+            }
+            for (slot, c) in &cfg.overrides {
+                palette[*slot as usize] = palette::to_ratatui(*c);
+            }
+        }
         Theme {
             bar_glyph: '▌',
             ship_right: '▸',
             ship_left: '◂',
             trail_glyph: '▮',
-            assistant_fg: Color::Cyan,
-            tool_req_fg: Color::Cyan,
-            tool_out_fg: Color::Gray,
-            error_fg: Color::Red,
-            message_bg: Color::Rgb(30, 30, 35),
-            sidebar_bg: Color::Rgb(26, 26, 33),
-            sidebar_fg: Color::Cyan,
-            input_bg: Color::Rgb(26, 26, 33),
             chat_margin_left: 2,
-            status: StatusTheme::default(),
+            status: StatusTheme::from_palette(&palette),
+            palette,
+            base: cfg.base,
+            no_color,
         }
     }
-}
 
-impl Theme {
-    pub fn user_colors(self, profile_color: Color) -> RoleColors {
-        RoleColors {
-            fg: profile_color,
-            bg: self.message_bg,
+    /// The colour of `slot`.
+    pub fn c(&self, slot: Slot) -> Color {
+        self.palette[slot as usize]
+    }
+
+    /// A style with `slot` as its foreground.
+    pub fn fg(&self, slot: Slot) -> Style {
+        Style::default().fg(self.c(slot))
+    }
+
+    pub fn base(&self) -> ThemeBase {
+        self.base
+    }
+
+    pub fn no_color(&self) -> bool {
+        self.no_color
+    }
+
+    /// A highlighted list row. Without colour a background can't mark it, so
+    /// it is reversed instead.
+    pub fn selection(&self) -> Style {
+        if self.no_color {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().bg(self.c(Slot::SelectionBg))
         }
+    }
+
+    /// The active tab of a tabbed dialog header.
+    pub fn heading(&self) -> Style {
+        if self.no_color {
+            Style::default().add_modifier(Modifier::REVERSED).bold()
+        } else {
+            Style::default()
+                .fg(self.c(Slot::HeadingFg))
+                .bg(self.c(Slot::HeadingBg))
+                .bold()
+        }
+    }
+
+    /// A profile's hashed colour, tuned to stay readable on the base's
+    /// background (bright on dark, deep on light).
+    pub fn profile_color(&self, name: &str) -> Color {
+        match (self.no_color, self.base) {
+            (true, _) => Color::Reset,
+            (false, ThemeBase::Dark) => hash_profile_color(name),
+            (false, ThemeBase::Light) => hashed_color(name, 55),
+        }
+    }
+
+    /// Every colour, for render-cache fingerprinting.
+    pub fn palette(&self) -> &[Color; Slot::COUNT] {
+        &self.palette
+    }
+
+    pub fn user_colors(self, profile_color: Color) -> RoleColors {
+        self.role(profile_color, Slot::MessageBg)
     }
 
     pub fn user_input_colors(self, profile_color: Color) -> RoleColors {
-        RoleColors {
-            fg: profile_color,
-            bg: self.input_bg,
-        }
+        self.role(profile_color, Slot::InputBg)
     }
 
     pub fn assistant_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: self.assistant_fg,
-            bg: self.message_bg,
-        }
+        self.role(self.c(Slot::Assistant), Slot::MessageBg)
     }
 
     pub fn reasoning_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: Color::Gray,
-            bg: self.message_bg,
-        }
+        self.role(self.c(Slot::Reasoning), Slot::MessageBg)
     }
 
     pub fn tool_req_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: self.tool_req_fg,
-            bg: self.message_bg,
-        }
+        self.role(self.c(Slot::ToolRequest), Slot::MessageBg)
     }
 
     pub fn tool_out_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: self.tool_out_fg,
-            bg: self.message_bg,
-        }
+        self.role(self.c(Slot::ToolOutput), Slot::MessageBg)
     }
 
     pub fn error_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: self.error_fg,
-            bg: self.message_bg,
-        }
+        self.role(self.c(Slot::Error), Slot::MessageBg)
     }
 
     pub fn sidebar_colors(&self) -> RoleColors {
-        RoleColors {
-            fg: self.sidebar_fg,
-            bg: self.sidebar_bg,
-        }
+        self.role(self.c(Slot::SidebarFg), Slot::SidebarBg)
+    }
+
+    fn role(&self, fg: Color, bg: Slot) -> RoleColors {
+        RoleColors { fg, bg: self.c(bg) }
     }
 
     pub fn decorate<'a>(self, line: Line<'a>, c: RoleColors, width: u16) -> Line<'a> {
@@ -174,16 +242,18 @@ pub(crate) fn darken(color: Color, factor: f32) -> Color {
     }
 }
 
+/// The dark theme's hashed profile colour.
 pub(crate) fn hash_profile_color(name: &str) -> Color {
+    hashed_color(name, 90)
+}
+
+fn hashed_color(name: &str, value: u8) -> Color {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(name, &mut hasher);
     let hash = hasher.finish();
 
     let hue = (hash % 360) as u8;
-    let saturation = 70;
-    let value = 90;
-
-    hsv_to_rgb(hue, saturation, value)
+    hsv_to_rgb(hue, 70, value)
 }
 
 fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
@@ -217,51 +287,4 @@ fn hsv_to_rgb(h: u8, s: u8, v: u8) -> Color {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_darken_rgb() {
-        let original = Color::Rgb(100, 150, 200);
-        let darkened = darken(original, 0.15);
-        match darkened {
-            Color::Rgb(r, g, b) => {
-                assert!(r < 100);
-                assert!(g < 150);
-                assert!(b < 200);
-            }
-            _ => panic!("Expected Color::Rgb"),
-        }
-    }
-
-    #[test]
-    fn test_theme_default() {
-        let theme = Theme::default();
-        assert_eq!(theme.bar_glyph, '▌');
-        assert_eq!(theme.ship_right, '▸');
-        assert_eq!(theme.ship_left, '◂');
-        assert_eq!(theme.trail_glyph, '▮');
-        assert_eq!(theme.assistant_fg, Color::Cyan);
-        assert_eq!(theme.message_bg, Color::Rgb(30, 30, 35));
-    }
-
-    #[test]
-    fn test_theme_colors() {
-        let theme = Theme::default();
-        let assistant = theme.assistant_colors();
-        assert_eq!(assistant.fg, Color::Cyan);
-        assert_eq!(assistant.bg, Color::Rgb(30, 30, 35));
-    }
-
-    #[test]
-    fn test_decorate_line() {
-        let theme = Theme::default();
-        let line = Line::from("test");
-        let assistant = theme.assistant_colors();
-        let decorated = theme.decorate(line, assistant, 20);
-        assert!(decorated.spans.len() >= 3);
-        assert_eq!(decorated.spans[0].content.as_ref(), "▌");
-        assert_eq!(decorated.spans[1].content.as_ref(), " ");
-        assert!(decorated.spans.iter().any(|s| s.content.as_ref() == "test"));
-    }
-}
+mod tests;

@@ -14,7 +14,7 @@
 use entanglement_core::SessionId;
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -22,6 +22,8 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::format::{attention_word, short_id};
+use crate::tui::keybindings::Action;
+use crate::tui::theme::Slot;
 
 /// One background session waiting on user input.
 pub(crate) struct AttentionItem {
@@ -85,14 +87,12 @@ pub(super) fn draw_attention_panel(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
 
-    let mut spans = vec![Span::styled(
-        "⚠ ",
-        Style::default().fg(Color::Yellow).bold(),
-    )];
+    let theme = app.theme();
+    let mut spans = vec![Span::styled("⚠ ", theme.fg(Slot::Warning).bold())];
     if items.len() > 1 {
         spans.push(Span::styled(
             format!("{} waiting · ", items.len()),
-            Style::default().fg(Color::Yellow),
+            theme.fg(Slot::Warning),
         ));
     }
     spans.extend([
@@ -105,9 +105,14 @@ pub(super) fn draw_attention_panel(f: &mut Frame, area: Rect, app: &mut App) {
         ),
         Span::styled("]", Style::default().dim()),
         Span::raw(" "),
-        Span::styled(first.summary.clone(), Style::default().fg(Color::Yellow)),
-        Span::styled("  — Ctrl+G: jump", Style::default().dim()),
+        Span::styled(first.summary.clone(), theme.fg(Slot::Warning)),
     ]);
+    if let Some(key) = app.keymap().first_key(Action::JumpAttention) {
+        spans.push(Span::styled(
+            format!("  — {key}: jump"),
+            Style::default().dim(),
+        ));
+    }
 
     f.render_widget(Paragraph::new(Line::from(spans)), area);
     app.set_attention_area(area);

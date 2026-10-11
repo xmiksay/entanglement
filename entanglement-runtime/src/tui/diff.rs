@@ -1,8 +1,10 @@
 use diffy::Patch;
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::Modifier,
     text::{Line, Span, Text},
 };
+
+use crate::tui::theme::{Slot, Theme};
 
 pub struct DiffRenderer;
 
@@ -11,9 +13,9 @@ impl DiffRenderer {
     /// `edit` tool block shows its edit expanded (#341). The hunks come out in
     /// the same `+`/`-` green/red style as [`render_unified`](Self::render_unified).
     /// Live via `render_expansion`'s `edit` arm (#341).
-    pub fn render_change(old: &str, new: &str) -> Text<'static> {
+    pub fn render_change(old: &str, new: &str, theme: &Theme) -> Text<'static> {
         let patch = diffy::create_patch(old, new);
-        Self::render_hunks(&patch)
+        Self::render_hunks(&patch, theme)
     }
 
     /// Render a raw unified-diff patch (`apply_patch`'s `patch` field) as a
@@ -21,7 +23,7 @@ impl DiffRenderer {
     /// own parser accepts the bare `@@ ... @@` hunks `apply_patch`'s
     /// hand-rolled `host::unified_diff` parser does — no `---`/`+++` file
     /// header required.
-    pub fn render_unified(diff: &str) -> Text<'static> {
+    pub fn render_unified(diff: &str, theme: &Theme) -> Text<'static> {
         if diff.is_empty() {
             return Text::default();
         }
@@ -30,13 +32,13 @@ impl DiffRenderer {
             Patch::from_str("").unwrap_or_else(|_| Patch::from_str("@@ -0,0 +0,0 @@\n").unwrap())
         });
 
-        Self::render_hunks(&patch)
+        Self::render_hunks(&patch, theme)
     }
 
     /// Shared hunk → styled-line rendering for [`render_change`](Self::render_change)
     /// and [`render_unified`](Self::render_unified): inserts green `+`, deletes
     /// red `-`, context dimmed.
-    fn render_hunks(patch: &Patch<'_, str>) -> Text<'static> {
+    fn render_hunks(patch: &Patch<'_, str>, theme: &Theme) -> Text<'static> {
         let mut lines = Vec::new();
 
         for hunk in patch.hunks() {
@@ -44,20 +46,20 @@ impl DiffRenderer {
                 match line {
                     diffy::Line::Context(line) => {
                         lines.push(Line::from(vec![
-                            Span::styled("  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("  ", theme.fg(Slot::DiffContext)),
                             Span::raw(line.to_string()),
                         ]));
                     }
                     diffy::Line::Insert(line) => {
                         lines.push(Line::from(vec![
-                            Span::styled("+ ", Style::default().fg(Color::Green)),
-                            Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+                            Span::styled("+ ", theme.fg(Slot::DiffAdd)),
+                            Span::styled(line.to_string(), theme.fg(Slot::DiffAdd)),
                         ]));
                     }
                     diffy::Line::Delete(line) => {
                         lines.push(Line::from(vec![
-                            Span::styled("- ", Style::default().fg(Color::Red)),
-                            Span::styled(line.to_string(), Style::default().fg(Color::Red)),
+                            Span::styled("- ", theme.fg(Slot::DiffRemove)),
+                            Span::styled(line.to_string(), theme.fg(Slot::DiffRemove)),
                         ]));
                     }
                 }
@@ -68,7 +70,7 @@ impl DiffRenderer {
     }
 
     #[allow(dead_code)]
-    pub fn render_stacked<'a>(before: &'a str, after: &'a str) -> Text<'a> {
+    pub fn render_stacked<'a>(before: &'a str, after: &'a str, theme: &Theme) -> Text<'a> {
         let before_lines: Vec<&str> = before.lines().collect();
         let after_lines: Vec<&str> = after.lines().collect();
 
@@ -79,14 +81,12 @@ impl DiffRenderer {
         lines.push(Line::from(vec![
             Span::styled(
                 "Before:",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                theme.fg(Slot::DiffRemove).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled(
                 "After:",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                theme.fg(Slot::DiffAdd).add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -117,15 +117,19 @@ impl DiffRenderer {
             lines.push(Line::from(vec![
                 Span::styled(
                     before_preview,
-                    Style::default().fg(if is_diff { Color::Red } else { Color::DarkGray }),
+                    theme.fg(if is_diff {
+                        Slot::DiffRemove
+                    } else {
+                        Slot::DiffContext
+                    }),
                 ),
                 Span::raw("  "),
                 Span::styled(
                     after_preview,
-                    Style::default().fg(if is_diff {
-                        Color::Green
+                    theme.fg(if is_diff {
+                        Slot::DiffAdd
                     } else {
-                        Color::DarkGray
+                        Slot::DiffContext
                     }),
                 ),
             ]));
@@ -160,7 +164,7 @@ mod tests {
 -line 2
 +line 2 modified
  line 3";
-        let result = DiffRenderer::render_unified(diff);
+        let result = DiffRenderer::render_unified(diff, &Theme::default());
         assert!(!result.lines.is_empty());
     }
 
@@ -168,7 +172,7 @@ mod tests {
     fn test_render_stacked_diff() {
         let before = "line 1\nline 2\nline 3";
         let after = "line 1\nline 2 modified\nline 3";
-        let result = DiffRenderer::render_stacked(before, after);
+        let result = DiffRenderer::render_stacked(before, after, &Theme::default());
         assert!(!result.lines.is_empty());
     }
 
@@ -178,21 +182,24 @@ mod tests {
         // (the old `&line[..27]` slice) lands mid-char and panics.
         let before = format!("{}日本語 rest of the line", "a".repeat(26));
         let after = format!("{}異なる other content here", "a".repeat(26));
-        let result = DiffRenderer::render_stacked(&before, &after);
+        let result = DiffRenderer::render_stacked(&before, &after, &Theme::default());
         assert!(!result.lines.is_empty());
     }
 
     #[test]
     fn test_render_empty_diff() {
         let diff = "";
-        let result = DiffRenderer::render_unified(diff);
+        let result = DiffRenderer::render_unified(diff, &Theme::default());
         assert!(result.lines.is_empty());
     }
 
     #[test]
     fn test_render_change_produces_delete_insert_pair() {
-        let result =
-            DiffRenderer::render_change("line 1\nold line\nline 3\n", "line 1\nnew line\nline 3\n");
+        let result = DiffRenderer::render_change(
+            "line 1\nold line\nline 3\n",
+            "line 1\nnew line\nline 3\n",
+            &Theme::default(),
+        );
         let has_delete = result
             .lines
             .iter()

@@ -1,86 +1,29 @@
-//! Key handling in [`ApprovalMode::Normal`]: the prompt input, popups,
-//! mode cycling, and submitting a prompt / slash command / `!bash` line.
+//! Key handling in [`ApprovalMode::Normal`]: the prompt input, popups, and
+//! submitting a prompt / slash command / `!bash` line. Remappable keys
+//! (`tui.keybindings`, #735) resolve to an action first ([`super::actions`]);
+//! the arms below are the fixed editing keys.
 
 use anyhow::Result;
 use entanglement_core::{Holly, InMsg};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tracing::debug;
 
+use super::actions::run_action;
 use super::slash_send::{
-    run_bash_passthrough, send_compact, send_help_if_requested, send_name, send_pause,
-    send_pause_resume_toggle, send_resume, send_show, send_stop,
+    run_bash_passthrough, send_compact, send_help_if_requested, send_name, send_pause, send_resume,
+    send_show, send_stop,
 };
 use crate::tui::app::App;
 
 /// Handle one key in Normal mode. `Ok(true)` asks the event loop to quit.
 pub(super) async fn handle_normal_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
+    if let Some(action) = app.keymap().direct_action(&key) {
+        return run_action(app, holly, action).await;
+    }
     match key.code {
-        // Mention popup (ADR-0030) wins first — it's the most
-        // specific (`@token` in flight). Then the slash popup
-        // (Issue 2): Tab accepts the selected `/command`.
-        KeyCode::Tab if app.mention_visible() => {
-            app.accept_mention();
-        }
-        KeyCode::Tab if app.slash_visible() => {
-            app.accept_slash();
-        }
-        KeyCode::Tab => {
-            let input_text = app.input().lines().join("\n");
-            if input_text.starts_with('/') && input_text.chars().count() == 1 {
-                app.toggle_command_palette();
-            } else if let Some(mode) = app.cycle_mode(true) {
-                // Cycles the permission mode, not the agent:
-                // ADR-0207 fixed the agent at session start, so
-                // mode is the only axis left that a keystroke
-                // can meaningfully switch.
-                let _ = holly
-                    .send(InMsg::SetMode {
-                        session: app.active_session_id().clone(),
-                        mode,
-                    })
-                    .await;
-            }
-        }
-        // crossterm reports Shift+Tab as `BackTab` (the SHIFT
-        // modifier is not guaranteed), so match the key code, not
-        // a modifier. Mirrors the Tab arm in reverse (#322).
-        KeyCode::BackTab if app.mention_visible() => {
-            app.accept_mention();
-        }
-        KeyCode::BackTab if app.slash_visible() => {
-            app.accept_slash();
-        }
-        KeyCode::BackTab => {
-            let input_text = app.input().lines().join("\n");
-            if input_text.starts_with('/') && input_text.chars().count() == 1 {
-                app.toggle_command_palette();
-            } else if let Some(mode) = app.cycle_mode(false) {
-                // Cycles the permission mode, not the agent:
-                // ADR-0207 fixed the agent at session start, so
-                // mode is the only axis left that a keystroke
-                // can meaningfully switch.
-                let _ = holly
-                    .send(InMsg::SetMode {
-                        session: app.active_session_id().clone(),
-                        mode,
-                    })
-                    .await;
-            }
-        }
-        KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-            app.toggle_profile_picker();
-        }
-        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
-            app.toggle_command_palette();
-        }
+        // Reserved (never remappable): the unconditional escape hatch.
         KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
             return Ok(true);
-        }
-        KeyCode::PageUp => {
-            app.scroll_up(5);
-        }
-        KeyCode::PageDown => {
-            app.scroll_down(5);
         }
         KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input().move_word_left();
@@ -125,11 +68,6 @@ pub(super) async fn handle_normal_key(app: &mut App, holly: &Holly, key: KeyEven
                 crate::tui::stop_command::request_stop(app, holly, target).await;
             }
         }
-        KeyCode::Enter => return submit_on_enter(app, holly, key).await,
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input().insert_newline();
-            app.update_popups();
-        }
         KeyCode::Up => {
             if app.mention_visible() {
                 app.mention_select_prev();
@@ -151,12 +89,6 @@ pub(super) async fn handle_normal_key(app: &mut App, holly: &Holly, key: KeyEven
             } else {
                 app.input().move_cursor_down();
             }
-        }
-        // Ctrl+Space toggles pause/resume on the active session
-        // (#6): Esc now stops the turn, so pause/resume need
-        // their own dedicated key. Idempotent server-side.
-        KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            send_pause_resume_toggle(app, holly).await;
         }
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if !app.handle_readline_key(c) {
@@ -192,18 +124,12 @@ pub(super) async fn handle_normal_key(app: &mut App, holly: &Holly, key: KeyEven
     Ok(false)
 }
 
-/// `Enter` in Normal mode: a modified Enter inserts a newline, an open popup
-/// accepts its selection, and otherwise the input is submitted.
-async fn submit_on_enter(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool> {
-    // Alt+Enter / Shift+Enter insert a newline (D1):
-    // Alt prefixes an ESC on virtually all vt100+
-    // terminals (universally detected), Shift works on
-    // kitty-protocol terminals — both fall through to
-    // the shared newline path.
-    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) {
-        app.input().insert_newline();
-        app.update_popups();
-    } else if app.mention_visible() {
+/// The `submit` action (`Enter` by default): an open popup accepts its
+/// selection, otherwise the input is submitted. Newlines are their own action
+/// (`Shift`/`Alt+Enter`, `Ctrl+J`): Alt prefixes an ESC on virtually all
+/// vt100+ terminals, Shift works on kitty-protocol terminals (D1).
+pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
+    if app.mention_visible() {
         app.accept_mention();
     } else if app.slash_visible() {
         app.accept_slash();

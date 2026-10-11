@@ -61,7 +61,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         // `Status`, #273) and stay visually distinct: an approval is not the
         // same ask as a question.
         let (state_word, state_style) = match attention_word(view) {
-            Some((word, color)) => (word, Style::default().fg(color).bold()),
+            Some((word, slot)) => (word, app.theme().fg(slot).bold()),
             None => (
                 match view.state() {
                     AgentState::Idle => "idle",

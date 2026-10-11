@@ -159,7 +159,7 @@ impl App {
                 self.scroll_down(5);
                 false
             }
-            Action::ShowHelp => {
+            Action::Help => {
                 self.toggle_help();
                 false
             }
@@ -175,6 +175,18 @@ impl App {
                 self.toggle_inspect();
                 false
             }
+            Action::JumpAttention => {
+                self.jump_to_next_attention();
+                false
+            }
+            // These need `holly` or the input context: the event loop's
+            // `run_action` handles them before falling through to here.
+            Action::Leader
+            | Action::Submit
+            | Action::Newline
+            | Action::CycleMode
+            | Action::CycleModeBack
+            | Action::PauseToggle => false,
         }
     }
 }

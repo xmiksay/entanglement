@@ -20,6 +20,7 @@ use crate::tui::theme::Theme;
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
 mod allow;
+pub(crate) mod appearance;
 mod approval_pager;
 mod aux;
 mod compact;
@@ -188,6 +189,7 @@ pub struct App {
 
     // Theme and rendering state
     theme: Theme,
+    tui_warnings: Vec<String>,
     profile_colors: HashMap<String, ratatui::style::Color>,
     thinking_since: Option<Instant>,
 

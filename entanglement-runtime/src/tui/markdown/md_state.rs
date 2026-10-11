@@ -1,10 +1,11 @@
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
 };
 
 use super::MarkdownRenderer;
+use crate::tui::theme::Slot;
 
 /// One in-flight list. Ordered lists carry a running item counter.
 struct ListState {
@@ -70,8 +71,10 @@ impl<'r> RenderState<'r> {
                 if self.in_cell {
                     self.table_cell.push_str(&text);
                 } else {
-                    let mut s = Style::default()
-                        .fg(Color::Yellow)
+                    let mut s = self
+                        .renderer
+                        .theme()
+                        .fg(Slot::MarkdownCode)
                         .add_modifier(Modifier::ITALIC);
                     if self.bold > 0 {
                         s = s.add_modifier(Modifier::BOLD);

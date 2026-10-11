@@ -4,23 +4,25 @@
 //! live in `/cost` instead — on a cached conversation they grow quadratically
 //! and say nothing about the next request.
 
-use ratatui::{
-    style::{Color, Style},
-    text::Span,
-};
+use ratatui::{style::Style, text::Span};
 
 use crate::tui::format::{format_context, format_round_usage, format_session_cost};
 use crate::tui::session_view::CostLedger;
+use crate::tui::theme::{Slot, Theme};
 
 /// Each segment is preceded by its own `" | "` separator, so an omitted one
 /// (no turn round yet → no `ctx`) never leaves a dangling bar.
-pub(super) fn usage_spans(ledger: &CostLedger, window: Option<u32>) -> Vec<Span<'static>> {
+pub(super) fn usage_spans(
+    ledger: &CostLedger,
+    window: Option<u32>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if let Some(prompt) = ledger.last_turn_prompt() {
         push(
             &mut spans,
             format!("ctx {}", format_context(prompt, window)),
-            Style::default().fg(Color::Cyan),
+            theme.fg(Slot::Accent),
         );
     }
     if ledger.rounds() > 0 {
@@ -30,15 +32,15 @@ pub(super) fn usage_spans(ledger: &CostLedger, window: Option<u32>) -> Vec<Span<
             ledger.prompt_total(),
             ledger.output_tokens(),
         );
-        push(&mut spans, spend, Style::default().fg(Color::Yellow));
+        push(&mut spans, spend, theme.fg(Slot::Warning));
     }
     if let Some(round) = ledger.last_round() {
         // A full miss right after a hit renders in the throttle indicator's
         // red/bold, so a cache regression is as loud as a rate-limit one.
         let style = if ledger.last_round_full_miss() {
-            Style::default().fg(Color::Red).bold()
+            theme.fg(Slot::Error).bold()
         } else {
-            Style::default().fg(Color::Yellow).dim()
+            theme.fg(Slot::Warning).dim()
         };
         push(
             &mut spans,
@@ -57,7 +59,7 @@ fn push(spans: &mut Vec<Span<'static>>, text: String, style: Style) {
 #[cfg(test)]
 mod tests {
     use entanglement_core::UsagePurpose;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Color, Modifier};
 
     use super::*;
     use crate::tui::session_view::RoundUsage;
@@ -77,7 +79,7 @@ mod tests {
 
     #[test]
     fn nothing_renders_before_the_first_round() {
-        assert!(usage_spans(&CostLedger::default(), Some(200_000)).is_empty());
+        assert!(usage_spans(&CostLedger::default(), Some(200_000), &Theme::default()).is_empty());
     }
 
     #[test]
@@ -89,7 +91,7 @@ mod tests {
             UsagePurpose::Turn,
         );
         assert_eq!(
-            text(&usage_spans(&ledger, Some(200_000))),
+            text(&usage_spans(&ledger, Some(200_000), &Theme::default())),
             " | ctx 51.2k/200k 26% | $1.2345 | last: 51.2k in (94% cached) · out 1.1k"
         );
     }
@@ -99,7 +101,7 @@ mod tests {
         let mut ledger = CostLedger::default();
         ledger.fold(round(30_000, 0, 1_500), None, UsagePurpose::Compaction);
         assert_eq!(
-            text(&usage_spans(&ledger, Some(200_000))),
+            text(&usage_spans(&ledger, Some(200_000), &Theme::default())),
             " | 30.0k in / 1.5k out | last: 30.0k in (0% cached) · out 1.5k"
         );
     }
@@ -109,7 +111,7 @@ mod tests {
         let mut ledger = CostLedger::default();
         ledger.fold(round(2_000, 48_000, 10), None, UsagePurpose::Turn);
         ledger.fold(round(51_200, 0, 10), None, UsagePurpose::Turn);
-        let spans = usage_spans(&ledger, None);
+        let spans = usage_spans(&ledger, None, &Theme::default());
         let last = spans.last().expect("last segment");
         assert_eq!(last.style.fg, Some(Color::Red));
         assert!(last.style.add_modifier.contains(Modifier::BOLD));

@@ -5,11 +5,12 @@
 //! required) per schema — instead of the reply's raw text or JSON.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 use serde_json::Value;
 
+use crate::tui::theme::{Slot, Theme};
 use crate::tui::wrap;
 
 use super::{parse_input, readable};
@@ -41,14 +42,18 @@ pub(super) fn render_describe_input(input: &str) -> Vec<Line<'static>> {
 /// `explore`'s reply (`discover::sections::render_sections`): one header line
 /// per non-empty section, `  name — description` rows beneath it, or
 /// `(no matches)`.
-pub(super) fn render_explore_output(output: &str, available_width: u16) -> Vec<Line<'static>> {
+pub(super) fn render_explore_output(
+    output: &str,
+    available_width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut rows = 0;
     for raw in output.lines().filter(|l| !l.trim().is_empty()) {
         match raw.strip_prefix("  ").and_then(|row| row.split_once(" — ")) {
             Some((name, description)) => {
                 rows += 1;
-                lines.extend(name_row(name, description, available_width));
+                lines.extend(name_row(name, description, available_width, theme));
             }
             None if raw.starts_with(' ') => {
                 lines.extend(readable::render_output(raw.trim(), available_width))
@@ -82,7 +87,11 @@ fn section_label(header: &str) -> &str {
 /// <call hint>` paragraph, then a JSON array of `{name, description, schema}`
 /// / `{name, error}` / `{name, note}` entries (or, on the `anthropic_native`
 /// wire, only the non-schema entries).
-pub(super) fn render_describe_output(output: &str, available_width: u16) -> Vec<Line<'static>> {
+pub(super) fn render_describe_output(
+    output: &str,
+    available_width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let (loaded, rest) = match output.strip_prefix("Loaded: ") {
         Some(after) => after
             .split_once("\n\n")
@@ -100,7 +109,7 @@ pub(super) fn render_describe_output(output: &str, available_width: u16) -> Vec<
             lines.extend(readable::indented_wrapped(
                 vec![hint.to_string()],
                 available_width,
-                Style::default().fg(Color::DarkGray),
+                theme.fg(Slot::Muted),
             ));
         }
     }
@@ -110,7 +119,7 @@ pub(super) fn render_describe_output(output: &str, available_width: u16) -> Vec<
     match serde_json::from_str::<Value>(rest) {
         Ok(Value::Array(entries)) => {
             for entry in &entries {
-                lines.extend(schema_entry(entry, available_width));
+                lines.extend(schema_entry(entry, available_width, theme));
             }
         }
         _ => lines.extend(readable::render_output(rest, available_width)),
@@ -118,26 +127,26 @@ pub(super) fn render_describe_output(output: &str, available_width: u16) -> Vec<
     lines
 }
 
-fn schema_entry(entry: &Value, available_width: u16) -> Vec<Line<'static>> {
+fn schema_entry(entry: &Value, available_width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let name = entry.get("name").and_then(Value::as_str).unwrap_or("?");
     let description = entry
         .get("description")
         .and_then(Value::as_str)
         .and_then(|d| d.lines().next())
         .unwrap_or("");
-    let mut lines = name_row(name, description, available_width);
+    let mut lines = name_row(name, description, available_width, theme);
     if let Some(error) = entry.get("error").and_then(Value::as_str) {
         lines.extend(readable::indented_wrapped(
             vec![format!("    ✗ {error}")],
             available_width,
-            Style::default().fg(Color::Red),
+            theme.fg(Slot::Error),
         ));
     }
     if let Some(note) = entry.get("note").and_then(Value::as_str) {
         lines.extend(readable::indented_wrapped(
             vec![format!("    {note}")],
             available_width,
-            Style::default().fg(Color::DarkGray),
+            theme.fg(Slot::Muted),
         ));
     }
     if let Some(schema) = entry.get("schema") {
@@ -200,11 +209,13 @@ fn type_label(property: &Value) -> String {
 
 /// `    name — description`, the name in the tool-name color, word-wrapped with
 /// continuation lines hanging under the name.
-fn name_row(name: &str, description: &str, available_width: u16) -> Vec<Line<'static>> {
-    let mut spans = vec![Span::styled(
-        name.to_string(),
-        Style::default().fg(Color::Cyan),
-    )];
+fn name_row(
+    name: &str,
+    description: &str,
+    available_width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut spans = vec![Span::styled(name.to_string(), theme.fg(Slot::Accent))];
     if !description.is_empty() {
         spans.push(Span::raw(format!(" — {description}")));
     }

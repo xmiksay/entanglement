@@ -13,6 +13,8 @@ use crate::tui::modals::{self, draw_mode_picker, draw_model_picker, draw_profile
 
 pub(crate) mod alerts;
 mod sidebar;
+#[cfg(test)]
+mod theme_render_tests;
 use alerts::{draw_attention_panel, draw_status_bar, panel_height};
 use sidebar::draw_sidebar;
 
@@ -165,7 +167,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if matches!(app.leader_handler().state(), LeaderState::Pending { .. }) {
-        modals::draw_which_key_popup(f, app.leader_handler().keymap());
+        let theme = app.theme();
+        modals::draw_which_key_popup(f, app.keymap(), &theme);
     }
 
     app.clear_dirty();

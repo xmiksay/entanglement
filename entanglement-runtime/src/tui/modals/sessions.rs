@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -9,8 +9,10 @@ use ratatui::{
 use super::centered_rect;
 use crate::tui::app::App;
 use crate::tui::format::format_rollup;
+use crate::tui::theme::Slot;
 
 pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let profiles = app.available_profiles().to_vec();
     let items: Vec<ListItem> = profiles
         .iter()
@@ -32,7 +34,7 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Agents (read-only, fixed per session; Esc/Enter to close)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(60, 40, f.area());
     app.set_profile_picker_rect(area);
@@ -44,6 +46,7 @@ pub fn draw_profile_picker(f: &mut Frame, app: &mut App) {
 /// modes, current one pre-selected, `Enter` sends a live `InMsg::SetMode` —
 /// unlike the read-only `/agent` picker above.
 pub fn draw_mode_picker(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let modes = app.available_modes().to_vec();
     let current = app.mode().to_string();
     let items: Vec<ListItem> = modes
@@ -67,7 +70,7 @@ pub fn draw_mode_picker(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Switch Permission Mode (Esc to close, Enter to switch)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(70, 40, f.area());
     app.set_mode_picker_rect(area);
@@ -76,6 +79,7 @@ pub fn draw_mode_picker(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let active = app.active_session_id().clone();
     // Tree-ordered with depth (session_tree.rs): rows nest under their parent,
     // and the modal's ListState index matches this same ordering.
@@ -108,18 +112,12 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                 Span::raw(format!(" {:?}", view.state())),
             ];
             if view.is_waiting_approval() {
-                spans.push(Span::styled(
-                    " ⏳ approval",
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(" ⏳ approval", theme.fg(Slot::Warning)));
             }
             // A parked `ask_user` question deserves the same visibility as a
             // parked approval — they are distinct waits (#488).
             if view.is_asking() {
-                spans.push(Span::styled(
-                    " ❓ question",
-                    Style::default().fg(Color::Cyan),
-                ));
+                spans.push(Span::styled(" ❓ question", theme.fg(Slot::Accent)));
             }
             // Inline description, dimmed (#327's resume-list idiom): the live
             // action when set, else the first-prompt snippet.
@@ -139,7 +137,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                         "  Σ {}",
                         format_rollup(rollup.input_tokens, rollup.output_tokens, rollup.cost_usd)
                     ),
-                    Style::default().fg(Color::DarkGray),
+                    theme.fg(Slot::Muted),
                 ));
             }
             // Sub-agents (depth > 0) show their spawn duration: live while
@@ -149,7 +147,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                     let (glyph, style) = if view.has_ended() {
                         (" ✓ ", Style::default().dim())
                     } else {
-                        (" ⏱ ", Style::default().fg(Color::Cyan))
+                        (" ⏱ ", theme.fg(Slot::Accent))
                     };
                     spans.push(Span::styled(format!("{glyph}{secs}s"), style));
                 }
@@ -164,7 +162,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Sessions (Enter: switch, n: new, Esc: close)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(60, 40, f.area());
     app.set_sessions_modal_rect(area);
@@ -173,6 +171,7 @@ pub fn draw_sessions_modal(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let available_models = app.available_models().to_vec();
     let mut items = Vec::new();
     let mut model_list_indices = Vec::new();
@@ -181,7 +180,7 @@ pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
     for (provider, model_list) in &available_models {
         items.push(ListItem::new(Line::from(vec![Span::styled(
             format!("{}:", provider),
-            Style::default().fg(Color::Cyan).bold(),
+            theme.fg(Slot::Accent).bold(),
         )])));
 
         for model in model_list {
@@ -212,7 +211,7 @@ pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Select Model (Esc to close, Enter: display only — restart to apply)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(50, 50, f.area());
     app.set_model_picker_rect(area);
@@ -220,7 +219,7 @@ pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, area, &mut list_state);
 
     let hint = Paragraph::new("Runtime switching requires engine extension (see issue #12)")
-        .style(Style::default().fg(Color::Yellow).dim())
+        .style(theme.fg(Slot::Warning).dim())
         .alignment(Alignment::Center);
     let hint_area = Rect {
         x: area.x,
@@ -232,6 +231,7 @@ pub fn draw_model_picker(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let sessions = app.available_sessions().to_vec();
     let items: Vec<ListItem> = sessions
         .iter()
@@ -243,7 +243,7 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
                 Span::styled(id_string, Style::default().bold()),
                 Span::raw(" "),
                 Span::styled("[", Style::default().dim()),
-                Span::styled(agent_string, Style::default().fg(Color::Cyan).bold()),
+                Span::styled(agent_string, theme.fg(Slot::Accent).bold()),
                 Span::styled("]", Style::default().dim()),
                 Span::raw(format!(" {}", model_string)),
             ];
@@ -266,7 +266,7 @@ pub fn draw_resume_modal(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Resume Session (Enter: select, Esc: close)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(60, 40, f.area());
     app.set_resume_modal_rect(area);

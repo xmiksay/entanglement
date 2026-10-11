@@ -8,12 +8,10 @@
 use std::path::Path;
 
 use entanglement_runtime::permission;
-use ratatui::{
-    style::{Color, Style},
-    text::{Line, Span, Text},
-};
+use ratatui::text::{Line, Span, Text};
 
 use crate::tui::diff::DiffRenderer;
+use crate::tui::theme::{Slot, Theme};
 use crate::tui::wrap;
 
 use super::{collect_line, parse_input};
@@ -53,12 +51,12 @@ pub(super) fn render_read_input(input: &str) -> Vec<Line<'static>> {
 
 /// An `edit` body: the full path plus a real `-`/`+` diff of
 /// `oldString` → `newString` (#341), never the raw JSON args.
-pub(super) fn render_edit_input(input: &str) -> Vec<Line<'static>> {
+pub(super) fn render_edit_input(input: &str, theme: &Theme) -> Vec<Line<'static>> {
     let v = parse_input(input);
     let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
     let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines: Vec<Line<'static>> = location_line("edit", input, "path").into_iter().collect();
-    lines.extend(DiffRenderer::render_change(old, new).lines);
+    lines.extend(DiffRenderer::render_change(old, new, theme).lines);
     lines
 }
 
@@ -89,17 +87,17 @@ pub(super) fn render_write_expansion(input: &str) -> Text<'static> {
 /// approval instead of only showing the new content blind. Falls back to
 /// "(new file)" + the full content when the target doesn't exist (or isn't
 /// readable UTF-8) yet.
-pub fn render_write_approval_body(input: &str, root: &Path) -> Text<'static> {
+pub fn render_write_approval_body(input: &str, root: &Path, theme: &Theme) -> Text<'static> {
     let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
     let path = v.get("path").and_then(|s| s.as_str()).unwrap_or("");
     let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines = vec![Line::from(format!("  path: {path}"))];
     match std::fs::read_to_string(root.join(path)) {
-        Ok(old) => lines.extend(DiffRenderer::render_change(&old, content).lines),
+        Ok(old) => lines.extend(DiffRenderer::render_change(&old, content, theme).lines),
         Err(_) => {
             lines.push(Line::from(vec![Span::styled(
                 "  (new file)",
-                Style::default().fg(Color::Green),
+                theme.fg(Slot::Success),
             )]));
             lines.extend(content.lines().map(|line| Line::from(format!("  {line}"))));
         }
@@ -114,12 +112,12 @@ pub fn render_write_approval_body(input: &str, root: &Path) -> Text<'static> {
 /// for the approval preview and the post-execution expansion. Falls back to
 /// the raw patch text (still never empty) if it fails to parse as a unified
 /// diff.
-pub(super) fn render_apply_patch_expansion(input: &str) -> Text<'static> {
+pub(super) fn render_apply_patch_expansion(input: &str, theme: &Theme) -> Text<'static> {
     let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
     let patch = v.get("patch").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines = Vec::new();
     lines.extend(location_line("apply_patch", input, "path"));
-    let diff = DiffRenderer::render_unified(patch);
+    let diff = DiffRenderer::render_unified(patch, theme);
     if diff.lines.is_empty() {
         lines.extend(patch.lines().map(|line| Line::from(format!("  {line}"))));
     } else {
@@ -500,7 +498,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "old line\n").expect("seed file");
         let input = serde_json::json!({ "path": "a.txt", "content": "new line\n" }).to_string();
 
-        let result = render_write_approval_body(&input, dir.path());
+        let result = render_write_approval_body(&input, dir.path(), &Theme::default());
         let text = flatten(&result);
         assert!(text.contains("path: a.txt"), "{text:?}");
         let has_delete = result
@@ -525,7 +523,7 @@ mod tests {
         let input =
             serde_json::json!({ "path": "brand-new.txt", "content": "hello\nworld" }).to_string();
 
-        let result = render_write_approval_body(&input, dir.path());
+        let result = render_write_approval_body(&input, dir.path(), &Theme::default());
         let text = flatten(&result);
         assert!(text.contains("new file"), "{text:?}");
         assert!(text.contains("hello"), "{text:?}");

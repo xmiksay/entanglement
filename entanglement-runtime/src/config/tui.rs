@@ -2,7 +2,7 @@
 //!
 //! One struct for every TUI knob, so the block grows by adding fields rather
 //! than new top-level keys: #739 moved the two former env vars here
-//! (`notify`, `mouse`); `theme`/`keybindings` (#735) and `statusline` (#762)
+//! (`notify`, `mouse`); `statusline` (#762), `theme` and `keybindings` (#735)
 //! join as further fields of [`TuiConfig`]. `#[serde(default)]` keeps every
 //! field optional — a layer may set one knob and inherit the rest — while
 //! `deny_unknown_fields` keeps a typo loud, like the rest of `config.yml`.
@@ -13,7 +13,9 @@
 
 use serde::Deserialize;
 
+use super::keybindings::KeybindingsConfig;
 use super::statusline::StatuslineConfig;
+use super::theme::ThemeConfig;
 
 /// Resolved `tui:` settings. The defaults are the pre-#739 behavior with
 /// neither env var set.
@@ -30,6 +32,11 @@ pub struct TuiConfig {
     pub mouse: bool,
     /// The top-row project/path status line (#762, [`super::statusline`]).
     pub statusline: StatuslineConfig,
+    /// Colour palette: `dark` (default) / `light` / slot overrides
+    /// ([`super::theme`]).
+    pub theme: ThemeConfig,
+    /// Action → key remaps ([`super::keybindings`]).
+    pub keybindings: KeybindingsConfig,
 }
 
 impl Default for TuiConfig {
@@ -38,7 +45,19 @@ impl Default for TuiConfig {
             notify: false,
             mouse: true,
             statusline: StatuslineConfig::default(),
+            theme: ThemeConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         }
+    }
+}
+
+impl TuiConfig {
+    /// Every non-fatal problem in the block, for the loader's warning list.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut w = self.statusline.warnings();
+        w.extend(self.theme.warnings());
+        w.extend(self.keybindings.warnings());
+        w
     }
 }
 
@@ -58,6 +77,8 @@ mod tests {
                 notify: false,
                 mouse: true,
                 statusline: StatuslineConfig::default(),
+                theme: ThemeConfig::default(),
+                keybindings: KeybindingsConfig::default(),
             }
         );
         assert_eq!(parse("{}").unwrap(), TuiConfig::default());
@@ -72,6 +93,10 @@ mod tests {
         let c = parse("statusline: {template: '{repo}'}\n").unwrap();
         assert_eq!(c.statusline.template, "{repo}");
         assert_eq!(c.statusline.right, "{session}", "sibling keeps its default");
+        let c = parse("theme: light\nkeybindings: {pick_model: ctrl+o}\n").unwrap();
+        assert_eq!(c.theme.base, "light");
+        assert!(c.keybindings.resolve().is_ok());
+        assert!(c.warnings().is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::app::App;
 use super::attention::Attention;
 use super::event::Event;
-use super::keybindings::LeaderResult;
+use super::keybindings::{Action, LeaderResult};
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_mode_picker_event, handle_model_picker_event, handle_mouse, handle_profile_picker_event,
@@ -16,6 +16,7 @@ use super::session_view::ApprovalMode;
 
 // Key handling per approval mode, and the slash-command senders the Normal
 // mode's submit path routes to.
+mod actions;
 mod approval_keys;
 mod normal_keys;
 mod slash_send;
@@ -32,8 +33,9 @@ pub(super) fn apply_input_edit_key(
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mods = key.modifiers;
     match key.code {
-        // Alt+Enter newline (D1): universally detected via the ESC Alt prefix.
-        KeyCode::Enter if mods.contains(KeyModifiers::ALT) => {
+        // The `newline` action (Alt+Enter by default, D1) works in every
+        // input field, not just the prompt.
+        _ if app.keymap().direct_action(key) == Some(Action::Newline) => {
             app.input().insert_newline();
             app.update_popups();
             true
@@ -269,7 +271,7 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
     // session is itself parked — the reject-reason and free-text
     // arms match bare `Char(c)` with no modifier check, so
     // without this Ctrl+G would type a literal `g` there.
-    if key.code == KeyCode::Char('g') && key.modifiers == KeyModifiers::CONTROL {
+    if app.keymap().direct_action(&key) == Some(Action::JumpAttention) {
         app.jump_to_next_attention();
         return Ok(false);
     }
@@ -281,8 +283,7 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
 
     let current_mode = app.approval_mode().clone();
 
-    if key.code == KeyCode::Char('l')
-        && key.modifiers == KeyModifiers::CONTROL
+    if app.keymap().direct_action(&key) == Some(Action::ListSessions)
         && !matches!(current_mode, ApprovalMode::EnteringRejectReason { .. })
     {
         app.toggle_sessions_modal();
@@ -291,12 +292,7 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
 
     if matches!(current_mode, ApprovalMode::Normal) {
         match app.leader_handler().handle_key(&key) {
-            LeaderResult::Action(action) => {
-                if app.dispatch_action(action) {
-                    return Ok(true);
-                }
-                return Ok(false);
-            }
+            LeaderResult::Action(action) => return actions::run_action(app, holly, action).await,
             // Arming the leader or extending/cancelling a chord must
             // not fall through to the generic Ctrl-char arm (#326).
             LeaderResult::Consumed => return Ok(false),
@@ -1199,6 +1195,62 @@ mod tests {
             app.slash().selected().cloned(),
             first,
             "Down moved the selection"
+        );
+    }
+
+    /// #735: a remapped `submit` moves sending off Enter, and a remapped
+    /// leader drives the chord actions — through the real key path.
+    #[tokio::test]
+    async fn remapped_keys_drive_the_real_key_path() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        let cfg: crate::config::TuiConfig =
+            serde_yaml::from_str("{keybindings: {submit: ctrl+s, newline: enter, leader: ctrl+b}}")
+                .unwrap();
+        app.apply_appearance(&cfg, false, true);
+        let holly = engine();
+        let mut rx = holly.subscribe_inbound();
+        let mut attention = Attention::new(false);
+        let ctrl =
+            |c| ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        for k in [
+            key(KeyCode::Char('h')),
+            key(KeyCode::Enter),
+            key(KeyCode::Char('i')),
+        ] {
+            handle_event(&mut app, &holly, &mut attention, Event::Key(k))
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.input().lines(), &["h".to_string(), "i".to_string()]);
+        assert!(
+            drain_inbound(&mut rx).await.is_empty(),
+            "Enter no longer sends"
+        );
+
+        handle_event(&mut app, &holly, &mut attention, Event::Key(ctrl('s')))
+            .await
+            .unwrap();
+        let sent = drain_inbound(&mut rx).await;
+        assert!(
+            sent.iter().any(|m| matches!(m, InMsg::Prompt { .. })),
+            "ctrl+s sends: {sent:?}"
+        );
+
+        handle_event(&mut app, &holly, &mut attention, Event::Key(ctrl('b')))
+            .await
+            .unwrap();
+        handle_event(
+            &mut app,
+            &holly,
+            &mut attention,
+            Event::Key(key(KeyCode::Char('?'))),
+        )
+        .await
+        .unwrap();
+        assert!(
+            app.showing_help(),
+            "Ctrl+B ? opens help under the new leader"
         );
     }
 }

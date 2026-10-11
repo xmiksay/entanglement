@@ -52,7 +52,9 @@
 //!   `notification`, #734). See [`crate::hooks`]. Empty by default.
 //! - `tui` — terminal-UI preferences ([`tui::TuiConfig`], ADR-0213): one
 //!   block every TUI knob joins, live-reloaded by the TUI. Its `statusline`
-//!   templates ([`statusline`], #762) warn once per unknown placeholder.
+//!   templates ([`statusline`], #762) warn once per unknown placeholder; its
+//!   `theme` ([`theme`]) warns per bad slot/colour and `keybindings`
+//!   ([`keybindings`]) once per rejected remap (#735).
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
 //!   `max_turns` / `idle_ttl_secs` / `auto_compact`. Each is a *fallback*: an
 //!   explicit CLI flag or environment variable wins over the file (env >
@@ -101,6 +103,8 @@ mod ceiling;
 mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;
+pub mod keybindings;
+pub mod keychord;
 mod layers;
 pub mod lock;
 pub mod mcp_persist;
@@ -111,6 +115,7 @@ mod raw;
 pub mod retired;
 pub mod state_dir;
 pub mod statusline;
+pub mod theme;
 pub mod tui;
 pub mod write_key;
 
@@ -307,7 +312,7 @@ fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
         tool_advertising: raw.tool_advertising,
         tui: raw.tui,
     };
-    warnings.extend(config.tui.statusline.warnings());
+    warnings.extend(config.tui.warnings());
     Ok(Resolved {
         config,
         layers: raw_layers

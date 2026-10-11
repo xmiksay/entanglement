@@ -2,9 +2,9 @@
 //! modal, the status bar, and the attention panel.
 
 use entanglement_core::SessionId;
-use ratatui::style::Color;
 
 use crate::tui::session_view::{RoundUsage, SessionView};
+use crate::tui::theme::Slot;
 
 /// Human-scale session label: the first 8 chars of the id. A v4 UUID's first
 /// group is unique enough to tell sessions apart in a list; short hand-picked
@@ -115,15 +115,15 @@ pub(crate) fn format_rollup(
     }
 }
 
-/// The attention word (and its accent color) for a session that is parked on
+/// The attention word (and its accent colour slot) for a session that is parked on
 /// user input: an approval prompt or an `ask_user` question. Derived from the
 /// pending queues, not `AgentState` — `Status` briefly flaps to `Thinking`
 /// between two parked requests (#273), so the queues are the reliable signal.
-pub(crate) fn attention_word(view: &SessionView) -> Option<(&'static str, Color)> {
+pub(crate) fn attention_word(view: &SessionView) -> Option<(&'static str, Slot)> {
     if view.is_waiting_approval() {
-        Some(("needs approval", Color::Yellow))
+        Some(("needs approval", Slot::Approval))
     } else if view.is_asking() {
-        Some(("question", Color::Cyan))
+        Some(("question", Slot::Accent))
     } else {
         None
     }
@@ -169,7 +169,7 @@ mod tests {
         });
         assert_eq!(
             attention_word(&view),
-            Some(("needs approval", Color::Yellow))
+            Some(("needs approval", Slot::Approval))
         );
 
         let mut asking = SessionView::new();
@@ -183,7 +183,7 @@ mod tests {
                 multi_select: false,
             }]),
         });
-        assert_eq!(attention_word(&asking), Some(("question", Color::Cyan)));
+        assert_eq!(attention_word(&asking), Some(("question", Slot::Accent)));
     }
 
     #[test]

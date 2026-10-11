@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
@@ -8,6 +8,7 @@ use ratatui::{
 use super::centered_rect;
 use crate::inspect::InspectItem;
 use crate::tui::app::{App, InspectTab};
+use crate::tui::theme::{Slot, Theme};
 
 /// Draw the in-session inspection overlay (#214, drill-down #331): a large
 /// centred pane with a tab header (Prompt / Agents / Skills, active one
@@ -16,13 +17,21 @@ use crate::tui::app::{App, InspectTab};
 /// list (name + one-line summary + winning layer) whose `Enter` opens the
 /// per-item detail pane.
 pub fn draw_inspect_overlay(f: &mut Frame, app: &App) {
+    let theme = app.theme();
     let area = centered_rect(88, 88, f.area());
     f.render_widget(Clear, area);
 
-    let block = tab_header_block(app.inspect_tab(), app.inspect_showing_list());
+    let block = tab_header_block(app.inspect_tab(), app.inspect_showing_list(), &theme);
 
     if app.inspect_showing_list() {
-        draw_list_pane(f, area, block, app.inspect_items(), app.inspect_selected());
+        draw_list_pane(
+            f,
+            area,
+            block,
+            app.inspect_items(),
+            app.inspect_selected(),
+            &theme,
+        );
     } else {
         draw_text_pane(f, area, block, app.inspect_content(), app.inspect_scroll());
     }
@@ -30,11 +39,11 @@ pub fn draw_inspect_overlay(f: &mut Frame, app: &App) {
 
 /// Build the bordered block with the tab header + the level-appropriate hint.
 /// The hint line tells the user what the current keys do at this level.
-fn tab_header_block(active: InspectTab, showing_list: bool) -> Block<'static> {
+fn tab_header_block(active: InspectTab, showing_list: bool, theme: &Theme) -> Block<'static> {
     let mut title: Vec<Span> = vec![Span::raw(" ")];
     for tab in [InspectTab::Prompt, InspectTab::Agents, InspectTab::Skills] {
         let style = if tab == active {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+            theme.heading()
         } else {
             Style::default().dim()
         };
@@ -65,6 +74,7 @@ fn draw_list_pane(
     block: Block<'static>,
     items: &[InspectItem],
     selected: usize,
+    theme: &Theme,
 ) {
     let list_items: Vec<ListItem> = items
         .iter()
@@ -72,10 +82,7 @@ fn draw_list_pane(
             ListItem::new(Line::from(vec![
                 Span::styled(&item.name, Style::default().bold()),
                 Span::raw("  "),
-                Span::styled(
-                    format!("[{}]", item.layer),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("[{}]", item.layer), theme.fg(Slot::Muted)),
                 Span::raw("  "),
                 Span::styled(&item.summary, Style::default().dim()),
             ]))
@@ -84,7 +91,7 @@ fn draw_list_pane(
 
     let list = List::new(list_items)
         .block(block)
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let mut state = ListState::default();
     // Clamp the selection defensively: the App already clamps, but a `List`

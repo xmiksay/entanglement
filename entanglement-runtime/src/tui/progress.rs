@@ -7,7 +7,7 @@ use ratatui::{
 };
 use std::time::Instant;
 
-use crate::tui::theme::{darken, Theme};
+use crate::tui::theme::{darken, Slot, Theme};
 
 pub(crate) fn draw_ship_cruise(
     f: &mut Frame,
@@ -83,10 +83,10 @@ pub(crate) fn draw_ship_cruise(
 
     // Match the input panel's background so the animated indicator doesn't
     // render as a black strip against the panel — the ship occupies the same
-    // row as the profile badge, which sits on `theme.input_bg`.
+    // row as the profile badge, which sits on the `input.bg` slot.
     let paragraph = Paragraph::new(line)
         .alignment(ratatui::layout::Alignment::Left)
-        .style(Style::default().bg(theme.input_bg));
+        .style(Style::default().bg(theme.c(Slot::InputBg)));
     f.render_widget(paragraph, area);
 }
 

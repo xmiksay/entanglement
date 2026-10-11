@@ -43,7 +43,7 @@ fn project_and_user_tui_fields_combine_and_report_provenance() {
         TuiConfig {
             notify: true,
             mouse: false,
-            statusline: Default::default(),
+            ..Default::default()
         }
     );
     let prov: HashMap<_, _> = resolved.provenance.iter().cloned().collect();
@@ -82,6 +82,48 @@ fn a_statusline_template_reloads_and_warns_on_an_unknown_placeholder() {
     let resolved = resolve_with_user(dir.path(), &user_file);
     assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
     assert!(resolved.warnings[0].contains("{nope}"));
+}
+
+/// #735: a theme/keybinding edit reaches the next resolve; a bad slot colour
+/// and a key conflict each add exactly one warning, while an unknown key
+/// inside the `theme:` object stays a hard error like the rest of the file.
+#[test]
+fn theme_and_keybinding_edits_reload_and_warn() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_file = dir.path().join("user.yml");
+    std::fs::write(
+        &user_file,
+        "tui: {theme: {base: light, slots: {diff.add: '#2e7d32'}}, \
+         keybindings: {pick_model: ctrl+o}}\n",
+    )
+    .unwrap();
+    let resolved = resolve_with_user(dir.path(), &user_file);
+    assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
+    assert_eq!(resolved.config.tui.theme.base, "light");
+    assert!(resolved.config.tui.keybindings.resolve().is_ok());
+
+    std::fs::write(
+        &user_file,
+        "tui: {theme: {slots: {accent: '#nothex'}}, keybindings: {pick_model: ctrl+g}}\n",
+    )
+    .unwrap();
+    let resolved = resolve_with_user(dir.path(), &user_file);
+    assert_eq!(resolved.warnings.len(), 2, "{:?}", resolved.warnings);
+    assert!(resolved
+        .warnings
+        .iter()
+        .any(|w| w.contains("tui.theme.slots.accent")));
+    assert!(resolved
+        .warnings
+        .iter()
+        .any(|w| w.contains("`jump_attention`")));
+
+    std::fs::write(&user_file, "tui: {theme: {bsae: light}}\n").unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::set_var(CONFIG_FILE_ENV, &user_file);
+    let result = Config::resolve(dir.path());
+    std::env::remove_var(CONFIG_FILE_ENV);
+    assert!(result.is_err(), "an unknown key inside `theme:` stays loud");
 }
 
 #[test]
