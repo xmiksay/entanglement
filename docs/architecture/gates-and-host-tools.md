@@ -54,7 +54,8 @@ self-test that pins the vacuous-pass fix (plus the `userid` and `file-cap`
 gates' self-tests). It runs with the default tools, then `POSIXLY_CORRECT=1`
 (strict POSIX GNU grep/find), then `AWK='gawk --posix'` and `AWK=mawk` when
 each is installed (mawk ignores `POSIXLY_CORRECT`, so strict-POSIX awk needs
-its own pass, #779) — and CI installs both awks and runs it as its own step, so
+its own pass, #779) — and CI installs both awks and runs it as its own step
+(`REQUIRE_AWKS=1`: a missing awk fails rather than skips), so
 a gate leaning on a GNU extension fails loudly
 (#770: `userid-gate.sh`'s trailing GNU-only `--include` became a filename
 operand under strict POSIX, grep's error exit read as "no match", and the gate

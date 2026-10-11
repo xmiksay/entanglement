@@ -44,7 +44,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gawk mawk
 
       - name: make test-gates
-        run: make test-gates
+        run: make test-gates REQUIRE_AWKS=1
 
   # MSRV gate (#728): the workspace `rust-version` is a claim embedders rely on,
   # so typecheck on exactly that toolchain. `make msrv` reads the version from
