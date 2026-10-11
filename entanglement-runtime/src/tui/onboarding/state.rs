@@ -34,6 +34,15 @@ impl ProviderOption {
 
 /// The catalog providers the dialog can configure, in catalog order.
 pub(crate) fn options(catalog: &Catalog) -> Vec<ProviderOption> {
+    options_with(catalog, |name| {
+        std::env::var(name).ok().filter(|v| !v.is_empty())
+    })
+}
+
+/// [`options`] over an injected env lookup. A keyless provider's base
+/// prefill follows startup's own precedence: `<NAME>_API_BASE` > catalog
+/// (the legacy `<NAME>_BASE` spelling is retired, ADR-0213).
+fn options_with(catalog: &Catalog, env: impl Fn(&str) -> Option<String>) -> Vec<ProviderOption> {
     catalog
         .providers
         .iter()
@@ -46,7 +55,8 @@ pub(crate) fn options(catalog: &Catalog) -> Vec<ProviderOption> {
             ProviderOption {
                 name: p.name.clone(),
                 key_env: p.key_env.clone(),
-                base_url: p.base_url.clone(),
+                base_url: env(&format!("{}_API_BASE", p.name.to_uppercase()))
+                    .or_else(|| p.base_url.clone()),
                 models,
                 default_model: p.default_model.clone(),
             }
@@ -62,8 +72,8 @@ pub(crate) enum Stage {
     Model,
 }
 
-/// What the user settled on.
-#[derive(Debug, Clone, PartialEq)]
+/// What the user settled on. `Debug` is hand-written to redact the key.
+#[derive(Clone, PartialEq)]
 pub(crate) struct Setup {
     pub provider: String,
     /// `(KEY_ENV, value)` for a keyed provider.
@@ -72,6 +82,20 @@ pub(crate) struct Setup {
     /// from the catalog's own — `None` keeps the catalog value.
     pub base: Option<(String, String)>,
     pub model: String,
+}
+
+impl std::fmt::Debug for Setup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Setup")
+            .field("provider", &self.provider)
+            .field(
+                "key",
+                &self.key.as_ref().map(|(env, _)| (env, "<redacted>")),
+            )
+            .field("base", &self.base)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -348,6 +372,32 @@ mod tests {
         press(&mut o, KeyCode::Esc);
         assert_eq!(o.stage(), Stage::Provider);
         assert_eq!(press(&mut o, KeyCode::Esc), Some(Outcome::Echo));
+    }
+
+    #[test]
+    fn the_base_prefill_prefers_the_api_base_env_var() {
+        let env = |name: &str| (name == "OLLAMA_API_BASE").then(|| "http://env:1/v1".to_string());
+        let ollama = options_with(&Catalog::builtin(), env)
+            .into_iter()
+            .find(|p| p.name == "ollama")
+            .unwrap();
+        assert_eq!(ollama.base_url.as_deref(), Some("http://env:1/v1"));
+    }
+
+    #[test]
+    fn debug_output_redacts_the_key() {
+        let setup = Setup {
+            provider: "zai".into(),
+            key: Some(("ZAI_API_KEY".into(), "sk-very-secret".into())),
+            base: None,
+            model: "glm".into(),
+        };
+        let shown = format!("{:?}", Outcome::Configured(setup));
+        assert!(!shown.contains("sk-very-secret"), "{shown}");
+        assert!(
+            shown.contains("ZAI_API_KEY") && shown.contains("<redacted>"),
+            "{shown}"
+        );
     }
 
     #[test]

@@ -21,8 +21,9 @@ streaming LLM queries.
 | Gemini | `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) |
 
 z.ai / OpenAI / Ollama share one `OpenAiLlm` client; Anthropic and Gemini each
-have their own client (distinct content-block formats). No key configured → `EchoLlm`, a
-deterministic offline backend for tests and demos.
+have their own client (distinct content-block formats). `EchoLlm` is a
+deterministic offline backend for tests and demos; an embedder opts into it
+explicitly (`skutter` selects it only with `ENTANGLEMENT_PROVIDER=echo`).
 
 ## What's inside
 

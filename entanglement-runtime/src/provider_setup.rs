@@ -43,10 +43,26 @@ pub(crate) fn no_provider_hint(catalog: &Catalog) -> String {
         .filter(|p| p.key_env.is_some())
         .map(|p| p.name.as_str())
         .collect();
+    // OAuth entries are never auto-detected: they need a connect, then an
+    // explicit `provider:` pin.
+    let oauth: Vec<&str> = catalog
+        .providers
+        .iter()
+        .filter(|p| p.oauth.is_some())
+        .map(|p| p.name.as_str())
+        .collect();
+    let oauth_line = if oauth.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n  OAuth provider: skutter config connect <{}>, then set `provider:` in config.yml",
+            oauth.join("|")
+        )
+    };
     format!(
         "skutter: no LLM provider configured.\n\
          \x20 set one of: {keys}\n\
-         \x20 or run: skutter config set-key <{names}>\n\
+         \x20 or run: skutter config set-key <{names}>{oauth_line}\n\
          \x20 local keyless model: ENTANGLEMENT_PROVIDER=ollama\n\
          \x20 debugging stub (no LLM): ENTANGLEMENT_PROVIDER=echo\n\
          \x20 (bare `skutter` opens a first-run setup dialog)",
@@ -119,5 +135,24 @@ mod tests {
         }
         // Keyless Ollama has no key to set.
         assert!(!hint.contains("|ollama"), "{hint}");
+        // No OAuth entry in the embedded catalog → no OAuth line.
+        assert!(!hint.contains("config connect"), "{hint}");
+    }
+
+    #[test]
+    fn hint_lists_oauth_entries_with_the_connect_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("providers.yml");
+        std::fs::write(
+            &path,
+            "providers:\n  - name: corp\n    base_url: http://localhost:9/v1\n    \
+             default_model: m\n    oauth: {}\n    models:\n      - id: m\n",
+        )
+        .unwrap();
+        let hint = no_provider_hint(&Catalog::load_from(&path).unwrap());
+        assert!(
+            hint.contains("skutter config connect <corp>, then set `provider:`"),
+            "{hint}"
+        );
     }
 }
