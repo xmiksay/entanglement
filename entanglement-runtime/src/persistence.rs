@@ -36,8 +36,37 @@ use gap_writer::GapWriter;
 /// back that root's later rows (counting them into the gap) until the `Gap`
 /// row lands — the same rule the tap follows — or an async writer persists
 /// rows after an unmarked hole, inside what `resumable_prefix` keeps.
+///
+/// **Wire visibility** (#767): the first failure of an outage is broadcast to
+/// every head as `OutEvent::PersistenceDegraded { root, error }`, with
+/// `error` taken from [`public_error`][RecordSink::public_error] — never the
+/// raw error chain, which may carry paths, hosts or DSNs.
 pub trait RecordSink: Send + Sync {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()>;
+
+    /// The wire-safe summary of an `append` error. The default keeps only
+    /// the top-level message (no `context` chain), with control characters
+    /// stripped, cut to [`PUBLIC_ERROR_MAX`] chars. Override to say less.
+    fn public_error(&self, error: &anyhow::Error) -> String {
+        public_error_summary(error)
+    }
+}
+
+/// The longest [`RecordSink::public_error`] default, in chars.
+pub const PUBLIC_ERROR_MAX: usize = 200;
+
+fn public_error_summary(error: &anyhow::Error) -> String {
+    let clean: String = error
+        .to_string()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if clean.chars().count() <= PUBLIC_ERROR_MAX {
+        return clean;
+    }
+    let mut cut: String = clean.chars().take(PUBLIC_ERROR_MAX - 1).collect();
+    cut.push('…');
+    cut
 }
 
 /// The default sink: appends to `{root_id}.jsonl` in a [`SessionStore`],

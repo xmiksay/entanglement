@@ -170,6 +170,8 @@ one trait impl instead of forking the subscriber:
 ```rust
 pub trait RecordSink: Send + Sync {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()>;
+    // Defaulted: the top-level message only, control chars stripped, ≤200 chars.
+    fn public_error(&self, error: &anyhow::Error) -> String { /* … */ }
 }
 ```
 
@@ -193,6 +195,16 @@ root, **at the hole**: once an insert fails, the writer holds back that root's
 later rows (counting them into the gap) until the `Gap` row lands — the same
 rule the tap follows. An async writer that keeps inserting puts rows after an
 unmarked hole, i.e. inside what `resumable_prefix` (below) keeps.
+
+**Outages are wire-visible (#767).** The first failed `append` of an outage
+broadcasts `OutEvent::PersistenceDegraded { root, error }`, and the landed
+tombstone `PersistenceRecovered { root, lost }`. Both are **engine-global**
+(no session routing), so every subscriber sees every root's outage. `error`
+is `public_error(&e)`, never the raw chain (which `tracing` still logs in
+full). Override `public_error` if even your top-level message can name a host,
+DSN or path. A multi-tenant head must filter these events by **root
+ownership** before forwarding them to a connection, as it already does for
+session-bearing events.
 
 **The one constraint that matters for a real (DB/network) sink:
 `append` must not block.** The tap reads `Holly`'s outbound broadcast, which is

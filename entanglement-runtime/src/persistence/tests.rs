@@ -255,11 +255,12 @@ fn lag_gap_whose_tombstone_fails_is_written_before_the_next_record() {
 
 #[test]
 fn pending_gaps_are_flushed_on_shutdown_and_kept_per_root() {
-    let sink = ScriptedSink::failing(&[0, 1]);
+    // #3 is the retry of r1's tombstone after r2's append, failing too.
+    let sink = ScriptedSink::failing(&[0, 1, 3]);
     let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let (r1, r2) = (SessionId::new("r1"), SessionId::new("r2"));
     writer.append(&r1, &prompt_record("a"), "test");
-    // r1's pending gap must not leak into r2's stream.
+    // r1's pending gap does not hold back r2's stream.
     writer.append(&r2, &prompt_record("b"), "test");
     assert_eq!(labels(&sink.stored()), ["b"]);
     writer.flush_all();
@@ -340,4 +341,34 @@ async fn a_healthy_sink_and_a_landed_lag_gap_signal_nothing() {
     record_gap(&mut writer, &roots_map(&[("root", "root")]), 3, "outbound");
     writer.append(&root, &prompt_record("b"), "test");
     assert!(transitions(&mut sub).is_empty());
+}
+
+#[tokio::test]
+async fn a_stopped_roots_tombstone_lands_on_another_roots_append() {
+    // r1's "b" (#1) and its tombstone (#2) fail, then r1 stops writing. r2's
+    // append (#3) succeeds, so r1's tombstone is retried (#4) and recovers.
+    let sink = ScriptedSink::failing(&[1, 2]);
+    let (mut writer, mut sub, _holly) = signalled_writer(sink.clone());
+    let (r1, r2) = (SessionId::new("r1"), SessionId::new("r2"));
+    writer.append(&r1, &prompt_record("a"), "test");
+    writer.append(&r1, &prompt_record("b"), "test");
+    writer.append(&r2, &prompt_record("c"), "test");
+    assert_eq!(
+        transitions(&mut sub),
+        [("r1".into(), "degraded", 0), ("r1".into(), "recovered", 1)]
+    );
+    assert_eq!(labels(&sink.stored()), ["a", "c", "gap:1"]);
+    assert!(writer.outage.is_empty());
+}
+
+#[test]
+fn the_default_public_error_drops_the_chain_and_control_chars_and_is_bounded() {
+    let sink = ScriptedSink::failing(&[]);
+    let e = anyhow::anyhow!("postgres://user:secret@db/x refused")
+        .context("insert failed\nretry later");
+    assert_eq!(sink.public_error(&e), "insert failed retry later");
+    let long = anyhow::anyhow!("{}", "x".repeat(500));
+    let cut = sink.public_error(&long);
+    assert_eq!(cut.chars().count(), PUBLIC_ERROR_MAX);
+    assert!(cut.ends_with('…'));
 }
