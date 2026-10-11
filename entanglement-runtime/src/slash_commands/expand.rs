@@ -55,7 +55,14 @@ pub fn split_args(args: &str) -> Vec<String> {
 /// data loss.
 pub fn render(body: &str, args: &str) -> String {
     let args = args.trim();
-    let positional = split_args(args);
+    render_with(body, args, &split_args(args))
+}
+
+/// [`render`] with the arguments already tokenized: `args` fills
+/// `$ARGUMENTS` (and the no-placeholder paragraph), `positional` fills
+/// `$1`..`$9`. The `run` head passes its argv straight through (#798), so the
+/// shell's own quoting decides the tokens and nothing is re-quoted.
+pub fn render_with(body: &str, args: &str, positional: &[String]) -> String {
     let mut out = String::with_capacity(body.len() + args.len());
     let mut placeholder = false;
     let mut rest = body;
@@ -83,34 +90,6 @@ pub fn render(body: &str, args: &str) -> String {
     if !placeholder && !args.is_empty() {
         out.push_str("\n\nARGUMENTS: ");
         out.push_str(args);
-    }
-    out
-}
-
-/// Rejoin a CLI argv into one invocation string that [`split_args`] splits
-/// back into the same tokens (#798): `skutter run /review "a b"` arrives as
-/// `["/review", "a b"]`, and a plain `join(" ")` would turn `$1` into `a`.
-/// The first element stays raw so the documented one-argument form
-/// (`skutter run "/review a b"`) keeps working; every later token is
-/// single-quoted only when it needs to be, so simple args read unchanged.
-pub fn quote_argv(argv: &[String]) -> String {
-    let mut out = String::new();
-    for (i, tok) in argv.iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        let plain = !tok.is_empty()
-            && !tok
-                .chars()
-                .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\'));
-        if i == 0 || plain {
-            out.push_str(tok);
-        } else {
-            // `'` can't appear inside single quotes: close, escape it, reopen.
-            out.push('\'');
-            out.push_str(&tok.replace('\'', r"'\''"));
-            out.push('\'');
-        }
     }
     out
 }
@@ -183,31 +162,19 @@ mod tests {
     }
 
     #[test]
+    fn render_with_takes_pre_split_arguments_verbatim() {
+        let argv = ["a b".to_string(), "it's".to_string()];
+        assert_eq!(render_with("[$1] [$2]", "a b it's", &argv), "[a b] [it's]");
+        assert_eq!(render_with("$ARGUMENTS", "it's", &argv[1..]), "it's");
+        assert_eq!(render_with("Hi", "a b", &argv[..1]), "Hi\n\nARGUMENTS: a b");
+    }
+
+    #[test]
     fn invocation_parsing() {
         assert_eq!(parse_invocation("/review a b"), Some(("review", "a b")));
         assert_eq!(parse_invocation("/fe:review"), Some(("fe:review", "")));
         assert_eq!(parse_invocation("/x\nline two"), Some(("x", "line two")));
         assert_eq!(parse_invocation("/"), None);
         assert_eq!(parse_invocation("review"), None);
-    }
-
-    #[test]
-    fn quoted_argv_splits_back_into_the_same_tokens() {
-        let argv: Vec<String> = ["/review", "a b", "plain", "it's", r#"say "hi""#, r"x\y", ""]
-            .map(String::from)
-            .into();
-        let joined = quote_argv(&argv);
-        let (name, args) = parse_invocation(&joined).unwrap();
-        assert_eq!(name, "review");
-        assert_eq!(split_args(args), argv[1..]);
-        assert_eq!(render("$1|$2", args), "a b|plain");
-    }
-
-    #[test]
-    fn quote_argv_keeps_simple_and_single_argument_forms_unchanged() {
-        let one = vec!["/review a b".to_string()];
-        assert_eq!(quote_argv(&one), "/review a b");
-        let simple: Vec<String> = ["/review", "src/a.rs", "x"].map(String::from).into();
-        assert_eq!(quote_argv(&simple), "/review src/a.rs x");
     }
 }

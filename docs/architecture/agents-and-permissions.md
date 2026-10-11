@@ -1212,7 +1212,7 @@ below realize one model:
   as `ARGUMENTS: …`; Claude Code's `` !`cmd` `` and `@file` are **not**
   supported and go out literally. **Expansion is head-side**: the TUI (Enter
   on `/name args`) and `skutter run "/name args"` (or unquoted, `skutter run
-  /name "a b"` — later argv tokens are re-quoted so `"a b"` stays one `$1`,
+  /name "a b"` — the shell's argv tokens are the positionals verbatim, so `"a b"` is one `$1`,
   #798) send the expanded text as
   an ordinary `InMsg::Prompt`, so core, the protocol and the session log
   never see a command; `pipe`/`serve` carry frames, not typed text, and do

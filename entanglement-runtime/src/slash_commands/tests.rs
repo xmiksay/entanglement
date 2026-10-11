@@ -171,6 +171,23 @@ fn argv_expansion_keeps_the_shell_quoting() {
         expand_argv_or_literal(&live, &argv(&["it's", "a b"])),
         "it's a b"
     );
+    // `$ARGUMENTS` gets the argv as typed, never shell-escaping noise.
+    write(dir.path(), "all.md", "<$ARGUMENTS>");
+    let reg =
+        registry_from(resolve(raws(&[(Layer::Project, dir.path(), Strictness::Strict)])).unwrap());
+    *live.write().unwrap() = Arc::new(reg);
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["/all", "don't touch tests"])),
+        "<don't touch tests>"
+    );
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["/all", "a b"])),
+        "<a b>"
+    );
+    assert_eq!(
+        expand_argv_or_literal(&live, &argv(&["/review", "it's"])),
+        "[it's] []"
+    );
 }
 
 /// The real `discover` path under an injected user layer: proves the user +
