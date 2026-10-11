@@ -63,7 +63,7 @@ impl FileBackups {
             session: session.clone(),
             request_id: request_id.to_string(),
             exec_seq: current_exec_seq(),
-            path: abs.to_path_buf(),
+            path: real_path(abs),
             display: shown.to_string(),
             before,
             after: after.map(sha256_hex),
@@ -104,6 +104,20 @@ impl FileBackups {
                 reason: format!("backup write failed: {e:#}"),
             },
         }
+    }
+}
+
+/// `abs` with its directory resolved to its real location, so a restore can
+/// tell when that directory was later swapped for a symlink (an in-tree
+/// symlinked directory is fine — it is recorded as where it really points).
+/// The file name itself stays as given: the target may be a symlink the
+/// rename replaces, never one to resolve.
+fn real_path(abs: &Path) -> std::path::PathBuf {
+    match (abs.parent(), abs.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map(|p| p.join(name))
+            .unwrap_or_else(|_| abs.to_path_buf()),
+        _ => abs.to_path_buf(),
     }
 }
 

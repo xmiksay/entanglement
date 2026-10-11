@@ -46,6 +46,9 @@ pub(super) fn restore(
     if let Prior::Skipped { reason } = before {
         return Err(Skip::consumed(format!("no backup ({reason})")));
     }
+    if directory_moved(path) {
+        return Err(Skip::pending("its directory moved — left as is"));
+    }
     let current = match std::fs::read(path) {
         Ok(bytes) => Some(sha256_hex(&bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -74,6 +77,25 @@ pub(super) fn restore(
         .map_err(|e| Skip::consumed(format!("backup missing: {e}")))?;
     let mode = super::record::file_mode(path).or(mode);
     write_atomic(path, &bytes, mode).map_err(|e| Skip::pending(format!("could not write it: {e}")))
+}
+
+/// Whether `path`'s directory no longer is where it was recorded (recorded
+/// paths have a canonical directory): the nearest existing ancestor must
+/// canonicalize to itself. WHY: `O_NOFOLLOW` guards only the last component —
+/// a directory swapped for a symlink (`rm -r sub && ln -s /elsewhere sub`)
+/// would send every read, create and rename of an unsandboxed restore out of
+/// the project. Checking the nearest *existing* ancestor also keeps a later
+/// `create_dir_all` from building through a symlinked prefix.
+fn directory_moved(path: &Path) -> bool {
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        match std::fs::symlink_metadata(d) {
+            Ok(_) => return std::fs::canonicalize(d).ok().as_deref() != Some(d),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => dir = d.parent(),
+            Err(_) => return true,
+        }
+    }
+    false
 }
 
 /// Write `bytes` to `path` via a synced sibling temp file and a rename,

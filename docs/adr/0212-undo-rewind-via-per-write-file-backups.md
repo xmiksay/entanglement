@@ -77,7 +77,14 @@ tools wrote.
    so a symlink the model planted at a predictable name must never redirect
    the write outside the project, and a long target name must not push the
    temp name past `NAME_MAX`. The rename replaces a symlink at the target
-   rather than writing through it.
+   rather than writing through it. `O_NOFOLLOW` covers only the last
+   component, so the change line records the file's *real* directory and a
+   restore first checks that the nearest existing ancestor still
+   canonicalizes to itself; a directory swapped for a symlink (`rm -r sub &&
+   ln -s /elsewhere sub`) leaves the file as is ("its directory moved",
+   pending) and no `create_dir_all` ever builds through such a prefix. A
+   tiny window remains between that check and the rename; closing it fully
+   needs `openat`/`renameat` on a held directory handle — accepted.
    A file already back at `before` (an earlier revert whose marker was lost)
    counts as restored. Outcomes:
    - restored → marked `reverted`;

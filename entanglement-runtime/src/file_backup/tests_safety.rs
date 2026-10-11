@@ -236,6 +236,37 @@ fn a_planted_symlink_is_never_written_through() {
     assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
 }
 
+/// A directory swapped for a symlink after the agent's write never steers
+/// the restore outside: even a file there whose bytes match the recorded
+/// `after` is left alone, and the skip stays pending.
+#[cfg(unix)]
+#[test]
+fn a_directory_swapped_for_a_symlink_is_refused() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.path("sub")).unwrap();
+    std::fs::write(f.path("sub/kept.txt"), "orig").unwrap();
+    f.prompt(&f.sid, "edit");
+    f.change(&f.sid, "sub/new.txt", Some(b"x"));
+    f.change(&f.sid, "sub/kept.txt", Some(b"x"));
+
+    let outside = f._tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("new.txt"), "x").unwrap();
+    std::fs::write(outside.join("kept.txt"), "x").unwrap();
+    std::fs::remove_dir_all(f.path("sub")).unwrap();
+    std::os::unix::fs::symlink(&outside, f.path("sub")).unwrap();
+
+    let report = f.backups.revert(&f.sid, None).unwrap();
+    assert!(report.restored.is_empty(), "{report:?}");
+    assert_eq!(report.skipped.len(), 2);
+    assert!(report
+        .skipped
+        .iter()
+        .all(|s| s.reason.contains("directory moved")));
+    assert_eq!(std::fs::read(outside.join("new.txt")).unwrap(), b"x");
+    assert_eq!(std::fs::read(outside.join("kept.txt")).unwrap(), b"x");
+}
+
 /// A filename near `NAME_MAX` still restores: the temp name is short.
 #[test]
 fn a_long_filename_restores() {
