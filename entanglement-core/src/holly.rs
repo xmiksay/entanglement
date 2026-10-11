@@ -31,6 +31,7 @@ pub use config::{
     ConfigError, EngineConfig, FileReverter, SessionModel, SystemPromptResolver, ToolSpecResolver,
 };
 pub(crate) use directory::SessionDirectory;
+pub use emit::PersistenceSignal;
 use outlets::Outlets;
 use supervisor::supervisor;
 pub use unknown_session::{SessionLoader, UnknownSession};

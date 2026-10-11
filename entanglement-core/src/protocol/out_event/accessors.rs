@@ -51,7 +51,10 @@ impl OutEvent {
             | OutEvent::McpList { .. }
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
-            | OutEvent::Throttle { .. } => None,
+            | OutEvent::Throttle { .. }
+            // `root` is payload, not routing (#767): engine-global, never persisted.
+            | OutEvent::PersistenceDegraded { .. }
+            | OutEvent::PersistenceRecovered { .. } => None,
         }
     }
 
@@ -77,6 +80,8 @@ impl OutEvent {
             | OutEvent::McpChanged { .. }
             | OutEvent::McpAuthChanged { .. }
             | OutEvent::Throttle { .. }
+            | OutEvent::PersistenceDegraded { .. }
+            | OutEvent::PersistenceRecovered { .. }
             | OutEvent::History { .. }
             | OutEvent::Status { .. }
             | OutEvent::AgentChanged { .. }

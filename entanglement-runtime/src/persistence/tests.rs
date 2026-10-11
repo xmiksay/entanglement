@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::session_store::{integrity_gap, SessionStore};
+use entanglement_core::PersistenceSignal;
 use std::sync::Mutex;
+use tokio::sync::broadcast;
 
 /// A [`RecordSink`] that captures every `(root, record)` it is handed, so a
 /// test can assert an embedder sink sees the exact stream the file sink does.
@@ -99,7 +101,7 @@ async fn forced_lag_hands_a_custom_sink_the_same_gap_tombstones_as_the_file() {
     let store = SessionStore::at(temp.path());
     let mut file_sink = file_writer(&store);
     let recording = Arc::new(RecordingSink::default());
-    let mut recording_writer = GapWriter::new(recording.clone());
+    let mut recording_writer = GapWriter::new(recording.clone(), PersistenceSignal::detached());
 
     record_gap(&mut file_sink, &roots, dropped, "outbound");
     record_gap(&mut recording_writer, &roots, dropped, "outbound");
@@ -140,7 +142,10 @@ fn record_gap_with_no_known_roots_writes_nothing() {
 }
 
 fn file_writer(store: &SessionStore) -> GapWriter {
-    GapWriter::new(Arc::new(FileSink::new(store.clone())))
+    GapWriter::new(
+        Arc::new(FileSink::new(store.clone())),
+        PersistenceSignal::detached(),
+    )
 }
 
 /// Fails the append calls whose 0-based index is in `fail`, storing the rest.
@@ -196,7 +201,7 @@ fn labels(records: &[LogRecord]) -> Vec<String> {
 #[test]
 fn failed_append_is_tombstoned_in_place() {
     let sink = ScriptedSink::failing(&[1]);
-    let mut writer = GapWriter::new(sink.clone());
+    let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let root = SessionId::new("root");
     for label in ["a", "b", "c"] {
         writer.append(&root, &prompt_record(label), "test");
@@ -208,7 +213,7 @@ fn failed_append_is_tombstoned_in_place() {
 fn failed_tombstone_lands_before_the_next_record() {
     // #1 is "b", #2 its tombstone; "c" then flushes the tombstone first.
     let sink = ScriptedSink::failing(&[1, 2]);
-    let mut writer = GapWriter::new(sink.clone());
+    let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let root = SessionId::new("root");
     for label in ["a", "b", "c"] {
         writer.append(&root, &prompt_record(label), "test");
@@ -224,7 +229,7 @@ fn records_behind_an_unwritten_tombstone_count_as_lost() {
     // "b" fails (#1), its tombstone fails (#2), "c"'s flush retry fails
     // (#3) so "c" joins the gap; "d" lands the 2-record tombstone first.
     let sink = ScriptedSink::failing(&[1, 2, 3]);
-    let mut writer = GapWriter::new(sink.clone());
+    let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let root = SessionId::new("root");
     for label in ["a", "b", "c"] {
         writer.append(&root, &prompt_record(label), "test");
@@ -239,7 +244,7 @@ fn records_behind_an_unwritten_tombstone_count_as_lost() {
 #[test]
 fn lag_gap_whose_tombstone_fails_is_written_before_the_next_record() {
     let sink = ScriptedSink::failing(&[1]);
-    let mut writer = GapWriter::new(sink.clone());
+    let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let roots = roots_map(&[("root", "root")]);
     let root = SessionId::new("root");
     writer.append(&root, &prompt_record("a"), "test");
@@ -251,7 +256,7 @@ fn lag_gap_whose_tombstone_fails_is_written_before_the_next_record() {
 #[test]
 fn pending_gaps_are_flushed_on_shutdown_and_kept_per_root() {
     let sink = ScriptedSink::failing(&[0, 1]);
-    let mut writer = GapWriter::new(sink.clone());
+    let mut writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
     let (r1, r2) = (SessionId::new("r1"), SessionId::new("r2"));
     writer.append(&r1, &prompt_record("a"), "test");
     // r1's pending gap must not leak into r2's stream.
@@ -259,4 +264,80 @@ fn pending_gaps_are_flushed_on_shutdown_and_kept_per_root() {
     assert_eq!(labels(&sink.stored()), ["b"]);
     writer.flush_all();
     assert_eq!(labels(&sink.stored()), ["b", "gap:1"]);
+}
+
+/// Every buffered outage transition (#767) on `sub`, as `(root, kind, lost)`.
+fn transitions(sub: &mut broadcast::Receiver<OutEvent>) -> Vec<(String, &'static str, u64)> {
+    let mut out = Vec::new();
+    while let Ok(ev) = sub.try_recv() {
+        match ev {
+            OutEvent::PersistenceDegraded { root, error } => {
+                assert!(error.contains("scripted failure"), "{error}");
+                out.push((root.to_string(), "degraded", 0));
+            }
+            OutEvent::PersistenceRecovered { root, lost } => {
+                out.push((root.to_string(), "recovered", lost));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A writer signalling into a live engine, plus a subscription to it (the
+/// `Holly` is returned so it outlives the test body).
+fn signalled_writer(sink: Arc<ScriptedSink>) -> (GapWriter, broadcast::Receiver<OutEvent>, Holly) {
+    let holly = Holly::spawn(entanglement_core::EngineConfig::default());
+    let sub = holly.subscribe();
+    (GapWriter::new(sink, holly.persistence_signal()), sub, holly)
+}
+
+#[tokio::test]
+async fn an_outage_signals_once_and_recovers_with_its_lost_count() {
+    // "b" fails (#1), its tombstone (#2) and "c"'s flush retry (#3) too: one
+    // outage, one degraded — then "d" lands the 2-record tombstone (#4).
+    let (mut writer, mut sub, _holly) = signalled_writer(ScriptedSink::failing(&[1, 2, 3]));
+    let root = SessionId::new("root");
+    for label in ["a", "b", "c"] {
+        writer.append(&root, &prompt_record(label), "test");
+    }
+    assert_eq!(transitions(&mut sub), [("root".into(), "degraded", 0)]);
+    writer.append(&root, &prompt_record("d"), "test");
+    writer.append(&root, &prompt_record("e"), "test");
+    assert_eq!(transitions(&mut sub), [("root".into(), "recovered", 2)]);
+}
+
+#[tokio::test]
+async fn outages_are_signalled_per_root_and_per_outage() {
+    // Each failure's tombstone lands on the very next call, so every outage
+    // is one record long; r1 fails twice — two separate outages.
+    let (mut writer, mut sub, _holly) = signalled_writer(ScriptedSink::failing(&[0, 2, 6]));
+    let (r1, r2) = (SessionId::new("r1"), SessionId::new("r2"));
+    writer.append(&r1, &prompt_record("a"), "test"); // #0 fails, #1 gap
+    writer.append(&r2, &prompt_record("b"), "test"); // #2 fails, #3 gap
+    writer.append(&r1, &prompt_record("c"), "test"); // #4
+    writer.append(&r2, &prompt_record("d"), "test"); // #5
+    writer.append(&r1, &prompt_record("e"), "test"); // #6 fails, #7 gap
+    assert_eq!(
+        transitions(&mut sub),
+        [
+            ("r1".into(), "degraded", 0),
+            ("r1".into(), "recovered", 1),
+            ("r2".into(), "degraded", 0),
+            ("r2".into(), "recovered", 1),
+            ("r1".into(), "degraded", 0),
+            ("r1".into(), "recovered", 1),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_healthy_sink_and_a_landed_lag_gap_signal_nothing() {
+    let (mut writer, mut sub, _holly) = signalled_writer(ScriptedSink::failing(&[]));
+    let root = SessionId::new("root");
+    writer.append(&root, &prompt_record("a"), "test");
+    // A lag is loss, but not an outage: its tombstone landed first try.
+    record_gap(&mut writer, &roots_map(&[("root", "root")]), 3, "outbound");
+    writer.append(&root, &prompt_record("b"), "test");
+    assert!(transitions(&mut sub).is_empty());
 }

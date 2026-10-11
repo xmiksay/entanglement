@@ -3,7 +3,7 @@
 
 use super::RecordSink;
 use crate::session_store::{LogPayload, LogRecord};
-use entanglement_core::SessionId;
+use entanglement_core::{PersistenceSignal, SessionId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -21,16 +21,20 @@ pub(super) struct GapWriter {
     /// root → records lost but not yet tombstoned.
     pending: HashMap<SessionId, u64>,
     /// Roots whose sink is currently failing. WHY: a persistent outage would
-    /// otherwise log an error per record; this logs its start and its end.
+    /// otherwise log an error per record; this logs its start and its end —
+    /// and signals both to the heads (#767), so exactly these transitions go
+    /// on the wire.
     pub(super) outage: HashSet<SessionId>,
+    signal: PersistenceSignal,
 }
 
 impl GapWriter {
-    pub(super) fn new(sink: Arc<dyn RecordSink>) -> Self {
+    pub(super) fn new(sink: Arc<dyn RecordSink>, signal: PersistenceSignal) -> Self {
         Self {
             sink,
             pending: HashMap::new(),
             outage: HashSet::new(),
+            signal,
         }
     }
 
@@ -75,6 +79,7 @@ impl GapWriter {
                 "Failed to persist {what} for {root}: {e:#}; recording a gap and holding \
                  this root's records until the sink recovers"
             );
+            self.signal.degraded(root, format!("{e:#}"));
         } else {
             tracing::debug!("Persistence for {root} still failing ({what}): {e:#}");
         }
@@ -99,6 +104,7 @@ impl GapWriter {
                     tracing::warn!(
                         "Persistence for {root} recovered; recorded a gap of {dropped} lost record(s)"
                     );
+                    self.signal.recovered(root, dropped);
                 }
                 true
             }

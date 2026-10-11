@@ -161,6 +161,22 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shared_leases: Option<usize>,
     },
+    /// The runtime's persistence tap could not append to `root`'s session log
+    /// (#767): the session keeps running, but its log has stopped. Emitted
+    /// once, on the **first** failure of an outage — the transition, like
+    /// [`Throttle`][OutEvent::Throttle] (ADR-0141), never per lost record.
+    /// `root` is data, not routing: like `Throttle` this is engine-global (no
+    /// `session`, no `seq`), so it is never persisted or replayed — which is
+    /// also what keeps the tap from trying to write it into the very sink that
+    /// is failing. `error` is the sink's error summary.
+    PersistenceDegraded { root: SessionId, error: String },
+    /// `root`'s session log is writable again (#767): the gap tombstone for
+    /// the outage landed, recording `lost` dropped records (the in-tree
+    /// resume refuses a gapped log; an embedder's `resumable_prefix` cuts
+    /// there). Paired one-to-one with a prior
+    /// [`PersistenceDegraded`][OutEvent::PersistenceDegraded]; an outage the
+    /// process never recovers from ends with no `PersistenceRecovered`.
+    PersistenceRecovered { root: SessionId, lost: u64 },
     /// A session's persisted content history from a requested `after_seq`, in
     /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
     /// history responder — which owns the event log — not the core supervisor.

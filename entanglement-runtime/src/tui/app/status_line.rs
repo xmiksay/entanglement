@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use entanglement_core::OutEvent;
 use tokio::sync::Notify;
 
 use crate::config::statusline::StatuslineConfig;
@@ -104,6 +105,29 @@ impl App {
                 }
             }
         }
+        self.mark_dirty();
+    }
+
+    /// Fold a session-log outage transition (#767): the status-line badge
+    /// stays up while any root's log is down, and each transition leaves one
+    /// transcript line with the detail. Other events are ignored.
+    pub(crate) fn handle_persistence(&mut self, event: &OutEvent) {
+        let outages = &mut self.status_line.log_outages;
+        let message = match event {
+            OutEvent::PersistenceDegraded { root, error } if outages.insert(root.clone()) => {
+                format!(
+                    "session log {root} is not being written ({error}); the session continues, \
+                     but its log now has a gap"
+                )
+            }
+            OutEvent::PersistenceRecovered { root, lost } if outages.remove(root) => {
+                format!("session log {root} recovered; {lost} record(s) lost")
+            }
+            _ => return,
+        };
+        self.sessions
+            .active_view_mut()
+            .record_status("log", message);
         self.mark_dirty();
     }
 

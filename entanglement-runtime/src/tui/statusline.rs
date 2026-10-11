@@ -10,6 +10,7 @@
 //! output instead of `template` ([`command`], part B); the right half and
 //! the counters stay template-driven.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use crate::tui::app::App;
 use crate::tui::event::Event;
 use crate::tui::format::{format_session_cost, short_id};
 use crate::tui::theme::StatusTheme;
+use entanglement_core::SessionId;
 
 pub(crate) mod command;
 mod git;
@@ -39,14 +41,16 @@ pub(crate) fn refreshes_git(tool: &str) -> bool {
 }
 
 /// The App-held half: the last probe result, the live-reloaded templates,
-/// the probe's wake-up handle (`None` in tests — nothing to wake), and the
-/// `command:` runner's state.
+/// the probe's wake-up handle (`None` in tests — nothing to wake), the
+/// `command:` runner's state, and the roots whose session log is currently
+/// not being written (#767).
 #[derive(Default)]
 pub(crate) struct StatusLineState {
     pub git: GitInfo,
     pub config: StatuslineConfig,
     pub refresh: Option<Arc<Notify>>,
     pub command: command::CommandState,
+    pub log_outages: HashSet<SessionId>,
 }
 
 /// Start the probe for `root`; the returned handle forces a re-probe.
@@ -164,7 +168,8 @@ fn task_counts(markdown: &str) -> Option<(usize, usize)> {
 }
 
 /// The old top bar's counters, kept as fixed chrome after the right template
-/// (and shed first): the session count and the waiting badge.
+/// (and shed first): the session count, the waiting badge, and the
+/// session-log outage badge (#767; the transcript carries the detail).
 fn counters(app: &App) -> Vec<Piece> {
     let mut out = Vec::new();
     let sessions = app.sessions().len();
@@ -174,6 +179,11 @@ fn counters(app: &App) -> Vec<Piece> {
     let waiting = crate::tui::ui::alerts::background_attention(app).len();
     if waiting > 0 {
         out.push((format!(" ⚠ {waiting}"), Slot::Attention));
+    }
+    match app.status_line().log_outages.len() {
+        0 => {}
+        1 => out.push((" ⚠ log".to_string(), Slot::Attention)),
+        n => out.push((format!(" ⚠ log×{n}"), Slot::Attention)),
     }
     out
 }
@@ -286,6 +296,36 @@ mod tests {
         let narrow = row(&app, 45);
         assert!(!narrow.contains("sessions"), "{narrow}");
         assert!(narrow.starts_with("proj › src"), "{narrow}");
+    }
+
+    #[test]
+    fn log_outage_badge_shows_until_recovered() {
+        let mut app = app_in_repo();
+        let root = SessionId::new("root-1");
+        assert!(!row(&app, 80).contains("⚠ log"));
+        app.handle_out_event(OutEvent::PersistenceDegraded {
+            root: root.clone(),
+            error: "disk full".into(),
+        });
+        let degraded = row(&app, 80);
+        assert!(degraded.trim_end().ends_with("⚠ log"), "{degraded}");
+        // A second outage on another root counts; a repeat of the first doesn't.
+        app.handle_out_event(OutEvent::PersistenceDegraded {
+            root: SessionId::new("root-2"),
+            error: "disk full".into(),
+        });
+        app.handle_out_event(OutEvent::PersistenceDegraded {
+            root: root.clone(),
+            error: "disk full".into(),
+        });
+        assert!(row(&app, 80).contains("⚠ log×2"));
+        app.handle_out_event(OutEvent::PersistenceRecovered {
+            root: SessionId::new("root-2"),
+            lost: 1,
+        });
+        app.handle_out_event(OutEvent::PersistenceRecovered { root, lost: 4 });
+        let healthy = row(&app, 80);
+        assert!(!healthy.contains("⚠ log"), "{healthy}");
     }
 
     #[test]

@@ -2,12 +2,61 @@
 //! way for a runtime service to broadcast an [`OutEvent`] without holding the
 //! raw outbound sender.
 
+use std::sync::{Arc, Weak};
+
+use super::outlets::Outlets;
 use super::Holly;
 #[cfg(doc)]
 use crate::protocol::InMsg;
 use crate::protocol::{AgentState, OutEvent, SessionId};
 
+/// The persistence tap's emitter for its outage transitions (#767):
+/// [`OutEvent::PersistenceDegraded`] / [`OutEvent::PersistenceRecovered`].
+///
+/// WHY not a [`Holly`] clone: the tap drains until the engine's channels
+/// close, and a `Holly` clone keeps the inbox open — an embedder that shuts
+/// down by dropping its handles would then never see the tap finish. This
+/// holds the outbox weakly, so it keeps nothing alive; once the engine is
+/// gone (or shut down) every emit is a silent no-op.
+#[derive(Clone, Default)]
+pub struct PersistenceSignal(Weak<Outlets>);
+
+impl PersistenceSignal {
+    /// A signal wired to no engine: every emit is a no-op (tests, or a tap
+    /// driven without a `Holly`).
+    pub fn detached() -> Self {
+        Self::default()
+    }
+
+    /// `root`'s log stopped being written: the first failure of an outage.
+    pub fn degraded(&self, root: &SessionId, error: String) {
+        self.emit(OutEvent::PersistenceDegraded {
+            root: root.clone(),
+            error,
+        });
+    }
+
+    /// `root`'s outage ended with a gap tombstone of `lost` records.
+    pub fn recovered(&self, root: &SessionId, lost: u64) {
+        self.emit(OutEvent::PersistenceRecovered {
+            root: root.clone(),
+            lost,
+        });
+    }
+
+    fn emit(&self, ev: OutEvent) {
+        if let Some(outlets) = self.0.upgrade() {
+            outlets.emit(ev);
+        }
+    }
+}
+
 impl Holly {
+    /// A non-owning [`PersistenceSignal`] onto this engine's outbox (#767).
+    pub fn persistence_signal(&self) -> PersistenceSignal {
+        PersistenceSignal(Arc::downgrade(&self.outlets))
+    }
+
     /// Mint a fresh monotonic per-session `seq` and broadcast a runtime-authored
     /// content event for `session` (#157). The sanctioned way for a runtime
     /// service to emit a seq-bearing [`OutEvent`] while a session is parked (an
@@ -148,5 +197,34 @@ impl Holly {
             waiters,
             shared_leases,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::broadcast::error::RecvError;
+
+    use super::*;
+    use crate::EngineConfig;
+
+    #[tokio::test]
+    async fn persistence_signal_emits_but_keeps_no_engine_alive() {
+        let holly = Holly::spawn(EngineConfig::default());
+        let signal = holly.persistence_signal();
+        let mut sub = holly.subscribe();
+        signal.degraded(&SessionId::new("r"), "down".into());
+        assert!(matches!(
+            sub.recv().await,
+            Ok(OutEvent::PersistenceDegraded { .. })
+        ));
+        // Dropping the only handle ends the engine although the signal lives
+        // on — the persistence tap holding one still sees its channels close.
+        drop(holly);
+        let closed = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await;
+        assert!(matches!(closed, Ok(Err(RecvError::Closed))), "{closed:?}");
+        signal.recovered(&SessionId::new("r"), 1); // a no-op, not a panic
+        PersistenceSignal::detached().recovered(&SessionId::new("r"), 1);
     }
 }
