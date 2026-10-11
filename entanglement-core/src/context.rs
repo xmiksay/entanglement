@@ -49,6 +49,12 @@ const COMPACT_TARGET_FRACTION: f32 = 0.9;
 #[derive(Debug, Clone)]
 pub struct Context {
     messages: Vec<Message>,
+    /// Index into `messages` of every user prompt pushed through
+    /// [`push_user_content`][Self::push_user_content], in order — turn `n`
+    /// (1-based, ADR-0212's numbering) starts at `prompts[n - 1]`. Lets a
+    /// fork cut the history at a turn boundary (#786) without guessing from
+    /// roles: a revert note or retry nudge is user-role too, but no turn.
+    prompts: Vec<usize>,
     /// Token budget the history is kept under (`within_limit`). Derived from the
     /// active model's context window, or [`CONTEXT_LIMIT_TOKENS`] when unknown.
     limit: usize,
@@ -60,6 +66,7 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             messages: Vec::new(),
+            prompts: Vec::new(),
             limit: CONTEXT_LIMIT_TOKENS,
             window: None,
         }
@@ -77,6 +84,7 @@ impl Context {
     pub fn with_window(context_window: Option<usize>) -> Self {
         Self {
             messages: Vec::new(),
+            prompts: Vec::new(),
             limit: Self::budget_for(context_window),
             window: context_window,
         }
@@ -137,7 +145,11 @@ impl Context {
     }
     /// Push a user turn with explicit multimodal content (e.g. a screenshot
     /// prompt, #197).
+    /// Every user *prompt* (a turn's opening one, or a folded mid-turn
+    /// steering one) comes through here, live and on replay alike, so this
+    /// is where turns are counted.
     pub fn push_user_content(&mut self, content: Vec<ContentPart>) {
+        self.prompts.push(self.messages.len());
         self.push(Message::user_content(content));
     }
     pub fn push_assistant(&mut self, text: impl Into<String>, tool_calls: Vec<ToolCall>) {
@@ -160,6 +172,32 @@ impl Context {
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.prompts.clear();
+    }
+
+    /// The history a fork carries (#786): everything, or with `Some(n)` only
+    /// turns `1..=n` — the cut lands just before turn `n + 1`'s prompt, a
+    /// turn boundary, so no tool round-trip is split. A turn past the last
+    /// one is the whole history; `Some(0)` is only what precedes the first
+    /// prompt (a fork's own seed, else nothing).
+    pub fn prefix(&self, at_turn: Option<u32>) -> Vec<Message> {
+        let end = at_turn
+            .and_then(|n| self.prompts.get(n as usize).copied())
+            .unwrap_or(self.messages.len());
+        self.messages.iter().take(end).cloned().collect()
+    }
+
+    /// Put a fork's seed history (#786) ahead of whatever is here. Its turns
+    /// are not counted: a fork numbers only its own prompts, as its log — and
+    /// so ADR-0212's `/rewind` — does. Prepended rather than assigned so a
+    /// replay whose log happened to record the fork's first prompt ahead of
+    /// its `SessionForked` still rebuilds the live order.
+    pub(crate) fn seed(&mut self, messages: Vec<Message>) {
+        let shift = messages.len();
+        self.messages.splice(0..0, messages);
+        for p in &mut self.prompts {
+            *p += shift;
+        }
     }
 
     /// Rough token estimate for the whole history.
@@ -435,5 +473,40 @@ mod tests {
         assert!(ctx.compact());
         // Nothing pruned when already within budget.
         assert_eq!(ctx.messages()[0].text(), "small output");
+    }
+
+    fn two_turns() -> Context {
+        let mut c = Context::new();
+        c.push_user_content(vec![ContentPart::text("one")]);
+        c.push_assistant("a1", Vec::new());
+        // A user-role note is not a turn.
+        c.push_user("[files reverted] note");
+        c.push_user_content(vec![ContentPart::text("two")]);
+        c.push_assistant("a2", Vec::new());
+        c
+    }
+
+    #[test]
+    fn prefix_cuts_at_a_turn_boundary() {
+        let c = two_turns();
+        assert_eq!(c.prefix(None).len(), 5);
+        assert_eq!(c.prefix(Some(1)).len(), 3, "turn 1 plus the note after it");
+        assert_eq!(c.prefix(Some(2)).len(), 5);
+        assert_eq!(
+            c.prefix(Some(9)).len(),
+            5,
+            "past the last turn is everything"
+        );
+        assert!(c.prefix(Some(0)).is_empty());
+    }
+
+    #[test]
+    fn a_seed_is_the_base_its_own_turns_count_from() {
+        let mut c = Context::new();
+        c.seed(two_turns().prefix(None));
+        assert_eq!(c.prefix(Some(0)).len(), 5, "turn 0 keeps the seed");
+        c.push_user_content(vec![ContentPart::text("three")]);
+        assert_eq!(c.prefix(Some(0)).len(), 5);
+        assert_eq!(c.prefix(Some(1)).len(), 6);
     }
 }

@@ -629,6 +629,27 @@ the event: a `Prompt` sent while the seam was still running is logged ahead
 of `FilesReverted` (and so pairs with it), yet the live session applied the
 revert first.
 
+**User fork: `InMsg::ForkSession` (`session/user_fork.rs`, #786,
+[ADR-0223](../adr/0223-non-compacting-session-fork.md)).** This fork does not
+compact anything. It is deferred like `RevertFiles`, so it is only ever cut at
+rest: no parked batch and no half-streamed round. At idle the session reads
+`ctx.prefix(at_turn)`. `Context` records the index of every prompt pushed
+through `push_user_content`, live and on replay, so turn `n` is the `n`-th
+prompt (ADR-0212's numbering), and the cut falls just before turn `n + 1`, a
+turn boundary. It then mints the fork's id in its own lineage (tenant prefix,
+ADR-0211) and sends, over the same session→supervisor channel compaction uses,
+a root `Spawn` with no `predecessor`, an empty prompt (no turn is queued), its
+own user and its mode. `Inherited` rides alongside with the live backend,
+generation and overlay, as for a compaction successor, plus a `seed`: the
+verbatim history. `start_session` applies the hand-over, then
+`user_fork::seed_fork` seeds `ctx` and emits `SessionForked { forked_from,
+at_turn, context }`. Replay folds that event with `Context::seed`, which
+*prepends*, so a log that recorded the fork's first prompt ahead of the event
+still rebuilds the live order. The fork's own prompts count from 1, so `/fork
+0` on a fork keeps exactly its seed. The source emits nothing and keeps
+running. The fork has no children (it is a root), and its undo history is empty
+(backups are per root).
+
 **Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the turn loop above: `run_oneshot` never streams tool calls and

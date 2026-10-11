@@ -86,6 +86,7 @@ mod retired_knobs;
 mod revert_files;
 #[cfg(feature = "serve")]
 mod serve;
+mod session_fork;
 #[cfg(feature = "provider")]
 mod session_title;
 mod skill_posture;

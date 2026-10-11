@@ -254,6 +254,8 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
             crate::tui::undo_command::send_undo(app, holly).await;
         } else if cmd == crate::tui::commands::Command::Rewind {
             crate::tui::undo_command::list_turns(app);
+        } else if cmd == crate::tui::commands::Command::Fork {
+            crate::tui::fork_command::send_fork(app, holly, "/fork").await;
         } else if cmd == crate::tui::commands::Command::Init {
             crate::tui::init_command::send_init(app, holly, "/init").await;
         } else {

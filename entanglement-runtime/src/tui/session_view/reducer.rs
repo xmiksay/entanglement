@@ -1,5 +1,6 @@
 use super::*;
 
+mod fork;
 mod notices;
 mod tools;
 
@@ -326,6 +327,14 @@ impl SessionView {
                 "undo",
                 crate::file_backup::summary(to_turn, &restored, &skipped),
             ),
+            // `/fork` (#786): render the inherited history under a lineage notice.
+            OutEvent::SessionForked {
+                seq,
+                forked_from,
+                at_turn,
+                context,
+                ..
+            } => self.fold_forked(seq, forked_from, at_turn, &context),
             // Ambiguous-stop bounded retry (#ADR-0118): a distinct out-of-band
             // notice (like `Compacted`/`SkillActive`) reporting the in-place
             // retry. Advancing `last_seen_seq` past this event also closes the

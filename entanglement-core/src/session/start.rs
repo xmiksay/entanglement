@@ -234,7 +234,8 @@ pub(super) fn start_session(
     // replays through a fresh resolution, which yields the catalog's params,
     // not a live `SetGeneration`'s; recording it as this profile's session
     // memory also keeps the persisted default below from overriding it.
-    let inherited = inherited.filter(|_| !is_resumed);
+    let mut inherited = inherited.filter(|_| !is_resumed);
+    let fork_seed = inherited.as_mut().and_then(|i| i.seed.take());
     if let Some(generation) = inherited.as_ref().and_then(|i| i.generation) {
         s.generation = Some(generation);
         s.generation_by_agent
@@ -255,6 +256,12 @@ pub(super) fn start_session(
             session: session.clone(),
             entries: s.tool_overlay.clone(),
         });
+    }
+
+    // A user fork's verbatim history (#786), announced after the hand-over
+    // above so the fork's log carries it ahead of anything it does next.
+    if let Some(seed) = fork_seed {
+        super::user_fork::seed_fork(session, &mut s, events, seed);
     }
 
     // Session-start persisted generation overlay (#374, ADR-0094 — mirrors the
@@ -312,6 +319,7 @@ mod tests {
                     generation: None,
                     mode: source_mode.into(),
                     overlay: vec![ToolOverlayEntry::allow("bash")],
+                    seed: None,
                 }),
             },
         );

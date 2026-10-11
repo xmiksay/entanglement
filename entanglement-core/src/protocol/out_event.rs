@@ -4,7 +4,7 @@
 //! companion types live in `parts.rs`; the `session`/`seq` accessors in
 //! `accessors.rs`.
 
-use entanglement_provider::{ContentPart, GenerationParams, UserId};
+use entanglement_provider::{ContentPart, GenerationParams, Message, UserId};
 use serde::{Deserialize, Serialize};
 
 #[cfg(doc)]
@@ -529,6 +529,23 @@ pub enum OutEvent {
         restored: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped: Vec<RevertSkip>,
+    },
+    /// This session is a non-compacting fork of `forked_from` (#786,
+    /// ADR-0223), in reply to [`InMsg::ForkSession`]: emitted once by the
+    /// fork itself, right after its start-up lifecycle events and before
+    /// anything else it logs. `context` is the verbatim history it starts
+    /// from — the source's whole `Context`, or turns `1..=at_turn` of it —
+    /// so `Session::replay` reseeds it exactly and a head can render the
+    /// inherited transcript. Distinct from `SessionStarted.predecessor`
+    /// (ADR-0205), whose source is *retired*: here the source stays live.
+    SessionForked {
+        session: SessionId,
+        seq: u64,
+        forked_from: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_turn: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        context: Vec<Message>,
     },
     /// The session's active-skill posture changed (#400, ADR-0106). Emitted by
     /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call

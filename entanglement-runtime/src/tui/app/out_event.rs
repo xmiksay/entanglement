@@ -112,7 +112,22 @@ impl App {
                 self.refresh_status_line();
             }
         }
+        // A `/fork` of the session being watched moves the user into the
+        // fork (#786) — keyed on lineage, like a compaction successor above,
+        // so a fork deferred behind a turn still lands where it was asked.
+        let follow = match &event {
+            OutEvent::SessionForked {
+                session,
+                forked_from,
+                ..
+            } if forked_from == self.sessions.active_id() => Some(session.clone()),
+            _ => None,
+        };
         if self.sessions.handle_out_event(event) {
+            self.mark_dirty();
+        }
+        if let Some(fork) = follow {
+            self.sessions.switch_to(fork);
             self.mark_dirty();
         }
     }

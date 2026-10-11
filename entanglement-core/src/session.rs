@@ -47,6 +47,7 @@ mod summary_attempt;
 mod transcript;
 mod turn;
 mod turn_state;
+mod user_fork;
 
 pub(crate) use cmd::SessionCmd;
 pub use state::{Session, SessionUsage};
@@ -254,7 +255,8 @@ pub(crate) async fn session_loop(
                 | SessionCmd::SetGeneration(_)
                 | SessionCmd::SetToolOverlay(_)
                 | SessionCmd::Oneshot(..)
-                | SessionCmd::RevertFiles(_)),
+                | SessionCmd::RevertFiles(_)
+                | SessionCmd::Fork(_)),
             ) if s.turn.is_some() || s.paused => {
                 stash_or_reject(&mut stash, cmd, &session, &events, &s.seq);
             }
@@ -286,6 +288,9 @@ pub(crate) async fn session_loop(
             }
             Some(SessionCmd::RevertFiles(to_turn)) => {
                 revert::revert_files(&mut s, &session, &events, &cfg, to_turn).await;
+            }
+            Some(SessionCmd::Fork(at_turn)) => {
+                let _ = user_fork::fork_session(&session, &s, &events, &cfg, at_turn);
             }
             // A result for the parked batch (#270): fold it into context on
             // arrival — arrival order, matching replay's `ToolOutput`-order

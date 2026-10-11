@@ -21,14 +21,14 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | HibernateSession | Resume (internal, not serialized)
+          | RevertFiles | ForkSession | HibernateSession | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
           | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
           | McpList | McpChanged | McpAuthChanged | Throttle
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | FilesReverted | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
 A session's agent (identity: prompt + model pin) is chosen once at session
@@ -50,7 +50,7 @@ Every frame is session-scoped (`SessionId`); content frames carry a monotonic
   `Holly::send_from_wire`, which enforces an allowlist and refuses
   runtime-authored or authority-bearing frames (`ToolResult`, `Spawn`,
   `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`/`McpAuth`, `SetMode`,
-  `RevertFiles`, and a `SetToolOverlay` carrying an enable entry).
+  `RevertFiles`, `ForkSession`, and a `SetToolOverlay` carrying an enable entry).
 - **Event-sourced persistence seam.** The event log + `Holly::resume` is the
   embedder persistence seam — no database in the crate. Replay reconstructs a
   mid-turn tail; resume re-offers pending tool calls at-least-once.
