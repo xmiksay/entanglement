@@ -23,6 +23,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use super::{parse_input, HookEvent, Hooks};
+use resume::ResumeMarks;
+
+mod resume;
 
 /// Every point this module drives, for [`Hooks::has_lifecycle`].
 pub(crate) const EVENTS: [HookEvent; 6] = [
@@ -55,8 +58,8 @@ struct Meta {
 #[derive(Debug, Default)]
 pub(crate) struct Tracker {
     sessions: HashMap<SessionId, Meta>,
-    /// Ids an `InMsg::Resume` is about to re-announce (its records' sub-tree).
-    resuming: HashSet<SessionId>,
+    /// What pending `InMsg::Resume`s are about to re-announce.
+    resuming: ResumeMarks,
     /// Sessions that announced `Compacted`: they are retiring into a successor.
     compacted: HashSet<SessionId>,
     /// Sessions whose `Done` arrived; the `Status` right after it says how
@@ -69,26 +72,8 @@ impl Tracker {
     /// Note an inbound frame. Only `Resume` matters: it is fanned out before
     /// the supervisor handles it, so it is always seen ahead of the
     /// `SessionStarted`s it causes (see [`spawn_watch`]).
-    ///
-    /// Mirrors core's cascade rule (`supervisor/resume.rs`): only the target
-    /// and the sessions still live as of the log's end — a `SessionStarted`
-    /// with no later `SessionEnded`/`SessionHibernated` — are re-announced, so
-    /// only those are marked; marking the rest would leak them forever.
     pub(crate) fn observe_in(&mut self, msg: &InMsg) {
-        let InMsg::Resume { session, records } = msg else {
-            return;
-        };
-        let mut live: Vec<&SessionId> = Vec::new();
-        for (_, ev) in records {
-            match ev {
-                OutEvent::SessionStarted { session, .. } => live.push(session),
-                OutEvent::SessionEnded { session, .. }
-                | OutEvent::SessionHibernated { session, .. } => live.retain(|s| *s != session),
-                _ => {}
-            }
-        }
-        self.resuming.insert(session.clone());
-        self.resuming.extend(live.into_iter().cloned());
+        self.resuming.observe(msg);
     }
 
     /// Fold one outbound event; returns the hook point it completes, if any.
@@ -103,7 +88,7 @@ impl Tracker {
                 root,
                 ..
             } => {
-                let source = if self.resuming.remove(session) {
+                let source = if self.resuming.take(session) {
                     "resume"
                 } else if predecessor.is_some() {
                     "compact"
@@ -141,7 +126,7 @@ impl Tracker {
                 // An error before the resumed `SessionStarted` is the
                 // supervisor refusing the resume (closed/already-live id,
                 // failed replay): no start follows, so drop the mark.
-                self.resuming.remove(session);
+                self.resuming.refuse(session);
                 // Only for a session we track, so an id that never ends
                 // can't grow the map.
                 if self.sessions.contains_key(session) {
@@ -250,7 +235,7 @@ impl Tracker {
     /// A session left memory: forget everything kept for it.
     fn end(&mut self, session: &SessionId, reason: &str) -> Firing {
         let meta = self.sessions.remove(session);
-        self.resuming.remove(session);
+        self.resuming.forget(session);
         self.compacted.remove(session);
         self.ended_turn.remove(session);
         self.last_error.remove(session);
