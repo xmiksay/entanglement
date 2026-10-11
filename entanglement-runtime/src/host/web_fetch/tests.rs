@@ -195,12 +195,12 @@ async fn deeply_nested_html_falls_back_to_plain_text_without_crashing() {
     );
     assert!(out.contains("deep text"));
 
-    // 200k levels: must come back fast (the scan is linear), not burn a minute.
-    let started = std::time::Instant::now();
-    let html = "<div>".repeat(200_000);
+    // A `>` inside a quoted attribute hides the nesting from any lexical
+    // scan; depth is measured on the parsed tree, so it's still caught.
+    // (The full 1.87 MB crash payload is pinned in `html::tests`.)
+    let html = "<div a=\"></div>\">".repeat(2_000);
     let out = render(text_outcome("text/html", &html), Format::Text, 0)
         .await
         .unwrap();
-    assert!(out.contains("nested too deeply"));
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(out.contains("nested too deeply"), "{out}");
 }

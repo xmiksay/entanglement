@@ -78,7 +78,7 @@ rhai = ["dep:rhai"]
 # fetch mechanism itself is provider-owned and always compiled; this gate
 # carries only the tool and its HTML->Markdown converter (`htmd`, which pulls
 # html5ever), so a lean embedder that never fetches pages can drop both.
-web-fetch = ["dep:htmd"]
+web-fetch = ["dep:htmd", "dep:html5ever", "dep:markup5ever_rcdom"]
 
 [dependencies]
 entanglement-core = { workspace = true }
@@ -136,6 +136,8 @@ base64 = { workspace = true }
 rhai = { workspace = true, optional = true }
 # HTML -> Markdown for `web_fetch` (behind the `web-fetch` feature, #736).
 htmd = { workspace = true, optional = true }
+markup5ever_rcdom = { workspace = true, optional = true }
+html5ever = { workspace = true, optional = true }
 # Advisory cross-process file lock for the managed read-modify-write writes
 # (grants.yml / agent-models.yml / the env file, #329).
 fd-lock = { workspace = true }
