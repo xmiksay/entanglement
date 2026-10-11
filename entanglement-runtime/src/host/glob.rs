@@ -6,8 +6,10 @@ use super::{list_files_with_extra_roots, truncate_output};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
+use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -17,6 +19,7 @@ pub struct GlobTool {
     /// Widens a search into a directory already covered by a durable `read`
     /// grant (ADR-0109/#482). `None` keeps strict containment.
     extra_roots: Option<Arc<ExtraRootStore>>,
+    workdirs: Option<SessionWorkdirs>,
 }
 
 impl GlobTool {
@@ -24,7 +27,16 @@ impl GlobTool {
         Self {
             root,
             extra_roots: None,
+            workdirs: None,
         }
+    }
+
+    /// Print paths relative to the calling session's workdir (#764,
+    /// ADR-0224) — the base its relative arguments resolve against — so a
+    /// listed path can be passed straight back.
+    pub fn with_workdirs(mut self, workdirs: SessionWorkdirs) -> Self {
+        self.workdirs = Some(workdirs);
+        self
     }
 
     /// Let a search descend into a directory the user already granted `read`
@@ -84,6 +96,22 @@ impl Tool for GlobTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.search(input, &self.root)
+    }
+    async fn run_for_session(
+        &self,
+        session: &SessionId,
+        _request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        let shown = SessionWorkdirs::display_root(self.workdirs.as_ref(), session, &self.root);
+        Ok(crate::tools::text_parts(self.search(input, &shown)?))
+    }
+}
+
+impl GlobTool {
+    /// The walk, with result paths relative to `shown`.
+    fn search(&self, input: &str, shown: &std::path::Path) -> Result<String> {
         let parsed: GlobInput = serde_json::from_str(input)
             .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
         let pattern = joined_pattern(parsed.path.as_deref(), &parsed.pattern);
@@ -103,7 +131,7 @@ impl Tool for GlobTool {
         );
         let mut out = String::new();
         for p in &list.files {
-            let rel = p.strip_prefix(&self.root).unwrap_or(p);
+            let rel = p.strip_prefix(shown).unwrap_or(p);
             out.push_str(&rel.to_string_lossy());
             out.push('\n');
         }

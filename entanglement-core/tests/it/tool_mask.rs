@@ -122,6 +122,7 @@ async fn restrictive_profile_still_advertises_the_full_set() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -174,6 +175,7 @@ async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -278,6 +280,7 @@ async fn spawned_explore_child_advertises_the_same_set_as_its_parent() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

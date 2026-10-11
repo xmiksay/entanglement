@@ -229,7 +229,11 @@ pub(super) async fn send_pause_resume_toggle(app: &mut App, holly: &Holly) {
 /// tool, #399/ADR-0104) so a passthrough command gets the same confinement.
 pub(super) async fn run_bash_passthrough(app: &mut App, command: &str) {
     use entanglement_runtime::Tool;
-    let tool = crate::host::bash::BashTool::new(app.root().to_path_buf())
+    // The user's own command runs where the focused session works (#764).
+    let cwd = app
+        .workdir()
+        .map_or_else(|| app.root().to_path_buf(), Into::into);
+    let tool = crate::host::bash::BashTool::new(cwd)
         .with_sandbox(crate::host::sandbox::SandboxPolicy::from_env());
     let input = serde_json::json!({ "command": command }).to_string();
     let output = match tool.run(&input).await {

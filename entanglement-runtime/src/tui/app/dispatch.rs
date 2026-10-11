@@ -112,6 +112,11 @@ impl App {
             // Same shape again (#732): `/init` needs `holly`, the index and
             // the trailing text — both call sites intercept it.
             Command::Init => false,
+            // Picked from the palette (#764): stage `/cd ` for the directory.
+            Command::Cd => {
+                self.set_input_text("/cd ".to_string());
+                false
+            }
             // Picked from the palette (#733): stage `/name ` in the input so
             // the user can add arguments; Enter then expands and sends it.
             Command::User(c) => {

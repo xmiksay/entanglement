@@ -181,6 +181,8 @@ pub(super) struct LadderCtx {
     /// catalog wired — degrades both to "no catalog configured" rather than
     /// panicking.
     pub catalog: Option<Arc<Catalog>>,
+    /// Each session's workdir as its latest `ToolExec` carried it (#764).
+    pub workdirs: crate::workdir::SessionWorkdirs,
 }
 
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and

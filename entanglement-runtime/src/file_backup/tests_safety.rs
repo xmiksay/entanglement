@@ -20,6 +20,7 @@ fn exec(f: &Fixture, session: &SessionId, seq: u64, request_id: &str) {
             input: "{}".into(),
             agent: "general".into(),
             envelope: None,
+            workdir: None,
         }),
     ));
 }

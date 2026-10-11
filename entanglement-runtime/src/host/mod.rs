@@ -348,16 +348,18 @@ pub fn host_tools_with_extra_roots(
     root: PathBuf,
     extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 ) -> ToolRegistry {
-    host_tools_with_backups(root, extra, None)
+    host_tools_with_backups(root, extra, None, None)
 }
 
 /// [`host_tools_with_extra_roots`] plus per-write backups (ADR-0212) wired
 /// into the three mutating tools (`edit`/`write`/`apply_patch`) — the
-/// undo/rewind source. `None` keeps them backup-free.
+/// undo/rewind source — and the executor's session workdirs (#764) into
+/// `glob`/`grep`. `None` keeps them backup-free / root-relative.
 pub fn host_tools_with_backups(
     root: PathBuf,
     extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
     backups: Option<crate::file_backup::FileBackups>,
+    workdirs: Option<crate::workdir::SessionWorkdirs>,
 ) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     let mut read = ReadTool::new(root.clone());
@@ -373,6 +375,10 @@ pub fn host_tools_with_backups(
         edit = edit.with_extra_roots(e.clone());
         write = write.with_extra_roots(e.clone());
         apply_patch = apply_patch.with_extra_roots(e.clone());
+    }
+    if let Some(w) = workdirs {
+        glob = glob.with_workdirs(w.clone());
+        grep = grep.with_workdirs(w);
     }
     if let Some(b) = backups {
         edit = edit.with_backups(b.clone());

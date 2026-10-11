@@ -209,6 +209,14 @@ pub enum OutEvent {
     /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged]/
     /// [`ToolOverlayChanged`][OutEvent::ToolOverlayChanged].
     ModeChanged { session: SessionId, mode: String },
+    /// The session's working directory changed (point-in-time, no `seq`, #764,
+    /// ADR-0224), in reply to [`InMsg::SetWorkdir`] — and at session start
+    /// (and on resume) whenever the session has one, so a head learns it
+    /// without re-reading history. `dir` is the validated absolute path.
+    /// Folded on replay by overwrite, like [`ModeChanged`][OutEvent::ModeChanged];
+    /// the model learns it from the per-round trailing notice, never from
+    /// `Context`, so the system prompt and history never change.
+    WorkdirChanged { session: SessionId, dir: String },
     /// The session switched to a different model/provider mid-run (point-in-time,
     /// no `seq`), in reply to [`InMsg::SetModel`] (#218). Carries the resolved
     /// `provider`/`model` and the new `context_window` (tokens) so a head can
@@ -357,6 +365,12 @@ pub enum OutEvent {
         /// call. Absent for every ordinary call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         envelope: Option<ToolEnvelope>,
+        /// The emitting session's working directory (#764, ADR-0224), absolute
+        /// — the runtime runs and resolves the call against it. Carried on
+        /// the call itself, like `agent`, so it can never be lost to a lagged
+        /// lifecycle fold. Absent when the session never set one (the root).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdir: Option<String>,
     },
     /// The model asked the user one or more decision questions in a single
     /// `ask_user` call (#488, supersedes parts of ADR-0027: one event now

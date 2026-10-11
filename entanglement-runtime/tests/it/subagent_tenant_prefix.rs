@@ -75,6 +75,7 @@ async fn an_agent_tool_child_keeps_the_tenant_prefix_and_owner() {
             user: Some(alice.clone()),
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

@@ -652,6 +652,26 @@ still rebuilds the live order. The fork's own prompts count from 1, so `/fork
 running. The fork has no children (it is a root), and its undo history is empty
 (backups are per root).
 
+**Working directory — `InMsg::SetWorkdir` / `Spawn.workdir`
+(`session/workdir.rs`, `holly/supervisor/workdir.rs`, #764,
+[ADR-0224](../adr/0224-session-working-directory.md)).** Core carries
+`Session::workdir` as an opaque absolute path and does no file I/O: the
+supervisor validates a `SetWorkdir` the moment it arrives through
+`EngineConfig::workdir_resolver(current, dir, approve)` — `current` is its own
+per-session cache of the latest validated workdir, so a relative `dir`
+resolves against what the user last saw — and refuses a bad one with a seq-0
+`Error`; `None` (no resolver) refuses every change. The session applies it
+deferred like `SetModel` (so one turn's calls share one workdir) and acks with
+`WorkdirChanged`, which replay folds by overwrite. A spawn's workdir is its own
+`Spawn.workdir` (validated against the parent's, no approval; a bad one refuses
+the spawn), else what a successor/fork carries on `Inherited`, else the
+parent's cached one; existing children are never moved. `start_session`
+announces it on a fresh start and on resume. Every `ToolExec` carries it
+(`emit::Caller`), so a re-offer runs where the original would have. The model
+is told through the per-round **trailing notice** —
+`[mode: …] [workdir: <dir> — …]`, rebuilt from `s.workdir` every round like
+the mode notice, never pushed into `Context` and never in the system prompt.
+
 **Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
 [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the turn loop above: `run_oneshot` never streams tool calls and

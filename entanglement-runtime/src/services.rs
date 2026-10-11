@@ -75,6 +75,7 @@ pub(crate) fn start(
         retained,
         scripts,
         file_backups,
+        workdirs,
         live_skills,
         live_profiles,
         live_agent_models,
@@ -139,6 +140,7 @@ pub(crate) fn start(
         .jobs(jobs)
         .retained(retained)
         .scripts(scripts)
+        .workdirs(workdirs)
         .live_agents(live_profiles.clone())
         .live_skills(live_skills.clone())
         .base(user_config.permissions.clone())

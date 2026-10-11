@@ -53,6 +53,8 @@ pub(crate) struct Inherited {
     pub(crate) mode: String,
     /// The source's live tool overlay (#776).
     pub(crate) overlay: Vec<ToolOverlayEntry>,
+    /// The source's working directory (#764), already validated.
+    pub(crate) workdir: Option<String>,
     /// A user fork's verbatim history (#786); `None` for a compaction
     /// successor, whose history is its seed prompt.
     pub(crate) seed: Option<ForkSeed>,
@@ -167,6 +169,8 @@ pub(crate) fn fork_successor(
                 // failure (#725); see `Inherited`.
                 model: None,
                 mode: None,
+                // Rides on `inherit` above: it was validated when it was set.
+                workdir: None,
             },
         },
         close: InMsg::CloseSession {

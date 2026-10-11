@@ -486,6 +486,26 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_turn: Option<u32>,
     },
+    /// Change `session`'s **working directory** (#764, ADR-0224): the default
+    /// cwd for `bash`/`call`/`rhai` exec and the base a relative path-tool
+    /// argument resolves against. `dir` is absolute or relative to the
+    /// session's current workdir; the supervisor validates it through
+    /// `EngineConfig::workdir_resolver` on arrival (canonical, a directory,
+    /// inside the project root or an approved extra root) and refuses a bad
+    /// one with a supervisor `Error`. `approve` is the escape-root approval
+    /// for a directory outside the root (ADR-0109): `Session`/`Always`
+    /// record the grant at that scope; `None` accepts only a directory that
+    /// is inside the root or already durably granted. Applied once the live
+    /// turn ends (stash replay), so a turn's tool calls all run under one
+    /// workdir; acked with [`OutEvent::WorkdirChanged`]. Existing children
+    /// keep theirs; children spawned later inherit it. **Trusted-only**: it
+    /// carries an escape-root approval.
+    SetWorkdir {
+        session: SessionId,
+        dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approve: Option<ApprovalScope>,
+    },
     /// Spawn a session running `prompt` beneath the named `agent` profile (#60,
     /// ADR-0021). `session` is the new session's id. With `parent = Some(p)` it is
     /// a **child** sub-agent under `p` (the common case): the supervisor records
@@ -546,6 +566,15 @@ pub enum InMsg {
         /// agent-hint-or-default start.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// The working directory the new session starts in (#764,
+        /// ADR-0224), validated like [`SetWorkdir`][InMsg::SetWorkdir]'s
+        /// `dir` (relative to the parent's workdir for a child) with no
+        /// approval — it must be inside the root or already durably granted;
+        /// a bad one **refuses the spawn** like an unresolvable `model`.
+        /// `None` inherits: a child takes its parent's workdir, a compaction
+        /// successor or user fork its source's, a fresh root the root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdir: Option<String>,
     },
     /// Resume a session from replayed log records (internal, not serialized).
     #[serde(skip)]

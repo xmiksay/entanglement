@@ -164,6 +164,8 @@ async fn launch(
             user: None,
             model: None,
             mode: None,
+            // Inherited from the parent by the supervisor (#764).
+            workdir: None,
         })
         .await
         .is_err()

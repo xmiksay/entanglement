@@ -151,6 +151,8 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
         InMsg::RevertFiles { to_turn, .. } => SessionCmd::RevertFiles(to_turn),
         InMsg::ForkSession { at_turn, .. } => SessionCmd::Fork(at_turn),
+        // Already validated (and `dir` made absolute) by the supervisor.
+        InMsg::SetWorkdir { dir, .. } => SessionCmd::SetWorkdir(dir),
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
         // CloseSession/HibernateSession queries are filtered out before routing
         // (see supervisor); Resume and Spawn are handled specially. The MCP ops

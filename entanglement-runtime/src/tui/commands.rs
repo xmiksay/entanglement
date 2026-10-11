@@ -40,6 +40,7 @@ pub enum Command {
     Rewind,
     Fork,
     Init,
+    Cd,
     /// A user-defined prompt template (#733). Never in [`all_commands`]: the
     /// TUI appends the live registry's entries via
     /// [`crate::tui::slash_popup::SlashPopup::roster`].
@@ -80,6 +81,7 @@ impl Command {
             Command::Rewind => "rewind",
             Command::Fork => "fork",
             Command::Init => "init",
+            Command::Cd => "cd",
             Command::User(c) => &c.name,
         }
     }
@@ -140,6 +142,9 @@ impl Command {
             Command::Fork => {
                 "Fork this session into a new one with the same history (/fork <N> keeps turns 1..N)"
             }
+            Command::Cd => {
+                "Change this session's working directory for bash/call and relative paths (bare = project root; --session/--always to approve one outside it)"
+            }
             Command::Init => {
                 "Ask the model to write an AGENTS.md brief for this repo (--update to improve an existing one)"
             }
@@ -185,6 +190,7 @@ pub fn all_commands() -> Vec<Command> {
         Command::Rewind,
         Command::Fork,
         Command::Init,
+        Command::Cd,
     ]
 }
 

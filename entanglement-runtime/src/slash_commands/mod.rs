@@ -74,6 +74,7 @@ pub const RESERVED_NAMES: &[&str] = &[
     "rewind",
     "fork",
     "init",
+    "cd",
 ];
 
 /// One resolved user command.

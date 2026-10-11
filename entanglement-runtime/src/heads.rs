@@ -207,6 +207,7 @@ async fn start_fresh(
             user: None,
             model: None,
             mode,
+            workdir: None,
         })
         .await?;
     await_started(holly, &mut events, session_id).await

@@ -243,6 +243,7 @@ async fn a_child_turn_fires_subagent_stop_not_stop() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

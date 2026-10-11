@@ -9,8 +9,10 @@ use super::{list_files_with_extra_roots, truncate_output, FileList};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::tools::Tool;
+use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use entanglement_core::{ContentPart, SessionId};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -123,6 +125,7 @@ pub struct GrepTool {
     /// Widens a search into a directory already covered by a durable `read`
     /// grant (ADR-0109/#482). `None` keeps strict containment.
     extra_roots: Option<Arc<ExtraRootStore>>,
+    workdirs: Option<SessionWorkdirs>,
 }
 
 impl GrepTool {
@@ -130,7 +133,16 @@ impl GrepTool {
         Self {
             root,
             extra_roots: None,
+            workdirs: None,
         }
+    }
+
+    /// Print paths relative to the calling session's workdir (#764,
+    /// ADR-0224) — the base its relative arguments resolve against — so a
+    /// listed path can be passed straight back.
+    pub fn with_workdirs(mut self, workdirs: SessionWorkdirs) -> Self {
+        self.workdirs = Some(workdirs);
+        self
     }
 
     /// Let a search descend into a directory the user already granted `read`
@@ -259,6 +271,22 @@ impl Tool for GrepTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
+        self.search(input, &self.root).await
+    }
+    async fn run_for_session(
+        &self,
+        session: &SessionId,
+        _request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        let shown = SessionWorkdirs::display_root(self.workdirs.as_ref(), session, &self.root);
+        Ok(crate::tools::text_parts(self.search(input, &shown).await?))
+    }
+}
+
+impl GrepTool {
+    /// The scan, with match paths relative to `shown`.
+    async fn search(&self, input: &str, shown: &Path) -> Result<String> {
         let parsed: GrepInput = serde_json::from_str(input)
             .context("invalid input to grep: expected {\"pattern\": string, ...}")?;
         let re = compile_regex(&parsed.pattern, parsed.case_insensitive)?;
@@ -270,7 +298,7 @@ impl Tool for GrepTool {
             self.extra_roots.as_deref(),
         )?;
         let scanned = list.files.len();
-        let scan = scan_matches(&self.root, &mut list, &re).await?;
+        let scan = scan_matches(shown, &mut list, &re).await?;
         let mut out = String::new();
         for m in &scan.matches {
             out.push_str(&format!("{}:{}:{}\n", m.path, m.lineno, m.line));
@@ -284,11 +312,11 @@ impl Tool for GrepTool {
                 msg.push_str("\n[file walk stopped after scanning 100000 entries — narrow `path`]");
             }
             if !scan.skipped.is_empty() {
-                msg = append_skip_notice(msg, &scan.skipped, &self.root);
+                msg = append_skip_notice(msg, &scan.skipped, shown);
             }
             return Ok(msg);
         }
-        let mut result = truncate_output(append_skip_notice(out, &scan.skipped, &self.root));
+        let mut result = truncate_output(append_skip_notice(out, &scan.skipped, shown));
         if scan.hit_match_cap {
             result.push_str("\n[match cap: first 1000 matches shown]");
         }

@@ -64,7 +64,10 @@ pub(super) async fn stream_round(
     // so it must carry the identical notice, not a second, now-empty read of
     // an already-taken `Option`. See `Session::mode_transition_from`'s doc
     // for why this is ephemeral session state, never `Context`/replay.
-    let trailing_notice = mode_notice_with_transition(&s.mode, s.mode_transition_from.take());
+    let trailing_notice = super::workdir::with_workdir(
+        mode_notice_with_transition(&s.mode, s.mode_transition_from.take()),
+        s.workdir.as_deref(),
+    );
     let mut attempt: usize = 0;
     let mut text_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();

@@ -173,6 +173,7 @@ async fn forged_wire_spawn_is_refused() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .expect_err("Spawn must be refused from the wire");

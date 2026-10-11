@@ -77,6 +77,7 @@ fn mid_turn_records(sid: &SessionId) -> Vec<(Option<InMsg>, OutEvent)> {
                 input: "{}".into(),
                 agent: "general".into(),
                 envelope: None,
+                workdir: None,
             },
         ),
     ]

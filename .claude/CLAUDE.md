@@ -164,9 +164,9 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized)
+          | RevertFiles | ForkSession | SetWorkdir | HibernateSession (trusted-only) | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
+          | WorkdirChanged | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
@@ -432,6 +432,16 @@ never here**; each bullet is the claim + where to read it:
   deferred to idle (no parked batch), has no children, and starts with an empty
   undo history. [engine](../docs/architecture/engine.md),
   [ADR-0223](../docs/adr/0223-non-compacting-session-fork.md).
+- **A session has a working directory** (`/cd`, `Spawn.workdir`): trusted-only
+  `SetWorkdir{dir,approve?}` is validated on arrival by the runtime's
+  `workdir_resolver` seam (inside the root, or under a `bash`/`call`
+  escape-root grant the approval records) → `WorkdirChanged`, deferred to
+  idle, inherited by later children, successors and forks. `ToolExec` carries
+  it; the executor rewrites relative path args onto it **before** grading, so
+  permission args stay root-relative and containment is re-checked at use.
+  The model learns it from the per-round trailing notice — never the system
+  prompt. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
+  [ADR-0224](../docs/adr/0224-session-working-directory.md).
 - **Plans**: `propose_plan` is the sole plan-authorship tool (`Capability::Plan`,
   allowed only in `plan` mode — a mode denying it flat-declines before any
   file is touched), file-backed under `.entanglement/plans/`, force-parked on

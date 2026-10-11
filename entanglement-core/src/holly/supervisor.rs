@@ -18,6 +18,7 @@ mod spawn;
 mod starting_mode;
 mod subtree;
 mod unknown;
+mod workdir;
 
 use subtree::{
     collect_subtree, hibernate_subtree, successor_of, sweep_idle_sessions, sweep_period,
@@ -55,6 +56,10 @@ struct Supervisor {
     // re-derives it from the replayed truth (`spawn_resumed`) and nothing
     // consults it while the session is hibernated.
     modes: HashMap<SessionId, String>,
+    // session → its latest validated workdir (#764), the base a relative
+    // `SetWorkdir` resolves against and what a new child inherits. Same
+    // lifecycle as `modes`; absent means the project root.
+    workdirs: HashMap<SessionId, String>,
     events: broadcast::Sender<OutEvent>,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
@@ -112,6 +117,7 @@ pub(super) async fn supervisor(
         closed: HashSet::new(),
         parent_links: HashMap::new(),
         modes: HashMap::new(),
+        workdirs: HashMap::new(),
         events,
         seqs,
         activity,
@@ -261,10 +267,22 @@ impl Supervisor {
             user,
             model,
             mode,
+            workdir,
         } = &msg
         {
-            self.spawn(child, parent, predecessor, agent, prompt, user, model, mode)
-                .await;
+            let workdir = workdir.as_deref();
+            self.spawn(
+                child,
+                parent,
+                predecessor,
+                agent,
+                prompt,
+                user,
+                model,
+                mode,
+                workdir,
+            )
+            .await;
             return;
         }
 
@@ -289,6 +307,10 @@ impl Supervisor {
             // same way any other session-scoped `InMsg` creates it.
             self.cascade_mode(session, mode).await;
         }
+
+        let Some(msg) = self.validate_set_workdir(msg) else {
+            return;
+        };
 
         // Non-routable variants are all handled/returned above; a stray one
         // maps to `None` and is dropped rather than crashing the supervisor
@@ -327,6 +349,7 @@ impl Supervisor {
             }
             self.parent_links.remove(&victim);
             self.modes.remove(&victim);
+            self.workdirs.remove(&victim);
             // A load still in flight (ADR-0210) is abandoned: its queued
             // messages are refused like any frame racing a close, and the
             // completion finds no queue and applies nothing.
@@ -341,41 +364,6 @@ impl Supervisor {
         if let Some(parent) = root_parent {
             if let Some(ptx) = self.sessions.get(&parent) {
                 let _ = ptx.send(SessionCmd::ChildClosed(session.clone())).await;
-            }
-        }
-    }
-
-    /// `SetMode`: cascade the new mode onto `session`'s live descendants.
-    async fn cascade_mode(&mut self, session: &SessionId, mode: &str) {
-        // ADR-0207 §6: mode applies to the whole spawn sub-tree, not just
-        // the target — reusing `collect_subtree`, the exact tree-walk
-        // `CloseSession`/`HibernateSession` already cascade over, so a
-        // switch on a session with live children reaches them too. Each
-        // live descendant gets its own `SessionCmd::SetMode`, so it
-        // applies and announces through the same per-session path a
-        // direct switch would (immediately, turn live or not — a mode is
-        // a label the runtime grades the *next* call against, never
-        // deferred like `SetAgent` used to be) — no session-loop
-        // special-casing needed for the cascade to be correct. `modes` is
-        // updated for every id in the subtree, live or not, so a hibernated
-        // descendant's cache entry is fixed up defensively too (it plays no
-        // functional role until that id resumes and re-derives the truth
-        // from its own replay anyway).
-        self.modes.insert(session.clone(), mode.to_string());
-        for descendant in collect_subtree(session, &self.parent_links) {
-            if &descendant == session {
-                continue;
-            }
-            self.modes.insert(descendant.clone(), mode.to_string());
-            if let Some(tx) = self.sessions.get(&descendant) {
-                route_to_session(
-                    tx,
-                    SessionCmd::SetMode(mode.to_string()),
-                    &descendant,
-                    &self.events,
-                    &self.seqs,
-                )
-                .await;
             }
         }
     }

@@ -71,6 +71,10 @@ pub struct BindingPolicy {
     /// `pub(super)`: the parent `script` module's escape-root gate
     /// (`approval_cache_key`) reads it directly too.
     pub(super) root: Option<PathBuf>,
+    /// `(project root, session workdir)` when the session works below the
+    /// root (#764): a binding's relative path rewrites against it exactly
+    /// as a direct call's does, before it is graded.
+    workdir: Option<(PathBuf, PathBuf)>,
 }
 
 impl BindingPolicy {
@@ -111,7 +115,21 @@ impl BindingPolicy {
             base: base.clone(),
             mode,
             root: root.map(Path::to_path_buf),
+            workdir: None,
         }
+    }
+
+    /// Resolve the script's relative paths against the session's workdir.
+    pub fn with_workdir(mut self, workdir: Option<(PathBuf, PathBuf)>) -> Self {
+        self.workdir = workdir;
+        self
+    }
+
+    /// A binding call's input with its relative paths made root-relative
+    /// (`crate::workdir::rewrite`), or `None` when nothing changes.
+    pub(super) fn rewrite(&self, tool: &str, input: &str) -> Option<String> {
+        let (root, workdir) = self.workdir.as_ref()?;
+        crate::workdir::rewrite(root, Some(workdir), tool, input)
     }
 
     /// Resolve one binding call's grade: a withdrawn binding (#634) declines

@@ -124,6 +124,7 @@ async fn lazy_prompt_refuses_a_known_hibernated_child() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

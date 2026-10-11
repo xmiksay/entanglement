@@ -1,6 +1,11 @@
-//! A freshly spawned session's starting permission mode (#763, ADR-0218).
+//! A freshly spawned session's starting permission mode (#763, ADR-0218),
+//! and a live `SetMode`'s cascade over the spawn sub-tree (ADR-0207 §6).
 
+use super::collect_subtree;
+use crate::holly::routing::route_to_session;
 use crate::holly::DEFAULT_MODE;
+use crate::protocol::SessionId;
+use crate::session::SessionCmd;
 
 /// Where a fresh (never resumed) session's mode comes from.
 pub(super) enum Lineage<'a> {
@@ -56,6 +61,43 @@ pub(super) fn starting_mode(
             Some(candidate) if no_wider(candidate, parent, ladder) => candidate.to_string(),
             _ => parent.to_string(),
         },
+    }
+}
+
+impl super::Supervisor {
+    /// `SetMode`: cascade the new mode onto `session`'s live descendants.
+    pub(super) async fn cascade_mode(&mut self, session: &SessionId, mode: &str) {
+        // ADR-0207 §6: mode applies to the whole spawn sub-tree, not just
+        // the target — reusing `collect_subtree`, the exact tree-walk
+        // `CloseSession`/`HibernateSession` already cascade over, so a
+        // switch on a session with live children reaches them too. Each
+        // live descendant gets its own `SessionCmd::SetMode`, so it
+        // applies and announces through the same per-session path a
+        // direct switch would (immediately, turn live or not — a mode is
+        // a label the runtime grades the *next* call against, never
+        // deferred like `SetAgent` used to be) — no session-loop
+        // special-casing needed for the cascade to be correct. `modes` is
+        // updated for every id in the subtree, live or not, so a hibernated
+        // descendant's cache entry is fixed up defensively too (it plays no
+        // functional role until that id resumes and re-derives the truth
+        // from its own replay anyway).
+        self.modes.insert(session.clone(), mode.to_string());
+        for descendant in collect_subtree(session, &self.parent_links) {
+            if &descendant == session {
+                continue;
+            }
+            self.modes.insert(descendant.clone(), mode.to_string());
+            if let Some(tx) = self.sessions.get(&descendant) {
+                route_to_session(
+                    tx,
+                    SessionCmd::SetMode(mode.to_string()),
+                    &descendant,
+                    &self.events,
+                    &self.seqs,
+                )
+                .await;
+            }
+        }
     }
 }
 

@@ -1075,6 +1075,7 @@ async fn set_agent(holly: &Holly, session: &SessionId, agent: &str) {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

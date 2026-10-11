@@ -87,6 +87,7 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Permission mode (ADR-0207, stage 3): rendered like `AgentChanged`
         // above — nothing in this stage enforces it yet.
         OutEvent::ModeChanged { mode, .. } => writeln!(out, "# mode: {mode}")?,
+        OutEvent::WorkdirChanged { dir, .. } => writeln!(out, "# workdir: {dir}")?,
         OutEvent::ModelChanged {
             provider, model, ..
         } => writeln!(out, "# model: {provider}/{model}")?,

@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{
     emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
-    emit_turn_error, emit_usage, next_seq,
+    emit_turn_error, emit_usage, next_seq, Caller,
 };
 use super::invoke_envelope::unwrap_batch;
 use super::stream::{stream_round, StreamedRound};
@@ -231,7 +231,7 @@ pub(super) async fn run_attempt(
         for call in &dispatch {
             let envelope = envelopes.get(&call.id);
             emit_tool_call(events, session, call, envelope, &s.seq);
-            emit_tool_exec(events, session, call, envelope, &s.agent.name, &s.seq);
+            emit_tool_exec(events, session, call, envelope, Caller::of(s), &s.seq);
         }
         if let Some(turn) = s.turn.as_mut() {
             turn.begin_batch(dispatch, envelopes);

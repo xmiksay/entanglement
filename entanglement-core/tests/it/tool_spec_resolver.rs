@@ -221,6 +221,7 @@ async fn resolver_output_is_advertised_verbatim_past_the_profile_mask() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();
@@ -292,6 +293,7 @@ async fn a_restrictive_profile_still_advertises_every_resolver_spec() {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

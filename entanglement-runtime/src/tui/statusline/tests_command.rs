@@ -24,6 +24,7 @@ fn payload(session: &str) -> Payload {
         context_pct: None,
         action: None,
         tasks: None,
+        workdir: None,
     }
 }
 

@@ -195,6 +195,7 @@ async fn a_change_is_placed_by_its_calls_log_position() {
             input: "{}".into(),
             agent: "general".into(),
             envelope: None,
+            workdir: None,
         }),
     ));
     let turns: Vec<u32> = f

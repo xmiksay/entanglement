@@ -119,6 +119,15 @@ with an empty `/undo` history, since file backups belong to the session that
 made the edit. Other trusted heads send `InMsg::ForkSession` and get the fork's
 `SessionForked` back.
 
+**Working directory** (ADR-0224): `/cd <dir>` moves the active session —
+`bash`/`call`/`rhai` commands run there and relative paths in file-tool
+arguments resolve against it; bare `/cd` goes back to the project root. A
+directory outside the root needs your approval once: `/cd --session <dir>`
+(this run) or `/cd --always <dir>`. Sub-agents spawned afterwards, compaction
+successors and `/fork`s inherit it; the status line shows `⚠ cd <dir>` while
+it differs from where the TUI runs. Other trusted heads send
+`InMsg::SetWorkdir` (or `Spawn.workdir`) and get `WorkdirChanged` back.
+
 A session advertises its tool surface in one of two modes (`ToolAdvertising`,
 default `ToolSearch`, ADR-0196): `full` sends every registered spec up
 front; `tool_search` sends a lean kernel plus an always-on `explore`/
@@ -249,7 +258,7 @@ first line a shell command prints (run with `sh -c`, at most once a second,
 killed after `timeout_ms`). It gets a JSON payload on stdin — `{"v": 1,
 "session", "cwd", "root", "repo", "branch", "worktree", "agent", "mode",
 "model": {"id", "name"}, "cost_usd", "context_pct", "action", "tasks":
-{"done", "total"}}`, unknown facts `null` — and its colours are stripped (the
+{"done", "total"}, "workdir"}`, unknown facts `null` — and its colours are stripped (the
 theme colours the line). On a failure or timeout the template line comes
 back, with one toast until the command succeeds again. It inherits the
 TUI's environment minus provider API keys, and a project-layer
@@ -280,7 +289,8 @@ stays. Both blocks live-reload; the help dialog (`Ctrl+X ?`) shows the keys in
 effect.
 
 Status-line placeholders: `{repo} {cwd} {cwd_rel} {branch} {worktree}
-{session} {agent} {mode} {model} {cost} {context_pct} {action} {tasks}`. An
+{session} {agent} {mode} {model} {cost} {context_pct} {action} {tasks}
+{workdir}` (`{workdir}`: the session's `/cd` directory, empty at the root). An
 empty value disappears with the separator in front of it; an unknown `{name}`
 renders literally and is reported once by `skutter inspect config`. Git facts
 are read from `.git` directly (no `git` process), so a detached `HEAD` shows a

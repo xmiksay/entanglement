@@ -570,6 +570,7 @@ async fn prompt(holly: &Holly, sid: &SessionId, agent: &str) {
             user: None,
             model: None,
             mode: None,
+            workdir: None,
         })
         .await
         .unwrap();

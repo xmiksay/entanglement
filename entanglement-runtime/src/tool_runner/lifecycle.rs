@@ -212,6 +212,7 @@ pub(super) async fn run(
                 // resume re-emits `ModeChanged` before anything reads it.
                 // The plan-file staleness binding (#513) is moot too.
                 ctx.plan_files.forget_session(&session);
+                ctx.workdirs.forget(&session);
                 // And its pinned tool advertising, discovered set, `Full`
                 // snapshot and `<env>` date (ADR-0196 §2-3, ADR-0202 §5) —
                 // a resume re-pins at its first round.
@@ -280,6 +281,7 @@ pub(super) async fn run(
                 input,
                 agent,
                 envelope,
+                workdir,
             }) => {
                 // Idempotence for core's re-offer timer (#274, ADR-0071):
                 // skip a request id whose call is still in flight. Core
@@ -332,6 +334,12 @@ pub(super) async fn run(
                 // adding one is a compiler-checked exhaustiveness change,
                 // not an ordering hazard. Each handler runs on its own
                 // task; the loop only routes.
+                // Relative paths resolve against the call's workdir (#764):
+                // rewritten root-relative before any route grades them.
+                ctx.workdirs.observe(&session, workdir.as_deref());
+                let wd = workdir.as_deref().map(std::path::Path::new);
+                let input =
+                    crate::workdir::rewrite(&ctx.plan_root, wd, &tool, &input).unwrap_or(input);
                 let route = Intercept::classify(&tool);
                 tracing::trace!(
                     %tool,

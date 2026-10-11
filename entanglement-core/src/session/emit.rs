@@ -127,7 +127,7 @@ pub(crate) fn emit_tool_exec(
     session: &SessionId,
     call: &entanglement_provider::ToolCall,
     envelope: Option<&ToolEnvelope>,
-    agent: &str,
+    caller: Caller<'_>,
     seq: &AtomicU64,
 ) {
     let _ = events.send(OutEvent::ToolExec {
@@ -136,9 +136,28 @@ pub(crate) fn emit_tool_exec(
         request_id: call.id.clone(),
         tool: call.name.clone(),
         input: call.input.clone(),
-        agent: agent.to_string(),
+        agent: caller.agent.to_string(),
         envelope: envelope.cloned(),
+        workdir: caller.workdir.map(str::to_string),
     });
+}
+
+/// Who a `ToolExec` runs as: the session's agent (#156) and working directory
+/// (#764) — both stamped on the call so the runtime never depends on a lossy
+/// lifecycle fold to know them.
+#[derive(Clone, Copy)]
+pub(crate) struct Caller<'a> {
+    pub agent: &'a str,
+    pub workdir: Option<&'a str>,
+}
+
+impl<'a> Caller<'a> {
+    pub(crate) fn of(s: &'a super::Session) -> Self {
+        Self {
+            agent: &s.agent.name,
+            workdir: s.workdir.as_deref(),
+        }
+    }
 }
 
 /// Re-offer every pending call of a parked batch — same `request_id`, fresh
@@ -148,7 +167,7 @@ pub(crate) fn reoffer_pending(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     turn: &TurnState,
-    agent: &str,
+    caller: Caller<'_>,
     seq: &AtomicU64,
 ) {
     for call in &turn.pending {
@@ -157,7 +176,7 @@ pub(crate) fn reoffer_pending(
             session,
             call,
             turn.envelopes.get(&call.id),
-            agent,
+            caller,
             seq,
         );
     }

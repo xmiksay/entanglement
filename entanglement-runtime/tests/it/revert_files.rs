@@ -76,6 +76,7 @@ pub(crate) fn spawn_with(
         work.to_path_buf(),
         Some(Arc::new(ExtraRootStore::ephemeral())),
         Some(backups),
+        None,
     )
     .shared();
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);

@@ -601,6 +601,7 @@ mod tests {
                 user: None,
                 model: None,
                 mode: None,
+                workdir: None,
             })
             .await
             .unwrap();

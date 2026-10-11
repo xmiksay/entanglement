@@ -78,6 +78,8 @@ pub struct SessionView {
     /// grant is mode-scoped, so recording one has to know the mode it's
     /// earned under.
     mode: String,
+    /// The session's working directory (#764), from `WorkdirChanged`.
+    workdir: Option<String>,
     state: AgentState,
     transcript: Vec<TranscriptEntry>,
     /// Some `User` entry may still be `pending` (dimmed). Lets
@@ -161,6 +163,7 @@ impl SessionView {
             // at start; this is only ever observed by a view that hasn't
             // folded its first event yet.
             mode: "build".to_string(),
+            workdir: None,
             state: AgentState::Idle,
             transcript: Vec::new(),
             user_pending: false,
