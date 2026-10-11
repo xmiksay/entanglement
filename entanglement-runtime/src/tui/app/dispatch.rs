@@ -107,6 +107,12 @@ impl App {
             // Same shape again (ADR-0212): `/undo`/`/rewind` need `holly` (and
             // `/rewind` the trailing turn) — both call sites intercept them.
             Command::Undo | Command::Rewind => false,
+            // Picked from the palette (#733): stage `/name ` in the input so
+            // the user can add arguments; Enter then expands and sends it.
+            Command::User(c) => {
+                self.set_input_text(format!("/{} ", c.name));
+                false
+            }
         }
     }
 

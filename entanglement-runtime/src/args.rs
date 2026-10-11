@@ -158,6 +158,13 @@ pub(crate) enum InspectCmd {
         #[arg(long)]
         disclosures: bool,
     },
+    /// List user slash commands (#733) with their winning layer + source file
+    /// (no `name`), or print one command's frontmatter, provenance and raw
+    /// template (a `name`, e.g. `review` or `frontend:review`).
+    Commands {
+        /// Command to detail, without the leading `/`. Omit for the table.
+        name: Option<String>,
+    },
     /// Print the resolved user config (#172): merged settings with their winning
     /// layer (default < user < project) and the permission ceiling.
     Config,

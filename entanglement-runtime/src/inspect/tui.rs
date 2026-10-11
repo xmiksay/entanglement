@@ -24,6 +24,7 @@ use crate::skills;
 use crate::system_prompt::PromptContext;
 
 use super::agents::{render_agent_detail, render_agent_table};
+use super::commands::render_command_table;
 use super::prompt::render_prompt_parts;
 use super::skills::{render_disclosures, render_skill_dry_run, render_skill_table};
 
@@ -50,6 +51,8 @@ pub struct InspectReports {
     pub prompt: String,
     pub agents: String,
     pub skills: String,
+    /// The `inspect commands` table (#733).
+    pub commands: String,
     pub agent_items: Vec<InspectItem>,
     pub skill_items: Vec<InspectItem>,
 }
@@ -73,7 +76,7 @@ pub enum InspectListTab {
     Skills,
 }
 
-/// Resolve and render the three inspection views for the in-session TUI overlay
+/// Resolve and render the inspection views for the in-session TUI overlay
 /// (#214, drill-down #331), reusing the exact `render_*` helpers the CLI prints.
 /// `agent` is the **active session's** resolved agent — the overlay inspects the
 /// live session's state rather than taking `--agent`. Resolution errors are
@@ -90,6 +93,7 @@ pub fn tui_reports(cwd: &Path, sessions: &SessionStore, agent: &str) -> InspectR
         prompt: tui_prompt(cwd, sessions, agent),
         agents: agent_summary,
         skills: skill_summary,
+        commands: tui_commands(cwd),
         agent_items,
         skill_items,
     }
@@ -179,6 +183,13 @@ fn tui_agent_views(cwd: &Path, sessions: &SessionStore, agent: &str) -> (Vec<Ins
         Ok((items, out))
     };
     build().unwrap_or_else(|e| (Vec::new(), format!("error: {e:#}")))
+}
+
+/// The user slash-command table (#733) — the same `inspect commands` output.
+fn tui_commands(cwd: &Path) -> String {
+    crate::slash_commands::resolve_registry(cwd)
+        .map(|resolved| render_command_table(&resolved))
+        .unwrap_or_else(|e| format!("error: {e:#}"))
 }
 
 /// Resolve the skill registry once and derive both presentations (#331): the

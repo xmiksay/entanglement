@@ -26,9 +26,10 @@
 //! An explicit override replaces the *whole* user layer (foreign + native),
 //! which doubles as the opt-out for cross-vendor discovery.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// Which of the three precedence layers a definition came from. Ordered low →
 /// high, so `built-in < user < project` matches discovery order and the
@@ -75,6 +76,9 @@ pub enum Strictness {
 /// - The project layer is `.claude/<kind>` (lenient) < `.agents/<kind>`
 ///   (lenient, cross-vendor beats vendor-specific — same tiebreak as the brief
 ///   chain in [`crate::system_prompt`]) < `.entanglement/<kind>` (strict).
+/// - A kind opencode also reads (only `commands`, #733) adds opencode's own
+///   dirs just below each native one, lenient: `<config>/opencode/<sub>` and
+///   `.opencode/<sub>` for each of [`opencode_subdirs`].
 pub(crate) fn candidate_dirs(
     root: &Path,
     kind: &str,
@@ -94,6 +98,13 @@ pub(crate) fn candidate_dirs(
             ));
         }
         if let Some(config) = config {
+            for sub in opencode_subdirs(kind) {
+                dirs.push((
+                    Layer::User,
+                    config.join("opencode").join(sub),
+                    Strictness::Lenient,
+                ));
+            }
             dirs.push((
                 Layer::User,
                 config.join("entanglement").join(kind),
@@ -111,12 +122,83 @@ pub(crate) fn candidate_dirs(
         root.join(".agents").join(kind),
         Strictness::Lenient,
     ));
+    for sub in opencode_subdirs(kind) {
+        dirs.push((
+            Layer::Project,
+            root.join(".opencode").join(sub),
+            Strictness::Lenient,
+        ));
+    }
     dirs.push((
         Layer::Project,
         root.join(".entanglement").join(kind),
         Strictness::Strict,
     ));
     dirs
+}
+
+/// opencode's directory names for `kind`. Only slash commands are read from
+/// opencode's tree; it documents the singular `command/` and newer releases
+/// also accept the plural, so both are scanned (#733).
+fn opencode_subdirs(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "commands" => &["command", "commands"],
+        _ => &[],
+    }
+}
+
+/// Recursively collect the files under `dir` that `is_match` accepts, shared
+/// by the skill (`SKILL.md`) and slash-command (`*.md`) walkers. `seen` holds
+/// canonicalized paths of already-visited files *and* directories: it dedupes
+/// symlinked duplicate files and breaks symlink directory cycles.
+/// `std::fs::metadata` follows symlinks so a linked directory is still
+/// traversed once.
+pub(crate) fn walk_files(
+    dir: &Path,
+    found: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    is_match: &dyn Fn(&Path) -> bool,
+) -> Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading definitions dir {}", dir.display()))?;
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("reading an entry under {}", dir.display()))?
+            .path();
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            // A broken symlink (or a racing removal) is skipped, not fatal — but
+            // not silent either (#186): a dangling link would drop a definition
+            // with zero signal.
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "skipping unreadable definitions entry (broken symlink or racing removal)",
+                );
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            subdirs.push(path);
+        } else if meta.is_file() && is_match(&path) {
+            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen.insert(canon) {
+                found.push(path);
+            }
+        }
+    }
+    subdirs.sort();
+    for sub in subdirs {
+        let canon = std::fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
+        // A directory already seen (a symlink pointing back into the tree) is
+        // not re-entered, so a cycle cannot loop forever.
+        if seen.insert(canon) {
+            walk_files(&sub, found, seen, is_match)?;
+        }
+    }
+    Ok(())
 }
 
 /// Discover layered definitions for `kind`, seeded with `built_ins`: read each
@@ -260,6 +342,34 @@ mod tests {
                     PathBuf::from("/repo/.entanglement/skills"),
                     Strictness::Strict
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn commands_add_opencode_dirs_below_each_native_one() {
+        let out = candidate_dirs(
+            Path::new("/repo"),
+            "commands",
+            None,
+            Some(Path::new("/home/u")),
+            Some(Path::new("/home/u/.config")),
+        );
+        let paths: Vec<(PathBuf, Strictness)> = out.into_iter().map(|(_, p, s)| (p, s)).collect();
+        let lenient = |p: &str| (PathBuf::from(p), Strictness::Lenient);
+        let strict = |p: &str| (PathBuf::from(p), Strictness::Strict);
+        assert_eq!(
+            paths,
+            vec![
+                lenient("/home/u/.claude/commands"),
+                lenient("/home/u/.config/opencode/command"),
+                lenient("/home/u/.config/opencode/commands"),
+                strict("/home/u/.config/entanglement/commands"),
+                lenient("/repo/.claude/commands"),
+                lenient("/repo/.agents/commands"),
+                lenient("/repo/.opencode/command"),
+                lenient("/repo/.opencode/commands"),
+                strict("/repo/.entanglement/commands"),
             ]
         );
     }

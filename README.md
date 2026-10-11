@@ -43,7 +43,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | Head | Status | What it is |
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
-| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
+| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill; `skutter inspect commands [name]` lists the user slash commands. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable); `dark`/`light` themes with per-slot colour overrides (`NO_COLOR` honoured) and remappable keys (`Ctrl+X` leader by default; `Ctrl+X ?` lists the bindings in effect). |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
@@ -134,7 +134,16 @@ renders both natively.
 Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
 `.md` files with YAML frontmatter — drop one in and it joins the registry with
 no code change; `skutter inspect agents|skills` shows the resolved set with
-layer provenance. Beyond the root-contained sextet (`read`/`write`/`edit`/
+layer provenance. **User slash commands** (`ENTANGLEMENT_COMMANDS_DIR`, #733,
+[ADR-0221](docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)) are prompt templates: drop
+`.entanglement/commands/review.md` (or reuse `.claude/commands/` /
+`.opencode/command/` files; `frontend/review.md` is `/frontend:review`) and
+`/review src/a.rs` in the TUI or `skutter run "/review src/a.rs"` sends its
+body with `$ARGUMENTS` / `$1`..`$9` filled in. Frontmatter `description` and
+`argument-hint` show in the slash popup; `agent`, `model` and `allowed-tools`
+are ignored, and `` !`cmd` `` / `@file` are sent literally — a command is
+plain text, never shell or file access. Built-in TUI commands win on a name
+clash; `skutter inspect commands` lists what resolved. Beyond the root-contained sextet (`read`/`write`/`edit`/
 `glob`/`grep`/`apply_patch`), both exec tools — `bash` (a real shell) and
 `call` (argv exec, no shell) — are always registered
 ([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))

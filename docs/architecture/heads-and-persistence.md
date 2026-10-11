@@ -76,6 +76,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   pseudo-tools (`capability::static_capability_of`), and MCP/endpoint tools
   are necessarily absent — a dynamic, environment-dependent surface out of
   scope for a static report.
+  `skutter inspect commands [name]` (#733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)) lists the
+  user slash commands — usage, winning layer, source file, description, and a
+  marker on any file a built-in name hides — or one command's provenance and
+  raw template.
   `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
   **skill** registry — the authoring loop was "start a session and ask the model":
   no `name` prints a table (name, user_only, winning layer, `root_dir`,
@@ -433,7 +437,16 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
   changes are not tracked). Bare `/rewind` is the picker: it lists the
   turns that still have revertable edits (turn, file count, prompt snippet)
-  read straight from the backup store — no engine traffic. **Modals and popups are mouse-clickable**
+  read straight from the backup store — no engine traffic. **User slash
+  commands** (#733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)): the slash popup, `Ctrl+P` palette,
+  input whisper and `/help <cmd>` list the built-ins plus the live
+  `slash_commands` registry (description + `argument-hint`; `SlashPopup` holds
+  the live handle). Enter on `/name args` that is not a built-in expands the
+  template and sends it as an ordinary `Prompt`; the transcript shows a
+  one-line notice naming the command's file, then the **expanded** prompt —
+  the text the model gets and the log replays. Picking a user command from the
+  palette stages `/name ` in the input for its arguments. An unknown `/word`
+  still goes to the model as typed. **Modals and popups are mouse-clickable**
   (f48cec5, `tui/modal_events/click.rs::click_modal`): with a modal or the
   slash/`@file` popup open, a left click on a row selects it and fires the
   same action `Enter` would, a click outside the open modal's rect closes it
@@ -461,7 +474,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   default-registered built-in (ADR-0195 superseded ADR-0010's opt-in; the
   typed command itself is the consent this gate was for). **In-session inspection
   overlay** (✅ #214, `tui::modals::inspect` + `tui::app::inspect`): `<leader>i` /
-  `/inspect` opens a read-only three-tab overlay (Prompt / Agents / Skills) over
+  `/inspect` opens a read-only four-tab overlay (Prompt / Agents / Skills / Commands) over
   the **active session's** resolved state — the same views the CLI's `skutter
   inspect prompt|agents|skills` print (the CLI also has `inspect config` for the
   resolved user config, #172), so you can debug a misbehaving session
@@ -481,7 +494,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   where `j`/`k`/arrows move the highlight and `Enter` opens the per-item detail
   pane rendered by the same per-name code path the CLI uses (`inspect agents
   <name>` / `inspect skills <name>`); `Esc`/`Backspace` returns to the list, `Esc`
-  again closes. The Prompt tab stays a single scroll-only document. `Tab`/`←`/`→`
+  again closes. The Prompt and Commands (the `inspect commands` table, #733)
+  tabs stay single scroll-only documents. `Tab`/`←`/`→`
   switch tabs from either level, arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel)
   scroll the document panes, `Esc` closes. **`/key`
   dialog** (✅ #304, [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md),

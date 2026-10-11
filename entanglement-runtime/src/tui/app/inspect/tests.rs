@@ -9,13 +9,15 @@ use entanglement_core::SessionId;
 fn tab_cycles_forward_and_back() {
     assert_eq!(InspectTab::Prompt.next(), InspectTab::Agents);
     assert_eq!(InspectTab::Agents.next(), InspectTab::Skills);
-    assert_eq!(InspectTab::Skills.next(), InspectTab::Prompt);
-    assert_eq!(InspectTab::Prompt.prev(), InspectTab::Skills);
+    assert_eq!(InspectTab::Skills.next(), InspectTab::Commands);
+    assert_eq!(InspectTab::Commands.next(), InspectTab::Prompt);
+    assert_eq!(InspectTab::Prompt.prev(), InspectTab::Commands);
 }
 
 #[test]
 fn prompt_tab_has_no_list_level() {
     assert!(InspectTab::Prompt.list_tab().is_none());
+    assert!(InspectTab::Commands.list_tab().is_none());
     assert!(InspectTab::Agents.list_tab().is_some());
     assert!(InspectTab::Skills.list_tab().is_some());
 }

@@ -138,6 +138,9 @@ pub mod session_title;
 // scanning, no deps.
 pub mod shell_split;
 pub mod skills;
+// User-defined slash commands — layered prompt templates (#733). Ungated: pure
+// discovery + text expansion, consumed by the TUI and the `run` head.
+pub mod slash_commands;
 pub mod subagent;
 pub mod system_prompt;
 // Composes the ADR-0196 §5 `ToolSearch`-mode prompt slimming with the

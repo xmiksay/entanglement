@@ -135,7 +135,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let slash_whisper = if !input_text.is_empty() && input_text.starts_with('/') {
         // The prefix is the text after `/` up to the first space.
         let prefix = input_text[1..].split_whitespace().next().unwrap_or("");
-        let best = crate::tui::commands::filter_commands(prefix)
+        let best = crate::tui::commands::filter_in(app.slash().roster(), prefix)
             .into_iter()
             // Name-prefix matches win over description-only matches so `/co`
             // hints `compact` (name starts with "co") not `resume` (whose

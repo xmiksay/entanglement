@@ -3,7 +3,7 @@
 //! seam, since the palette is a UI widget over the command set, not part of
 //! defining/parsing commands.
 
-use super::commands::{all_commands, filter_commands, Command};
+use super::commands::{all_commands, filter_in, Command};
 use ratatui::widgets::ListState;
 
 pub struct CommandPalette {
@@ -34,6 +34,12 @@ impl CommandPalette {
         self.visible
     }
 
+    /// Replace the roster (built-ins + live user commands, #733) — called on
+    /// every open so a reload since the last open is reflected.
+    pub fn set_commands(&mut self, commands: Vec<Command>) {
+        self.commands = commands;
+    }
+
     pub fn show(&mut self) {
         self.visible = true;
         self.reset();
@@ -52,7 +58,7 @@ impl CommandPalette {
 
     pub fn set_query(&mut self, query: String) {
         self.query = query;
-        self.filtered = filter_commands(&self.query);
+        self.filtered = filter_in(self.commands.clone(), &self.query);
         if !self.filtered.is_empty() {
             self.state.select(Some(0));
         } else {

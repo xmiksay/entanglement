@@ -41,7 +41,7 @@ pub fn draw_inspect_overlay(f: &mut Frame, app: &App) {
 /// The hint line tells the user what the current keys do at this level.
 fn tab_header_block(active: InspectTab, showing_list: bool, theme: &Theme) -> Block<'static> {
     let mut title: Vec<Span> = vec![Span::raw(" ")];
-    for tab in [InspectTab::Prompt, InspectTab::Agents, InspectTab::Skills] {
+    for tab in InspectTab::ORDER {
         let style = if tab == active {
             theme.heading()
         } else {

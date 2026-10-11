@@ -135,7 +135,7 @@ naming its replacement (`config::retired`) for one release.
 | `ENTANGLEMENT_PROVIDERS_FILE` | override the provider-catalog user file path |
 | `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
 | `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
-| `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` | replace the whole user agents/skills layer (also the cross-vendor opt-out) |
+| `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` / `ENTANGLEMENT_COMMANDS_DIR` | replace the whole user agents/skills/slash-commands layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files together (`grants.yml`, `agent-models.yml`, `agent-generation.yml`, `aux-models.yml`, `extra-roots.yml`, `mcp-tokens.yml`, `llm-tokens.yml`; default `${config_dir}/entanglement`, `config::state_dir`) |
 | `ENTANGLEMENT_DEBUG` | comma list of developer diagnostics: `bodies` (LLM request-body logging, #165), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing, #523); an unknown token warns once |
@@ -380,6 +380,13 @@ never here**; each bullet is the claim + where to read it:
   tools (`endpoint__`/`skill__` — below) surface via `explore`/`describe`
   like everything else. [agents & permissions](../docs/architecture/agents-and-permissions.md),
   [ADR-0074](../docs/adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0194](../docs/adr/0194-skills-are-additive-only.md).
+- **User slash commands are head-side prompt templates**: layered
+  `commands/*.md` (`.claude`/`.opencode`/`.entanglement`, `:` namespaces)
+  expanded by the TUI and `run` into an ordinary `Prompt` — never seen by
+  core or the log; `$ARGUMENTS`/`$1..$9` only, no shell/`@file`; built-in
+  names win; `agent`/`model`/`allowed-tools` ignored.
+  [agents & permissions](../docs/architecture/agents-and-permissions.md),
+  [ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md).
 - **Discovery pair + definition-driven tool sources**: `explore(filter?)`/
   `describe(names)` are always-on, non-maskable, always-`Allow` internal
   tools (the `poll` pattern) indexing every dynamic source — MCP servers,
@@ -493,7 +500,7 @@ never here**; each bullet is the claim + where to read it:
 | stdio/TUI/`serve` heads, event-sourced persistence, managed files | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
 | dependency gates, host tools (file sextet + exec), lifecycle hooks, MCP | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
-Debugging: `skutter inspect prompt|agents|skills|config` re-runs the load-time
+Debugging: `skutter inspect prompt|agents|skills|commands|config` re-runs the load-time
 discovery with **no engine** and prints the resolved state, including the layer
 that won an override. The TUI exposes the same views in-session via `/inspect`
 (or `<leader>i`). Trust & scope decisions:

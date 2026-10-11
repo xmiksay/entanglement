@@ -1182,6 +1182,33 @@ below realize one model:
   mode class-allows `read`, so the default is permissive — a subagent may
   discover and load any skill exactly like its parent, unless the mode or an
   overlay says otherwise.
+- **User slash commands — prompt templates (✅ #733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)):**
+  `entanglement_runtime::slash_commands` discovers every `*.md` under the
+  layered `commands` dirs through the same `layers::candidate_dirs` as skills —
+  user `~/.claude/commands`, `${config_dir}/opencode/command` and `…/commands`
+  (lenient) < `${config_dir}/entanglement/commands` (strict; the whole user
+  layer is replaced by `ENTANGLEMENT_COMMANDS_DIR`) < project
+  `.claude/commands`, `.agents/commands`, `.opencode/command(s)` (lenient) <
+  `.entanglement/commands` (strict); later wins by name, no embedded
+  built-ins. A file's path relative to its dir is its name, subdirectories as
+  `:` namespaces (`frontend/review.md` → `/frontend:review`). Frontmatter is
+  optional: `description` (default: the body's first non-empty line) and
+  `argument-hint`; `agent`, `model` and `allowed-tools` parse but are ignored
+  (a native file carrying one gets a load warning) — a command runs in the
+  current session with its agent, model and permission mode, so like a skill
+  it never narrows or widens authority. The body is pure text: `$ARGUMENTS`
+  is the whole argument string, `$1`..`$9` shell-style positional args (quotes
+  group; missing → empty); with no placeholder, non-empty args are appended
+  as `ARGUMENTS: …`; Claude Code's `` !`cmd` `` and `@file` are **not**
+  supported and go out literally. **Expansion is head-side**: the TUI (Enter
+  on `/name args`) and `skutter run "/name args"` send the expanded text as
+  an ordinary `InMsg::Prompt`, so core, the protocol and the session log
+  never see a command; `pipe`/`serve` carry frames, not typed text, and do
+  not expand. A user command named like a built-in TUI command
+  (`RESERVED_NAMES`, pinned to the TUI roster by a unit test) is dropped with
+  a load warning in every head. The definitions watcher reloads the registry
+  live; `skutter inspect commands [name]` lists name, layer, source and
+  description (or one command's provenance and raw template).
 - **Where dispatch runs (✅ #59):** the `Agent` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
   **runtime** concern ([ADR-0003](../adr/0003-agent-and-permission-profiles.md) /

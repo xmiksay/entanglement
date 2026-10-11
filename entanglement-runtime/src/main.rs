@@ -35,8 +35,9 @@ use entanglement_runtime::{
     agents, arg_validate, ask_user, aux_llm, capability, config, discover, endpoint, extra_roots,
     file_backup, history, host, inspect, logging, mcp, mode, narrate, permission_path, persistence,
     plan_files, plan_tasks, plan_watch, policy, poll, propose_plan, request_mode, retained_output,
-    script_ops, session_store, session_title, skills, subagent, system_prompt, system_prompt_mode,
-    throttle, tool_advertising, tool_names, tool_runner, watch, SharedRegistry, ToolRegistry,
+    script_ops, session_store, session_title, skills, slash_commands, subagent, system_prompt,
+    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch, SharedRegistry,
+    ToolRegistry,
 };
 
 use anyhow::{Context, Result};
@@ -150,6 +151,7 @@ async fn main() -> Result<()> {
             InspectCmd::Mcp => inspect::inspect_mcp(&cwd),
             InspectCmd::Session { id } => inspect::inspect_session(&cwd, id),
             InspectCmd::Modes { name } => inspect::inspect_modes(&cwd, name.as_deref()),
+            InspectCmd::Commands { name } => inspect::inspect_commands(&cwd, name.as_deref()),
         };
     }
 

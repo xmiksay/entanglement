@@ -99,6 +99,7 @@ pub async fn tui(
     // reads it; nothing else in the TUI does.
     advertising_state: std::sync::Arc<crate::tool_advertising::AdvertisingState>,
     launch_mode: crate::session_store::LaunchMode,
+    user_commands: crate::slash_commands::LiveCommands,
 ) -> Result<()> {
     setup_panic_handler();
 
@@ -160,6 +161,7 @@ pub async fn tui(
     app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
+    app.slash_mut().set_user_commands(user_commands);
     app.init_head_context(root.clone());
     let config_root = root.clone();
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
