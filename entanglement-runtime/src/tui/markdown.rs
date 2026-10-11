@@ -6,9 +6,12 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 use syntect::{
-    highlighting::{Theme, ThemeSet},
+    highlighting::{Theme as SyntaxTheme, ThemeSet},
     parsing::SyntaxSet,
 };
+
+use crate::config::theme::ThemeBase;
+use crate::tui::theme::Theme;
 
 mod md_state;
 
@@ -17,24 +20,42 @@ use md_state::RenderState;
 /// syntect's bundled syntaxes + themes, inflated on the first fenced code
 /// block rather than at TUI start: the load costs hundreds of ms and used to
 /// sit before the first frame (#703). Process-wide, so every clone shares it.
-static HIGHLIGHT: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
+/// Code-block colours follow the TUI theme's *base* (#735) — a syntax palette
+/// is dozens of scopes, not a slot, so it pairs dark/light rather than being
+/// overridable per colour.
+static HIGHLIGHT: OnceLock<(SyntaxSet, SyntaxTheme, SyntaxTheme)> = OnceLock::new();
 
-fn highlight_assets() -> &'static (SyntaxSet, Theme) {
+fn highlight_assets() -> &'static (SyntaxSet, SyntaxTheme, SyntaxTheme) {
     HIGHLIGHT.get_or_init(|| {
         let mut themes = ThemeSet::load_defaults().themes;
-        let theme = themes
-            .remove("base16-ocean.dark")
-            .expect("syntect bundles the base16-ocean.dark theme");
-        (SyntaxSet::load_defaults_newlines(), theme)
+        let mut take = |name: &str| {
+            themes
+                .remove(name)
+                .expect("invariant: syntect bundles the base16-ocean themes")
+        };
+        let dark = take("base16-ocean.dark");
+        let light = take("base16-ocean.light");
+        (SyntaxSet::load_defaults_newlines(), dark, light)
     })
 }
 
+/// Renders markdown in the colours of the [`Theme`] it was built with.
 #[derive(Clone)]
-pub struct MarkdownRenderer;
+pub struct MarkdownRenderer {
+    theme: Theme,
+}
 
 impl MarkdownRenderer {
     pub fn new() -> Self {
-        Self
+        Self::with_theme(Theme::default())
+    }
+
+    pub fn with_theme(theme: Theme) -> Self {
+        Self { theme }
+    }
+
+    pub(crate) fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Parse CommonMark + GFM (tables, strikethrough, task lists, footnotes,
@@ -72,7 +93,12 @@ impl MarkdownRenderer {
     /// machine in `md_state` can delegate here without exposing syntect to the
     /// rest of the crate.
     pub(super) fn highlight_code(&self, language: &str, code: &str) -> Text<'static> {
-        let (syntax_set, theme) = highlight_assets();
+        let (syntax_set, dark, light) = highlight_assets();
+        let theme = match self.theme.base() {
+            ThemeBase::Dark => dark,
+            ThemeBase::Light => light,
+        };
+        let no_color = self.theme.no_color();
         let syntax = syntax_set
             .find_syntax_by_token(language)
             .or_else(|| syntax_set.find_syntax_by_extension(language))
@@ -88,6 +114,9 @@ impl MarkdownRenderer {
             let spans: Vec<Span> = ranges
                 .into_iter()
                 .map(|(style, text)| {
+                    if no_color {
+                        return Span::raw(text.to_string());
+                    }
                     let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                     Span::styled(text.to_string(), Style::default().fg(fg))
                 })

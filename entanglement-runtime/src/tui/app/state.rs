@@ -248,10 +248,13 @@ impl App {
     }
 
     pub fn profile_color_for(&self, name: &str) -> ratatui::style::Color {
+        if self.theme.no_color() {
+            return ratatui::style::Color::Reset;
+        }
         self.profile_colors
             .get(name)
             .copied()
-            .unwrap_or_else(|| crate::tui::theme::hash_profile_color(name))
+            .unwrap_or_else(|| self.theme.profile_color(name))
     }
 
     pub fn thinking_since(&self) -> Option<Instant> {

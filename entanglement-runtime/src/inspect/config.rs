@@ -145,6 +145,31 @@ fn render_config(resolved: &Resolved) -> String {
         c.tui.statusline.right,
         from("tui")
     );
+    // Raw overrides, as written: a rejected key map or bad slot is named
+    // under `warnings:` below, and the TUI then keeps its previous map.
+    let slots: Vec<String> = c
+        .tui
+        .theme
+        .slots
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  tui.theme: {} [{}] ← {}",
+        c.tui.theme.base,
+        slots.join(", "),
+        from("tui")
+    );
+    let keys: Vec<String> = (c.tui.keybindings.0.iter())
+        .map(|(action, specs)| format!("{action}={}", specs.specs().join("|")))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  tui.keybindings: [{}] ← {}",
+        keys.join(", "),
+        from("tui")
+    );
 
     let _ = writeln!(
         out,
@@ -313,7 +338,10 @@ mod tests {
         let user_file = dir.path().join("user-config.yml");
         std::fs::write(
             &user_file,
-            "tui: {notify: true, statusline: {right: '{mode}'}}\ndiscovery: {zai: invoke}\n",
+            "tui: {notify: true, statusline: {right: '{mode}'}, \
+             theme: {base: light, slots: {diff.add: '#2e7d32'}}, \
+             keybindings: {pick_model: [ctrl+o, leader o], export: ctrl+g}}\n\
+             discovery: {zai: invoke}\n",
         )
         .unwrap();
         std::env::set_var("ENTANGLEMENT_CONFIG_FILE", &user_file);
@@ -330,8 +358,19 @@ mod tests {
             "{rendered}"
         );
         assert!(
+            rendered.contains("tui.theme: light [diff.add=#2e7d32] ← user"),
+            "{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("tui.keybindings: [export=ctrl+g, pick_model=ctrl+o|leader o] ← user"),
+            "{rendered}"
+        );
+        assert!(
             rendered.contains("warnings:") && rendered.contains("`discovery:`"),
             "{rendered}"
         );
+        // The export/jump_attention clash is a warning, not a load failure.
+        assert!(rendered.contains("`jump_attention`"), "{rendered}");
     }
 }

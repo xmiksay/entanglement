@@ -118,11 +118,7 @@ impl Default for RenderCache {
 fn theme_fingerprint(theme: Theme, user: RoleColors) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     theme.bar_glyph.hash(&mut h);
-    theme.assistant_fg.hash(&mut h);
-    theme.tool_req_fg.hash(&mut h);
-    theme.tool_out_fg.hash(&mut h);
-    theme.error_fg.hash(&mut h);
-    theme.message_bg.hash(&mut h);
+    theme.palette().hash(&mut h);
     user.fg.hash(&mut h);
     user.bg.hash(&mut h);
     h.finish()

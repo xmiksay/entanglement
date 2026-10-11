@@ -167,6 +167,7 @@ impl App {
             sidebar_visible: true,
             sidebar_width: 0,
             theme: Theme::default(),
+            tui_warnings: Vec::new(),
             profile_colors: HashMap::new(),
             thinking_since: None,
             input_multiline: false,

@@ -289,9 +289,45 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   without one a submodule; `HEAD` `ref: refs/heads/x` → `x`, an object id →
   short sha, anything else (reftable's `.invalid` stub) → `?`; no dirty flag.
   It re-probes when a `bash`/`call`/`rhai` `ToolOutput` lands and otherwise
-  only stats `HEAD`'s mtime every 2 s. Colours are named `StatusTheme`
-  slots (`status.repo/path/branch/worktree/text/dim/attention`) for #735's
-  theme config. Approval prompts for path tools
+  only stats `HEAD`'s mtime every 2 s. Its colours are the
+  `status.repo/path/branch/worktree/text/dim/attention` theme slots.
+  **Themes** (#735, [ADR-0219](../adr/0219-tui-themes-and-keybindings.md),
+  `config::theme` + `tui::theme`): every colour the TUI draws is one named
+  `Slot` of a resolved `Theme` palette — no widget names a `Color` itself
+  (fenced-code syntax colours are the one exception: they follow the base's
+  syntect theme, `base16-ocean.dark`/`.light`). `tui.theme` is `dark` (the
+  pre-#735 colours exactly), `light` (all foregrounds ≥ 4.5:1 WCAG contrast on
+  its backgrounds, unit-tested), or `{base, slots: {name: colour}}` — named
+  ANSI, `#rrggbb` or a 256 index. Lenient: an unknown base/slot or a bad
+  colour is one `Resolved::warnings` line and the base's colour stays.
+  `NO_COLOR` (set, non-empty) resets every slot and the syntax colours to the
+  terminal default; emphasis survives as modifiers (bold/dim, `REVERSED` for
+  a list selection and the active tab). A theme change rebuilds the
+  `MarkdownRenderer` and the render cache's palette fingerprint drops the
+  memo. **Keybindings** (#735, `config::keybindings` + `config::keychord` + `tui::keybindings`):
+  `tui.keybindings` maps a `KeyAction` — exactly the pre-#735 configurable
+  bindings: `leader submit newline cycle_mode cycle_mode_back scroll_up
+  scroll_down toggle_reasoning jump_attention new_session list_sessions
+  pause_toggle pick_agent pick_model inspect toggle_sidebar open_editor export
+  command_palette interrupt quit help` — to one spec or a list replacing its
+  defaults (`[]` unbinds). A spec is a chord (`ctrl+`/`alt+`/`shift+` on a
+  char or named key, normalized so `shift+e` ≡ `E` and `shift+tab` ≡ BackTab)
+  or `leader <key>`. Direct chords and leader keys are two contexts; any
+  action may live in either, and both dispatch through
+  `event_loop::actions::run_action`, so a remapped key behaves exactly like
+  the default one. All-or-nothing validation: a key bound to two actions in
+  one context, an unknown action, an unparseable key, a bare printable key as
+  a direct chord, or a reserved key (`ctrl+c` two-stage interrupt/quit,
+  `ctrl+q` immediate quit, `esc` cancel — also as `leader esc`) rejects the
+  whole override with one warning naming every culprit, and the TUI keeps the
+  map it had (the defaults at startup). Dialog-local keys (approval
+  `y/s/a/d/n/e/v`, list navigation) and readline editing stay fixed. The help
+  dialog lists the effective bindings plus the fixed keys; the input
+  placeholder and the attention panel's jump hint read the live map. Both
+  blocks re-apply on the watcher's reload arm (`App::apply_appearance`), which
+  records each *changed* set of theme/keybinding warnings once as a transcript
+  notice (startup warnings go to stderr); `skutter inspect config` prints both
+  raw blocks with their layer. Approval prompts for path tools
   (`read`/`edit`/`write`/`apply_patch`/`glob`/`grep`) add a `root: <dir>`
   line under the header, since a relative `path:` means nothing without the
   root it resolves against. **Attention signals** (issue #14, `tui::attention`):

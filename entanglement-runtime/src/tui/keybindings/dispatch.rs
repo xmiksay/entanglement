@@ -45,6 +45,13 @@ impl LeaderKeyHandler {
         &self.keymap
     }
 
+    /// Swap in a reloaded key map, dropping any half-typed chord (its prefix
+    /// may not exist in the new map).
+    pub fn set_keymap(&mut self, keymap: KeyMap) {
+        self.keymap = keymap;
+        self.state = LeaderState::Idle;
+    }
+
     pub fn state(&self) -> &LeaderState {
         &self.state
     }
@@ -85,7 +92,7 @@ impl LeaderKeyHandler {
 
                 if let Some(action) = self.keymap.get(&extended) {
                     self.state = LeaderState::Idle;
-                    LeaderResult::Action(action.clone())
+                    LeaderResult::Action(*action)
                 } else {
                     let candidates = self.keymap.get_candidates(&extended);
                     if candidates.is_empty() {

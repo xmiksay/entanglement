@@ -1,6 +1,14 @@
+//! The TUI's key map (#735): the `tui.keybindings` config
+//! ([`crate::config::keybindings`]) turned into crossterm lookups. Two
+//! contexts — direct chords and `leader <key>` sequences — each one action per
+//! key; the help dialog and the which-key popup list whatever is in effect.
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::fmt;
+
+pub use crate::config::keybindings::KeyAction as Action;
+use crate::config::keybindings::{KeyBinding, KeyChord, KeyName, ResolvedKeys};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -48,19 +56,41 @@ impl KeySequence {
         }
     }
 
+    #[cfg(test)]
     pub fn ctrl(key: Key) -> Self {
         Self {
             keys: vec![(key, KeyModifiers::CONTROL)],
         }
     }
 
+    /// A keypress, normalized like a config chord: a character never carries
+    /// `SHIFT` (it is in the case) and neither does `BackTab`, whose `SHIFT`
+    /// flag crossterm reports inconsistently across terminals (#322).
     pub fn from_event(event: &KeyEvent) -> Self {
+        let mut mods = event.modifiers;
         let key = match event.code {
-            KeyCode::Char(c) => Key::Char(c),
+            KeyCode::Char(c) => {
+                mods.remove(KeyModifiers::SHIFT);
+                Key::Char(c)
+            }
+            KeyCode::BackTab => {
+                mods.remove(KeyModifiers::SHIFT);
+                Key::Code(KeyCode::BackTab)
+            }
             code => Key::Code(code),
         };
         Self {
-            keys: vec![(key, event.modifiers)],
+            keys: vec![(key, mods)],
+        }
+    }
+
+    fn from_chord(c: &KeyChord) -> Self {
+        let mut mods = KeyModifiers::empty();
+        mods.set(KeyModifiers::CONTROL, c.ctrl);
+        mods.set(KeyModifiers::ALT, c.alt);
+        mods.set(KeyModifiers::SHIFT, c.shift);
+        Self {
+            keys: vec![(key_of(c.key), mods)],
         }
     }
 
@@ -77,6 +107,34 @@ impl KeySequence {
     pub fn matches(&self, other: &KeySequence) -> bool {
         self.keys == other.keys
     }
+
+    pub fn extend_with(&self, key: Key) -> KeySequence {
+        let mut keys = self.keys.clone();
+        keys.push((key, KeyModifiers::empty()));
+        KeySequence { keys }
+    }
+}
+
+fn key_of(name: KeyName) -> Key {
+    Key::Code(match name {
+        KeyName::Char(c) => return Key::Char(c),
+        KeyName::Enter => KeyCode::Enter,
+        KeyName::Tab => KeyCode::Tab,
+        KeyName::BackTab => KeyCode::BackTab,
+        KeyName::Esc => KeyCode::Esc,
+        KeyName::Backspace => KeyCode::Backspace,
+        KeyName::Delete => KeyCode::Delete,
+        KeyName::Insert => KeyCode::Insert,
+        KeyName::Home => KeyCode::Home,
+        KeyName::End => KeyCode::End,
+        KeyName::PageUp => KeyCode::PageUp,
+        KeyName::PageDown => KeyCode::PageDown,
+        KeyName::Up => KeyCode::Up,
+        KeyName::Down => KeyCode::Down,
+        KeyName::Left => KeyCode::Left,
+        KeyName::Right => KeyCode::Right,
+        KeyName::F(n) => KeyCode::F(n),
+    })
 }
 
 impl fmt::Display for KeySequence {
@@ -100,139 +158,47 @@ impl fmt::Display for KeySequence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Action {
-    Quit,
-    NewSession,
-    ListSessions,
-    PickAgent,
-    PickModel,
-    ToggleSidebar,
-    OpenEditor,
-    Export,
-    Interrupt,
-    #[allow(dead_code)]
-    ScrollUp,
-    #[allow(dead_code)]
-    ScrollDown,
-    ShowHelp,
-    CommandPalette,
-    ToggleReasoning,
-    Inspect,
-}
-
-impl Action {
-    pub fn description(&self) -> &str {
-        match self {
-            Action::Quit => "Quit (Ctrl+Q immediate; Ctrl+C clears then quits on second press)",
-            Action::NewSession => "Create a new session",
-            Action::ListSessions => "List and switch sessions",
-            Action::PickAgent => "Show available agents",
-            Action::PickModel => "Pick model",
-            Action::ToggleSidebar => "Toggle sidebar",
-            Action::OpenEditor => "Open editor",
-            Action::Export => "Export conversation",
-            Action::Interrupt => "Interrupt current operation",
-            Action::ScrollUp => "Scroll up",
-            Action::ScrollDown => "Scroll down",
-            Action::ShowHelp => "Show help",
-            Action::CommandPalette => "Open command palette",
-            Action::ToggleReasoning => "Toggle the most recent thinking or tool block",
-            Action::Inspect => "Inspect prompt, agents & skills",
-        }
-    }
-
-    pub fn category(&self) -> &str {
-        match self {
-            Action::Quit => "General",
-            Action::NewSession => "Sessions",
-            Action::ListSessions => "Sessions",
-            Action::PickAgent => "Agent",
-            Action::PickModel => "Agent",
-            Action::ToggleSidebar => "UI",
-            Action::OpenEditor => "UI",
-            Action::Export => "UI",
-            Action::Interrupt => "General",
-            Action::ScrollUp => "Navigation",
-            Action::ScrollDown => "Navigation",
-            Action::ShowHelp => "Help",
-            Action::CommandPalette => "General",
-            Action::ToggleReasoning => "Navigation",
-            Action::Inspect => "Agent",
-        }
-    }
-}
-
 pub struct KeyMap {
+    /// Leader sequences (`leader` + one key).
     bindings: HashMap<KeySequence, Action>,
+    /// Direct single-chord bindings.
+    direct: HashMap<KeySequence, Action>,
     leader_sequence: KeySequence,
+    /// Every binding with its display label, in help-dialog order.
+    listing: Vec<(String, Action)>,
 }
 
 impl KeyMap {
+    /// The built-in map.
     pub fn new() -> Self {
+        Self::from_resolved(&ResolvedKeys::defaults())
+    }
+
+    pub fn from_resolved(keys: &ResolvedKeys) -> Self {
+        let leader_sequence = KeySequence::from_chord(&keys.leader);
         let mut bindings = HashMap::new();
-
-        // Leader key: Ctrl+X
-        let leader = KeySequence::ctrl(Key::Char('x'));
-
-        // Session management
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('n')),
-            Action::NewSession,
-        );
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('l')),
-            Action::ListSessions,
-        );
-
-        // Agent management
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('a')),
-            Action::PickAgent,
-        );
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('m')),
-            Action::PickModel,
-        );
-
-        // UI controls
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('s')),
-            Action::ToggleSidebar,
-        );
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('e')),
-            Action::OpenEditor,
-        );
-        bindings.insert(leader.clone().extend_with(Key::Char('E')), Action::Export);
-
-        // General
-        bindings.insert(leader.clone().extend_with(Key::Char('q')), Action::Quit);
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('c')),
-            Action::Interrupt,
-        );
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('p')),
-            Action::CommandPalette,
-        );
-
-        // Transcript
-        bindings.insert(
-            leader.clone().extend_with(Key::Char('t')),
-            Action::ToggleReasoning,
-        );
-
-        // Inspection overlay (#214)
-        bindings.insert(leader.clone().extend_with(Key::Char('i')), Action::Inspect);
-
-        // Help
-        bindings.insert(leader.clone().extend_with(Key::Char('?')), Action::ShowHelp);
-        bindings.insert(leader.clone().extend_with(Key::Char('h')), Action::ShowHelp);
-
+        let mut direct = HashMap::new();
+        let mut listing = Vec::new();
+        for (action, binding) in &keys.bindings {
+            let label = match binding {
+                KeyBinding::Direct(c) => {
+                    direct.insert(KeySequence::from_chord(c), *action);
+                    c.to_string()
+                }
+                KeyBinding::Leader(c) => {
+                    bindings.insert(leader_sequence.extend_with(key_of(c.key)), *action);
+                    format!("{} {c}", keys.leader)
+                }
+            };
+            listing.push((label, *action));
+        }
+        listing.push((keys.leader.to_string(), Action::Leader));
+        listing.sort_by_key(|(_, a)| (a.category(), *a));
         Self {
             bindings,
-            leader_sequence: leader,
+            direct,
+            leader_sequence,
+            listing,
         }
     }
 
@@ -240,8 +206,14 @@ impl KeyMap {
         &self.leader_sequence
     }
 
+    /// The action a full leader sequence resolves to.
     pub fn get(&self, sequence: &KeySequence) -> Option<&Action> {
         self.bindings.get(sequence)
+    }
+
+    /// The action a direct keypress is bound to, if any.
+    pub fn direct_action(&self, event: &KeyEvent) -> Option<Action> {
+        self.direct.get(&KeySequence::from_event(event)).copied()
     }
 
     pub fn get_candidates(&self, prefix: &KeySequence) -> Vec<(&KeySequence, &Action)> {
@@ -251,18 +223,35 @@ impl KeyMap {
             .collect()
     }
 
-    pub fn all_bindings(&self) -> Vec<(&KeySequence, &Action)> {
+    /// The leader sequences, for the which-key popup.
+    pub fn leader_bindings(&self) -> Vec<(&KeySequence, &Action)> {
         let mut bindings: Vec<_> = self.bindings.iter().collect();
-        bindings.sort_by_key(|(seq, action)| (action.category().to_string(), format!("{}", seq)));
+        bindings.sort_by_key(|(seq, action)| (action.category(), seq.to_string()));
         bindings
     }
-}
 
-impl KeySequence {
-    pub fn extend_with(&self, key: Key) -> KeySequence {
-        let mut keys = self.keys.clone();
-        keys.push((key, KeyModifiers::empty()));
-        KeySequence { keys }
+    /// Every effective binding (label, action), grouped by category — the
+    /// help dialog's listing.
+    pub fn all_bindings(&self) -> &[(String, Action)] {
+        &self.listing
+    }
+
+    /// The first key bound to `action`, for an inline hint.
+    pub fn first_key(&self, action: Action) -> Option<&str> {
+        self.listing
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(label, _)| label.as_str())
+    }
+
+    /// Every key bound to `action`, joined for an inline hint.
+    pub fn keys_for(&self, action: Action) -> String {
+        self.listing
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 }
 

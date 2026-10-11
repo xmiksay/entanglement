@@ -1,22 +1,24 @@
 use entanglement_core::AgentState;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 
 use crate::tui::app::App;
+use crate::tui::keybindings::Action;
 use crate::tui::modals;
 use crate::tui::progress;
 use crate::tui::session_view::ApprovalMode;
+use crate::tui::theme::Slot;
 
 mod status_usage;
 
 pub fn draw_top_padding(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
-    let paragraph = Paragraph::new("").style(Style::default().bg(theme.input_bg));
+    let paragraph = Paragraph::new("").style(Style::default().bg(theme.c(Slot::InputBg)));
     f.render_widget(paragraph, area);
 }
 
@@ -24,17 +26,14 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let theme = app.theme();
     let user_input = theme.user_input_colors(app.profile_color_for(app.agent()));
 
-    let state_color = match app.state() {
-        AgentState::Idle => Color::Green,
-        AgentState::Thinking => Color::Yellow,
-        AgentState::Working => Color::Yellow,
-        AgentState::WaitingAgent => Color::Magenta,
-        AgentState::WaitingApproval => Color::Cyan,
-        AgentState::WaitingAnswer => Color::Cyan,
-        AgentState::Paused => Color::Magenta,
-        AgentState::Done => Color::Blue,
-        AgentState::Error => Color::Red,
-    };
+    let state_color = theme.c(match app.state() {
+        AgentState::Idle => Slot::Success,
+        AgentState::Thinking | AgentState::Working => Slot::Warning,
+        AgentState::WaitingAgent | AgentState::Paused => Slot::Special,
+        AgentState::WaitingApproval | AgentState::WaitingAnswer => Slot::Accent,
+        AgentState::Done => Slot::Info,
+        AgentState::Error => Slot::Error,
+    });
 
     let state_text = match app.state() {
         AgentState::Idle => "Idle",
@@ -106,18 +105,21 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|q| q.entering_free_form)
             .unwrap_or(false)
         {
-            "Type your answer... (Enter to submit, Esc to go back)"
+            "Type your answer... (Enter to submit, Esc to go back)".to_string()
         } else {
-            ""
+            String::new()
         }
     } else {
         match &approval_mode {
-            ApprovalMode::Normal => {
-                "Type a message... | Enter: send | Alt/Ctrl+J/Shift+Enter: newline | Ctrl+\u{2190}/\u{2192} word | Home/End line | Ctrl+Home/End doc"
-            }
-            ApprovalMode::WaitingForApproval { .. } => "",
+            // The send/newline keys are remappable (#735): show the live ones.
+            ApprovalMode::Normal => format!(
+                "Type a message... | {}: send | {}: newline | Ctrl+\u{2190}/\u{2192} word | Home/End line | Ctrl+Home/End doc",
+                app.keymap().keys_for(Action::Submit),
+                app.keymap().keys_for(Action::Newline),
+            ),
+            ApprovalMode::WaitingForApproval { .. } => String::new(),
             ApprovalMode::EnteringRejectReason { .. } => {
-                "Enter rejection reason... (Enter to send, Esc to cancel)"
+                "Enter rejection reason... (Enter to send, Esc to cancel)".to_string()
             }
         }
     };
@@ -157,7 +159,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let display_lines: Vec<Line> = if input_text.is_empty() {
         vec![Line::from(Span::styled(
             placeholder_text,
-            Style::default().fg(Color::DarkGray).bg(theme.input_bg),
+            theme.fg(Slot::Muted).bg(theme.c(Slot::InputBg)),
         ))]
     } else {
         let rows = app.input().lines().to_vec();
@@ -167,13 +169,13 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|(i, row)| {
                 let mut spans = vec![Span::styled(
                     row,
-                    Style::default().fg(Color::White).bg(theme.input_bg),
+                    theme.fg(Slot::Text).bg(theme.c(Slot::InputBg)),
                 )];
                 if i == last {
                     if let Some(hint) = &slash_whisper {
                         spans.push(Span::styled(
                             format!("  {hint}"),
-                            Style::default().fg(Color::DarkGray).bg(theme.input_bg),
+                            theme.fg(Slot::Muted).bg(theme.c(Slot::InputBg)),
                         ));
                     }
                 }
@@ -200,7 +202,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     let hscroll = cursor_col.saturating_sub(area.width.saturating_sub(1) as usize) as u16;
 
     let paragraph = Paragraph::new(display_lines)
-        .style(Style::default().fg(Color::White).bg(theme.input_bg))
+        .style(theme.fg(Slot::Text).bg(theme.c(Slot::InputBg)))
         .scroll((vscroll, hscroll));
     f.render_widget(paragraph, area);
 
@@ -237,16 +239,10 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     // it's unknown so we never leave a dangling `·`.
     let mut pm_spans: Vec<Span> = Vec::new();
     if !provider_display.is_empty() {
-        pm_spans.push(Span::styled(
-            provider_display,
-            Style::default().fg(Color::Magenta),
-        ));
+        pm_spans.push(Span::styled(provider_display, theme.fg(Slot::Special)));
         pm_spans.push(Span::raw(" · "));
     }
-    pm_spans.push(Span::styled(
-        model_display,
-        Style::default().fg(Color::Cyan),
-    ));
+    pm_spans.push(Span::styled(model_display, theme.fg(Slot::Accent)));
 
     // The keybinding hints that used to sit here duplicated the input-box
     // placeholder, so this segment now carries only transient status: a pending
@@ -258,31 +254,29 @@ pub fn draw_input_info(f: &mut Frame, area: Rect, app: &App) {
     spans.extend(status_usage::usage_spans(
         app.cost(),
         app.model_info().context_window,
+        &theme,
     ));
     if app.quit_pending() {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
             "Press Ctrl+C again to quit",
-            Style::default().fg(Color::Yellow).bold(),
+            theme.fg(Slot::Warning).bold(),
         ));
     } else if let Some(msg) = app.toast() {
         spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            msg.to_string(),
-            Style::default().fg(Color::Green),
-        ));
+        spans.push(Span::styled(msg.to_string(), theme.fg(Slot::Success)));
     } else if let Some(status) = app.throttle_status() {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
             throttle_label(&status),
-            Style::default().fg(Color::Red).bold(),
+            theme.fg(Slot::Error).bold(),
         ));
     }
     let info_line = Line::from(spans);
 
     let paragraph = Paragraph::new(info_line)
         .alignment(Alignment::Right)
-        .style(Style::default().bg(theme.input_bg));
+        .style(Style::default().bg(theme.c(Slot::InputBg)));
     f.render_widget(paragraph, area);
 }
 

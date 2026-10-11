@@ -1,11 +1,11 @@
 use ratatui::{
-    style::{Color, Style, Stylize},
+    style::Stylize,
     text::{Line, Span},
 };
 
 use crate::tui::app::App;
 use crate::tui::session_view::ApprovalMode;
-use crate::tui::theme::RoleColors;
+use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
 use crate::tui::wrap;
 
@@ -53,7 +53,7 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             let (tool, input) = (tool.clone(), input.clone());
             let rule = "─".repeat(available_width.max(1) as usize);
             lines.push(Line::from(""));
-            lines.push(Line::from(rule.clone()).fg(Color::Yellow));
+            lines.push(Line::from(rule.clone()).fg(theme.c(Slot::Approval)));
 
             lines.extend(render_approval_tool_body(
                 app,
@@ -64,7 +64,7 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
 
             lines.push(Line::from(""));
             let mut footer = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
-                plan_accept_footer(&input)
+                plan_accept_footer(&input, &theme)
             } else {
                 // The three approval scopes (#174): `y` once, `s` for the rest
                 // of the session, `a` persisted to the grants file. All three
@@ -72,11 +72,11 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                 // shortcuts read as missing. The `[d]` directory variant
                 // (read-only triad) follows.
                 let mut footer = vec![
-                    Span::styled("[y]", Style::default().fg(Color::Green).bold()),
+                    Span::styled("[y]", theme.fg(Slot::Success).bold()),
                     Span::raw(" approve  "),
-                    Span::styled("[s]", Style::default().fg(Color::Green).bold()),
+                    Span::styled("[s]", theme.fg(Slot::Success).bold()),
                     Span::raw(" approve session  "),
-                    Span::styled("[a]", Style::default().fg(Color::Green).bold()),
+                    Span::styled("[a]", theme.fg(Slot::Success).bold()),
                     Span::raw(" approve always  "),
                 ];
                 // `[d]` (#486, ADR-0126) only makes sense for the read-only
@@ -84,35 +84,32 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
                 // other tool would just degrade to an exact `Session` grant, so
                 // the hint is withheld rather than shown misleadingly.
                 if crate::tool_names::is_read_capability_member(&tool) {
-                    footer.push(Span::styled(
-                        "[d]",
-                        Style::default().fg(Color::Green).bold(),
-                    ));
+                    footer.push(Span::styled("[d]", theme.fg(Slot::Success).bold()));
                     footer.push(Span::raw(" allow dir (session)  "));
                 }
                 footer
             };
             footer.extend([
-                Span::styled("[n]", Style::default().fg(Color::Red).bold()),
+                Span::styled("[n]", theme.fg(Slot::Error).bold()),
                 Span::raw(" reject  "),
-                Span::styled("[e]", Style::default().fg(Color::Yellow).bold()),
+                Span::styled("[e]", theme.fg(Slot::Warning).bold()),
                 Span::raw(" edit reason  "),
                 // Full-body pager (#B2): a long diff/plan body can scroll off
                 // this viewport before the footer even comes into view.
-                Span::styled("[v]", Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[v]", theme.fg(Slot::Accent).bold()),
                 Span::raw(" view · PgUp/PgDn scroll  "),
-                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::styled("[Esc]", theme.fg(Slot::Secondary).bold()),
                 Span::raw(" interrupt"),
             ]);
             // The footer is short, but wrap it too so a very narrow panel can't
             // overflow horizontally (#wrap).
             push_wrapped_spans(&mut lines, footer, available_width);
-            lines.push(Line::from(rule).fg(Color::Yellow));
+            lines.push(Line::from(rule).fg(theme.c(Slot::Approval)));
         }
     }
 
     if let Some(q) = app.pending_question() {
-        render_question(&mut lines, q, &app.input_text(), available_width);
+        render_question(&mut lines, q, &app.input_text(), available_width, &theme);
     }
 
     // The freshly-appended tail lines carry no clickable-block provenance.
@@ -129,7 +126,7 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
 /// (`run_propose_plan`'s own shape, `propose_plan.rs`), whose `suggested_mode`
 /// field — the model's own hint, never a decision — marks whichever option it
 /// named as "(suggested)" so the human sees it without it choosing for them.
-fn plan_accept_footer(input: &str) -> Vec<Span<'static>> {
+fn plan_accept_footer(input: &str, theme: &Theme) -> Vec<Span<'static>> {
     let suggested = serde_json::from_str::<serde_json::Value>(input)
         .ok()
         .and_then(|v| {
@@ -145,9 +142,9 @@ fn plan_accept_footer(input: &str) -> Vec<Span<'static>> {
         }
     };
     vec![
-        Span::styled("[u]", Style::default().fg(Color::Green).bold()),
+        Span::styled("[u]", theme.fg(Slot::Success).bold()),
         Span::raw(label("auto", " accept \u{2192} auto (default)")),
-        Span::styled("[b]", Style::default().fg(Color::Green).bold()),
+        Span::styled("[b]", theme.fg(Slot::Success).bold()),
         Span::raw(label("build", " accept \u{2192} build")),
     ]
 }
@@ -183,23 +180,30 @@ pub(crate) fn render_approval_tool_body(
     available_width: u16,
 ) -> Vec<Line<'static>> {
     let theme = app.theme();
-    // Yellow accent ties this body to the surrounding rules; it goes through
+    // The approval accent ties this body to the surrounding rules; it goes through
     // `Theme::decorate` like any other block so it reads as part of the
     // transcript, not a bolted-on overlay (#487).
     let approval_colors = RoleColors {
-        fg: Color::Yellow,
-        bg: theme.message_bg,
+        fg: theme.c(Slot::Approval),
+        bg: theme.c(Slot::MessageBg),
     };
 
-    let mut header =
-        render_run::tool_header_spans(tool, input, '▾', Color::Yellow, available_width, None);
+    let mut header = render_run::tool_header_spans(
+        &theme,
+        tool,
+        input,
+        '▾',
+        theme.c(Slot::Approval),
+        available_width,
+        None,
+    );
     // Core batch-emits tool calls (#270), so more approvals may be parked
     // behind this one (#273) — show how many are waiting.
     let queued = app.queued_approvals();
     if queued > 0 {
         header.push(Span::styled(
             format!("  (+{queued} more queued)"),
-            Style::default().fg(Color::DarkGray),
+            theme.fg(Slot::Muted),
         ));
     }
     let mut lines = vec![theme.decorate(Line::from(header), approval_colors, available_width)];
@@ -208,7 +212,7 @@ pub(crate) fn render_approval_tool_body(
     }
 
     let rendered = if tool == "write" {
-        tool_render::render_write_approval_body(input, app.root())
+        tool_render::render_write_approval_body(input, app.root(), &theme)
     } else {
         tool_render::render_expansion(
             Some(tool),

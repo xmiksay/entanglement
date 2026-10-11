@@ -6,7 +6,7 @@
 //! mask to allowlist).
 
 use ratatui::{
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -14,6 +14,7 @@ use ratatui::{
 
 use super::centered_rect;
 use crate::tui::app::App;
+use crate::tui::theme::Slot;
 
 /// Draw the `/mcp list` result panel (#373, selectable since #539): connected
 /// servers, transport, status, and tools. `Up`/`Down`/`j`/`k` move the server
@@ -22,6 +23,7 @@ use crate::tui::app::App;
 /// the session's current override), `c`/`t` run the OAuth connect/check for it
 /// (ADR-0153), `PageUp`/`PageDown` scroll, `Esc` closes.
 pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let servers = app.mcp_servers();
     let overlay = app.overlay_entries(app.active_session_id());
     let selected = app.mcp_selected();
@@ -44,10 +46,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
         ];
         lines.push(Line::from(""));
         for u in usage {
-            lines.push(Line::from(Span::styled(
-                u,
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled(u, theme.fg(Slot::Muted))));
         }
     } else {
         for (i, s) in servers.iter().enumerate() {
@@ -57,23 +56,17 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
             let status = if s.auth.as_deref() == Some("needs auth") {
                 // An OAuth server awaiting sign-in (ADR-0153) is not broken
                 // either — it just needs `c`. Say so instead of "disconnected".
-                Span::styled(
-                    "needs auth (sign in with c)",
-                    Style::default().fg(Color::Yellow),
-                )
+                Span::styled("needs auth (sign in with c)", theme.fg(Slot::Warning))
             } else if s.connected {
-                Span::styled("connected", Style::default().fg(Color::Green))
+                Span::styled("connected", theme.fg(Slot::Success))
             } else if s.state.as_deref() == Some("allowed") {
-                Span::styled(
-                    "available (enable with e)",
-                    Style::default().fg(Color::Yellow),
-                )
+                Span::styled("available (enable with e)", theme.fg(Slot::Warning))
             } else {
-                Span::styled("disconnected", Style::default().fg(Color::Red))
+                Span::styled("disconnected", theme.fg(Slot::Error))
             };
             let marker = if i == selected { "▶ " } else { "  " };
             let name_style = if i == selected {
-                Style::default().bold().bg(Color::DarkGray)
+                theme.selection().bold()
             } else {
                 Style::default().bold()
             };
@@ -88,11 +81,11 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
             let server_pattern = format!("mcp__{}__*", s.name);
             if let Some(e) = overlay.iter().find(|e| e.pattern == server_pattern) {
                 let tag = if e.deny {
-                    Span::styled("  session: off", Style::default().fg(Color::Red))
+                    Span::styled("  session: off", theme.fg(Slot::Error))
                 } else if e.allow {
-                    Span::styled("  session: on (allow)", Style::default().fg(Color::Green))
+                    Span::styled("  session: on (allow)", theme.fg(Slot::Success))
                 } else {
-                    Span::styled("  session: on", Style::default().fg(Color::Green))
+                    Span::styled("  session: on", theme.fg(Slot::Success))
                 };
                 header.push(tag);
             }
@@ -100,7 +93,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
             if let Some(err) = &s.error {
                 lines.push(Line::from(Span::styled(
                     format!("    error: {err}"),
-                    Style::default().fg(Color::Red),
+                    theme.fg(Slot::Error),
                 )));
             } else if s.tools.is_empty() {
                 lines.push(Line::from(Span::styled(
@@ -133,6 +126,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
 /// `Space` toggles, `a` toggles auto-allow on an enabled override, `Enter`
 /// applies the overlay diff, `Esc` discards.
 pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let rows = app.session_tools_dialog().rows().to_vec();
 
     let items: Vec<ListItem> = rows
@@ -155,11 +149,11 @@ pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
                     } else {
                         "  +session"
                     };
-                    spans.push(Span::styled(tag, Style::default().fg(Color::Green)));
+                    spans.push(Span::styled(tag, theme.fg(Slot::Success)));
                 }
                 // A deny override the diff will materialize.
                 (false, true) => {
-                    spans.push(Span::styled("  -session", Style::default().fg(Color::Red)));
+                    spans.push(Span::styled("  -session", theme.fg(Slot::Error)));
                 }
                 _ => {}
             }
@@ -173,7 +167,7 @@ pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Session tools (Space: toggle, a: auto-allow, Enter: apply, Esc: cancel)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(60, 60, f.area());
     app.set_session_tools_dialog_rect(area);
@@ -187,6 +181,7 @@ pub fn draw_session_tools_dialog(f: &mut Frame, app: &mut App) {
 /// as the filter/category status line — there's no separate input widget to
 /// render, `tools_view`'s own state already carries both.
 pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let category = app.tools_view().category().unwrap_or("all");
     let filter = app.tools_view().filter_text().to_string();
     let rows = app.tools_view().filtered();
@@ -195,9 +190,9 @@ pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|row| {
             let masked_style = if row.masked {
-                Style::default().fg(Color::Red)
+                theme.fg(Slot::Error)
             } else {
-                Style::default().fg(Color::Green)
+                theme.fg(Slot::Success)
             };
             let masked_tag = if row.masked { "masked" } else { "usable" };
             let grade_tag = row.grade.unwrap_or("-");
@@ -205,7 +200,7 @@ pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
                 Span::styled(format!("[{:<8}] ", row.kind), Style::default().dim()),
                 Span::styled(row.name.clone(), Style::default().bold()),
                 Span::raw("  "),
-                Span::styled(row.status, Style::default().fg(Color::Cyan)),
+                Span::styled(row.status, theme.fg(Slot::Accent)),
                 Span::raw("  "),
                 Span::styled(masked_tag, masked_style),
                 Span::raw("  "),
@@ -226,7 +221,7 @@ pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
     };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     // No mouse hit-test rect (unlike the other tool dialogs): `/tools` is a
     // keyboard-driven typeahead browser, not a click target — out of scope

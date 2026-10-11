@@ -225,6 +225,7 @@ pub(crate) fn reload_tui_config(
     match crate::config::Config::load(root) {
         Ok(c) => {
             apply_tui_config(term.backend_mut(), attention, &c.tui);
+            app.apply_appearance(&c.tui, crate::tui::app::appearance::no_color_env(), false);
             app.set_statusline_config(c.tui.statusline);
         }
         Err(e) => tracing::warn!("tui config not reloaded, keeping previous settings: {e:#}"),

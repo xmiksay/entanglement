@@ -44,7 +44,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, user_only, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill. |
-| **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable). |
+| **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable); `dark`/`light` themes with per-slot colour overrides (`NO_COLOR` honoured) and remappable keys (`Ctrl+X` leader by default; `Ctrl+X ?` lists the bindings in effect). |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
 Building your own head — a multi-tenant server embedding the engine as a
@@ -196,7 +196,37 @@ tui:
   statusline:    # the top row: where the TUI is working
     template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"   # left-aligned
     right: "{session}"                                      # right-aligned
+  theme:         # `dark` (default) | `light` | a base plus slot overrides
+    base: light
+    slots: { status.branch: cyan, diff.add: "#2e7d32", muted: 244 }
+  keybindings:   # action -> key(s); replaces that action's defaults
+    leader: ctrl+b
+    pick_model: [leader m, ctrl+o]
+    newline: [shift+enter, alt+enter]
 ```
+
+**Themes.** Every colour the TUI draws is a named slot (`message.bg`,
+`accent`, `success`, `warning`, `error`, `muted`, `selection.bg`, `approval`,
+`diff.add`/`diff.remove`/`diff.context`, `status.*`, … — the full list is in
+the scaffolded `config.yml`); a colour is a named ANSI colour, `#rrggbb` or a
+256-colour index. An unknown slot or bad colour warns once and keeps the
+base's colour. `light` keeps every foreground at WCAG ≥ 4.5:1 on its
+backgrounds; code blocks follow the base (`base16-ocean` dark/light).
+`NO_COLOR` (set, non-empty) turns all colour off — bold/dim/reverse still
+mark emphasis and selection.
+
+**Keys.** Actions: `leader submit newline cycle_mode cycle_mode_back
+scroll_up scroll_down toggle_reasoning jump_attention new_session
+list_sessions pause_toggle pick_agent pick_model inspect toggle_sidebar
+open_editor export command_palette interrupt quit help`. A key is
+`[ctrl+][alt+][shift+]<key>` (a character or `enter`, `tab`, `esc`,
+`pageup`, `space`, `f5`, …) or `leader <key>`; `[]` unbinds. `Ctrl+C`
+(interrupt / two-stage quit), `Ctrl+Q` (quit) and `Esc` are fixed, and a bare
+printable key can't be bound directly. Two actions on one key in the same
+context (direct or after the leader), an unknown action or a bad key rejects
+the whole remap with one warning naming the culprits, and the previous map
+stays. Both blocks live-reload; the help dialog (`Ctrl+X ?`) shows the keys in
+effect.
 
 Status-line placeholders: `{repo} {cwd} {cwd_rel} {branch} {worktree}
 {session} {agent} {mode} {model} {cost} {context_pct} {action} {tasks}`. An

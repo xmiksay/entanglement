@@ -249,3 +249,44 @@
 #  statusline:
 #    template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"
 #    right: "{session}"
+#  # Colours: `dark` (default) or `light` (for light terminal backgrounds),
+#  # or an object overriding named slots on top of a base. A colour is a
+#  # named ANSI colour (cyan, dark_gray, light_red, white, default), "#rrggbb"
+#  # or a 256-colour index (0-255). Slots: message.bg input.bg sidebar.bg
+#  # sidebar.fg assistant reasoning tool.request tool.output text accent
+#  # success warning error special info muted secondary selection.bg
+#  # heading.fg heading.bg approval markdown.code diff.add diff.remove
+#  # diff.context status.repo status.path status.branch status.worktree
+#  # status.text status.dim status.attention. An unknown slot or bad colour
+#  # is warned about once and keeps the base's colour. NO_COLOR=1 in the
+#  # environment turns every colour off (bold/dim/reverse still mark things).
+#  theme: dark
+#  #theme:
+#  #  base: light
+#  #  slots:
+#  #    status.branch: cyan
+#  #    diff.add: "#2e7d32"
+#  #    muted: 244
+#  # Remap keys: action -> one key or a list (replacing that action's
+#  # defaults; [] unbinds it). A key is [ctrl+][alt+][shift+]<key> — a single
+#  # character or enter, tab, esc, backspace, delete, insert, home, end,
+#  # pageup, pagedown, up, down, left, right, space, f1-f24 — or
+#  # "leader <key>" for a chord after the leader. Actions and defaults:
+#  #   leader ctrl+x            submit enter
+#  #   newline [shift+enter, alt+enter, ctrl+j]
+#  #   cycle_mode tab           cycle_mode_back shift+tab
+#  #   scroll_up pageup         scroll_down pagedown
+#  #   toggle_reasoning leader t     jump_attention ctrl+g
+#  #   new_session leader n     list_sessions [leader l, ctrl+l]
+#  #   pause_toggle ctrl+space  pick_agent [leader a, ctrl+a]
+#  #   pick_model leader m      inspect leader i
+#  #   toggle_sidebar leader s  open_editor leader e     export leader E
+#  #   command_palette [leader p, ctrl+p]  interrupt leader c  quit leader q
+#  #   help [leader ?, leader h]
+#  # ctrl+c (interrupt / quit), ctrl+q (quit) and esc (cancel) are fixed, and
+#  # a bare printable key can't be bound directly. Two actions on one key, an
+#  # unknown action or a bad key rejects the whole remap with one warning and
+#  # the previous key map stays.
+#  keybindings:
+#    leader: ctrl+x
+#    pick_model: [leader m, ctrl+o]

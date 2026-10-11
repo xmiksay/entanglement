@@ -3,6 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::tui::theme::{Slot, Theme};
 use crate::tui::wrap;
 
 /// Render a pending `ask_user` call: its current question while any remain
@@ -13,11 +14,12 @@ pub(super) fn render_question<'a>(
     q: &crate::tui::session_view::PendingQuestion,
     input_text: &str,
     available_width: u16,
+    theme: &Theme,
 ) {
     if q.is_reviewing() {
-        render_review(lines, q, available_width);
+        render_review(lines, q, available_width, theme);
     } else {
-        render_current_question(lines, q, input_text, available_width);
+        render_current_question(lines, q, input_text, available_width, theme);
     }
 }
 
@@ -33,8 +35,10 @@ fn render_current_question<'a>(
     q: &crate::tui::session_view::PendingQuestion,
     input_text: &str,
     available_width: u16,
+    theme: &Theme,
 ) {
-    let accent = Color::Cyan;
+    let accent = theme.c(Slot::Accent);
+    let (ok, esc_fg) = (theme.c(Slot::Success), theme.c(Slot::Secondary));
     let rule_w = available_width.max(1) as usize;
     let rule = "─".repeat(rule_w);
     lines.push(Line::from(""));
@@ -120,9 +124,9 @@ fn render_current_question<'a>(
     };
     let footer = if q.entering_free_form {
         vec![
-            Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+            Span::styled("[Enter]", Style::default().fg(ok).bold()),
             Span::raw(" next  "),
-            Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+            Span::styled("[Esc]", Style::default().fg(esc_fg).bold()),
             Span::raw(" back"),
         ]
     } else if current.multi_select {
@@ -133,9 +137,9 @@ fn render_current_question<'a>(
                 Span::raw(" select  "),
                 Span::styled("[Space/1-9]", Style::default().fg(accent).bold()),
                 Span::raw(" toggle  "),
-                Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+                Span::styled("[Enter]", Style::default().fg(ok).bold()),
                 Span::raw(" next  "),
-                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::styled("[Esc]", Style::default().fg(esc_fg).bold()),
                 Span::raw(" interrupt"),
             ],
         ]
@@ -148,9 +152,9 @@ fn render_current_question<'a>(
                 Span::raw(" select  "),
                 Span::styled("[1-9]", Style::default().fg(accent).bold()),
                 Span::raw(" pick  "),
-                Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+                Span::styled("[Enter]", Style::default().fg(ok).bold()),
                 Span::raw(" next  "),
-                Span::styled("[Esc]", Style::default().fg(Color::Gray).bold()),
+                Span::styled("[Esc]", Style::default().fg(esc_fg).bold()),
                 Span::raw(" interrupt"),
             ],
         ]
@@ -171,8 +175,10 @@ fn render_review<'a>(
     lines: &mut Vec<Line<'a>>,
     q: &crate::tui::session_view::PendingQuestion,
     available_width: u16,
+    theme: &Theme,
 ) {
-    let accent = Color::Cyan;
+    let accent = theme.c(Slot::Accent);
+    let (ok, esc_fg) = (theme.c(Slot::Success), theme.c(Slot::Secondary));
     let rule_w = available_width.max(1) as usize;
     let rule = "─".repeat(rule_w);
     lines.push(Line::from(""));
@@ -214,9 +220,9 @@ fn render_review<'a>(
 
     lines.push(Line::from(""));
     let footer = vec![
-        Span::styled("[Enter]", Style::default().fg(Color::Green).bold()),
+        Span::styled("[Enter]", Style::default().fg(ok).bold()),
         Span::raw(" submit  "),
-        Span::styled("[←/Esc]", Style::default().fg(Color::Gray).bold()),
+        Span::styled("[←/Esc]", Style::default().fg(esc_fg).bold()),
         Span::raw(" back to revise"),
     ];
     for wline in wrap::wrap_line(Line::from(footer), available_width) {

@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -10,19 +10,17 @@ use super::{centered_rect, mention_popup_area, slash_popup_area};
 use crate::tui::app::App;
 use crate::tui::commands::Command;
 use crate::tui::keybindings::KeyMap;
+use crate::tui::theme::{Slot, Theme};
 
-pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
-    let bindings = keymap.all_bindings();
+pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap, theme: &Theme) {
+    let bindings = keymap.leader_bindings();
     let mut lines = Vec::new();
 
     for (sequence, action) in bindings {
         let key_str = format!("{}", sequence);
         let description = action.description();
         lines.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!(" {:8} ", key_str),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
+            Span::styled(format!(" {:8} ", key_str), theme.fg(Slot::Accent).bold()),
             Span::styled(description, Style::default()),
         ])));
     }
@@ -33,7 +31,7 @@ pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
                 .borders(Borders::ALL)
                 .title("Keybindings (Esc to cancel)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(80, 60, f.area());
     f.render_widget(Clear, area);
@@ -41,6 +39,7 @@ pub fn draw_which_key_popup(f: &mut Frame, keymap: &KeyMap) {
 }
 
 pub fn draw_help_dialog(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let keymap = app.keymap();
     let bindings = keymap.all_bindings();
     let mut current_category = String::new();
@@ -54,20 +53,22 @@ pub fn draw_help_dialog(f: &mut Frame, app: &mut App) {
             }
             lines.push(Line::from(vec![Span::styled(
                 format!("{}:", category),
-                Style::default().fg(Color::Yellow).bold(),
+                theme.fg(Slot::Warning).bold(),
             )]));
             current_category = category.to_string();
         }
 
-        let key_str = format!("{}", sequence);
-        let description = action.description();
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {:12} ", key_str),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
-            Span::styled(description, Style::default()),
-        ]));
+        lines.push(help_row(sequence, action.description(), &theme));
+    }
+    // Not remappable (`tui.keybindings` refuses them): the ways out must
+    // always work.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Fixed:",
+        theme.fg(Slot::Warning).bold(),
+    )));
+    for (key, what) in FIXED_KEYS {
+        lines.push(help_row(key, what, &theme));
     }
 
     let scroll = app.help_scroll();
@@ -82,7 +83,21 @@ pub fn draw_help_dialog(f: &mut Frame, app: &mut App) {
     f.render_widget(para, area);
 }
 
+const FIXED_KEYS: [(&str, &str); 3] = [
+    ("Ctrl+c", "Interrupt; press again to quit"),
+    ("Ctrl+q", "Quit immediately"),
+    ("Esc", "Stop the turn / close a dialog / cancel a chord"),
+];
+
+fn help_row(key: &str, description: &'static str, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {key:12} "), theme.fg(Slot::Accent).bold()),
+        Span::raw(description),
+    ])
+}
+
 pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let palette = app.command_palette();
     let query = palette.query().to_string();
     let commands = palette.filtered_commands().to_vec();
@@ -93,10 +108,7 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
             let name = cmd.slash_name();
             let description = cmd.description();
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{} ", name),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
+                Span::styled(format!("{} ", name), theme.fg(Slot::Accent).bold()),
                 Span::styled(description, Style::default().dim()),
             ]))
         })
@@ -107,7 +119,7 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
     } else {
         query.as_str()
     })
-    .style(Style::default().fg(Color::Yellow));
+    .style(theme.fg(Slot::Warning));
 
     let list = List::new(items)
         .block(
@@ -115,7 +127,7 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Command Palette (Esc to close, Enter to execute)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let area = centered_rect(60, 50, f.area());
 
@@ -135,6 +147,7 @@ pub fn draw_command_palette(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
+    let theme = app.theme();
     // Issue 2: the old "only show when input is exactly `/`" static list is
     // replaced by the live prefix-filter `SlashPopup` (mirrors the mention
     // popup). The popup's own visibility gate (set by `SlashPopup::update`
@@ -153,10 +166,7 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
             let name = cmd.slash_name();
             let description = cmd.description();
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{} ", name),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
+                Span::styled(format!("{} ", name), theme.fg(Slot::Accent).bold()),
                 Span::styled(description, Style::default().dim()),
             ]))
         })
@@ -168,7 +178,7 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
                 .borders(Borders::ALL)
                 .title("Commands (Tab/Enter to insert, Esc to dismiss)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let popup_area = slash_popup_area(input_area, commands.len());
     app.set_slash_popup_rect(popup_area);
@@ -180,6 +190,7 @@ pub fn draw_slash_autocomplete(f: &mut Frame, app: &mut App, input_area: Rect) {
 /// autocomplete, listing the fuzzy-matched relative paths with the current pick
 /// highlighted.
 pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
+    let theme = app.theme();
     if !app.mention().visible() {
         return;
     }
@@ -190,12 +201,7 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
 
     let items: Vec<ListItem> = matches
         .iter()
-        .map(|p| {
-            ListItem::new(Line::from(Span::styled(
-                p.clone(),
-                Style::default().fg(Color::Cyan),
-            )))
-        })
+        .map(|p| ListItem::new(Line::from(Span::styled(p.clone(), theme.fg(Slot::Accent)))))
         .collect();
 
     let list = List::new(items)
@@ -204,7 +210,7 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
                 .borders(Borders::ALL)
                 .title("Files (Tab/Enter to insert, Esc to dismiss)"),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(theme.selection());
 
     let popup_area = mention_popup_area(input_area, matches.len());
     app.set_mention_popup_rect(popup_area);
@@ -217,6 +223,7 @@ pub fn draw_mention_popup(f: &mut Frame, app: &mut App, input_area: Rect) {
 /// [`crate::tui::key_dialog::KeyDialog::masked`] renders the buffer, never its
 /// characters.
 pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     use crate::tui::key_dialog::KeyStage;
 
     let area = centered_rect(50, 40, f.area());
@@ -243,7 +250,7 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
                         .borders(Borders::ALL)
                         .title("Set API Key — pick provider (Enter: next, Esc: close)"),
                 )
-                .highlight_style(Style::default().bg(Color::DarkGray));
+                .highlight_style(theme.selection());
             f.render_stateful_widget(list, area, app.key_dialog_state());
         }
         KeyStage::EnterKey => {
@@ -265,7 +272,7 @@ pub fn draw_key_dialog(f: &mut Frame, app: &mut App) {
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("Key: "),
-                    Span::styled(bullets, Style::default().fg(Color::Cyan)),
+                    Span::styled(bullets, theme.fg(Slot::Accent)),
                 ]),
                 Line::from(""),
                 Line::from(Span::styled(

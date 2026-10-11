@@ -164,6 +164,7 @@ pub async fn tui(
     let config_root = root.clone();
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
     app.set_statusline_config(tui_config.statusline.clone());
+    app.apply_appearance(&tui_config, app::appearance::no_color_env(), true);
     app.set_status_refresh(statusline::spawn_probe(root.clone(), event_tx.clone()));
     mention::spawn_index_build(root, event_tx.clone()); // off the critical path, #678
 

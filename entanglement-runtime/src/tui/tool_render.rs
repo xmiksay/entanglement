@@ -1,13 +1,10 @@
 use std::borrow::Cow;
 
-use ratatui::{
-    style::{Color, Style},
-    text::{Line, Span, Text},
-};
+use ratatui::text::{Line, Span, Text};
 
 use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
-use crate::tui::theme::Theme;
+use crate::tui::theme::{Slot, Theme};
 
 mod body;
 mod discovery;
@@ -34,8 +31,16 @@ pub fn render_tool_output(
         Some("read") => render_read_output(output, theme, available_width, md),
         Some("glob") => render_glob_output(output, theme, available_width),
         Some("grep") => render_grep_output(output, theme, available_width),
-        Some("explore") => Text::from(discovery::render_explore_output(output, available_width)),
-        Some("describe") => Text::from(discovery::render_describe_output(output, available_width)),
+        Some("explore") => Text::from(discovery::render_explore_output(
+            output,
+            available_width,
+            &theme,
+        )),
+        Some("describe") => Text::from(discovery::render_describe_output(
+            output,
+            available_width,
+            &theme,
+        )),
         Some(_) => Text::from(readable::render_output(output, available_width)),
         None => render_plain_output(output, theme, available_width, md),
     }
@@ -73,7 +78,7 @@ pub fn render_expansion(
         None => (None, Cow::Borrowed(input)),
     };
     let tool = tool.as_deref();
-    let mut lines = input_body(tool, &input, available_width, md);
+    let mut lines = input_body(tool, &input, theme, available_width, md);
     match output {
         Some(out) if is_error => lines.extend(readable::render_error_output(
             out,
@@ -89,14 +94,15 @@ pub fn render_expansion(
 fn input_body(
     tool: Option<&str>,
     input: &str,
+    theme: Theme,
     available_width: u16,
     md: &MarkdownRenderer,
 ) -> Vec<Line<'static>> {
     match tool {
         Some("read") => expansion::render_read_input(input),
-        Some("edit") => expansion::render_edit_input(input),
+        Some("edit") => expansion::render_edit_input(input, &theme),
         Some("write") => expansion::render_write_expansion(input).lines,
-        Some("apply_patch") => expansion::render_apply_patch_expansion(input).lines,
+        Some("apply_patch") => expansion::render_apply_patch_expansion(input, &theme).lines,
         Some(t @ ("bash" | "call")) => expansion::render_command_input(t, input, available_width),
         Some("glob") => expansion::render_glob_input(input),
         Some("grep") => expansion::render_grep_input(input),
@@ -126,8 +132,8 @@ fn output_body(
         Some("read") => render_read_output(output, theme, available_width, md).lines,
         Some("edit") => render_edit_output(output, theme, available_width, md).lines,
         Some("bash" | "call") => render_plain_output(output, theme, available_width, md).lines,
-        Some("explore") => discovery::render_explore_output(output, available_width),
-        Some("describe") => discovery::render_describe_output(output, available_width),
+        Some("explore") => discovery::render_explore_output(output, available_width, &theme),
+        Some("describe") => discovery::render_describe_output(output, available_width, &theme),
         Some("agent" | "agent_send") => {
             orchestration::render_markdown_body(md, output, available_width).lines
         }
@@ -156,7 +162,7 @@ fn render_edit_output(
 ) -> Text<'static> {
     if output.contains("created file:") || output.contains("matches replaced") {
         let line = Line::from(vec![
-            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled("✓ ", theme.fg(Slot::Success)),
             Span::raw(output.to_string()),
         ]);
         return Text::from(vec![line]);

@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -11,6 +11,7 @@ use ratatui::{
 use super::centered_rect;
 use crate::tui::app::App;
 use crate::tui::settings_dialog::{RowView, Stage, Tab};
+use crate::tui::theme::{Slot, Theme};
 
 const TAB_SEPARATOR: &str = "│";
 
@@ -32,19 +33,19 @@ pub fn settings_tab_at(x0: u16, column: u16) -> Option<Tab> {
     None
 }
 
-fn row_item(row: &RowView, label_width: usize) -> ListItem<'static> {
+fn row_item(row: &RowView, label_width: usize, theme: &Theme) -> ListItem<'static> {
     let marker = if row.changed { "* " } else { "  " };
     let label = format!("{marker}{:<label_width$} ", row.label);
     let mut spans = if row.id == crate::tui::settings_dialog::RowId::Note && row.value.is_empty() {
         vec![Span::styled(
             format!("  {}", row.label),
-            Style::default().fg(Color::DarkGray),
+            theme.fg(Slot::Muted),
         )]
     } else {
         let style = if row.disabled.is_some() {
             Style::default().dim()
         } else if row.changed {
-            Style::default().fg(Color::Yellow)
+            theme.fg(Slot::Warning)
         } else {
             Style::default()
         };
@@ -63,6 +64,7 @@ fn row_item(row: &RowView, label_width: usize) -> ListItem<'static> {
 }
 
 pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let Some(dialog) = app.settings_dialog() else {
         return;
     };
@@ -98,7 +100,7 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
             tab_spans.push(Span::styled(TAB_SEPARATOR, Style::default().dim()));
         }
         let style = if tab == active {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+            theme.heading()
         } else {
             Style::default()
         };
@@ -113,8 +115,11 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
         .max()
         .unwrap_or(0)
         .min(usize::from(inner.width / 2));
-    let items: Vec<ListItem> = rows.iter().map(|r| row_item(r, label_width)).collect();
-    let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|r| row_item(r, label_width, &theme))
+        .collect();
+    let list = List::new(items).highlight_style(theme.selection());
 
     let pending_text = if pending.is_empty() {
         "Pending: none".to_string()
@@ -122,10 +127,7 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
         format!("Pending ({}): {}", pending.len(), pending.join("; "))
     };
     let footer = Paragraph::new(vec![
-        Line::from(Span::styled(
-            pending_text,
-            Style::default().fg(Color::Yellow),
-        )),
+        Line::from(Span::styled(pending_text, theme.fg(Slot::Warning))),
         Line::from(Span::styled(
             "↑↓ move · ←→/Space change · a auto-allow · PgUp/PgDn",
             Style::default().dim(),
@@ -143,11 +145,11 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
     app.set_settings_rects(tabs_rect, body_rect);
 
     if stage == Stage::ConfirmRepin {
-        draw_repin_confirm(f, area, &pending);
+        draw_repin_confirm(f, area, &pending, &theme);
     }
 }
 
-fn draw_repin_confirm(f: &mut Frame, over: Rect, pending: &[String]) {
+fn draw_repin_confirm(f: &mut Frame, over: Rect, pending: &[String], theme: &Theme) {
     let area = centered_rect(80, 60, over);
     f.render_widget(Clear, area);
     let changes: Vec<&String> = pending
@@ -162,7 +164,7 @@ fn draw_repin_confirm(f: &mut Frame, over: Rect, pending: &[String]) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "This rebuilds the prompt cache and changes the tool surface for this session.",
-        Style::default().fg(Color::Yellow),
+        theme.fg(Slot::Warning),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(

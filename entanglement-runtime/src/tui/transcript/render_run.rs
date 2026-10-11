@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
-use crate::tui::theme::{RoleColors, Theme};
+use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
 
 /// Reforge a `Line` whose spans the markdown renderer produced under `&self`'s
@@ -211,6 +211,7 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 /// tail (`transcript.rs`), and the standalone tool-output header (`block.rs`),
 /// so the same idiom shows up wherever a tool call renders (#487).
 pub(super) fn tool_header_spans(
+    theme: &Theme,
     tool: &str,
     input: &str,
     arrow: char,
@@ -225,7 +226,7 @@ pub(super) fn tool_header_spans(
     let name = summary::display_name(&tool);
     let mut header = vec![
         Span::styled(format!("{arrow} "), Style::default().fg(fg)),
-        Span::styled(name.to_string(), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(name.to_string(), theme.fg(Slot::Accent).bold()),
     ];
     if let Some(arg) = tool_primary_arg(&tool, &input) {
         // Budget the arg so the header stays on one line: strip the bar (2),
@@ -271,9 +272,10 @@ pub(super) fn flush_tool_call(
     let status_suffix = output.is_some().then_some(if is_error {
         (" ✗", theme.error_colors().fg)
     } else {
-        (" ✓", Color::Green)
+        (" ✓", theme.c(Slot::Success))
     });
     let header = tool_header_spans(
+        &theme,
         tool,
         input,
         arrow,

@@ -4,12 +4,9 @@
 //! (`expansion::render_glob_expansion`/`render_grep_expansion`) share these —
 //! fixing the summary here fixes both call sites.
 
-use ratatui::{
-    style::{Color, Style},
-    text::{Line, Span, Text},
-};
+use ratatui::text::{Line, Span, Text};
 
-use crate::tui::theme::Theme;
+use crate::tui::theme::{Slot, Theme};
 
 /// `host::glob::GlobTool::run` returns either a newline-delimited file list
 /// (each line a matched path, possibly followed by a `... [truncated: …]`
@@ -20,12 +17,12 @@ const GLOB_HINT_PREFIX: &str = "pattern `";
 
 pub(super) fn render_glob_output(
     output: &str,
-    _theme: Theme,
+    theme: Theme,
     _available_width: u16,
 ) -> Text<'static> {
     if output.trim().is_empty() {
         return Text::from(vec![Line::from(vec![
-            Span::styled("✗ ", Style::default().fg(Color::Red)),
+            Span::styled("✗ ", theme.fg(Slot::Error)),
             Span::raw("No matches found"),
         ])]);
     }
@@ -35,8 +32,8 @@ pub(super) fn render_glob_output(
     // by scraping digits out of it (#520).
     if output.starts_with(GLOB_HINT_PREFIX) {
         return Text::from(vec![Line::from(vec![
-            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
-            Span::styled(output.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled("⚠ ", theme.fg(Slot::Warning)),
+            Span::styled(output.to_string(), theme.fg(Slot::Warning)),
         ])]);
     }
 
@@ -56,10 +53,10 @@ pub(super) fn render_glob_output(
     }
 
     let header = Line::from(vec![
-        Span::styled("✓ ", Style::default().fg(Color::Green)),
+        Span::styled("✓ ", theme.fg(Slot::Success)),
         Span::styled(
             format!("{} files matched", file_lines.len()),
-            Style::default().fg(Color::Cyan),
+            theme.fg(Slot::Accent),
         ),
     ]);
 
@@ -69,8 +66,8 @@ pub(super) fn render_glob_output(
     // fold silently into the file list or vanish.
     result.extend(notice_lines.into_iter().map(|l| {
         Line::from(vec![
-            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
-            Span::styled(l.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled("⚠ ", theme.fg(Slot::Warning)),
+            Span::styled(l.to_string(), theme.fg(Slot::Warning)),
         ])
     }));
     Text::from(result)
@@ -90,7 +87,7 @@ fn parse_grep_match(line: &str) -> Option<(&str, &str, &str)> {
 
 pub(super) fn render_grep_output(
     output: &str,
-    _theme: Theme,
+    theme: Theme,
     _available_width: u16,
 ) -> Text<'static> {
     let mut lines = Vec::new();
@@ -101,10 +98,7 @@ pub(super) fn render_grep_output(
             Some((file, lineno, content)) => {
                 match_count += 1;
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {file}:{lineno}:"),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(format!("  {file}:{lineno}:"), theme.fg(Slot::Accent)),
                     Span::raw(content.to_string()),
                 ]));
             }
@@ -116,7 +110,7 @@ pub(super) fn render_grep_output(
                 // never silently dropped (#520).
                 lines.push(Line::from(Span::styled(
                     format!("  {line}"),
-                    Style::default().fg(Color::Yellow),
+                    theme.fg(Slot::Warning),
                 )));
             }
         }
@@ -124,8 +118,8 @@ pub(super) fn render_grep_output(
 
     let msg = format!("{} matches found", match_count);
     let header = Line::from(vec![
-        Span::styled("✓ ", Style::default().fg(Color::Green)),
-        Span::styled(msg, Style::default().fg(Color::Cyan)),
+        Span::styled("✓ ", theme.fg(Slot::Success)),
+        Span::styled(msg, theme.fg(Slot::Accent)),
     ]);
 
     let mut result = vec![header];

@@ -1,11 +1,11 @@
 use crate::tui::wrap;
 use ratatui::{
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
 };
 
 use crate::tui::markdown::MarkdownRenderer;
-use crate::tui::theme::{RoleColors, Theme};
+use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
 
 use super::render_run::{
@@ -108,6 +108,7 @@ fn render_tool_output(
     // there is no call `input` here (only the free-text `output`), so the arg
     // slot is empty and the header falls back to the bare tool name.
     let header = tool_header_spans(
+        &theme,
         tool.unwrap_or("output"),
         "",
         '▸',
@@ -134,8 +135,8 @@ fn render_error(
     let padding = padding_line(error, available_width);
     let mut out = vec![padding.clone()];
     let error_line = Line::from(vec![
-        Span::styled("Error: ", Style::default().fg(Color::Red).bold()),
-        Span::styled(message.to_string(), Style::default().fg(Color::Red)),
+        Span::styled("Error: ", theme.fg(Slot::Error).bold()),
+        Span::styled(message.to_string(), theme.fg(Slot::Error)),
     ]);
     for wline in wrap::wrap_line(error_line, available_width.saturating_sub(4)) {
         out.push(theme.decorate(wline, error, available_width));
