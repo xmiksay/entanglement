@@ -396,7 +396,11 @@ from that log):
 ```rust,ignore
 let backups = FileBackups::new(store.clone());
 cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
-let tools = host_tools_with_backups(root, extra, Some(backups.clone()), None);
+let tools = host_tools_with(root, HostToolOptions {
+    extra_roots: extra,
+    backups: Some(backups.clone()),
+    ..HostToolOptions::default()
+});
 let holly = Holly::spawn(cfg);
 backups.track_roots(&holly);                          // lineage + busy sessions
 backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
@@ -418,7 +422,11 @@ search tools and the executor; with no resolver every `SetWorkdir`/
 ```rust,ignore
 cfg.workdir_resolver = Some(workdir::resolver(root.clone(), Some(store.clone())));
 let workdirs = SessionWorkdirs::default();
-let tools = host_tools_with_backups(root, Some(store), backups, Some(workdirs.clone()));
+let tools = host_tools_with(root, HostToolOptions {
+    extra_roots: Some(store),
+    workdirs: Some(workdirs.clone()),
+    ..HostToolOptions::default()
+});
 ToolExecutor::builder(&holly, tools.shared()).workdirs(workdirs) /* … */;
 ```
 

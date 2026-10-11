@@ -665,8 +665,11 @@ deferred like `SetModel` (so one turn's calls share one workdir) and acks with
 `WorkdirChanged`, which replay folds by overwrite. A spawn's workdir is its own
 `Spawn.workdir` (validated against the parent's, no approval; a bad one refuses
 the spawn), else what a successor/fork carries on `Inherited`, else the
-parent's cached one; existing children are never moved. `start_session`
-announces it on a fresh start and on resume. Every `ToolExec` carries it
+parent's cached one; existing children are never moved. On resume the
+supervisor re-validates the replayed workdir (no approval) and falls back to
+the project root with an `Error` when it no longer resolves
+(`revalidate_resumed_workdir`). `start_session` announces it on a fresh start
+and on resume. Every `ToolExec` carries it
 (`emit::Caller`), so a re-offer runs where the original would have. The model
 is told through the per-round **trailing notice** —
 `[mode: …] [workdir: <dir> — …]`, rebuilt from `s.workdir` every round like

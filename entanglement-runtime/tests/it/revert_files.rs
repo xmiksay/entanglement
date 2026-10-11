@@ -15,7 +15,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::file_backup::FileBackups;
-use entanglement_runtime::host::host_tools_with_backups;
+use entanglement_runtime::host::{host_tools_with, HostToolOptions};
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
 use entanglement_runtime::session_store::{pair_records, SessionStore};
@@ -72,11 +72,13 @@ pub(crate) fn spawn_with(
     let holly = Holly::spawn(cfg);
     backups.track_roots(&holly);
     spawn_persistence_subscriber(&holly, store.clone());
-    let tools = host_tools_with_backups(
+    let tools = host_tools_with(
         work.to_path_buf(),
-        Some(Arc::new(ExtraRootStore::ephemeral())),
-        Some(backups),
-        None,
+        HostToolOptions {
+            extra_roots: Some(Arc::new(ExtraRootStore::ephemeral())),
+            backups: Some(backups),
+            workdirs: None,
+        },
     )
     .shared();
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);

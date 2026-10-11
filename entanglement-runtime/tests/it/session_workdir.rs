@@ -13,7 +13,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::host::{host_tools_with_backups, BashTool, CallTool};
+use entanglement_runtime::host::{host_tools_with, BashTool, CallTool, HostToolOptions};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 use entanglement_runtime::workdir::{self, SessionWorkdirs};
@@ -74,6 +74,7 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
     std::fs::write(root.join("sub/a.txt"), "alpha\n").unwrap();
     std::fs::write(root.join("sub/e.txt"), "one\n").unwrap();
     std::fs::write(root.join("sub/p.txt"), "x\ny\n").unwrap();
+    std::fs::write(outside.join("o.txt"), "outer\n").unwrap();
 
     let store = Arc::new(ExtraRootStore::ephemeral());
     let cfg = EngineConfig {
@@ -88,11 +89,13 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
     };
     let holly = Holly::spawn(cfg);
     let workdirs = SessionWorkdirs::default();
-    let mut reg = host_tools_with_backups(
+    let mut reg = host_tools_with(
         root.clone(),
-        Some(store.clone()),
-        None,
-        Some(workdirs.clone()),
+        HostToolOptions {
+            extra_roots: Some(store.clone()),
+            backups: None,
+            workdirs: Some(workdirs.clone()),
+        },
     );
     reg.register(BashTool::new(root.clone()).with_extra_roots(store.clone()));
     reg.register(CallTool::new(root.clone()).with_extra_roots(store.clone()));
@@ -365,5 +368,53 @@ async fn rhai_exec_bindings_default_to_the_workdir() {
     assert!(
         out.contains(&h.root.join("sub").display().to_string()) && out.contains("alpha"),
         "{out}"
+    );
+}
+
+/// The `/cd` grant covers the exec cwd only: a file tool reaching into the
+/// out-of-root workdir still asks for its own escape-root approval.
+#[tokio::test]
+async fn a_file_tool_in_an_approved_outside_workdir_still_asks() {
+    let h = harness(
+        vec![call("r", "read", serde_json::json!({"path": "o.txt"}))],
+        allow_all_table(),
+    );
+    h.cd(&h.outside, Some(ApprovalScope::Session))
+        .await
+        .expect("approved cd");
+    let events = h.turn().await;
+    let asked = requests(&events);
+    assert!(
+        asked.len() == 1 && asked[0].contains("OUTSIDE the project root"),
+        "{asked:?}"
+    );
+    let (out, is_error) = output(&events, "r");
+    assert!(
+        is_error && !out.contains("outer"),
+        "rejected, never read: {out}"
+    );
+}
+
+/// `call`'s `input_file`/`output_file` in an out-of-root workdir ride the same
+/// durable `call` grant its cwd does.
+#[tokio::test]
+async fn call_files_in_an_approved_outside_workdir_resolve() {
+    let h = harness(
+        vec![call(
+            "c",
+            "call",
+            serde_json::json!({"command": "cat", "input_file": "o.txt", "output_file": "copy.txt"}),
+        )],
+        allow_all_table(),
+    );
+    h.cd(&h.outside, Some(ApprovalScope::Session))
+        .await
+        .expect("approved cd");
+    let events = h.turn().await;
+    let (out, is_error) = output(&events, "c");
+    assert!(!is_error, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(h.outside.join("copy.txt")).unwrap(),
+        "outer\n"
     );
 }

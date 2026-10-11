@@ -245,6 +245,10 @@ guessing again:
   a `/cd` target, requires a directory inside the root, or — outside it — a
   durable `bash`+`call` grant in the `ExtraRootStore`, which a
   `Session`/`Always` approval on `SetWorkdir` records (`Once` is refused).
+  That grant is process-wide (ADR-0109): any session, model-spawned
+  children included, may then run `bash`/`call` there unasked. `call`'s
+  `input_file`/`output_file` outside the root resolve under a durable `call`
+  grant on the path or an ancestor (`call::output::resolve_call_file`).
   File tools keep their per-path escape-root rules outside the root.
 - **The trusted scratch dir is exempt from the escape-root prompt** (#524,
   [ADR-0142](../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),
@@ -637,7 +641,7 @@ The code is in `host/web_fetch/html.rs`.
 
 `write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`
 bindings, which run those same registry tools — back up what they replace
-when built `with_backups(FileBackups)` (`host::host_tools_with_backups`;
+when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptions::backups`;
 `skutter` always wires it, an embedder opts in). Only a session's run
 (`run_for_session`) is recorded; a bare `run` is not.
 

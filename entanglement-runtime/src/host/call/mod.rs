@@ -337,6 +337,7 @@ impl CallTool {
         )?;
         foreground::run_foreground(
             &self.root,
+            self.extra_roots.as_deref(),
             self.sandbox_resolver.as_ref(),
             &self.secret_env,
             &self.retained,
