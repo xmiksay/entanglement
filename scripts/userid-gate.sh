@@ -18,6 +18,13 @@ if [ ! -d "$src_dir" ]; then
 	exit 1
 fi
 
+# A directory with no `.rs` files at all is as unverifiable as a missing one
+# (#779) — e.g. a typo'd path pointing at a docs dir.
+if [ -z "$(find "$src_dir" -type f -name '*.rs' | head -n 1)" ]; then
+	echo "FAIL (userid): no .rs files under '$src_dir' — the gate cannot verify anything, refusing to pass vacuously" >&2
+	exit 1
+fi
+
 # Word-boundary match without GNU \b so a hypothetical `MyUserIdLike` type
 # never trips the gate; only the real token does.
 pattern='(^|[^A-Za-z0-9_])UserId([^A-Za-z0-9_]|$)'

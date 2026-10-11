@@ -37,7 +37,12 @@ jobs:
         run: make verify
 
       # Gate self-tests (#770): default tools (ubuntu's awk is mawk) and strict
-      # POSIX, so a gate relying on a GNU extension can't pass vacuously.
+      # POSIX, so a gate relying on a GNU extension can't pass vacuously. mawk
+      # ignores POSIXLY_CORRECT, so gawk is installed for the real strict-POSIX
+      # awk pass (`gawk --posix`, #779); mawk keeps its own pass.
+      - name: Install gawk + mawk
+        run: sudo apt-get update && sudo apt-get install -y gawk mawk
+
       - name: make test-gates
         run: make test-gates
 
