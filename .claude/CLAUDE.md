@@ -159,8 +159,8 @@ doc, never here**:
   mode-scoped enable/deny entries over the mode's grade
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).
 - **Trusted/untrusted frame split** — `Holly::send` is privileged;
-  `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`)
-  ([protocol](../docs/architecture/protocol.md), [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)).
+  `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`); every
+  refused variant + why: [protocol §2 trusted/untrusted split](../docs/architecture/protocol.md) ([ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)).
 - **Session-multiplexed** — every frame carries `SessionId`; `(session, seq)`
   is unique per authored event; `List*`/`McpList` are correlation-id queries
   ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)).
@@ -174,7 +174,7 @@ doc, never here**:
   ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads-and-persistence.md), [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)).
 - **A session has a working directory** — relative path args are rewritten
   onto it *before* grading; the model learns it from the per-round notice
-  ([engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/0224-session-working-directory.md)).
+  ([gates §8 session working directory](../docs/architecture/gates-and-host-tools.md), [engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/0224-session-working-directory.md)).
 - **Filesystem containment** — symlink-safe root containment, approval-gated
   escape hatch, optional bubblewrap sandbox as a mode fact
   ([gates §8](../docs/architecture/gates-and-host-tools.md), [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)).
