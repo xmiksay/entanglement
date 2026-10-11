@@ -193,6 +193,11 @@ the TUI `/mcp` path is unaffected since it sends over the privileged
 `Connect` opens a browser and mints a durable credential, a forged
 `Disconnect` destroys one, and even `Check` mutates state by refreshing — so
 unlike the read-only `McpList`, none of the three actions is wire-allowed),
+`SetMode` ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md):
+the mode *is* the session's authority, so a forged one widens every later
+tool grade — e.g. into `auto` — with no approval; the model's own way to
+widen is the force-parked `request_mode` tool, and the TUI `/mode` sends over
+`Holly::send`),
 `RevertFiles` (#731, [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md):
 it rewrites and deletes files in the user's working tree from the session's
 backups), `ForkSession` (#786, [ADR-0223](../adr/0223-non-compacting-session-fork.md):
