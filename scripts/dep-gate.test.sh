@@ -104,6 +104,9 @@ if [ "$(id -u)" -ne 0 ]; then
 	rm -f "$udir/unreadable.rs"
 fi
 ucheck "userid: missing dir fails (not vacuous)" 1 "$tmp/no-such-dir"
+mkdir -p "$tmp/no-rs"
+printf 'UserId\n' >"$tmp/no-rs/notes.md"
+ucheck "userid: dir without .rs files fails (not vacuous)" 1 "$tmp/no-rs"
 
 # --- file-cap-gate.sh self-tests (#745) --------------------------------------
 # Each case writes one crate/src/x.rs into a fresh tree with an empty

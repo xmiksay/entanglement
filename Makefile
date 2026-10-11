@@ -110,14 +110,19 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 
 # Self-test for the shared dep-gate mechanism (stubbed cargo; proves the #207
 # vacuous-pass fix). Fast, no build — kept out of `verify` (CI runs it as its
-# own step). Runs twice: with the default tools, then under POSIXLY_CORRECT=1
-# (strict POSIX bash/grep/find/gawk), so a gate leaning on a GNU extension
-# fails here instead of silently on another platform (#770). If `mawk` is
-# installed the file-cap counter also runs under it (CI ubuntu's default awk).
+# own step). Runs with the default tools, then under POSIXLY_CORRECT=1 (strict
+# POSIX GNU grep/find), so a gate leaning on a GNU extension fails here instead
+# of silently on another platform (#770). mawk ignores POSIXLY_CORRECT, so the
+# file-cap counter's strict-POSIX awk coverage is a separate `gawk --posix` run
+# (#779), plus an `AWK=mawk` run (CI ubuntu's default awk); each is skipped
+# when that awk isn't installed (CI installs both).
 test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests), default + strict POSIX
 	@sh scripts/dep-gate.test.sh
 	@echo '--- strict POSIX (POSIXLY_CORRECT=1) ---'
 	@POSIXLY_CORRECT=1 sh scripts/dep-gate.test.sh
+	@if command -v gawk >/dev/null 2>&1; then \
+		echo "--- AWK='gawk --posix' ---"; AWK='gawk --posix' sh scripts/dep-gate.test.sh; \
+	else echo '--- gawk not installed; skipping the strict-POSIX awk run ---'; fi
 	@if command -v mawk >/dev/null 2>&1; then \
 		echo '--- AWK=mawk ---'; AWK=mawk sh scripts/dep-gate.test.sh; \
 	else echo '--- mawk not installed; skipping the AWK=mawk run ---'; fi
