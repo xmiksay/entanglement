@@ -647,7 +647,10 @@ below realize one model:
   and `<root>/.entanglement/` (`notify`, debounced
   500ms so a burst of edits collapses into one reload) and, on change, re-runs the
   skill + agent loaders and swaps the result into **runtime-held mirrors**
-  (`watch::LiveDefinitions { profiles, skills, agent_models, grants }`) — never
+  (`watch::LiveDefinitions { agents, skills, commands, agent_models, grants,
+  mcp_capabilities, file_backups }`, built via `LiveDefinitions::new` +
+  `with_file_backups`; the config's `undo:` block is re-applied onto
+  `file_backups` on every change, #787) — never
   core's `EngineConfig.profiles`, which stays pinned for the process lifetime (the
   [ADR-0081](../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)
   "live registry mutation" rejection applies identically here). Permission

@@ -19,17 +19,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use entanglement_core::AgentCatalog;
 use notify_debouncer_mini::DebounceEventResult;
 use sha2::{Digest, Sha256};
 
-use crate::config::agent_models::AgentModelStore;
-use crate::policy::DefaultGrantStore;
-use crate::skills::SkillRegistry;
-use crate::{agents, layers, mcp, skills, system_prompt};
+use crate::{agents, layers, skills, system_prompt};
+
+mod live;
+pub use live::LiveDefinitions;
 
 /// Debounce window collapsing a burst of edits (e.g. an editor's save-as-two-
 /// writes, or several files touched by one `git checkout`) into one reload.
@@ -46,29 +45,6 @@ const MANAGED_FILE_ENVS: &[&str] = &[
     "ENTANGLEMENT_PROVIDERS_FILE",
     "ENTANGLEMENT_ENV_FILE",
 ];
-
-/// The runtime-held mirrors a reload swaps. See the module doc for why this is
-/// deliberately *not* core's `EngineConfig.agents`.
-#[derive(Clone)]
-pub struct LiveDefinitions {
-    pub agents: Arc<RwLock<AgentCatalog>>,
-    pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
-    /// User slash commands (#733) — read by the heads on every use, so a
-    /// reload is live in the very next popup or `/name` invocation.
-    pub commands: crate::slash_commands::LiveCommands,
-    pub agent_models: Arc<Mutex<AgentModelStore>>,
-    pub grants: Arc<DefaultGrantStore>,
-    /// The MCP capability index (#426), captured once at startup like the
-    /// config ceiling permissions — `config.yml`'s `mcp:` section is watched
-    /// for the same *file content* fingerprint as everything else here, but
-    /// (like the ceiling) is never itself re-parsed on a reload; only the
-    /// agent/skill definition re-parse below is live. A config edit to
-    /// `capabilities:` needs a restart to take effect, same as a ceiling edit.
-    pub mcp_capabilities: mcp::McpCapabilityIndex,
-    /// Per-write file backups (#787): unlike the ceiling, `config.yml`'s
-    /// `undo:` block *is* re-applied on every reload.
-    pub file_backups: Option<crate::file_backup::FileBackups>,
-}
 
 /// Start the watcher for `cwd`'s resolved definition dirs + managed files.
 /// `notice` receives a one-line human-readable message after each successful
