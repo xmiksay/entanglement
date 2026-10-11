@@ -6,17 +6,23 @@
 //! changes — or forces a re-send when an exec tool finishes, since a script
 //! may read state the payload doesn't carry (a dirty tree). `watch` keeps
 //! only the latest value, so a burst of changes during a run collapses into
-//! one follow-up run; the task also waits out [`MIN_INTERVAL`] from each
-//! run's start, so the command runs at most once a second and never twice
-//! at once.
+//! one follow-up run. The next run starts no earlier than
+//! [`MIN_INTERVAL`] after the last one *started* and half of it after that
+//! one *finished*, so the command runs at most once a second, never twice
+//! at once, and a script slower than the interval still leaves the machine
+//! a gap instead of running back to back.
 //!
 //! A run is the hooks' execution model (`hooks::invoke`): `sh -c` in its own
 //! process group, the payload as JSON on stdin, the whole group SIGKILLed on
 //! timeout (then reaped — no zombie). Unlike a hook, only the first stdout
 //! line matters, read through a [`READ_CAP`]-byte window while the rest of
 //! the output is drained and discarded, so a chatty script can't grow memory
-//! or block on a full pipe. ANSI escapes and control characters are
-//! stripped: the theme's `status.text` slot colours the line.
+//! or block on a full pipe. ANSI escapes, control characters and bidi /
+//! zero-width format characters are stripped: the theme's `status.text`
+//! slot colours the line, and nothing can reorder or hide text in the row.
+//! As with `bash` and hooks, the group is only killed on timeout or
+//! cancel: a grandchild that redirects its output away (`cmd >/dev/null &`)
+//! keeps running after a successful run.
 //!
 //! Environment: inherited like a hook's, minus the catalog's provider API
 //! key variables (#164 — the same scrub `bash`/`call`/MCP stdio children
@@ -102,9 +108,10 @@ fn spawn_with(
             if event_tx.send(Event::StatusCommand(outcome)).await.is_err() {
                 return;
             }
+            let next = (started + min_interval).max(Instant::now() + min_interval / 2);
             tokio::select! {
                 _ = event_tx.closed() => return,
-                _ = tokio::time::sleep_until(started + min_interval) => {}
+                _ = tokio::time::sleep_until(next) => {}
             }
         }
     });
@@ -224,11 +231,24 @@ fn sanitize(s: &str) -> String {
                 _ => {}
             },
             '\t' => out.push(' '),
-            c if c.is_control() => {}
+            c if c.is_control() || is_invisible_format(c) => {}
             c => out.push(c),
         }
     }
     out.trim_end().to_string()
+}
+
+/// Bidi embeddings/overrides/isolates and marks (which can visually
+/// reorder the row) and zero-width characters (which can hide text).
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 #[cfg(test)]
