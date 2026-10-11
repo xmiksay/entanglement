@@ -278,7 +278,21 @@ pub(super) async fn permission(
             }
             None => tools,
         };
-        crate::tool_runner::dispatch(
+        // The same grading context, owned, for targets the call reaches
+        // mid-run (a `web_fetch` redirect hop, #808).
+        let grader = crate::tool_runner::call_grader::CallGrader {
+            tools: tools.clone(),
+            resolver: resolver.clone(),
+            chain: chain.clone(),
+            grants: grants.clone(),
+            session: session.clone(),
+            mode: call_mode.clone(),
+            overlay_entry: overlay_entry.clone(),
+            overlay_denied,
+            ceiling: ceiling.clone(),
+            root: escape_root.as_ref().map(|er| er.root.clone()),
+        };
+        let dispatched = crate::tool_runner::dispatch(
             &holly,
             &tools,
             &skills,
@@ -306,8 +320,8 @@ pub(super) async fn permission(
             call_mode,
             limits,
             &denials,
-        )
-        .await;
+        );
+        crate::tool_runner::call_grader::scope(grader, dispatched).await;
     }));
     cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
 }

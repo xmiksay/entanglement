@@ -364,3 +364,40 @@ fn normalize_url_is_what_gets_fetched_and_graded() {
     }
     assert_eq!(normalize_url("not a url"), None);
 }
+
+#[tokio::test]
+async fn check_hop_sees_each_normalized_redirect_target_and_can_stop_it() {
+    let target = spawn_server(1, |_, _| {
+        response("200 OK", "Content-Type: text/plain\r\n", b"ok")
+    });
+    let hop = spawn_server(2, move |_, _| {
+        response(
+            "302 Found",
+            &format!("Location: HTTP://{target}/next\r\n"),
+            b"",
+        )
+    });
+    let seen = std::sync::Mutex::new(Vec::new());
+    let out = loopback_fetcher()
+        .fetch_checked(&format!("http://{hop}/"), 1024, |url| {
+            seen.lock().unwrap().push(url);
+            async { Ok(()) }
+        })
+        .await
+        .unwrap();
+    assert!(matches!(out.body, FetchBody::Text { ref text, .. } if text == "ok"));
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].starts_with("http://127.0.0.1:") && seen[0].ends_with("/next"),
+        "{seen:?}"
+    );
+
+    let err = loopback_fetcher()
+        .fetch_checked(&format!("http://{hop}/"), 1024, |url| async move {
+            anyhow::bail!("hop {url} refused")
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{err}").contains("refused"), "{err}");
+}

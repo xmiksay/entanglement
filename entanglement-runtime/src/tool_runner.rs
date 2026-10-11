@@ -53,6 +53,8 @@ use ladder::LadderCtx;
 // constructors (#724) — re-exported
 // at their pre-split paths.
 mod background;
+pub(crate) mod call_grader;
+pub use call_grader::grade_in_scope;
 mod builder;
 mod inputs;
 mod lifecycle;
