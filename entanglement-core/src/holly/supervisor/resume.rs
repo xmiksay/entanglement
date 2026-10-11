@@ -88,7 +88,7 @@ impl Supervisor {
         // showed in `ListSessions` and silently swallowed every routed `Prompt`
         // (issue #105). Register only on success; on failure surface an `Error`
         // and leave the id unclaimed.
-        let initial_session = match Session::replay(records, &self.cfg, target) {
+        let mut initial_session = match Session::replay(records, &self.cfg, target) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to replay session {}: {}", target, e);
@@ -114,12 +114,9 @@ impl Supervisor {
         // child of its own.
         self.modes
             .insert(target.clone(), initial_session.mode.clone());
-        // Same for the workdir cache (#764): a resumed parent's new children
-        // inherit the workdir its replay restored.
-        match initial_session.workdir.clone() {
-            Some(dir) => self.workdirs.insert(target.clone(), dir),
-            None => self.workdirs.remove(target),
-        };
+        // Same for the workdir cache (#764), after re-validating the
+        // replayed workdir: a resumed parent's new children inherit it.
+        self.revalidate_resumed_workdir(target, &mut initial_session.workdir);
         let children = initial_session.children.clone();
         let (stx, srx) = mpsc::channel::<SessionCmd>(SESSION_CMD_CAPACITY);
         let ev = self.events.clone();

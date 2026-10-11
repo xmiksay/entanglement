@@ -363,6 +363,47 @@ async fn replay_and_resume_restore_the_workdir() {
     );
 }
 
+/// A replayed workdir the resolver no longer accepts (gone, swapped out,
+/// grant expired) falls back to the root on resume, with an `Error` saying so.
+#[tokio::test]
+async fn a_stale_workdir_falls_back_to_the_root_on_resume() {
+    let f = fixture(false, true);
+    let sid = SessionId::new("s1");
+    let log = vec![
+        (
+            None,
+            OutEvent::SessionStarted {
+                session: sid.clone(),
+                parent: None,
+                predecessor: None,
+                agent: "general".into(),
+                model: None,
+                root: true,
+                ts: 0,
+                user: None,
+            },
+        ),
+        (
+            None,
+            OutEvent::WorkdirChanged {
+                session: sid.clone(),
+                dir: "bad-gone".into(),
+            },
+        ),
+    ];
+    let mut sub = f.holly.subscribe();
+    f.holly.resume(sid.clone(), log).await.unwrap();
+    let err = matching(&mut sub, |e| matches!(e, OutEvent::Error { .. })).await;
+    assert!(
+        matches!(&err, OutEvent::Error { message, .. } if message.contains("no longer usable")),
+        "{err:?}"
+    );
+    assert_eq!(workdir_of(&mut sub, &sid).await, "/p/.", "the root, logged");
+    turn(&f, &mut sub, &sid, "hi").await;
+    let seen = f.seen.lock().unwrap().clone();
+    assert!(!seen[0].1.as_deref().unwrap_or("").contains("bad-gone"));
+}
+
 #[tokio::test]
 async fn set_workdir_is_refused_from_the_wire() {
     let holly = Holly::spawn(EngineConfig::default());

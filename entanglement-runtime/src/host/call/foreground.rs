@@ -4,9 +4,9 @@
 //! (issue #451) — the counterpart to `background.rs`'s detached path.
 
 use super::format::{format_call_output, format_call_streams};
-use super::output::{persist_output, resolve_output_target};
+use super::output::{persist_output, resolve_call_file, resolve_output_target};
+use crate::extra_roots::ExtraRootStore;
 use crate::host::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
-use crate::host::resolve_under_root;
 use crate::host::sandbox;
 use crate::policy::SandboxResolver;
 use crate::retained_output::RetainedOutputRegistry;
@@ -22,6 +22,7 @@ use tokio::io::AsyncWriteExt;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_foreground(
     root: &Path,
+    extra: Option<&ExtraRootStore>,
     sandbox_resolver: &dyn SandboxResolver,
     secret_env: &[String],
     retained: &RetainedOutputRegistry,
@@ -40,7 +41,7 @@ pub(super) async fn run_foreground(
     // the child (#381, #386).
     let stdin_data = match input_file {
         Some(rel) => {
-            let abs = resolve_under_root(root, rel)?;
+            let abs = resolve_call_file(root, extra, rel)?;
             Some(
                 tokio::fs::read(&abs)
                     .await
@@ -49,7 +50,7 @@ pub(super) async fn run_foreground(
         }
         None => None,
     };
-    let output_target = resolve_output_target(root, output_file)?;
+    let output_target = resolve_output_target(root, extra, output_file)?;
 
     let policy = sandbox_resolver.resolve(session);
     let mut cmd = sandbox::command(&policy, root, command, args);

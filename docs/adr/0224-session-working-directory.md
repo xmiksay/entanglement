@@ -56,7 +56,13 @@ not the TUI root.
    approved. The user asks once: the recorded grant then lets later `/cd`s to
    that directory, and every exec there, through silently. File tools keep
    their own per-path escape-root rules outside the root. The grant is for
-   exec cwd, not a blanket read/write of the tree.
+   exec cwd, not a blanket read/write of the tree. Like every ADR-0109
+   `Session`/`Always` grant it is process-wide, not tied to the session
+   that asked: any session, including a model-spawned child, can then run
+   `bash`/`call` with that directory as its workdir without asking. `call`'s
+   `input_file`/`output_file` there ride the same `call` grant (a durable
+   grant on the path or an ancestor), since a `call` allowed to run in that
+   directory can already read and write its files through the command.
 4. **Containment is re-checked at use.** The workdir is not trusted after
    validation. Every exec and path call resolves through the same
    `resolve_under_root_or_grant`/`resolve_workdir_or_grant` as before
@@ -98,8 +104,13 @@ not the TUI root.
    `Spawn.workdir` resolves against it. Existing children keep theirs: a `/cd`
    is the user's navigation in one session, not a move of running
    sub-agents. A compaction successor and a user fork carry it on
-   `Inherited` (already validated). A resumed session re-announces it so a
-   reconnecting head learns it.
+   `Inherited` (already validated). On resume the supervisor re-runs the
+   resolver on the replayed workdir with no approval: a directory that is
+   gone, was swapped for a symlink out of the root, or was covered only by a
+   `Session` grant that died with the old process falls back to the project
+   root, with an `Error` saying why. Either way the session re-announces its
+   workdir, so a reconnecting head learns it and the log records the
+   fallback.
 8. **TUI.** `/cd [--session|--always] [<dir>]`: bare `/cd` returns to the
    project root, and `~` expands. The status line gains a `{workdir}`
    placeholder (relative to the TUI root, absolute outside it, empty while
@@ -115,8 +126,8 @@ not the TUI root.
 - `write`/`edit` result text names the root-relative path the call resolved
   to. Only the search tools' listings are relativized.
 - A `Session`-scoped out-of-root grant lives for the process, as every
-  ADR-0109 `Session` grant does. After a restart a resumed session's exec
-  calls there ask again, one call at a time, through the ordinary gate.
+  ADR-0109 `Session` grant does. After a restart, resume finds it gone and
+  returns the session to the root; `/cd --session` asks again.
 
 ## Alternatives rejected
 

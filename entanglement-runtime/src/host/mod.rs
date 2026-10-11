@@ -31,8 +31,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::tools::ToolRegistry;
-
 pub mod apply_patch;
 pub mod bash;
 mod brace;
@@ -43,6 +41,7 @@ pub mod glob;
 pub mod grep;
 pub mod jobs;
 pub mod read;
+mod registry;
 pub mod sandbox;
 pub mod search_json;
 pub mod unified_diff;
@@ -59,6 +58,7 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use jobs::JobRegistry;
 pub use read::{ReadRawTool, ReadTool};
+pub use registry::{host_tools, host_tools_with, host_tools_with_extra_roots, HostToolOptions};
 pub use sandbox::{SandboxBackend, SandboxPolicy};
 pub use search_json::{GlobJsonTool, GrepJsonTool};
 pub(crate) use walk::MAX_RESULTS;
@@ -324,74 +324,6 @@ pub fn bounded_result(status: &str, body: String) -> String {
     out.push_str(status);
     out.push_str(&truncate_head_tail_within(body, budget));
     out
-}
-
-// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ host_tools registry
-// ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Build the **root-contained sextet**
-/// (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). The exec pair
-/// (`call`/`bash`) is registered by the head alongside this sextet,
-/// unconditionally (ADR-0093/ADR-0195).
-pub fn host_tools(root: PathBuf) -> ToolRegistry {
-    host_tools_with_extra_roots(root, None)
-}
-
-/// [`host_tools`] with an optional escape-root grant store (ADR-0109) wired into
-/// every tool that can reach outside root: the path-touching quartet
-/// (`read`/`edit`/`write`/`apply_patch`), so an approved out-of-root path is
-/// reachable, and `glob`/`grep` (#482), which never force their own approval
-/// but widen a search into a directory already covered by a durable `read`
-/// grant. `None` is byte-identical to the pre-ADR-0109 strict sextet.
-pub fn host_tools_with_extra_roots(
-    root: PathBuf,
-    extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
-) -> ToolRegistry {
-    host_tools_with_backups(root, extra, None, None)
-}
-
-/// [`host_tools_with_extra_roots`] plus per-write backups (ADR-0212) wired
-/// into the three mutating tools (`edit`/`write`/`apply_patch`) — the
-/// undo/rewind source — and the executor's session workdirs (#764) into
-/// `glob`/`grep`. `None` keeps them backup-free / root-relative.
-pub fn host_tools_with_backups(
-    root: PathBuf,
-    extra: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
-    backups: Option<crate::file_backup::FileBackups>,
-    workdirs: Option<crate::workdir::SessionWorkdirs>,
-) -> ToolRegistry {
-    let mut reg = ToolRegistry::new();
-    let mut read = ReadTool::new(root.clone());
-    let mut glob = GlobTool::new(root.clone());
-    let mut grep = GrepTool::new(root.clone());
-    let mut edit = EditTool::new(root.clone());
-    let mut write = WriteTool::new(root.clone());
-    let mut apply_patch = ApplyPatchTool::new(root.clone());
-    if let Some(e) = &extra {
-        read = read.with_extra_roots(e.clone());
-        glob = glob.with_extra_roots(e.clone());
-        grep = grep.with_extra_roots(e.clone());
-        edit = edit.with_extra_roots(e.clone());
-        write = write.with_extra_roots(e.clone());
-        apply_patch = apply_patch.with_extra_roots(e.clone());
-    }
-    if let Some(w) = workdirs {
-        glob = glob.with_workdirs(w.clone());
-        grep = grep.with_workdirs(w);
-    }
-    if let Some(b) = backups {
-        edit = edit.with_backups(b.clone());
-        write = write.with_backups(b.clone());
-        apply_patch = apply_patch.with_backups(b);
-    }
-    reg.register(read);
-    reg.register(glob);
-    reg.register(grep);
-    reg.register(edit);
-    reg.register(write);
-    reg.register(apply_patch);
-    reg
 }
 
 #[cfg(test)]

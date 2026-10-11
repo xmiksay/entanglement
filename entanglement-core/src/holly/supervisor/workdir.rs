@@ -78,6 +78,37 @@ impl Supervisor {
         Ok(workdir)
     }
 
+    /// A resumed session's replayed workdir is re-checked, with no approval
+    /// (#764): the directory may be gone, swapped for a symlink out of the
+    /// root, or covered only by a `Session` grant that died with the old
+    /// process. A stale one falls back to the project root — `start_session`
+    /// then re-announces (and so logs) the root — with an `Error` saying why,
+    /// so the trailing notice never names a directory commands can't run in.
+    /// Kept as is when no resolver is configured: there is nothing to check
+    /// it against, nor a root to fall back to.
+    pub(super) fn revalidate_resumed_workdir(
+        &mut self,
+        session: &SessionId,
+        workdir: &mut Option<String>,
+    ) {
+        if let (Some(dir), true) = (workdir.clone(), self.cfg.workdir_resolver.is_some()) {
+            if let Err(e) = self.resolve_workdir(None, &dir, None) {
+                tracing::warn!(%session, dir, error = %e, "resumed workdir no longer valid");
+                *workdir = self.resolve_workdir(None, ".", None).ok();
+                emit_supervisor_error(
+                    &self.events,
+                    &self.seqs,
+                    session,
+                    &format!("workdir `{dir}` is no longer usable ({e}); back to the project root"),
+                );
+            }
+        }
+        match workdir {
+            Some(dir) => self.workdirs.insert(session.clone(), dir.clone()),
+            None => self.workdirs.remove(session),
+        };
+    }
+
     fn resolve_workdir(
         &self,
         current: Option<&str>,

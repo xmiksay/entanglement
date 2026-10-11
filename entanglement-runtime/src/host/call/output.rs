@@ -7,7 +7,8 @@
 //! instead (`crate::retained_output::RetainedOutputRegistry`) and paged via
 //! `poll`, not written to a scratch file.
 
-use crate::host::resolve_under_root;
+use crate::extra_roots::ExtraRootStore;
+use crate::host::{escaping_path, resolve_under_root};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -30,18 +31,35 @@ fn stderr_sibling(path: &Path) -> PathBuf {
 /// none — the caller then has no file to write and no path to name.
 pub(super) fn resolve_output_target(
     root: &Path,
+    extra: Option<&ExtraRootStore>,
     output_file: &Option<String>,
 ) -> Result<Option<OutputTarget>> {
     let Some(rel) = output_file else {
         return Ok(None);
     };
-    let stdout_abs = resolve_under_root(root, rel)?;
+    let stdout_abs = resolve_call_file(root, extra, rel)?;
     let stderr_abs = stderr_sibling(&stdout_abs);
     Ok(Some(OutputTarget {
         stdout_abs,
         stderr_abs,
         rel: rel.clone(),
     }))
+}
+
+/// Resolve an `input_file`/`output_file` path: contained under root, or
+/// outside it under a durable `call` escape-root grant on the path or an
+/// ancestor (#764) — the grant a call's out-of-root `workdir` (a `/cd`)
+/// already carries. That widens nothing: a `call` allowed to run in that
+/// directory can already read and write its files through the command.
+pub(super) fn resolve_call_file(
+    root: &Path,
+    extra: Option<&ExtraRootStore>,
+    rel: &str,
+) -> Result<PathBuf> {
+    match escaping_path(root, rel) {
+        Some(abs) if extra.is_some_and(|e| e.is_durably_allowed_under("call", &abs)) => Ok(abs),
+        _ => resolve_under_root(root, rel),
+    }
 }
 
 /// Write the full raw stdout/stderr to `target`, creating missing parent
@@ -98,13 +116,15 @@ mod tests {
     #[test]
     fn no_output_file_resolves_to_none() {
         let root = TempDir::new();
-        assert!(resolve_output_target(&root.path, &None).unwrap().is_none());
+        assert!(resolve_output_target(&root.path, None, &None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn explicit_output_file_stays_contained_to_root() {
         let root = TempDir::new();
-        let target = resolve_output_target(&root.path, &Some("out/log.txt".to_string()))
+        let target = resolve_output_target(&root.path, None, &Some("out/log.txt".to_string()))
             .unwrap()
             .unwrap();
         assert!(
@@ -115,13 +135,15 @@ mod tests {
         assert_eq!(target.rel, "out/log.txt");
 
         // A path escaping root is still refused.
-        assert!(resolve_output_target(&root.path, &Some("../escape.txt".to_string())).is_err());
+        assert!(
+            resolve_output_target(&root.path, None, &Some("../escape.txt".to_string())).is_err()
+        );
     }
 
     #[tokio::test]
     async fn persist_output_writes_stdout_and_stderr_sibling() {
         let root = TempDir::new();
-        let target = resolve_output_target(&root.path, &Some("out/log.txt".to_string()))
+        let target = resolve_output_target(&root.path, None, &Some("out/log.txt".to_string()))
             .unwrap()
             .unwrap();
         persist_output(&target, b"out-bytes", b"err-bytes")

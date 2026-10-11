@@ -183,13 +183,17 @@ pub(crate) async fn build_config(
     cfg.file_reverter = Some(file_backups.reverter());
     let mut tools = register_default_tools(
         root.clone(),
-        Some(extra_root_store.clone()),
-        secret_env.clone(),
-        sandbox_config.resolver(),
-        jobs.clone(),
-        retained.clone(),
-        Some(file_backups),
-        workdirs.clone(),
+        DefaultTools {
+            host: host::HostToolOptions {
+                extra_roots: Some(extra_root_store.clone()),
+                backups: Some(file_backups),
+                workdirs: Some(workdirs.clone()),
+            },
+            secret_env: secret_env.clone(),
+            sandbox_resolver: sandbox_config.resolver(),
+            jobs: jobs.clone(),
+            retained: retained.clone(),
+        },
     );
     let escape_root = EscapeRoot {
         root: root.clone(),
@@ -337,6 +341,17 @@ pub(crate) async fn build_config(
     )
 }
 
+/// What [`register_default_tools`] wires into the host tools.
+pub(crate) struct DefaultTools {
+    /// The sextet's escape-root store, backups and session workdirs; the
+    /// store is shared with `call`/`bash`.
+    pub(crate) host: host::HostToolOptions,
+    pub(crate) secret_env: Vec<String>,
+    pub(crate) sandbox_resolver: Arc<dyn policy::SandboxResolver>,
+    pub(crate) jobs: host::JobRegistry,
+    pub(crate) retained: retained_output::RetainedOutputRegistry,
+}
+
 /// Assemble the tool registry: the root-contained sextet plus the exec pair —
 /// `call` (registered unconditionally since ADR-0094) and `bash` (registered
 /// unconditionally since ADR-0195, which retired the `ENTANGLEMENT_ENABLE_BASH`
@@ -352,23 +367,16 @@ pub(crate) async fn build_config(
 /// (#399/ADR-0104, #479) resolves both `bash` and `call`'s bubblewrap
 /// confinement per session/profile — a resolver that always returns
 /// `SandboxPolicy::none()` leaves their spawn behavior unchanged.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn register_default_tools(
-    root: std::path::PathBuf,
-    extra_roots: Option<Arc<extra_roots::ExtraRootStore>>,
-    secret_env: Vec<String>,
-    sandbox_resolver: Arc<dyn policy::SandboxResolver>,
-    jobs: host::JobRegistry,
-    retained: retained_output::RetainedOutputRegistry,
-    file_backups: Option<file_backup::FileBackups>,
-    workdirs: workdir::SessionWorkdirs,
-) -> ToolRegistry {
-    let mut tools = host::host_tools_with_backups(
-        root.clone(),
-        extra_roots.clone(),
-        file_backups,
-        Some(workdirs),
-    );
+pub(crate) fn register_default_tools(root: std::path::PathBuf, opts: DefaultTools) -> ToolRegistry {
+    let DefaultTools {
+        host,
+        secret_env,
+        sandbox_resolver,
+        jobs,
+        retained,
+    } = opts;
+    let extra_roots = host.extra_roots.clone();
+    let mut tools = host::host_tools_with(root.clone(), host);
     let mut call = CallTool::new(root.clone())
         .with_secret_env(secret_env.clone())
         .with_sandbox_resolver(sandbox_resolver.clone())
@@ -410,13 +418,13 @@ mod tests {
         let root = std::env::temp_dir();
         register_default_tools(
             root,
-            None,
-            Vec::new(),
-            std::sync::Arc::new(SandboxPolicy::none()),
-            crate::host::JobRegistry::new(),
-            retained_output::RetainedOutputRegistry::new(),
-            None,
-            crate::workdir::SessionWorkdirs::default(),
+            super::DefaultTools {
+                host: crate::host::HostToolOptions::default(),
+                secret_env: Vec::new(),
+                sandbox_resolver: std::sync::Arc::new(SandboxPolicy::none()),
+                jobs: crate::host::JobRegistry::new(),
+                retained: retained_output::RetainedOutputRegistry::new(),
+            },
         )
         .specs()
         .into_iter()
