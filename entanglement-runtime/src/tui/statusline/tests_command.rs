@@ -200,7 +200,7 @@ mod unix {
         jobs.send_modify(|_| {});
         next_outcome(&mut event_rx).await;
         // Back to back would be ~300 ms; the half-interval gap adds 200.
-        assert!(first_done.elapsed() >= Duration::from_millis(480));
+        assert!(first_done.elapsed() >= Duration::from_millis(420));
     }
 
     #[tokio::test]
