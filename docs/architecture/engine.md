@@ -635,8 +635,10 @@ compact anything. It is deferred like `RevertFiles`, so it is only ever cut at
 rest: no parked batch and no half-streamed round. At idle the session reads
 `ctx.prefix(at_turn)`. `Context` records the index of every prompt pushed
 through `push_user_content`, live and on replay, so turn `n` is the `n`-th
-prompt (ADR-0212's numbering), and the cut falls just before turn `n + 1`, a
-turn boundary. It then mints the fork's id in its own lineage (tenant prefix,
+prompt (ADR-0212's numbering), and the cut falls just before turn `n + 1`.
+That is a turn boundary unless turn `n + 1` was a mid-turn steering prompt.
+Such a prompt is folded in after the previous round's tool results, so the cut
+keeps every call paired with its result but ends on those results. It then mints the fork's id in its own lineage (tenant prefix,
 ADR-0211) and sends, over the same session→supervisor channel compaction uses,
 a root `Spawn` with no `predecessor`, an empty prompt (no turn is queued), its
 own user and its mode. `Inherited` rides alongside with the live backend,

@@ -244,3 +244,90 @@ async fn fork_session_is_refused_from_the_wire() {
         .expect_err("trusted-only");
     assert!(err.to_string().contains("fork_session"), "{err}");
 }
+
+/// A fork asked for while the source is parked on a tool call waits for the
+/// turn to end, then carries the whole completed turn and starts idle.
+#[tokio::test]
+async fn a_fork_sent_mid_turn_runs_once_the_turn_ends() {
+    let h = Harness::new();
+    let holly = Holly::spawn(h.config(false));
+    let src = SessionId::new("src");
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(src.clone(), "tool"))
+        .await
+        .unwrap();
+    let request_id = loop {
+        if let OutEvent::ToolExec {
+            session,
+            request_id,
+            ..
+        } = next(&mut sub).await
+        {
+            if session == src {
+                break request_id;
+            }
+        }
+    };
+    holly
+        .send(InMsg::ForkSession {
+            session: src.clone(),
+            at_turn: None,
+        })
+        .await
+        .unwrap();
+    holly
+        .send(InMsg::tool_result(src.clone(), request_id, "probed"))
+        .await
+        .unwrap();
+    let mut done_first = false;
+    let context = loop {
+        match next(&mut sub).await {
+            OutEvent::Done { session, .. } if session == src => done_first = true,
+            OutEvent::SessionForked { context, .. } => break context,
+            _ => {}
+        }
+    };
+    assert!(done_first, "the fork waits for the source's turn to end");
+    let texts: Vec<String> = context.iter().map(|m| content_text(&m.content)).collect();
+    assert_eq!(
+        texts,
+        ["tool", "", "probed", "done"],
+        "the whole turn, no parked batch"
+    );
+}
+
+/// A hibernated fork resumes from its own log with the inherited history.
+#[tokio::test]
+async fn a_hibernated_fork_resumes_with_its_inherited_history() {
+    let requests = Requests::default();
+    let holly = Holly::spawn(echo_config(&requests));
+    let src = SessionId::new("src");
+    let mut sub = holly.subscribe();
+    turn(&holly, &mut sub, &src, "one").await;
+    let (fork_id, log) = fork(&holly, &mut sub, &src, None).await;
+    holly
+        .send(InMsg::prompt(fork_id.clone(), "two"))
+        .await
+        .unwrap();
+    let turn_events = events_until_done(&mut sub, &fork_id).await;
+    let mut records: Vec<(Option<InMsg>, OutEvent)> = log.into_iter().map(|e| (None, e)).collect();
+    let mut prompt = Some(InMsg::prompt(fork_id.clone(), "two"));
+    records.extend(turn_events.into_iter().map(|e| (prompt.take(), e)));
+
+    holly
+        .send(InMsg::HibernateSession {
+            session: fork_id.clone(),
+        })
+        .await
+        .unwrap();
+    while !matches!(next(&mut sub).await, OutEvent::SessionHibernated { session, .. } if session == fork_id)
+    {
+    }
+    holly.resume(fork_id.clone(), records).await.unwrap();
+    turn(&holly, &mut sub, &fork_id, "three").await;
+    assert_eq!(
+        requests.lock().unwrap().last().unwrap(),
+        &["one", "re: one", "two", "re: two", "three"]
+    );
+}

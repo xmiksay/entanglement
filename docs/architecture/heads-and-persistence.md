@@ -477,8 +477,14 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   notice plus the inherited transcript rebuilt from the event's `context`, the
   same path a restored fork log takes. The sessions modal tags the row
   "⑂ forked from …". The persistence tap logs no record for an empty `Spawn`
-  prompt (the fork's, or an identity-binding spawn's), so the fork's log
-  replays with no blank user message. `/init [--update]
+  prompt, since the supervisor queues no turn for one. That covers the fork's
+  spawn and `heads::start_fresh`'s (#752: every `run`/TUI launch with an
+  agent, `--mode` or a config `mode:`), whose log used to start with a blank
+  `Prompt`. Before this change, a resume replayed that record as a phantom
+  blank user message, and `/rewind` (which numbers turns by `Prompt` records)
+  counted it as turn 1. New logs number from the first real prompt. An old log
+  keeps its blank record and its offset, consistently on both sides: replay
+  counts the blank message as turn 1 too. `/init [--update]
   [instructions…]` (`tui/init_command.rs`, ✅ #732,
   [ADR-0222](../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)) sends
   a built-in prompt plus a bounded repo snapshot (the `@file` index — the capped
