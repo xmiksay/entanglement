@@ -13,7 +13,7 @@ use super::*;
 /// so the sibling `tests_retention` module reuses it instead of rebuilding the
 /// same parse path.
 pub(super) fn defaults() -> Config {
-    parse(&[default_layer()]).unwrap().config
+    parse(&[default_layer()], None).unwrap().config
 }
 
 #[test]
@@ -60,7 +60,7 @@ pub(super) fn merge_user(user: &str) -> Config {
         source: "user.yml".to_string(),
         doc: serde_yaml::from_str(user).unwrap(),
     };
-    parse(&[default_layer(), user]).unwrap().config
+    parse(&[default_layer(), user], None).unwrap().config
 }
 
 /// The ceiling's *real* resolution path (ADR-0207 stage 6c): through

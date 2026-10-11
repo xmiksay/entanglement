@@ -260,7 +260,7 @@ impl Config {
     /// embedder (or a test) can override field by field without touching any
     /// file on disk.
     pub fn embedded_defaults() -> Result<Config> {
-        Ok(parse(&[default_layer()])?.config)
+        Ok(parse(&[default_layer()], None)?.config)
     }
 
     /// Resolve the user config for `root`: embedded defaults, deep-merged with the
@@ -287,7 +287,7 @@ impl Config {
     /// [`resolve`](Self::resolve) with an explicit user-layer path, as
     /// [`load_with`](Self::load_with).
     pub fn resolve_with(root: &Path, user_file: Option<&Path>) -> Result<Resolved> {
-        parse(&discover(root, user_file)?)
+        parse(&discover(root, user_file)?, Some(root))
     }
 }
 
@@ -295,12 +295,15 @@ impl Config {
 /// per-field provenance. The merge and the `deny_unknown_fields` validation both
 /// run on the combined [`Value`], so a field override keeps its siblings and a
 /// typo in any layer is rejected.
-fn parse(raw_layers: &[RawLayer]) -> Result<Resolved> {
+///
+/// `root` scopes the load-time warnings' dedupe ([`warn_once`]); `None` for
+/// the embedded defaults alone.
+fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
     let mut warnings = retired::strip_retired_keys(&mut raw_layers);
     let raw_layers = raw_layers.as_slice();
-    ceiling_warn::warn_project_permission_overrides(raw_layers);
-    mode_warn::warn_stale_mode_tuning_names(raw_layers);
+    ceiling_warn::warn_project_permission_overrides(raw_layers, root);
+    mode_warn::warn_stale_mode_tuning_names(raw_layers, root);
     let mut merged = Value::Null;
     for rl in raw_layers {
         merged = merge_value(merged, rl.doc.clone());

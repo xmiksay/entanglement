@@ -71,11 +71,10 @@ async fn a_fork_at_a_turn_persists_its_own_exactly_replayable_log() {
     holly.shutdown().await;
     // The persistence tap writes on its own task: wait for both final turns
     // to be on disk (#815) instead of sleeping.
-    let persisted = crate::eventually(|| {
+    crate::eventually(|| {
         replayed_texts(&store, &cfg, &fork) == 4 && replayed_texts(&store, &cfg, &src) == 6
     })
     .await;
-    assert!(persisted, "both logs persisted in time");
 
     let fork_log = store.read(&fork).unwrap();
     let prompts: Vec<String> = fork_log
@@ -158,8 +157,7 @@ async fn an_empty_spawn_prompt_logs_no_prompt_record() {
     .await;
     turn(&holly, &mut sub, &sid, "hi").await;
     holly.shutdown().await;
-    let persisted = crate::eventually(|| replayed_texts(&store, &cfg, &sid) >= 2).await;
-    assert!(persisted, "the turn persisted in time");
+    crate::eventually(|| replayed_texts(&store, &cfg, &sid) >= 2).await;
 
     let log = store.read(&sid).unwrap();
     assert_eq!(logged_prompts(&log), ["hi"]);

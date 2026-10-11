@@ -40,13 +40,16 @@ pub(super) fn project_permission_overrides(layers: &[RawLayer]) -> Vec<(String, 
 /// Log one warning per overridden ceiling key — only for a finding new since
 /// this root's previous load ([`super::warn_once`]). Returns how many it
 /// logged.
-pub(super) fn warn_project_permission_overrides(layers: &[RawLayer]) -> usize {
+pub(super) fn warn_project_permission_overrides(
+    layers: &[RawLayer],
+    root: Option<&std::path::Path>,
+) -> usize {
     let overrides = project_permission_overrides(layers);
     let keys: Vec<String> = overrides
         .iter()
         .map(|(k, e, p)| format!("{k}\0{e}\0{p}"))
         .collect();
-    let fresh = super::warn_once::fresh(super::warn_once::scope("ceiling", layers), &keys);
+    let fresh = super::warn_once::fresh(super::warn_once::scope("ceiling", root, layers), &keys);
     let mut logged = 0;
     for ((key, earlier, project), _) in overrides.into_iter().zip(fresh).filter(|(_, f)| *f) {
         logged += 1;
@@ -102,15 +105,15 @@ mod tests {
             layer(ConfigLayer::User, "permissions:\n  dedupe_785: ask\n"),
             layer(ConfigLayer::Project, "permissions:\n  dedupe_785: allow\n"),
         ];
-        assert_eq!(warn_project_permission_overrides(&layers), 1);
-        assert_eq!(warn_project_permission_overrides(&layers), 0);
+        assert_eq!(warn_project_permission_overrides(&layers, None), 1);
+        assert_eq!(warn_project_permission_overrides(&layers, None), 0);
         // #813: fixed, then reintroduced — it warns again.
         let fixed = vec![
             layer(ConfigLayer::User, "permissions:\n  dedupe_785: ask\n"),
             layer(ConfigLayer::Project, "permissions:\n  dedupe_785: ask\n"),
         ];
-        assert_eq!(warn_project_permission_overrides(&fixed), 0);
-        assert_eq!(warn_project_permission_overrides(&layers), 1);
+        assert_eq!(warn_project_permission_overrides(&fixed, None), 0);
+        assert_eq!(warn_project_permission_overrides(&layers, None), 1);
     }
 
     #[test]
