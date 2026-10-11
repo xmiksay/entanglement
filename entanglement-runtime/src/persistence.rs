@@ -170,9 +170,10 @@ pub fn spawn_persistence_subscriber_with_sink(
                         // `roots` can't resolve the child until its
                         // `SessionStarted` arrives (see the doc comment above).
                         if let InMsg::Spawn { session: child, prompt, .. } = &msg {
-                            // An empty prompt queues no turn (a fork #786, an
-                            // identity-binding spawn): logging it would replay
-                            // a blank user message the live session never had.
+                            // An empty prompt queues no turn (a fork #786,
+                            // `heads::start_fresh` #752): logging it would
+                            // replay a blank user message the live session
+                            // never had, and shift `/rewind`'s numbering.
                             if !prompt.is_empty() {
                                 pending_spawn_prompts.insert(child.clone(), prompt.clone());
                             }

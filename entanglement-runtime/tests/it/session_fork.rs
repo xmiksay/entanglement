@@ -9,7 +9,7 @@ use entanglement_core::{
     content_text, session::Session, EngineConfig, Holly, InMsg, OutEvent, SessionId,
 };
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
+use entanglement_runtime::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
 use tokio::sync::broadcast::Receiver;
 
 async fn until(sub: &mut Receiver<OutEvent>, pred: impl Fn(&OutEvent) -> bool) -> OutEvent {
@@ -98,4 +98,106 @@ async fn a_fork_at_a_turn_persists_its_own_exactly_replayable_log() {
     let src_texts = texts(&replayed_src);
     assert_eq!(src_texts.len(), 6, "{src_texts:?}");
     assert!(!src_texts.iter().any(|t| t == "three"));
+}
+
+fn logged_prompts(log: &[LogRecord]) -> Vec<String> {
+    log.iter()
+        .filter_map(|r| match &r.payload {
+            LogPayload::In(InMsg::Prompt { content, .. }) => Some(content_text(content)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `heads::start_fresh` (#752) opens a launch with an agent/`--mode` through
+/// an empty-prompt `Spawn`: it queues no turn, so the log records no prompt —
+/// no phantom blank user message on resume, and `/rewind`'s turn 1 is the
+/// first real prompt.
+#[tokio::test]
+async fn an_empty_spawn_prompt_logs_no_prompt_record() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = SessionStore::at(tmp.path());
+    let cfg = EngineConfig::default();
+    let holly = Holly::spawn(cfg.clone());
+    let _tap = spawn_persistence_subscriber(&holly, store.clone());
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("fresh");
+    holly
+        .send(InMsg::Spawn {
+            session: sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "general".into(),
+            prompt: String::new(),
+            user: None,
+            model: None,
+            mode: Some("plan".into()),
+        })
+        .await
+        .unwrap();
+    until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionStarted { session, .. } if *session == sid),
+    )
+    .await;
+    turn(&holly, &mut sub, &sid, "hi").await;
+    holly.shutdown().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let log = store.read(&sid).unwrap();
+    assert_eq!(logged_prompts(&log), ["hi"]);
+    let replayed = Session::replay(&pair_records(&log), &cfg, &sid).unwrap();
+    assert_eq!(texts(&replayed)[0], "hi", "no phantom blank user message");
+}
+
+/// A log written before the fix keeps its blank spawn prompt. Replay still
+/// folds it and counts it as turn 1, exactly as `/rewind` numbers the log's
+/// `Prompt` records, so the two sides stay consistent on old logs.
+#[test]
+fn an_old_log_with_a_blank_spawn_prompt_counts_it_on_both_sides() {
+    let sid = SessionId::new("old");
+    let out = |ev: OutEvent| LogRecord::new(sid.clone(), LogPayload::Out(ev));
+    let prompt = |text: &str| {
+        LogRecord::new(
+            sid.clone(),
+            LogPayload::In(InMsg::prompt(sid.clone(), text)),
+        )
+    };
+    let log = vec![
+        out(OutEvent::SessionStarted {
+            session: sid.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "general".into(),
+            model: None,
+            root: true,
+            ts: 0,
+            user: None,
+        }),
+        prompt(""),
+        out(OutEvent::Status {
+            session: sid.clone(),
+            state: entanglement_core::AgentState::Idle,
+        }),
+        prompt("hi"),
+        out(OutEvent::TextDelta {
+            session: sid.clone(),
+            seq: 1,
+            text: "hello".into(),
+        }),
+        out(OutEvent::Done {
+            session: sid.clone(),
+            seq: 2,
+        }),
+    ];
+    assert_eq!(logged_prompts(&log), ["", "hi"], "`/rewind` sees two turns");
+    let replayed = Session::replay(&pair_records(&log), &EngineConfig::default(), &sid).unwrap();
+    assert_eq!(texts(&replayed), ["", "hi", "hello"]);
+    let turn_one: Vec<String> = replayed
+        .ctx
+        .prefix(Some(1))
+        .iter()
+        .map(|m| content_text(&m.content))
+        .collect();
+    assert_eq!(turn_one, [""], "turn 1 is the blank prompt on both sides");
 }

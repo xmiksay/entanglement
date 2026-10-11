@@ -38,14 +38,26 @@ round-trips, reasoning blocks — and keep the source running (#786).
    taken from the source's live `Context` in process. It rides the
    session→supervisor fork channel (ADR-0205) on `Inherited::seed`, beside a
    `Spawn` with an empty prompt. The persistence tap now logs no prompt for an
-   empty `Spawn` prompt (no turn is queued, so none would replay). That also
-   fixes ADR-0174's identity-binding spawn, which used to replay a blank user
-   message.
+   empty `Spawn` prompt: the supervisor queues no turn for one, so a logged
+   prompt would replay a user message the live session never had. That also
+   fixes an existing bug. `heads::start_fresh` (#752) sends an empty-prompt
+   `Spawn` on every `run`/TUI launch that names an agent, passes `--mode`, or
+   has a config `mode:`. Its log used to start with a blank `Prompt`, so a
+   resume added a phantom blank user message, and `/rewind`, which numbers
+   turns by `Prompt` records, counted a phantom turn 1. New logs number from
+   the first real prompt. An existing log keeps its blank record and so its
+   offset, and both sides stay consistent: replay folds the blank message
+   into `Context` and counts it as turn 1, exactly as `/rewind` does.
 3. **`at_turn`.** `None` copies everything; `Some(n)` keeps turns `1..=n`. A
    turn is a user prompt applied to the context, counted the way ADR-0212's
    `/rewind` counts them: `Context` records each prompt's index as it is
    pushed, live and on replay. The cut falls just before turn `n + 1`'s
-   prompt, a turn boundary, so no tool round-trip is split. A number past the
+   prompt. When that prompt opened a turn, this is a turn boundary. When it
+   was a mid-turn steering prompt, it was folded in at the start of a round,
+   after the previous round's tool results. The cut then keeps every tool call
+   paired with its result, but the history ends on those results with no
+   closing reply, and the fork's next prompt follows them as a steered round
+   would. No tool round-trip is ever split. A number past the
    last turn copies everything. A fork does not count its seed as turns: its
    own prompts start at 1, matching its own log, which is what `/rewind`
    reads. So `Some(0)` on a fork keeps exactly its seed.

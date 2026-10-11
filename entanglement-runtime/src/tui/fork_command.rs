@@ -4,7 +4,7 @@
 //! `SessionForked`, which moves the user into the fork (`app/out_event.rs`)
 //! and renders the inherited history (`session_view::reducer::fork`).
 
-use entanglement_core::{Holly, InMsg};
+use entanglement_core::{AgentState, Holly, InMsg};
 
 use crate::tui::app::App;
 
@@ -17,12 +17,27 @@ pub(crate) async fn send_fork(app: &mut App, holly: &Holly, text: &str) {
             return;
         }
     };
-    let _ = holly
-        .send(InMsg::ForkSession {
-            session: app.active_session_id().clone(),
-            at_turn,
-        })
-        .await;
+    let session = app.active_session_id().clone();
+    let state = app
+        .sessions()
+        .into_iter()
+        .find(|(id, _)| **id == session)
+        .map(|(_, view)| view.state());
+    // The engine defers a fork until the session rests, so say why nothing
+    // happens yet instead of leaving the command looking ignored.
+    if let Some(note) = state.and_then(deferral_note) {
+        app.record_status("fork", note.to_string());
+    }
+    let _ = holly.send(InMsg::ForkSession { session, at_turn }).await;
+}
+
+/// Why a fork sent now waits, or `None` when the session is at rest.
+fn deferral_note(state: AgentState) -> Option<&'static str> {
+    match state {
+        AgentState::Idle | AgentState::Done | AgentState::Error => None,
+        AgentState::Paused => Some("fork queued until the session is resumed"),
+        _ => Some("fork queued until the turn ends"),
+    }
 }
 
 /// `/fork [N]` → `Ok(None)` (everything) or `Ok(Some(N))`, else a usage error.
@@ -59,6 +74,40 @@ mod tests {
             sent,
             InMsg::ForkSession { session, at_turn: Some(3) } if session == SessionId::new("s1")
         ));
+    }
+
+    #[test]
+    fn a_fork_sent_while_busy_or_paused_says_it_is_queued() {
+        assert_eq!(deferral_note(AgentState::Done), None);
+        assert_eq!(deferral_note(AgentState::Idle), None);
+        assert!(
+            deferral_note(AgentState::Thinking).is_some_and(|n| n.contains("until the turn ends"))
+        );
+        assert!(deferral_note(AgentState::WaitingApproval)
+            .is_some_and(|n| n.contains("until the turn ends")));
+        assert!(deferral_note(AgentState::Paused).is_some_and(|n| n.contains("resumed")));
+    }
+
+    #[tokio::test]
+    async fn a_busy_session_records_the_queued_note() {
+        let holly = Holly::spawn(entanglement_core::EngineConfig::default());
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_out_event(OutEvent::Status {
+            session: SessionId::new("s1"),
+            state: AgentState::Thinking,
+        });
+        send_fork(&mut app, &holly, "/fork").await;
+        let view = app
+            .sessions()
+            .into_iter()
+            .find(|(id, _)| id.0 == "s1")
+            .map(|(_, v)| v.transcript().to_vec())
+            .unwrap();
+        assert!(view.iter().any(|e| matches!(
+            e,
+            crate::tui::session_view::TranscriptEntry::ToolOutput { output, .. }
+                if output.contains("fork queued")
+        )));
     }
 
     /// The fork of the watched session takes focus; a fork of some other

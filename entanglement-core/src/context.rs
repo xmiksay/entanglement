@@ -176,10 +176,13 @@ impl Context {
     }
 
     /// The history a fork carries (#786): everything, or with `Some(n)` only
-    /// turns `1..=n` — the cut lands just before turn `n + 1`'s prompt, a
-    /// turn boundary, so no tool round-trip is split. A turn past the last
-    /// one is the whole history; `Some(0)` is only what precedes the first
-    /// prompt (a fork's own seed, else nothing).
+    /// turns `1..=n`. The cut lands just before turn `n + 1`'s prompt, so no
+    /// tool round-trip is split. When that prompt opened a turn, this is a
+    /// turn boundary. A mid-turn steering prompt is folded in at the start of
+    /// a round, after the previous round's tool results, so a cut there ends
+    /// on those results with no closing reply. A turn past the last one is
+    /// the whole history. `Some(0)` is only what precedes the first prompt (a
+    /// fork's own seed, else nothing).
     pub fn prefix(&self, at_turn: Option<u32>) -> Vec<Message> {
         let end = at_turn
             .and_then(|n| self.prompts.get(n as usize).copied())
@@ -508,5 +511,21 @@ mod tests {
         c.push_user_content(vec![ContentPart::text("three")]);
         assert_eq!(c.prefix(Some(0)).len(), 5);
         assert_eq!(c.prefix(Some(1)).len(), 6);
+    }
+
+    /// A mid-turn steering prompt is folded after the round's tool results,
+    /// so a cut before it keeps the call/result pair but ends on the result.
+    #[test]
+    fn a_cut_before_a_steering_prompt_ends_on_paired_tool_results() {
+        let mut c = Context::new();
+        c.push_user_content(vec![ContentPart::text("one")]);
+        c.push_assistant("", vec![ToolCall::new("c1", "read", "{}")]);
+        c.push_tool("c1", "out");
+        c.push_user_content(vec![ContentPart::text("steer")]);
+        c.push_assistant("done", Vec::new());
+        let cut = c.prefix(Some(1));
+        assert_eq!(cut.len(), 3);
+        assert_eq!(cut[2].role, MessageRole::Tool);
+        assert_eq!(cut[2].tool_call_id.as_deref(), Some("c1"));
     }
 }
