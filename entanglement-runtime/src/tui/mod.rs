@@ -88,7 +88,7 @@ pub async fn tui(
         std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
     >,
     aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
-    mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watch::ReloadNotice>,
     root: std::path::PathBuf,
     tool_roster: Vec<String>,
     http_client: HttpClient,
@@ -231,12 +231,21 @@ pub async fn tui(
             // The definitions watcher (#329) reloaded: refresh the `/agent`
             // picker + Tab-cycle roster from the fresh registry and surface a
             // status line, matching the `/key`/`/model` status pattern.
+            // The `tui:` block re-applies on every content change, even when
+            // the definitions reload failed (#785).
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
-                    let fresh = entry_profiles_from(&agents.read().unwrap());
-                    app.refresh_profiles(fresh);
                     editor::reload_tui_config(&mut terminal, &mut attention, &mut app, &config_root);
-                    app.record_reload_status(notice);
+                    match notice {
+                        crate::watch::ReloadNotice::Reloaded(summary) => {
+                            let fresh = entry_profiles_from(&agents.read().unwrap());
+                            app.refresh_profiles(fresh);
+                            app.record_reload_status(summary);
+                        }
+                        crate::watch::ReloadNotice::Failed(error) => {
+                            app.record_status("config", format!("⚠ {error}"));
+                        }
+                    }
                     app.mark_dirty();
                 }
             }

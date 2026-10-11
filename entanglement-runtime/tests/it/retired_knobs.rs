@@ -54,6 +54,33 @@ fn each_retired_knob_warns_once_and_startup_continues() {
     assert_eq!(lines.len(), 7, "nothing else warns: {stderr}");
 }
 
+/// #785: a retired var parked in the managed `.env` (not the shell) is
+/// warned about too — the file feeds the same process env.
+#[test]
+fn a_retired_var_in_the_managed_env_file_warns() {
+    let (mut cmd, _sandbox) = isolated_skutter();
+    let root = tempfile::tempdir().unwrap();
+    let env_file = root.path().join("managed.env");
+    std::fs::write(&env_file, "ENTANGLEMENT_ECHO_FULL=1\n").unwrap();
+    let out = cmd
+        .args(["run", "hi"])
+        .current_dir(root.path())
+        .env("ENTANGLEMENT_PROVIDER", "echo")
+        .env("ENTANGLEMENT_ENV_FILE", &env_file)
+        .output()
+        .expect("failed to spawn skutter");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines = warnings(&stderr);
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(
+        lines[0].contains("`ENTANGLEMENT_ECHO_FULL`"),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains("ENTANGLEMENT_DEBUG=echo"), "{}", lines[0]);
+}
+
 #[test]
 fn a_clean_environment_prints_no_retirement_warning() {
     let (mut cmd, _sandbox) = isolated_skutter();
