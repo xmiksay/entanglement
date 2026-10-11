@@ -235,16 +235,9 @@ pub async fn tui(
             // the definitions reload failed (#785).
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
-                    editor::reload_tui_config(&mut terminal, &mut attention, &mut app, &config_root);
-                    match notice {
-                        crate::watch::ReloadNotice::Reloaded(summary) => {
-                            let fresh = entry_profiles_from(&agents.read().unwrap());
-                            app.refresh_profiles(fresh);
-                            app.record_reload_status(summary);
-                        }
-                        crate::watch::ReloadNotice::Failed(error) => {
-                            app.record_status("config", format!("⚠ {error}"));
-                        }
+                    if editor::apply_reload(&mut terminal, &mut attention, &mut app, &config_root, notice) {
+                        let fresh = entry_profiles_from(&agents.read().unwrap());
+                        app.refresh_profiles(fresh);
                     }
                     app.mark_dirty();
                 }

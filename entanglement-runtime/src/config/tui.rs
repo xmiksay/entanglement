@@ -9,7 +9,7 @@
 //!
 //! Live-reloaded: the TUI re-resolves the layered config when the definitions
 //! watcher reports a change and re-applies this block in place
-//! (`tui::editor::reload_tui_config`).
+//! (`tui::editor::apply_reload`).
 
 use serde::Deserialize;
 
