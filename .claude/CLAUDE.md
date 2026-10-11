@@ -7,58 +7,58 @@ TUI) is a thin adapter over `holly.send()` / `holly.subscribe()`.
 
 Architecture & the four interfaces:
 [`../docs/architecture.md`](../docs/architecture.md). Overview:
-[`../README.md`](../README.md). Decisions: [`../docs/adr/`](../docs/adr/)
-(numbered, immutable — the index [`README.md`](../docs/adr/README.md) flags
-superseded/amended entries). Intentional deferrals and docs-drift findings
-live as GitHub issues, one each (#689).
+[`../README.md`](../README.md). Embedding guide:
+[`../docs/embedding.md`](../docs/embedding.md). Decisions:
+[`../docs/adr/`](../docs/adr/) (numbered, immutable — the index
+[`README.md`](../docs/adr/README.md) flags superseded/amended entries).
+Intentional deferrals and docs-drift findings live as GitHub issues, one each
+(#689).
 
 ## Stack
 
 - **Rust** (stable, `../rust-toolchain.toml`; MSRV is the workspace `Cargo.toml` `rust-version`, CI-tested by `make msrv`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
-- No web framework in core; the runtime head's `serve` subcommand brings `axum`
+- No web framework in core; the runtime's `serve` subcommand brings `axum`
   (behind its own `serve` feature).
 
 ## Workspace
 
-Three crates, two seams (core↔provider via the `Llm` trait, core↔runtime for
-tool exec/approval over the protocol). Dependency direction is
-`provider (leaf) ← core ← runtime` ([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)).
+Three crates, dependency direction `provider (leaf) ← core ← runtime`
+([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)); layering detail in
+[layers & ABI](../docs/architecture/layers-and-abi.md).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
-| `entanglement-provider` | **leaf** crate: the `Llm` **trait** + DTOs, all LLM I/O (OpenAI-compat client for z.ai/OpenAI/Ollama, separate Anthropic client, native Gemini client), per-endpoint pool/retry/rate-limit, the YAML provider/model catalog, and the **MCP client mechanism** (streamable-HTTP transport + OAuth stack, [ADR-0153](../docs/adr/0153-mcp-server-oauth.md) — mechanism only, policy stays in the runtime). Usable standalone. Detail: [provider](../docs/architecture/provider.md). | no `entanglement-*` deps; owns `reqwest`. |
-| `entanglement-core` | actor engine: `Holly`, protocol, **agent turn loop**, `Context`. Advertises tool *schemas* only — holds no executable tools, makes no policy calls. Re-exports the provider ABI. Detail: [engine](../docs/architecture/engine.md). | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider. `make tree` enforces. |
-| `entanglement-runtime` | the head crate (binary `skutter`): `Tool` trait + `ToolRegistry`, host tools, tool execution + permission dispatch/approval, user sessions, the stdio `run`/`pipe`, `tui`, `serve` (local WS, [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md)), and `sessions`/`inspect`/`config` subcommands. Selects the provider and glues it to core. Features: `cli` / `provider` / `tui` / `serve` / `mcp-http` / `rhai` / `web-fetch`; `default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]`; also a lean embedder library ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). Detail: [heads & persistence](../docs/architecture/heads-and-persistence.md), [gates & host tools](../docs/architecture/gates-and-host-tools.md). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
+| `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
+| `entanglement-runtime` | head crate (binary `skutter`): `Tool`/`ToolRegistry`, host tools, permission dispatch, `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config`; also a lean embedder library. Features `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch`, default `tui`+`serve`+`mcp-http`+`rhai`+`web-fetch` ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). [heads & persistence](../docs/architecture/heads-and-persistence.md), [gates & host tools](../docs/architecture/gates-and-host-tools.md) | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Commands — drive through `make`
 
 ```bash
-make help         # list every target with its one-line description
-make run           # stdio head, one turn (text); no key → hint + exit 2, ENTANGLEMENT_PROVIDER=echo for the stub
-make run-json      # one turn, NDJSON events (opencode run --format json)
-make run-tui       # launch the terminal UI
+make help          # list every target with its one-line description
+make build | check | clean | install       # install the `skutter` binary into $CARGO_HOME/bin
+make run           # one turn; no key → hint + exit 2, ENTANGLEMENT_PROVIDER=echo for the offline stub
+make run-json      # one turn as NDJSON events (opencode run --format json)
+make run-tui       # terminal UI (first-run setup dialog when no provider is configured)
 make pipe          # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
 make serve         # local WebSocket head on 127.0.0.1 (ARGS='--port 4517')
 make sessions      # list past (resumable) sessions
-make inspect       # resolved prompt/agents/skills/config, no engine (ARGS='prompt --agent general')
-make install       # install the `skutter` binary into $CARGO_HOME/bin
-make test          # unit + integration, HOME/XDG sandboxed: fails if a test writes there (#747)
-make test-unit | make test-integration
-make test-live     # opt-in live z.ai probes (ZAI_API_KEY): tool discovery + prompt cache facts
-make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
-make lint          # clippy --all-targets -D warnings
+make inspect       # resolved state, no engine (ARGS='prompt --agent general' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
+make test          # unit + integration (also test-unit / test-integration), HOME/XDG-sandboxed (#747)
+make test-live     # live z.ai + Anthropic discovery/cache probes (skip without ZAI_API_KEY / ANTHROPIC_API_KEY)
+make lint          # clippy, warnings = errors
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + file-cap + userid + lint + test  (CI-equivalent gate)
-make msrv          # cargo check (full + lean runtime) on the declared MSRV toolchain (own CI job)
-make tree          # entanglement-core dep hygiene gate (fails on UI/transport crates)
-make check-lean    # runtime --no-default-features stays CLI/TUI/transport-free (ADR-0025)
+make tree          # entanglement-core dep hygiene gate (fails on UI/web-server crates)
+make check-lean    # lean runtime (--no-default-features) stays CLI/TUI-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
 make userid        # UserId-free entanglement-runtime gate (ADR-0181)
-make test-gates    # dep-gate + userid-gate + file-cap-gate + test-isolated self-tests, default + strict POSIX (scripts/dep-gate.test.sh)
-make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify
-make build | check | clean
+make test-gates    # dep-gate + userid + file-cap + test-isolated self-tests, default + strict POSIX (scripts/dep-gate.test.sh)
+make msrv          # cargo check (full + lean runtime) on the MSRV toolchain; msrv-version prints it
+make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
+make tag           # cut a release tag (VERSION=vX.Y.Z): refuses dirty tree / red verify, does not push
 ```
 
 Build jobs capped at 4 via `../.cargo/config.toml` (also links with `lld`);
@@ -66,469 +66,164 @@ dev-profile tuning lives in the workspace `../Cargo.toml`.
 
 ## Providers (`skutter`)
 
-Set `ENTANGLEMENT_PROVIDER` explicitly, or let it auto-detect by key (z.ai
-first). No key → the TUI's first-run dialog, every other head a hint + exit 2;
-`EchoLlm` only via `ENTANGLEMENT_PROVIDER=echo` ([ADR-0222](../docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)). Full detail (clients, catalog, resilience):
-[provider](../docs/architecture/provider.md).
+Set `ENTANGLEMENT_PROVIDER`, or let it auto-detect by key (z.ai first). No key
+→ the TUI's first-run dialog, every other head a hint + exit 2; `EchoLlm` only
+via `ENTANGLEMENT_PROVIDER=echo`
+([ADR-0222](../docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)).
 
 | `ENTANGLEMENT_PROVIDER` | wire | key env | model env (default) | base env |
 | --- | --- | --- | --- | --- |
-| `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.3`) | `ZAI_API_BASE` (Coding Plan endpoint) |
-| `zai_paas` | OpenAI-compat | `ZAI_API_KEY` | `ZAI_PAAS_MODEL` (`glm-5.3`) | `ZAI_PAAS_API_BASE` (pay-as-you-go endpoint) |
+| `zai` (primary) | OpenAI-compat | `ZAI_API_KEY` | `ZAI_MODEL` (`glm-5.3`) | `ZAI_API_BASE` (Coding Plan) |
+| `zai_paas` | OpenAI-compat | `ZAI_API_KEY` | `ZAI_PAAS_MODEL` (`glm-5.3`) | `ZAI_PAAS_API_BASE` (pay-as-you-go) |
 | `openai` | OpenAI-compat | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-4o`) | `OPENAI_API_BASE` |
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) | — |
-| `gemini` | Gemini `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
-| `openai_responses` (opt-in) | OpenAI Responses API — client-executed `tool_search`, ADR-0196 §3 | `OPENAI_API_KEY` | `gpt-5.4` | — |
+| `gemini` | `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
+| `openai_responses` (opt-in) | Responses API (ADR-0196 §3) | `OPENAI_API_KEY` | `gpt-5.4` | — |
 
-That table is **catalog data, not hardcode** (#118): an embedded default
-(`entanglement-provider/src/defaults.yml`) deep-merged with a user override at
-`${config_dir}/entanglement/providers.yml`; a `wire:` tag lets a user add any
-OpenAI-compatible endpoint with zero code change — and an `oauth:` block
-instead of `key_env` authenticates it with a refreshed bearer token
-(`skutter config connect <provider>`, managed `llm-tokens.yml`; pool identity
-stays decoupled from the rotating token,
-[ADR-0189](../docs/adr/0189-oauth-for-llm-provider-endpoints.md)). `ModelEntry` carries
-capability flags, pricing, an optional per-model `concurrency` cap
-([ADR-0140](../docs/adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
-and generation params gated onto every `LlmRequest` (incl. `reasoning_effort`,
-[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
-The **wire-fact knobs** — `thinking_style`/`replay_thinking`
-([ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)), `thinking_format`
-([ADR-0191](../docs/adr/0191-inline-think-tags-catalog-format.md)), `effort_tiers`,
-`thinking_required`, provider `thinking_control: zai`
-([ADR-0203](../docs/adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)),
-`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`,
-per-model `tool_advertising`/`discovery` (ADR-0204), `rpm`/`concurrency` —
-describe what an endpoint accepts, so they are **catalog data only** (no env,
-no `config.yml` key; `discovery` resolves catalog model > catalog provider >
-`append`), documented in [provider](../docs/architecture/provider.md)
-§advanced catalog and listed per model by `skutter inspect config`
-([ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)). The
-Anthropic client binds its model facts
-(`AnthropicModelSpec`) at construction, so a `model:`-only pin under a
-different id uses the default model's facts. Two z.ai entries share one key:
-`zai` (Coding Plan, auto-detect winner, carries the bundled MCP servers) and
-`zai_paas` (pay-as-you-go)
-([ADR-0203](../docs/adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)).
-Precedence: **env > user YAML > embedded defaults**.
+The table is **catalog data** (`entanglement-provider/src/defaults.yml`
+deep-merged with `${config_dir}/entanglement/providers.yml`; precedence env >
+user YAML > embedded): a `wire:` tag adds any OpenAI-compatible endpoint, an
+`oauth:` block authenticates one
+([ADR-0189](../docs/adr/0189-oauth-for-llm-provider-endpoints.md)), and the
+per-model wire-fact knobs are catalog-only
+([ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)) — see
+[provider §advanced catalog](../docs/architecture/provider.md#advanced-catalog-wire-facts).
+Resilience (pool, retry, RPM/concurrency caps, AIMD pacing, 429 park,
+per-model caps, cross-process shared state) is **per endpoint**:
+[provider](../docs/architecture/provider.md),
+[ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md).
 
-Resilience is **per-endpoint** (keyed by a normalized base URL + a stable
-sha256 API-key hash, [ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0156](../docs/adr/0156-normalize-and-stabilize-the-endpoint-pool-key.md)):
-connection pool, retry/backoff, RPM + concurrency caps, adaptive AIMD pacing,
-bounded 429 park ([ADR-0111](../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)),
-per-model caps layered on top (ADR-0140), and a file-backed **cross-process**
-gate ([ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md),
-opt-out `ENTANGLEMENT_DEBUG=no-shared-state`), swept for orphaned
-`.state`/`.lock` pairs on startup and on `/key` rotation (ADR-0156). Opt-in provider-side
-**web search** ([ADR-0075](../docs/adr/0075-provider-side-web-search-mvp.md)/[ADR-0131](../docs/adr/0131-web-search-post-mvp-follow-ups.md))
-runs outside the permission ladder — enabling *is* consent.
+### Env vars — the one-place index
 
-Runtime env vars (the one-place index; each is documented inline at the
-feature that reads it). [ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)
-pruned this list: a retired var still set at startup prints **one** warning
-naming its replacement (`config::retired`) for one release.
+Each is documented inline at the feature that reads it.
+[ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md) pruned the
+list; a retired var still set prints one warning naming its replacement
+(`config::retired`).
 
 | Env var | Purpose |
 | --- | --- |
 | `ENTANGLEMENT_PROVIDER` | select provider (`zai`/`zai_paas`/`openai`/`ollama`/`anthropic`/`gemini`/`echo`); else auto-detect by key |
-| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base; `<NAME>` is the uppercased catalog entry name (`ZAI_PAAS_MODEL`), the key var is the entry's `key_env` |
-| `ENTANGLEMENT_PROVIDERS_FILE` | override the provider-catalog user file path |
-| `ENTANGLEMENT_CONFIG_FILE` | override the layered user config file path (`config.yml`) |
-| `ENTANGLEMENT_ENV_FILE` | override the managed provider-key env file path (`.env`) |
+| `<NAME>_API_KEY` / `<NAME>_MODEL` / `<NAME>_API_BASE` | per-provider key/model/base; `<NAME>` is the uppercased catalog entry name, the key var is the entry's `key_env` |
+| `ENTANGLEMENT_PROVIDERS_FILE` / `ENTANGLEMENT_CONFIG_FILE` / `ENTANGLEMENT_ENV_FILE` | override the provider catalog / layered `config.yml` / managed key `.env` path |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` / `ENTANGLEMENT_COMMANDS_DIR` | replace the whole user agents/skills/slash-commands layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files together (`grants.yml`, `agent-models.yml`, `agent-generation.yml`, `aux-models.yml`, `extra-roots.yml`, `mcp-tokens.yml`, `llm-tokens.yml`; default `${config_dir}/entanglement`, `config::state_dir`) |
-| `ENTANGLEMENT_DEBUG` | comma list of developer diagnostics: `bodies` (LLM request-body logging, #165), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing, #523); an unknown token warns once |
-| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call` process-wide; a session's permission **mode** sets its own sandbox posture for its whole spawn sub-tree, so this only ever *tightens* the mode's choice, never loosens it (ADR-0207 §6) |
-| `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child's env by the runtime (read-only context, not user-set) |
+| `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `llm-tokens` `.yml`; default `${config_dir}/entanglement`) |
+| `ENTANGLEMENT_DEBUG` | comma list: `bodies` (LLM request-body logging), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing); unknown token warns once |
+| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
+| `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by the runtime (read-only context) |
 
-Moved to `config.yml`/catalog (ADR-0213): session retention
-(`session_retention_days`), tool advertising (`tool_advertising`), TUI
-notify/mouse (`tui: {notify, mouse}` — the `tui:` block, `config::tui`, that
-`theme`/`keybindings` (#735) and `statusline` (#762) extend), rate limits
-(`rpm`/`concurrency` in `providers.yml`). `ENTANGLEMENT_SHARED_STATE_DIR`
-survives only as an undocumented subprocess-test hook.
-
-The session's permission **mode** has no env var by design: `--mode` on
-`run`/`tui` > `config.yml` `mode:` > the agent's `default_mode` > the
-engine's own `DEFAULT_MODE` (`build`) — see the permission-mode contract bullet below
-([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
+Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
+`tool_advertising`, `tui: {notify, mouse}` (also `theme`/`keybindings`/
+`statusline`), `rpm`/`concurrency` (providers.yml).
+`ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
+The permission **mode** has no env var by design (`--mode` > `config.yml`
+`mode:` > agent `default_mode` > `build`).
 
 ## The contract (read before touching the engine)
 
-`entanglement-core/src/protocol.rs` is the single set of types every head uses:
+`entanglement-core/src/protocol/in_msg.rs` and `out_event.rs` are the single
+set of types every head uses ([protocol](../docs/architecture/protocol.md)):
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
           | PauseSession | ResumeSession
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
+          | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | ForkSession | SetWorkdir | HibernateSession (trusted-only) | Resume (internal, not serialized)
-OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
-          | WorkdirChanged | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
+          | RevertFiles | ForkSession | SetWorkdir | HibernateSession | Resume (internal, not serialized)
+OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList
+          | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged
+          | ToolOverlayChanged | WorkdirChanged | McpList | McpChanged | McpAuthChanged | Throttle
+          | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
 ```
 
-Load-bearing invariants — **the detail lives in the linked architecture doc,
-never here**; each bullet is the claim + where to read it:
+Load-bearing invariants — one claim each; **the detail lives in the linked
+doc, never here**:
 
-- **Tool execution is a protocol round-trip, parked as data**: a round ending in
-  tool calls batch-emits `ToolExec` and parks the turn as serde `TurnState`;
-  results resolve in any order; replay/resume reconstruct a mid-turn tail; a
-  parked batch re-offers on a timer. `InMsg::ToolResult`/`OutEvent::ToolOutput`
-  carry `is_error`/`duration_ms` as a **structured side channel** alongside the
-  still-unchanged text `content`/`output` (#636, ADR-0176) — denied/masked/
-  refused/unknown-tool/errored calls (and an MCP `isError` result, #727) set
-  `is_error`; `duration_ms` is measured once, generically, around the whole
-  host-tool dispatch — an optional `envelope` carrying the call exactly as the model emitted it when core
-  unwrapped an `invoke` (ADR-0204; replay rebuilds from it) — and `exit_code`
-  (#681, ADR-0186): a `bash`/`call` foreground exit (or a `poll` observing a
-  job exit) as a real field via the defaulted `Tool::run_with_meta`, `None`
-  for everything else incl. killed processes, orthogonal to `is_error`.
-  `poll`'s own branches are classified too (#695, the ADR-0176 remainder):
-  unknown-handle/refused-`kill`/script-error set `is_error`, state reports
-  stay `false`. [engine](../docs/architecture/engine.md),
-  [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../docs/adr/0071-parked-turn-reoffer-timer.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md).
-- **The advertised tool surface is stable within a session**: core advertises
-  exactly what the resolver yields for the session's `ToolAdvertising` mode
-  (`full`/`tool_search`, default `tool_search`, per-session, pinned by the
-  tool-spec resolver at its first resolution — never off a broadcast —
-  kept across `SetModel`, re-pinnable live only via the TUI `/set` dialog —
-  `config.yml` `tool_advertising` > catalog > default). Under `full`, every
-  spec the config/resolver provides **at session start** (tools enabled
-  later stay discoverable until described, then append once; a removed tool
-  stays advertised and declines at dispatch); under `tool_search`, a lean kernel plus
-  the always-on, non-maskable `explore`/`describe` discovery pair; on
-  `client_side`, per the catalog `discovery` strategy pinned with the
-  mode at first resolution, `append` grows **append-only** as `describe()` calls land while
-  `native_first`/`invoke` add one `invoke {name, args}` kernel spec and never
-  change the array (core unwraps the envelope for events and dispatch but
-  keeps the model's own call in `Context`; the runtime declines a malformed
-  one, [ADR-0204](../docs/adr/0204-invoke-fallback-for-client-side-discovery.md)),
-  or via each wire's own `defer_loading`/`tool_search` primitive
-  (`anthropic_native`/`responses_native`, where a discovered tool *stays*
-  deferred for the session and arrives through the transcript's reference
-  block — never an un-defer, [ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md))
-  — never removed, never reordered. Enabling a tool (overlay or live MCP
-  enable) never changes the array by itself; only a delivered schema can
-  (ADR-0204).
-  Nothing filters advertisement any more — there is no agent tool mask to
-  filter with ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
-  retired it along with `Agent`'s authority fields). Authority is
-  graded entirely at the runtime's dispatch gate by the session's
-  **permission mode**: a `Capability::Control` tool (`explore`/`describe`/
-  `poll`/`ask_user`/`update_tasks`/`load_skill`/`mcp_enable`/`agent`/
-  `agent_send`/`request_mode`) is never graded at all; everything else grades
-  `Allow`/`Ask`/`Deny` off the mode's rule table, where a `Deny` is an
-  **absolute** flat decline (`tool \`x\` denied by mode \`research\` — use
-  /mode to switch`) and an `Ask` parks an ordinary approval — no more
-  mask-miss/attributed-decline distinction to draw (ADR-0198 is superseded,
-  "there is no mask left to miss"). Spawning is refused only past the mode's
-  `max_depth`/`max_agents`, as an `is_error`, never as a permission grade.
-  WHY: any mid-session change to the tools
-  array busts the provider prompt cache from the tools block onward. Only the
-  profile-defining specs (`propose_plan`, `request_mode`, the `agent`/
-  `agent_send` spawn enum) and `mcp__*` legitimately vary. Subsumes ADR-0190's
-  `poll` advertisement exemption (constant removed; its resolver-roster fix
-  stands); no envelope tool — a discovered tool is called exactly like a
-  kernel one, by its real name.
-  [engine](../docs/architecture/engine.md),
-  [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
-- **Authority is the session's permission mode, not the agent**
-  ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md),
-  superseding ADR-0003/0038/0040/0114/0134/0148/0192/0198): `research` |
-  `plan` | `build` | `auto`, compiled into the runtime — a user tunes one via
-  `config.yml` `modes:` (add-only: longest match already lets a longer rule
-  out-rank a shorter shipped one, so there is no removal syntax) but can never
-  define, add or remove one; an embedder supplies its own table. A tool
-  declares its `Capability` (`Read`/`Write`/`Exec`/`Plan`/`Control`, a slice —
-  `call`/`rhai` are genuinely multi); a mode's rule list keys on a bare tool
-  name, `*`, argument-scoped `tool(pattern)`, workdir-scoped `tool{pattern}`,
-  or a bare capability-class name, and **the longest matching key wins** (a
-  tie favors the more restrictive grade) — no tier order to memorize. `bash`
-  and `call` share one rule set; a compound command grades per segment
-  (ADR-0197), falling back to the mode's `default` when the splitter can't
-  parse it. `--mode` on `run`/`tui` > `config.yml` `mode:` > the agent's
-  `default_mode` starting hint (fresh sessions only, never wider than `build`;
-  a child never widens past its parent, [ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md))
-  > the engine's own `DEFAULT_MODE` (`build`); `request_mode` lets a blocked model ask to widen
-  (never into/from `auto`, never narrow — that's `/mode`'s job). Path args
-  still grade root-relative; a `config.yml` `permissions:` ceiling still
-  clamps least-privilege over every mode's grade; `Approve` still carries
-  scope (`Once`/`Session`/`SessionDir`/`Always`) and a grant is now **mode-scoped**
-  too (earned in `build`, inert in `research`). `auto` is the unattended
-  posture, and its bound is `question_timeout`/`on_timeout`, **not** its
-  default grade: its default is `prompt`, so an unenumerated call collapses
-  to a refusal and an identical retry parks a bounded approval (60s, expiring
-  as a denial) — only the explicit `deny` list refuses with no escalation
-  path ([ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)
-  amending ADR-0207 §11). [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0051](../docs/adr/0051-argument-scoped-permission-rules.md)/[ADR-0052](../docs/adr/0052-approval-scope-and-persisted-grants.md)/[ADR-0116](../docs/adr/0116-workdir-scoped-permission-rules-for-bash-call.md)/[ADR-0125](../docs/adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)/[ADR-0126](../docs/adr/0126-session-scoped-directory-grants.md)/[ADR-0088](../docs/adr/0088-session-aware-tool-execution.md)/[ADR-0197](../docs/adr/0197-compound-bash-commands-grade-per-segment.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
-- **`rhai` is a sandboxed script tool with file/exec bindings** graded
-  through the same permission chain as everything else — the session's
-  permission mode, the escape-root gate, workdir scopes — since it is a
-  multi-`Capability` tool (`Read`+`Write`+`Exec`) like `call`; `background:
-  true` detaches it like the other launchers (#637 — `x-` handle to `poll`,
-  120s/600s budget, cooperative kill only).
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0115](../docs/adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0130](../docs/adr/0130-rhai-exec-bindings-marshal-workdir.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
-- **Trusted/untrusted frame split**: `Holly::send` is privileged;
-  `send_from_wire` enforces a fail-closed allowlist (`ToolResult`, `Spawn`,
-  `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`, `McpAuth`, `SetMode`,
-  `RevertFiles`, `ForkSession` refused;
-  `SetToolOverlay` refused only for an enable entry — a deny-only overlay,
-  including the empty clearing list, is wire-allowed, #634).
-  [protocol](../docs/architecture/protocol.md),
-  [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)/[ADR-0124](../docs/adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md).
-- **Session-multiplexed**: every frame carries `SessionId`; `(session, seq)` is
-  unique across authored content events (shared per-session counter); the
-  seq-`0` bypass renders supervisor lifecycle errors; `ListSessions`/`McpList`/
-  `ListQuestions`/`ListPending` (parked approvals, #726) are correlation-id queries. [protocol](../docs/architecture/protocol.md),
-  [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0072](../docs/adr/0072-protocol-warts-settled-before-serve.md)/[ADR-0217](../docs/adr/0217-list-pending-query-for-parked-approvals.md).
-- **Model/provider/generation switching is live**: `SetModel` re-resolves via
-  the runtime-supplied `model_resolver` seam; agent profiles can pin models
-  (rebind at session start or spawn — `SetAgent` itself is gone,
-  [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §9: an agent is chosen once and is fixed for the session's life, so there is
-  no live persona switch left to rebind on); `SetGeneration` merges partial
-  params; both persist per profile in managed files. **Aux models** (`summarize`, `session_title`,
-  `narrate`) resolve per purpose via `aux_llm_resolver` / `AuxLlmRegistry`,
-  falling back to the session's own backend; `narrate` drives `Session.action`
-  live off every tool call (`narrate.rs`). A multi-user embedder builds
-  per-user registries itself — `AuxModelStore::in_memory` + a resolver
-  closure bound to its user (ADR-0181: no `UserId` in the runtime).
-  [engine](../docs/architecture/engine.md),
-  [heads & persistence](../docs/architecture/heads-and-persistence.md),
-  [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0081](../docs/adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md)/[ADR-0094](../docs/adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md).
-- **Compaction always forks** ([ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)):
-  manual `/compact`, auto-compaction on overflow (`auto_compact`, default on)
-  and the prune-only fallback each fork a successor session (copy-on-write,
-  keep-tail) and retire the source unchanged; a mid-turn fork carries the
-  parked batch into the successor. No path rewrites a live context, so every
-  log replays exactly. On the session's own backend the
-  summary request replays the session's system + tools + head verbatim and the
-  session cache key — byte-identical to a turn, so it reads the cached prefix;
-  only its instruction forbids tools, and a tool call falls back once to the
-  rendered transcript (also used for a pinned aux model or a head that
-  exceeds the real window; ADR-0202). `OutEvent::Usage.purpose` tags it
-  `compaction`. [engine](../docs/architecture/engine.md),
-  [ADR-0082](../docs/adr/0082-single-shot-session-ops-and-persisted-compaction.md)/[ADR-0101](../docs/adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)/[ADR-0102](../docs/adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)/[ADR-0103](../docs/adr/0103-auto-summarize-on-context-overflow.md)/[ADR-0110](../docs/adr/0110-compaction-successor-closes-predecessor.md)/[ADR-0121](../docs/adr/0121-prune-only-compact-stays-silent.md)/[ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md).
-- **Session lifecycle**: hibernation is eviction-not-termination (resume
-  replays the log, cascading over the spawn sub-tree); an optional idle TTL
-  auto-hibernates settled roots; `PauseSession`/`ResumeSession` hold a session
-  between cancel and hibernate; a spawned child's initiating prompt is
-  synthesized into the log; display metadata (`name`/`action`) is settable
-  live, with an auto session-title generator on first prompt. A message to a
-  non-live id follows `EngineConfig::unknown_session` — `SpawnBlank`
-  (default) / `Refuse` / `Resume(SessionLoader)`; `Holly::is_live` queries
-  liveness, `Holly::session_info` a live session's lineage + owner. `IdGen`
-  mints with an `IdContext` (parent/predecessor/user), and the default keeps
-  a `{tenant}:` prefix across sub-agent children and compaction successors.
-  [engine](../docs/architecture/engine.md),
-  [heads & persistence](../docs/architecture/heads-and-persistence.md),
-  [ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)/[ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0090](../docs/adr/0090-idle-ttl-auto-hibernation.md)/[ADR-0105](../docs/adr/0105-expose-idle-ttl-via-runtime-config.md)/[ADR-0112](../docs/adr/0112-resume-cascades-over-the-spawn-subtree.md)/[ADR-0113](../docs/adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0151](../docs/adr/0151-settable-session-metadata.md).
-- **MCP**: external tool servers over stdio or streamable HTTP, registered as
-  `mcp__<server>__<tool>` and graded under the same session permission mode; live add/remove/
-  list via engine-global messages answered by a runtime responder;
-  provider-bundled servers with three-state activation
-  (`enabled`/`allowed`/`disabled`, session-scoped lazy enablement); OAuth for
-  protected servers (discovery + DCR + PKCE, tokens in a managed file,
-  `/mcp connect`, or `/mcp connect --device-code` for RFC 8628 on a browser-less
-  host — the cross-process refresh race is also closed, ADR-0182; a web
-  embedder mints per-user credentials with `WebFlow` against its own callback
-  URI instead of either in-tree flow, ADR-0187). **Session-keyed per-user MCP
-  scopes** (#684, ADR-0188): an embedder-supplied resolver maps a session to
-  an opaque scope key + that user's server set + `user_scoped` token store;
-  a scoped session's `mcp__*` namespace is entirely scope-owned (replace
-  semantics; `(scope, server)` connection cache; `prewarm`/`evict_scope`;
-  auth-required surfaces as a clean tool error), and a null resolver — every
-  in-tree head — stays byte-identical single-user. The HTTP
-  transport shares the LLM endpoint pool — same
-  `HttpClient`, RPM/concurrency caps, 429 handling — keyed by the server's own
-  URL plus its bundling provider's key when known, so a provider-bundled
-  server's traffic counts against the same key budget its LLM endpoint
-  enforces. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0080](../docs/adr/0080-mcp-streamable-http-transport.md)/[ADR-0096](../docs/adr/0096-dynamic-toolregistry-sharedregistry.md)/[ADR-0097](../docs/adr/0097-live-mcp-server-management.md)/[ADR-0100](../docs/adr/0100-tui-mcp-command.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0157](../docs/adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)/[ADR-0182](../docs/adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md)/[ADR-0187](../docs/adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md).
-- **There is no agent tool mask any more** — `Agent`'s `tools`/
-  `disallowed_tools`/`permission`/`sandbox`/`can_spawn`/`spawnable_agents`/
-  `mode` fields, `mask_request.rs`, `decline.rs` and ADR-0198's approval
-  ladder are all deleted
-  ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md),
-  superseding ADR-0038/ADR-0148). A per-session tool overlay
-  (`SetToolOverlay`, trusted-only for an enable entry) survives as the user's
-  own direct voice: an enable entry overrides even a mode `Deny` for that
-  session (the model can't reach it — enabling stays trusted-frame-only), a
-  deny entry withdraws a tool outright, and an enable is optionally
-  `arg_pattern`-narrowed to an argument-scoped grade. The overlay is now
-  **mode-scoped** — dropped wholesale on any live mode change, since an entry
-  enabled under one mode carries no meaning in another. In-app allowlist
-  editing now materializes into the config `modes:` tuning block instead of a
-  per-agent mask file; `bash` registers at startup unconditionally like every
-  other built-in (ADR-0195).
-  [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0083](../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md)/[ADR-0163](../docs/adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)/[ADR-0195](../docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
-- **Skills are additive-only**: layered definitions with cross-vendor
-  discovery; a loaded skill only *adds* capability (its body text, endpoint
-  refs, rhai-backed tools, aliases) and never narrows the tool surface —
-  frontmatter `allowed_tools` is parsed-but-ignored (one-time load warning),
-  the session's permission mode is the sole control. A skill's own definition-driven
-  tools (`endpoint__`/`skill__` — below) surface via `explore`/`describe`
-  like everything else. [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0074](../docs/adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0194](../docs/adr/0194-skills-are-additive-only.md).
-- **User slash commands are head-side prompt templates**: layered
-  `commands/*.md` (`.claude`/`.opencode`/`.entanglement`, `:` namespaces)
-  expanded by the TUI and `run` into an ordinary `Prompt` — never seen by
-  core or the log; `$ARGUMENTS`/`$1..$9` only, no shell/`@file`; built-in
-  names win; `agent`/`model`/`allowed-tools` ignored.
-  [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md).
-- **Discovery pair + definition-driven tool sources**: `explore(filter?)`/
-  `describe(names)` are always-on, non-maskable, always-`Allow` internal
-  tools (the `poll` pattern) indexing every dynamic source — MCP servers,
-  `config.yml` `endpoints:` (→ `endpoint__<name>`, riding the shared provider
-  HTTP pool), skill-declared `tools:` (→ `skill__<skill>__<name>`: endpoint
-  refs, rhai-backed scripts, or aliases) — with alias rewrite happening
-  *before* grading so an alias can't launder a denied tool.
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)/[ADR-0190](../docs/adr/0190-poll-is-always-on-non-maskable-internal-tool.md).
-- **Definitions are data, layered** embedded < user < project, later wins; the
-  project layer is **trusted** ([ADR-0047](../docs/adr/0047-local-trust-boundary.md)).
-  Provider keys live in a managed `.env` with two writer surfaces
-  (`skutter config set-key`, TUI `/key`); lifecycle hooks wrap tool dispatch
-  and prompt ingress; everything watched + live-reloaded with advisory-locked
-  managed files. [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [heads & persistence](../docs/architecture/heads-and-persistence.md),
-  [ADR-0066](../docs/adr/0066-lifecycle-hooks-as-runtime-interceptors.md)/[ADR-0073](../docs/adr/0073-managed-env-file-writer-and-key-surfaces.md)/[ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md).
-- **Filesystem containment**: symlink-safe root containment with an
-  approval-gated escape hatch (per-tool, per-path grants; `glob`/`grep` ride
-  durable `read` grants; the runtime scratch dir is pre-trusted; `plan` mode
-  gets a plans-folder write carve-out). Optional bubblewrap sandbox for
-  `bash`/`call`, now a **mode** fact applying to its whole spawn sub-tree
-  (env may only tighten it further, never loosen it) rather than a per-agent
-  one.
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0119](../docs/adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)/[ADR-0120](../docs/adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)/[ADR-0132](../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)/[ADR-0142](../docs/adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
-  (supersedes [ADR-0134](../docs/adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)).
-- **Undo/rewind is per-write backups, not git**: `write`/`edit`/`apply_patch`
-  (and the `rhai` file bindings) store each file's prior bytes under the root
-  session's store dir; trusted-only `RevertFiles` → `FilesReverted` restores
-  everything after a turn (TUI `/undo`, `/rewind`), refusing any file changed
-  since, and leaves the model a replay-folded note. `bash`/`call`/`rhai` exec
-  changes are never tracked; replay never touches the disk.
-  [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md).
-- **`/fork` is a non-compacting copy**: trusted-only `ForkSession{at_turn?}`
-  mints a fresh root (tenant prefix kept) seeded with the source's verbatim
-  `Context` (or turns `1..=n`), announced and persisted as the fork's own
-  `SessionForked{context}` so its log replays exactly. It inherits the live
-  model, generation, mode and overlay. The source stays live, and the fork is
-  deferred to idle (no parked batch), has no children, and starts with an empty
-  undo history. [engine](../docs/architecture/engine.md),
-  [ADR-0223](../docs/adr/0223-non-compacting-session-fork.md).
-- **A session has a working directory** (`/cd`, `Spawn.workdir`): trusted-only
-  `SetWorkdir{dir,approve?}` is validated on arrival by the runtime's
-  `workdir_resolver` seam (inside the root, or under a `bash`/`call`
-  escape-root grant the approval records) → `WorkdirChanged`, deferred to
-  idle, inherited by later children, successors and forks. `ToolExec` carries
-  it; the executor rewrites relative path args onto it **before** grading, so
-  permission args stay root-relative and containment is re-checked at use.
-  The model learns it from the per-round trailing notice — never the system
-  prompt. [gates & host tools](../docs/architecture/gates-and-host-tools.md),
-  [ADR-0224](../docs/adr/0224-session-working-directory.md).
-- **Plans**: `propose_plan` is the sole plan-authorship tool (`Capability::Plan`,
-  allowed only in `plan` mode — a mode denying it flat-declines before any
-  file is touched), file-backed under `.entanglement/plans/`, force-parked on
-  `Ask` regardless. On approval the session tree **switches mode** in place
-  and the same turn continues — no sponsored child, no permission root;
-  [ADR-0024](../docs/adr/0024-subagent-permission-gating.md)'s ancestor
-  privilege clamp loses its only exemption
-  ([ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §7, superseding [ADR-0138](../docs/adr/0138-sponsored-build-child-and-propose-plan-cycle.md)).
-  **Which mode is the approver's own choice** (#560): `InMsg::Approve` carries
-  an optional `mode` (`build`/`auto`) offered at the prompt — a bare accept
-  (`None`) defaults to `auto` (bounded, so "go implement this" stays safe
-  unattended); `propose_plan` may *suggest* one via its own optional `mode`
-  argument, which only pre-selects the prompt's option and never decides.
-  Asymmetric with `request_mode` on purpose: that tool still refuses `auto`
-  outright since there the *model* asks with no human answering.
-  A blocked model widens into `plan`/`build` itself via `request_mode`
-  (force-parked the same way, never into/from `auto`). A session-scoped
-  content-hash staleness guard refuses a stale
-  `path` resubmit at the *next* call; a dedicated debounced plans-folder
-  watch (`plan_watch.rs`, reusing only `watch.rs`'s `spawn_debounced_watcher`
-  primitive, never its unrelated agent/skill/config reload) surfaces the same
-  out-of-band edit live as `OutEvent::PlanChanged`, self-healing the guard's
-  registry so the next resubmit isn't also refused.
-  [agents & permissions](../docs/architecture/agents-and-permissions.md),
-  [engine](../docs/architecture/engine.md),
-  [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0173](../docs/adr/0173-watcher-driven-plan-file-changed-notice.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md).
-- **`ask_user` questions are listable/retractable/replaceable** after being
-  asked (`ListQuestions`/`RetractQuestion`/`ReplaceQuestion`, runtime-owned
-  registry). [protocol](../docs/architecture/protocol.md),
-  [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md).
-- **An ambiguous LLM stop retries in place** (bounded, persisted
-  `AmbiguousRetry` for exact replay) instead of ending the turn.
-  [engine](../docs/architecture/engine.md),
-  [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md).
-- **Endpoint throttle transitions are wire-visible** (`OutEvent::Throttle`,
-  engine-global, transition-only). [provider](../docs/architecture/provider.md),
-  [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md).
-  A session-log write outage is too, on the same model
-  (`PersistenceDegraded`/`PersistenceRecovered`, one pair per outage per
-  root, never persisted — #767).
-  [heads & persistence](../docs/architecture/heads-and-persistence.md).
-- **Reasoning has two rails**: `ReasoningDelta` renders (never folded into
-  `Context`), `ContentPart::Reasoning` + `ReasoningBlock` replays. Anthropic
-  requires the signed thinking block back on a parked turn's final assistant
-  message; capture is unconditional, replay is per-model
-  (`ModelEntry::replay_thinking`) and covers **every** assistant turn (stripping
-  earlier blocks edits history on preserved-thinking models, ADR-0202), and a
-  foreign provider's block is dropped, not degraded to text. [provider](../docs/architecture/provider.md),
-  [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md).
-- **Multi-user mode is an embedder library API** (`UserId` on the wire,
-  per-user catalogs/keys/budgets via `entanglement-provider::multi_user`,
-  per-user MCP credentials via `provider::oauth::UserTokenStore` +
-  `user_scoped` — minted from a web app via `WebFlow` (ADR-0187), routed per
-  session via `mcp::scoped::McpScopes` (ADR-0188) — per-user OAuth *LLM*
-  endpoints via `UserProviderContext::with_token_source` (ADR-0189), per-user
-  ceilings/grants/aux pins as embedder
-  implementations of the existing seams — the runtime crate never names
-  `UserId`, enforced by `make userid`); `serve` stays local single-user.
-  [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../docs/adr/0184-provider-hosted-multi-user-seams.md)/[ADR-0183](../docs/adr/0183-narrate-purpose-and-per-user-aux-pins.md),
-  recipes: [embedding](../docs/embedding.md) §7.
-  Two users sharing one **literal** API key each get their own rpm/concurrency
-  slice via a per-user admission gate (`HttpClient::with_user_budget`) layered
-  above the shared endpoint pool, mirroring ADR-0140's per-model gate.
-  [ADR-0175](../docs/adr/0175-per-user-admission-gate-on-a-shared-literal-key.md).
-  No in-tree head ships multi-user: the authenticated multi-user wire head
-  designed by ADR-0174 was built (#674), then removed (#686) — `UserId` must
-  not appear anywhere in `entanglement-runtime`; `serve` stays exactly
-  ADR-0048's local posture. An authenticated wire head is an embedder's own
-  build, out of tree. [ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)
-  supersedes [ADR-0174](../docs/adr/0174-authenticated-multi-user-wire-head.md).
+- **Tool execution is a protocol round-trip, parked as data** — a `ToolExec`
+  batch parks the turn as serde `TurnState`; results (structured
+  `is_error`/`duration_ms`/`exit_code`/`envelope`) resolve in any order
+  ([engine](../docs/architecture/engine.md), [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md)).
+- **The advertised tool array is stable within a session** — pinned at first
+  resolution, append-only, never filtered/removed/reordered, since any change
+  busts the prompt cache ([gates §discovery](../docs/architecture/gates-and-host-tools.md), [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)/[ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)/[ADR-0204](../docs/adr/0204-invoke-fallback-for-client-side-discovery.md)).
+- **Authority is the session's permission mode, not the agent** —
+  `research`/`plan`/`build`/`auto`, graded at the runtime's dispatch gate by
+  the longest matching rule; there is no agent tool mask
+  ([agents & permissions §3](../docs/architecture/agents-and-permissions.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)).
+- **The tool overlay is the user's own trusted voice** — per-session,
+  mode-scoped enable/deny entries over the mode's grade
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).
+- **Trusted/untrusted frame split** — `Holly::send` is privileged;
+  `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`)
+  ([protocol](../docs/architecture/protocol.md), [ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)).
+- **Session-multiplexed** — every frame carries `SessionId`; `(session, seq)`
+  is unique per authored event; `List*`/`McpList` are correlation-id queries
+  ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)).
+- **Model/generation switching is live; aux models resolve per purpose**
+  ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads-and-persistence.md), [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)).
+- **Compaction always forks a successor session** — no path rewrites a live
+  context, so every log replays exactly; `/fork` is the non-compacting copy
+  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)).
+- **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
+  idle TTL, unknown-session policy, tenant-prefixed ids
+  ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads-and-persistence.md), [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)).
+- **A session has a working directory** — relative path args are rewritten
+  onto it *before* grading; the model learns it from the per-round notice
+  ([engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/0224-session-working-directory.md)).
+- **Filesystem containment** — symlink-safe root containment, approval-gated
+  escape hatch, optional bubblewrap sandbox as a mode fact
+  ([gates §8](../docs/architecture/gates-and-host-tools.md), [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)).
+- **Undo/rewind is per-write backups, not git** — exec changes are never
+  tracked; replay never touches the disk
+  ([gates §undo](../docs/architecture/gates-and-host-tools.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)).
+- **`rhai` is a sandboxed script tool** graded like its bindings' host tools
+  ([gates §8](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)).
+- **MCP** — stdio/HTTP servers as `mcp__<server>__<tool>`; live add/remove,
+  provider-bundled three-state servers, OAuth, per-user scopes
+  ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
+- **Discovery pair + definition-driven tools** — always-`Allow`
+  `explore`/`describe` index MCP, `endpoint__*` and `skill__*` tools; alias
+  rewrite happens before grading ([gates §definition-driven](../docs/architecture/gates-and-host-tools.md), [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)).
+- **Skills are additive-only; slash commands are head-side templates**
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)).
+- **Definitions are data, layered** embedded < user < project (project
+  trusted); managed files are advisory-locked and live-reloaded
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads-and-persistence.md), [ADR-0047](../docs/adr/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)).
+- **Plans** — `propose_plan` (only in `plan` mode) is file-backed; approval
+  switches the session's mode in place, to the approver's choice
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
+- **`ask_user` questions are listable/retractable/replaceable**
+  ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)).
+- **An ambiguous LLM stop retries in place**, bounded and persisted
+  ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)).
+- **Throttle and persistence outages are wire-visible transitions**
+  ([provider](../docs/architecture/provider.md), [heads §6b](../docs/architecture/heads-and-persistence.md), [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md)).
+- **Reasoning has two rails** — `ReasoningDelta` renders, `ReasoningBlock`
+  replays ([provider §extended thinking](../docs/architecture/provider.md#extended-thinking-capture-and-replay), [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)).
+- **Multi-user is an embedder library API** — `UserId` never appears in
+  `entanglement-runtime` (`make userid`); no in-tree head is multi-user
+  ([embedding §7](../docs/embedding.md), [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)).
 
 | Topic | Module |
 | --- | --- |
+| crate layering, the actor ABI | [layers & ABI](../docs/architecture/layers-and-abi.md) |
 | `InMsg`/`OutEvent`, Plan/TaskList events | [protocol](../docs/architecture/protocol.md) |
-| agent profiles, permission modes, spawn gating, plan authority, skills, prompt assembly | [agents & permissions](../docs/architecture/agents-and-permissions.md) |
-| turn loop, tool round-trip, steering, cancellation, compaction, aux models | [engine](../docs/architecture/engine.md) |
-| streaming client, catalog, pool/retry/rate-limit | [provider](../docs/architecture/provider.md) |
-| stdio/TUI/`serve` heads, event-sourced persistence, managed files | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
-| dependency gates, host tools (file sextet + exec), lifecycle hooks, MCP | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
+| agent profiles, permission modes, spawn gating, plan authority, skills, slash commands, prompt assembly | [agents & permissions](../docs/architecture/agents-and-permissions.md) |
+| turn loop, tool round-trip, steering, cancellation, compaction, fork, workdir | [engine](../docs/architecture/engine.md) |
+| streaming clients, catalog, pool/retry/rate-limit, thinking | [provider](../docs/architecture/provider.md) |
+| stdio/TUI/`serve` heads, persistence, managed files, aux models | [heads & persistence](../docs/architecture/heads-and-persistence.md) |
+| dependency gates, host tools, undo, discovery, hooks, MCP | [gates & host tools](../docs/architecture/gates-and-host-tools.md) |
 
-Debugging: `skutter inspect prompt|agents|skills|commands|config` re-runs the load-time
-discovery with **no engine** and prints the resolved state, including the layer
-that won an override. The TUI exposes the same views in-session via `/inspect`
-(or `<leader>i`). Trust & scope decisions:
-[ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo trusted; config
-precedence system < user < repo) and
+Debugging: `skutter inspect prompt|agents|skills|commands|config|modes|aux-models|mcp-tokens|mcp|session`
+re-runs load-time discovery with **no engine** and prints the resolved state,
+including the winning layer; the TUI shows the same via `/inspect` (`<leader>i`).
+Trust & scope: [ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo
+trusted; system < user < repo) and
 [ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md) (local-only `serve`).
 
 ## Conventions (project-specific)
@@ -552,9 +247,10 @@ precedence system < user < repo) and
   link. Drift check: `/arch check`.
 - **Keep this brief + the `docs/architecture/` modules in sync.** The brief
   carries *pointers*; the architecture docs carry the *what is*; ADRs carry the
-  *why*. When a message variant, profile, crate, or command changes, update the
-  owning architecture doc (and the contract block above) in the same change —
-  never grow this brief back into a re-statement of the docs.
+  *why*. When a message variant, profile, crate, env var or command changes,
+  update the owning architecture doc (and the contract block / env index /
+  command list above) in the same change. A new invariant gets **one** short
+  bullet here — claim + links — never a re-statement of the docs.
 - **Every intentional deferral and docs-drift finding gets its own GitHub
   issue** in the same change that defers it (#689 retired the old
   deferred-work ledger file — issues are the only tracker; an issue must be
@@ -562,11 +258,6 @@ precedence system < user < repo) and
 
 ## Open work
 
-Every epic through **0.5.0** is complete; the release history lives in
-[`../CHANGELOG.md`](../CHANGELOG.md) (0.2.0–0.5.0 + `[Unreleased]`) and the
-closed GitHub issues. Post-0.5.0 work (per-model concurrency #521, shared
-endpoint state #523, pause/resume #516, plan tool #513, `ask_user` v2 #515,
-multi-user API #522, bundled MCP #542, session metadata, aux models, MCP
-OAuth, `auto_compact`) is in `[Unreleased]`. Current focus: the **2026-08-01
-pre-release audit umbrella, issue #560** — P0 stability/provider-sharing fixes
-and release mechanics gating the next tag.
+Release history lives in [`../CHANGELOG.md`](../CHANGELOG.md) and the closed
+GitHub issues; open work is the open issue list. Current focus: cutting the
+**0.7.0** release (issue #741).

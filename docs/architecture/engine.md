@@ -59,7 +59,10 @@ own `Deny`/`Ask` grading and the discovery pair's non-tool kinds).
 [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
 superseding ADR-0193's `native`/`invoke` split): the surface above is what
 **`Full`** mode advertises — the full registered surface with dynamic MCP
-specs inline, mutating on add/remove (an accepted cache cost). **`ToolSearch`**
+specs inline, snapshotted at first resolution: a tool added later is appended
+once when described, a removed one stays advertised and declines at dispatch
+(ADR-0204 §5; [gates & host tools](gates-and-host-tools.md) §Client-side
+discovery strategy). **`ToolSearch`**
 mode (**the default**) advertises instead an **immutable lean kernel**: the
 high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
 `ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
