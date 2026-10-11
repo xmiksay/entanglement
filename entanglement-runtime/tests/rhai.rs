@@ -25,7 +25,7 @@ use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::{load_registry, LoadSkillTool};
+use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
@@ -38,6 +38,12 @@ use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 /// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
 /// every test in this file
 /// that isn't specifically about mode grading.
+/// An empty user skills layer under `root`, so the host's real user skills
+/// never leak in (#773).
+fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
+    entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
+}
+
 fn allow_all_table() -> Arc<ModeTable> {
     let mode = Mode {
         name: "build".to_string(),
@@ -1389,9 +1395,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
     .unwrap();
     std::fs::write(root.join("f.txt"), "before").unwrap();
 
-    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-    let skill_registry = Arc::new(load_registry(&root).unwrap());
-    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+    let skill_registry = Arc::new(load_registry_in(&root, &no_user(&root)).unwrap());
     let skills = Arc::new(RwLock::new(skill_registry));
 
     let mut tools = host_tools(root.clone());

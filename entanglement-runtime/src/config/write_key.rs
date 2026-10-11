@@ -55,9 +55,15 @@ const ADVERTISING_COMMENT: &str =
 /// for **new** sessions. (The per-provider `discovery:` map it once wrote too
 /// is retired, ADR-0213: the catalog decides.)
 pub fn save_tool_advertising(mode: ToolAdvertising) -> Result<PathBuf> {
-    save_key("tool_advertising", ADVERTISING_COMMENT, |_| {
-        Ok(Value::String(mode.label().to_string()))
-    })
+    save_key(
+        "tool_advertising",
+        ADVERTISING_COMMENT,
+        advertising_value(mode),
+    )
+}
+
+fn advertising_value(mode: ToolAdvertising) -> impl FnOnce(Option<&Value>) -> Result<Value> {
+    move |_| Ok(Value::String(mode.label().to_string()))
 }
 
 /// Set one top-level `key` of the user config to whatever `value` returns for
@@ -285,7 +291,17 @@ fn commented_child(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ENV_LOCK};
+    use crate::config::Config;
+    use std::path::Path;
+
+    fn save_adv(path: &Path, mode: ToolAdvertising) -> Result<PathBuf> {
+        save_key_at(
+            path.to_path_buf(),
+            "tool_advertising",
+            ADVERTISING_COMMENT,
+            advertising_value(mode),
+        )
+    }
 
     fn advertising(mode: &str) -> String {
         format!("tool_advertising: {mode}\n")
@@ -412,24 +428,21 @@ mod tests {
 
     #[test]
     fn two_keys_written_in_sequence_both_land_and_reload() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yml");
-        std::env::set_var(CONFIG_FILE_ENV, &path);
 
         // No file yet: the writer scaffolds from the template, then edits it;
         // a second write rewrites the key in place, and a mapping key lands
         // beside it.
-        save_tool_advertising(ToolAdvertising::Full).unwrap();
-        save_tool_advertising(ToolAdvertising::ToolSearch).unwrap();
-        save_key("tui", "unused", |_| {
+        save_adv(&path, ToolAdvertising::Full).unwrap();
+        save_adv(&path, ToolAdvertising::ToolSearch).unwrap();
+        save_key_at(path.clone(), "tui", "unused", |_| {
             Ok(serde_yaml::from_str("{notify: true}")?)
         })
         .unwrap();
 
-        let resolved = Config::load(dir.path()).unwrap();
+        let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
 
         assert_eq!(resolved.tool_advertising, Some(ToolAdvertising::ToolSearch));
         assert!(resolved.tui.notify && resolved.tui.mouse);
@@ -448,14 +461,11 @@ mod tests {
 
     #[test]
     fn no_config_path_is_a_loud_error() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("config.yml");
-        std::env::set_var(CONFIG_FILE_ENV, &path);
         // A missing parent dir is created, not an error — the first persist on
         // a machine with no config dir yet must still work.
-        let written = save_tool_advertising(ToolAdvertising::Full).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
+        let written = save_adv(&path, ToolAdvertising::Full).unwrap();
         assert_eq!(written, path);
         assert!(path.exists());
     }

@@ -17,6 +17,7 @@
 //! never had one) needs a restart to be picked up.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
@@ -81,9 +82,10 @@ pub fn spawn_watcher(
     // Baseline captured *before* the first debounced firing can land, so even
     // the very first wakeup is checked against real state rather than always
     // reloading unconditionally.
-    let mut last_fingerprint = fingerprint(&cwd, &Fingerprint::default());
+    let mut last_fingerprint = fingerprint(&paths, &Fingerprint::default());
+    let fingerprinted = paths.clone();
     spawn_debounced_watcher(paths, DEBOUNCE, move || {
-        let fresh = fingerprint(&cwd, &last_fingerprint);
+        let fresh = fingerprint(&fingerprinted, &last_fingerprint);
         let changed = definitions_changed(&last_fingerprint, &fresh);
         last_fingerprint = fresh;
         if !changed {
@@ -143,10 +145,10 @@ fn is_definition_file(path: &Path) -> bool {
 /// file whose stat pair moved (stage 2). A no-op `read()` — which `reload()`
 /// itself does every pass — leaves `(mtime, size)` untouched, so it costs a
 /// `stat()`, never a re-hash.
-fn fingerprint(cwd: &Path, prev: &Fingerprint) -> Fingerprint {
+fn fingerprint(paths: &[PathBuf], prev: &Fingerprint) -> Fingerprint {
     let mut map = BTreeMap::new();
-    for root in watch_paths(cwd).into_iter().filter(|p| p.exists()) {
-        fingerprint_into(&root, prev, &mut map);
+    for root in paths.iter().filter(|p| p.exists()) {
+        fingerprint_into(root, prev, &mut map);
     }
     Fingerprint(map)
 }
@@ -289,16 +291,30 @@ pub(crate) fn spawn_debounced_watcher(
 /// location is still watched (#558). Deduplicated (a `BTreeSet` — several of these overlap
 /// by construction).
 fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
-    let mut set = BTreeSet::new();
-    let home = dirs::home_dir();
-    let config = dirs::config_dir();
+    watch_paths_from(
+        cwd,
+        |name| std::env::var_os(name),
+        crate::user_dirs::home_dir(),
+        crate::user_dirs::config_dir(),
+    )
+}
 
-    for (kind, env) in [
+/// [`watch_paths`] over an injected env lookup and home/config dirs, so tests
+/// never touch process env or the real user dirs (#773).
+fn watch_paths_from(
+    cwd: &Path,
+    env: impl Fn(&str) -> Option<OsString>,
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut set = BTreeSet::new();
+
+    for (kind, env_var) in [
         ("agents", "ENTANGLEMENT_AGENTS_DIR"),
         ("skills", "ENTANGLEMENT_SKILLS_DIR"),
         ("commands", crate::slash_commands::COMMANDS_DIR_ENV),
     ] {
-        let env_override = std::env::var_os(env).map(PathBuf::from);
+        let env_override = env(env_var).map(PathBuf::from);
         for (_, dir, _) in
             layers::candidate_dirs(cwd, kind, env_override, home.as_deref(), config.as_deref())
         {
@@ -310,12 +326,13 @@ fn watch_paths(cwd: &Path) -> Vec<PathBuf> {
         set.insert(cfg.join("entanglement"));
     }
     set.insert(cwd.join(".entanglement"));
-    if let Some(state) = crate::config::state_dir::state_dir() {
+    let default_state = || config.as_ref().map(|c| c.join("entanglement"));
+    if let Some(state) = crate::config::state_dir::resolve(&env, default_state) {
         set.insert(state);
     }
 
-    for env in MANAGED_FILE_ENVS {
-        if let Some(parent) = std::env::var_os(env)
+    for var in MANAGED_FILE_ENVS {
+        if let Some(parent) = env(var)
             .map(PathBuf::from)
             .as_deref()
             .and_then(Path::parent)
@@ -371,6 +388,12 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// The watch set with no env overrides and no home/config dirs: the
+    /// project layer only, so tests never see the real user dirs.
+    fn project_paths(cwd: &Path) -> Vec<PathBuf> {
+        watch_paths_from(cwd, |_| None, None, None)
+    }
+
     #[test]
     fn fingerprint_is_stable_across_reads_but_changes_on_a_real_write() {
         // The bug this guards: on this filesystem a bare `read()` of a
@@ -387,11 +410,11 @@ mod tests {
         let file = dir.join("test.md");
         std::fs::write(&file, "v1").unwrap();
 
-        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
+        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
         for _ in 0..5 {
             let _ = std::fs::read_to_string(&file).unwrap();
         }
-        let fp2 = fingerprint(cwd.path(), &fp1);
+        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
         assert!(
             !definitions_changed(&fp1, &fp2),
             "repeated reads of unchanged files must not count as a change"
@@ -401,7 +424,7 @@ mod tests {
         // below lands in a distinguishably later tick.
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&file, "v2, different length").unwrap();
-        let fp3 = fingerprint(cwd.path(), &fp2);
+        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
         assert!(
             definitions_changed(&fp2, &fp3),
             "an actual content change must be reflected in the fingerprint"
@@ -420,7 +443,7 @@ mod tests {
         let skill = agents.join("test.md");
         std::fs::write(&skill, "v1").unwrap();
 
-        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
+        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
 
         // A command dumps output under .entanglement/tmp — not a definition file.
         let tmp = cwd
@@ -430,7 +453,7 @@ mod tests {
             .join("call-output");
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("call-1.stdout"), "lots of noisy output").unwrap();
-        let fp2 = fingerprint(cwd.path(), &fp1);
+        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
         assert!(
             !definitions_changed(&fp1, &fp2),
             "a write to a non-definition (.stdout) file must not trigger a reload"
@@ -439,7 +462,7 @@ mod tests {
         // Re-save the definition file with identical content, later mtime.
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&skill, "v1").unwrap();
-        let fp3 = fingerprint(cwd.path(), &fp2);
+        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
         assert!(
             !definitions_changed(&fp2, &fp3),
             "a same-content re-save (mtime bump only) must not trigger a reload"
@@ -448,7 +471,7 @@ mod tests {
         // A genuine edit still does.
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&skill, "v2").unwrap();
-        let fp4 = fingerprint(cwd.path(), &fp3);
+        let fp4 = fingerprint(&project_paths(cwd.path()), &fp3);
         assert!(
             definitions_changed(&fp3, &fp4),
             "a real content edit must trigger a reload"
@@ -463,16 +486,16 @@ mod tests {
         let a = agents.join("a.md");
         std::fs::write(&a, "a").unwrap();
 
-        let fp1 = fingerprint(cwd.path(), &Fingerprint::default());
+        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
         std::fs::write(agents.join("b.md"), "b").unwrap();
-        let fp2 = fingerprint(cwd.path(), &fp1);
+        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
         assert!(
             definitions_changed(&fp1, &fp2),
             "adding a definition is a change"
         );
 
         std::fs::remove_file(&a).unwrap();
-        let fp3 = fingerprint(cwd.path(), &fp2);
+        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
         assert!(
             definitions_changed(&fp2, &fp3),
             "removing a definition is a change"
@@ -482,7 +505,7 @@ mod tests {
         let commands = cwd.path().join(".claude").join("commands");
         std::fs::create_dir_all(&commands).unwrap();
         std::fs::write(commands.join("review.md"), "Review $1").unwrap();
-        let fp4 = fingerprint(cwd.path(), &fp3);
+        let fp4 = fingerprint(&project_paths(cwd.path()), &fp3);
         assert!(
             definitions_changed(&fp3, &fp4),
             "adding a command file is a change"
@@ -571,7 +594,7 @@ mod tests {
     #[test]
     fn watch_paths_is_deduped_and_nonempty() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = watch_paths(dir.path());
+        let paths = project_paths(dir.path());
         // The project `.entanglement` dir is always a candidate, so the set is
         // never empty even on a bare tempdir with no home/config layers.
         assert!(paths.contains(&dir.path().join(".entanglement")));
@@ -586,22 +609,29 @@ mod tests {
 
     /// #558/ADR-0213: a relocated managed-state dir is watched itself, so
     /// a managed file written outside `${config_dir}/entanglement/` still
-    /// live-reloads. Shares `crate::config::ENV_LOCK` with the other suites
-    /// that mutate process-global `ENTANGLEMENT_*` vars.
+    /// live-reloads.
     #[test]
     fn watch_paths_includes_a_relocated_state_dir() {
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let custom = dir.path().join("elsewhere");
-        std::fs::create_dir_all(&custom).unwrap();
-        std::env::set_var(crate::config::state_dir::STATE_DIR_ENV, &custom);
-        let paths = watch_paths(dir.path());
-        std::env::remove_var(crate::config::state_dir::STATE_DIR_ENV);
+        let env = |name: &str| {
+            (name == crate::config::state_dir::STATE_DIR_ENV).then(|| custom.clone().into())
+        };
+        let paths = watch_paths_from(dir.path(), env, None, Some("/cfg".into()));
         assert!(
             paths.contains(&custom),
             "a relocated ENTANGLEMENT_STATE_DIR must be watched"
         );
+        assert!(paths.contains(&PathBuf::from("/cfg/entanglement")));
+    }
+
+    /// The user layers and a relocated managed file's parent are watched too.
+    #[test]
+    fn watch_paths_covers_user_layers_and_relocated_file_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = |name: &str| (name == "ENTANGLEMENT_ENV_FILE").then(|| "/keys/x.env".into());
+        let paths = watch_paths_from(dir.path(), env, Some("/home/u".into()), None);
+        assert!(paths.contains(&PathBuf::from("/home/u/.claude/skills")));
+        assert!(paths.contains(&PathBuf::from("/keys")));
     }
 }

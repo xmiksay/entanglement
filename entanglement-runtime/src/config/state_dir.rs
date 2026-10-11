@@ -40,7 +40,7 @@ pub const MANAGED_STATE_FILES: [&str; 7] = [
 pub fn state_dir() -> Option<PathBuf> {
     resolve(
         |name| std::env::var_os(name),
-        || dirs::config_dir().map(|d| d.join("entanglement")),
+        || crate::user_dirs::config_dir().map(|d| d.join("entanglement")),
     )
 }
 

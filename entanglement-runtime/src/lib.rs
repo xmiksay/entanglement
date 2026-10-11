@@ -65,6 +65,7 @@ pub mod hooks;
 pub mod host;
 pub mod inspect;
 pub mod layers;
+mod user_dirs;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any

@@ -23,7 +23,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId,
 };
-use entanglement_runtime::agents::load_registry;
+use entanglement_runtime::agents::load_registry_in;
 use entanglement_runtime::mcp::McpCapabilityIndex;
 use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, SkillDisclosure};
 
@@ -92,19 +92,14 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
     };
 
     // Isolate from any host user-agents dir; project agents come from the temp dir.
-    let profiles = {
-        let _guard = crate::env_lock();
-        std::env::set_var("ENTANGLEMENT_AGENTS_DIR", "/nonexistent-user-agents-dir");
-        let profiles = load_registry(
-            project.path(),
-            &ctx,
-            &entanglement_runtime::skills::SkillRegistry::default(),
-            &McpCapabilityIndex::new(),
-        )
-        .expect("load_registry");
-        std::env::remove_var("ENTANGLEMENT_AGENTS_DIR");
-        profiles
-    };
+    let profiles = load_registry_in(
+        project.path(),
+        &crate::no_user(project.path()),
+        &ctx,
+        &entanglement_runtime::skills::SkillRegistry::default(),
+        &McpCapabilityIndex::new(),
+    )
+    .expect("load_registry");
 
     // Sanity: the registry itself carries the composed prompts.
     let parent_prompt = &profiles.get("parent").unwrap().system_prompt;

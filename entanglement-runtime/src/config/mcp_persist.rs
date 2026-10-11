@@ -37,8 +37,13 @@ pub fn save_mcp(servers: &HashMap<String, McpServerConfig>) -> Result<()> {
     let Some(path) = user_config_path() else {
         bail!("no config directory available; set {CONFIG_FILE_ENV} to a path first");
     };
-    lock::with_locked_file(&path, || {
-        let mut doc = read_doc(&path)?;
+    save_mcp_at(&path, servers)
+}
+
+/// [`save_mcp`] against an explicit config file.
+fn save_mcp_at(path: &Path, servers: &HashMap<String, McpServerConfig>) -> Result<()> {
+    lock::with_locked_file(path, || {
+        let mut doc = read_doc(path)?;
         let mapping = doc.as_mapping_mut().ok_or_else(|| {
             anyhow::anyhow!(
                 "{} does not parse as a YAML mapping at its root",
@@ -48,7 +53,7 @@ pub fn save_mcp(servers: &HashMap<String, McpServerConfig>) -> Result<()> {
         let mcp_value = serde_yaml::to_value(servers).context("serializing mcp servers")?;
         mapping.insert(Value::String("mcp".to_string()), mcp_value);
         let body = serde_yaml::to_string(&doc).context("serializing config.yml")?;
-        atomic_write(&path, &body)
+        atomic_write(path, &body)
     })
 }
 
@@ -74,7 +79,7 @@ fn read_doc(path: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ENV_LOCK};
+    use crate::config::Config;
 
     fn stdio_cfg(command: &str) -> McpServerConfig {
         McpServerConfig {
@@ -92,17 +97,14 @@ mod tests {
 
     #[test]
     fn save_mcp_creates_a_fresh_file_when_absent() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yml");
-        std::env::set_var(CONFIG_FILE_ENV, &path);
 
         let mut servers = HashMap::new();
         servers.insert("everything".to_string(), stdio_cfg("npx"));
-        save_mcp(&servers).unwrap();
+        save_mcp_at(&path, &servers).unwrap();
 
-        let resolved = Config::load(dir.path()).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
+        let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
 
         assert_eq!(resolved.mcp.len(), 1);
         assert_eq!(resolved.mcp["everything"].command.as_deref(), Some("npx"));
@@ -110,18 +112,15 @@ mod tests {
 
     #[test]
     fn save_mcp_preserves_sibling_keys() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yml");
         std::fs::write(&path, "provider: anthropic\nverbose: true\n").unwrap();
-        std::env::set_var(CONFIG_FILE_ENV, &path);
 
         let mut servers = HashMap::new();
         servers.insert("srv".to_string(), stdio_cfg("my-server"));
-        save_mcp(&servers).unwrap();
+        save_mcp_at(&path, &servers).unwrap();
 
-        let resolved = Config::load(dir.path()).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
+        let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
 
         assert_eq!(resolved.provider.as_deref(), Some("anthropic"));
         assert!(resolved.verbose);
@@ -131,20 +130,20 @@ mod tests {
 
     #[test]
     fn save_mcp_round_trips_add_then_remove() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yml");
-        std::env::set_var(CONFIG_FILE_ENV, &path);
 
         let mut servers = HashMap::new();
         servers.insert("srv".to_string(), stdio_cfg("my-server"));
-        save_mcp(&servers).unwrap();
-        assert!(Config::load(dir.path()).unwrap().mcp.contains_key("srv"));
+        save_mcp_at(&path, &servers).unwrap();
+        assert!(Config::load_with(dir.path(), Some(&path))
+            .unwrap()
+            .mcp
+            .contains_key("srv"));
 
         servers.remove("srv");
-        save_mcp(&servers).unwrap();
-        let resolved = Config::load(dir.path()).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
+        save_mcp_at(&path, &servers).unwrap();
+        let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
 
         assert!(
             !resolved.mcp.contains_key("srv"),
@@ -154,18 +153,15 @@ mod tests {
 
     #[test]
     fn save_mcp_overwrites_a_prior_mcp_section() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yml");
         std::fs::write(&path, "mcp:\n  old:\n    command: old-binary\n").unwrap();
-        std::env::set_var(CONFIG_FILE_ENV, &path);
 
         let mut servers = HashMap::new();
         servers.insert("new".to_string(), stdio_cfg("new-binary"));
-        save_mcp(&servers).unwrap();
+        save_mcp_at(&path, &servers).unwrap();
 
-        let resolved = Config::load(dir.path()).unwrap();
-        std::env::remove_var(CONFIG_FILE_ENV);
+        let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
 
         assert_eq!(resolved.mcp.len(), 1);
         assert!(resolved.mcp.contains_key("new"));

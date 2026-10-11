@@ -17,6 +17,7 @@
 //!   environment **only if that var is not already set** — the real process env
 //!   always wins (env > file). Malformed lines are skipped, not fatal.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -28,10 +29,18 @@ pub(super) const ENV_FILE_ENV: &str = "ENTANGLEMENT_ENV_FILE";
 /// `ENTANGLEMENT_ENV_FILE` (which tests point at a temp file). `None` when the
 /// platform has no config dir and no override is set.
 pub fn env_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(ENV_FILE_ENV) {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_dir().map(|d| d.join("entanglement").join(".env"))
+    resolve_path(|name| std::env::var_os(name), crate::user_dirs::config_dir)
+}
+
+/// [`env_file_path`] over an injected env lookup and config dir, so the
+/// precedence is unit-testable without mutating process env (#773).
+fn resolve_path(
+    env: impl Fn(&str) -> Option<OsString>,
+    config_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    env(ENV_FILE_ENV)
+        .map(PathBuf::from)
+        .or_else(|| config_dir().map(|d| d.join("entanglement").join(".env")))
 }
 
 /// First-run scaffold (#220): if the managed env file does not exist yet, write a
@@ -43,9 +52,11 @@ pub fn env_file_path() -> Option<PathBuf> {
 /// the config dir is unknown). A write error is returned for the caller to log —
 /// startup must not fail because the home directory is read-only.
 pub fn scaffold_if_missing(key_names: &[String]) -> Result<Option<PathBuf>> {
-    let Some(path) = env_file_path() else {
-        return Ok(None);
-    };
+    env_file_path().map_or(Ok(None), |path| scaffold_at(path, key_names))
+}
+
+/// [`scaffold_if_missing`] at an explicit `path`.
+fn scaffold_at(path: PathBuf, key_names: &[String]) -> Result<Option<PathBuf>> {
     if path.exists() {
         return Ok(None);
     }
@@ -87,21 +98,36 @@ pub fn load() -> Result<Option<(PathBuf, usize)>> {
     let Some(path) = env_file_path() else {
         return Ok(None);
     };
+    load_at(
+        path,
+        |key| std::env::var_os(key).is_some(),
+        |key, value| std::env::set_var(key, value),
+    )
+}
+
+/// [`load`] from an explicit `path` into an injected environment (`is_set`
+/// probes it, `set` exports into it), so the env-wins rule is unit-testable
+/// without mutating the process env (#773).
+fn load_at(
+    path: PathBuf,
+    is_set: impl Fn(&str) -> bool,
+    mut set: impl FnMut(&str, &str),
+) -> Result<Option<(PathBuf, usize)>> {
     if !path.exists() {
         return Ok(None);
     }
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading env file {}", path.display()))?;
-    let mut set = 0usize;
+    let mut count = 0usize;
     for (key, value) in parse(&text) {
         // Process env wins: only fill a var the environment left unset. Presence
         // (even empty) counts as set, matching standard dotenv no-override.
-        if std::env::var_os(&key).is_none() {
-            std::env::set_var(&key, value);
-            set += 1;
+        if !is_set(&key) {
+            set(&key, &value);
+            count += 1;
         }
     }
-    Ok(Some((path, set)))
+    Ok(Some((path, count)))
 }
 
 /// Parse `KEY=VALUE` lines: blank lines and `#` comments are skipped, the key is
@@ -136,14 +162,6 @@ fn unquote(value: &str) -> &str {
     }
     value
 }
-
-/// `load`/`scaffold`/`set_key` all mutate the process-global environment
-/// (`ENTANGLEMENT_ENV_FILE` and the keys themselves), so every test touching it —
-/// here and in the sibling `env_key` module — serializes under this one lock.
-/// Two separate `static`s would each only serialize their own module's tests
-/// against each other, not against the other module's, defeating the point.
-#[cfg(test)]
-pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -202,62 +220,76 @@ SINGLE='single quoted'
     }
 
     #[test]
-    fn load_sets_unset_but_never_overrides_process_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+    fn the_env_override_wins_over_the_config_dir() {
+        let path = resolve_path(
+            |n| (n == ENV_FILE_ENV).then(|| "/srv/keys.env".into()),
+            || panic!("the default must not be consulted"),
+        );
+        assert_eq!(path, Some(PathBuf::from("/srv/keys.env")));
+        let path = resolve_path(|_| None, || Some(PathBuf::from("/cfg")));
+        assert_eq!(path, Some(PathBuf::from("/cfg/entanglement/.env")));
+        // ADR-0213: the managed-state dir never moves this hand-edited input.
+        let path = resolve_path(
+            |n| (n == super::super::state_dir::STATE_DIR_ENV).then(|| "/state".into()),
+            || Some(PathBuf::from("/cfg")),
+        );
+        assert_eq!(path, Some(PathBuf::from("/cfg/entanglement/.env")));
+    }
+
+    #[test]
+    fn load_sets_unset_but_never_overrides_the_env() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        std::fs::write(
-            &path,
-            "ENTG_TEST_UNSET=from_file\nENTG_TEST_PRESET=from_file\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "UNSET=from_file\nPRESET=from_file\n").unwrap();
 
         // The real env wins for a var already set; the other is filled from file.
-        std::env::set_var("ENTG_TEST_PRESET", "from_env");
-        std::env::remove_var("ENTG_TEST_UNSET");
-        std::env::set_var(ENV_FILE_ENV, &path);
-
-        let (loaded, set) = load().unwrap().unwrap();
+        let env = std::cell::RefCell::new(std::collections::HashMap::from([(
+            "PRESET".to_string(),
+            "from_env".to_string(),
+        )]));
+        let (loaded, set) = load_at(
+            path.clone(),
+            |k| env.borrow().contains_key(k),
+            |k, v| {
+                env.borrow_mut().insert(k.to_string(), v.to_string());
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(loaded, path);
         assert_eq!(set, 1, "only the unset var is filled");
-        assert_eq!(std::env::var("ENTG_TEST_UNSET").unwrap(), "from_file");
-        assert_eq!(std::env::var("ENTG_TEST_PRESET").unwrap(), "from_env");
-
-        for k in ["ENTG_TEST_UNSET", "ENTG_TEST_PRESET", ENV_FILE_ENV] {
-            std::env::remove_var(k);
-        }
+        assert_eq!(env.borrow()["UNSET"], "from_file");
+        assert_eq!(env.borrow()["PRESET"], "from_env");
     }
 
     #[test]
     fn load_is_noop_when_file_absent() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var(ENV_FILE_ENV, dir.path().join("missing.env"));
-        assert!(load().unwrap().is_none());
-        std::env::remove_var(ENV_FILE_ENV);
+        let loaded = load_at(
+            dir.path().join("missing.env"),
+            |_| false,
+            |_, _| panic!("nothing to set"),
+        );
+        assert!(loaded.unwrap().is_none());
     }
 
     #[test]
     fn scaffold_writes_template_once_then_leaves_it_alone() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join(".env");
-        std::env::set_var(ENV_FILE_ENV, &path);
 
         let keys = vec!["ZAI_API_KEY".to_string(), "OPENAI_API_KEY".to_string()];
-        let written = scaffold_if_missing(&keys).unwrap();
+        let written = scaffold_at(path.clone(), &keys).unwrap();
         assert_eq!(written.as_deref(), Some(path.as_path()));
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("#ZAI_API_KEY=\n"));
 
         // A pre-existing file is never overwritten.
         std::fs::write(&path, "ZAI_API_KEY=mine\n").unwrap();
-        assert!(scaffold_if_missing(&keys).unwrap().is_none());
+        assert!(scaffold_at(path.clone(), &keys).unwrap().is_none());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "ZAI_API_KEY=mine\n"
         );
-
-        std::env::remove_var(ENV_FILE_ENV);
     }
 }

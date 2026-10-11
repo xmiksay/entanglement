@@ -27,6 +27,7 @@
 //! which doubles as the opt-out for cross-vendor discovery.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -201,6 +202,19 @@ pub(crate) fn walk_files(
     Ok(())
 }
 
+/// Where a loader's user layer comes from.
+#[derive(Debug, Clone, Default)]
+pub enum UserLayer {
+    /// Production: the kind's `ENTANGLEMENT_*_DIR` override, else the
+    /// cross-vendor + native dirs under the real home/config dirs.
+    #[default]
+    FromEnv,
+    /// Exactly this dir (strict), as the env override would — the seam tests
+    /// and embedders use to stay off process env and the real user dirs
+    /// (#773). A missing dir is an empty layer.
+    Dir(PathBuf),
+}
+
 /// Discover layered definitions for `kind`, seeded with `built_ins`: read each
 /// candidate dir from [`candidate_dirs`] in precedence order, appending that
 /// layer's raw items to the accumulator. `read_dir(layer, dir, strictness,
@@ -211,11 +225,37 @@ pub fn load_layers<T>(
     root: &Path,
     kind: &str,
     env: &str,
+    user: &UserLayer,
     mut acc: Vec<T>,
     mut read_dir: impl FnMut(Layer, &Path, Strictness, &mut Vec<T>) -> Result<()>,
 ) -> Result<Vec<T>> {
-    let env_override = std::env::var_os(env).map(PathBuf::from);
-    if let Some(over) = &env_override {
+    let dirs = match user {
+        UserLayer::Dir(dir) => candidate_dirs(root, kind, Some(dir.clone()), None, None),
+        UserLayer::FromEnv => env_candidate_dirs(
+            root,
+            kind,
+            env,
+            |name| std::env::var_os(name),
+            || (crate::user_dirs::home_dir(), crate::user_dirs::config_dir()),
+        ),
+    };
+    for (layer, dir, strictness) in dirs {
+        read_dir(layer, &dir, strictness, &mut acc)?;
+    }
+    Ok(acc)
+}
+
+/// [`UserLayer::FromEnv`]'s candidate dirs over an injected env lookup and
+/// `(home, config)` dirs — the latter consulted only when the override is
+/// unset — so the resolution is unit-testable without mutating process env.
+fn env_candidate_dirs(
+    root: &Path,
+    kind: &str,
+    env: &str,
+    lookup: impl Fn(&str) -> Option<OsString>,
+    user_dirs: impl FnOnce() -> (Option<PathBuf>, Option<PathBuf>),
+) -> Vec<(Layer, PathBuf, Strictness)> {
+    if let Some(over) = lookup(env).map(PathBuf::from) {
         // A default path that isn't there is the normal "no user layer" case;
         // an explicit override that isn't there is a user mistake.
         if !over.exists() {
@@ -226,26 +266,15 @@ pub fn load_layers<T>(
                 "explicit definitions-dir override points at a missing path; treating the user layer as empty",
             );
         }
+        return candidate_dirs(root, kind, Some(over), None, None);
     }
-    let home = dirs::home_dir();
-    let config = dirs::config_dir();
-    for (layer, dir, strictness) in
-        candidate_dirs(root, kind, env_override, home.as_deref(), config.as_deref())
-    {
-        read_dir(layer, &dir, strictness, &mut acc)?;
-    }
-    Ok(acc)
+    let (home, config) = user_dirs();
+    candidate_dirs(root, kind, None, home.as_deref(), config.as_deref())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
-
-    /// `load_layers` reads a process-global env var; tests that set it must not
-    /// race under cargo's parallel test threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     const TEST_ENV: &str = "ENTANGLEMENT_LAYERS_TEST_DIR";
 
@@ -388,17 +417,15 @@ mod tests {
         let user = root.join("user");
         std::fs::create_dir_all(&user).unwrap();
 
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(TEST_ENV, &user);
         let out = load_layers(
             root,
             "agents",
             TEST_ENV,
+            &UserLayer::Dir(user.clone()),
             vec![(Layer::BuiltIn, root.to_path_buf(), Strictness::Strict)],
             record,
         )
         .unwrap();
-        std::env::remove_var(TEST_ENV);
 
         assert_eq!(out[0].0, Layer::BuiltIn);
         assert_eq!(out[1], (Layer::User, user, Strictness::Strict));
@@ -413,19 +440,48 @@ mod tests {
     }
 
     #[test]
-    fn missing_explicit_override_still_reads_and_does_not_abort() {
+    fn missing_explicit_override_is_still_the_whole_user_layer() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let missing = root.join("no-such-dir");
 
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(TEST_ENV, &missing);
-        // A missing explicit override warns but is not fatal: the closure is
-        // still invoked for the (absent) user dir, which treats it as empty.
-        let out: Vec<(Layer, PathBuf, Strictness)> =
-            load_layers(root, "skills", TEST_ENV, Vec::new(), record).unwrap();
-        std::env::remove_var(TEST_ENV);
-
+        // A missing explicit override warns but is not fatal: it still stands
+        // in for the whole user layer (read as empty), and the home/config
+        // dirs are never consulted.
+        let out = env_candidate_dirs(
+            root,
+            "skills",
+            TEST_ENV,
+            |n| (n == TEST_ENV).then(|| missing.clone().into()),
+            || panic!("home/config must not be consulted under an override"),
+        );
         assert_eq!(out[0], (Layer::User, missing, Strictness::Strict));
+        assert!(out[1..].iter().all(|(l, _, _)| *l == Layer::Project));
+    }
+
+    #[test]
+    fn unset_override_reads_the_home_and_config_dirs() {
+        let out = env_candidate_dirs(
+            Path::new("/repo"),
+            "skills",
+            TEST_ENV,
+            |_| None,
+            || (Some("/home/u".into()), Some("/home/u/.config".into())),
+        );
+        assert_eq!(
+            out[..2],
+            [
+                (
+                    Layer::User,
+                    PathBuf::from("/home/u/.claude/skills"),
+                    Strictness::Lenient
+                ),
+                (
+                    Layer::User,
+                    PathBuf::from("/home/u/.config/entanglement/skills"),
+                    Strictness::Strict
+                ),
+            ]
+        );
     }
 }

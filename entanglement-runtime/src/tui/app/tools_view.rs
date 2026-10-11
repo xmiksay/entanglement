@@ -111,7 +111,8 @@ impl App {
                 // (that state lives inside the tool executor's own loop and
                 // isn't threaded out to the TUI) — mirrors `skutter inspect`'s
                 // own posture of re-running discovery with no engine.
-                let skills = crate::skills::load_registry(self.root()).unwrap_or_default();
+                let skills = crate::skills::load_registry_in(self.root(), &self.inspect.user_layer)
+                    .unwrap_or_default();
                 crate::discover::index_rows(
                     &registry,
                     &handles.avail,

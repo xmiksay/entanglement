@@ -176,7 +176,7 @@ fn prune_does_not_walk_sibling_project_dirs() {
 }
 
 #[test]
-#[should_panic(expected = "real session-log dir")]
+#[should_panic(expected = "resolved the real user data dir")]
 fn for_cwd_refuses_the_real_data_dir_under_test() {
     // The #747 guard: a unit test can never reach the developer's live logs.
     let _ = SessionStore::for_cwd(Path::new("/some/project"));

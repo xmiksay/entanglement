@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::AgentLayer;
-use crate::layers::Strictness;
+use crate::layers::{Strictness, UserLayer};
 
 /// Embedded built-in definitions, parsed through the same loader as user/project
 /// files. `(filename, contents)` — the filename only feeds parse-error messages;
@@ -39,7 +39,7 @@ pub(super) struct RawAgent {
 /// win on a `name` collision, so consumers keep the last match. A missing dir is
 /// fine; an unreadable dir or file is an error. A missing *explicit*
 /// `ENTANGLEMENT_AGENTS_DIR` override is warned by [`crate::layers::load_layers`].
-pub(super) fn discover(root: &Path) -> Result<Vec<RawAgent>> {
+pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawAgent>> {
     let built_ins: Vec<RawAgent> = BUILT_INS
         .iter()
         .map(|(file, contents)| RawAgent {
@@ -50,7 +50,14 @@ pub(super) fn discover(root: &Path) -> Result<Vec<RawAgent>> {
             path: None,
         })
         .collect();
-    crate::layers::load_layers(root, "agents", AGENTS_DIR_ENV, built_ins, read_dir_raws)
+    crate::layers::load_layers(
+        root,
+        "agents",
+        AGENTS_DIR_ENV,
+        user,
+        built_ins,
+        read_dir_raws,
+    )
 }
 
 /// Append every `*.md` file in `dir` (if it exists) to `raws`, tagged with

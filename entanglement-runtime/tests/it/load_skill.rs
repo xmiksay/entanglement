@@ -19,8 +19,10 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::skills::{load_registry, LoadSkillTool};
+use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_runner::ToolExecutor;
+
+use crate::no_user;
 
 /// Replays scripted responses in order, then a plain text reply so the turn loop
 /// terminates. The `read` call in turn 2 references a path captured *after* the
@@ -104,10 +106,7 @@ fn cross_vendor_project_skill_resolves_root_dir() {
     )
     .unwrap();
 
-    let _guard = crate::env_lock();
-    std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-    let registry = load_registry(root).unwrap();
-    std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
+    let registry = load_registry_in(root, &no_user(root)).unwrap();
 
     let meta = registry.get("vendor").expect("cross-vendor skill loaded");
     assert_eq!(meta.root_dir.as_deref(), Some(skill_dir.as_path()));
@@ -160,13 +159,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     let scripted = Arc::new(vec![load_call, read_call, finish]);
     // Point the user layer at a non-existent dir so a real ~/.config skill can't
     // leak in; the project layer under `root` supplies `demo`.
-    let registry = {
-        let _guard = crate::env_lock();
-        std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-        let registry = Arc::new(load_registry(&root).unwrap());
-        std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
-        registry
-    };
+    let registry = Arc::new(load_registry_in(&root, &no_user(&root)).unwrap());
 
     let mut tools = host_tools(root.clone());
     tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(
@@ -275,13 +268,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
         ..Default::default()
     };
     let scripted = Arc::new(vec![load_call, finish]);
-    let registry = {
-        let _guard = crate::env_lock();
-        std::env::set_var("ENTANGLEMENT_SKILLS_DIR", root.join("no-such-user-dir"));
-        let registry = Arc::new(load_registry(&root).unwrap());
-        std::env::remove_var("ENTANGLEMENT_SKILLS_DIR");
-        registry
-    };
+    let registry = Arc::new(load_registry_in(&root, &no_user(&root)).unwrap());
 
     let mut tools = host_tools(root.clone());
     tools.register(LoadSkillTool::new(Arc::new(std::sync::RwLock::new(

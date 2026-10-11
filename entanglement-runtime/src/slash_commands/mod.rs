@@ -30,7 +30,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use anyhow::{Context, Result};
 
-use crate::layers::{Layer, Strictness};
+use crate::layers::{Layer, Strictness, UserLayer};
 
 mod discovery;
 mod expand;
@@ -171,7 +171,12 @@ pub struct CommandResolution {
 /// file in a native dir aborts; a malformed foreign file is warned and skipped
 /// (ADR-0074).
 pub fn resolve_registry(root: &Path) -> Result<Vec<CommandResolution>> {
-    resolve(discovery::discover(root)?)
+    resolve_registry_in(root, &UserLayer::FromEnv)
+}
+
+/// [`resolve_registry`] with an explicit user layer (#773).
+pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<CommandResolution>> {
+    resolve(discovery::discover(root, user)?)
 }
 
 fn resolve(raws: Vec<discovery::RawCommand>) -> Result<Vec<CommandResolution>> {

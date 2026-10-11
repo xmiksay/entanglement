@@ -7,6 +7,7 @@
 //! key-wise mappings, scalar replacement — are documented on `catalog.rs`'s
 //! module doc, since they are what a reader of `Catalog` needs to know.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde_yaml::Value;
@@ -25,16 +26,35 @@ pub(super) struct CatalogFile {
 /// The user override file path: `${config_dir}/entanglement/providers.yml`,
 /// overridable via `ENTANGLEMENT_PROVIDERS_FILE`.
 pub(super) fn providers_file_path() -> Option<CatalogFile> {
-    if let Some(p) = std::env::var_os(PROVIDERS_FILE_ENV) {
+    resolve_providers_file(|name| std::env::var_os(name), default_config_dir)
+}
+
+/// [`providers_file_path`] over an injected env lookup and config dir, so the
+/// precedence is unit-testable without mutating process env (#773).
+pub(super) fn resolve_providers_file(
+    env: impl Fn(&str) -> Option<OsString>,
+    config_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<CatalogFile> {
+    if let Some(p) = env(PROVIDERS_FILE_ENV) {
         return Some(CatalogFile {
             path: PathBuf::from(p),
             explicit: true,
         });
     }
-    dirs::config_dir().map(|d| CatalogFile {
+    config_dir().map(|d| CatalogFile {
         path: d.join("entanglement").join("providers.yml"),
         explicit: false,
     })
+}
+
+fn default_config_dir() -> Option<PathBuf> {
+    // Guard (#773): a unit test reaching the real config dir would merge the
+    // developer's own `providers.yml` into the catalog under test — fail it
+    // loudly so the test uses `Catalog::builtin`/`Catalog::load_from` instead.
+    if cfg!(test) {
+        panic!("test resolved the real providers.yml; use Catalog::builtin or Catalog::load_from");
+    }
+    dirs::config_dir()
 }
 
 /// Drop provider keys a released-or-branch catalog once accepted but no

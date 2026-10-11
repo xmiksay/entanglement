@@ -231,19 +231,9 @@ fn prune_orphan_backups(store_dir: &Path) {
 }
 
 /// `<data_dir>/entanglement/sessions`, the base every project's store lives
-/// under.
-#[cfg(not(test))]
+/// under. Guarded under `cfg(test)` (#747): a unit test must inject
+/// `SessionStore::at(<tempdir>)`, never read, write and prune the developer's
+/// live session logs.
 fn default_base() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("entanglement/sessions"))
-}
-
-/// Guard (#747): a unit test resolving the real data dir would read, write and
-/// prune the developer's live session logs (and leak `tmp-*` project dirs into
-/// it) — fail it loudly so the test injects `SessionStore::at` instead.
-#[cfg(test)]
-fn default_base() -> Option<PathBuf> {
-    panic!(
-        "test resolved the real session-log dir; inject a SessionStore::at(<tempdir>) \
-         instead of SessionStore::for_cwd"
-    )
+    crate::user_dirs::data_dir().map(|d| d.join("entanglement/sessions"))
 }

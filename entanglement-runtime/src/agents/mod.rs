@@ -76,6 +76,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use entanglement_core::{Agent, AgentCatalog};
 
+use crate::layers::UserLayer;
 use crate::mcp::McpCapabilityIndex;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble_parts, PromptContext, PromptPart};
@@ -102,13 +103,24 @@ pub fn load_registry(
     skills: &SkillRegistry,
     mcp: &McpCapabilityIndex,
 ) -> Result<AgentCatalog> {
+    load_registry_in(root, &UserLayer::FromEnv, ctx, skills, mcp)
+}
+
+/// [`load_registry`] with an explicit user layer (#773).
+pub fn load_registry_in(
+    root: &Path,
+    user: &UserLayer,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+    mcp: &McpCapabilityIndex,
+) -> Result<AgentCatalog> {
     let mut reg = AgentCatalog::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
     // longer silent (#185): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect agents` surfaces.
     let mut winning: std::collections::HashMap<String, (AgentLayer, String)> =
         std::collections::HashMap::new();
-    for raw in discover(root)? {
+    for raw in discover(root, user)? {
         // Later layers replace earlier ones on a `name` collision because
         // `discover` yields them in precedence order and `insert` overwrites.
         let Some((def, body)) = parse_raw(&raw)? else {
@@ -192,6 +204,16 @@ pub fn resolve_registry(
     ctx: &PromptContext,
     skills: &SkillRegistry,
 ) -> Result<Vec<AgentResolution>> {
+    resolve_registry_in(root, &UserLayer::FromEnv, ctx, skills)
+}
+
+/// [`resolve_registry`] with an explicit user layer (#773).
+pub fn resolve_registry_in(
+    root: &Path,
+    user: &UserLayer,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<Vec<AgentResolution>> {
     let mcp = McpCapabilityIndex::new();
     // Preserve first-seen order of names, then sort at the end; group each name's
     // definitions in precedence order so the last is the winner and the rest are
@@ -199,7 +221,7 @@ pub fn resolve_registry(
     let mut order: Vec<String> = Vec::new();
     let mut by_name: std::collections::HashMap<String, Vec<(AgentLayer, String, Agent)>> =
         std::collections::HashMap::new();
-    for raw in discover(root)? {
+    for raw in discover(root, user)? {
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };
@@ -260,10 +282,21 @@ pub fn prompt_report(
     ctx: &PromptContext,
     skills: &SkillRegistry,
 ) -> Result<Option<AgentPromptReport>> {
+    prompt_report_in(root, &UserLayer::FromEnv, agent, ctx, skills)
+}
+
+/// [`prompt_report`] with an explicit user layer (#773).
+pub fn prompt_report_in(
+    root: &Path,
+    user: &UserLayer,
+    agent: &str,
+    ctx: &PromptContext,
+    skills: &SkillRegistry,
+) -> Result<Option<AgentPromptReport>> {
     // Scan in precedence order, keeping the *last* definition whose name matches
     // — the same "later layer wins" rule `load_registry` gets from `insert`.
     let mut winner: Option<(String, AgentDefinition, String)> = None;
-    for raw in discover(root)? {
+    for raw in discover(root, user)? {
         let Some((def, body)) = parse_raw(&raw)? else {
             continue;
         };

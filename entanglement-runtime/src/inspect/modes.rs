@@ -68,7 +68,12 @@ pub(super) fn render_start_precedence(config_mode: Option<&str>) -> String {
 
 pub fn inspect_modes(root: &Path, name: Option<&str>) -> Result<()> {
     let config = Config::load(root).context("loading user config")?;
-    let table = resolved_table(&config)?;
+    print_modes(&config, name)
+}
+
+/// [`inspect_modes`] over an already-loaded config.
+fn print_modes(config: &Config, name: Option<&str>) -> Result<()> {
+    let table = resolved_table(config)?;
     match name {
         Some(name) => {
             let m = table.get(name).with_context(|| {
@@ -260,18 +265,11 @@ mod tests {
 
     #[test]
     fn unknown_mode_name_is_a_loud_error() {
-        // Point the user-config path at a file that doesn't exist so this
-        // test's `Config::load` sees only the embedded defaults, never a
-        // real `~/.config/entanglement/config.yml` on the machine running
-        // it — the same isolation `config::tests` uses, guarded by the same
-        // process-global env lock so a concurrent config test can't race it.
-        let _g = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        // No user layer: only the embedded defaults, never the real
+        // `~/.config/entanglement/config.yml` of whoever runs the test.
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ENTANGLEMENT_CONFIG_FILE", dir.path().join("nope.yml"));
-        let err = inspect_modes(dir.path(), Some("researchx")).unwrap_err();
-        std::env::remove_var("ENTANGLEMENT_CONFIG_FILE");
+        let config = Config::load_with(dir.path(), None).unwrap();
+        let err = print_modes(&config, Some("researchx")).unwrap_err();
         assert!(err.to_string().contains("researchx"), "got: {err}");
     }
 }

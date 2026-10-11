@@ -147,15 +147,6 @@ const DEFAULTS_YML: &str = include_str!("defaults.yml");
 /// a user who never set the key.
 const DEFAULT_SESSION_RETENTION_DAYS: u64 = 30;
 
-/// Guards mutation of `ENTANGLEMENT_CONFIG_FILE` — process-global env state —
-/// across every test in this crate that points the layered config loader (or
-/// [`mcp_persist::save_mcp`]'s surgical `mcp:` writer) at a temp file. Shared by
-/// `config::tests` and `config::mcp_persist::tests` (not module-local to
-/// either) so the two suites can't race on the same var when `cargo test` runs
-/// them in parallel threads.
-#[cfg(test)]
-pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// A parsed embedded-defaults [`Config`], for sibling crates' unit tests
 /// (e.g. `tool_advertising`'s precedence tests): constructed through the real
 /// `parse` so it can never drift from `Config`'s field list, and overridable
@@ -268,10 +259,24 @@ impl Config {
         Ok(Self::resolve(root)?.config)
     }
 
+    /// [`load`](Self::load) with the user layer at `user_file` instead of the
+    /// `ENTANGLEMENT_CONFIG_FILE`/`${config_dir}` resolution — `None` reads no
+    /// user layer. The seam tests (and embedders) use to stay off the real
+    /// user config and process env (#773).
+    pub fn load_with(root: &Path, user_file: Option<&Path>) -> Result<Config> {
+        Ok(Self::resolve_with(root, user_file)?.config)
+    }
+
     /// Like [`load`](Self::load) but also returns the per-field provenance and the
     /// discovered layers, for `skutter inspect config`.
     pub fn resolve(root: &Path) -> Result<Resolved> {
-        parse(&discover(root)?)
+        Self::resolve_with(root, user_config_path().as_deref())
+    }
+
+    /// [`resolve`](Self::resolve) with an explicit user-layer path, as
+    /// [`load_with`](Self::load_with).
+    pub fn resolve_with(root: &Path, user_file: Option<&Path>) -> Result<Resolved> {
+        parse(&discover(root, user_file)?)
     }
 }
 

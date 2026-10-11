@@ -14,6 +14,7 @@
 //! overlay). Tab switching works from either level.
 
 use crate::inspect::{InspectItem, InspectListTab};
+use crate::layers::UserLayer;
 
 use super::App;
 
@@ -101,6 +102,10 @@ pub struct InspectState {
     level: InspectLevel,
     /// The resolved per-item detail string, set on `Enter`. Cleared on back.
     detail: Option<String>,
+    /// The user definitions layer the overlay (and `/tools`) resolves agents,
+    /// skills and commands from: the env/real dirs live, an empty dir in a
+    /// test `App` so it never reads the developer's own definitions (#773).
+    pub(super) user_layer: UserLayer,
 }
 
 impl InspectState {
@@ -173,8 +178,12 @@ impl App {
         if self.inspect.visible {
             self.close_inspect();
         } else {
-            let reports =
-                crate::inspect::tui_reports(self.root(), self.session_store(), self.agent());
+            let reports = crate::inspect::tui_reports(
+                self.root(),
+                &self.inspect.user_layer,
+                self.session_store(),
+                self.agent(),
+            );
             self.inspect.prompt = reports.prompt;
             self.inspect.agents = reports.agents;
             self.inspect.skills = reports.skills;
@@ -265,10 +274,15 @@ impl App {
             return;
         };
         let detail = match list_tab {
-            InspectListTab::Agents => {
-                crate::inspect::agent_detail(self.root(), self.session_store(), &item.name)
+            InspectListTab::Agents => crate::inspect::agent_detail(
+                self.root(),
+                &self.inspect.user_layer,
+                self.session_store(),
+                &item.name,
+            ),
+            InspectListTab::Skills => {
+                crate::inspect::skill_detail(self.root(), &self.inspect.user_layer, &item.name)
             }
-            InspectListTab::Skills => crate::inspect::skill_detail(self.root(), &item.name),
         };
         self.inspect.detail = detail.or_else(|| Some(format!("(no detail for `{}`)", item.name)));
         self.inspect.level = InspectLevel::Detail;

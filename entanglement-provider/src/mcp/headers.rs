@@ -35,6 +35,12 @@ pub fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap> {
 /// expands to an empty string (with a warning) so a missing token yields an
 /// obviously-broken auth header rather than a literal `${VAR}` on the wire.
 pub fn expand_env(input: &str) -> String {
+    expand_env_with(input, |var| std::env::var(var).ok())
+}
+
+/// [`expand_env`] over an injected env lookup, so the expansion is
+/// unit-testable without mutating process env (#773).
+fn expand_env_with(input: &str, env: impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(start) = rest.find("${") {
@@ -46,9 +52,9 @@ pub fn expand_env(input: &str) -> String {
             return out;
         };
         let var = &after[..end];
-        match std::env::var(var) {
-            Ok(v) => out.push_str(&v),
-            Err(_) => tracing::warn!("MCP header references unset env var `{var}`"),
+        match env(var) {
+            Some(v) => out.push_str(&v),
+            None => tracing::warn!("MCP header references unset env var `{var}`"),
         }
         rest = &after[end + 1..];
     }
@@ -79,15 +85,13 @@ mod tests {
 
     #[test]
     fn expands_present_env_var() {
-        std::env::set_var("MCP_TEST_TOKEN_XYZ", "secret");
-        assert_eq!(expand_env("Bearer ${MCP_TEST_TOKEN_XYZ}"), "Bearer secret");
-        std::env::remove_var("MCP_TEST_TOKEN_XYZ");
+        let env = |v: &str| (v == "TOKEN").then(|| "secret".to_string());
+        assert_eq!(expand_env_with("Bearer ${TOKEN}", env), "Bearer secret");
     }
 
     #[test]
     fn unset_env_var_expands_empty() {
-        std::env::remove_var("MCP_TEST_MISSING_XYZ");
-        assert_eq!(expand_env("Bearer ${MCP_TEST_MISSING_XYZ}"), "Bearer ");
+        assert_eq!(expand_env_with("Bearer ${MISSING}", |_| None), "Bearer ");
     }
 
     #[test]

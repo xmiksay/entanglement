@@ -48,21 +48,12 @@ fn resolve_path(
     state_dir::resolve(env, default_dir).map(|d| d.join(GRANTS_FILE))
 }
 
-#[cfg(not(test))]
+/// `${config_dir}/entanglement`. Guarded under `cfg(test)` (#747): a unit
+/// test must use `FileGrantStore::load_from` / `DefaultGrantStore::load_from`,
+/// never the developer's own `grants.yml` (an `Always` grant there turns an
+/// expected Ask into Allow).
 fn default_state_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("entanglement"))
-}
-
-/// Guard (#747): a unit test reaching the real config dir would read the
-/// developer's `grants.yml` (an `Always` grant there turns an expected Ask into
-/// Allow) and could write to it — fail loudly so the test uses
-/// `FileGrantStore::load_from` instead.
-#[cfg(test)]
-fn default_state_dir() -> Option<PathBuf> {
-    panic!(
-        "test resolved the real grants file; use FileGrantStore::load_from / \
-         DefaultGrantStore::load_from with a temp path (or None)"
-    )
+    crate::user_dirs::config_dir().map(|d| d.join("entanglement"))
 }
 
 /// Read + parse the grants file at `path` into a key set. A missing file, or any
@@ -161,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "real grants file")]
+    #[should_panic(expected = "resolved the real user config dir")]
     fn the_real_grants_file_is_unreachable_under_test() {
         let _ = grants_file_path_without_env();
     }

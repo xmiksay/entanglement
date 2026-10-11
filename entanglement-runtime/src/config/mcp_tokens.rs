@@ -311,14 +311,14 @@ mod tests {
     use entanglement_core::TokenSet;
 
     /// The LLM sibling store (#684 edge d) resolves its own file, fully
-    /// independent of the MCP one — both inside the managed-state dir.
+    /// independent of the MCP one — both inside the managed-state dir. Checked
+    /// on the file names: resolving the real stores would read the developer's
+    /// own token files (#773).
     #[test]
     fn llm_store_resolves_its_own_file() {
         assert_ne!(LLM_TOKENS_FILE, MCP_TOKENS_FILE);
-        if let (Some(llm), Some(mcp)) = (McpTokenStore::load_llm().path, McpTokenStore::load().path)
-        {
-            assert!(llm.ends_with(LLM_TOKENS_FILE));
-            assert_eq!(llm.parent(), mcp.parent());
+        for file in [LLM_TOKENS_FILE, MCP_TOKENS_FILE] {
+            assert!(super::super::state_dir::MANAGED_STATE_FILES.contains(&file));
         }
     }
 

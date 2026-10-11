@@ -22,12 +22,18 @@ impl ProviderEntry {
     /// consumer of this predicate — `select_provider`, agent/session
     /// construction, and every live spawn/`explore` call all run after.
     pub fn is_usable(&self) -> bool {
+        self.is_usable_with(|var| std::env::var(var).ok())
+    }
+
+    /// [`is_usable`](Self::is_usable) over an injected env lookup, so the
+    /// predicate is unit-testable without mutating process env (#773).
+    fn is_usable_with(&self, env: impl Fn(&str) -> Option<String>) -> bool {
         if self.oauth.is_some() {
             return true;
         }
         match &self.key_env {
             None => true,
-            Some(var) => std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false),
+            Some(var) => env(var).is_some_and(|v| !v.is_empty()),
         }
     }
 }
@@ -56,18 +62,10 @@ mod tests {
 
     #[test]
     fn keyed_provider_needs_a_set_nonempty_env_var() {
-        let e = entry("key_env: USABLE_TEST_KEY_UNSET_560\n");
-        std::env::remove_var("USABLE_TEST_KEY_UNSET_560");
-        assert!(!e.is_usable());
-
-        let e = entry("key_env: USABLE_TEST_KEY_EMPTY_560\n");
-        std::env::set_var("USABLE_TEST_KEY_EMPTY_560", "");
-        assert!(!e.is_usable());
-        std::env::remove_var("USABLE_TEST_KEY_EMPTY_560");
-
-        let e = entry("key_env: USABLE_TEST_KEY_SET_560\n");
-        std::env::set_var("USABLE_TEST_KEY_SET_560", "sk-test");
-        assert!(e.is_usable());
-        std::env::remove_var("USABLE_TEST_KEY_SET_560");
+        let e = entry("key_env: TEST_KEY\n");
+        assert!(!e.is_usable_with(|_| None));
+        assert!(!e.is_usable_with(|_| Some(String::new())));
+        assert!(e.is_usable_with(|v| (v == "TEST_KEY").then(|| "sk-test".into())));
+        assert!(!e.is_usable_with(|v| (v == "OTHER").then(|| "sk-test".into())));
     }
 }
