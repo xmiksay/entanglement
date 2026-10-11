@@ -219,6 +219,8 @@ tui:
   statusline:    # the top row: where the TUI is working
     template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"   # left-aligned
     right: "{session}"                                      # right-aligned
+    # command: jq -r '"\(.repo // .cwd) ⎇ \(.branch // "-")"'  # replaces `template`
+    # timeout_ms: 1000
   theme:         # `dark` (default) | `light` | a base plus slot overrides
     base: light
     slots: { status.branch: cyan, diff.add: "#2e7d32", muted: 244 }
@@ -227,6 +229,17 @@ tui:
     pick_model: [leader m, ctrl+o]
     newline: [shift+enter, alt+enter]
 ```
+
+**Status command.** `statusline.command` swaps the left template for the
+first line a shell command prints (run with `sh -c`, at most once a second,
+killed after `timeout_ms`). It gets a JSON payload on stdin — `{"v": 1,
+"session", "cwd", "root", "repo", "branch", "worktree", "agent", "mode",
+"model": {"id", "name"}, "cost_usd", "context_pct", "action", "tasks":
+{"done", "total"}}`, unknown facts `null` — and its colours are stripped (the
+theme colours the line). On a failure or timeout the template line comes
+back, with one toast until the command succeeds again. It inherits the
+TUI's environment minus provider API keys, and a project-layer
+`config.yml` may set it (the repo is trusted, like its hooks).
 
 **Themes.** Every colour the TUI draws is a named slot (`message.bg`,
 `accent`, `success`, `warning`, `error`, `muted`, `selection.bg`, `approval`,

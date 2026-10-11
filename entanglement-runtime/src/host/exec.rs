@@ -49,18 +49,19 @@ pub fn own_process_group(cmd: &mut Command) {
 /// running child; `kill_on_drop` would then reap only the direct child, leaving
 /// grandchildren orphaned exactly as on the timeout path (#168). Disarmed on
 /// every normal exit of [`wait_or_kill_group`], so it only fires on a cancel.
-struct GroupKillGuard {
+/// Also guards the TUI status-line command (`tui::statusline::command`).
+pub struct GroupKillGuard {
     /// Group leader pid (== pgid, since the child was spawned `process_group(0)`),
     /// or `None` once disarmed / when the child had no pid.
     pgid: Option<u32>,
 }
 
 impl GroupKillGuard {
-    fn new(pgid: Option<u32>) -> Self {
+    pub fn new(pgid: Option<u32>) -> Self {
         Self { pgid }
     }
 
-    fn disarm(&mut self) {
+    pub fn disarm(&mut self) {
         self.pgid = None;
     }
 }

@@ -9,9 +9,13 @@
 //!
 //! The tokenizer lives here (lean library) rather than in the TUI so the
 //! config loader can warn about unknown placeholders without a TUI build.
-//! Part B's `command:` runner (and its `timeout_ms`) will join this struct;
-//! they are deliberately absent until then — `deny_unknown_fields` keeps a
-//! premature key loud instead of silently inert.
+//!
+//! `command` (#762 part B) replaces the *left* template with the first line
+//! a shell command prints; `right` stays template-driven so the session id
+//! and counters never depend on a script. Allowed from the project layer
+//! like project hooks and MCP stdio servers (ADR-0047: the repo is trusted).
+//! The runner, its JSON payload and the failure rules live in
+//! `tui::statusline::command`.
 
 use serde::Deserialize;
 
@@ -35,6 +39,7 @@ pub const PLACEHOLDERS: &[&str] = &[
 
 const DEFAULT_TEMPLATE: &str = "{repo} › {cwd_rel}  ⎇ {branch} {worktree}";
 const DEFAULT_RIGHT: &str = "{session}";
+const DEFAULT_TIMEOUT_MS: u64 = 1000;
 
 /// Resolved `tui.statusline` settings.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -44,6 +49,12 @@ pub struct StatuslineConfig {
     pub template: String,
     /// The right-aligned line, sharing the row with `template`.
     pub right: String,
+    /// An `sh -c` command whose first stdout line replaces `template`'s
+    /// output; unset (or blank) keeps the template.
+    pub command: Option<String>,
+    /// How long one `command` run may take before its process group is
+    /// killed and the template line shown instead.
+    pub timeout_ms: u64,
 }
 
 impl Default for StatuslineConfig {
@@ -51,11 +62,18 @@ impl Default for StatuslineConfig {
         Self {
             template: DEFAULT_TEMPLATE.to_string(),
             right: DEFAULT_RIGHT.to_string(),
+            command: None,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
         }
     }
 }
 
 impl StatuslineConfig {
+    /// The command to run, `None` when unset or blank.
+    pub fn command(&self) -> Option<&str> {
+        self.command.as_deref().filter(|c| !c.trim().is_empty())
+    }
+
     /// One warning per distinct unknown placeholder across both templates.
     pub fn warnings(&self) -> Vec<String> {
         let mut seen: Vec<String> = Vec::new();
@@ -171,6 +189,7 @@ mod tests {
         let c = StatuslineConfig {
             template: "{foo} {foo} {repo}".into(),
             right: "{foo} {bar}".into(),
+            ..StatuslineConfig::default()
         };
         let w = c.warnings();
         assert_eq!(w.len(), 2, "{w:?}");
@@ -183,6 +202,17 @@ mod tests {
         let c: StatuslineConfig = serde_yaml::from_str("right: ''\n").unwrap();
         assert_eq!(c.template, StatuslineConfig::default().template);
         assert!(c.right.is_empty());
-        assert!(serde_yaml::from_str::<StatuslineConfig>("command: x\n").is_err());
+        assert!(serde_yaml::from_str::<StatuslineConfig>("comand: x\n").is_err());
+    }
+
+    #[test]
+    fn command_defaults_off_with_a_one_second_timeout() {
+        let c = StatuslineConfig::default();
+        assert_eq!((c.command(), c.timeout_ms), (None, 1000));
+        let c: StatuslineConfig =
+            serde_yaml::from_str("command: 'echo hi'\ntimeout_ms: 250\n").unwrap();
+        assert_eq!((c.command(), c.timeout_ms), (Some("echo hi"), 250));
+        let c: StatuslineConfig = serde_yaml::from_str("command: '  '\n").unwrap();
+        assert_eq!(c.command(), None, "a blank command keeps the template");
     }
 }

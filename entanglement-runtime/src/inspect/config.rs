@@ -140,9 +140,14 @@ fn render_config(resolved: &Resolved) -> String {
     );
     let _ = writeln!(
         out,
-        "  tui.statusline: template={:?} right={:?} ← {}",
+        "  tui.statusline: template={:?} right={:?} command={} timeout_ms={} ← {}",
         c.tui.statusline.template,
         c.tui.statusline.right,
+        c.tui
+            .statusline
+            .command()
+            .map_or_else(|| "none".to_string(), |cmd| format!("{cmd:?}")),
+        c.tui.statusline.timeout_ms,
         from("tui")
     );
     // Raw overrides, as written: a rejected key map or bad slot is named
@@ -338,7 +343,7 @@ mod tests {
         let user_file = dir.path().join("user-config.yml");
         std::fs::write(
             &user_file,
-            "tui: {notify: true, statusline: {right: '{mode}'}, \
+            "tui: {notify: true, statusline: {right: '{mode}', command: 'echo hi'}, \
              theme: {base: light, slots: {diff.add: '#2e7d32'}}, \
              keybindings: {pick_model: [ctrl+o, leader o], export: ctrl+g}}\n\
              discovery: {zai: invoke}\n",
@@ -354,7 +359,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}" ← user"#),
+            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}" command="echo hi" timeout_ms=1000 ← user"#),
             "{rendered}"
         );
         assert!(

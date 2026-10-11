@@ -295,6 +295,30 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   It re-probes when a `bash`/`call`/`rhai` `ToolOutput` lands and otherwise
   only stats `HEAD`'s mtime every 2 s. Its colours are the
   `status.repo/path/branch/worktree/text/dim/attention` theme slots.
+  **Status command** (#762 part B, `tui::statusline::command`):
+  `tui.statusline.command` (an `sh -c` string, allowed from the project
+  layer per [ADR-0047](../adr/0047-local-trust-boundary.md) like project
+  hooks) replaces the *left* template with its first stdout line; `right`
+  and the counters stay template-driven. It reads a versioned JSON payload
+  on stdin (`tui::statusline::payload`, `{"v":1, session, cwd, root, repo,
+  branch, worktree, agent, mode, model:{id,name}, cost_usd, context_pct,
+  action, tasks:{done,total}}`, unknown facts `null`; fields are only added
+  under the same `v`). One background task runs it the hooks' way — own
+  process group, SIGKILLed after `timeout_ms` (default 1000) and reaped —
+  reading a 4 KiB window of stdout/stderr while draining the rest; ANSI
+  escapes and control characters are stripped (the `status.text` slot
+  colours it). The App publishes the current job (command, timeout,
+  payload) into a `watch` channel on every dirty frame, which wakes the
+  runner only on change — git probe, focus switch, mode/model/usage/task/
+  action events — and an exec-tool `ToolOutput` forces a re-run; `watch`
+  keeps only the latest job and each run waits out 1 s from its start, so
+  it runs at most once a second, never twice at once. Success shows the
+  line (kept until the next run reports); a failure (non-zero exit,
+  signal, timeout, spawn error) shows the template again with one toast
+  per failure streak. A result for a command a reload has since replaced
+  is dropped. The child inherits the TUI's environment minus the catalog's
+  provider key variables (#164, as for `bash`/`call`/MCP stdio). The task
+  stops when the TUI drops its event receiver, killing a run in flight.
   **Themes** (#735, [ADR-0219](../adr/0219-tui-themes-and-keybindings.md),
   `config::theme` + `tui::theme`): every colour the TUI draws is one named
   `Slot` of a resolved `Theme` palette — no widget names a `Color` itself

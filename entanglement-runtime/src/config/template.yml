@@ -249,6 +249,18 @@
 #  statusline:
 #    template: "{repo} › {cwd_rel}  ⎇ {branch} {worktree}"
 #    right: "{session}"
+#    # Or let a script draw the left half: `sh -c` gets a JSON payload on
+#    # stdin and its first stdout line replaces `template` (colours are
+#    # stripped; `right` stays). Payload (v1, unknown facts are null):
+#    #   {"v":1, "session", "cwd", "root", "repo", "branch", "worktree",
+#    #    "agent", "mode", "model":{"id","name"}, "cost_usd", "context_pct",
+#    #    "action", "tasks":{"done","total"}}
+#    # Runs at most once a second, when something in the payload changes or
+#    # a bash/call/rhai call finishes; killed after timeout_ms. A failure
+#    # shows the template again (one toast). Provider API keys are removed
+#    # from its environment.
+#    #command: jq -r '"\(.repo // .cwd) ⎇ \(.branch // "-")  \(.context_pct // 0)%"'
+#    #timeout_ms: 1000
 #  # Colours: `dark` (default) or `light` (for light terminal backgrounds),
 #  # or an object overriding named slots on top of a base. A colour is a
 #  # named ANSI colour (cyan, dark_gray, light_red, white, default), "#rrggbb"

@@ -5,6 +5,10 @@
 //! It re-probes when a `bash`/`call`/`rhai` call finishes (those can switch
 //! branches or create a repo) and otherwise only stats `HEAD` every 2 s, so
 //! an out-of-band `git checkout` shows up without any tree walk.
+//!
+//! With `tui.statusline.command` set, the left half is that command's
+//! output instead of `template` ([`command`], part B); the right half and
+//! the counters stay template-driven.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,13 +17,15 @@ use std::time::Duration;
 use ratatui::text::{Line, Span};
 use tokio::sync::Notify;
 
-use crate::config::statusline::{tokenize, StatuslineConfig};
+use crate::config::statusline::{tokenize, StatuslineConfig, Token};
 use crate::tui::app::App;
 use crate::tui::event::Event;
 use crate::tui::format::{format_session_cost, short_id};
 use crate::tui::theme::StatusTheme;
 
+pub(crate) mod command;
 mod git;
+pub(crate) mod payload;
 mod render;
 
 pub(crate) use git::GitInfo;
@@ -33,12 +39,14 @@ pub(crate) fn refreshes_git(tool: &str) -> bool {
 }
 
 /// The App-held half: the last probe result, the live-reloaded templates,
-/// and the probe's wake-up handle (`None` in tests — nothing to wake).
+/// the probe's wake-up handle (`None` in tests — nothing to wake), and the
+/// `command:` runner's state.
 #[derive(Default)]
 pub(crate) struct StatusLineState {
     pub git: GitInfo,
     pub config: StatuslineConfig,
     pub refresh: Option<Arc<Notify>>,
+    pub command: command::CommandState,
 }
 
 /// Start the probe for `root`; the returned handle forces a re-probe.
@@ -115,24 +123,28 @@ fn vars(app: &App) -> Vars {
         );
         v.insert("cost", cost);
     }
-    if let (Some(prompt), Some(window)) = (ledger.last_turn_prompt(), model.context_window) {
-        if window > 0 {
-            let pct = prompt as f64 / f64::from(window) * 100.0;
-            v.insert("context_pct", format!("{pct:.0}%"));
-        }
+    if let Some(pct) = context_pct(app) {
+        v.insert("context_pct", format!("{pct:.0}%"));
     }
     if let Some(action) = app.status_action() {
         v.insert("action", action.to_string());
     }
-    if let Some(tasks) = app.task_list().and_then(|t| task_counts(t)) {
-        v.insert("tasks", tasks);
+    if let Some((done, total)) = app.task_list().and_then(|t| task_counts(t)) {
+        v.insert("tasks", format!("{done}/{total}"));
     }
     v
 }
 
-/// `done/total` over a markdown checklist's `- [ ]` / `- [x]` lines; `None`
-/// when it has none.
-fn task_counts(markdown: &str) -> Option<String> {
+/// The last turn's prompt as a share of the model's context window.
+fn context_pct(app: &App) -> Option<f64> {
+    let prompt = app.cost().last_turn_prompt()?;
+    let window = app.model_info().context_window.filter(|w| *w > 0)?;
+    Some(prompt as f64 / f64::from(window) * 100.0)
+}
+
+/// `(done, total)` over a markdown checklist's `- [ ]` / `- [x]` lines;
+/// `None` when it has none.
+fn task_counts(markdown: &str) -> Option<(usize, usize)> {
     let (mut done, mut total) = (0, 0);
     for line in markdown.lines() {
         let item = line
@@ -148,7 +160,7 @@ fn task_counts(markdown: &str) -> Option<String> {
             _ => {}
         }
     }
-    (total > 0).then(|| format!("{done}/{total}"))
+    (total > 0).then_some((done, total))
 }
 
 /// The old top bar's counters, kept as fixed chrome after the right template
@@ -169,11 +181,21 @@ fn counters(app: &App) -> Vec<Piece> {
 /// The rendered row for `cols` columns: left template, padding, right
 /// template + counters.
 pub(crate) fn status_line(app: &App, cols: u16) -> Line<'static> {
-    let config = &app.status_line().config;
+    let state = app.status_line();
+    let mut vars = vars(app);
+    // The command's line rides a pseudo-placeholder outside `PLACEHOLDERS`
+    // (so no template can name it) that the shed order never empties.
+    let left = match (state.config.command(), &state.command.line) {
+        (Some(_), Some(line)) => {
+            vars.insert("command", line.clone());
+            vec![Token::Var("command")]
+        }
+        _ => tokenize(&state.config.template).0,
+    };
     let (left, right) = render::layout(
-        &tokenize(&config.template).0,
-        &tokenize(&config.right).0,
-        &vars(app),
+        &left,
+        &tokenize(&state.config.right).0,
+        &vars,
         counters(app),
         usize::from(cols),
     );
@@ -222,6 +244,7 @@ mod tests {
             branch: "main".into(),
             worktree: Some("wt".into()),
             head: None,
+            toplevel: Some("/w/proj".into()),
         });
         app
     }
@@ -248,6 +271,7 @@ mod tests {
         app.set_statusline_config(StatuslineConfig {
             template: "{repo} {tasks} {agent}/{mode} {model}".into(),
             right: String::new(),
+            ..StatuslineConfig::default()
         });
         let text = row(&app, 60);
         assert!(text.starts_with("proj 2/3 build/build"), "{text}");
@@ -266,10 +290,7 @@ mod tests {
 
     #[test]
     fn task_counts_reads_checkbox_lines_only() {
-        assert_eq!(
-            task_counts("- [x] a\n* [ ] b\nplain").as_deref(),
-            Some("1/2")
-        );
+        assert_eq!(task_counts("- [x] a\n* [ ] b\nplain"), Some((1, 2)));
         assert_eq!(task_counts("no boxes"), None);
     }
 

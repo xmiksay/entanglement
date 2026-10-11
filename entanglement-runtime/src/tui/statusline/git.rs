@@ -33,6 +33,8 @@ pub(crate) struct GitInfo {
     pub worktree: Option<String>,
     /// The `HEAD` file the 2 s poll stats for an mtime change.
     pub head: Option<PathBuf>,
+    /// The checkout's top-level directory (the status command's `root`).
+    pub toplevel: Option<PathBuf>,
 }
 
 /// Probe `cwd`. `home` abbreviates paths to `~` (injected so tests never
@@ -60,6 +62,7 @@ pub(crate) fn probe(cwd: &Path, home: Option<&Path>) -> GitInfo {
             .map_or_else(|| "?".to_string(), read_branch),
         worktree: repo.worktree,
         head: repo.gitdir.map(|g| g.join("HEAD")),
+        toplevel: Some(repo.toplevel),
     }
 }
 
@@ -205,6 +208,7 @@ mod tests {
         assert_eq!(info.branch, "main");
         assert_eq!(info.worktree, None);
         assert_eq!(info.head, Some(top.join(".git/HEAD")));
+        assert_eq!(info.toplevel, Some(top.clone()));
         assert!(head_stamp(&info).is_some());
     }
 
