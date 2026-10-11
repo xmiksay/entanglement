@@ -37,6 +37,26 @@ question timeout). `permission_arg` yields the URL, so a user can widen with
 an argument-scoped rule such as `web_fetch(https://docs.rs/*)` under
 `config.yml` `modes:`.
 
+The graded URL is the **normalized** URL (`web_fetch::normalize_url`), not
+the raw text the model wrote. Normalization means WHATWG parsing (scheme and
+host lowercased, default port dropped, surrounding whitespace and embedded
+tabs removed) plus stripping a trailing root dot from the host. It is the
+exact string the fetcher requests. Without it, `HTTPS://PASTEBIN.COM./x`
+would get past a `web_fetch(https://pastebin.com/*)` deny while fetching the
+same page.
+
+Two limits of argument-scoped rules, stated plainly:
+
+- **Rules grade the requested URL only.** Redirect hops are checked by the
+  SSRF guard but not graded against the mode's rules. An allowed site that
+  redirects elsewhere is followed. Re-grading would need the session's mode
+  table inside the tool, which this change does not plumb in.
+- **Rule globs are not URL-aware.** `*` also matches `/`, so a host wildcard
+  such as `web_fetch(https://*.example.com/*)` also matches
+  `https://evil.com/.example.com/`. Write host rules as a literal
+  scheme+host+`/` prefix (`https://docs.rs/*`). Because the graded URL is
+  normalized and userinfo is refused, that prefix pins the host.
+
 A separate `Network` class was rejected. It would need a new vocabulary
 member, an entry in every mode table, and tuning-guard changes, all to
 reproduce the outcome `Exec` already gives.
@@ -52,9 +72,12 @@ provider-owned) and is re-exported by core as `entanglement_core::web_fetch`.
   documentation and benchmarking ranges, multicast, broadcast, `240/4`, and
   on IPv6 `::`, `::1`, ULA `fc00::/7`, link-local `fe80::/10`, site-local
   `fec0::/10`, multicast, `2001:db8::/32` and Teredo `2001::/32`. IPv6 forms
-  that embed an IPv4 address (mapped `::ffff:0:0/96`, compatible `::/96`,
-  NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) are judged by the embedded
-  address.
+  that embed an IPv4 address are judged by the embedded address. That covers
+  IPv4-mapped `::ffff:0:0/96`, IPv4-translated `::ffff:0:0:0/96`, compatible
+  `::/96`, NAT64 `64:ff9b::/96`, NAT64 local-use `64:ff9b:1::/48` and 6to4
+  `2002::/16`. A local-use prefix may be any RFC 6052 length, so both the
+  `/48` and `/96` embeddings are checked, and the address is blocked if
+  either one is.
 - **URL validation** runs on the first URL and on every redirect target. It
   allows only `http`/`https` and refuses userinfo credentials. An IP-literal
   host is checked directly, because reqwest never calls a resolver for one.
@@ -83,6 +106,19 @@ go through the endpoint pool. That pool keys resilience state per base URL
 and persists it across processes (ADR-0144), so every arbitrary site would
 create its own entry and state file. A fetch is a single attempt, with a 10 s
 connect timeout, 30 s per request and 60 s for the whole redirect chain.
+
+**HTML conversion is hardened.** `htmd` recurses over the DOM with no depth
+limit. A ~100 KB page of nested `<div>`s overflows the stack and aborts the
+whole process, and very deep pages burn minutes of CPU. Three guards apply:
+
+1. A linear tag scan estimates nesting depth. Its stack ignores stray end
+   tags, so it can only over-count. Above 256, `htmd` is skipped and the page
+   gets flat plain-text extraction.
+2. Conversion runs on a dedicated thread with a 64 MiB stack, never on a
+   tokio worker. A test pins 4× the gate as safe.
+3. A 5 s timeout falls back to plain text.
+
+The tool output says when it fell back.
 
 The body is streamed up to `max_bytes` (default 2 MiB, clamped to 10 MiB).
 Content is classified by `Content-Type`. When the header is missing, a NUL in

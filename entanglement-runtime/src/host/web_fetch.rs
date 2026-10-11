@@ -27,6 +27,8 @@ use crate::capability::Capability;
 use crate::host::MAX_OUTPUT_BYTES;
 use crate::tools::Tool;
 
+mod html;
+
 pub const WEB_FETCH_TOOL: &str = "web_fetch";
 
 pub struct WebFetchTool {
@@ -113,13 +115,13 @@ impl Tool for WebFetchTool {
             .fetcher
             .fetch(&input.url, input.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
             .await?;
-        render(outcome, input.format, input.offset.unwrap_or(0))
+        render(outcome, input.format, input.offset.unwrap_or(0)).await
     }
 }
 
 /// Render a fetch outcome as the tool result: a short header, then one page
 /// of the converted content.
-fn render(outcome: FetchOutcome, format: Format, offset: usize) -> Result<String> {
+async fn render(outcome: FetchOutcome, format: Format, offset: usize) -> Result<String> {
     let mime = outcome.mime.as_deref().unwrap_or("unknown");
     let (text, truncated) = match outcome.body {
         FetchBody::Binary { size } => {
@@ -132,16 +134,25 @@ fn render(outcome: FetchOutcome, format: Format, offset: usize) -> Result<String
         FetchBody::Text { text, truncated } => (text, truncated),
     };
     let is_html = matches!(mime, "text/html" | "application/xhtml+xml");
-    let content = match format {
-        Format::Raw => text,
-        Format::Markdown if is_html => html_to_markdown(&text)?,
-        Format::Text if is_html => strip_link_targets(&html_to_markdown(&text)?),
-        Format::Markdown | Format::Text => text,
+    let (content, fallback) = match format {
+        Format::Markdown | Format::Text if is_html => {
+            let converted = html::to_markdown(text).await;
+            let content = if format == Format::Text {
+                strip_link_targets(&converted.text)
+            } else {
+                converted.text
+            };
+            (content, converted.fallback)
+        }
+        Format::Raw | Format::Markdown | Format::Text => (text, None),
     };
     let mut header = format!(
         "URL: {}\nStatus: {}\nContent-Type: {mime}\n",
         outcome.final_url, outcome.status
     );
+    if let Some(why) = fallback {
+        header.push_str(&format!("[{why} — showing extracted plain text]\n"));
+    }
     if truncated {
         header.push_str("[download stopped at the byte cap — raise max_bytes for more]\n");
     }
@@ -178,18 +189,6 @@ fn floor_boundary(s: &str, idx: usize) -> usize {
         idx -= 1;
     }
     idx
-}
-
-fn html_to_markdown(html: &str) -> Result<String> {
-    htmd::HtmlToMarkdown::builder()
-        // Page chrome and code that carries no reading value but would eat
-        // the context budget.
-        .skip_tags(vec![
-            "script", "style", "noscript", "svg", "head", "iframe", "template",
-        ])
-        .build()
-        .convert(html)
-        .context("converting HTML to Markdown")
 }
 
 /// Drop link and image targets from Markdown: `[text](url)` → `text`,

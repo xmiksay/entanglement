@@ -550,8 +550,21 @@ changes the advertised array.
 **Grading.** It declares `Capability::Exec`: outbound network to a
 model-chosen URL is graded like `curl`, not like a host `read`. The shipped
 modes give `build` → allow and `research`/`plan`/`auto` → prompt. The
-permission argument is the URL, so `modes: research: allow:
-["web_fetch(https://docs.rs/*)"]` widens it for one site.
+permission argument is the **normalized** URL (`web_fetch::normalize_url`:
+WHATWG-parsed with the host's trailing dot stripped), the same string the
+fetcher requests. So `modes: research: allow:
+["web_fetch(https://docs.rs/*)"]` widens it for one site, and a deny cannot be
+dodged with `HTTPS://`, a trailing dot, or `:443`. Write rules as a literal
+`scheme://host/` prefix: rule globs let `*` match `/`, so a host wildcard
+(`https://*.example.com/*`) is unsafe. Redirect hops are SSRF-checked but not
+re-graded against the rules.
+
+**Hostile HTML.** `htmd` recurses without a depth limit. A linear tag scan
+estimates nesting first, and above 256 the page gets flat plain-text
+extraction instead. Conversion runs on its own 64 MiB-stack thread (never a
+tokio worker) under a 5 s timeout that also falls back to plain text. A
+deeply nested page therefore cannot overflow the stack and abort the process
+(`host/web_fetch/html.rs`).
 
 **SSRF policy** (`entanglement_provider::web_fetch`, re-exported as
 `entanglement_core::web_fetch`):
@@ -561,8 +574,10 @@ permission argument is the URL, so `modes: research: allow:
   link-local `169.254/16` (cloud metadata), `192.0.0/24`, documentation and
   benchmarking ranges, multicast, broadcast, `240/4`, `::`, `::1`, ULA
   `fc00::/7`, `fe80::/10`, `fec0::/10`, `2001:db8::/32` and Teredo. An
-  IPv4-mapped, IPv4-compatible, NAT64 or 6to4 IPv6 address is judged by the
-  IPv4 address it embeds.
+  IPv6 address that embeds an IPv4 one is judged by that IPv4 address. That
+  covers IPv4-mapped, IPv4-translated (`::ffff:0:0:0/96`), IPv4-compatible,
+  NAT64 (`64:ff9b::/96`), NAT64 local-use (`64:ff9b:1::/48`, where both the
+  `/48` and `/96` embeddings are checked) and 6to4.
 - An IP-literal host is checked after WHATWG parsing, so `2130706433`,
   `0x7f.1` and `[::ffff:127.0.0.1]` are all caught. `localhost` and
   `*.localhost` are refused by name.

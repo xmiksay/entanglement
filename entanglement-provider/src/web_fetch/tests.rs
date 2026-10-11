@@ -99,6 +99,13 @@ fn blocks_every_non_public_ipv6_range_and_embedded_ipv4() {
         "::127.0.0.1",
         "64:ff9b::a9fe:a9fe",
         "2002:7f00:1::",
+        // IPv4-translated ::ffff:0:0/96 and NAT64 local-use 64:ff9b:1::/48
+        // (both the /48 split embedding and a /96 tail).
+        "::ffff:0:7f00:1",
+        "::ffff:0:a9fe:a9fe",
+        "64:ff9b:1:7f00:0:100::",
+        "64:ff9b:1:a9fe:a9:fe00::",
+        "64:ff9b:1::7f00:1",
     ] {
         assert!(is_blocked(ip(addr)), "{addr} must be blocked");
     }
@@ -113,6 +120,7 @@ fn public_addresses_pass() {
         "172.32.0.1",
         "2606:4700::1111",
         "::ffff:8.8.8.8",
+        "::ffff:0:808:808",
     ] {
         assert!(!is_blocked(ip(addr)), "{addr} must be allowed");
     }
@@ -129,6 +137,8 @@ fn url_validation_refuses_blocked_literals_in_every_encoding() {
         "http://[::1]/",
         "http://[::ffff:127.0.0.1]/",
         "http://[::ffff:7f00:1]/",
+        "http://[::ffff:0:7f00:1]/",
+        "http://[64:ff9b:1:7f00:0:100::]/",
         "http://2130706433/",
         "http://0x7f000001/",
         "http://0177.0.0.1/",
@@ -335,4 +345,22 @@ fn textual_mime_classification() {
     ] {
         assert!(!is_textual(m), "{m}");
     }
+}
+
+#[test]
+fn normalize_url_is_what_gets_fetched_and_graded() {
+    for raw in [
+        "HTTPS://PASTEBIN.COM/x",
+        "https://pastebin.com./x",
+        "https://pastebin.com:443/x",
+        " https://pastebin.com/x",
+        "https://paste\tbin.com/x",
+    ] {
+        assert_eq!(
+            normalize_url(raw).as_deref(),
+            Some("https://pastebin.com/x"),
+            "{raw:?}"
+        );
+    }
+    assert_eq!(normalize_url("not a url"), None);
 }

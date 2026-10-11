@@ -100,8 +100,9 @@ fn is_local_name(name: &str) -> bool {
 
 /// Every address `web_fetch` refuses to connect to — anything that is not
 /// plainly public unicast. IPv6 addresses that embed an IPv4 one
-/// (IPv4-mapped, IPv4-compatible, NAT64, 6to4) are judged by that embedded
-/// address, so no alternate spelling reaches a blocked IPv4 range.
+/// (IPv4-mapped/-translated/-compatible, NAT64 incl. local-use, 6to4) are
+/// judged by that embedded address, so no alternate spelling reaches a
+/// blocked IPv4 range.
 pub fn is_blocked(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_v4(v4),
@@ -126,8 +127,9 @@ fn is_blocked_v4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_blocked_v6(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = embedded_v4(ip) {
-        return is_blocked_v4(v4);
+    let embedded = embedded_v4(ip);
+    if !embedded.is_empty() {
+        return embedded.into_iter().any(is_blocked_v4);
     }
     let seg = ip.segments();
     ip.is_unspecified()
@@ -140,26 +142,41 @@ fn is_blocked_v6(ip: Ipv6Addr) -> bool {
         || (seg[0] == 0x2001 && seg[1] == 0) // Teredo 2001::/32 (tunnels to an obfuscated v4)
 }
 
-/// The IPv4 address an IPv6 address carries, for the forms that route to it:
-/// IPv4-mapped `::ffff:a.b.c.d`, IPv4-compatible `::a.b.c.d` (excluding
-/// `::`/`::1`, which are their own v6 cases), NAT64 `64:ff9b::/96` and 6to4
-/// `2002::/16`.
-fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+/// The IPv4 address(es) an IPv6 address carries, for the forms that route
+/// to one: IPv4-mapped `::ffff:a.b.c.d`, IPv4-translated `::ffff:0:a.b.c.d`,
+/// IPv4-compatible `::a.b.c.d` (excluding `::`/`::1`, their own v6 cases),
+/// NAT64 `64:ff9b::/96`, NAT64 local-use `64:ff9b:1::/48` and 6to4
+/// `2002::/16`. Local-use NAT64 prefixes may be any RFC 6052 length, so both
+/// plausible embeddings (the `/48` split around the `u` octet, and the `/96`
+/// tail) are returned — the caller blocks if *either* is blocked. Empty for
+/// a native IPv6 address.
+fn embedded_v4(ip: Ipv6Addr) -> Vec<Ipv4Addr> {
     if let Some(v4) = ip.to_ipv4_mapped() {
-        return Some(v4);
+        return vec![v4];
     }
     let seg = ip.segments();
-    let low = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    let tail = Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7]));
+    if seg[..6] == [0, 0, 0, 0, 0xffff, 0] {
+        return vec![tail];
+    }
     if seg[..6] == [0; 6] && !ip.is_unspecified() && !ip.is_loopback() {
-        return Some(low(seg[6], seg[7]));
+        return vec![tail];
     }
     if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        return Some(low(seg[6], seg[7]));
+        return vec![tail];
+    }
+    if seg[..3] == [0x64, 0xff9b, 1] {
+        let [a, b] = seg[3].to_be_bytes();
+        let c = seg[4].to_be_bytes()[1];
+        let d = seg[5].to_be_bytes()[0];
+        return vec![Ipv4Addr::new(a, b, c, d), tail];
     }
     if seg[0] == 0x2002 {
-        return Some(low(seg[1], seg[2]));
+        let [a, b] = seg[1].to_be_bytes();
+        let [c, d] = seg[2].to_be_bytes();
+        return vec![Ipv4Addr::new(a, b, c, d)];
     }
-    None
+    Vec::new()
 }
 
 /// The fetch client's DNS resolver: resolve, then refuse the whole answer if
