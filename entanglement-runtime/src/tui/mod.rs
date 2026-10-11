@@ -172,7 +172,6 @@ pub async fn tui(
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
     app.set_statusline_config(tui_config.statusline.clone());
     app.apply_appearance(&tui_config, app::appearance::no_color_env(), true);
-    app.set_status_root(root.canonicalize().ok());
     app.set_status_refresh(statusline::spawn_probe(root.clone(), event_tx.clone()));
     app.set_status_command_runner(statusline::command::spawn_runner(
         event_tx.clone(),

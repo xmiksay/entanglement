@@ -11,6 +11,9 @@ impl App {
     /// built here — the walk over a huge working directory used to freeze the
     /// first draw (#678); it arrives later via [`App::set_file_index`].
     pub fn init_head_context(&mut self, root: PathBuf) {
+        // Canonical once, off the draw path: the status line compares a
+        // (canonical) session workdir against it (#764).
+        self.set_status_root(root.canonicalize().ok());
         self.root = root;
     }
 
