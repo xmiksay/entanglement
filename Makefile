@@ -40,16 +40,16 @@ build: ## cargo build --workspace
 install: ## install the `skutter` binary into $CARGO_HOME/bin (cargo install --path)
 	$(CARGO) install --path entanglement-runtime --locked
 
-run: build ## build + run the stdio head once (one dummy turn)
+run: build ## run one turn on the configured provider (no key: hint + exit 2; ENTANGLEMENT_PROVIDER=echo for the offline stub)
 	$(CARGO) run -p entanglement-runtime -- run "Hello, Holly!" $(ARGS)
 
-run-json: build ## stream one turn as NDJSON events (like opencode run --format json)
+run-json: build ## stream one turn as NDJSON events (like opencode run --format json; same provider rules as `run`)
 	$(CARGO) run -p entanglement-runtime -- run --format json "Hello, Holly!"
 
-run-tui: build ## launch the terminal UI
+run-tui: build ## launch the terminal UI (first-run setup dialog when no provider is configured)
 	$(CARGO) run -p entanglement-runtime -- tui
 
-pipe: build ## stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
+pipe: build ## stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout (same provider rules as `run`)
 	$(CARGO) run -p entanglement-runtime -- pipe
 
 serve: build ## WebSocket serve head — local loopback HTTP+WS on 127.0.0.1 (ARGS='--port 4517')

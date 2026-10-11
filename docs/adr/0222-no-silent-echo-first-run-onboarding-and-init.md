@@ -28,6 +28,8 @@ brief.
    code every other provider-selection error uses. The hint lists the
    catalog's key variables, `skutter config set-key <keyed providers>`, the
    keyless `ENTANGLEMENT_PROVIDER=ollama`, and `ENTANGLEMENT_PROVIDER=echo`.
+   When the catalog has OAuth entries, the hint also names them with
+   `skutter config connect <p>` and says to set `provider:` afterwards.
    All three heads behave the same. A `pipe`/`serve` client that wants the
    stub asks for it, so it never mistakes stub output for model output.
 
@@ -41,7 +43,8 @@ brief.
    - Pick a provider. Every catalog entry is listed except OAuth-only ones,
      which need `skutter config connect`. Keyless entries are included.
    - Enter the key, masked, for a keyed provider. A keyless provider gets a
-     base-URL prompt instead, prefilled from the catalog.
+     base-URL prompt instead, prefilled from `<NAME>_API_BASE` when set,
+     else from the catalog.
    - Pick a model. The catalog default is preselected.
    - Save. The key, or an edited base URL as `<NAME>_API_BASE`, goes through
      the existing managed `.env` writer (`env_key`), the same path `/key` and

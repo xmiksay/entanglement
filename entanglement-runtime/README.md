@@ -48,7 +48,10 @@ envelope.
 ## Providers
 
 Set `ENTANGLEMENT_PROVIDER` (`zai` | `zai_paas` | `openai` | `ollama` |
-`anthropic` | `gemini` | any catalog entry) or let key auto-detection pick; no key → offline `EchoLlm`. The
+`anthropic` | `gemini` | any catalog entry) or let key auto-detection pick. With
+no key, the TUI opens a first-run setup dialog and `run`/`pipe`/`serve` print a
+hint and exit 2; the offline `EchoLlm` stub is explicit-only
+(`ENTANGLEMENT_PROVIDER=echo`). The
 provider/model list is YAML data — see
 [`entanglement-provider`](https://crates.io/crates/entanglement-provider).
 

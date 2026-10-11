@@ -36,7 +36,7 @@ tool exec/approval over the protocol). Dependency direction is
 
 ```bash
 make help         # list every target with its one-line description
-make run           # stdio head, one turn (text)
+make run           # stdio head, one turn (text); no key → hint + exit 2, ENTANGLEMENT_PROVIDER=echo for the stub
 make run-json      # one turn, NDJSON events (opencode run --format json)
 make run-tui       # launch the terminal UI
 make pipe          # stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout
