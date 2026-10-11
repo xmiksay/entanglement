@@ -284,8 +284,7 @@ fn resume_marks_only_reannounced_ids_and_a_refusal_clears_its_mark() {
             (None, ended("gone")),
         ],
     });
-    let marked: HashSet<_> = t.resuming.iter().map(|s| s.0.as_str()).collect();
-    assert_eq!(marked, HashSet::from(["root", "live"]));
+    assert_eq!(t.resuming.marked(), HashSet::from(["root", "live"]));
 
     // A refused resume: the supervisor's `Error` arrives, no start follows.
     t.observe_in(&InMsg::Resume {
@@ -293,11 +292,63 @@ fn resume_marks_only_reannounced_ids_and_a_refusal_clears_its_mark() {
         records: vec![],
     });
     assert!(t.observe(&refusal("closed")).is_none());
-    assert!(!t.resuming.contains(&sid("closed")));
+    assert!(!t.resuming.marked().contains("closed"));
 
     // Ending a marked session drops its mark too.
     t.observe(&ended("live"));
-    assert!(!t.resuming.contains(&sid("live")));
+    assert!(!t.resuming.marked().contains("live"));
+}
+
+fn already_live(s: &str) -> OutEvent {
+    OutEvent::Error {
+        session: sid(s),
+        seq: 0,
+        message: "cannot resume an already-live session id".into(),
+    }
+}
+
+/// #791: a duplicate `Resume` refused as already-live before the original's
+/// start lands must not spend the original's mark — in either order.
+#[test]
+fn a_refused_duplicate_resume_keeps_the_originals_mark() {
+    let resume = || InMsg::Resume {
+        session: sid("a"),
+        records: vec![(None, started("a", None, None))],
+    };
+    let mut t = Tracker::default();
+    t.observe_in(&resume());
+    t.observe_in(&resume());
+    assert!(t.observe(&already_live("a")).is_none());
+    assert_eq!(source_of(&mut t, &started("a", None, None)), "resume");
+    assert!(t.resuming.marked().is_empty());
+
+    let mut t = Tracker::default();
+    t.observe_in(&resume());
+    t.observe_in(&resume());
+    assert_eq!(source_of(&mut t, &started("a", None, None)), "resume");
+    t.observe(&already_live("a"));
+    assert!(
+        t.resuming.marked().is_empty(),
+        "the refusal spent the duplicate"
+    );
+}
+
+/// #791: resuming a non-root target with the root's whole log marks only the
+/// target's own still-live sub-tree, never its siblings' branches.
+#[test]
+fn a_non_root_resume_marks_only_the_targets_subtree() {
+    let mut t = Tracker::default();
+    t.observe_in(&InMsg::Resume {
+        session: sid("child"),
+        records: vec![
+            (None, started("root", None, None)),
+            (None, started("child", Some("root"), None)),
+            (None, started("grand", Some("child"), None)),
+            (None, started("sibling", Some("root"), None)),
+            (None, started("nephew", Some("sibling"), None)),
+        ],
+    });
+    assert_eq!(t.resuming.marked(), HashSet::from(["child", "grand"]));
 }
 
 #[test]
