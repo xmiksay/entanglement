@@ -50,11 +50,12 @@ impl Llm for ScriptedLlm {
     }
 }
 
-/// Collect events for `sid` up to and including the *n*th `Done`, then linger
-/// briefly to also catch anything the tool executor emits asynchronously right
-/// after `Done` — its own broadcast subscription processes `Done` concurrently
-/// with this collector, so the skill-posture clear `SkillActive` (#400) can
-/// arrive a beat after `Done` itself rather than strictly before it.
+/// Collect events for `sid` up to and including the *n*th `Done` *and* the
+/// skill-posture clear `SkillActive` (#400). The tool executor's own broadcast
+/// subscription processes `Done` concurrently with this collector, so the
+/// clear can arrive a beat after `Done`; waiting for that event itself (not
+/// a fixed linger, #815) keeps a loaded runner from losing the race. Each
+/// recv is bounded, so a missing event fails the caller's assertion.
 async fn collect_through_dones(
     sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
@@ -62,22 +63,20 @@ async fn collect_through_dones(
 ) -> Vec<OutEvent> {
     let mut out = Vec::new();
     let mut seen_dones = 0;
-    while seen_dones < dones {
-        let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
+    let mut cleared = false;
+    while seen_dones < dones || !cleared {
+        let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(10), sub.recv()).await else {
             break;
         };
         if ev.session() != Some(sid) {
             continue;
         }
-        if matches!(ev, OutEvent::Done { .. }) {
-            seen_dones += 1;
+        match ev {
+            OutEvent::Done { .. } => seen_dones += 1,
+            OutEvent::SkillActive { skill_id: None, .. } => cleared = true,
+            _ => {}
         }
         out.push(ev);
-    }
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
-        if ev.session() == Some(sid) {
-            out.push(ev);
-        }
     }
     out
 }
