@@ -48,6 +48,12 @@ fn only_the_first_line_survives_stripped_of_escapes_and_controls() {
     assert_eq!(first_line(b""), "");
 }
 
+#[test]
+fn bidi_and_zero_width_characters_are_stripped() {
+    let spoof = "a\u{202E}gnp.exe\u{202C} b\u{2066}c\u{2069} d\u{200B}e\u{FEFF}f\u{200F}\u{061C}g";
+    assert_eq!(first_line(spoof.as_bytes()), "agnp.exe bc defg");
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -117,12 +123,22 @@ mod unix {
             p = pids.display()
         );
         let started = Instant::now();
-        let err = run(&job(&cmd, 300), &[]).await.unwrap_err();
-        assert_eq!(err, "timed out after 300 ms");
-        assert!(started.elapsed() < Duration::from_secs(5));
-        let text = std::fs::read_to_string(&pids).unwrap();
+        let running = tokio::spawn(async move { run(&job(&cmd, 2000), &[]).await });
+        // Wait for both pids while the run is still in flight; a loaded host
+        // may take a while to get the script that far.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let text = loop {
+            let text = std::fs::read_to_string(&pids).unwrap_or_default();
+            if text.lines().count() == 2 {
+                break text;
+            }
+            assert!(Instant::now() < deadline, "script never wrote its pids");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
         let pids: Vec<i32> = text.lines().map(|l| l.trim().parse().unwrap()).collect();
-        assert_eq!(pids.len(), 2, "{text}");
+        let err = running.await.unwrap().unwrap_err();
+        assert_eq!(err, "timed out after 2000 ms");
+        assert!(started.elapsed() < Duration::from_secs(15));
         // The leader was reaped by `run` (a zombie would still answer
         // signal 0); the backgrounded grandchild died with the group.
         assert!(!alive(pids[0]), "leader left as a zombie");
@@ -172,6 +188,19 @@ mod unix {
             runs[1].contains("burst-19"),
             "the follow-up sees the latest payload"
         );
+    }
+
+    #[tokio::test]
+    async fn a_script_slower_than_the_interval_still_gets_a_gap() {
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let jobs = spawn_with(event_tx, Vec::new(), Duration::from_millis(400));
+        jobs.send_replace(Some(job("sleep 0.3; echo ok", 5000)));
+        next_outcome(&mut event_rx).await;
+        let first_done = Instant::now();
+        jobs.send_modify(|_| {});
+        next_outcome(&mut event_rx).await;
+        // Back to back would be ~300 ms; the half-interval gap adds 200.
+        assert!(first_done.elapsed() >= Duration::from_millis(480));
     }
 
     #[tokio::test]

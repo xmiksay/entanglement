@@ -311,14 +311,21 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   payload) into a `watch` channel on every dirty frame, which wakes the
   runner only on change — git probe, focus switch, mode/model/usage/task/
   action events — and an exec-tool `ToolOutput` forces a re-run; `watch`
-  keeps only the latest job and each run waits out 1 s from its start, so
-  it runs at most once a second, never twice at once. Success shows the
+  keeps only the latest job and the next run starts no earlier than 1 s
+  after the last one started and 0.5 s after it finished, so it runs at
+  most once a second, never twice at once, and a slow script never runs
+  back to back. Success shows the
   line (kept until the next run reports); a failure (non-zero exit,
   signal, timeout, spawn error) shows the template again with one toast
   per failure streak. A result for a command a reload has since replaced
   is dropped. The child inherits the TUI's environment minus the catalog's
   provider key variables (#164, as for `bash`/`call`/MCP stdio). The task
   stops when the TUI drops its event receiver, killing a run in flight.
+  The line is stripped of ANSI escapes, control characters and bidi /
+  zero-width format characters (no reordered or hidden text). As with
+  `bash` and hooks, the group is killed only on timeout or cancel: a
+  grandchild that redirects its output away keeps running after a
+  successful run.
   **Themes** (#735, [ADR-0219](../adr/0219-tui-themes-and-keybindings.md),
   `config::theme` + `tui::theme`): every colour the TUI draws is one named
   `Slot` of a resolved `Theme` palette — no widget names a `Color` itself

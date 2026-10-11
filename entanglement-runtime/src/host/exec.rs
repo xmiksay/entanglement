@@ -47,9 +47,13 @@ pub fn own_process_group(cmd: &mut Command) {
 /// SIGKILL the child's process group if this guard is dropped while still armed.
 /// A `Stop` (#167) aborts the executor task, which drops the future holding the
 /// running child; `kill_on_drop` would then reap only the direct child, leaving
-/// grandchildren orphaned exactly as on the timeout path (#168). Disarmed on
-/// every normal exit of [`wait_or_kill_group`], so it only fires on a cancel.
-/// Also guards the TUI status-line command (`tui::statusline::command`).
+/// grandchildren orphaned exactly as on the timeout path (#168). Callers
+/// disarm it once the child has exited normally and either drop it armed to
+/// kill on timeout ([`wait_or_kill_group`] signals explicitly instead) or
+/// let a cancel drop it. Public only because the `skutter` binary's TUI
+/// status-line command (`tui::statusline::command`) reuses it — not part of
+/// the embedder API.
+#[doc(hidden)]
 pub struct GroupKillGuard {
     /// Group leader pid (== pgid, since the child was spawned `process_group(0)`),
     /// or `None` once disarmed / when the child had no pid.
