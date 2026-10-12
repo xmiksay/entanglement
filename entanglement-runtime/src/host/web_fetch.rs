@@ -8,7 +8,7 @@
 //! "reads the host", which `research`/`plan`/`auto` allow unprompted, while
 //! an outbound request to a model-chosen URL is an outward effect (a query
 //! string can carry data out). `Exec` is what every other outbound-network
-//! tool already declares (`endpoint__*`, `call`), so the built-in modes grade
+//! tool already declares (`call`, `http`), so the built-in modes grade
 //! `web_fetch` exactly like `curl` with no new rule entries: `build` allows
 //! it, every other mode prompts. A user who wants unprompted docs lookups
 //! adds an argument-scoped rule such as `web_fetch(https://docs.rs/*)`.

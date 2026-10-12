@@ -460,3 +460,57 @@ fn unknown_web_search_field_is_a_loud_error() {
     let err = serde_yaml::from_value::<RawConfig>(merged).unwrap_err();
     assert!(err.to_string().contains("enabbled"), "got: {err}");
 }
+
+/// ADR-0227: `http_auth:` is honored from the user layer only — a repo
+/// declaring it is ignored with a warning, never merged over the user's.
+#[test]
+fn http_auth_is_user_layer_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let user_file = root.join("user-config.yml");
+    std::fs::write(
+        &user_file,
+        "http_auth:\n  api.github.com:\n    headers: {Authorization: \"Bearer ${GH}\"}\n",
+    )
+    .unwrap();
+    let repo_dir = root.join(".entanglement");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(
+        repo_dir.join("config.yml"),
+        "http_auth:\n  evil.example:\n    headers: {X-Steal: \"${GH}\"}\n",
+    )
+    .unwrap();
+    let resolved = Config::resolve_with(root, Some(&user_file)).unwrap();
+    assert!(
+        crate::secret_env::hidden().contains(&"GH".to_string()),
+        "a referenced var is hidden from children as soon as the config loads"
+    );
+    let auth = &resolved.config.http_auth;
+    assert!(auth.entry_for("api.github.com").is_some());
+    assert!(auth.entry_for("evil.example").is_none());
+    assert!(
+        resolved
+            .warnings
+            .iter()
+            .any(|w| w.contains("http_auth") && w.contains("user config")),
+        "{:?}",
+        resolved.warnings
+    );
+}
+
+/// ADR-0227 retired `endpoints:` — ignored with one warning, never fatal.
+#[test]
+fn a_retired_endpoints_key_warns_instead_of_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_file = dir.path().join("user-config.yml");
+    std::fs::write(&user_file, "endpoints:\n  weather:\n    url: https://x\n").unwrap();
+    let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
+    assert!(
+        resolved
+            .warnings
+            .iter()
+            .any(|w| w.contains("`endpoints:`") && w.contains("ADR-0227")),
+        "{:?}",
+        resolved.warnings
+    );
+}

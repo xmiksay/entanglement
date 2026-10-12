@@ -179,6 +179,8 @@ pub(super) struct LadderCtx {
     pub catalog: Option<Arc<Catalog>>,
     /// Each session's workdir as its latest `ToolExec` carried it (#764).
     pub workdirs: crate::workdir::SessionWorkdirs,
+    /// The credentialed-`http()` gate (ADR-0227).
+    pub http_gate: Arc<crate::http_gate::HttpGate>,
 }
 
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and

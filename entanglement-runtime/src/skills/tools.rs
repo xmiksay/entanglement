@@ -4,10 +4,9 @@
 //! never reads it), since a Claude-Code-style skill directory has no concept
 //! of it and entanglement doesn't own the file.
 //!
-//! Three kinds, one frontmatter list (tagged by `kind`):
-//! - [`SkillToolDef::Endpoint`] — the same [`EndpointConfig`]/[`EndpointTool`]
-//!   machinery as `config.yml`'s `endpoints:` (P8's other half), just
-//!   namespaced under the skill instead of the top level.
+//! Two kinds, one frontmatter list (tagged by `kind`) — the third,
+//! `endpoint`, went with the declared endpoint tools (ADR-0227: a skill's
+//! `lib.rhai` function calling `http()` replaces it):
 //! - [`SkillToolDef::Rhai`] — a script path relative to the skill dir, run
 //!   through the *existing* sandboxed `rhai` machinery, graded exactly like
 //!   `rhai` (ADR-0046). Implemented as sugar over [`AliasTool`]: registering
@@ -53,14 +52,9 @@
 //! registered skill tool is advertised natively until #820 retires skill
 //! `tools:` (ADR-0226), so its schema already sits in the tools array.
 
-use std::collections::HashMap;
-
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use entanglement_core::{EndpointMethod, HttpClient};
-
-use crate::endpoint::{EndpointConfig, EndpointParam, EndpointTool};
 use crate::tool_names::{self, RHAI_TOOL};
 use crate::tools::ToolRegistry;
 
@@ -73,20 +67,6 @@ use super::{SkillMeta, SkillRegistry};
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SkillToolDef {
-    Endpoint {
-        name: String,
-        #[serde(default = "default_method")]
-        method: EndpointMethod,
-        url: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default)]
-        params: HashMap<String, EndpointParam>,
-        #[serde(default)]
-        headers: HashMap<String, String>,
-        #[serde(default)]
-        body: Option<String>,
-    },
     Rhai {
         name: String,
         /// Path to a `.rhai` script, relative to the skill's own directory
@@ -108,38 +88,42 @@ pub enum SkillToolDef {
         #[serde(default)]
         description: String,
     },
+    /// The retired `endpoint` kind (ADR-0227), kept parseable so an old
+    /// `SKILL.md` never fails startup: skipped at registration with a
+    /// warning naming the replacement.
+    Endpoint(Map<String, Value>),
 }
 
 impl SkillToolDef {
-    /// The tool's own short name (unnamespaced) — every variant carries one.
+    /// The tool's own short name (unnamespaced).
     pub fn name(&self) -> &str {
         match self {
-            Self::Endpoint { name, .. } | Self::Rhai { name, .. } | Self::Alias { name, .. } => {
-                name
-            }
+            Self::Rhai { name, .. } | Self::Alias { name, .. } => name,
+            Self::Endpoint(fields) => fields.get("name").and_then(Value::as_str).unwrap_or(""),
         }
     }
 }
 
-fn default_method() -> EndpointMethod {
-    EndpointMethod::Get
-}
-
 /// Register every discovered skill's `tools:` entries, namespaced
-/// `skill__<skill>__<name>`. Two passes: endpoint/rhai-backed tools first,
+/// `skill__<skill>__<name>`. Two passes: rhai-backed tools first,
 /// then aliases — so an alias may target a sibling skill tool registered in
 /// the first pass (as well as any host/MCP-so-far/pseudo-tool). Per-entry
 /// failures (a rhai script that doesn't exist, an alias with an unknown
 /// target) are logged and skipped, never fatal to startup — matching how an
 /// MCP server that fails to connect is logged and skipped rather than
 /// aborting.
-pub fn register_skill_tools(tools: &mut ToolRegistry, skills: &SkillRegistry, http: &HttpClient) {
+pub fn register_skill_tools(tools: &mut ToolRegistry, skills: &SkillRegistry) {
     for skill in skills.iter() {
         for def in &skill.tools {
             match def {
-                SkillToolDef::Endpoint { .. } => register_endpoint(tools, skill, def, http),
                 SkillToolDef::Rhai { .. } => register_rhai(tools, skill, def),
                 SkillToolDef::Alias { .. } => {} // second pass, below
+                SkillToolDef::Endpoint(_) => tracing::warn!(
+                    skill = %skill.name,
+                    tool = %def.name(),
+                    "skill tool kind `endpoint` was removed (ADR-0227) — skipping; write a \
+                     `lib.rhai` function calling `http()` instead"
+                ),
             }
         }
     }
@@ -154,39 +138,6 @@ pub fn register_skill_tools(tools: &mut ToolRegistry, skills: &SkillRegistry, ht
 
 fn namespaced(skill: &str, name: &str) -> String {
     format!("skill__{skill}__{name}")
-}
-
-fn register_endpoint(
-    tools: &mut ToolRegistry,
-    skill: &SkillMeta,
-    def: &SkillToolDef,
-    http: &HttpClient,
-) {
-    let SkillToolDef::Endpoint {
-        name,
-        method,
-        url,
-        description,
-        params,
-        headers,
-        body,
-    } = def
-    else {
-        return;
-    };
-    let cfg = EndpointConfig {
-        method: *method,
-        url: url.clone(),
-        description: description.clone(),
-        params: params.clone(),
-        headers: headers.clone(),
-        body: body.clone(),
-    };
-    tools.register(EndpointTool::new(
-        namespaced(&skill.name, name),
-        &cfg,
-        http.clone(),
-    ));
 }
 
 /// Sugar over [`AliasTool`]: target `rhai`, one preset arg (`script`, the
@@ -349,6 +300,7 @@ mod tests {
             root_dir,
             body: String::new(),
             tools,
+            lib: None,
         }
     }
 
@@ -361,13 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_all_three_kinds_from_yaml() {
+    fn parses_both_kinds_from_yaml() {
         let yaml = "
-- kind: endpoint
-  name: gh_search
-  url: \"https://api.github.com/search?q={{query}}\"
-  params:
-    query: { type: string }
 - kind: rhai
   name: run_lint
   script: scripts/lint.rhai
@@ -378,23 +325,22 @@ mod tests {
     path: README.md
 ";
         let defs: Vec<SkillToolDef> = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(defs.len(), 3);
-        assert_eq!(defs[0].name(), "gh_search");
-        assert_eq!(defs[1].name(), "run_lint");
-        assert_eq!(defs[2].name(), "quick_read");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name(), "run_lint");
+        assert_eq!(defs[1].name(), "quick_read");
     }
 
+    /// ADR-0227: the `endpoint` kind is retired, not fatal — it parses, and
+    /// registration skips it.
     #[test]
-    fn endpoint_kind_rejects_unknown_fields() {
-        let err = serde_yaml::from_str::<SkillToolDef>(
-            "kind: endpoint\nname: x\nurl: https://x\ntypo: 1",
-        )
-        .unwrap_err();
-        assert!(format!("{err}").contains("typo"), "{err}");
-    }
-
-    fn http() -> HttpClient {
-        crate::test_http_client()
+    fn the_retired_endpoint_kind_parses_and_is_skipped() {
+        let def: SkillToolDef =
+            serde_yaml::from_str("kind: endpoint\nname: x\nurl: https://x").unwrap();
+        assert_eq!(def.name(), "x");
+        let skills = registry_with(vec![skill_with_tools("s", None, vec![def])]);
+        let mut tools = ToolRegistry::new();
+        register_skill_tools(&mut tools, &skills);
+        assert!(!tools.contains("skill__s__x"));
     }
 
     #[test]
@@ -405,15 +351,6 @@ mod tests {
             "research",
             Some(dir.path().to_path_buf()),
             vec![
-                SkillToolDef::Endpoint {
-                    name: "gh_search".to_string(),
-                    method: EndpointMethod::Get,
-                    url: "https://api.github.com/search".to_string(),
-                    description: String::new(),
-                    params: HashMap::new(),
-                    headers: HashMap::new(),
-                    body: None,
-                },
                 SkillToolDef::Rhai {
                     name: "run_lint".to_string(),
                     script: "lint.rhai".to_string(),
@@ -430,9 +367,8 @@ mod tests {
         let skills = registry_with(vec![skill]);
         let mut tools = ToolRegistry::new();
         tools.register(DummyRead);
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
 
-        assert!(tools.contains("skill__research__gh_search"));
         assert!(tools.contains("skill__research__run_lint"));
         assert!(tools.contains("skill__research__quick_read"));
     }
@@ -452,7 +388,7 @@ mod tests {
         );
         let skills = registry_with(vec![skill]);
         let mut tools = ToolRegistry::new();
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
 
         let tool = tools.get("skill__research__run_lint").unwrap();
         let (target, merged) = tool.alias_rewrite("{}").unwrap();
@@ -474,7 +410,7 @@ mod tests {
         );
         let skills = registry_with(vec![skill]);
         let mut tools = ToolRegistry::new();
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
         assert!(!tools.contains("skill__built_in__run_lint"));
     }
 
@@ -492,25 +428,22 @@ mod tests {
         );
         let skills = registry_with(vec![skill]);
         let mut tools = ToolRegistry::new();
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
         assert!(!tools.contains("skill__x__bogus"));
     }
 
     #[test]
     fn alias_can_target_a_sibling_skill_tool_registered_in_pass_one() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("search.rhai"), "1").unwrap();
         let skill = skill_with_tools(
             "x",
             Some(dir.path().to_path_buf()),
             vec![
-                SkillToolDef::Endpoint {
+                SkillToolDef::Rhai {
                     name: "search".to_string(),
-                    method: EndpointMethod::Get,
-                    url: "https://x/search".to_string(),
+                    script: "search.rhai".to_string(),
                     description: String::new(),
-                    params: HashMap::new(),
-                    headers: HashMap::new(),
-                    body: None,
                 },
                 SkillToolDef::Alias {
                     name: "search_alias".to_string(),
@@ -522,7 +455,7 @@ mod tests {
         );
         let skills = registry_with(vec![skill]);
         let mut tools = ToolRegistry::new();
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
         assert!(tools.contains("skill__x__search_alias"));
     }
 
@@ -544,7 +477,7 @@ mod tests {
             }],
         );
         let skills = registry_with(vec![skill]);
-        register_skill_tools(&mut tools, &skills, &http());
+        register_skill_tools(&mut tools, &skills);
         let spec = tools.spec_for("skill__x__quick_read").unwrap();
         assert!(spec.schema["properties"].get("path").is_none());
     }

@@ -3,8 +3,8 @@ name: rhai
 description: >-
   Long-form guide to the `rhai` tool: worked examples plus the detail behind the
   signature list the tool spec already carries — permission grading, escape-root
-  gating, background runs, output and limits. Load it when a script needs more
-  than the signatures.
+  gating, `http()`, the `mcp::`/`skill::` namespaces, chaining calls, background
+  runs, output and limits. Load it when a script needs more than the signatures.
 ---
 
 # `rhai` guide
@@ -19,11 +19,14 @@ cannot pull in modules or re-enter the parser.
 
 ## Host I/O bindings
 
-Each binding passes the **same permission check as the equivalent tool
-call** (the session's permission mode, its tool overlay, the config
-ceiling, and the escape-root gate for an out-of-project path) and returns that tool's text output. Denial or failure
-**throws** — wrap in `try`/`catch` if the script should degrade gracefully
-instead of aborting.
+Each binding call goes through **the same dispatch path as the equivalent
+tool call** (the session's permission mode, its tool overlay, the config
+ceiling, grants, `pre_tool_use`/`post_tool_use` hooks, the escape-root gate
+for an out-of-project path, argument validation, `FileChange` events) and
+returns that tool's text output. A refusal (denied, rejected, vetoed by a
+hook) **throws** — wrap in `try`/`catch` if the script should degrade
+gracefully instead of aborting. An approval covers a repeat of the exact same
+call in the same run; any other target asks again.
 
 - `read(path)`, `read(path, offset, limit)` — returns `"{lineno}: {line}"`
   text, **not** parseable as JSON/YAML.
@@ -52,7 +55,74 @@ instead of aborting.
 `workdir` (on `exec`/`bash`) is what a workdir-scoped permission rule
 (`tool{pattern}`) matches, and also feeds the escape-root gate. `exec`/`bash`
 timeouts are clamped to the script's own remaining wall-clock budget, not the
-tool's much longer default.
+tool's much longer default; every other nested call except `write`/`edit`
+is cut off shortly before the script's budget runs out — the cut throws, and
+its outcome (did it take effect?) is unknown.
+
+## `http(method, url, #{headers, body})`
+
+`http("GET", url)` / `http("POST", url, #{headers: #{"Accept": "application/json"}, body: #{q: 1}})`
+returns the response body as text; a non-2xx status **throws** (the message
+carries the status and body). A map/array `body` is sent as JSON with
+`Content-Type: application/json` (unless you set one). Methods:
+GET, HEAD, POST, PUT, PATCH, DELETE. Private and loopback addresses are
+refused, like `web_fetch`.
+
+Graded as `http` with the argument `"{METHOD} {url}"`, so a rule can allow
+reads only: `http(GET https://api.github.com/*)`. Every redirect hop is graded
+the same way and stops the request if it would need approval.
+
+Credentials are never the script's business: the user maps hosts to headers
+or cookies in their own config (`http_auth:`), and the runtime adds them at
+send time over https — never visible to the script or in the environment of
+a process it starts, never sent to another host on a redirect. Setting
+`Authorization`/`Cookie`/`Host`/`X-Forwarded-Host` yourself, or putting
+`user@` in the URL, is refused. The
+first authenticated call to a host in a session always asks the user (the
+card says `authenticated for <host>`).
+
+## Namespaces: `mcp::<server>::<tool>` and `skill::<skill>::<fn>`
+
+Every MCP tool the session can see is callable as
+`mcp::<server>::<tool>(#{arg: value})` (or `()` with no arguments), graded as
+the `mcp__<server>__<tool>` tool it is; its text result comes back (call
+`.parse_json()` on JSON) and a failure throws. Names are mapped to
+identifiers: other characters become `_`, a name that does not start with a
+letter (after any leading `_`) gets a `t_` prefix (`2fa` → `t_2fa`), a
+reserved word (`call`, `print`, `type_of`, …) a `_` suffix — `mcp_tools`
+shows each tool's rhai name. A server not yet connected connects on the
+first call.
+
+A skill that ships a `lib.rhai` next to its `SKILL.md` adds its functions as
+`skill::<skill>::<fn>(...)`; `load_skill` lists them. A lib function can call
+every binding and namespace above.
+
+Nested `rhai`, the `mcp` envelope and the session tools (`agent`,
+`agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`,
+`update_tasks`, `list_*`, `load_skill`, `mcp_tools`) cannot be called from a
+script.
+
+## Chain calls in one script
+
+The point of a script is to do several calls in **one** round: pass one
+call's result straight into the next instead of returning it to yourself.
+
+```rhai
+// search, then read the best hit — one tool call, not two rounds
+let hits = mcp::docs::search(#{query: "retry policy"}).parse_json();
+let page = mcp::docs::read(#{id: hits[0].id});
+page
+```
+
+```rhai
+// find the files, then edit each
+for f in glob_json("src/**/*.rs").files {
+    if read_raw(f).contains("old_name(") {
+        edit(f, "old_name(", "new_name(", true);
+    }
+}
+"renamed"
+```
 
 All bindings are callable as methods, e.g. `read_raw(path).parse_json()`.
 

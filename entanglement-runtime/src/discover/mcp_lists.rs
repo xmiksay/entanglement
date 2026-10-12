@@ -4,7 +4,8 @@
 //! its state and, when known, its tool names: live for a connected server,
 //! else the last-seen cache. `mcp_tools(name)` is a read of one server's tool
 //! catalog — every tool with its JSON schema and one `mcp {...}` call line,
-//! the MCP counterpart of `load_skill`. MCP has no offline catalog, so the
+//! the MCP counterpart of `load_skill` — plus the tool's rhai name
+//! (`mcp::<server>::<tool>`, ADR-0227). MCP has no offline catalog, so the
 //! first read of a server in the process connects it (an implementation
 //! detail; the call through `mcp` is what gets graded).
 //!
@@ -35,7 +36,8 @@ pub struct McpSources<'a> {
 
 const CALL_HINT: &str =
     "Call a tool by calling the `mcp` tool with {\"server\": \"<server>\", \"tool\": \"<tool>\", \"args\": {...}}; \
-     mcp_tools {\"name\": \"<server>\"} shows a server's tools with their schemas.";
+     mcp_tools {\"name\": \"<server>\"} shows a server's tools with their schemas; a rhai script calls \
+     mcp::<server>::<tool>(#{...}) instead.";
 
 /// `list_mcp`: one line per registered server.
 pub fn list_mcp(src: &McpSources<'_>, session: &SessionId) -> String {
@@ -109,7 +111,7 @@ pub async fn mcp_tools(src: &McpSources<'_>, session: &SessionId, input: &str) -
     let scoped = src
         .scopes
         .and_then(|s| s.rows(session).map(|rows| (s, rows)));
-    let (specs, description) = match scoped {
+    let (specs, description, servers) = match scoped {
         Some((scopes, rows)) => {
             let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
             let Some(row) = rows.into_iter().find(|r| r.name == server) else {
@@ -124,7 +126,11 @@ pub async fn mcp_tools(src: &McpSources<'_>, session: &SessionId, input: &str) -
                 .overlay_registry_for_call(session, base, &prefix)
                 .await
             {
-                Ok(reg) => (owned_specs(reg.specs(), &names, &server), row.description),
+                Ok(reg) => (
+                    owned_specs(reg.specs(), &names, &server),
+                    row.description,
+                    names,
+                ),
                 Err(msg) => return (msg, true),
             }
         }
@@ -147,7 +153,12 @@ pub async fn mcp_tools(src: &McpSources<'_>, session: &SessionId, input: &str) -
                 .specs();
             let description = src.avail.get(&server).and_then(|s| s.config.description);
             let names = src.avail.available_names();
-            (owned_specs(specs, &names, &server), description)
+            // The same server set the script namespaces are planned over.
+            let servers = crate::mcp::roster(src.avail, src.active)
+                .into_iter()
+                .map(|r| r.name)
+                .collect();
+            (owned_specs(specs, &names, &server), description, servers)
         }
     };
     let mut delivered = src
@@ -158,7 +169,7 @@ pub async fn mcp_tools(src: &McpSources<'_>, session: &SessionId, input: &str) -
         delivered.mark(session, &spec.name);
     }
     (
-        render_tools(&server, description.as_deref(), &specs, &prefix),
+        render_tools(&server, description.as_deref(), &specs, &prefix, &servers),
         false,
     )
 }
@@ -187,28 +198,84 @@ fn render_tools(
     description: Option<&str>,
     specs: &[ToolSpec],
     prefix: &str,
+    servers: &[String],
 ) -> String {
     let about = description.map(|d| format!(" ({d})")).unwrap_or_default();
     if specs.is_empty() {
         return format!("MCP server `{server}`{about} exposes no tools.");
     }
     let mut out = format!("MCP server `{server}`{about} — tools:");
+    let tools: Vec<(String, String)> = specs
+        .iter()
+        .map(|s| {
+            let short = s.name.strip_prefix(prefix).unwrap_or(&s.name);
+            (server.to_string(), short.to_string())
+        })
+        .collect();
+    let names = RhaiNames::plan(servers, &tools);
     for spec in specs {
         let tool = spec.name.strip_prefix(prefix).unwrap_or(&spec.name);
+        let example = crate::arg_validate::minimal_example(&spec.schema);
         // Spelled out rather than `json!` so the key order reads server,
         // tool, args — serde_json would sort them.
         let call = format!(
-            "mcp {{\"server\": {}, \"tool\": {}, \"args\": {}}}",
+            "mcp {{\"server\": {}, \"tool\": {}, \"args\": {example}}}",
             json!(server),
             json!(tool),
-            crate::arg_validate::minimal_example(&spec.schema)
         );
+        // Signature first, schema second (#826: signature-only listings were
+        // the more accurate shape), with the mapped rhai name (ADR-0227).
         out.push_str(&format!(
-            "\n\n- {tool}: {}\n{}\ncall as: {call}",
-            spec.description, spec.schema
+            "\n\n- {tool}: {}{}\n  call as: {call}\n  schema: {}",
+            spec.description,
+            names.line(server, tool, &example),
+            spec.schema
         ));
     }
     out
+}
+
+/// The `in rhai:` lines, from the one naming pass script namespaces are
+/// registered with — a tool that lost a collision is listed without a rhai
+/// name rather than under one that reaches another tool. Absent from a build
+/// without the script engine, where nothing could call it.
+#[cfg(feature = "rhai")]
+struct RhaiNames(std::collections::HashMap<(String, String), crate::rhai_ident::RhaiName>);
+
+#[cfg(feature = "rhai")]
+impl RhaiNames {
+    fn plan(servers: &[String], tools: &[(String, String)]) -> Self {
+        // The listed server may be missing from `servers` (a race with a
+        // removal); it still claims its own segment.
+        let mut servers = servers.to_vec();
+        servers.extend(tools.first().map(|(s, _)| s.clone()));
+        Self(crate::rhai_ident::plan_mcp(&servers, tools))
+    }
+
+    fn line(&self, server: &str, tool: &str, example: &serde_json::Value) -> String {
+        match self.0.get(&(server.to_string(), tool.to_string())) {
+            Some(crate::rhai_ident::RhaiName::Path(path)) => format!(
+                "\n  in rhai: {path}({})",
+                crate::rhai_ident::rhai_literal(example)
+            ),
+            Some(other) => format!("\n  in rhai: {}", other.listing("mcp(...)")),
+            None => String::new(),
+        }
+    }
+}
+
+#[cfg(not(feature = "rhai"))]
+struct RhaiNames;
+
+#[cfg(not(feature = "rhai"))]
+impl RhaiNames {
+    fn plan(_servers: &[String], _tools: &[(String, String)]) -> Self {
+        RhaiNames
+    }
+
+    fn line(&self, _server: &str, _tool: &str, _example: &serde_json::Value) -> String {
+        String::new()
+    }
 }
 
 #[cfg(test)]
@@ -289,20 +356,45 @@ mod tests {
             "search issues",
             json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}),
         );
-        let out = render_tools("gh", Some("GitHub"), &[spec], "mcp__gh__");
+        let out = render_tools("gh", Some("GitHub"), &[spec], "mcp__gh__", &[]);
         assert!(
             out.starts_with("MCP server `gh` (GitHub) — tools:"),
             "{out}"
         );
-        assert!(out.contains("- search: search issues\n{"), "{out}");
+        #[cfg(feature = "rhai")]
+        assert!(
+            out.contains("- search: search issues\n  in rhai: mcp::gh::search(#{q: \"example\"})"),
+            "{out}"
+        );
         assert!(
             out.contains(
                 r#"call as: mcp {"server": "gh", "tool": "search", "args": {"q":"example"}}"#
             ),
             "{out}"
         );
+        assert!(out.contains("\n  schema: {"), "schema comes last: {out}");
+        // A reserved-word tool shows its mapped rhai name (ADR-0227).
+        #[cfg(feature = "rhai")]
+        {
+            let call = ToolSpec::with_schema("mcp__my-gh__call", "d", json!({"type": "object"}));
+            let out = render_tools("my-gh", None, &[call], "mcp__my-gh__", &[]);
+            assert!(out.contains("in rhai: mcp::my_gh::call_(#{})"), "{out}");
+            // A collision lists the loser without a rhai name, naming the
+            // winner — the same plan the script namespaces use.
+            let specs = ["delete.item", "delete-item"].map(|t| {
+                ToolSpec::with_schema(format!("mcp__s__{t}"), "d", json!({"type": "object"}))
+            });
+            let out = render_tools("s", None, &specs, "mcp__s__", &["s".to_string()]);
+            assert!(out.contains("in rhai: mcp::s::delete_item(#{})"), "{out}");
+            assert!(
+                out.contains(
+                    "in rhai: no rhai name (collides with `mcp__s__delete-item`) — use mcp(...)"
+                ),
+                "{out}"
+            );
+        }
         assert_eq!(
-            render_tools("gh", None, &[], "mcp__gh__"),
+            render_tools("gh", None, &[], "mcp__gh__", &[]),
             "MCP server `gh` exposes no tools."
         );
     }

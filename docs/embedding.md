@@ -378,6 +378,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
+| `http_gate(Arc<HttpGate>)` | no `http` tool — set it to enable the script `http()` binding; the builder registers the tool over this gate (ADR-0227) |
 | `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |
 | `catalog(Arc<Catalog>)` | none — `list_models` and `agent`'s `model` validation report "no catalog configured" |
 | `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private advertising state, empty MCP roster) |
@@ -741,6 +742,39 @@ embedder has to change:
   when an `McpAdd`/`McpRemove` was refused or failed (a match on the variant
   needs `..` or the new field). Old logs carrying
   `invoke` envelopes still deserialize and replay.
+
+## Migrating to one binding path (ADR-0227, #819)
+
+[ADR-0227](adr/0227-one-binding-path-namespaces-http-skill-libraries.md) routes every `rhai` binding through the executor's dispatch seam
+and removes the declared endpoint tools. What an embedder has to change:
+
+- **Removed:** `script::BindingPolicy` (bindings grade through the executor's
+  own resolver, overlay, ceiling, grants and hooks — nothing to wire);
+  `entanglement_runtime::endpoint` (`EndpointConfig`, `EndpointTool`,
+  `register_endpoints`); `entanglement_core::{call_endpoint, EndpointMethod,
+  EndpointResponse, ENDPOINT_RESPONSE_CAP}` and the provider's `endpoint`
+  module; `Config.endpoints`; the skill-tool `endpoint` kind.
+- **Reshaped:** `skills::tools::register_skill_tools(&mut tools, &skills)`
+  drops its `HttpClient` argument; `SkillMeta` gains `lib:
+  Option<SkillLib>` (add `lib: None` to a struct literal); `Config` gains
+  `http_auth`.
+- **Added:** `http_gate::HttpGate` + `ToolExecutorBuilder::http_gate(..)` —
+  the builder registers the `http` tool (behind `rhai`; `HttpTool::new` is
+  crate-private) over that same gate, so injection and the forced per-host
+  approval share one source; without it `http()` is unbound in scripts.
+  Loading a `Config` (and building a gate) scrubs every `${VAR}` its
+  `http_auth` references from every child's environment (`secret_env`); the
+  managed `.env` file stays readable by exec tools (#832);
+  `WebFetcher::request` (any method, per-hop `check_hop`/`credentials` seams)
+  and `web_fetch::{HttpRequest, HTTP_METHODS, parse_method, scheme_and_host}`;
+  `rhai_ident::{rhai_ident, mcp_path}`.
+- **Behaviour:** hooks and `FileChange` now fire for a script's nested calls;
+  a script's approval covers an identical repeat only (tool + full input);
+  a credentialed `http()` call asks once per host per session in every mode
+  and is refused in an unattended one without an explicit `http(...)` rule.
+- **Retired config key:** `config.yml` `endpoints:` (ignored with one
+  warning) — express an HTTP API as a skill `lib.rhai` function calling
+  `http()`, with credentials in the user-layer `http_auth:`.
 
 ## TLS and the rustls crypto provider
 

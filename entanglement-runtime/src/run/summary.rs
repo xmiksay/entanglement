@@ -53,8 +53,8 @@ fn inner_call(tool: &str, envelope: &Value) -> Option<(String, String)> {
 }
 
 /// The human name of a tool: `mcp__<server>__<tool>` and
-/// `skill__<skill>__<tool>` read `server › tool`, `endpoint__<name>` reads
-/// `endpoint › name`; every other name is shown as is.
+/// `skill__<skill>__<tool>` read `server › tool`; every other name is shown
+/// as is.
 pub(crate) fn display_name(tool: &str) -> Cow<'_, str> {
     let namespaced = tool
         .strip_prefix("mcp__")
@@ -63,10 +63,7 @@ pub(crate) fn display_name(tool: &str) -> Cow<'_, str> {
     if let Some((owner, name)) = namespaced {
         return Cow::Owned(format!("{owner} › {name}"));
     }
-    match tool.strip_prefix("endpoint__") {
-        Some(name) => Cow::Owned(format!("endpoint › {name}")),
-        None => Cow::Borrowed(tool),
-    }
+    Cow::Borrowed(tool)
 }
 
 /// The primary argument of a call: the permission-graded value for the file
@@ -285,7 +282,6 @@ mod tests {
     fn display_name_splits_namespaced_tools() {
         assert_eq!(display_name("mcp__chess__makemove"), "chess › makemove");
         assert_eq!(display_name("skill__arch__check"), "arch › check");
-        assert_eq!(display_name("endpoint__weather"), "endpoint › weather");
         assert_eq!(display_name("edit"), "edit");
     }
 

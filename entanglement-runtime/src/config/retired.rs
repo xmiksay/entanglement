@@ -1,5 +1,5 @@
-//! One-release migration warnings for the knobs ADR-0213 and ADR-0226
-//! retired.
+//! One-release migration warnings for the knobs ADR-0213, ADR-0226 and
+//! ADR-0227 retired.
 //!
 //! A retired env var or config key is **ignored**, never fatal — but silently
 //! ignoring a setting a user still relies on is the worst failure, so each one
@@ -80,6 +80,11 @@ const RETIRED_CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "tool_advertising",
         "ADR-0226",
         "nothing — one advertised surface on every wire, no mode",
+    ),
+    (
+        "endpoints",
+        "ADR-0227",
+        "a skill `lib.rhai` function calling `http()`, credentials in `http_auth:`",
     ),
 ];
 

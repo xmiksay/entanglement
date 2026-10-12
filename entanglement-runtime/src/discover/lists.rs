@@ -111,6 +111,7 @@ mod tests {
             root_dir: None,
             body: String::new(),
             tools: Vec::new(),
+            lib: None,
         });
         assert!(skills_list(&skills.disclosures()).contains("git — commit helpers"));
         assert_eq!(skills_list(&[]), "No skills are available.");

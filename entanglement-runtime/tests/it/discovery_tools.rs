@@ -106,6 +106,7 @@ async fn run_calls(calls: &[(&str, &str)]) -> Vec<OutEvent> {
         root_dir: None,
         body: String::new(),
         tools: Vec::new(),
+        lib: None,
     });
     let mut reg = ToolRegistry::new();
     reg.register(EchoRead);

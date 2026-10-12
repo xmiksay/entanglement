@@ -16,50 +16,34 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
-use entanglement_core::{Holly, SessionId};
-use rhai::{Dynamic, Engine};
-use tokio::sync::mpsc;
-
-use crate::pending::PendingDecisions;
-use crate::script_ops::ScriptRegistry;
 use crate::seam;
-use crate::tool_runner::EscapeRoot;
-use crate::tools::ToolRegistry;
+use crate::tool_runner::Dispatcher;
 
-use super::{
-    configure_engine, data, register_bindings, result_line, service_bindings, BindingCall,
-    BindingPolicy,
-};
+use super::engine::{run_engine, RunSpec};
+use super::{result_line, Launch};
 
 /// Register, reply with the handle, then run the script to completion with
 /// output streaming into the registry. Runs on the executor-spawned task the
 /// blocking path would have used — the task simply outlives its `ToolResult`.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_background(
-    holly: Holly,
-    tools: ToolRegistry,
-    policy: BindingPolicy,
-    escape_root: Option<EscapeRoot>,
-    session: SessionId,
+    dispatcher: Dispatcher,
+    launch: Launch,
     request_id: String,
-    pending: PendingDecisions,
     script: String,
     timeout: std::time::Duration,
     stop: Arc<AtomicBool>,
-    scripts: ScriptRegistry,
 ) {
     let secs = timeout.as_secs();
-    let (id, op) = scripts.register(
+    let (id, op) = launch.scripts.register(
         script_label(&script),
-        Some(session.clone()),
+        Some(dispatcher.session.clone()),
         timeout,
         stop.clone(),
     );
     seam::reply(
-        &holly,
-        session.clone(),
+        &dispatcher.holly,
+        dispatcher.session.clone(),
         request_id.clone(),
         format!(
             "[background script {id} started]\n\
@@ -73,48 +57,23 @@ pub(super) async fn run_background(
     )
     .await;
 
-    let (tx, rx) = mpsc::unbounded_channel::<BindingCall>();
-    let start = Instant::now();
-    let bash_enabled = tools.contains("bash");
-    let engine_stop = stop.clone();
     let timed_out = Arc::new(AtomicBool::new(false));
-    let engine_timed_out = timed_out.clone();
     let print_op = op.clone();
-    let handle = tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::new_raw();
-        configure_engine(
-            &mut engine,
-            timeout,
-            start,
-            move |text| {
-                print_op.append_output(text);
-                print_op.append_output("\n");
-            },
-            engine_stop,
-            engine_timed_out,
-        );
-        register_bindings(&mut engine, tx, bash_enabled, start, timeout);
-        data::register_data_functions(&mut engine);
-        engine.eval::<Dynamic>(&script)
-    });
-
+    let run = RunSpec {
+        script,
+        timeout,
+        stop,
+        timed_out: timed_out.clone(),
+        detached: true,
+    };
     // Unlike the blocking path, a `Stop`-unwound run still records a terminal
     // state: nothing else ever resolves this handle, so a poll of a killed
     // script must see *something* final rather than `running` forever.
-    let _stopped = service_bindings(
-        rx,
-        &tools,
-        &policy,
-        escape_root.as_ref(),
-        &holly,
-        &session,
-        &request_id,
-        &pending,
-        true,
-    )
+    let (eval_result, _stopped) = run_engine(&dispatcher, &launch, &request_id, run, move |text| {
+        print_op.append_output(text);
+        print_op.append_output("\n");
+    })
     .await;
-
-    let eval_result = handle.await;
     if timed_out.load(Ordering::Relaxed) {
         op.mark_timed_out();
     }

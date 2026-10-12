@@ -45,6 +45,7 @@ use crate::system_prompt::SkillDisclosure;
 
 mod alias_tool;
 mod discovery;
+pub mod lib_rhai;
 pub mod load_skill;
 pub mod tools;
 
@@ -84,6 +85,9 @@ pub struct SkillMeta {
     /// entries — see [`tools::register_skill_tools`] for why discovery-time,
     /// not `load_skill`-time.
     pub tools: Vec<SkillToolDef>,
+    /// The compiled `lib.rhai` beside `SKILL.md` (ADR-0227), registered in
+    /// every script as `skill::<skill>`; `None` when absent or refused.
+    pub lib: Option<lib_rhai::SkillLib>,
 }
 
 /// Skill frontmatter: `name` + `description` required, the rest optional.
@@ -97,10 +101,10 @@ struct SkillFrontmatter {
     user_only: bool,
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
-    /// Skill-declared tools (#560 P8) — endpoint refs, rhai-backed tools,
-    /// aliases. Strict layers only: [`ForeignSkillFrontmatter`] below has no
-    /// such field, so a lenient (cross-vendor) parse drops a stray `tools:`
-    /// key the same way it already drops Claude-style `allowed-tools`.
+    /// Skill-declared tools (#560 P8) — rhai-backed tools and aliases.
+    /// Strict layers only: [`ForeignSkillFrontmatter`] below has no such
+    /// field, so a lenient (cross-vendor) parse drops a stray `tools:` key
+    /// the same way it already drops Claude-style `allowed-tools`.
     #[serde(default)]
     tools: Vec<crate::skills::tools::SkillToolDef>,
 }
@@ -162,7 +166,28 @@ impl SkillRegistry {
         let skill = self.get(name).ok_or_else(|| {
             anyhow::anyhow!("unknown preload skill `{name}`: it is not in the skill index")
         })?;
-        Ok(load_skill::render_skill(skill))
+        Ok(load_skill::render_skill_in(self, skill))
+    }
+
+    /// Why `name`'s `lib.rhai` has no `skill::` namespace — the skill that
+    /// claimed the segment first — or `None` (ADR-0227's shared naming pass,
+    /// the one script registration uses).
+    #[cfg(feature = "rhai")]
+    pub fn lib_collision(&self, name: &str) -> Option<String> {
+        let with_lib: Vec<String> = self
+            .iter()
+            .filter(|s| s.lib.is_some())
+            .map(|s| s.name.clone())
+            .collect();
+        match crate::rhai_ident::plan_skills(&with_lib).remove(name)? {
+            crate::rhai_ident::RhaiName::Collides(other) => Some(other),
+            crate::rhai_ident::RhaiName::Path(_) => None,
+        }
+    }
+
+    #[cfg(not(feature = "rhai"))]
+    pub fn lib_collision(&self, _name: &str) -> Option<String> {
+        None
     }
 
     /// Tier-1 disclosure lines for the system prompt: `name` + `description`
@@ -323,11 +348,13 @@ fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
              additive-only) — permission profiles are the control now; remove the field",
         );
     }
+    let lib = lib_rhai::load(&fm.name, root_dir.as_deref());
     Ok(SkillMeta {
         name: fm.name,
         description: fm.description,
         user_only: fm.user_only,
         allowed_tools: fm.allowed_tools,
+        lib,
         root_dir,
         body,
         tools: fm.tools,
@@ -346,11 +373,13 @@ fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Skill
     if fm.name.trim().is_empty() {
         bail!("skill frontmatter `name` must not be empty");
     }
+    let lib = lib_rhai::load(&fm.name, root_dir.as_deref());
     Ok(SkillMeta {
         name: fm.name,
         description: fm.description,
         user_only: fm.disable_model_invocation,
         allowed_tools: None,
+        lib,
         root_dir,
         body,
         tools: Vec::new(),
@@ -648,6 +677,48 @@ mod tests {
         );
     }
 
+    /// ADR-0227: a retired `kind: endpoint` skill tool never bricks startup,
+    /// in the user or the project layer.
+    #[test]
+    fn a_retired_endpoint_tool_loads_in_user_and_project_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let md = |name: &str| {
+            format!(
+                "---\nname: {name}\ndescription: d\ntools:\n  - kind: endpoint\n    name: w\n    \
+                 url: https://x\n    method: GET\n---\nbody"
+            )
+        };
+        let user = root.join("user-skills");
+        write_skill(&user, "u", &md("u"));
+        write_skill(&root.join(".entanglement").join("skills"), "p", &md("p"));
+        let reg = load_registry_in(root, &UserLayer::Dir(user)).unwrap();
+        assert_eq!(reg.get("u").unwrap().tools[0].name(), "w");
+        assert_eq!(reg.get("p").unwrap().tools[0].name(), "w");
+    }
+
+    /// ADR-0227: a foreign (cross-vendor) skill dir's `lib.rhai` loads too.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn a_foreign_skill_dir_lib_rhai_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skill_dir = write_skill(
+            &root.join(".claude").join("skills"),
+            "foreign",
+            "---\nname: foreign\ndescription: d\n---\nbody",
+        );
+        std::fs::write(skill_dir.join(lib_rhai::LIB_FILE), "fn hi() { 1 }").unwrap();
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
+        let lib = reg
+            .get("foreign")
+            .unwrap()
+            .lib
+            .as_ref()
+            .expect("lib loaded");
+        assert_eq!(lib.signatures, vec!["skill::foreign::hi()"]);
+    }
+
     #[test]
     fn native_layer_tools_key_is_parsed() {
         let dir = tempfile::tempdir().unwrap();
@@ -741,6 +812,7 @@ mod tests {
             root_dir: None,
             body: String::new(),
             tools: Vec::new(),
+            lib: None,
         });
         reg.insert(SkillMeta {
             name: "deploy".into(),
@@ -750,6 +822,7 @@ mod tests {
             root_dir: None,
             body: String::new(),
             tools: Vec::new(),
+            lib: None,
         });
         reg.insert(SkillMeta {
             name: "alpha".into(),
@@ -759,6 +832,7 @@ mod tests {
             root_dir: None,
             body: String::new(),
             tools: Vec::new(),
+            lib: None,
         });
         let d = reg.disclosures();
         assert_eq!(d.len(), 2, "user_only skill must be withheld: {d:?}");

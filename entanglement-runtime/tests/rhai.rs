@@ -29,10 +29,14 @@ use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
+// ADR-0227's unified binding path: hooks/FileChange from a script, the
+// generated `mcp::` namespace against a stub server, `http()` grading.
+#[path = "rhai/unified.rs"]
+mod unified;
+
 /// `rhai`'s own permission grading resolves through the same session-mode
-/// route as any other tool now (ADR-0207 stage 4b: `crate::script::
-/// BindingPolicy` reuses the ancestor chain + `PermissionResolver`, not the
-/// retired `Agent`-chain path) — `ModeResolver` (the seam
+/// route as any other tool (ADR-0207 stage 4b), and every binding through the
+/// executor's dispatch seam (ADR-0227) — `ModeResolver` (the seam
 /// `ToolExecutor::builder` takes) needs a mode table regardless of
 /// which route a given test exercises. A single `"build"`-named, `default:
 /// Allow` mode mirrors the pre-ADR-0207 `build` agent's `default: allow` for
@@ -320,7 +324,7 @@ fn one_profile(name: &str, _permission: PermissionProfile) -> AgentCatalog {
 /// A single `"build"`-named mode carrying `permission`'s own `default` +
 /// `rules` (ADR-0207 stage 4b): the mode-table analog of the
 /// `Agent.permission` these `rhai`-binding tests used to grade off
-/// directly, before `crate::script::BindingPolicy` moved onto the mode table.
+/// directly, before binding grading moved onto the mode table.
 /// Named `"build"` — not the caller's agent name — because a session's mode
 /// is `DEFAULT_MODE` ("build") unless something sends `SetMode`, which none
 /// of these tests do; the *agent* profile name is now identity only and no
@@ -867,58 +871,38 @@ async fn ask_binding_parks_then_runs_on_approve() {
     );
 }
 
+/// ADR-0227: the per-run approval cache keys on tool + full input for every
+/// tool — repeating the exact call rides the approval, a different target
+/// asks again.
 #[tokio::test]
-async fn ask_is_resolved_once_per_function_per_run() {
+async fn ask_is_resolved_once_per_exact_call_per_run() {
     let dir = TempDir::new("ask-once");
-    // Two edits in one run; the first asks, the approval covers the second.
-    // Custom mode table — see `ask_binding_parks_then_runs_on_approve`.
-    let permission = PermissionProfile::new(Permission::Allow).with("edit", Permission::Ask);
+    let permission = PermissionProfile::new(Permission::Allow).with("write", Permission::Ask);
     let holly = spawn_with_rhai_mode(
-        r#"edit("a.txt", "", "1\n"); edit("b.txt", "", "2\n"); "done""#,
+        r#"write("a.txt", "1"); write("a.txt", "1"); write("b.txt", "2"); "done""#,
         &dir.path,
-        one_profile("askedit", permission.clone()),
+        one_profile("askwrite", permission.clone()),
         mode_table_for(&permission),
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    let mut watch = holly.subscribe();
-    prompt(&holly, &sid, "askedit").await;
-
-    let mut request_id = None;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), watch.recv()).await {
-        if let OutEvent::ToolRequest {
-            request_id: rid, ..
-        } = &ev
-        {
-            request_id = Some(rid.clone());
-            break;
-        }
-    }
-    let request_id = request_id.expect("expected the first edit to ask");
-    holly
-        .send(InMsg::Approve {
-            session: sid.clone(),
-            request_id,
-            scope: Default::default(),
-            mode: None,
-        })
-        .await
-        .unwrap();
-
-    let events = collect(sub, &sid).await;
+    prompt(&holly, &sid, "askwrite").await;
+    let events = collect_auto_approving(&holly, sub, &sid).await;
     let requests = events
         .iter()
         .filter(|e| matches!(e, OutEvent::ToolRequest { .. }))
         .count();
-    assert_eq!(requests, 1, "approval should cover the rest of the run");
+    assert_eq!(
+        requests, 2,
+        "the repeat rides the approval, b.txt asks anew"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path.join("a.txt")).unwrap(),
-        "1\n"
+        "1"
     );
     assert_eq!(
         std::fs::read_to_string(dir.path.join("b.txt")).unwrap(),
-        "2\n",
-        "second edit runs without a fresh prompt"
+        "2"
     );
 }
 

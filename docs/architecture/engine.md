@@ -65,9 +65,9 @@ discovery tools `list_agents`/`list_models`/`list_skills`/`load_skill`/
 first resolution and returned byte-identical every later round, on every
 wire. Nothing else is advertised: MCP tools are reached only through
 `mcp(server, tool, args)`, their schemas delivered by `mcp_tools` as a tool
-result; `glob`/`grep`/`call` are script-only `rhai` bindings. (Until
-#819/#820, registered definition-driven `endpoint__*`/`skill__*` tools are
-appended to the snapshot — they have no other path.) Core still advertises
+result; `glob`/`grep`/`call`/`http` are script-only `rhai` bindings. (Until #820,
+registered skill-declared `skill__*` tools are appended to the snapshot —
+they have no other path.) Core still advertises
 whatever the `tool_spec_resolver` yields, re-consulted every round; that it
 never changes is the runtime's snapshot, not a core rule. The system prompt
 carries no skill roster (`list_skills` does) and one static tool-conventions

@@ -78,6 +78,10 @@ pub(super) fn template(key_names: &[String]) -> String {
          # it a value to set that provider's key. Keep this file out of any repo.\n\
          # A matching variable already set in the real environment always wins over\n\
          # this file (env > file).\n\
+         #\n\
+         # Secrets that config.yml `http_auth:` references as ${VAR} (the rhai\n\
+         # http() binding's hidden credentials, ADR-0227) belong here too, e.g.\n\
+         # GITHUB_TOKEN=...\n\
          #\n",
     );
     for key in key_names {

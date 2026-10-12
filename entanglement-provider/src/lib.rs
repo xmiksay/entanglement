@@ -30,7 +30,6 @@ pub mod anthropic;
 pub mod catalog;
 pub mod client;
 pub mod debug;
-pub mod endpoint;
 pub mod gemini;
 pub mod llm;
 pub mod mcp;
@@ -58,9 +57,6 @@ pub use client::{
     UserBudget,
 };
 pub use debug::{DebugFlags, DEBUG_ENV};
-pub use endpoint::{
-    call as call_endpoint, EndpointMethod, EndpointResponse, ENDPOINT_RESPONSE_CAP,
-};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
     fixed_model_concurrency, fixed_thinking_spec, mcp_tool_name, AuxLlmResolver, DummyLlm, EchoLlm,

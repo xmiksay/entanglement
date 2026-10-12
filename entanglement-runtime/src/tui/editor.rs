@@ -132,7 +132,9 @@ fn enter(terminal: &mut Term) -> Result<()> {
 /// `--wait` convention). Word-splits the command so `"code --wait"` works.
 fn launch_editor(path: &Path, editor: &str) -> Result<()> {
     let (program, args) = split_editor_command(editor);
-    let status = Command::new(program)
+    let mut cmd = Command::new(program);
+    entanglement_runtime::secret_env::scrub_std(&mut cmd);
+    let status = cmd
         .args(args)
         .arg(path)
         .status()

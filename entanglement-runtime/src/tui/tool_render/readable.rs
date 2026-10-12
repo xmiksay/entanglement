@@ -1,5 +1,5 @@
 //! The generic readable body (ADR-0204 §6) for every tool without a dedicated
-//! renderer — MCP `mcp__<server>__<tool>`, `endpoint__*`/`skill__*`,
+//! renderer — MCP `mcp__<server>__<tool>`, `skill__*`,
 //! unknown names — plus the output and error tails every
 //! expanded call shares. Arguments and JSON outputs become indented
 //! `key: value` lines ([`summary::readable_lines`]) wrapped to the panel,
@@ -139,7 +139,7 @@ mod tests {
     fn long_string_argument_wraps_in_full() {
         let long = "word ".repeat(40);
         let input = serde_json::json!({ "query": long }).to_string();
-        let text = expand("endpoint__search", &input, None, false);
+        let text = expand("mcp__docs__search", &input, None, false);
         let rendered = lines(&text);
         assert!(rendered.len() > 2, "a long value must wrap: {rendered:#?}");
         assert!(
@@ -159,7 +159,7 @@ mod tests {
         );
         assert_eq!(lines(&text), vec!["  strict: true", "  all good"]);
         let text = expand(
-            "endpoint__weather",
+            "mcp__weather__now",
             r#"{"city":"Prague"}"#,
             Some("sunny"),
             false,

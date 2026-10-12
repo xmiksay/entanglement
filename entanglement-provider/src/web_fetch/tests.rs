@@ -401,3 +401,165 @@ async fn check_hop_sees_each_normalized_redirect_target_and_can_stop_it() {
         .unwrap_err();
     assert!(format!("{err}").contains("refused"), "{err}");
 }
+
+/// [`spawn_server`], also handing each raw request (head + body) back.
+fn spawn_recording(
+    count: usize,
+    respond: impl Fn(usize, &str) -> Vec<u8> + Send + 'static,
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr").to_string();
+    let own = addr.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for n in 0..count {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(read) = sock.read(&mut buf) {
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..read]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    let len = text[..head_end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= head_end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&raw).to_string());
+            let _ = sock.write_all(&respond(n, &own));
+            let _ = sock.flush();
+        }
+    });
+    (addr, rx)
+}
+
+fn http_req(method: &str, url: String, body: Option<&str>) -> HttpRequest {
+    HttpRequest {
+        method: method.to_string(),
+        url,
+        headers: vec![("X-Trace".to_string(), "t1".to_string())],
+        body: body.map(str::to_string),
+        max_bytes: 1024,
+    }
+}
+
+/// ADR-0227: credentials are asked for per hop, so a redirect to another
+/// host can go out without them while the caller's own headers and a
+/// 307's method + body survive.
+#[tokio::test]
+async fn request_sends_credentials_only_where_the_per_hop_seam_says() {
+    let (target, target_rx) = spawn_recording(1, |_, _| {
+        response("200 OK", "Content-Type: text/plain\r\n", b"landed")
+    });
+    let port = target.rsplit(':').next().unwrap().to_string();
+    let (hop, hop_rx) = spawn_recording(1, move |_, _| {
+        response(
+            "307 Temporary Redirect",
+            &format!("Location: http://fixture.test:{port}/end\r\n"),
+            b"",
+        )
+    });
+    let out = loopback_fetcher()
+        .request(
+            http_req("post", format!("http://{hop}/start"), Some("{\"q\":1}")),
+            |_, _| async { Ok(()) },
+            |url| {
+                if url.starts_with("http://127.0.0.1:") {
+                    vec![("Authorization".into(), "Bearer s3cret".into())]
+                } else {
+                    Vec::new()
+                }
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.status, 200);
+    let first = hop_rx.recv().unwrap();
+    assert!(first.starts_with("POST /start"), "{first}");
+    assert!(
+        first
+            .to_ascii_lowercase()
+            .contains("authorization: bearer s3cret"),
+        "{first}"
+    );
+    assert!(first.ends_with("{\"q\":1}"), "{first}");
+    let second = target_rx.recv().unwrap();
+    assert!(
+        second.starts_with("POST /end"),
+        "a 307 keeps the method: {second}"
+    );
+    assert!(
+        second.ends_with("{\"q\":1}"),
+        "a 307 keeps the body: {second}"
+    );
+    assert!(
+        second.to_ascii_lowercase().contains("x-trace: t1"),
+        "{second}"
+    );
+    assert!(
+        !second.contains("s3cret"),
+        "cross-host hop must not carry credentials: {second}"
+    );
+}
+
+#[tokio::test]
+async fn a_303_becomes_a_bodyless_get_and_check_hop_sees_the_new_method() {
+    let (target, target_rx) = spawn_recording(1, |_, _| {
+        response("200 OK", "Content-Type: text/plain\r\n", b"ok")
+    });
+    let hop = spawn_server(1, move |_, _| {
+        response(
+            "303 See Other",
+            &format!("Location: http://{target}/done\r\n"),
+            b"",
+        )
+    });
+    let seen = std::sync::Mutex::new(Vec::new());
+    loopback_fetcher()
+        .request(
+            http_req("POST", format!("http://{hop}/"), Some("payload")),
+            |method, url| {
+                seen.lock().unwrap().push(format!("{method} {url}"));
+                async { Ok(()) }
+            },
+            |_| Vec::new(),
+        )
+        .await
+        .unwrap();
+    let got = target_rx.recv().unwrap();
+    assert!(got.starts_with("GET /done"), "{got}");
+    assert!(!got.contains("payload"), "{got}");
+    let seen = seen.into_inner().unwrap();
+    assert!(seen[0].starts_with("GET http://127.0.0.1:"), "{seen:?}");
+}
+
+#[test]
+fn methods_parse_case_insensitively_from_a_closed_set() {
+    assert_eq!(parse_method("patch").unwrap(), "PATCH");
+    assert!(parse_method("TRACE").is_err());
+    assert!(has_userinfo("https://u:p@a.io/"));
+    assert!(
+        has_userinfo("https:u:p@a.io/"),
+        "the scheme-relative spelling too"
+    );
+    assert!(has_userinfo("https://u@a.io/"));
+    assert!(!has_userinfo("https://a.io/x?u=me@x"));
+    assert!(!has_userinfo("not a url"));
+    assert_eq!(
+        scheme_and_host("HTTPS://API.GitHub.com./x?y=1"),
+        Some(("https".to_string(), "api.github.com".to_string()))
+    );
+}

@@ -118,7 +118,7 @@ impl Command {
                 "Disable tools for this session (mcp <server> | tool <name>; bare = reset to mode defaults)"
             }
             Command::Tools => {
-                "Browse this session's tool surface — host tools, MCP servers, skills, endpoints (filter as you type, Tab cycles category, Enter enables the highlighted row)"
+                "Browse this session's tool surface — host tools, MCP servers, skills (filter as you type, Tab cycles category, Enter enables the highlighted row)"
             }
             Command::Pause => {
                 "Pause the current session (--all for every live session)"

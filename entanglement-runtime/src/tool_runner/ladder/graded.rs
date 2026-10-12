@@ -1,9 +1,9 @@
-//! The permission-graded handlers of the interception ladder (issue #451,
-//! split out of `ladder.rs`): `rhai` (behind the `rhai` feature) and the
-//! generic `Permission` route are the two handlers
-//! [`Intercept::bypasses_permission`][super::Intercept::bypasses_permission]
-//! is `false` for — each resolves the call's grade through the pluggable
-//! [`crate::policy::PermissionResolver`] before running anything.
+//! The permission-graded handlers of the interception ladder (issue #451):
+//! `rhai` (behind the `rhai` feature) and the generic `Permission` route —
+//! the two handlers [`Intercept::bypasses_permission`][super::Intercept::bypasses_permission]
+//! is `false` for. Both build one [`Dispatcher`] from the executor's shared
+//! state: the generic route dispatches its call through it, and `rhai` hands
+//! it to the script so every binding climbs the same ladder (ADR-0227).
 
 use std::collections::HashMap;
 #[cfg(feature = "rhai")]
@@ -11,138 +11,140 @@ use std::sync::atomic::AtomicBool;
 #[cfg(feature = "rhai")]
 use std::sync::Arc;
 
-use entanglement_core::{SessionId, ToolEnvelope};
+use entanglement_core::{SessionId, ToolEnvelope, ToolOverlayEntry};
 
 use crate::cancel::TaskCanceller;
-use crate::permission::{ancestor_chain, overlay_denies, overlay_grade_entry};
+use crate::permission::ancestor_chain;
 #[cfg(feature = "rhai")]
 use crate::permission_path::grading_arg;
-use crate::seam;
 use crate::subagent::SpawnGuard;
+use crate::tool_runner::dispatch::{Call, Dispatcher};
 
 use super::LadderCtx;
+
+/// Snapshot everything a call needs before spawning, so it stays ordered
+/// with the lifecycle events the loop already folded: the ancestor chain
+/// (ADR-0024), the chain's overlays (#539/#628/#634), the session's mode and
+/// its limits (ADR-0207 §8/§11), and the registry (#372 — a brief read lock,
+/// never held across an `.await`). An unseen session's empty mode name never
+/// matches a grant, and its resolver grade fails closed (#156).
+fn dispatcher(
+    ctx: &LadderCtx,
+    spawn_guard: &SpawnGuard,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    session: &SessionId,
+) -> Dispatcher {
+    let chain = ancestor_chain(spawn_guard, session);
+    let overlays = chain
+        .iter()
+        .filter_map(|s| overlays.get(s).map(|o| (s.clone(), o.clone())))
+        .collect();
+    let mode = ctx
+        .perm_modes
+        .lock()
+        .expect("permission-mode mutex poisoned")
+        .get(session)
+        .cloned()
+        .unwrap_or_default();
+    // An unresolvable mode falls back to `Limits::default()` — wait forever,
+    // never an unattended posture nobody configured.
+    let limits = ctx
+        .mode_table
+        .get(&mode)
+        .map(|m| m.limits)
+        .unwrap_or_default();
+    Dispatcher {
+        holly: ctx.holly.clone(),
+        tools: ctx
+            .tools
+            .read()
+            .expect("tool registry lock poisoned")
+            .clone(),
+        registry: ctx.tools.clone(),
+        skills: ctx.skills.clone(),
+        active_skill: ctx.active_skill.clone(),
+        resolver: ctx.resolver.clone(),
+        chain,
+        grants: ctx.grants.clone(),
+        hooks: ctx.hooks.clone(),
+        pending: ctx.pending.clone(),
+        escape_root: ctx.escape_root.clone(),
+        overlays,
+        ceiling: ctx.base.clone(),
+        advertising: ctx.advertising.clone(),
+        validation: ctx.validation.clone(),
+        mcp_avail: ctx.mcp_avail.clone(),
+        mcp_active: ctx.mcp_active.clone(),
+        mcp_http: ctx.mcp_http.clone(),
+        mcp_scopes: ctx.mcp_scopes.clone(),
+        session: session.clone(),
+        mode,
+        mode_table: ctx.mode_table.clone(),
+        limits,
+        denials: ctx.denials.clone(),
+        http_gate: ctx.http_gate.clone(),
+    }
+}
 
 #[cfg(feature = "rhai")]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn rhai(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     tool: String,
     session: SessionId,
     seq: u64,
     request_id: String,
     input: String,
 ) {
-    // `rhai`'s own grade (whether the model may invoke
-    // it at all this call) and every binding call
-    // inside the script (`BindingPolicy::decide`, in
-    // `crate::script`) now resolve through the *same*
-    // pluggable resolver + ancestor-chain clamp a
-    // direct tool call uses (ADR-0207 stage 4b) —
-    // `rhai` declares `Capability::Read|Write|Exec`
-    // (`capability.rs`), so a mode denying any of
-    // those denies `rhai` outright with no bespoke
-    // rule, and there is no second `Agent`-
-    // chain grading path left to drift from it. The
-    // resolve can hit a DB for a pluggable multi-
-    // tenant resolver, so — mirroring the `Permission`
-    // route above — it runs inside the detached task,
-    // never this loop; only the cheap, synchronous
-    // chain/overlay snapshots are taken here.
-    // Root-relative arg normalization (#485, ADR-0125):
-    // computed from the escape-root policy before it's
-    // cloned/shadowed below, so an in-root absolute path
-    // grades identically to its relative spelling here too.
+    // `rhai`'s own grade resolves through the same resolver + chain clamp as
+    // a direct call (ADR-0207 stage 4b), inside the detached task since a
+    // pluggable resolver may hit a DB. Root-relative (#485, ADR-0125).
     let arg = grading_arg(
         &tool,
         &input,
         ctx.escape_root.as_ref().map(|er| er.root.as_path()),
     );
-    let escape_root = ctx.escape_root.clone();
-    let chain = ancestor_chain(spawn_guard, &session);
-    // The grant lookup/record is mode-scoped (ADR-0207
-    // §8): an approval earned in one mode must not
-    // silently apply in another.
-    let call_mode = ctx
-        .perm_modes
-        .lock()
-        .expect("permission-mode mutex poisoned")
-        .get(&session)
-        .cloned()
-        .unwrap_or_default();
-    let policy = crate::script::BindingPolicy::capture(
-        spawn_guard,
-        overlays,
-        &session,
-        &ctx.base,
-        ctx.resolver.clone(),
-        call_mode.clone(),
-        escape_root.as_ref().map(|er| er.root.as_path()),
-    )
-    .with_workdir(
-        ctx.workdirs
+    let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
+    let launch = crate::script::Launch {
+        skills: ctx
+            .skills
+            .read()
+            .expect("skill registry lock poisoned")
+            .clone(),
+        workdir: ctx
+            .workdirs
             .get(&session)
             .map(|w| (ctx.plan_root.clone(), w)),
-    );
-    let resolver = ctx.resolver.clone();
-    let grants = ctx.grants.clone();
-    let pending = ctx.pending.clone();
-    // Snapshot the registry *before* spawning (#372): a brief
-    // read lock, never held across the script's `.await`, so a
-    // concurrent tool registration/removal is invisible to a
-    // script already in flight but picked up by the next one.
-    let tools = ctx
-        .tools
-        .read()
-        .expect("tool registry lock poisoned")
-        .clone();
-    // A scoped session's script sees its scope's cached MCP
-    // tools, never the global set (#684) — cached-only: a
-    // script call must not block this loop on a lazy connect.
-    let tools = match &ctx.mcp_scopes {
-        Some(scopes) => scopes.overlay_registry_cached(&session, tools),
-        None => tools,
+        scripts: ctx.scripts.clone(),
     };
-    let holly = ctx.holly.clone();
-    // The blocking engine can't be aborted, so pair the
-    // task abort with a cooperative stop flag its progress
-    // callback polls (#167).
+    // The blocking engine can't be aborted, so the task abort pairs with a
+    // cooperative stop flag its progress callback polls (#167).
     let stop = Arc::new(AtomicBool::new(false));
     let reg_session = session.clone();
     let run_stop = stop.clone();
-    let scripts = ctx.scripts.clone();
-    // A `background: true` script (#637, ADR-0185)
-    // deliberately survives a session `Stop`, exactly
-    // as a background `bash`/`call` job does — so it is
-    // never registered with the canceller. Its only
-    // kill is `poll`'s `kill: true`, which trips the
-    // same `stop` flag via the script registry.
+    // A `background: true` script (#637, ADR-0185) survives a session `Stop`
+    // like a background `bash`/`call` job: never registered with the
+    // canceller; `poll`'s `kill: true` trips the same flag.
     let background = crate::script::is_background(&input);
     let cancels = ctx.cancels.clone();
     let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
         let self_perm = crate::tool_runner::apply_grant(
-            &*grants,
+            &*dispatcher.grants,
             &session,
             &tool,
             arg.as_deref(),
-            crate::tool_runner::resolve_effective(&*resolver, &chain, &tool, &input).await,
-            &call_mode,
+            crate::tool_runner::resolve_effective(
+                &*dispatcher.resolver,
+                &dispatcher.chain,
+                &tool,
+                &input,
+            )
+            .await,
+            &dispatcher.mode,
         );
-        crate::script::run_rhai(
-            holly,
-            tools,
-            policy,
-            self_perm,
-            escape_root,
-            session,
-            request_id,
-            pending,
-            input,
-            run_stop,
-            scripts,
-        )
-        .await;
+        crate::script::run_rhai(dispatcher, launch, self_perm, request_id, input, run_stop).await;
     }));
     if !background {
         cancels.register(
@@ -156,178 +158,31 @@ pub(super) async fn rhai(
 pub(super) async fn permission(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     tool: String,
-    // The call exactly as the model emitted it, when core unwrapped an
-    // `mcp` envelope (ADR-0226) — carried through to `dispatch`'s
-    // duplicate-key re-scan; `None` for an ordinary native call.
+    // The call as the model emitted it when core unwrapped an `mcp`
+    // envelope (ADR-0226) — for the duplicate-key re-scan.
     envelope: Option<ToolEnvelope>,
     session: SessionId,
     seq: u64,
     request_id: String,
     input: String,
 ) {
-    // Snapshot the ancestor chain *before* spawning so it
-    // stays ordered with the lifecycle events above (and the
-    // `ToolExec.agent` self-heal); the detached task resolves
-    // each session's grade through the pluggable resolver
-    // (#311) and clamps least-privilege across the chain, so
-    // a child sub-agent can never exceed any ancestor (#77).
-    // A root (no ancestors) resolves to its own grade; an
-    // unseen session defaults to `Deny` (fail-closed, #156).
-    // The DB-backed resolver runs in the task, never the loop.
-    let chain = ancestor_chain(spawn_guard, &session);
-    let resolver = ctx.resolver.clone();
-    // The nearest ancestor-chain link with a live
-    // overlay entry for this call (#539, ADR-0149;
-    // `arg_pattern` #611/ADR-0163; chain reach #628),
-    // resolved before spawning like the chain
-    // snapshot above: a matching entry replaces the
-    // profile chain's grade — still ceiling-clamped
-    // inside `dispatch`, which also has the
-    // `arg`/`workdir` an `arg_pattern` rule needs to
-    // resolve against. Walking the whole chain (not
-    // just `session` itself) is what lets a parent's
-    // overlay grade reach a child that has none of
-    // its own.
-    let overlay_entry = overlay_grade_entry(overlays, &chain, &tool);
-    // The same chain walk, but for a **deny** opinion
-    // (#634, gap 2 of ADR-0207 stage 4b): the nearest
-    // link with *any* overlay opinion about this tool
-    // wins, and if that opinion is deny the call is
-    // declined flat in `dispatch`, ahead of even
-    // `overlay_entry`'s enable materialization.
-    let overlay_denied = overlay_denies(overlays, &chain, &tool);
-    let ceiling = ctx.base.clone();
-    // The session's current permission mode (ADR-0207
-    // stage 4), threaded into `dispatch` for the
-    // mode-scoped grant lookup/record (ADR-0207 §8).
-    // An unseen session's empty string never matches
-    // a real mode name, so it never wrongly upgrades
-    // — the resolver's own fail-closed `Deny` for an
-    // unseen session already refuses the call before
-    // a grant could apply.
-    let call_mode = ctx
-        .perm_modes
-        .lock()
-        .expect("permission-mode mutex poisoned")
-        .get(&session)
-        .cloned()
-        .unwrap_or_default();
-    // `call_mode`'s resolved `Limits` (ADR-0207 §11, stage 5c) — an unseen/
-    // unresolvable mode falls back to `Limits::default()` (`question_timeout:
-    // 0`, i.e. "wait forever"), the safe direction: it never invents an
-    // unattended posture nobody configured.
-    let limits = ctx
-        .mode_table
-        .get(&call_mode)
-        .map(|m| m.limits)
-        .unwrap_or_default();
-    let denials = ctx.denials.clone();
-    // The live registry, cloned (cheap `Arc`) *before*
-    // the snapshot shadow below — ADR-0201's dispatch-
-    // time lazy MCP re-enable needs the live handle to
-    // register into and re-snapshot from, not the
-    // pre-spawn owned clone `tools` becomes next.
-    let registry = ctx.tools.clone();
-    let mcp_avail = ctx.mcp_avail.clone();
-    let mcp_active = ctx.mcp_active.clone();
-    let mcp_http = ctx.mcp_http.clone();
-    // Snapshot before spawning (#372) — see the Rhai arm above.
-    let tools = ctx
-        .tools
-        .read()
-        .expect("tool registry lock poisoned")
-        .clone();
-    let holly = ctx.holly.clone();
-    let skills = ctx.skills.clone();
-    let active_skill = ctx.active_skill.clone();
-    let grants = ctx.grants.clone();
-    let hooks = ctx.hooks.clone();
-    let pending = ctx.pending.clone();
-    let escape_root = ctx.escape_root.clone();
-    let mcp_scopes = ctx.mcp_scopes.clone();
-    let advertising = ctx.advertising.clone();
-    let validation = ctx.validation.clone();
-    // Register so a `Stop` aborts this task mid-execution:
-    // aborting the future drops the exec tool's child,
-    // firing its process-group SIGKILL guard (#167/#168).
-    let reg_session = session.clone();
-    let cancels = ctx.cancels.clone();
-    // The ToolExec seq rides the task so a file change it records names its
-    // exact log record (ADR-0212) — request ids alone repeat across turns.
-    let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
-        // A scoped session's snapshot swaps its `mcp__*`
-        // namespace for the scope's own tools (#684),
-        // lazily connecting the called server with the
-        // scope's credentials — in the detached task,
-        // never this loop. A refusal (auth-required,
-        // connect failure) is the call's tool error.
-        let tools = match &mcp_scopes {
-            Some(scopes) => {
-                let overlaid = scopes
-                    .overlay_registry_for_call(&session, tools, &tool)
-                    .await
-                    .and_then(
-                        |tools| match scopes.scope_decline(&session, &tools, &tool) {
-                            Some(decline) => Err(decline),
-                            None => Ok(tools),
-                        },
-                    );
-                match overlaid {
-                    Ok(tools) => tools,
-                    Err(msg) => {
-                        seam::reply(&holly, session, request_id, msg, true).await;
-                        return;
-                    }
-                }
-            }
-            None => tools,
-        };
-        // The same grading context, owned, for targets the call reaches
-        // mid-run (a `web_fetch` redirect hop, #808).
-        let grader = crate::tool_runner::call_grader::CallGrader {
-            tools: tools.clone(),
-            resolver: resolver.clone(),
-            chain: chain.clone(),
-            grants: grants.clone(),
-            session: session.clone(),
-            mode: call_mode.clone(),
-            overlay_entry: overlay_entry.clone(),
-            overlay_denied,
-            ceiling: ceiling.clone(),
-            root: escape_root.as_ref().map(|er| er.root.clone()),
-        };
-        let dispatched = crate::tool_runner::dispatch(
-            &holly,
-            &tools,
-            &skills,
-            &active_skill,
-            &*resolver,
-            &chain,
-            &*grants,
-            &hooks,
-            &pending,
-            escape_root.as_ref(),
-            overlay_entry,
-            overlay_denied,
-            &ceiling,
-            &advertising,
-            &validation,
-            envelope,
-            &registry,
-            &mcp_avail,
-            &mcp_active,
-            mcp_http.as_ref(),
-            session,
-            request_id,
-            tool,
-            input,
-            call_mode,
-            limits,
-            &denials,
-        );
-        crate::tool_runner::call_grader::scope(grader, dispatched).await;
-    }));
-    cancels.register(&reg_session, TaskCanceller::task(handle.abort_handle()));
+    let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
+    let call = Call {
+        request_id,
+        tool,
+        input,
+        envelope,
+    };
+    // Registered so a `Stop` aborts the task mid-execution: dropping the
+    // future drops an exec tool's child and fires its process-group SIGKILL
+    // guard (#167/#168). The ToolExec seq rides the task so a file change
+    // names its exact log record (ADR-0212).
+    let handle = tokio::spawn(crate::file_backup::with_exec_seq(
+        seq,
+        dispatcher.dispatch(call),
+    ));
+    ctx.cancels
+        .register(&session, TaskCanceller::task(handle.abort_handle()));
 }

@@ -1,5 +1,5 @@
 //! The internal tool index the TUI `/tools` view browses: every host tool,
-//! runtime-owned pseudo-tool, definition-driven endpoint/skill tool, skill,
+//! runtime-owned pseudo-tool, skill-declared tool, skill,
 //! and MCP server (its tools when connected), each with a kind label. Built
 //! fresh per call from live state — never cached.
 
@@ -16,7 +16,7 @@ pub struct IndexRow {
     pub name: String,
     pub description: String,
     pub source: String,
-    /// `"tool"` | `"mcp"` | `"skill"` | `"endpoint"`.
+    /// `"tool"` | `"mcp"` | `"skill"`.
     pub kind: &'static str,
 }
 
@@ -46,8 +46,6 @@ pub fn index_rows(
     for spec in registry.specs().into_iter().chain(runtime_owned_specs()) {
         let (source, kind) = if spec.name.starts_with("mcp__") {
             continue; // listed per server below
-        } else if spec.name.starts_with("endpoint__") {
-            ("endpoint".to_string(), "endpoint")
         } else if let Some(rest) = spec.name.strip_prefix("skill__") {
             let skill = rest.split("__").next().unwrap_or_default();
             (format!("skill:{skill}"), "skill")
@@ -109,7 +107,7 @@ mod tests {
     #[test]
     fn rows_are_classified_by_source_and_unconnected_servers_get_one_row() {
         let mut registry = ToolRegistry::new();
-        for name in ["glob", "endpoint__weather", "skill__git__log"] {
+        for name in ["glob", "skill__git__log"] {
             registry.register(Fake(name));
         }
         let avail = AvailableMcp::default();
@@ -119,7 +117,6 @@ mod tests {
         let kind = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.kind);
         assert_eq!(kind("glob"), Some("tool"));
         assert_eq!(kind("list_mcp"), Some("tool"));
-        assert_eq!(kind("endpoint__weather"), Some("endpoint"));
         assert_eq!(kind("skill__git__log"), Some("skill"));
         assert_eq!(kind("kb"), Some("mcp"));
         let glob = rows.iter().find(|r| r.name == "glob").unwrap();

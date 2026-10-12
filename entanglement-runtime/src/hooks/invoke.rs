@@ -94,6 +94,7 @@ pub(super) async fn invoke(
     if let Some(t) = tool {
         cmd.env("ENTANGLEMENT_TOOL_NAME", t);
     }
+    crate::secret_env::scrub(&mut cmd);
     own_process_group(&mut cmd);
 
     let mut child = match cmd.spawn() {

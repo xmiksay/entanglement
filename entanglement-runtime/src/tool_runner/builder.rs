@@ -58,6 +58,7 @@ impl ToolExecutor {
             catalog: None,
             discovery: DiscoverySurface::default(),
             workdirs: crate::workdir::SessionWorkdirs::default(),
+            http_gate: None,
         }
     }
 }
@@ -87,6 +88,7 @@ pub struct ToolExecutorBuilder {
     pub(super) catalog: Option<Arc<entanglement_core::Catalog>>,
     pub(super) discovery: DiscoverySurface,
     pub(super) workdirs: crate::workdir::SessionWorkdirs,
+    pub(super) http_gate: Option<Arc<crate::http_gate::HttpGate>>,
 }
 
 impl ToolExecutorBuilder {
@@ -151,7 +153,7 @@ impl ToolExecutorBuilder {
     }
 
     /// The shared session→[`Agent`] map the executor folds lifecycle events
-    /// into (spawn gating, the `rhai` binding policy). Default: a private map;
+    /// into (spawn gating). Default: a private map;
     /// pass one only if the caller reads it too.
     pub fn active(mut self, active: Arc<Mutex<HashMap<SessionId, Agent>>>) -> Self {
         self.active = active;
@@ -232,6 +234,15 @@ impl ToolExecutorBuilder {
     /// catalog configured".
     pub fn catalog(mut self, catalog: Arc<entanglement_core::Catalog>) -> Self {
         self.catalog = Some(catalog);
+        self
+    }
+
+    /// Enable the rhai `http()` binding (ADR-0227) over `gate`'s `http_auth`
+    /// credentials: `spawn` registers the `http` tool with this same gate, so
+    /// injection and the forced per-host approval can never come from two
+    /// different gates. Default: no `http` tool at all.
+    pub fn http_gate(mut self, gate: Arc<crate::http_gate::HttpGate>) -> Self {
+        self.http_gate = Some(gate);
         self
     }
 

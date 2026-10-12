@@ -133,7 +133,9 @@ base64 = { workspace = true }
 # lean-build/cross-compile clean when enabled, but is one of the heaviest
 # always-compiled deps, so a lean embedder can opt out via
 # `--no-default-features`.
-rhai = { workspace = true, optional = true }
+# `internals` for `AST::statements` — a skill `lib.rhai` must be fn-only
+# (ADR-0227).
+rhai = { workspace = true, optional = true, features = ["internals"] }
 # HTML -> Markdown for `web_fetch` (behind the `web-fetch` feature, #736).
 htmd = { workspace = true, optional = true }
 markup5ever_rcdom = { workspace = true, optional = true }

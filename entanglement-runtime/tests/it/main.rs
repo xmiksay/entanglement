@@ -64,7 +64,6 @@ mod aux_models;
 mod compact_fork;
 mod discovery_tools;
 #[cfg(feature = "serve")]
-mod endpoint;
 mod executor_builder;
 mod hook_events;
 mod hooks;
