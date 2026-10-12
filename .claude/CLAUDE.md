@@ -48,6 +48,7 @@ make sessions      # list past (resumable) sessions
 make inspect       # resolved state, no engine (ARGS='prompt --agent general' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
 make test          # unit + integration (also test-unit / test-integration), HOME/XDG-sandboxed (#747)
 make test-live     # live z.ai + Anthropic discovery/cache probes (skip without ZAI_API_KEY / ANTHROPIC_API_KEY)
+make test-live-matrix # live z.ai tool-use matrix (#826): every GLM model × call encodings × discovery shapes; results under scratch/
 make lint          # clippy, warnings = errors
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + file-cap + userid + lint + test  (CI-equivalent gate)
