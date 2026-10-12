@@ -1,137 +1,149 @@
-//! Resolving a parked tool-approval decision (issue #451, split out of
-//! `tool_runner.rs`): [`await_decision`] is `dispatch`'s tail once a call is
-//! parked as `OutEvent::ToolRequest` — it waits for the head's
-//! `Approve`/`Reject`/`Stop`, records a wider-scope grant on approval, and
-//! either runs the call via [`super::execute::run_and_reply`] or replies with
-//! a denial.
+//! The approval park (issue #451, re-cut by ADR-0227): emit the
+//! `ToolRequest`, wait for the head's decision (bounded by the mode's
+//! `question_timeout`), record what the approval earned — an escape-root
+//! grant, a per-host `http` approval, a wider-scope grant, a script's
+//! per-run cache entry — and run, or refuse.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex, RwLock};
+use std::path::PathBuf;
 
-use entanglement_core::{AgentState, ApprovalScope, Holly, SessionId, ToolEnvelope};
+use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, ToolOverlayEntry};
 
-use crate::arg_validate;
-use crate::hooks::Hooks;
-use crate::policy::GrantStore;
-use crate::seam;
-use crate::skills::SkillRegistry;
-use crate::tool_advertising;
+use crate::run_limits;
+use crate::seam::Decision;
 use crate::tools::ToolRegistry;
 
-/// Park until the head answers the pending approval, then run-or-refuse. A
-/// `Stop` (Esc-in-approval) unwinds silently: core's `wait_tool_result` sees the
-/// same `Stop` on its inbox and cancels the turn, so no `ToolResult` is owed
-/// (the shared park/filter is [`crate::seam::await_decision`]). `arg` is the
-/// grading-time argument `dispatch` already computed (#485, ADR-0125) — taken
-/// as a parameter rather than recomputed here, so the grant this records on
-/// approval provably uses the exact same key `apply_grant` looked up before
-/// the prompt was ever shown. `mode` is likewise threaded through so the
-/// recorded grant is tagged with the mode it was actually approved under
-/// (ADR-0207 §8). `question_timeout` (ADR-0207 §11, stage 5c) bounds the
-/// park: `None` waits forever (every attended mode); `Some(d)` is the mode's
-/// own `question_timeout`, and an elapsed wait expires as a denial —
-/// silence is never consent for a privileged action.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn await_decision(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    // The call exactly as the model emitted it, when core unwrapped an
-    // `mcp` envelope (ADR-0226) — carried across the approval park to
-    // `execute::run_and_reply`'s duplicate-key re-scan on approval.
-    envelope: Option<ToolEnvelope>,
-    pending: &crate::pending::PendingDecisions,
-    rx: tokio::sync::oneshot::Receiver<seam::Decision>,
-    escape_grant: Option<(Arc<crate::extra_roots::ExtraRootStore>, std::path::PathBuf)>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-    arg: Option<String>,
-    mode: String,
-    question_timeout: Option<std::time::Duration>,
-) {
-    let decision = match pending
-        .await_timed(&session, &request_id, rx, question_timeout)
-        .await
-    {
-        Some(decision) => decision,
-        // Elapsed with no answer: `on_timeout` for a parked approval is
-        // always `Deny` today (`crate::mode::OnTimeout`) — silence is never
-        // consent for a privileged action (ADR-0207 §11).
-        None => {
-            set_thinking(holly, &session);
-            let output = format!(
-                "tool `{tool}` denied: no response within {}s (mode `{mode}`)",
-                question_timeout.map(|d| d.as_secs()).unwrap_or_default()
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-            return;
-        }
-    };
-    match decision {
-        // `mode` (#560) is `propose_plan`-only; the generic permission `Ask`
-        // approval this dispatch handles never sets it.
-        seam::Decision::Approve { scope, .. } => {
-            set_thinking(holly, &session);
-            if let Some((store, abs)) = &escape_grant {
-                // The prompt was forced by an out-of-root access (ADR-0109):
-                // record the approval in the escape-root store so the host tool's
-                // containment check lets *this tool* reach *this path*. Every scope
-                // is recorded (a `Once` becomes the single-use token bound to this
-                // exact `request_id`, #449, so a concurrent call to the same path
-                // can't consume it); `Session`/`Always` also relax future
-                // containment and let the executor skip re-asking. Per-tool by
-                // construction.
-                store.record(&tool, abs, scope, &request_id);
-            } else if scope != ApprovalScope::Once {
-                // Ordinary (in-root) approval: record the wider scopes (#174) so an
-                // identical later call skips this prompt — through the pluggable
-                // [`GrantStore`] (#311), tagged with the mode it was earned in
-                // (ADR-0207 §8). `Once` records nothing.
-                grants
-                    .record(&session, &tool, arg.as_deref(), scope, &mode)
-                    .await;
-            }
-            super::execute::run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                envelope,
-                session,
-                request_id,
-                tool,
-                input,
-            )
-            .await;
-        }
-        seam::Decision::Reject { reason } => {
-            set_thinking(holly, &session);
-            let output = format!(
-                "tool `{tool}` rejected: {}",
-                reason.as_deref().unwrap_or("user")
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
-        // `Replace` never target a tool-approval request id (they are
-        // `ask_user`-only, #515).
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => {}
-    }
+use super::grade::graded_name;
+use super::{Call, Dispatcher, Outcome, Via};
+
+/// Why a call is parked — decides the card text and what approval records.
+pub(super) enum Prompt {
+    /// The mode graded it `Ask`.
+    Grade,
+    /// It reaches outside the project root (ADR-0109).
+    Escape(PathBuf),
+    /// A credentialed `http` call to a host not yet approved this session.
+    Host(String),
 }
 
-fn set_thinking(holly: &Holly, session: &SessionId) {
-    holly.emit_status(session, AgentState::Thinking);
+impl Dispatcher {
+    pub(super) async fn park(
+        &self,
+        tools: &ToolRegistry,
+        call: Call,
+        via: Via<'_>,
+        arg: Option<String>,
+        prompt: Prompt,
+        overlay_entry: Option<ToolOverlayEntry>,
+    ) -> Option<Outcome> {
+        let (shown, reason) = match &prompt {
+            Prompt::Escape(abs) => {
+                let abs = abs.display();
+                (
+                    format!(
+                        "{}\n\n⚠ accesses a path OUTSIDE the project root: {abs}",
+                        call.input
+                    ),
+                    format!("accesses a path outside the project root: {abs}"),
+                )
+            }
+            Prompt::Host(host) => (
+                format!("{}\n\nauthenticated for {host}", call.input),
+                format!("authenticated for {host}"),
+            ),
+            Prompt::Grade => (
+                call.input.clone(),
+                format!("mode `{}` grades `{}` Ask", self.mode, call.tool),
+            ),
+        };
+        // A script's nested call is carded as such; the script source rode
+        // the outer `rhai` approval.
+        let (kind, card_tool, detached) = match via {
+            Via::Model => (ApprovalKind::Tool, call.tool.clone(), false),
+            Via::Script(sc) => (
+                ApprovalKind::Rhai,
+                format!("{} (rhai)", call.tool),
+                sc.detached,
+            ),
+        };
+        let req = crate::pending::approval(
+            &self.session,
+            &call.request_id,
+            kind,
+            &card_tool,
+            shown,
+            reason,
+        );
+        let rx = crate::pending::park_approval(&self.holly, &self.pending, req, card_tool);
+        // A background script's Ask arrives outside any live turn (#637):
+        // flipping the session's state would strand a stale status.
+        let set_state = |state| {
+            if !detached {
+                self.holly.emit_status(&self.session, state);
+            }
+        };
+        set_state(AgentState::WaitingApproval);
+        let timeout = run_limits::timeout(&self.limits);
+        let decision = self
+            .pending
+            .await_timed(&self.session, &call.request_id, rx, timeout)
+            .await;
+        let Some(decision) = decision else {
+            // Silence is never consent (ADR-0207 §11).
+            set_state(AgentState::Thinking);
+            return Some(Outcome::Refused(format!(
+                "tool `{}` denied: no response within {}s (mode `{}`)",
+                call.tool,
+                timeout.map(|d| d.as_secs()).unwrap_or_default(),
+                self.mode
+            )));
+        };
+        match decision {
+            Decision::Approve { scope, .. } => {
+                set_state(AgentState::Thinking);
+                // Every escape scope is recorded: a `Once` is the single-use
+                // token bound to this exact request id (#449). A host
+                // approval is the per-session unlock and, like a plain grade
+                // approval, also earns the script cache entry and any wider
+                // grant the user chose.
+                if let Prompt::Escape(abs) = &prompt {
+                    if let Some(er) = &self.escape_root {
+                        er.store.record(&call.tool, abs, scope, &call.request_id);
+                    }
+                } else {
+                    if let Prompt::Host(host) = &prompt {
+                        self.http_gate.approve(&self.session, host);
+                    }
+                    if let Via::Script(sc) = via {
+                        sc.approve(&call.tool, &call.input);
+                    }
+                    if scope != ApprovalScope::Once {
+                        self.grants
+                            .record(
+                                &self.session,
+                                graded_name(&call.tool),
+                                arg.as_deref(),
+                                scope,
+                                &self.mode,
+                            )
+                            .await;
+                    }
+                }
+                Some(self.execute(tools, call, via, overlay_entry).await)
+            }
+            Decision::Reject { reason } => {
+                set_state(AgentState::Thinking);
+                Some(Outcome::Refused(format!(
+                    "tool `{}` rejected: {}",
+                    call.tool,
+                    reason.as_deref().unwrap_or("user")
+                )))
+            }
+            // `Stop` (and a closed inbox) unwind; `Answer`/`Retract`/
+            // `Replace` never target an approval id (`ask_user`-only, #515).
+            Decision::Stop
+            | Decision::Answer { .. }
+            | Decision::Retract
+            | Decision::Replace { .. } => None,
+        }
+    }
 }

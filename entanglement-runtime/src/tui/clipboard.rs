@@ -121,7 +121,9 @@ fn parse_osascript_png(out: &[u8]) -> Option<Vec<u8>> {
 /// actionable `Err` when the tool isn't installed or hangs.
 async fn run(program: &str, args: &[&str]) -> std::result::Result<Option<Vec<u8>>, String> {
     use tokio::io::AsyncReadExt;
-    let mut child = tokio::process::Command::new(program)
+    let mut cmd = tokio::process::Command::new(program);
+    entanglement_runtime::secret_env::scrub(&mut cmd);
+    let mut child = cmd
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

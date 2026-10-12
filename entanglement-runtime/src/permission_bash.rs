@@ -17,8 +17,8 @@
 //! receiver. Core's `resolve_scoped`/`glob_match` stay untouched (`make
 //! tree` keeps the runtime's policy layer out of core); this is a
 //! runtime-only wrapper, applied independently at each remaining call site
-//! (the tool-overlay grade, in both `tool_runner::dispatch` and
-//! `BindingPolicy::decide`) rather than as one refactored top-level function
+//! (the tool-overlay grade in the dispatch seam, which rhai bindings share
+//! since ADR-0227) rather than as one refactored top-level function
 //! — `min`-folding a segment grade is associative and commutative, so
 //! folding per layer then combining layers with the existing
 //! `min_permission` calls gives exactly the same answer as folding once over

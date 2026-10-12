@@ -147,6 +147,7 @@ impl BashTool {
         for var in &self.secret_env {
             cmd.env_remove(var);
         }
+        crate::secret_env::scrub(&mut cmd);
         cmd
     }
 }

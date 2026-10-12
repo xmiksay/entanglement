@@ -371,6 +371,7 @@ mod tests {
             root_dir: None,
             body: body.into(),
             tools: Vec::new(),
+            lib: None,
         });
         reg
     }

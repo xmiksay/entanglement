@@ -32,9 +32,9 @@ const GRADE_KEYS: [&str; 3] = ["allow", "deny", "prompt"];
 /// exact-argument scoped rule like `bash(cargo check)` carries no wildcard of
 /// its own and must not false-positive just because the whole entry isn't a
 /// known literal. `is_recognized_mask_entry` already narrows the check to
-/// the compile-time built-in vocabulary — a `mcp__*`/`endpoint__*`/
-/// `skill__*` name, a capability class, or a glob pattern is never flagged,
-/// since MCP/endpoint/skill tools register after config load.
+/// the compile-time built-in vocabulary — a `mcp__*`/`skill__*`
+/// name, a capability class, or a glob pattern is never flagged, since
+/// MCP/skill tools register after config load.
 pub(super) fn stale_mode_tuning_names(layers: &[RawLayer]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for layer in layers {
@@ -198,10 +198,10 @@ mod tests {
     }
 
     #[test]
-    fn an_endpoint_or_skill_tool_does_not_warn() {
+    fn a_skill_tool_does_not_warn() {
         let layers = vec![layer(
             ConfigLayer::Project,
-            "modes:\n  build:\n    prompt: [\"endpoint__docs\", \"skill__deploy__ship\"]\n",
+            "modes:\n  build:\n    prompt: [\"skill__deploy__ship\"]\n",
         )];
         assert!(stale_mode_tuning_names(&layers).is_empty());
     }

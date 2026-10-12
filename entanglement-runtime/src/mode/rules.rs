@@ -189,6 +189,43 @@ fn resolve_single(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
+    best_match(rules, tool_name, capabilities, arg, workdir).unwrap_or(default)
+}
+
+/// The grade of the longest rule for literal `tool` that is argument- or
+/// workdir-scoped and matches `arg`; `None` when none does. ADR-0227's
+/// "explicit `http(...)` rule" test: a bare tool or class entry never counts.
+/// `skip` drops entries by key (the project layer's, which must not unlock).
+pub(crate) fn scoped_grade(
+    rules: &Rules,
+    tool: &str,
+    arg: Option<&str>,
+    skip: impl Fn(&str) -> bool,
+) -> Option<Permission> {
+    let scoped = Rules {
+        entries: rules
+            .entries
+            .iter()
+            .filter(|e| {
+                e.class.is_none()
+                    && rule_tool_name(&e.key) == tool
+                    && e.key != tool
+                    && !skip(&e.key)
+            })
+            .cloned()
+            .collect(),
+    };
+    best_match(&scoped, tool, &[], arg, None)
+}
+
+/// The longest matching entry's grade (ties to the more restrictive).
+fn best_match(
+    rules: &Rules,
+    tool_name: &str,
+    capabilities: &[Capability],
+    arg: Option<&str>,
+    workdir: Option<&str>,
+) -> Option<Permission> {
     let mut best: Option<(usize, Permission)> = None;
     for entry in &rules.entries {
         let matches = match entry.class {
@@ -208,7 +245,7 @@ fn resolve_single(
             Some(existing) => existing,
         });
     }
-    best.map_or(default, |(_, grade)| grade)
+    best.map(|(_, grade)| grade)
 }
 
 /// Per-segment grading for `bash`/`call` (ADR-0197, extended to `call` by
@@ -273,6 +310,27 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_grade_sees_only_argument_scoped_rules_for_the_tool() {
+        let rules = Rules::from_lists(
+            &["http(DELETE *)".to_string()],
+            &[
+                "exec".to_string(),
+                "http".to_string(),
+                "http(GET https://a.io/*)".to_string(),
+            ],
+            &[],
+        );
+        let g = |arg: &str| scoped_grade(&rules, "http", Some(arg), |_| false);
+        assert_eq!(g("GET https://a.io/x"), Some(Permission::Allow));
+        assert_eq!(g("DELETE https://a.io/x"), Some(Permission::Deny));
+        assert_eq!(
+            g("POST https://a.io/x"),
+            None,
+            "bare `http`/`exec` never count"
+        );
+    }
 
     #[test]
     fn longer_scoped_tool_rule_beats_shorter_class_deny() {

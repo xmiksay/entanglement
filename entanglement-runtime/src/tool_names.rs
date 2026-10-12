@@ -19,17 +19,17 @@ pub const POLL_TOOL: &str = "poll";
 /// bindings added by ADR-0115).
 pub const RHAI_TOOL: &str = "rhai";
 
-/// The host functions bound into every `rhai` script — the original
-/// root-contained quintet (not the full `host::host_tools` sextet — `apply_patch`
-/// has no rhai binding yet, #455) plus permission-gated process-exec
-/// (`call`/`bash`, ADR-0115 amending ADR-0046) — so `rhai` is precisely as
-/// privileged as the always-registered tools it does bind. `bash` is only
-/// ever *reachable*, not just masked, when the host `bash` tool itself is
-/// registered (a head always registers it, ADR-0195; a bespoke registry
-/// may not); it stays in this mask/grade list unconditionally since
-/// `BindingPolicy` grading is argument-independent of whether the engine
-/// bound the function.
+/// The host tools bound into every `rhai` script under their own names (`call`
+/// as `exec`) — every call through the dispatch seam, graded like a direct
+/// call (ADR-0227). `bash` is *reachable* only when the host `bash` tool is
+/// registered. The script-only `http` binding and the generated `mcp::`/
+/// `skill::` namespaces are not in this list.
 pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
+
+/// The rhai `http(method, url, #{headers, body})` binding's tool (ADR-0227):
+/// registered but never advertised — reachable from a script only, graded as
+/// `Exec` on `"{METHOD} {url}"`, with hidden `http_auth` credentials.
+pub const HTTP_TOOL: &str = "http";
 
 /// Tool name the plan agent calls to submit its plan (`content` XOR `path`)
 /// for approval (#141, ADR-0042; #513, ADR-0145 — the sole plan-authorship
@@ -129,9 +129,10 @@ pub fn is_non_maskable(tool: &str) -> bool {
 /// ride the shared spec pool like everything else, so the filter keeps only
 /// what is listed. Registered but hidden: `call`/`glob`/`grep` (script-only
 /// rhai bindings, still graded under their names) and `read_raw`/
-/// `glob_json`/`grep_json`. Interim exception, until #819/#820 remove them:
-/// registered `endpoint__*`/`skill__*` tools are advertised beside this list
-/// (`tool_advertising::surface`), since nothing else reaches them.
+/// `glob_json`/`grep_json`, and `http` (ADR-0227). Interim exception, until
+/// #820 removes skill `tools:`: registered `skill__*` tools are advertised
+/// beside this list (`tool_advertising::surface`), since nothing else
+/// reaches them.
 pub const KERNEL: &[&str] = &[
     "read",
     "edit",
@@ -233,6 +234,7 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     "read_raw",
     "glob_json",
     "grep_json",
+    HTTP_TOOL,
 ];
 
 /// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a
@@ -259,11 +261,9 @@ pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
         || entry.starts_with("mcp__")
-        // Definition-driven sources (#560 P8): a config-declared endpoint
-        // (`endpoint__<name>`) or a skill-declared tool (`skill__<skill>__
-        // <name>` — endpoint ref, rhai-backed, or alias) isn't knowable from
-        // a fixed compile-time list either, exactly like an MCP tool above.
-        || entry.starts_with("endpoint__")
+        // A skill-declared tool (`skill__<skill>__<name>`, #560 P8) isn't
+        // knowable from a fixed compile-time list either, exactly like an
+        // MCP tool above.
         || entry.starts_with("skill__")
         || is_capability_name(entry)
         || KNOWN_TOOL_NAMES.contains(&entry)

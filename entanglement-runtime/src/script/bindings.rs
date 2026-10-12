@@ -1,5 +1,6 @@
 //! The sandboxed Rhai engine: resource caps, the progress interrupt, and the
-//! registered file/exec/data bindings that cross the bridge to [`super::service`].
+//! registered file/exec/`http` bindings that cross the bridge to
+//! [`super::service`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,6 +10,8 @@ use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
+
+use crate::tool_names::HTTP_TOOL;
 
 use super::{
     BindingCall, MAX_ARRAY_SIZE, MAX_CALL_LEVELS, MAX_MAP_SIZE, MAX_OPERATIONS, MAX_STRING_SIZE,
@@ -82,13 +85,18 @@ pub(super) fn configure_engine(
 /// value into the delegated tool's own `workdir` field — the same field a
 /// `tool{pattern}` workdir-scoped rule (#425) and the escape-root gate (#446)
 /// both extract, so a script gets identical scoping to a direct tool call.
+/// `http` (ADR-0227) is registered only when the `http` tool is.
 pub(super) fn register_bindings(
     engine: &mut Engine,
     tx: UnboundedSender<BindingCall>,
     bash_enabled: bool,
+    http_enabled: bool,
     start: Instant,
     timeout: Duration,
 ) {
+    if http_enabled {
+        register_http(engine, &tx);
+    }
     let t = tx.clone();
     engine.register_fn("read", move |path: &str| {
         call_binding(&t, "read", serde_json::json!({ "path": path }))
@@ -105,7 +113,7 @@ pub(super) fn register_bindings(
     // Raw counterpart of `read` with no line-number prefix — source for
     // parse_json/parse_yaml, since `read`'s "{lineno}: {line}" format isn't
     // valid JSON/YAML. Graded and masked as an alias of `read`
-    // (`BindingPolicy::decide`), not a distinct permission surface.
+    // (the seam's `graded_name`), not a distinct permission surface.
     engine.register_fn("read_raw", move |path: &str| {
         call_binding(&t, "read_raw", serde_json::json!({ "path": path }))
     });
@@ -241,7 +249,7 @@ pub(super) fn register_bindings(
                 }),
             )
         });
-        let t = tx;
+        let t = tx.clone();
         engine.register_fn("bash", move |command: &str, workdir: &str| {
             call_binding(
                 &t,
@@ -254,6 +262,61 @@ pub(super) fn register_bindings(
             )
         });
     }
+}
+
+/// `http(method, url)` / `http(method, url, #{headers, body})` (ADR-0227):
+/// the body text of the response; a non-2xx status or a refusal throws.
+/// A map/array `body` is sent as JSON; any other option key is refused so a
+/// typo never silently drops a header.
+fn register_http(engine: &mut Engine, tx: &UnboundedSender<BindingCall>) {
+    let t = tx.clone();
+    engine.register_fn("http", move |method: &str, url: &str| {
+        call_binding(
+            &t,
+            HTTP_TOOL,
+            serde_json::json!({ "method": method, "url": url }),
+        )
+    });
+    let t = tx.clone();
+    engine.register_fn("http", move |method: &str, url: &str, opts: rhai::Map| {
+        let mut input = serde_json::json!({ "method": method, "url": url });
+        let mut json_body = false;
+        for (key, value) in opts {
+            let value = match key.as_str() {
+                "headers" => rhai::serde::from_dynamic::<serde_json::Value>(&value)
+                    .map_err(|e| runtime_err(&format!("http: headers: {e}")))?,
+                "body" if value.is_string() => serde_json::Value::String(value.to_string()),
+                "body" => {
+                    json_body = true;
+                    serde_json::Value::String(
+                        rhai::serde::from_dynamic::<serde_json::Value>(&value)
+                            .map_err(|e| runtime_err(&format!("http: body: {e}")))?
+                            .to_string(),
+                    )
+                }
+                other => {
+                    return Err(runtime_err(&format!(
+                        "http: unknown option `{other}` (expected headers, body)"
+                    )))
+                }
+            };
+            input[key.as_str()] = value;
+        }
+        // A map/array body was serialized as JSON here, so say so — unless
+        // the script chose its own content type.
+        if json_body {
+            let has_type = input["headers"]
+                .as_object()
+                .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")));
+            if !has_type {
+                if !input["headers"].is_object() {
+                    input["headers"] = serde_json::json!({});
+                }
+                input["headers"]["Content-Type"] = "application/json".into();
+            }
+        }
+        call_binding(&t, HTTP_TOOL, input)
+    });
 }
 
 /// Convert a Rhai `args` array (`exec(command, args)`) to argv strings — a
@@ -283,12 +346,12 @@ pub(super) fn remaining_timeout_secs(start: Instant, timeout: Duration) -> u64 {
 /// exception it may `try`/`catch`.
 pub(super) fn call_binding(
     tx: &UnboundedSender<BindingCall>,
-    tool: &'static str,
+    tool: &str,
     input: serde_json::Value,
 ) -> Result<String, Box<EvalAltResult>> {
     let (reply, wait) = oneshot::channel();
     tx.send(BindingCall {
-        tool,
+        tool: tool.to_string(),
         input: input.to_string(),
         reply,
     })
@@ -314,7 +377,7 @@ pub(super) fn runtime_err(msg: &str) -> Box<EvalAltResult> {
 /// string the script would have to defensively parse itself.
 pub(super) fn call_binding_dynamic(
     tx: &UnboundedSender<BindingCall>,
-    tool: &'static str,
+    tool: &str,
     input: serde_json::Value,
 ) -> Result<Dynamic, Box<EvalAltResult>> {
     let text = call_binding(tx, tool, input)?;

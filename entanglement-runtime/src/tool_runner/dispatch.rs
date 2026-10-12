@@ -1,346 +1,179 @@
-//! The executor's generic tool-call primitives (issue #451, split out of
-//! `tool_runner.rs`): [`dispatch`] resolves one `ToolExec`'s permission — via
-//! [`grade::apply_grant`]/[`grade::resolve_effective`] — and runs, denies, or
-//! parks it; [`decision::await_decision`] resolves a parked approval;
-//! [`execute::run_and_reply`] is the run-against-the-registry step both
-//! reach. These grew every time a later stage added a gate (grants,
-//! escape-root, mode limits, argument validation); the executor loop above
-//! (event folding, registry mirrors, `LadderCtx`) never touches them
-//! directly — only `ladder::graded` calls into [`dispatch`].
+//! The dispatch seam (issue #451, split by ADR-0227): one graded path for a
+//! tool call, whoever issued it. [`Dispatcher::run`] grades and executes a
+//! [`Call`] and hands back an [`Outcome`]; the caller decides what to do
+//! with it — [`Dispatcher::dispatch`] folds it back to core as the
+//! `ToolResult` a model call is owed, while a rhai binding returns it to the
+//! script over the bridge (`crate::script`), so core never sees a result for
+//! an id it never parked on.
+//!
+//! The ladder itself lives in [`gates`] (unknown/lazy-MCP resolution, alias
+//! rewrite, the `Control` bypass, overlay deny, mode grade + grants, hooks,
+//! escape-root, the credentialed-`http` gate), the approval park in
+//! [`decision`], the run-against-the-registry step in [`execute`].
 
 mod decision;
 mod execute;
+mod gates;
 pub(crate) mod grade;
+mod script;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{
-    AgentState, ApprovalKind, Holly, Permission, PermissionProfile, SessionId, ToolEnvelope,
+    ContentPart, Holly, PermissionProfile, SessionId, ToolEnvelope, ToolOverlayEntry,
 };
 
-use crate::capability::{self, Capability};
+use crate::arg_validate::LoopBreaker;
 use crate::hooks::Hooks;
-use crate::mcp::{ActiveServers, AvailableMcp};
+use crate::http_gate::HttpGate;
+use crate::mcp::{ActiveServers, AvailableMcp, McpScopes};
+use crate::mode::{Limits, ModeTable};
+use crate::pending::PendingDecisions;
 use crate::policy::{GrantStore, PermissionResolver};
+use crate::run_limits::DenialTracker;
+use crate::seam;
 use crate::skills::SkillRegistry;
+use crate::tool_advertising::SharedAdvertisingState;
 use crate::tool_names::REQUEST_MODE_TOOL;
 use crate::tools::{SharedRegistry, ToolRegistry};
-use crate::{arg_validate, run_limits, seam, tool_advertising};
 
 use super::EscapeRoot;
 
-/// Resolve one `ToolExec` per its permission and reply with a `ToolResult`.
-///
-/// The grade comes from the pluggable [`PermissionResolver`] (#311) — the
-/// default [`ModeResolver`][crate::policy::ModeResolver] grades from
-/// the session's permission mode (ADR-0207 stage 4) — clamped least-privilege
-/// across the call's ancestor `chain` (the sub-agent ceiling, ADR-0024) and
-/// upgraded from `Ask` to `Allow` by an existing [`GrantStore`] grant scoped
-/// to `mode` (ADR-0207 §8). The DB-backed resolve runs here in the detached
-/// task, not the loop.
-///
-/// A `pre_tool_use` hook (#199) can **veto** the call: a non-zero-exit hook
-/// short-circuits with a denial `ToolResult`, so the tool neither prompts nor
-/// runs. Cleared hooks fall through to the normal `Allow | Ask | Deny` dispatch.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn dispatch(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    resolver: &dyn PermissionResolver,
-    chain: &[SessionId],
-    grants: &dyn GrantStore,
-    hooks: &Hooks,
-    pending: &crate::pending::PendingDecisions,
-    escape_root: Option<&EscapeRoot>,
-    // The nearest ancestor-chain link's live overlay entry for this call
-    // (#539, ADR-0149; `arg_pattern` #611/ADR-0163; chain reach #628):
-    // `Some` when a `ToolOverlayEntry` matched the tool at `session` or one
-    // of its ancestors — [`overlay_entry_grade`][crate::permission::overlay_entry_grade]
-    // materializes it into a profile that replaces the profile chain's grade
-    // (that override is the overlay's point; the injecting head is trusted),
-    // clamped against `ceiling` below so the config permission ceiling (#172)
-    // still wins.
-    overlay_entry: Option<entanglement_core::ToolOverlayEntry>,
-    // Whether the nearest ancestor-chain link with an overlay *opinion* about
-    // this tool is a **deny** (#634, ADR-0207 §8 restore — gap 2 of stage
-    // 4b): resolved by the caller alongside `overlay_entry` above, from the
-    // same `overlays`/`chain` the loop already holds. Checked before the
-    // mode grade even runs, and before `overlay_entry`'s enable materializes
-    // a grade — a deny withdraws the tool from the session outright, the way
-    // the retired `tool_mask_source` used to.
-    overlay_denied: bool,
-    ceiling: &PermissionProfile,
-    // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
-    // delivered-schema dedup (`advertising.delivered`, shared with
-    // `mcp_tools`, ADR-0226) and the loop-breaker's per-session last-call
-    // tracker.
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    // The call as emitted when core unwrapped an `mcp` envelope (ADR-0226)
-    // — for `execute::run_and_reply`'s duplicate-key re-scan; `None` natively.
-    envelope: Option<ToolEnvelope>,
-    // ADR-0201's dispatch-time lazy MCP connect: the live registry (to
-    // register into, and to re-snapshot from on success — `tools` above is
-    // an already-cloned snapshot that a fresh registration is invisible to),
-    // the roster + connected-server map `ensure_connected` needs, and the
-    // endpoint-pool client its connect rides.
-    registry: &SharedRegistry,
-    mcp_avail: &AvailableMcp,
-    mcp_active: &ActiveServers,
-    http: Option<&entanglement_core::HttpClient>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-    // The session's current permission mode (ADR-0207 stage 4), resolved by
-    // the caller before spawning (mirrors `overlay_entry`/`chain` above) —
-    // threaded through to the grant lookup/record so a grant is matched
-    // and recorded against the mode it was actually earned under (§8).
-    mode: String,
-    // `mode`'s resolved `Limits` (ADR-0207 §11, stage 5c), resolved by the
-    // caller alongside `mode` itself — governs whether a bare `Ask` collapses
-    // to a denial (`run_limits::collapses_ask`) and how long a parked
-    // approval waits (`run_limits::timeout`).
-    limits: crate::mode::Limits,
-    // Per-session, per-turn repeat-denial tracker (ADR-0207 §11): a second
-    // identical collapsed-`Ask` denial parks an approval instead of refusing
-    // silently again.
-    denials: &crate::run_limits::DenialTracker,
-) {
-    // The `Control` bypass and the `Allow` grade below call `execute::
-    // run_and_reply` with the same dozen args — one macro, not two copies.
-    macro_rules! run_and_reply {
-        ($tool:expr, $input:expr) => {
-            execute::run_and_reply(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                hooks,
-                advertising,
-                validation,
-                envelope,
-                session,
-                request_id,
-                $tool,
-                $input,
-            )
-            .await
-        };
-    }
-    // A hallucinated tool name can never execute, so reject it *before* the
-    // ladder runs (#437): otherwise an `Ask` grade prompts the user to approve
-    // a call that can only fail, `pre_tool_use` vetoes a call that was never
-    // executable, and an `Always`-scoped approval could record a grant for a
-    // tool that doesn't exist. Uses the same freshly-snapshotted `tools`
-    // `dispatch` already received, so a live `McpAdd`/`McpRemove` (#372) is
-    // honored exactly as execution itself would see it. `update_tasks` is a
-    // runtime state tool with no registry entry (#231, ADR-0049) — `run_and_reply`
-    // handles it separately — and `request_mode` (ADR-0207 §10) is likewise a
-    // pure orchestration pseudo-tool with no registry entry, handled specially
-    // just below in the `Control` bypass — so both are exempt from this
-    // registry check.
-    //
-    // ADR-0201/ADR-0226: an unregistered `mcp__<server>__*` name usually
-    // just means the server isn't connected yet — nothing connects at
-    // startup, and a direct `mcp(...)` may precede any `mcp_tools` read (or
-    // follow a resume, since registration is process-lifetime). Connect it
-    // lazily before ever reporting "unknown": reserve that message for a
-    // name matching no registered tool AND no registered server.
-    let mut refreshed_tools: Option<ToolRegistry> = None;
-    if !tools.contains(&tool)
-        && !crate::plan_tasks::is_state_tool(&tool)
-        && tool != REQUEST_MODE_TOOL
-    {
-        let resolved = if tool.starts_with("mcp__") {
-            crate::mcp::available::resolve_unregistered(
-                mcp_avail, &tool, registry, mcp_active, http,
-            )
-            .await
-        } else {
-            Err(tool_advertising::unknown_tool_reply(tools, &tool))
-        };
-        match resolved {
-            Ok(snapshot) => refreshed_tools = Some(snapshot),
-            Err(output) => {
-                seam::reply(holly, session, request_id, output, true).await;
-                return;
-            }
-        }
-    }
-    let tools = refreshed_tools.as_ref().unwrap_or(tools);
-    // Alias rewrite (#560 P8): a skill-declared alias — a renamed/preset-args
-    // wrapper over another tool, or the rewrite-to-`rhai` a rhai-backed skill
-    // tool is sugar for — must not launder permission through its own
-    // namespaced name (`Tool::alias_rewrite`'s doc). Rewriting *here*, before
-    // grading/escape-root/hooks/the approval round-trip all run, means every
-    // one of them operates on the wrapped tool's real name and merged input —
-    // exactly as if the model had called it directly — with zero special-
-    // casing anywhere else in this pipeline. A tool that never aliases
-    // (everything but `skills::alias_tool::AliasTool`) leaves `(tool, input)`
-    // untouched.
-    let (tool, input) = match tools.get(&tool).and_then(|t| t.alias_rewrite(&input)) {
-        Some(rewritten) => rewritten,
-        None => (tool, input),
-    };
-    // ADR-0207 §3: a `Capability::Control`-only tool reads/orchestrates
-    // session state and cannot itself read, write or execute anything on the
-    // host, so it is never graded — checked by *capability*, not by adding
-    // another `Intercept` route to remember, so it automatically covers
-    // `update_tasks`/`load_skill`/`request_mode` with nothing to update here
-    // for *grading*. Bypasses the overlay too
-    // (`overlay_denied` below never reached) — Control is "never graded"
-    // outright, the same posture `Intercept::Discover`'s sibling routes
-    // already take.
-    if capability::capability_of(&tool, tools) == Some([Capability::Control].as_slice()) {
-        // `request_mode` (ADR-0207 §10) is the one Control tool whose
-        // semantics — like `propose_plan`'s — *require* an unconditional
-        // approval park: widening a session's own authority is a decision
-        // only the user makes, never one `run_and_reply`'s straight-through
-        // execution can grant. A name check here, not a second `Intercept`
-        // route, is what keeps this a capability-driven bypass rather than
-        // another routing table entry to remember.
-        if tool == REQUEST_MODE_TOOL {
-            crate::request_mode::run_request_mode(holly, pending, session, request_id, input, mode)
-                .await;
-            return;
-        }
-        run_and_reply!(tool, input);
-        return;
-    }
-    // A matching overlay **deny** entry withdraws the tool from the session
-    // outright (#634, ADR-0207 §8's restore of the retired `tool_mask_source`
-    // behavior) — checked before the mode grade runs, and before hooks, since
-    // the tool doesn't "exist" for this session at all right now. An overlay
-    // **enable** still overrides even a mode `deny` (`overlay_entry` below,
-    // materialized further down) — that asymmetry is deliberate: the user's
-    // own `/enable`/`/disable` is trusted-frame-only (ADR-0177), so the model
-    // can reach neither directly.
-    if overlay_denied {
-        let output =
-            format!("tool `{tool}` withdrawn for this session by /disable — /enable to restore");
-        seam::reply(holly, session, request_id, output, true).await;
-        return;
-    }
-    // Resolve + apply grants first (matching the pre-seam order where `perm` was
-    // computed before the hook ran), so a grant upgrade and the veto compose the
-    // same way. The tool-specific argument (command/path, #173) lets an
-    // argument-scoped rule resolve against the call. Normalized root-relative
-    // (#485, ADR-0125) so an in-root absolute path grades identically to its
-    // relative spelling and keys the same grant — computed once here and
-    // threaded into `await_decision` below instead of recomputed there, so the
-    // grant lookup (`apply_grant`) and grant record (on approval) provably
-    // share one key.
-    let inputs = grade::GradeInputs {
-        tools,
-        resolver,
-        chain,
-        grants,
-        session: &session,
-        mode: &mode,
-        overlay_entry: overlay_entry.as_ref(),
-        ceiling,
-        root: escape_root.map(|er| er.root.as_path()),
-    };
-    let (perm, arg) = grade::grade_call(&inputs, &tool, &input).await;
-    if let Some(reason) = hooks.run_pre_tool_use(&session, &tool, &input).await {
-        seam::reply(holly, session, request_id, reason, true).await;
-        return;
-    }
-    // Escape-root gate (ADR-0109): a `read`/`edit`/`write` path or `bash`/`call`
-    // `workdir` that resolves *outside* the project root requires explicit
-    // approval — even when the profile would `Allow` — unless the user already
-    // durably granted this exact `(tool, path)`. A `Deny` floor still wins (the
-    // profile forbade the tool outright), so escaping never *lowers* the bar.
-    // `None` (no escape policy wired) is the pre-ADR-0109 strict-containment path.
-    let escape = escape_root
-        .filter(|_| perm != Permission::Deny)
-        .and_then(|er| er.escaping(&tool, &input).map(|abs| (er, abs)))
-        .filter(|(er, abs)| !er.store.is_durably_allowed(&tool, abs));
+pub(crate) use script::ScriptCall;
 
-    match perm {
-        Permission::Allow if escape.is_none() => {
-            run_and_reply!(tool, input);
+/// Everything one session's calls are graded and executed against, owned so
+/// it moves into the detached task (and, for a script, lives for the run).
+/// Built by `ladder::graded` from the executor's shared state.
+pub(crate) struct Dispatcher {
+    pub holly: Holly,
+    /// The registry snapshot taken before spawning (#372).
+    pub tools: ToolRegistry,
+    /// The live registry — a lazy MCP connect registers into it and
+    /// re-snapshots (ADR-0201).
+    pub registry: SharedRegistry,
+    pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    pub active_skill: Arc<Mutex<HashSet<SessionId>>>,
+    pub resolver: Arc<dyn PermissionResolver>,
+    /// The ancestor chain, nearest first (ADR-0024).
+    pub chain: Vec<SessionId>,
+    pub grants: Arc<dyn GrantStore>,
+    pub hooks: Arc<Hooks>,
+    pub pending: PendingDecisions,
+    pub escape_root: Option<EscapeRoot>,
+    /// The tool overlays of the chain's sessions (#539/#628/#634), looked up
+    /// per call since one script calls many tools.
+    pub overlays: HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    pub ceiling: PermissionProfile,
+    pub advertising: SharedAdvertisingState,
+    pub validation: Arc<LoopBreaker>,
+    pub mcp_avail: Arc<AvailableMcp>,
+    pub mcp_active: ActiveServers,
+    pub mcp_http: Option<entanglement_core::HttpClient>,
+    pub mcp_scopes: Option<Arc<McpScopes>>,
+    pub session: SessionId,
+    /// The session's permission mode — grants are scoped to it (ADR-0207 §8).
+    pub mode: String,
+    /// Read only for an explicit `http(...)` rule (ADR-0227).
+    pub mode_table: Arc<ModeTable>,
+    pub limits: Limits,
+    pub denials: Arc<DenialTracker>,
+    pub http_gate: Arc<HttpGate>,
+}
+
+/// One call to grade and run.
+pub(crate) struct Call {
+    pub request_id: String,
+    pub tool: String,
+    pub input: String,
+    /// The call as the model emitted it when core unwrapped an `mcp`
+    /// envelope (ADR-0226) — for the duplicate-key re-scan; `None` otherwise.
+    pub envelope: Option<ToolEnvelope>,
+}
+
+/// Who issued a call: the model (owed a `ToolResult`) or a running script.
+// The lean build has no script engine, so nothing constructs `Script` there.
+#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+#[derive(Clone, Copy)]
+pub(crate) enum Via<'a> {
+    Model,
+    Script(&'a ScriptCall),
+}
+
+/// What a call came to. `None` from [`Dispatcher::run`] means a `Stop`
+/// unwound it: core cancels the turn on the same Stop, so nothing is owed.
+pub(crate) enum Outcome {
+    /// A gate declined it (mode deny, overlay withdrawal, hook veto,
+    /// rejection, unknown tool, unreachable from a script…) — it never ran.
+    Refused(String),
+    /// A script's nested call was cut off by the script's budget mid-run: it
+    /// started, so whether it took effect is unknown — never "it never ran".
+    TimedOut(String),
+    /// It ran (or failed validation at the door); `is_error` per ADR-0176.
+    Ran {
+        content: Vec<ContentPart>,
+        is_error: bool,
+        duration_ms: Option<u64>,
+        exit_code: Option<i32>,
+    },
+}
+
+impl Outcome {
+    fn text(text: String, is_error: bool) -> Self {
+        Outcome::Ran {
+            content: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![ContentPart::text(text)]
+            },
+            is_error,
+            duration_ms: None,
+            exit_code: None,
         }
-        Permission::Deny => {
-            // ADR-0207 §4: a mode `deny` is absolute — no prompt — and the
-            // message names the mode and the way out, so the model (or the
-            // user reading the transcript) knows this isn't a bug to retry
-            // but a posture to switch out of.
-            let output = format!("tool `{tool}` denied by mode `{mode}` — use /mode to switch");
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // ADR-0207 §11: an unattended mode (a finite `question_timeout`) has
-        // no one to prompt, so a bare `Ask` grade collapses to an immediate
-        // denial rather than parking — *unless* this exact `(tool, arg)` was
-        // already denied once this turn, in which case a model insisting
-        // twice may genuinely need it, so the repeat falls through to the
-        // ordinary park below (still bounded by the same timeout). The guard
-        // records the denial as a side effect, so it never double-charges: a
-        // first call denies-and-records, a second sees the record and falls
-        // to `_`.
-        Permission::Ask
-            if run_limits::collapses_ask(&limits)
-                && !denials.record_repeat(&session, &tool, arg.as_deref()) =>
-        {
-            let output = format!(
-                "tool `{tool}` denied — mode `{mode}` is unattended (question_timeout \
-                 {}s, no one to prompt); call it again to request a one-time approval",
-                limits.question_timeout
-            );
-            seam::reply(holly, session, request_id, output, true).await;
-        }
-        // Either the mode said `Ask` (an attended mode, or a collapsed
-        // mode's second identical call), or an out-of-root access forced one.
-        _ => {
-            // `park_approval` registers before prompting (#156) and mints a
-            // fresh per-session seq (#157), not the `ToolExec` one.
-            let escape_grant = escape.map(|(er, abs)| (er.store.clone(), abs));
-            let (shown, reason) = match &escape_grant {
-                Some((_, abs)) => {
-                    let abs = abs.display();
-                    let shown =
-                        format!("{input}\n\n⚠ accesses a path OUTSIDE the project root: {abs}");
-                    let why = format!("accesses a path outside the project root: {abs}");
-                    (shown, why)
-                }
-                None => (input.clone(), format!("mode `{mode}` grades `{tool}` Ask")),
-            };
-            let req = crate::pending::approval(
-                &session,
-                &request_id,
-                ApprovalKind::Tool,
-                &tool,
-                shown,
-                reason,
-            );
-            let rx = crate::pending::park_approval(holly, pending, req, tool.clone());
-            holly.emit_status(&session, AgentState::WaitingApproval);
-            decision::await_decision(
-                holly,
-                tools,
-                skills,
-                active_skill,
-                grants,
-                hooks,
-                advertising,
-                validation,
-                envelope,
-                pending,
-                rx,
-                escape_grant,
-                session,
-                request_id,
-                tool,
-                input,
-                arg,
-                mode,
-                run_limits::timeout(&limits),
+    }
+}
+
+impl Dispatcher {
+    /// A model call: run it through the seam and reply to core.
+    pub(crate) async fn dispatch(self, call: Call) {
+        // `request_mode` (ADR-0207 §10) is a Control pseudo-tool that always
+        // parks its own approval and replies itself.
+        if call.tool == REQUEST_MODE_TOOL {
+            crate::request_mode::run_request_mode(
+                &self.holly,
+                &self.pending,
+                self.session.clone(),
+                call.request_id,
+                call.input,
+                self.mode.clone(),
             )
             .await;
+            return;
+        }
+        let request_id = call.request_id.clone();
+        let session = self.session.clone();
+        match self.run(call, Via::Model).await {
+            None => {}
+            Some(Outcome::Refused(text) | Outcome::TimedOut(text)) => {
+                seam::reply(&self.holly, session, request_id, text, true).await;
+            }
+            Some(Outcome::Ran {
+                content,
+                is_error,
+                duration_ms,
+                exit_code,
+            }) => {
+                seam::reply_content(
+                    &self.holly,
+                    session,
+                    request_id,
+                    content,
+                    is_error,
+                    duration_ms,
+                    exit_code,
+                )
+                .await;
+            }
         }
     }
 }

@@ -53,7 +53,6 @@ mod date;
 // state/logic over core + the lean `mcp` module, needed by the lean build's
 // executor too.
 pub mod discover;
-pub mod endpoint;
 pub mod env_date;
 pub mod extra_roots;
 pub mod file_backup;
@@ -63,8 +62,16 @@ pub mod grants;
 pub mod history;
 pub mod hooks;
 pub mod host;
+// The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
+// the dispatch seam; ungated so the lean executor compiles the same ladder.
+pub mod http_gate;
 pub mod inspect;
 pub mod layers;
+// The identifier mapping for generated rhai namespaces (ADR-0227).
+#[cfg(feature = "rhai")]
+pub mod rhai_ident;
+// Env vars no child process may inherit — `http_auth`'s secrets (ADR-0227).
+pub mod secret_env;
 mod user_dirs;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +

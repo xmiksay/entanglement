@@ -135,7 +135,16 @@ pub(crate) fn start(
     // The resolver is the builder's default `ModeResolver` over exactly
     // these `perm_modes`/`mode_table`/`tools`/ceiling, with root-relative arg
     // normalization off `escape_root` (#485, ADR-0125).
+    // The credentialed-`http()` gate (ADR-0227): `http_auth:` is user-layer
+    // only (the config loader drops a project layer's); the builder registers
+    // the script-only `http` tool over this same gate, after the advertised
+    // specs were taken, so it is never model-facing.
+    let http_gate = Arc::new(
+        entanglement_runtime::http_gate::HttpGate::new(user_config.http_auth.clone())
+            .with_untrusted_rules(user_config.untrusted_http_rules.clone()),
+    );
     let tool_executor = tool_runner::ToolExecutor::builder(&holly, tools.clone())
+        .http_gate(http_gate)
         .jobs(jobs)
         .retained(retained)
         .scripts(scripts)

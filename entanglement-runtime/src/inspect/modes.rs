@@ -53,7 +53,7 @@ const ROSTER: &[&str] = &[
 /// Build the resolved mode table exactly as `services.rs` does at real startup
 /// (built-ins + `config.yml` `modes:` tuning, validated against a real
 /// capability resolver) — `inspect` has no live `ToolRegistry`, so it uses
-/// the same no-registry static resolver `BindingPolicy` grades through.
+/// the no-registry static resolver (`capability::static_capability_of`).
 fn resolved_table(config: &Config) -> Result<ModeTable> {
     mode::build_table(&config.modes, &static_capability_of)
         .context("building the permission mode table from config.yml `modes:`")

@@ -117,7 +117,8 @@ list; a retired var still set prints one warning naming its replacement
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
 `tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
 `rpm`/`concurrency` (providers.yml). Retired outright by ADR-0226:
-`tool_advertising`, `discovery`, MCP `state:` (one warning each).
+`tool_advertising`, `discovery`, MCP `state:` (one warning each); by
+ADR-0227: `endpoints:`.
 `ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
 The permission **mode** has no env var by design (`--mode` > `config.yml`
 `mode:` > agent `default_mode` > `build`).
@@ -184,8 +185,10 @@ doc, never here**:
 - **Undo/rewind is per-write backups, not git** — exec changes are never
   tracked; replay never touches the disk
   ([gates §undo](../docs/architecture/gates-and-host-tools.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)).
-- **`rhai` is a sandboxed script tool** graded like its bindings' host tools
-  ([gates §8](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)).
+- **`rhai` is a sandboxed script tool whose every binding runs the executor's
+  dispatch seam** — `mcp::<server>::<tool>`/`skill::<skill>::<fn>`
+  namespaces, `http()` with user-layer-only `http_auth` credentials
+  ([gates §script surface](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)).
 - **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
   `mcp__<server>__<tool>`), schemas never advertised; registered = available
   (`disabled: true` the one opt-out), lazy connect, live add/remove,
@@ -194,7 +197,7 @@ doc, never here**:
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
   `mcp_tools` reads (and lazily connects) one server's catalog; alias rewrite
-  of definition-driven tools happens before grading ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
+  of skill-declared tools happens before grading ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 - **Skills are additive-only; slash commands are head-side templates**
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)).
 - **Definitions are data, layered** embedded < user < project (project

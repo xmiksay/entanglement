@@ -30,7 +30,9 @@ pub fn open(url: &str) -> bool {
 /// `PATH`, which would break every parallel test spawning a process.
 fn open_with(url: &str, launchers: &[(&str, &[&str])]) -> bool {
     for &(program, args) in launchers {
-        let spawned = std::process::Command::new(program)
+        let mut cmd = std::process::Command::new(program);
+        crate::secret_env::scrub_std(&mut cmd);
+        let spawned = cmd
             .args(args)
             .arg(url)
             .stdin(Stdio::null())

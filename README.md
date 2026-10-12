@@ -170,7 +170,12 @@ clash; `skutter inspect commands` lists what resolved. Beyond the root-contained
 ([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
 and graded by the session's mode like everything else; the sandboxed `rhai`
 scripting tool ships in every default build (droppable via
-`--no-default-features`, #502). `web_fetch` reads a public http(s) page as
+`--no-default-features`, #502) — every call a script makes goes through the
+same permission path as a direct one, MCP tools are callable as
+`mcp::<server>::<tool>(…)`, a skill can ship a `lib.rhai`, and `http()` can
+attach credentials the user maps per host in `config.yml` `http_auth:` (never
+visible to the model; the first use per host is always approved,
+[ADR-0227](docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as
 Markdown behind an SSRF guard: private, loopback, link-local and metadata
 addresses are refused, DNS answers are pinned, and every redirect is checked
 again. It is graded like `curl` (allowed in `build`, prompted elsewhere) and

@@ -4,7 +4,7 @@
 //! ancestor chain through the pluggable [`PermissionResolver`]. Both are
 //! `pub(crate)` and re-exported at `tool_runner::{apply_grant,
 //! resolve_effective}` — `ladder::graded` and (for `resolve_effective`
-//! alone) `propose_plan`/`script::binding_policy` call them by that path.
+//! alone) `propose_plan` call them by that path.
 
 use std::path::Path;
 
@@ -69,6 +69,19 @@ pub(crate) async fn grade_call(
     (perm, arg)
 }
 
+/// The grade identity of a call: a script-facing read variant grades as the
+/// tool it rides on — `read_raw` → `read` (ADR-0098), `glob_json`/`grep_json`
+/// → `glob`/`grep` (ADR-0206) — so a structured-output escape hatch is never
+/// a permission escape hatch. Everything else grades under its own name.
+pub(crate) fn graded_name(tool: &str) -> &str {
+    match tool {
+        "read_raw" => "read",
+        "glob_json" => "glob",
+        "grep_json" => "grep",
+        other => other,
+    }
+}
+
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
 /// granted under `mode` (#174, ADR-0207 §8: a grant matches only the mode it
 /// was earned in): a session-scoped or persisted "always allow" grant lets an
@@ -99,11 +112,9 @@ pub(crate) fn apply_grant(
 /// needed. An empty chain is impossible — the leaf session is always present —
 /// but defaults to `Deny` if one ever arrives.
 ///
-/// `pub(crate)`: also the grading primitive [`crate::script::BindingPolicy`]
-/// reuses (ADR-0207 stage 4b) so a `rhai` binding — and `rhai`'s own
-/// dispatch, `ladder::Intercept::Rhai` — resolve through the *exact* same
-/// pluggable resolver + chain walk a direct tool call does, instead of a
-/// second `Agent`-chain path.
+/// `pub(crate)`: `rhai`'s own launch gate (`ladder::Intercept::Rhai`)
+/// resolves through it too, so a script's launch grades exactly like a
+/// direct call.
 pub(crate) async fn resolve_effective(
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],

@@ -18,7 +18,7 @@
 
 use ratatui::widgets::ListState;
 
-/// One row: a tool/MCP server/skill/endpoint plus this
+/// One row: a tool/MCP server/skill plus this
 /// session's relationship to it. `status` and `grade` are best-effort —
 /// `"n/a"`/`None` when the underlying state isn't cheaply available (no
 /// live `AdvertisingState` handle, no matching agent profile) rather than a
@@ -27,7 +27,7 @@ use ratatui::widgets::ListState;
 pub struct ToolsViewRow {
     pub name: String,
     pub description: String,
-    /// `"tool"` | `"mcp"` | `"skill"` | `"endpoint"` — the index's kind labels.
+    /// `"tool"` | `"mcp"` | `"skill"` — the index's kind labels.
     pub kind: &'static str,
     /// `"advertised"` | `"hidden"` | `"n/a"`.
     pub status: &'static str,
@@ -45,13 +45,7 @@ pub struct ToolsViewRow {
 
 /// The category cycle order `cycle_category` steps through — `None` (every
 /// kind) first, then each kind in a fixed order.
-const CATEGORY_ORDER: [Option<&str>; 5] = [
-    None,
-    Some("tool"),
-    Some("mcp"),
-    Some("skill"),
-    Some("endpoint"),
-];
+const CATEGORY_ORDER: [Option<&str>; 4] = [None, Some("tool"), Some("mcp"), Some("skill")];
 
 pub struct ToolsView {
     visible: bool,
@@ -224,8 +218,7 @@ mod tests {
         v.cycle_category(); // -> mcp
         assert_eq!(v.filtered(), vec![&row("mcp__docs__search", "mcp")]);
         v.cycle_category(); // -> skill
-        v.cycle_category(); // -> endpoint
-        assert!(v.filtered().is_empty());
+        assert_eq!(v.filtered(), vec![&row("git", "skill")]);
         v.cycle_category(); // wraps back to "all"
         assert_eq!(v.category(), None);
         assert_eq!(v.filtered().len(), 3);

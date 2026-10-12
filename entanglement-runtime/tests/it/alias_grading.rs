@@ -84,6 +84,7 @@ fn skill_with_bash_alias() -> SkillRegistry {
             args: serde_json::Map::new(),
             description: String::new(),
         }],
+        lib: None,
     });
     skills
 }
@@ -126,15 +127,7 @@ async fn alias_grades_as_its_underlying_tool_not_its_own_name() {
     let skills = skill_with_bash_alias();
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    register_skill_tools(
-        &mut reg,
-        &skills,
-        &entanglement_core::HttpClient::with_shared_state(
-            entanglement_core::SharedStateLocation::Disabled,
-            entanglement_core::RetryConfig::default(),
-        )
-        .unwrap(),
-    );
+    register_skill_tools(&mut reg, &skills);
     assert!(
         reg.contains("skill__x__alias_bash"),
         "alias must have registered"

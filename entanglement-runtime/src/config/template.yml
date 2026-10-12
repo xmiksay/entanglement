@@ -135,36 +135,34 @@
 #    url: https://example.com/mcp
 #    oauth: {}
 
-# Definition-driven HTTP endpoint tools (#560): a map of name → endpoint
-# definition, each registered as `endpoint__<name>` — an HTTP call tool whose
-# schema is derived from `params` (so argument validation works the same as for
-# any native tool). Fields:
-#   method      — GET/POST/PUT/PATCH/DELETE/HEAD, case-insensitive (default GET)
-#   url         — a template; `{{param}}` tokens are substituted (percent-encoded)
-#                 from the tool call's arguments at call time
-#   description — surfaced as the tool's advertised description
-#   params      — name -> { type, description, required } (all optional;
-#                 type defaults to "string", required defaults to true) — also
-#                 which `{{param}}` tokens the url/body templates may reference
-#   headers     — static request headers; values may reference `${VAR}` from
-#                 the environment, exactly like an MCP server's headers above
-#   body        — an optional static body template (`{{param}}` substituted,
-#                 unencoded — shape it yourself, e.g. a JSON template)
-# The response body is capped at 32 KiB (truncated with a marker, never an
-# error) and rides the same per-endpoint connection/retry/rate-limit pool as
-# LLM/MCP traffic. Registration is startup-only — editing this section needs a
-# restart, unlike `mcp:`/skills/agents, which live-reload.
-# By default every endpoint tool also grades under a bare `call: allow/ask/deny`
-# permission (it makes a network call, like `bash`) — see `permissions` above.
-#endpoints:
-#  weather:
-#    method: GET
-#    url: "https://api.example.com/weather/{{city}}"
-#    description: "Current weather for a city"
-#    params:
-#      city: { type: string, description: "City name" }
+# Hidden credentials for the rhai `http(method, url, #{headers, body})`
+# binding (ADR-0227). Maps a host to headers/cookies the runtime injects at
+# send time; the script never sees them and neither does the model. USER LAYER
+# ONLY — a project `.entanglement/config.yml` declaring `http_auth:` is ignored
+# with a warning (a repo's script must not spend your tokens). Rules:
+#   - a key matches the URL host exactly or as a dot-boundary suffix
+#     (`github.com` covers `api.github.com`, never `github.com.evil.io`);
+#     the longest matching key wins; paths are never matched
+#   - injected over https only, never on a redirect to another host
+#   - `${VAR}` in a value resolves from the environment, where the managed
+#     `.env` (ENTANGLEMENT_ENV_FILE) lands at startup
+#   - a script that sets Authorization/Cookie itself is refused
+#   - the first credentialed call to a host in a session always asks
+#     (`authenticated for <host>`), whatever the mode grades; `auto` refuses it
+#     unless an explicit `http(...)` rule in THIS file allows it, e.g.
+#     modes: {auto: {allow: ["http(GET https://api.github.com/*)"]}}
+#   - the referenced variables are scrubbed from every child's environment
+#     (bash, hooks, MCP servers, ...); the managed .env file itself and this
+#     process's /proc environ stay readable by bash — an accepted risk shared
+#     with provider keys (#832)
+#   - read at startup only: editing this section needs a restart
+#http_auth:
+#  api.github.com:
 #    headers:
-#      Authorization: "Bearer ${WEATHER_API_KEY}"
+#      Authorization: "Bearer ${GITHUB_TOKEN}"
+#  example.com:
+#    cookies:
+#      session: "${EXAMPLE_SESSION}"
 
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
 # web search MID-TURN, server-side (z.ai `zai`/`zai_paas` and Anthropic only), and cites the

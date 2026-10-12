@@ -1,191 +1,168 @@
-//! The actual run-against-the-registry step (issue #451, split out of
-//! `tool_runner.rs`): [`run_and_reply`] is reached both by `dispatch`'s
-//! straight-through `Allow` and by [`super::decision::await_decision`]'s
-//! `Approve` — one place that executes a host tool call and replies, so an
-//! approved call and an outright-allowed one run identically.
+//! The run-against-the-registry step (issue #451): reached by a straight
+//! `Allow`, an approval, and the `Control` bypass alike, so every path runs
+//! a call identically — state tools, pre-dispatch argument validation,
+//! `FileChange` capture, the loop-breaker, `load_skill` posture, the
+//! `post_tool_use` hook. A script's call additionally runs under the
+//! script's remaining budget (ADR-0227).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{Holly, OutEvent, SessionId, ToolCall, ToolEnvelope};
+use entanglement_core::{Holly, OutEvent, SessionId, ToolCall, ToolOverlayEntry};
 
 use crate::arg_validate;
-use crate::hooks::Hooks;
-use crate::seam;
 use crate::skills::load_skill::parse_skill_id;
 use crate::skills::SkillRegistry;
-use crate::tool_advertising;
 use crate::tool_names::LOAD_SKILL_TOOL;
+use crate::tool_runner::call_grader::{self, CallGrader};
 use crate::tools::{ToolExecution, ToolRegistry};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_and_reply(
-    holly: &Holly,
-    tools: &ToolRegistry,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
-    active_skill: &Arc<Mutex<HashSet<SessionId>>>,
-    hooks: &Hooks,
-    advertising: &tool_advertising::AdvertisingState,
-    validation: &arg_validate::LoopBreaker,
-    // The call exactly as the model emitted it, when core unwrapped an
-    // `mcp` envelope (ADR-0226) — `None` for an ordinary native call.
-    // Needed only for duplicate-key re-scanning below; every other use of
-    // `tool`/`input` in this function already means the *inner* call either
-    // way.
-    envelope: Option<ToolEnvelope>,
-    session: SessionId,
-    request_id: String,
-    tool: String,
-    input: String,
-) {
-    // `update_tasks` carries no host resource (#231, ADR-0049): it is not in
-    // the registry. The runtime emits its `TaskList` snapshot — minting a
-    // **fresh** per-session seq (#157) so it takes an ordered place in the
-    // content stream instead of colliding with the parked `ToolExec` seq —
-    // and acks (text), instead of dispatching.
-    if crate::plan_tasks::is_state_tool(&tool) {
-        holly.emit_for_session(&session, |seq| {
-            crate::plan_tasks::state_event(&session, seq, &tool, &input)
-                .expect("is_state_tool ⇒ state_event is Some")
-        });
-        let ack = crate::plan_tasks::ack(&tool);
-        hooks
-            .run_post_tool_use(&session, &tool, &input, &ack, false, None)
-            .await;
-        seam::reply(holly, session, request_id, ack, false).await;
-        return;
-    }
-    // Pre-dispatch argument validation (#560, ADR-0196 §6): a call whose
-    // input violates the tool's advertised schema (missing/unexpected
-    // properties, a type mismatch) never reaches `Tool::run` at all — it gets
-    // a specific complaint instead of `run()`'s opaque parse-failure text.
-    // A tool absent from the registry (a runtime-owned pseudo-tool like
-    // `update_tasks`/`ask_user`/`poll`, already handled above or dispatched
-    // elsewhere) has no advertised schema here, so it's exempt by
-    // construction — nothing to validate against.
-    if let Some(spec) = tools.spec_for(&tool) {
-        if let Some(mut violation) = arg_validate::validate(&spec.schema, &input) {
-            // Core's `mcp` unwrap has to parse the outer envelope to pull
-            // out `args`, which collapses a duplicate key inside it exactly
-            // like `validate`'s own parse of `input` just did above — so a
-            // duplicate that lived under `args` is already gone from `input`
-            // by the time it reaches here. Re-scan the envelope's raw text
-            // (the call exactly as the model emitted it, still carrying the
-            // duplicate) instead, whenever this call arrived that way.
-            if let Some(env) = &envelope {
-                violation.duplicate_keys = arg_validate::find_duplicate_keys(&env.input);
-            }
-            tracing::warn!(
-                tool = %tool,
-                violation = ?violation.lines(),
-                "tool call failed pre-dispatch schema validation"
-            );
-            // An MCP tool's schema reaches the model only inside a tool result
-            // (`mcp_tools`, or an earlier decline) — the delivered set covers
-            // both, so a repeat violation points back instead of resending it.
-            let already_delivered = {
-                let mut delivered = advertising
-                    .delivered
-                    .lock()
-                    .expect("delivered-schema mutex poisoned");
-                let seen = delivered.contains(&session, &tool);
-                delivered.mark(&session, &tool);
-                seen
-            };
-            let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
-            if validation.note(&session, &tool, &input, true) {
-                output.push_str("\n\n");
-                output.push_str(arg_validate::LOOP_BREAKER_NOTE);
-            }
-            hooks
-                .run_post_tool_use(&session, &tool, &input, &output, true, None)
+use super::{Call, Dispatcher, Outcome, Via};
+
+impl Dispatcher {
+    pub(super) async fn execute(
+        &self,
+        tools: &ToolRegistry,
+        call: Call,
+        via: Via<'_>,
+        overlay_entry: Option<ToolOverlayEntry>,
+    ) -> Outcome {
+        let Call {
+            request_id,
+            tool,
+            input,
+            envelope,
+        } = call;
+        let session = &self.session;
+        // `update_tasks` carries no host resource (#231, ADR-0049): emit its
+        // snapshot on a fresh seq (#157) and ack.
+        if crate::plan_tasks::is_state_tool(&tool) {
+            self.holly.emit_for_session(session, |seq| {
+                crate::plan_tasks::state_event(session, seq, &tool, &input)
+                    .expect("is_state_tool ⇒ state_event is Some")
+            });
+            let ack = crate::plan_tasks::ack(&tool);
+            self.hooks
+                .run_post_tool_use(session, &tool, &input, &ack, false, None)
                 .await;
-            seam::reply(holly, session, request_id, output, true).await;
-            return;
+            return Outcome::text(ack.to_string(), false);
+        }
+        // Pre-dispatch argument validation (#560, ADR-0196 §6): a schema
+        // violation never reaches `Tool::run`.
+        if let Some(spec) = tools.spec_for(&tool) {
+            if let Some(mut violation) = arg_validate::validate(&spec.schema, &input) {
+                // Core's `mcp` unwrap collapsed any duplicate key under
+                // `args`; the envelope still carries it.
+                if let Some(env) = &envelope {
+                    violation.duplicate_keys = arg_validate::find_duplicate_keys(&env.input);
+                }
+                tracing::warn!(
+                    tool = %tool,
+                    violation = ?violation.lines(),
+                    "tool call failed pre-dispatch schema validation"
+                );
+                // An MCP schema reaches the model only in a tool result; a
+                // repeat violation points back instead of resending it.
+                let already_delivered = {
+                    let mut delivered = self
+                        .advertising
+                        .delivered
+                        .lock()
+                        .expect("delivered-schema mutex poisoned");
+                    let seen = delivered.contains(session, &tool);
+                    delivered.mark(session, &tool);
+                    seen
+                };
+                let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
+                if self.validation.note(session, &tool, &input, true) {
+                    output.push_str("\n\n");
+                    output.push_str(arg_validate::LOOP_BREAKER_NOTE);
+                }
+                self.hooks
+                    .run_post_tool_use(session, &tool, &input, &output, true, None)
+                    .await;
+                return Outcome::text(output, true);
+            }
+        }
+        // The call's own grading context, reachable mid-run for targets it
+        // reaches beyond its argument (redirect hops, #808/ADR-0225).
+        let grader = CallGrader {
+            tools: tools.clone(),
+            resolver: self.resolver.clone(),
+            chain: self.chain.clone(),
+            grants: self.grants.clone(),
+            session: session.clone(),
+            mode: self.mode.clone(),
+            overlay_entry,
+            overlay_denied: false,
+            ceiling: self.ceiling.clone(),
+            root: self.escape_root.as_ref().map(|er| er.root.clone()),
+        };
+        let tool_call = ToolCall {
+            id: request_id,
+            name: tool.clone(),
+            input: input.clone(),
+            provider_meta: None,
+        };
+        let started = std::time::Instant::now();
+        let run = crate::file_change::capture_and_emit(
+            &self.holly,
+            session,
+            call_grader::scope(grader, tools.execute(&tool_call, session)),
+        );
+        let execution = match via.budget(&tool) {
+            Some(budget) => match tokio::time::timeout(budget, run).await {
+                Ok(execution) => execution,
+                Err(_) => {
+                    return Outcome::TimedOut(format!(
+                        "binding `{tool}` was cut off at the script's time budget — it may or \
+                         may not have taken effect"
+                    ))
+                }
+            },
+            None => run.await,
+        };
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let ToolExecution {
+            mut content,
+            is_error,
+            exit_code,
+        } = execution;
+        let mut output_text = entanglement_core::content_text(&content);
+        // Two identical failing calls in a row mean the schema was never the
+        // problem (#560, ADR-0196 §6).
+        if self.validation.note(session, &tool, &input, is_error) && is_error {
+            output_text.push_str("\n\n");
+            output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
+            content.push(entanglement_core::ContentPart::text(format!(
+                "\n\n{}",
+                arg_validate::LOOP_BREAKER_NOTE
+            )));
+        }
+        if tool == LOAD_SKILL_TOOL {
+            activate_skill(
+                &self.holly,
+                &self.skills,
+                &self.active_skill,
+                session,
+                &output_text,
+            );
+        }
+        self.hooks
+            .run_post_tool_use(session, &tool, &input, &output_text, is_error, exit_code)
+            .await;
+        Outcome::Ran {
+            content,
+            is_error,
+            duration_ms: Some(duration_ms),
+            exit_code,
         }
     }
-    // Every other tool executes against the host registry, returning multimodal
-    // content (a text result, or an image block for `read` on an image, #221)
-    // plus `is_error` (#636, ADR-0176). `edit`/`write` record their change into
-    // the capture scope (#202); the executor mints a fresh `FileChange` seq
-    // (#157) and broadcasts the audit event before replying with the
-    // `ToolResult`. `duration_ms` is measured around the whole execution —
-    // generic across every host tool, unlike `is_error` which the registry
-    // itself classifies — so a slow `bash`/`call` is visible without either
-    // parsing its `[exit N]` header or threading a bespoke timer through every
-    // `Tool` impl.
-    let started = std::time::Instant::now();
-    let execution = crate::file_change::capture_and_emit(
-        holly,
-        &session,
-        tools.execute(
-            &ToolCall {
-                id: request_id.clone(),
-                name: tool.clone(),
-                input: input.clone(),
-                provider_meta: None,
-            },
-            &session,
-        ),
-    )
-    .await;
-    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let ToolExecution {
-        mut content,
-        is_error,
-        exit_code,
-    } = execution;
-    let mut output_text = entanglement_core::content_text(&content);
-    // Loop-breaker guard (#560, ADR-0196 §6): two identical failing calls in a
-    // row — same tool, same input, both `is_error` — mean the schema was
-    // never the problem. Deliberately generic across every failure kind
-    // (unknown-tool and schema-violation return earlier, above/in `dispatch`;
-    // this covers a runtime tool error and an MCP required-param rejection
-    // alike). A non-error result never triggers the note, matching decision
-    // 3: a command failure (non-zero exit) is untouched.
-    if validation.note(&session, &tool, &input, is_error) && is_error {
-        output_text.push_str("\n\n");
-        output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
-        content.push(entanglement_core::ContentPart::text(format!(
-            "\n\n{}",
-            arg_validate::LOOP_BREAKER_NOTE
-        )));
-    }
-    // #400, ADR-0106 (posture-only since ADR-0194): a successful `load_skill`
-    // records the session's skill-active posture and tells any listening head
-    // via `OutEvent::SkillActive` — parsed from the result's `skill_id:`
-    // header (absent on a failed load: unknown/`user_only` skill, which
-    // leaves any prior posture untouched). It no longer narrows the
-    // session's tool set.
-    if tool == LOAD_SKILL_TOOL {
-        activate_skill(holly, skills, active_skill, &session, &output_text);
-    }
-    // `post_tool_use` (#199) observes the result before it is folded back — a
-    // pure side-effect (formatter/telemetry); it cannot rewrite `content`, but
-    // it now also observes `is_error` (#636) so a hook can branch on outcome
-    // without re-parsing `output`.
-    hooks
-        .run_post_tool_use(&session, &tool, &input, &output_text, is_error, exit_code)
-        .await;
-    seam::reply_content(
-        holly,
-        session,
-        request_id,
-        content,
-        is_error,
-        Some(duration_ms),
-        exit_code,
-    )
-    .await;
 }
 
 /// Record `session`'s skill-active posture (#400, ADR-0106; posture-only
-/// since ADR-0194 — skills no longer mask tools) from a `load_skill` result:
-/// parse its `skill_id:` header, look the skill up in the live registry for
-/// its (now-vestigial, wire-compat-only) `allowed_tools`, and tell any
-/// listening head via [`OutEvent::SkillActive`]. A `result` with no
-/// `skill_id:` header (a failed load) is a no-op — the session keeps
-/// whatever posture was active before.
+/// since ADR-0194) from a `load_skill` result's `skill_id:` header and tell
+/// any listening head; a failed load (no header) is a no-op.
 fn activate_skill(
     holly: &Holly,
     skills: &Arc<RwLock<Arc<SkillRegistry>>>,

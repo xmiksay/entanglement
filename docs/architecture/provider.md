@@ -244,26 +244,20 @@ what belongs here, the full wire contracts (request/response JSON, streaming
 event shapes, per-provider quirks) live in
 `scratch/tool-search-wire-reference.md`.
 
-**Definition-driven HTTP endpoint execution** (`entanglement-provider::endpoint`,
-#560 P8) — the provider-owned mechanism a runtime-registered `endpoint__<name>`
-(or skill-declared `skill__<skill>__<name>`) tool calls through, riding the
-*same* per-endpoint pool/retry/rate-limit machinery (`HttpClient::execute_with_retry`)
-as LLM and MCP traffic instead of a bespoke `reqwest` client of its own —
-mirrors `mcp::http::McpHttpClient`'s json-only surface, so `entanglement-runtime`
-never needs `reqwest` as a direct dependency to build a request through this
-module. `EndpointMethod` (`Get`/`Post`/`Put`/`Patch`/`Delete`/`Head`) parses
-case-insensitively and deserializes the same way, so a malformed `method:` in
-a runtime config file is a loud config-load-time error, never a
-lazily-discovered one. `call(http, method, url, headers, body)` keys the pool
-by `url` alone (no API key — a config-declared endpoint has no catalog
-identity to pool-key against); `headers` values may reference `${VAR}` from
-the environment like an MCP server's static headers. A non-2xx status is a
-normal `EndpointResponse` the caller renders, mirroring how a non-zero `bash`
-exit is not `is_error` (ADR-0176) — only a transport/config failure is an
-`Err`. The response body is capped at 32 KiB (`ENDPOINT_RESPONSE_CAP`),
-truncated at a UTF-8 char boundary with a `[truncated: response exceeded 32
-KiB]` marker so the model can tell a real short response apart from a capped
-one.
+**The general request behind `web_fetch` and `http()`** (`web_fetch::request`,
+[ADR-0227](../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)) —
+`WebFetcher::request(HttpRequest{method, url, headers, body, max_bytes},
+check_hop, credentials)`: any method from the closed `HTTP_METHODS` set, the
+same SSRF guard and manual re-validated redirects as `fetch` (which now
+delegates to it as a GET). Two caller seams run per hop: `check_hop(method,
+url)` may stop the request before it is sent, and `credentials(url)` supplies
+the hidden headers for the URL about to be requested — asked again on every
+hop, so the runtime drops them on a cross-host or non-https redirect. 303
+(and 301/302 for a non-GET) become a bodyless GET; 307/308 keep method and
+body. Header values never appear in an error. `scheme_and_host` gives the
+normalized scheme/host the runtime matches `http_auth` entries against. (The
+#560 P8 endpoint mechanism — `endpoint::call`, `EndpointMethod`, pooled
+per-URL — is removed with the declared endpoint tools.)
 
 **Provider-side web search** (#305,
 [ADR-0075](../adr/0075-provider-side-web-search-mvp.md); post-MVP follow-ups

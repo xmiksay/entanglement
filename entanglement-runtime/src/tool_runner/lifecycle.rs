@@ -266,8 +266,8 @@ pub(super) async fn run(
                 // Authoritative self-heal (#156): the emitting session's
                 // active agent rides on the `ToolExec` itself, so resolve it
                 // from the registry and overwrite the folded entry *before*
-                // any permission decision (spawn gating and the `rhai`
-                // binding policy still read `active`; sandboxing reads
+                // any permission decision (spawn gating still reads
+                // `active`; sandboxing reads
                 // `perm_modes` directly, ADR-0207 §6). The lifecycle
                 // fold above is a lossy broadcast — under burst a dropped
                 // `SessionStarted`/`AgentChanged` would leave a restricted

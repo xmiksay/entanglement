@@ -225,7 +225,7 @@ below realize one model:
   `deny: [write]` forbids. `mode::tune::apply` closes this by resolving each
   tuned rule's named tool to its real `Capability` set (via a live
   `ToolRegistry`-backed resolver — `skutter inspect modes` uses the same
-  no-registry static fallback `BindingPolicy` grades through) and rejecting
+  no-registry static capability fallback) and rejecting
   the rule outright if any of them is class-denied in that mode. The
   `config.yml` `permissions:` ceiling is a `PermissionProfile` re-interpreted
   through `Mode::from_permission_profile` into the identical longest-match
@@ -426,9 +426,9 @@ below realize one model:
   privilege ceiling already does (`permission::ancestor_chain`) — the whole
   spawn sub-tree shares one **mode** now (§6), so this walk exists purely for
   the overlay/grant layer riding on top of it, not for re-deriving the mode
-  itself at each link — and the `rhai` `BindingPolicy` snapshot consults the
-  identical lookup, so a script's `bash()` binding grades exactly like a
-  direct `bash` call.
+  itself at each link — and a `rhai` binding runs the same dispatch seam
+  (ADR-0227), so a script's `bash()` grades exactly like a direct `bash`
+  call.
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
   the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).
@@ -785,9 +785,9 @@ below realize one model:
   overlay only under the mode it was set in (#776,
   [engine](engine.md)). The grade override still reaches down the spawn sub-tree via the
   same nearest-link-first ancestor-chain walk the ADR-0024 privilege ceiling
-  uses (`permission::overlay_grade_entry`/`ancestor_chain`), and the `rhai`
-  `BindingPolicy` snapshot consults the identical lookup (a script's
-  `bash()` binding grades identically to a direct `bash` call).
+  uses (`permission::overlay_grade_entry`/`ancestor_chain`), and a `rhai`
+  binding runs the same dispatch seam (ADR-0227 — a script's `bash()` grades
+  identically to a direct `bash` call).
   The TUI drives it via `/enable tool <name>` [`--allow [<pattern>]`] and
   `/disable tool <name>` (upserts a deny; bare = reset) and the
   bare-`/enable` session-tools checklist dialog (checkboxes over the full
@@ -1123,16 +1123,31 @@ below realize one model:
   author's explicit escape hatch. The result is an ordinary `tool_result` carrying
   `skill_id`, the substituted body, and `available_refs` (supporting files listed
   as absolute paths, **not** loaded) — never a spoofed user message, so the
-  authorship trail stays honest.
+  authorship trail stays honest — then, when the skill ships one, its
+  `lib.rhai` function signatures.
+- **Skill libraries — `lib.rhai` (✅ #819, [ADR-0227](../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)):**
+  a `lib.rhai` beside `SKILL.md` — any layer, foreign skill dirs included
+  (`root_dir` is pre-resolved by both parsers) — compiles once at discovery
+  (`skills::lib_rhai`) into an encapsulated static module every `rhai` run
+  registers as `skill::<skill>` (name mapped like an MCP segment: non-identifier
+  → `_`, no letter before the first digit → `t_` prefix, reserved word
+  `_`-suffixed, validity per Rhai itself; a colliding
+  later skill is logged, skipped, and listed by `load_skill` as not callable — the same naming pass registration uses). Only `fn` definitions: a top-level
+  statement would run on every script launch unasked, so it rejects the whole
+  lib with a warning. A lib function calls every binding a script can —
+  including `http()` with the user's `http_auth` credentials, which is why a
+  credentialed call still forces a per-host approval. Live-reloaded with the
+  skill registry; `load_skill` lists the public signatures (signature-first,
+  #826).
 - **Skills are additive-only — the `allowed_tools` mask is removed (✅ ADR-0194,
   [0194](../adr/0194-skills-are-additive-only.md), superseding
   [ADR-0106](0106-skill-scoped-allowed-tools-enforcement.md) and retiring
   [ADR-0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
-  a skill adds capabilities (its body, endpoint refs, rhai-backed tools,
-  aliases) and **never restricts** the session's tool set. The session-keyed
+  a skill adds capabilities (its body, its `lib.rhai` functions, rhai-backed
+  tools, aliases) and **never restricts** the session's tool set. The session-keyed
   `ActiveSkill` map, `permission::skill_masked`, the `load_skill`
-  result-header activation parse, and `BindingPolicy`'s skill-mask snapshot
-  are deleted; the dispatch ladder loses its skill arm. WHY: the mask's
+  result-header activation parse, and the rhai binding policy's skill-mask
+  snapshot are deleted; the dispatch ladder loses its skill arm. WHY: the mask's
   scope was one turn of one session, triggered and outlived by the same
   model it restrained — a speed bump, not a boundary — while the standing
   control was always the real story, and its observable effect was

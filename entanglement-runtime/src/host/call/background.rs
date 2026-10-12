@@ -39,6 +39,7 @@ pub(super) async fn spawn_background(
     for var in secret_env {
         cmd.env_remove(var);
     }
+    crate::secret_env::scrub(&mut cmd);
     let label = if args.is_empty() {
         command.to_string()
     } else {

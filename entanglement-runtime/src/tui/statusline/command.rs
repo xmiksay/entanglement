@@ -132,6 +132,7 @@ async fn run(job: &Job, secret_env: &[String]) -> Result<String, String> {
     for var in secret_env {
         cmd.env_remove(var);
     }
+    entanglement_runtime::secret_env::scrub(&mut cmd);
     own_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("could not run: {e}"))?;
     let mut guard = GroupKillGuard::new(child.id());

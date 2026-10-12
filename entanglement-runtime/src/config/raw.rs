@@ -9,7 +9,6 @@ use serde::Deserialize;
 
 use super::ceiling;
 use super::tui::TuiConfig;
-use crate::endpoint::EndpointConfig;
 use crate::file_backup::BackupLimits;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
@@ -63,11 +62,10 @@ pub(super) struct RawConfig {
     /// registry. Absent ⇒ no servers.
     #[serde(default)]
     pub(super) mcp: HashMap<String, McpServerConfig>,
-    /// Definition-driven HTTP endpoint tools (#560 P8): a map of name →
-    /// endpoint definition, each registered as `endpoint__<name>`. Absent ⇒
-    /// no endpoint tools. See [`crate::endpoint`].
+    /// Hidden `http()` credentials (ADR-0227), host → headers/cookies.
+    /// Stripped from the project layer before the merge.
     #[serde(default)]
-    pub(super) endpoints: HashMap<String, EndpointConfig>,
+    pub(super) http_auth: super::http_auth::HttpAuth,
     /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
     /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
     /// it is consent (the server tool runs provider-side, *outside* the runtime

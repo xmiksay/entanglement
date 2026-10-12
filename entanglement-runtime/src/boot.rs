@@ -16,9 +16,8 @@ use crate::factories::build_model_resolver;
 use crate::providers::web_search_config;
 use crate::tool_runner::EscapeRoot;
 use crate::{
-    agents, config, endpoint, file_backup, host, logging, mcp, mode, policy, retained_output,
-    script_ops, skills, subagent, system_prompt, system_prompt_mode, tool_advertising,
-    SharedRegistry,
+    agents, config, file_backup, host, logging, mcp, mode, policy, retained_output, script_ops,
+    skills, subagent, system_prompt, system_prompt_mode, tool_advertising, SharedRegistry,
 };
 
 /// Everything [`boot`] produced that the services and heads still need, past
@@ -78,14 +77,8 @@ pub(crate) async fn boot(
     // folded into any bare `read`/`write`/`call` permission key alongside the
     // fixed built-in set — computed once here (like the ceiling permission
     // below) rather than re-derived on every reload.
-    let mut mcp_capabilities = mcp::capability_index_with_catalog(catalog, &user_config.mcp)
+    let mcp_capabilities = mcp::capability_index_with_catalog(catalog, &user_config.mcp)
         .context("resolving MCP capability hints")?;
-    // Every declared endpoint tool joins the same data-driven `call` index
-    // (#560 P8), unconditionally — see `endpoint::call_capability_names`.
-    mcp_capabilities
-        .entry("call".to_string())
-        .or_default()
-        .extend(endpoint::call_capability_names(&user_config.endpoints));
     // The skill registry also resolves per-agent `skills:` preload bodies (#117).
     let mut profiles = agents::load_registry(cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
         .context("loading agent definitions")?;

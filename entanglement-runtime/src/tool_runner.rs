@@ -69,17 +69,14 @@ pub use wrappers::{
 use crate::cancel::{CancelAllOnDrop, CancelRegistry};
 use crate::run_limits;
 
-// The generic tool-call primitives (issue #451) — `dispatch`, the parked-
-// approval tail `await_decision`, and the run-against-the-registry step
-// `run_and_reply` — split out so this file stays the executor loop shell
-// (lifecycle folding + `LadderCtx` construction); `apply_grant`/
-// `resolve_effective` live in `dispatch::grade`. Re-exported at their
-// pre-split paths (`tool_runner::dispatch`/`apply_grant`/`resolve_effective`)
-// since `ladder::graded`, `propose_plan`, and `script::binding_policy` all
-// call them by those paths.
+// The dispatch seam (issue #451, ADR-0227): `Dispatcher::run` grades and
+// executes one call into an `Outcome`, `Dispatcher::dispatch` replies to core
+// with it, and a rhai binding (`crate::script`) takes it back over the
+// bridge; `apply_grant`/`resolve_effective` live in `dispatch::grade`.
 mod dispatch;
-pub(crate) use dispatch::dispatch;
 pub(crate) use dispatch::grade::resolve_effective;
+#[cfg(feature = "rhai")]
+pub(crate) use dispatch::{Call, Dispatcher, Outcome, ScriptCall, Via};
 // `apply_grant`'s only caller outside `dispatch` is the rhai route in
 // `ladder::graded`, which is feature-gated — so an ungated re-export is an
 // unused import in the `--no-default-features` lean build (ADR-0025) and
@@ -118,6 +115,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         catalog,
         discovery,
         workdirs,
+        http_gate,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -135,6 +133,18 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
     // grants must never read or write the developer's real `grants.yml`.
     let grants =
         grants.unwrap_or_else(|| Arc::new(crate::policy::DefaultGrantStore::load_from(None)));
+    // One gate for the tool that injects and the seam that forces approval.
+    #[cfg(feature = "rhai")]
+    if let Some(gate) = &http_gate {
+        match crate::host::HttpTool::new(gate.clone()) {
+            Ok(tool) => tools
+                .write()
+                .expect("tool registry lock poisoned")
+                .register(tool),
+            Err(e) => tracing::warn!("rhai http() unavailable: {e:#}"),
+        }
+    }
+    let http_gate = http_gate.unwrap_or_default();
     let DiscoverySurface {
         advertising,
         mcp_avail,
@@ -177,8 +187,8 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // clearing notice). Set when a `load_skill` call resolves, cleared on
         // the turn's `Done` — a skill's scope is one conversational turn —
         // or when the session ends. Shared with
-        // `dispatch`/`await_decision`/`run_and_reply` (the detached per-call
-        // tasks), which set it after a successful `load_skill`; this loop is
+        // the dispatch seam's execute step (the detached per-call tasks),
+        // which sets it after a successful `load_skill`; this loop is
         // the sole writer of the clear path.
         let active_skill: Arc<Mutex<HashSet<SessionId>>> = Arc::new(Mutex::new(HashSet::new()));
         // Per-session, per-turn repeat-denial tracker (ADR-0207 §11, stage
@@ -261,6 +271,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             denials,
             catalog,
             workdirs,
+            http_gate,
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);

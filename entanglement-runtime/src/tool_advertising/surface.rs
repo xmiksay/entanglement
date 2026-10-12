@@ -71,11 +71,11 @@ pub fn build_surface(registry_specs: Vec<ToolSpec>, agent_specs: Vec<ToolSpec>) 
     specs
 }
 
-/// Kernel tools, plus the definition-driven `endpoint__*`/`skill__*` tools
-/// until #819/#820 retire them: with `describe` gone they have no other
-/// model-facing path.
+/// Kernel tools, plus the skill-declared `skill__*` tools until #820
+/// retires skill `tools:`: with `describe` gone they have no other
+/// model-facing path. (ADR-0227 removed the `endpoint__*` half.)
 fn is_advertised(name: &str) -> bool {
-    KERNEL.contains(&name) || name.starts_with("endpoint__") || name.starts_with("skill__")
+    KERNEL.contains(&name) || name.starts_with("skill__")
 }
 
 #[cfg(test)]
@@ -103,11 +103,7 @@ mod tests {
         ]
         .map(spec)
         .into_iter()
-        .chain([
-            spec("endpoint__weather"),
-            spec("skill__git__log"),
-            spec("read"),
-        ])
+        .chain([spec("skill__git__log"), spec("read")])
         .collect();
         let specs = build_surface(registry, vec![spec("agent")]);
         let got = names(&specs);
@@ -121,7 +117,6 @@ mod tests {
             "read",
             "write",
             "agent",
-            "endpoint__weather",
             "skill__git__log",
             "mcp",
             "list_mcp",

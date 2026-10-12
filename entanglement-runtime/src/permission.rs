@@ -12,8 +12,7 @@
 //!   more privileged than its ancestors. The main dispatch ladder
 //!   (`tool_runner::resolve_effective`) takes the least-privileged
 //!   [`crate::policy::PermissionResolver`] grade across exactly this chain,
-//!   and the `rhai` binding policy ([`crate::script::BindingPolicy`]) now
-//!   reuses the *same* chain + resolver (ADR-0207 stage 4b) — the old
+//!   and every `rhai` binding runs that same ladder (ADR-0227) — the old
 //!   `Agent`-chain grading path (`effective_permission`/
 //!   `permission_chain`/`permission_for`) that used to serve `rhai` alone is
 //!   retired along with it, since nothing resolves a session's mode from
@@ -139,7 +138,7 @@ pub fn resolve_model(
 /// this clamp, so a `Deny` here can never be re-opened by a stale grant.
 ///
 /// `base` keeps its historical [`PermissionProfile`] type — the type every
-/// call site in the executor, `BindingPolicy`, and ~30 test fixtures already
+/// call site in the executor and ~30 test fixtures already
 /// threads by value — but is graded through [`crate::mode::Mode::resolve`]
 /// via [`crate::mode::Mode::from_permission_profile`] (ADR-0207 stage 6c),
 /// not `PermissionProfile`'s own matcher: `config.yml`'s `permissions:`
@@ -240,9 +239,9 @@ pub fn overlay_denies(
 /// grade across exactly these sessions — the sub-agent privilege ceiling
 /// (ADR-0024) applied *on top of* whatever grade the resolver returns, so a
 /// pluggable tenant rule can never widen a child beyond its parent. Shared by
-/// `tool_runner`'s dispatch ladder and [`crate::script::BindingPolicy`]
-/// (ADR-0207 stage 4b) — a `rhai` binding resolves across the identical chain
-/// a direct tool call does.
+/// `tool_runner`'s dispatch seam, which every `rhai` binding runs too
+/// (ADR-0227) — a binding resolves across the identical chain a direct tool
+/// call does.
 ///
 /// ADR-0207 §7 retires the sponsored-child exemption (ADR-0138): approving a
 /// `propose_plan` now switches the session's mode instead of spawning a
@@ -307,6 +306,15 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
         // `web_fetch(https://pastebin.com/*)` rule can't be dodged by
         // `HTTPS://PASTEBIN.COM./x`. Unparseable → no argument (it can't fetch).
         "web_fetch" => entanglement_core::web_fetch::normalize_url(value.get("url")?.as_str()?),
+        // ADR-0227: `{METHOD} {url}`, so a rule can allow reads only —
+        // `http(GET https://api.github.com/*)`. Both halves normalized as
+        // sent; either unparseable → no argument (the call would fail).
+        crate::tool_names::HTTP_TOOL => {
+            let method =
+                entanglement_core::web_fetch::parse_method(value.get("method")?.as_str()?).ok()?;
+            let url = entanglement_core::web_fetch::normalize_url(value.get("url")?.as_str()?)?;
+            Some(format!("{method} {url}"))
+        }
         _ => None,
     }
 }
@@ -786,6 +794,19 @@ mod tests {
             Some("https://pastebin.com/x")
         );
         assert_eq!(permission_arg("web_fetch", r#"{"url":"nope"}"#), None);
+        // http → `{METHOD} {url}`, both normalized (ADR-0227).
+        assert_eq!(
+            permission_arg(
+                "http",
+                r#"{"method":"get","url":"HTTPS://API.github.com./r"}"#
+            )
+            .as_deref(),
+            Some("GET https://api.github.com/r")
+        );
+        assert_eq!(
+            permission_arg("http", r#"{"method":"TRACE","url":"https://a/"}"#),
+            None
+        );
         // glob → the pattern itself, since a glob pattern is a path.
         assert_eq!(
             permission_arg("glob", r#"{"pattern":"src/*.rs"}"#).as_deref(),
@@ -850,7 +871,7 @@ mod tests {
     /// `workdir_scoped_rule_resolves_through_the_agent_chain` (deleted with
     /// `effective_permission`/`permission_for`, ADR-0207 stage 4b): `clamp_to_base`
     /// itself is still very much alive, on the overlay-grade path in both
-    /// `tool_runner::dispatch` and `BindingPolicy::decide`.
+    /// the dispatch seam (`dispatch::grade::grade_call`).
     #[test]
     fn clamp_to_base_honors_workdir_scoped_ceiling() {
         let deny_etc =

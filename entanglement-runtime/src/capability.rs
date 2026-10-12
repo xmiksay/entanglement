@@ -66,14 +66,12 @@ pub fn capability_of(name: &str, registry: &ToolRegistry) -> Option<&'static [Ca
     runtime_owned(name).or_else(|| registry.get(name).map(|tool| tool.capabilities()))
 }
 
-/// [`capability_of`] for the two call sites that have no live [`ToolRegistry`]
-/// in hand: [`crate::script::binding_policy::BindingPolicy`] grades a `rhai`
-/// binding call before dispatch ever looks one up, and `skutter inspect
-/// modes` (#560, ADR-0207 stage 6c) deliberately runs with "no engine"
-/// (matching every other `inspect` subcommand). Both only ever need the
-/// fixed, always-registered host quintet-plus-two
-/// ([`crate::tool_names::BINDING_TOOLS`]) plus `apply_patch`/`load_skill`
-/// (`Control` since ADR-0226: a catalog read, like the other discovery tools) —
+/// [`capability_of`] for call sites that have no live [`ToolRegistry`] in
+/// hand: `skutter inspect modes` (#560, ADR-0207 stage 6c) deliberately runs
+/// with "no engine" (matching every other `inspect` subcommand). It only
+/// ever needs the fixed, always-registered host tools
+/// ([`crate::tool_names::BINDING_TOOLS`]), `apply_patch`, `web_fetch`,
+/// `http` and `load_skill` (`Control` since ADR-0226: a catalog read) —
 /// a closed set whose capability is a compile-time fact of each `Tool` impl,
 /// not something registration state could change — so hardcoding it here
 /// (mirroring [`runtime_owned`]'s own style) is precise, not a guess, and
@@ -88,8 +86,9 @@ pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
         "read" | "glob" | "grep" => Some(&[Capability::Read]),
         "load_skill" => Some(&[Capability::Control]),
         "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
-        // `web_fetch` is outbound network, graded like `curl` (#736, ADR-0220).
-        "bash" | "call" | "web_fetch" => Some(&[Capability::Exec]),
+        // `web_fetch`/`http` are outbound network, graded like `curl` (#736,
+        // ADR-0220; ADR-0227).
+        "bash" | "call" | "web_fetch" | "http" => Some(&[Capability::Exec]),
         _ => None,
     }
 }

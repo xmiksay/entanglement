@@ -29,7 +29,9 @@ use crate::tool_names::RHAI_TOOL;
 /// together.
 const BINDING_REFERENCE: &str = r#"Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; import/eval are disabled. Only the functions below exist; anything else throws.
 
-Host I/O bindings — each passes the same permission check as the equivalent tool call (agent/skill mask, permission chain, escape-root gate for a path outside the project root); a denial or failure throws, catchable with try/catch:
+Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, escape-root gate for a path outside the project root, hooks); a refusal throws, catchable with try/catch.
+
+Host bindings:
   read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML
   read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`)
   glob(pattern) -> matching paths
@@ -40,18 +42,27 @@ Host I/O bindings — each passes the same permission check as the equivalent to
   write(path, content)
   exec(command) / exec(command, args) / exec(command, args, workdir) -> argv exec, no shell; graded as the `call` tool (spelled `exec` because `call` is a reserved Rhai keyword)
   bash(command) / bash(command, workdir) -> sh -c; bound only when the host `bash` tool is enabled, else an unknown-function error
-  workdir is what a workdir-scoped permission rule matches; an exec/bash timeout is clamped to the script's own remaining budget.
-  glob_json/grep_json grade and mask as glob/grep — a structured-output escape hatch is not a permission escape hatch; prefer them over hand-splitting glob/grep's newline text.
+  http(method, url) / http(method, url, #{headers: #{...}, body: text-or-map}) -> response body text; a non-2xx status throws; graded as `http(METHOD url)`; credentials for a host come from the user's config, never from the script (an Authorization/Cookie/Host header or user@ in the URL is refused); a map/array body is sent as JSON
+  workdir is what a workdir-scoped permission rule matches; nested calls are clamped to the script's remaining budget (a cut call throws: its outcome is unknown); write/edit are never cut.
+  glob_json/grep_json grade as glob/grep — prefer them over hand-splitting glob/grep's newline text.
+
+Generated namespaces:
+  mcp::<server>::<tool>(#{arg: value, ...}) / mcp::<server>::<tool>() -> the MCP tool's text result (parse_json it if JSON); a failure throws. Names map to identifiers: other characters become _, a name not starting with a letter gets a t_ prefix (2fa -> t_2fa), a reserved word a _ suffix — mcp_tools shows each tool's rhai name.
+  skill::<skill>::<fn>(...) -> a function from a skill's lib.rhai; load_skill lists them.
+  Nested rhai, the mcp envelope and the session tools (agent, ask_user, poll, list_*, load_skill, ...) cannot be called from a script.
 
 Pure converters — no IO, no permission check:
   parse_json(text) / to_json(value) / parse_yaml(text) / to_yaml(value); parse_* throws on invalid input; JSON/YAML null becomes ().
 
+Chain calls in ONE script — pass one call's result to the next instead of spending a round per call:
+  let hits = mcp::docs::search(#{query: "retry policy"}).parse_json();
+  let page = mcp::docs::read(#{id: hits[0].id});
+  page
+
 Every binding is also callable as a method: read_raw(p).parse_json().
 Result: the value of the last expression, serialized, with any print(x) output returned above it (a background run streams prints to `poll` as they happen)."#;
 
-/// The `rhai` tool schema advertised to the model. Appended to the engine's
-/// shared `tool_specs` (every profile may script; a profile masks it like any
-/// tool via its `tools`/`disallowed_tools` allowlist — #116).
+/// The `rhai` tool schema advertised to the model (a kernel tool, ADR-0226).
 pub fn rhai_spec() -> ToolSpec {
     ToolSpec::with_schema(
         RHAI_TOOL,
@@ -127,15 +138,15 @@ mod tests {
     /// Every script-facing name the engine registers, derived from the same
     /// tables the registration code reads: the graded host bindings
     /// ([`BINDING_TOOLS`] — `call` binds as `exec`, since `call` is a reserved
-    /// Rhai keyword), the never-advertised `read_raw` alias of `read`, and the
-    /// pure converters.
+    /// Rhai keyword), the never-advertised `read_raw` alias of `read`, `http`,
+    /// and the pure converters.
     fn registered_names() -> Vec<&'static str> {
         let mut names: Vec<&'static str> = BINDING_TOOLS
             .into_iter()
             .map(|tool| if tool == "call" { "exec" } else { tool })
             .collect();
         names.push("read_raw");
-        names.extend(["glob_json", "grep_json"]);
+        names.extend(["glob_json", "grep_json", "http"]);
         names.extend(DATA_FUNCTIONS);
         names
     }
@@ -155,6 +166,7 @@ mod tests {
             "write" => r#"write("f", "c")"#,
             "exec" => r#"exec("echo")"#,
             "bash" => r#"bash("echo")"#,
+            "http" => r#"http("GET", "https://a.io")"#,
             "parse_json" => r#"parse_json("{}")"#,
             "to_json" => r#"to_json("x")"#,
             "parse_yaml" => r#"parse_yaml("a: 1")"#,
@@ -185,6 +197,20 @@ mod tests {
         );
         // The skill pointer survives, demoted to examples-and-detail.
         assert!(desc.contains("`rhai` skill"), "skill pointer lost");
+        // #826: without an explicit chained example GLM models call one tool
+        // per round even inside a script (ADR-0227).
+        assert!(
+            desc.contains("Chain calls in ONE script"),
+            "chained example lost"
+        );
+        assert!(
+            desc.contains("mcp::<server>::<tool>("),
+            "mcp namespace undocumented"
+        );
+        assert!(
+            desc.contains("skill::<skill>::<fn>("),
+            "skill namespace undocumented"
+        );
     }
 
     /// The other direction: nothing in the reference is invented — each name
@@ -196,6 +222,7 @@ mod tests {
         register_bindings(
             &mut engine,
             tx,
+            true,
             true,
             Instant::now(),
             Duration::from_secs(5),

@@ -1,5 +1,5 @@
 //! Startup assembly of the engine config and the tool registry: provider
-//! selection, host/exec tool registration, skill/endpoint/MCP tools, and the
+//! selection, host/exec tool registration, skill/MCP tools, and the
 //! runtime-owned specs advertised alongside them.
 
 use std::collections::HashMap;
@@ -17,8 +17,8 @@ use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    config, discover, endpoint, extra_roots, file_backup, host, mcp, policy, retained_output,
-    script_ops, session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
+    config, discover, extra_roots, file_backup, host, mcp, policy, retained_output, script_ops,
+    session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
 
@@ -214,7 +214,7 @@ pub(crate) async fn build_config(
         );
     }
     // Skill-declared tools (#560 P8): a native/strict-layer `SKILL.md`'s
-    // `tools:` frontmatter — endpoint refs, rhai-backed tools, and aliases —
+    // `tools:` frontmatter — rhai-backed tools and aliases —
     // registered once at skill-discovery time (this same startup pass, not
     // gated behind `load_skill`), namespaced `skill__<skill>__<name>`. See
     // `skills::tools`'s module doc for why discovery-time beats load-time.
@@ -222,14 +222,10 @@ pub(crate) async fn build_config(
     // `LoadSkillTool::new` below (cheap — an `Arc` clone under a brief read
     // lock).
     let skill_registry_snapshot = skills.read().unwrap().clone();
-    skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot, http_client);
+    skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot);
     // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
     // `Capability::Control` like the other discovery tools (ADR-0226).
     tools.register(LoadSkillTool::new(skills));
-    // Definition-driven HTTP endpoint tools (#560 P8): `config.yml`'s
-    // `endpoints:` map, each registered as `endpoint__<name>` — startup-only,
-    // see `endpoint`'s module doc for why live-reload isn't wired.
-    endpoint::register_endpoints(&mut tools, &user_config.endpoints, http_client);
     // External MCP tool servers (#198): the roster of catalog-bundled
     // (key-gated) servers overlaid with the user `mcp:` map. Registered =
     // available and nothing connects here (ADR-0226): the first `mcp_tools`

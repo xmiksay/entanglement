@@ -1,5 +1,7 @@
-//! The `web_fetch` mechanism (#736, ADR-0220): one SSRF-guarded HTTP GET with
-//! manual, re-validated redirects and a streamed byte cap. Provider-owned
+//! The `web_fetch` mechanism (#736, ADR-0220): one SSRF-guarded HTTP request
+//! with manual, re-validated redirects and a streamed byte cap — a GET for
+//! `web_fetch`, any method for the rhai `http()` binding (ADR-0227,
+//! [`request`]). Provider-owned
 //! like every other outbound request (ADR-0053: `reqwest` lives here) — the
 //! runtime's `web_fetch` tool parses arguments and renders the result, and
 //! never sees a `reqwest` type.
@@ -15,15 +17,17 @@
 //! Never uses a proxy (`no_proxy`): a proxy resolves the name itself, which
 //! would bypass [`ssrf::GuardedResolver`] entirely.
 
+mod request;
 mod ssrf;
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION, USER_AGENT};
+use anyhow::{Context, Result};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION};
 use reqwest::Url;
 
 use crate::client::client_builder;
+pub use request::{parse_method, HttpRequest, HTTP_METHODS};
 pub use ssrf::is_blocked;
 
 /// Default response byte cap.
@@ -38,7 +42,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a fetch produced. A non-2xx status is a normal result, not an error
-/// (mirrors [`crate::endpoint::call`]) — the page body of a 404 is often
+/// — the page body of a 404 is often
 /// exactly what the model needs to see.
 #[derive(Debug)]
 pub struct FetchOutcome {
@@ -104,57 +108,24 @@ impl WebFetcher {
         &self,
         url: &str,
         max_bytes: usize,
-        check_hop: F,
-    ) -> Result<FetchOutcome>
-    where
-        F: FnMut(String) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
-    {
-        let max_bytes = max_bytes.clamp(1, HARD_MAX_BYTES);
-        tokio::time::timeout(TOTAL_TIMEOUT, self.fetch_inner(url, max_bytes, check_hop))
-            .await
-            .map_err(|_| anyhow::anyhow!("fetch timed out after {TOTAL_TIMEOUT:?}"))?
-    }
-
-    async fn fetch_inner<F, Fut>(
-        &self,
-        url: &str,
-        max_bytes: usize,
         mut check_hop: F,
     ) -> Result<FetchOutcome>
     where
         F: FnMut(String) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
-        let mut url = parse_normalized(url)?;
-        for _ in 0..=MAX_REDIRECTS {
-            ssrf::validate_url(&url, &self.guard)?;
-            let response = self
-                .client
-                .get(url.clone())
-                .header(
-                    USER_AGENT,
-                    concat!("entanglement-web-fetch/", env!("CARGO_PKG_VERSION")),
-                )
-                .header(
-                    ACCEPT,
-                    "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.5",
-                )
-                .send()
-                .await
-                // `{:#}`-style chain: reqwest wraps the resolver's refusal, and
-                // the refusal is the part the model needs to read.
-                .map_err(|e| anyhow::anyhow!("fetching {url}: {}", error_chain(&e)))?;
-            if response.status().is_redirection() {
-                if let Some(next) = redirect_target(&url, &response)? {
-                    check_hop(next.to_string()).await?;
-                    url = next;
-                    continue;
-                }
-            }
-            return read_body(url, response, max_bytes).await;
-        }
-        bail!("too many redirects (more than {MAX_REDIRECTS})")
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers: vec![(
+                ACCEPT.to_string(),
+                "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.5".to_string(),
+            )],
+            body: None,
+            max_bytes,
+        };
+        self.request(req, |_, hop| check_hop(hop), |_| Vec::new())
+            .await
     }
 }
 
@@ -256,6 +227,19 @@ async fn read_body(
 /// would fail the same way).
 pub fn normalize_url(raw: &str) -> Option<String> {
     parse_normalized(raw).ok().map(String::from)
+}
+
+/// The scheme and host of `raw` in its [`normalize_url`] form — what the
+/// runtime matches `http_auth` entries against (ADR-0227).
+pub fn scheme_and_host(raw: &str) -> Option<(String, String)> {
+    let url = parse_normalized(raw).ok()?;
+    Some((url.scheme().to_string(), url.host_str()?.to_string()))
+}
+
+/// Whether `raw` parses to a URL carrying userinfo (`user[:pass]@host`) —
+/// judged on the WHATWG parse, so `https:u:p@host/` counts too.
+pub fn has_userinfo(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| !u.username().is_empty() || u.password().is_some())
 }
 
 fn parse_normalized(raw: &str) -> Result<Url> {

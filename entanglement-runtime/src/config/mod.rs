@@ -88,7 +88,6 @@ use anyhow::{Context, Result};
 use entanglement_core::{PermissionProfile, WebSearchConfig};
 use serde_yaml::Value;
 
-use crate::endpoint::EndpointConfig;
 use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
@@ -104,6 +103,7 @@ mod ceiling;
 mod ceiling_warn;
 pub mod env_file;
 pub mod env_key;
+pub mod http_auth;
 pub mod keybindings;
 pub mod keychord;
 mod layers;
@@ -184,9 +184,13 @@ pub struct Config {
     pub hooks: Hooks,
     /// External MCP tool servers (#198). Empty by default (a no-op).
     pub mcp: HashMap<String, McpServerConfig>,
-    /// Definition-driven HTTP endpoint tools (#560 P8). Empty by default (a
-    /// no-op). See [`crate::endpoint`].
-    pub endpoints: HashMap<String, EndpointConfig>,
+    /// Hidden credentials for the rhai `http()` binding (ADR-0227) — user
+    /// layer only ([`http_auth`]). Empty by default.
+    pub http_auth: http_auth::HttpAuth,
+    /// Per mode, the `http(...)` allow rules only a project layer added —
+    /// they grade, but never unlock a credentialed call in an unattended
+    /// mode (ADR-0227).
+    pub untrusted_http_rules: http_auth::ProjectHttpRules,
     /// Provider-side web search (#305). Disabled by default (a no-op).
     pub web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
@@ -271,7 +275,12 @@ impl Config {
     /// [`resolve`](Self::resolve) with an explicit user-layer path, as
     /// [`load_with`](Self::load_with).
     pub fn resolve_with(root: &Path, user_file: Option<&Path>) -> Result<Resolved> {
-        parse(&discover(root, user_file)?, Some(root))
+        let resolved = parse(&discover(root, user_file)?, Some(root))?;
+        // Hidden at load, not at gate construction: onboarding and boot
+        // already spawn children (a browser, MCP servers) before the gate
+        // exists. Kept out of `parse` so it stays pure.
+        crate::secret_env::hide(resolved.config.http_auth.referenced_vars());
+        Ok(resolved)
     }
 }
 
@@ -285,7 +294,10 @@ impl Config {
 fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
     let mut warnings = retired::strip_retired_keys(&mut raw_layers);
+    warnings.extend(http_auth::strip_project_layer(&mut raw_layers));
     let raw_layers = raw_layers.as_slice();
+    let (untrusted_http_rules, http_rule_warnings) = http_auth::project_http_rules(raw_layers);
+    warnings.extend(http_rule_warnings);
     ceiling_warn::warn_project_permission_overrides(raw_layers, root);
     mode_warn::warn_stale_mode_tuning_names(raw_layers, root);
     let mut merged = Value::Null;
@@ -304,7 +316,8 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         modes: raw.modes,
         hooks: raw.hooks,
         mcp: raw.mcp,
-        endpoints: raw.endpoints,
+        http_auth: raw.http_auth,
+        untrusted_http_rules,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
@@ -317,6 +330,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         undo: raw.undo,
     };
     warnings.extend(config.tui.warnings());
+    warnings.extend(config.http_auth.key_warnings());
     Ok(Resolved {
         config,
         layers: raw_layers

@@ -39,6 +39,8 @@ pub mod edit;
 pub mod exec;
 pub mod glob;
 pub mod grep;
+#[cfg(feature = "rhai")]
+pub mod http;
 pub mod jobs;
 pub mod read;
 mod registry;
@@ -56,6 +58,8 @@ pub use call::CallTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+#[cfg(feature = "rhai")]
+pub use http::HttpTool;
 pub use jobs::JobRegistry;
 pub use read::{ReadRawTool, ReadTool};
 pub use registry::{host_tools, host_tools_with, host_tools_with_extra_roots, HostToolOptions};

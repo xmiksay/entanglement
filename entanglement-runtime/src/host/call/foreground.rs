@@ -76,6 +76,7 @@ pub(super) async fn run_foreground(
     for var in secret_env {
         cmd.env_remove(var);
     }
+    crate::secret_env::scrub(&mut cmd);
     let mut child = cmd
         .spawn()
         // A missing binary (or non-exec target) surfaces here — return it as

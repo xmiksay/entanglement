@@ -79,6 +79,7 @@ fn build_command(
     for var in secret_env {
         cmd.env_remove(var);
     }
+    crate::secret_env::scrub(&mut cmd);
     cmd.args(args)
         .envs(env)
         .stdin(Stdio::piped())
@@ -451,6 +452,18 @@ mod tests {
             .unwrap();
         let text = res["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "echo: hi");
+    }
+
+    /// ADR-0227: an `http_auth` secret is hidden from an MCP stdio server too.
+    #[test]
+    fn build_command_scrubs_hidden_http_auth_vars() {
+        crate::secret_env::hide(["ENTANGLEMENT_TEST_STDIO_HIDDEN".to_string()]);
+        let cmd = build_command("srv-bin", &[], &HashMap::new(), &[]);
+        let removed = cmd
+            .as_std()
+            .get_envs()
+            .any(|(k, v)| k == "ENTANGLEMENT_TEST_STDIO_HIDDEN" && v.is_none());
+        assert!(removed);
     }
 
     #[test]
