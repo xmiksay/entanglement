@@ -20,3 +20,4 @@ Cargo.lock.bak
 # session debug dumps (keep the tool-search wire reference, linked from docs)
 scratch/*
 !scratch/tool-search-wire-reference.md
+!scratch/tool-use-matrix-2026-10.md

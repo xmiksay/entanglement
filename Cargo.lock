@@ -661,6 +661,7 @@ dependencies = [
  "httpdate",
  "idna_adapter",
  "reqwest",
+ "rhai",
  "rustls",
  "serde",
  "serde_json",
