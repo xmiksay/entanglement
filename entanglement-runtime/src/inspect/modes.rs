@@ -42,8 +42,11 @@ const ROSTER: &[&str] = &[
     "agent_send",
     "poll",
     "ask_user",
-    "explore",
-    "describe",
+    "list_agents",
+    "list_models",
+    "list_skills",
+    "list_mcp",
+    "mcp_tools",
     "update_tasks",
 ];
 

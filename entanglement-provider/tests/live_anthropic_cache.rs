@@ -1,13 +1,14 @@
 //! Opt-in live probes of Anthropic prompt caching with deferred tools
 //! (`make test-live`).
 //!
-//! WHY: the `anthropic_native` encoding (ADR-0196 §3, ADR-0202 §1) keeps every
-//! non-kernel tool `defer_loading: true` for the whole session, resting on the
-//! tool-search docs' statement that "Deferred tools are not included in the
-//! system-prompt prefix". These pin that fact against the real API, and
-//! measure the two questions ADR-0204 and the TUI `/set` dialog leave open:
-//! does adding a deferred tool mid-session (an MCP server enabled live) keep
-//! the cache, and does a `tool_reference` in history?
+//! WHY: the retired `anthropic_native` encoding (ADR-0196 §3, superseded by
+//! ADR-0226's one surface) kept every non-kernel tool `defer_loading: true`,
+//! resting on the tool-search docs' statement that "Deferred tools are not
+//! included in the system-prompt prefix". The runtime no longer sends
+//! deferred tools; these probes stay as the measured evidence behind that
+//! choice (does a deferred tool added mid-session keep the cache, and does a
+//! `tool_reference` replayed from an old log?).
+//! Whether to keep or delete these probes is #830.
 //!
 //! Every test is `#[ignore]` (network + a real key) and skips with a note
 //! when `ANTHROPIC_API_KEY` is unset. Env: `ANTHROPIC_PROBE_MODEL` (default

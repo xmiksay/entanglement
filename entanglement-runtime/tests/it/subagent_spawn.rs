@@ -1356,32 +1356,19 @@ async fn spawn_without_agent_falls_to_default_general() {
 
 #[test]
 fn specs_advertise_the_agent_tool_with_a_background_flag() {
-    // #606, ADR-0161 §1: `agent_spawn` is retired — one `agent` tool carries a
-    // `background` flag instead. The roster is a **constant** now (ADR-0207
-    // §6/§9): `agent_specs` takes only the registry, not a spawning profile.
-    let reg =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
-    let specs = entanglement_runtime::subagent::agent_specs(&reg);
+    // #606, ADR-0161 §1: one `agent` tool carries a `background` flag.
+    // ADR-0226: the spec is session-invariant — no roster, no enum; the
+    // roster is `list_agents`.
+    let specs = entanglement_runtime::subagent::agent_specs();
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-    // `poll` (#605) is no longer part of the spawn family — it rides the
-    // shared specs like `ask_user`, since it also joins non-spawn job
-    // handles. `agent_send` (#609, ADR-0162) rides alongside `agent` here
-    // instead.
     assert_eq!(names, vec!["agent", "agent_send"]);
     let agent = &specs[0];
-    // Every registered agent is disclosed in both the description and the
-    // enum now — `general`/`plan`/`debug` (ADR-0207 stage 6a's collapsed
-    // roster), not just the old subagent leaves.
     assert!(
-        agent.description.contains("general:"),
-        "roster in description"
+        agent.description.contains("list_agents"),
+        "{}",
+        agent.description
     );
-    let enum_names = agent.schema["properties"]["agent"]["enum"]
-        .as_array()
-        .unwrap();
-    assert!(enum_names.iter().any(|n| n == "general"));
-    assert!(enum_names.iter().any(|n| n == "plan"));
-    assert!(enum_names.iter().any(|n| n == "debug"));
+    assert!(agent.schema["properties"]["agent"].get("enum").is_none());
     assert_eq!(
         agent.schema["properties"]["background"]["type"],
         serde_json::json!("boolean"),

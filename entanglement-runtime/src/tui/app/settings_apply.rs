@@ -1,12 +1,11 @@
 //! The live side effects of the `/set` dialog's plan. Each step goes through
 //! the path its single-purpose command already uses: `SetModel`/
 //! `SetGeneration` with the ADR-0081/0095 persist-on-confirmation pendings,
-//! `/enable`'s lazy MCP connect + `SetToolOverlay`, the shared advertising
-//! state's live re-pin, and `/aux-model`'s store write. The agent row is
+//! `/enable`'s `SetToolOverlay`, and `/aux-model`'s store write. The agent row is
 //! read-only display now (ADR-0207 §9) — there is no `ApplyStep::Agent` any
 //! more.
 
-use entanglement_core::{Holly, InMsg, SessionId};
+use entanglement_core::{Holly, InMsg};
 
 use super::App;
 use crate::tui::settings_dialog::{ApplyStep, SettingsEffects, ToolsChange};
@@ -22,28 +21,6 @@ impl LiveEffects<'_> {
             .send(msg)
             .await
             .map_err(|_| "the engine is no longer accepting messages".to_string())
-    }
-
-    async fn apply_tools(
-        &mut self,
-        session: SessionId,
-        change: &ToolsChange,
-    ) -> Result<(), String> {
-        for server in &change.enable_servers {
-            let pattern = format!("mcp__{server}__*");
-            crate::tui::enable_command::lazy_enable_available(self.app, &pattern).await?;
-        }
-        if let Some(handles) = self.app.mcp_handles() {
-            for server in &change.disable_servers {
-                handles.avail.mark_disabled(server, &session);
-            }
-        }
-        if let Some(entries) = &change.entries {
-            let entries = entries.clone();
-            self.send(InMsg::SetToolOverlay { session, entries })
-                .await?;
-        }
-        Ok(())
     }
 }
 
@@ -86,19 +63,9 @@ impl SettingsEffects for LiveEffects<'_> {
                 let overrides = *overrides;
                 self.send(InMsg::SetGeneration { session, overrides }).await
             }
-            ApplyStep::Tools(change) => self.apply_tools(session, change).await,
-            ApplyStep::Repin { mode, discovery } => {
-                let adv =
-                    self.app.advertising.clone().ok_or_else(|| {
-                        "advertising state isn't wired into this head".to_string()
-                    })?;
-                adv.repin(&session, *mode, *discovery);
-                Ok(())
-            }
-            ApplyStep::PersistAdvertising { mode } => {
-                crate::config::write_key::save_tool_advertising(*mode)
-                    .map(|_| ())
-                    .map_err(|e| format!("persist failed: {e:#}"))
+            ApplyStep::Tools(ToolsChange { entries }) => {
+                let entries = entries.clone();
+                self.send(InMsg::SetToolOverlay { session, entries }).await
             }
             ApplyStep::Aux {
                 purpose,

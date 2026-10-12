@@ -13,12 +13,12 @@
 //! reshaping a struct three other call sites already depend on. The
 //! row-building logic it needs (name/description/kind) is *not*
 //! reimplemented here — see `App::tools_view_rows` (`app/tools_view.rs`),
-//! which calls into [`crate::discover::index_rows`], the same index
-//! `explore` itself serves.
+//! which calls into [`crate::discover::index_rows`], the runtime's one live
+//! tool index.
 
 use ratatui::widgets::ListState;
 
-/// One row: a describable tool/MCP-server-hint/skill/endpoint plus this
+/// One row: a tool/MCP server/skill/endpoint plus this
 /// session's relationship to it. `status` and `grade` are best-effort —
 /// `"n/a"`/`None` when the underlying state isn't cheaply available (no
 /// live `AdvertisingState` handle, no matching agent profile) rather than a
@@ -27,10 +27,9 @@ use ratatui::widgets::ListState;
 pub struct ToolsViewRow {
     pub name: String,
     pub description: String,
-    /// `"tool"` | `"mcp"` | `"skill"` | `"endpoint"` — matches
-    /// `explore`'s own `kind` enum values byte-for-byte.
+    /// `"tool"` | `"mcp"` | `"skill"` | `"endpoint"` — the index's kind labels.
     pub kind: &'static str,
-    /// `"kernel"` | `"advertised"` | `"discoverable"` | `"n/a"`.
+    /// `"advertised"` | `"hidden"` | `"n/a"`.
     pub status: &'static str,
     /// Withheld by the session's own tool overlay — the same
     /// effective-availability read `session_tools_dialog` computes. No
@@ -45,8 +44,7 @@ pub struct ToolsViewRow {
 }
 
 /// The category cycle order `cycle_category` steps through — `None` (every
-/// kind) first, then each kind in the same fixed order `explore`'s own
-/// sections render in.
+/// kind) first, then each kind in a fixed order.
 const CATEGORY_ORDER: [Option<&str>; 5] = [
     None,
     Some("tool"),

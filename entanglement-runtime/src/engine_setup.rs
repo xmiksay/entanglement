@@ -12,16 +12,13 @@ use crate::factories::build_model_resolver;
 use crate::host::{GlobJsonTool, GrepJsonTool, ReadRawTool};
 use crate::mode::ModeTable;
 use crate::providers::{select_provider, web_search_config};
-#[cfg(feature = "rhai")]
-use crate::script;
 use crate::skills::LoadSkillTool;
 use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    ask_user, config, endpoint, extra_roots, file_backup, host, mcp, plan_tasks, policy, poll,
-    propose_plan, request_mode, retained_output, script_ops, session_store, skills, subagent,
-    workdir, SharedRegistry,
+    config, discover, endpoint, extra_roots, file_backup, host, mcp, policy, retained_output,
+    script_ops, session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
 
@@ -45,8 +42,9 @@ use default_tools::{register_default_tools, DefaultTools};
 ///
 /// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`), `call`
 /// (argv exec, no shell), `load_skill`, and `bash` are always registered, rooted
-/// at the current working directory, so the `build`/`plan`/`explore` permission
-/// profiles gate something real out of the box (ADR-0195 retired the old
+/// at the current working directory (`glob`/`grep`/`call` registered but only
+/// reachable as rhai bindings, ADR-0226), so the permission modes gate
+/// something real out of the box (ADR-0195 retired the old
 /// `ENTANGLEMENT_ENABLE_BASH` opt-in — registration is not where `bash`'s
 /// security story lives; the permission profiles and the config ceiling are).
 /// Both run unsandboxed with the engine's full privileges by default
@@ -59,7 +57,7 @@ use default_tools::{register_default_tools, DefaultTools};
 /// the sandbox errors rather than falling back to unsandboxed (#399, ADR-0104).
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
-/// (`cfg.tool_specs`, later kept live via `cfg.tool_spec_resolver`, #372). The
+/// (`cfg.tool_specs`, snapshotted per session by `cfg.tool_spec_resolver`). The
 /// returned [`ToolRegistry`] stays in the runtime — wrapped into a
 /// [`entanglement_runtime::SharedRegistry`] by the caller — and is handed to
 /// [`tool_runner::ToolExecutor::builder`], which answers the
@@ -225,43 +223,26 @@ pub(crate) async fn build_config(
     // lock).
     let skill_registry_snapshot = skills.read().unwrap().clone();
     skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot, http_client);
-    // `load_skill` is tier-2 progressive disclosure (#115): a real host tool (it
-    // reads the filesystem), so it is registered here and goes through the *same*
-    // per-call permission gate as `read` — no runtime-executor interception.
+    // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
+    // `Capability::Control` like the other discovery tools (ADR-0226).
     tools.register(LoadSkillTool::new(skills));
     // Definition-driven HTTP endpoint tools (#560 P8): `config.yml`'s
     // `endpoints:` map, each registered as `endpoint__<name>` — startup-only,
     // see `endpoint`'s module doc for why live-reload isn't wired.
     endpoint::register_endpoints(&mut tools, &user_config.endpoints, http_client);
-    // External MCP tool servers (#198): spawn each configured server, discover its
-    // `tools/list`, and register every tool into the same registry as a
-    // runtime-side provider. They then ride `tool_specs` (schemas) and the
-    // `ToolExec` round-trip (execution) with no core change — governed by the same
-    // permission profiles as any host tool. A server that fails to connect is
-    // logged and skipped, never fatal.
-    // The same provider-key scrub as the exec tools (#164): an MCP stdio server
-    // is an arbitrary external process and must not inherit the engine's keys.
-    // Three-state split (#542): catalog-bundled servers (key-gated) overlay
-    // the user `mcp:` map; only the `enabled` slice connects at startup —
-    // `allowed` servers wait in `mcp_available` for a per-session `/enable`
-    // or the `mcp_enable` tool below.
-    let (startup_mcp, mcp_available) =
-        mcp::AvailableMcp::partition(catalog, &user_config.mcp, secret_env.clone());
-    let mcp_available = Arc::new(mcp_available);
-    let initial_mcp = mcp::connect(&startup_mcp, &mut tools, &secret_env, http_client).await;
-    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(initial_mcp));
-    // Shared from here on (#372): `mcp_enable` needs the registry handle to
-    // register a lazily-connected server's tools at enable time, so the
-    // by-value registration phase ends here. Registered *before* the specs
-    // snapshot so it rides the static roster like any host tool.
+    // External MCP tool servers (#198): the roster of catalog-bundled
+    // (key-gated) servers overlaid with the user `mcp:` map. Registered =
+    // available and nothing connects here (ADR-0226): the first `mcp_tools`
+    // or `mcp(...)` on a server connects it, so a down server never delays
+    // startup. Its tool schemas are never advertised; the provider-key scrub
+    // (#164) applies to every stdio server it later spawns.
+    let mcp_available = Arc::new(
+        mcp::AvailableMcp::from_config(catalog, &user_config.mcp, secret_env.clone())
+            .with_tool_cache(mcp::McpToolCache::managed()),
+    );
+    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
     let tools = tools.shared();
-    tools.write().unwrap().register(mcp::McpEnableTool::new(
-        mcp_available.clone(),
-        &tools,
-        mcp_active.clone(),
-        http_client.clone(),
-    ));
-    cfg.tool_specs = tools.read().unwrap().specs();
+    let registered_specs = tools.read().unwrap().specs();
     // `read_raw` and the script-facing search variants (rhai-only — see
     // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
     // bindings, ADR-0206) register *after* the specs snapshot above: present
@@ -280,51 +261,25 @@ pub(crate) async fn build_config(
         .write()
         .unwrap()
         .register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
-    // The `agent_*` family is orchestration, not registry tools (#60, #120): the
-    // runtime executor handles them directly, so they only need advertising to
-    // the model. Spawning is unconditional now (ADR-0207 §6/§9) — the roster
-    // is a constant, not scoped per spawning profile — so it joins the
-    // shared `tool_specs` like `ask_user`/`update_tasks` below, keeping the
-    // advertised array identical across `SetAgent` (the whole point of the
-    // constant roster).
-    cfg.tool_specs.extend(subagent::agent_specs(&cfg.agents));
-    // `update_tasks` is a runtime state tool (#231): general progress bookkeeping,
-    // no cross-agent authority, so it rides the shared specs (a read-only
-    // session's permission mode declines the call at dispatch). The runtime
-    // executor intercepts it to emit the `TaskList` snapshot.
-    cfg.tool_specs.push(plan_tasks::update_tasks_spec());
-    // `ask_user` is likewise runtime-owned (#90) but not a spawn tool: every
-    // profile may surface a decision prompt, so it stays in the shared specs.
-    cfg.tool_specs.push(ask_user::ask_user_spec());
-    // `propose_plan` (#231, ADR-0049; #513, ADR-0145) is advertised
-    // unconditionally now (ADR-0207 §7: the old default-closed per-profile
-    // allowlist gate is retired along with the mask it read) — it joins the
-    // shared specs like `update_tasks`; the force-park on `Ask` is the only
-    // gate left.
-    cfg.tool_specs.push(propose_plan::propose_plan_spec());
-    // `request_mode` (#560, ADR-0207 §10) is likewise unconditional — a
-    // blocked model must always be able to ask for more authority, in every
-    // mode including the one that would deny the ask itself.
-    cfg.tool_specs.push(request_mode::request_mode_spec());
-    // `poll` (#605, ADR-0161) is runtime-owned like `ask_user` but not a spawn
-    // tool either — it joins both background `bash` jobs and sub-agents, so it
-    // rides the shared specs rather than the per-profile spawn family.
-    cfg.tool_specs.push(poll::poll_spec());
-    // `rhai` is a runtime-owned sandboxed script tool (#122, ADR-0046). Its
-    // bindings are exactly the root-contained quintet, so it is no more
-    // privileged than the always-registered tools and rides the shared specs
-    // (registered by default; graded like any tool through the session's
-    // permission mode). The executor intercepts it before permission
-    // resolution. Behind the `rhai` feature (#502, ADR-0135) — absent
-    // entirely from a lean build that opts out of it.
-    #[cfg(feature = "rhai")]
-    cfg.tool_specs.push(script::rhai_spec());
-    // `/tools` and the bare `/enable` checklist offer every advertised tool
-    // name — captured here (before `cfg` is moved into `Holly::spawn`), not
-    // via the `ToolRegistry` alone, so it also includes the runtime-owned
-    // specs appended above (`update_tasks`/`ask_user`/`rhai`) that aren't
-    // registry tools.
-    let mut tool_names: Vec<String> = cfg.tool_specs.iter().map(|s| s.name.clone()).collect();
+    // The one advertised surface (ADR-0226): the kernel picked out of the
+    // registered specs plus the runtime-owned pseudo-tools (`agent`/
+    // `agent_send`, `update_tasks`, `ask_user`, `propose_plan`,
+    // `request_mode`, `poll`, `rhai`, the discovery tools and the `mcp`
+    // envelope). `boot` installs a resolver that snapshots exactly this per
+    // session; `tool_specs` carries it for an embedder that wires none.
+    let agent_specs = subagent::agent_specs();
+    cfg.tool_specs =
+        tool_advertising::surface::build_surface(registered_specs.clone(), agent_specs.clone());
+    // `/tools` and the bare `/enable` checklist offer every tool a session
+    // could reach or a rule could name — the hidden script-only ones
+    // (`glob`/`grep`/`call`) included, since an overlay entry still grades
+    // their rhai bindings.
+    let mut tool_names: Vec<String> = registered_specs
+        .into_iter()
+        .chain(discover::runtime_owned_specs())
+        .chain(agent_specs)
+        .map(|s| s.name)
+        .collect();
     tool_names.sort();
     tool_names.dedup();
     (

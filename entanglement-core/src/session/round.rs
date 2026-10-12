@@ -15,7 +15,7 @@ use super::emit::{
     emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
     emit_turn_error, emit_usage, next_seq, Caller,
 };
-use super::invoke_envelope::unwrap_batch;
+use super::mcp_envelope::unwrap_batch;
 use super::stream::{stream_round, StreamedRound};
 use super::turn_state::TurnState;
 use super::{Session, SessionCmd};
@@ -225,7 +225,7 @@ pub(super) async fn run_attempt(
         // deliberate change from the serial in-call-order dispatch this
         // replaced).
         //
-        // ADR-0204: every event names an unwrapped `invoke` call's inner tool,
+        // ADR-0226: every event names an unwrapped `mcp` call's inner tool,
         // while `Context` (pushed above) keeps the call as the model emitted it.
         let (dispatch, envelopes) = unwrap_batch(&tool_calls, specs);
         for call in &dispatch {

@@ -116,20 +116,18 @@ pub struct AllowArgs {
     pub path: String,
 }
 
-/// `/enable`/`/disable` subcommand target (#539, ADR-0149): an MCP server
-/// (`mcp <server>` ⇒ `mcp__<server>__*`) or a bare tool name / glob
-/// (`tool <name>`).
+/// `/enable`/`/disable` subcommand target (#539, ADR-0149): a bare tool name
+/// or glob (`tool <name>`, e.g. `mcp__<server>__*`). MCP servers need no
+/// enabling (ADR-0226).
 #[derive(clap::Subcommand, Clone, Debug, PartialEq)]
 pub enum EnableTarget {
-    /// Enable/disable every tool from an MCP server.
-    Mcp { server: String },
     /// Enable/disable a single tool name or glob pattern.
     Tool { name: String },
 }
 
-/// `/enable mcp <server> | tool <name> [--allow [<pattern>]]` (bare `/enable`
+/// `/enable tool <name> [--allow [<pattern>]]` (bare `/enable`
 /// opens the session-tools dialog; `--allow` is enable-only). `--allow` is
-/// `global` so it parses after the `mcp`/`tool` subcommand
+/// `global` so it parses after the `tool` subcommand
 /// (`/enable tool bash --allow`). The optional trailing `<pattern>` (ADR-0163,
 /// #611 — folds live bash enablement's `--allow [<pattern>]` into this one
 /// command surface) is a free-form, possibly multi-word command-argument glob
@@ -148,7 +146,7 @@ pub struct EnableArgs {
     pub allow: bool,
 }
 
-/// `/disable mcp <server> | tool <name>` (bare `/disable` clears the overlay).
+/// `/disable tool <name>` (bare `/disable` clears the overlay).
 #[derive(Parser, Debug)]
 #[command(name = "/disable")]
 pub struct DisableArgs {

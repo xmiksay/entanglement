@@ -160,7 +160,27 @@ impl Holly {
     /// [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). No `seq` — a point-in-time
     /// engine-global lifecycle event, not session content.
     pub fn emit_mcp_changed(&self, name: String, action: crate::protocol::McpAction) {
-        self.outlets.emit(OutEvent::McpChanged { name, action });
+        self.outlets.emit(OutEvent::McpChanged {
+            name,
+            action,
+            error: None,
+        });
+    }
+
+    /// Broadcast an [`OutEvent::McpChanged`] reporting that `action` on `name`
+    /// was refused or failed — nothing changed. A head waiting on its
+    /// `/mcp add`/`remove` learns why instead of hearing nothing.
+    pub fn emit_mcp_change_failed(
+        &self,
+        name: String,
+        action: crate::protocol::McpAction,
+        error: String,
+    ) {
+        self.outlets.emit(OutEvent::McpChanged {
+            name,
+            action,
+            error: Some(error),
+        });
     }
 
     /// Broadcast a runtime-authored [`OutEvent::McpAuthChanged`] reply to

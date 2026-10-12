@@ -40,20 +40,18 @@
 //!    `load_skill` no longer owns.
 //! 2. **The advertised tool surface is stable within a session** (this
 //!    project's own contract, `.claude/CLAUDE.md`): any mid-session addition
-//!    to the registry busts the provider prompt cache from the tools block
-//!    onward under `full` mode, and under `tool_search` mode it's simply
-//!    unnecessary — these tools are never in the lean kernel, so they're
-//!    already reachable *only* via `explore`+`describe` regardless of when
-//!    they were registered, exactly like an MCP tool.
+//!    to the registry would bust the provider prompt cache from the tools
+//!    block onward — and the per-session surface snapshot (ADR-0226) would
+//!    not show a later registration anyway.
 //! 3. **`load_skill`'s own handler is a pure, session-free function** (no
 //!    `ToolRegistry` handle, no `holly`/session context) — wiring registry
-//!    mutation through it would need the same live-mutation machinery MCP's
-//!    `mcp_enable` needed (`SharedRegistry`, a `WeakRegistry` handle) for a
-//!    feature with no corresponding "skills load asynchronously" requirement.
+//!    mutation through it would need live-registry machinery
+//!    (`SharedRegistry`, a `WeakRegistry` handle) for a feature with no
+//!    corresponding "skills load asynchronously" requirement.
 //!
-//! `load_skill`'s own result still lists only tool **names** (never
-//! schemas) — a model discovers a skill tool's full schema through
-//! `describe`, same as any other non-kernel tool.
+//! `load_skill`'s own result lists only tool **names** (never schemas): a
+//! registered skill tool is advertised natively until #820 retires skill
+//! `tools:` (ADR-0226), so its schema already sits in the tools array.
 
 use std::collections::HashMap;
 

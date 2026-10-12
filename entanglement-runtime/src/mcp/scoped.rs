@@ -5,15 +5,16 @@
 //! tokens without the provider crate's user-id type ever entering this crate
 //! (ADR-0181, the grep gate):
 //! it supplies an [`McpScopeResolver`] — a closure from `SessionId` to that
-//! session's [`McpScope`] — and the runtime consults it at advertisement and
-//! dispatch time. The session→user mapping stays the embedder's private
+//! session's [`McpScope`] — and the runtime consults it at discovery
+//! (`list_mcp`/`mcp_tools`) and dispatch time. The session→user mapping stays the embedder's private
 //! concern; the scope's `key` is an opaque string it derives from its own user
 //! identity, and the credential slice is typically
 //! `entanglement_provider::user_scoped(store, user)`.
 //!
 //! **Replace semantics**: a scoped session's `mcp__*` namespace is entirely
-//! scope-owned — the global registry's MCP tools are stripped from its specs
-//! and dispatch snapshots, and the scope's own tools take their place. That is
+//! scope-owned — `list_mcp` lists only the scope's servers, and the global
+//! registry's MCP tools are stripped from its dispatch snapshots with the
+//! scope's own tools in their place. That is
 //! what makes same-named servers unambiguous (user A's `kb`, user B's `kb`,
 //! and a global `kb` are three different endpoints behind one tool name):
 //! disambiguation is structural, via the `(scope key, server)` connection
@@ -24,20 +25,19 @@
 //! Connections are lazy and cached per `(scope key, server)` for the process
 //! lifetime — eviction is the embedder's explicit [`McpScopes::evict_scope`]
 //! call (logout, a changed server set), matching the global connections'
-//! process-lifetime precedent. The resolver runs on the advertisement path
-//! (core's sync `ToolSpecResolver`) and per MCP dispatch, so it must be cheap
-//! and non-blocking — an in-memory map lookup, never I/O.
+//! process-lifetime precedent. The resolver runs per discovery read and per
+//! MCP dispatch, so it must be cheap and non-blocking — an in-memory map
+//! lookup, never I/O.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{SessionId, ToolSpec};
+use entanglement_core::SessionId;
 
 use crate::tools::{Tool, ToolRegistry};
 
-use super::tool::namespaced_tool_name;
 use super::{McpClient, McpServerConfig, McpTool};
 
 /// Ceiling on a lazy per-scope connect, mirroring `available_enable.rs` (#556):
@@ -59,16 +59,14 @@ pub struct McpScope {
 }
 
 /// The embedder-supplied seam: session → scope. `None` means the session is
-/// unscoped and sees the global MCP behavior unchanged. Runs on the sync
-/// advertisement path — keep it an in-memory lookup.
+/// unscoped and sees the global MCP behavior unchanged. Keep it an in-memory
+/// lookup.
 pub type McpScopeResolver = Arc<dyn Fn(&SessionId) -> Option<McpScope> + Send + Sync>;
 
-/// A connected per-scope server: the shared client, its registered-shape tool
-/// proxies, and the cached `tools/list` specs the sync advertisement path
-/// serves.
+/// A connected per-scope server: the shared client and its registered-shape
+/// tool proxies.
 struct ScopeServer {
     tools: Vec<Arc<dyn Tool>>,
-    specs: Vec<ToolSpec>,
     /// Keeps the connection (and a stdio server's child) alive as long as the
     /// cache entry does, exactly like `ActiveServer` — the tool proxies above
     /// each hold their own `Arc<McpClient>` clone already, this field just
@@ -78,8 +76,7 @@ struct ScopeServer {
 
 /// The per-scope MCP connection cache + overlay entry points. Construct one
 /// per embedded engine and hand it to
-/// [`ToolExecutor::builder`][crate::tool_runner::ToolExecutor::builder];
-/// wrap your `tool_spec_resolver` with [`overlay_specs`][Self::overlay_specs].
+/// [`ToolExecutor::builder`][crate::tool_runner::ToolExecutor::builder].
 pub struct McpScopes {
     resolver: McpScopeResolver,
     /// The shared endpoint pool (#559) every scope's HTTP transport rides.
@@ -121,18 +118,25 @@ impl McpScopes {
     }
 
     /// Connect every server in the session's scope, concurrently and
-    /// best-effort, so the scope's tools are listed (and advertisable) before
-    /// the first prompt. Returns per-server failures — empty means every
-    /// server connected. Embedders call this between `Spawn` and the first
-    /// `Prompt`; a scoped session that was never prewarmed advertises no MCP
-    /// tools until a dispatch lazily connects one.
+    /// best-effort, so `list_mcp` shows their tools before the first prompt.
+    /// Returns per-server failures — empty means every server connected.
+    /// Optional: `mcp_tools` and a dispatch connect a server lazily anyway.
     pub async fn prewarm(self: &Arc<Self>, session: &SessionId) -> Vec<(String, anyhow::Error)> {
         let Some(scope) = self.scope_of(session) else {
             return Vec::new();
         };
         let scope = Arc::new(scope);
         let mut pending = tokio::task::JoinSet::new();
-        for name in scope.servers.keys() {
+        let (usable, skipped) = usable_servers(&scope);
+        for (name, other) in skipped {
+            tracing::warn!(
+                "MCP server `{name}` in scope `{}` ignored: its tool names would collide \
+                 with `{other}`'s — rename one",
+                scope.key
+            );
+        }
+        let usable: Vec<String> = usable.into_iter().map(str::to_string).collect();
+        for name in &usable {
             let this = self.clone();
             let scope = scope.clone();
             let name = name.clone();
@@ -150,32 +154,6 @@ impl McpScopes {
             }
         }
         failures
-    }
-
-    /// The advertisement overlay: for a scoped session, strip every global
-    /// `mcp__*` spec and advertise the scope's *cached* (already-connected)
-    /// tools instead, re-sorted by name (#566). Unscoped sessions pass
-    /// through untouched. Sync on purpose — it runs inside core's
-    /// [`ToolSpecResolver`][entanglement_core::ToolSpecResolver] closure, so
-    /// listings come from the cache ([`prewarm`][Self::prewarm]), never from
-    /// I/O here.
-    pub fn overlay_specs(&self, session: &SessionId, specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
-        let Some(scope) = self.scope_of(session) else {
-            return specs;
-        };
-        let mut specs: Vec<ToolSpec> = specs
-            .into_iter()
-            .filter(|s| !s.name.starts_with("mcp__"))
-            .collect();
-        let cache = self.cache.lock().expect("scope cache lock poisoned");
-        for name in scope.servers.keys() {
-            if let Some(server) = cache.get(&(scope.key.clone(), name.clone())) {
-                specs.extend(server.specs.iter().cloned());
-            }
-        }
-        drop(cache);
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs
     }
 
     /// The dispatch overlay for a call to `tool`: for a scoped session,
@@ -272,7 +250,8 @@ impl McpScopes {
         if let Some(server) = already {
             return Ok(server);
         }
-        let Some(cfg) = scope.servers.get(name) else {
+        let usable = usable_servers(scope).0.contains(&name);
+        let Some(cfg) = scope.servers.get(name).filter(|_| usable) else {
             bail!("scope has no MCP server named `{name}`");
         };
         // An OAuth server with no stored credential for this scope fails
@@ -311,13 +290,8 @@ impl McpScopes {
                     as Arc<dyn Tool>
             })
             .collect();
-        let specs: Vec<ToolSpec> = tools
-            .iter()
-            .map(|t| ToolSpec::with_schema(t.name(), t.description(), t.schema()))
-            .collect();
         let server = Arc::new(ScopeServer {
             tools,
-            specs,
             _client: client,
         });
         self.cache
@@ -327,7 +301,7 @@ impl McpScopes {
         tracing::info!(
             "MCP server `{name}`: connected for scope `{}`, {} tool(s)",
             scope.key,
-            server.specs.len()
+            server.tools.len()
         );
         Ok(server)
     }
@@ -337,12 +311,31 @@ impl McpScopes {
 /// the same sanitized prefix [`McpTool::new`] advertises under — so a server
 /// name that was sanitized (`my server` → `my_server`) still matches its own
 /// tools.
+/// A disabled or clashed-out scoped server owns nothing: unreachable, like
+/// `list_mcp` never lists it.
 fn owning_server(scope: &McpScope, tool: &str) -> Option<String> {
-    scope
+    super::tool::owning_server(usable_servers(scope).0, tool).map(str::to_string)
+}
+
+/// The scope's servers that can register tools — not disabled and, by name
+/// order, not clashing with an earlier one ([`super::tool::names_clash`], the
+/// global roster's rule) — plus each skipped `(server, clashes with)`.
+fn usable_servers(scope: &McpScope) -> (Vec<&str>, Vec<(&str, &str)>) {
+    let mut names: Vec<&str> = scope
         .servers
-        .keys()
-        .find(|name| tool.starts_with(&namespaced_tool_name(name, "")))
-        .cloned()
+        .iter()
+        .filter(|(_, cfg)| !cfg.disabled)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    names.sort_unstable();
+    let (mut kept, mut skipped): (Vec<&str>, Vec<(&str, &str)>) = (Vec::new(), Vec::new());
+    for name in names {
+        match kept.iter().find(|k| super::tool::names_clash(k, name)) {
+            Some(other) => skipped.push((name, other)),
+            None => kept.push(name),
+        }
+    }
+    (kept, skipped)
 }
 
 fn auth_required_message(name: &str) -> String {
@@ -367,6 +360,11 @@ fn render_scope_error(name: &str, e: &anyhow::Error) -> String {
         format!("MCP server `{name}` connect failed: {msg}")
     }
 }
+
+// `list_mcp`'s scoped rows and the scoped dispatch decline, split out along
+// the 400-line file cap (a `#[path]` child, so private fields stay reachable).
+#[path = "scoped_list.rs"]
+mod list;
 
 #[cfg(test)]
 #[path = "scoped_tests.rs"]

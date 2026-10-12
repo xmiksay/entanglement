@@ -73,24 +73,18 @@ impl App {
     /// every profile inherits every tool now (ADR-0207 moved authority off
     /// the profile and onto the session's independent permission mode, so
     /// there is no more per-profile mask to seed a default from), overridden
-    /// by the live overlay's disposition (#539).
-    ///
-    /// A provider-bundled/`allowed` MCP server (#542) isn't in `tool_roster` —
-    /// its tools don't exist until enabled — so it would otherwise be invisible
-    /// in the very UI meant to discover it (#555). Each available server gets
-    /// one extra row named `mcp__<server>__*`, the same whole-server pattern
-    /// `/enable mcp <name>` and the `/mcp` panel's `e` key write; checking it
-    /// lazily connects the server on submit (`enable_command::lazy_enable_entries`).
+    /// by the live overlay's disposition (#539). MCP servers get no rows:
+    /// they need no enabling (ADR-0226), and a `mcp__<server>__*` overlay
+    /// glob is still typed with `/enable tool`.
     pub fn open_session_tools_dialog(&mut self) {
-        let rows = self.session_tool_rows(&[]);
+        let rows = self.session_tool_rows();
         self.session_tools_dialog.show(rows);
         self.mark_dirty();
     }
 
-    /// The checklist rows over the roster, every available server's
-    /// whole-server pattern, and `extra` patterns (deduped) — shared with the
-    /// `/set` dialog's Tools tab.
-    pub(super) fn session_tool_rows(&self, extra: &[String]) -> Vec<SessionToolRow> {
+    /// The checklist rows over the roster — shared with the `/set` dialog's
+    /// Tools tab.
+    pub(super) fn session_tool_rows(&self) -> Vec<SessionToolRow> {
         let session = self.active_session_id().clone();
         let overlay = self.overlay_entries(&session);
         let row = |name: &str| {
@@ -106,22 +100,7 @@ impl App {
                     .unwrap_or(false),
             }
         };
-        let mut names: Vec<String> = self.tool_roster.clone();
-        if let Some(handles) = self.mcp_handles() {
-            names.extend(
-                handles
-                    .avail
-                    .available_names()
-                    .into_iter()
-                    .map(|server| format!("mcp__{server}__*")),
-            );
-        }
-        for pattern in extra {
-            if !names.contains(pattern) {
-                names.push(pattern.clone());
-            }
-        }
-        names.iter().map(|n| row(n)).collect()
+        self.tool_roster.iter().map(|n| row(n)).collect()
     }
 
     pub fn close_session_tools_dialog(&mut self) {
@@ -239,49 +218,6 @@ mod tests {
             if r.name.starts_with("mcp__docs__") {
                 assert!(r.checked, "enable entry checks its matches");
             }
-        }
-    }
-
-    /// #555: an `allowed` bundled/available MCP server has no tools yet, so it
-    /// can never ride `tool_roster` — without a dedicated row it would be
-    /// invisible in the very checklist meant to discover it (#542).
-    #[test]
-    fn session_tools_dialog_lists_an_available_server() {
-        let mut app = App::new_for_test(SessionId::new("s1"));
-        app.set_mcp_handles(test_handles_with_available_server("zread"));
-        app.open_session_tools_dialog();
-        let rows = app.session_tools_dialog().rows().to_vec();
-        assert!(
-            rows.iter().any(|r| r.name == "mcp__zread__*"),
-            "expected an `mcp__zread__*` row for the available server, got {rows:?}"
-        );
-    }
-
-    /// Builds `McpHandles` around a single ungated `allowed` server named
-    /// `name`, for the row-listing test above (#555). Points at a URL, never
-    /// actually dialed.
-    fn test_handles_with_available_server(name: &str) -> crate::mcp::McpHandles {
-        let mut user_mcp = std::collections::HashMap::new();
-        user_mcp.insert(
-            name.to_string(),
-            crate::mcp::McpServerConfig {
-                command: None,
-                args: vec![],
-                env: std::collections::HashMap::new(),
-                url: Some("https://example.invalid/mcp".to_string()),
-                headers: std::collections::HashMap::new(),
-                disabled: false,
-                capabilities: std::collections::HashMap::new(),
-                oauth: None,
-                state: Some(crate::mcp::McpServerState::Allowed),
-            },
-        );
-        let catalog = entanglement_core::Catalog { providers: vec![] };
-        let (_startup, avail) = crate::mcp::AvailableMcp::partition(&catalog, &user_mcp, vec![]);
-        crate::mcp::McpHandles {
-            avail: std::sync::Arc::new(avail),
-            registry: std::sync::Arc::new(std::sync::RwLock::new(crate::ToolRegistry::new())),
-            active: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }

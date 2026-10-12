@@ -31,12 +31,10 @@ pub fn render_tool_output(
         Some("read") => render_read_output(output, theme, available_width, md),
         Some("glob") => render_glob_output(output, theme, available_width),
         Some("grep") => render_grep_output(output, theme, available_width),
-        Some("explore") => Text::from(discovery::render_explore_output(
-            output,
-            available_width,
-            &theme,
-        )),
-        Some("describe") => Text::from(discovery::render_describe_output(
+        Some("list_agents" | "list_models" | "list_skills" | "list_mcp") => Text::from(
+            discovery::render_list_output(output, available_width, &theme),
+        ),
+        Some("mcp_tools") => Text::from(discovery::render_mcp_tools_output(
             output,
             available_width,
             &theme,
@@ -53,9 +51,9 @@ pub fn render_tool_output(
 /// body, `edit` → the path + a real diff, `write`/`apply_patch` → the path +
 /// the content/patch as a diff, `bash`/`call`/`rhai` → the full command or
 /// script + its output, `glob`/`grep` → the full pattern/filter, the
-/// orchestration tools → readable prose, `explore`/`describe` → the query and
-/// a readable index/schema summary, and everything else (MCP, endpoint, skill
-/// and unknown tools) → `key: value` arguments and output (ADR-0204 §6). A
+/// orchestration tools → readable prose, the discovery tools → a readable
+/// roster or per-tool schema summary (ADR-0226), and everything else (MCP,
+/// endpoint, skill and unknown tools) → `key: value` arguments and output. A
 /// failed call's (`is_error`) output is marked in the error color.
 ///
 /// `md` renders the markdown bodies (plans, task snapshots, sub-agent
@@ -72,7 +70,7 @@ pub fn render_expansion(
 ) -> Text<'static> {
     let (tool, input) = match tool {
         Some(t) => {
-            let (t, i) = summary::unwrap_invoke(t, input);
+            let (t, i) = summary::unwrap_envelope(t, input);
             (Some(t), i)
         }
         None => (None, Cow::Borrowed(input)),
@@ -107,8 +105,9 @@ fn input_body(
         Some("glob") => expansion::render_glob_input(input),
         Some("grep") => expansion::render_grep_input(input),
         Some("rhai") => expansion::render_rhai_input(input, available_width),
-        Some("explore") => discovery::render_explore_input(input),
-        Some("describe") => discovery::render_describe_input(input),
+        Some("mcp_tools") => discovery::render_mcp_tools_input(input),
+        // The no-argument lists: the reply says it all.
+        Some("list_agents" | "list_models" | "list_skills" | "list_mcp") => Vec::new(),
         Some(
             t @ ("agent" | "agent_send" | "poll" | "ask_user" | "propose_plan" | "update_tasks"
             | "load_skill"),
@@ -132,8 +131,10 @@ fn output_body(
         Some("read") => render_read_output(output, theme, available_width, md).lines,
         Some("edit") => render_edit_output(output, theme, available_width, md).lines,
         Some("bash" | "call") => render_plain_output(output, theme, available_width, md).lines,
-        Some("explore") => discovery::render_explore_output(output, available_width, &theme),
-        Some("describe") => discovery::render_describe_output(output, available_width, &theme),
+        Some("list_agents" | "list_models" | "list_skills" | "list_mcp") => {
+            discovery::render_list_output(output, available_width, &theme)
+        }
+        Some("mcp_tools") => discovery::render_mcp_tools_output(output, available_width, &theme),
         Some("agent" | "agent_send") => {
             orchestration::render_markdown_body(md, output, available_width).lines
         }

@@ -1,231 +1,216 @@
-//! `enable_for_session`/`disconnect` for [`super::AvailableMcp`] (#542). Split
-//! out of `available.rs` along the 400-line file cap (#556) — the lazy-connect
-//! critical section grew a per-server guard + timeout and pushed the file
-//! over. Sibling `#[path]` child module (not `available_tests.rs`'s sibling
-//! test file), so private fields/methods stay reachable via the normal
-//! descendant-module visibility rule.
+//! Lazy connect for [`super::AvailableMcp`] (ADR-0226): the first
+//! `mcp_tools` read or `mcp(...)` dispatch on a server connects it for the
+//! whole process. Split out of `available.rs` along the 400-line file cap
+//! (#556) — a sibling `#[path]` child module, so the roster's private fields
+//! stay reachable via the normal descendant-module visibility rule.
 
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use entanglement_core::SessionId;
 
 use crate::tools::SharedRegistry;
 
-use super::super::live::{ActiveServer, ActiveServers};
-use super::super::{connect_client, register_tools, transport_label};
+use super::super::live::{drop_server, install_server, ActiveServers};
+use super::super::{connect_client, record_last_seen};
 use super::AvailableMcp;
 
-/// Ceiling on a lazy `mcp_enable` connect (#556): a hung server must not park
-/// the calling turn — nor every other caller waiting on the per-server
+/// Ceiling on a lazy connect (#556): a hung server must not park the calling
+/// turn — nor every other caller waiting on the per-server
 /// [`AvailableMcp::connect_guard`] — forever.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Enable an available server for `session` (#542): lazily connect + register
-/// its tools if this is the first enablement (no persistence — `ServerConfigs`
-/// and `config.yml` are never touched, unlike `mcp_add`), then mark the
-/// session. Returns the server's registered tool names. `http` (#559) is the
-/// shared endpoint pool the connect rides — a bundled server's own `key_env`
-/// (from its `AvailableServer` entry) is resolved live so its traffic shares
-/// pool-key identity with the LLM endpoint billed against the same key.
-pub async fn enable_for_session(
+/// Connect an available server if it isn't already, registering its tools
+/// into the live `registry` (no persistence — `ServerConfigs` and
+/// `config.yml` are never touched), and record its tool names in the
+/// last-seen cache. Returns the server's registered tool names. `http`
+/// (#559) is the shared endpoint pool the connect rides; a bundled server's
+/// `key_env` is resolved live so its traffic shares pool-key identity with
+/// the LLM endpoint billed against the same key.
+pub async fn ensure_connected(
     avail: &AvailableMcp,
     name: &str,
-    session: &SessionId,
     registry: &SharedRegistry,
     active: &ActiveServers,
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let connected = active.lock().unwrap().get(name).map(|s| s.tools.clone());
-    // A startup-`enabled` server is globally visible already — enabling it
-    // must *not* mark it lazy, or the spec filter would suddenly scope it to
-    // this session and hide it everywhere else.
-    if !avail.is_lazy(name) && avail.get(name).is_none() {
-        return match connected {
-            Some(tools) => Ok(tools),
-            None => bail!(
-                "no available MCP server named `{name}` (available: {})",
-                avail.available_names().join(", ")
-            ),
-        };
+    if let Some(tools) = connected_tools(active, name) {
+        return Ok(tools);
     }
-    let tools = match connected {
-        Some(tools) => tools,
-        None => {
-            // Serialize the check-then-connect-then-register sequence per
-            // server (#556 TOCTOU): two concurrent enables of a not-yet-
-            // connected server must not both pass the check above,
-            // double-connect, and orphan the loser's registered tools.
-            let guard = avail.connect_guard(name);
-            let _permit = guard.lock().await;
-            // Re-check now that we hold the guard — another caller may have
-            // finished connecting while we waited for it. Bound to a `let`
-            // first so the `MutexGuard` drops before the `else` branch's
-            // `.await`s (an `if let`'s scrutinee temporary otherwise lives
-            // for the whole if/else, poisoning the future's `Send`-ness).
-            let already_connected = active.lock().unwrap().get(name).map(|s| s.tools.clone());
-            if let Some(tools) = already_connected {
-                tools
-            } else {
-                let Some(server) = avail.get(name) else {
-                    bail!(
-                        "no available MCP server named `{name}` (available: {})",
-                        avail.available_names().join(", ")
-                    );
-                };
-                let api_key = server
-                    .key_env
-                    .as_deref()
-                    .and_then(|var| std::env::var(var).ok());
-                let (client, defs) = match tokio::time::timeout(
-                    CONNECT_TIMEOUT,
-                    connect_client(
-                        name,
-                        &server.config,
-                        &avail.secret_env,
-                        http,
-                        api_key.as_deref(),
-                        None,
-                    ),
-                )
-                .await
-                {
-                    Ok(result) => result?,
-                    Err(_) => bail!("connecting MCP server `{name}` timed out"),
-                };
-                let tools = {
-                    let mut reg = registry.write().unwrap();
-                    reg.unregister_prefix(&format!("mcp__{name}__"));
-                    register_tools(&mut reg, &client, name, defs, &server.config.capabilities)
-                };
-                active.lock().unwrap().insert(
-                    name.to_string(),
-                    ActiveServer {
-                        client,
-                        tools: tools.clone(),
-                        transport: transport_label(&server.config),
-                    },
-                );
-                tracing::info!(
-                    "MCP server `{name}`: lazily connected, {} tool(s)",
-                    tools.len()
-                );
-                tools
-            }
-        }
+    // Serialize the check-then-connect-then-register sequence per server
+    // (#556 TOCTOU), then re-check: another caller may have finished
+    // connecting while this one waited.
+    let guard = avail.connect_guard(name);
+    let _permit = guard.lock().await;
+    if let Some(tools) = connected_tools(active, name) {
+        return Ok(tools);
+    }
+    let Some(server) = avail.get(name) else {
+        bail!(
+            "no available MCP server named `{name}` (available: {})",
+            avail.available_names().join(", ")
+        );
     };
-    avail.mark_enabled(name, session);
+    if avail.needs_auth(name, &server.config) {
+        bail!(auth_hint(name));
+    }
+    let api_key = server
+        .key_env
+        .as_deref()
+        .and_then(|var| std::env::var(var).ok());
+    let connect = connect_client(
+        name,
+        &server.config,
+        avail.secret_env(),
+        http,
+        api_key.as_deref(),
+        None,
+    );
+    let (client, defs) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        Ok(result) => result?,
+        Err(_) => bail!("connecting MCP server `{name}` timed out"),
+    };
+    let tools = install_server(registry, active, name, client, defs, &server.config);
+    record_last_seen(avail.tool_cache(), name, &server.config, &tools).await;
+    tracing::info!("MCP server `{name}`: connected, {} tool(s)", tools.len());
     Ok(tools)
 }
 
-/// Cooldown window for [`try_lazy_reenable`]'s stampede guard (ADR-0201): a
-/// dispatch-time re-enable failure within this window short-circuits a later
+fn auth_hint(name: &str) -> String {
+    format!("MCP server `{name}` needs authorization — the user can run `/mcp connect {name}`")
+}
+
+fn connected_tools(active: &ActiveServers, name: &str) -> Option<Vec<String>> {
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .get(name)
+        .map(|s| s.tools.clone())
+}
+
+/// Cooldown window for [`try_lazy_connect`]'s stampede guard (ADR-0201): a
+/// dispatch-time connect failure within this window short-circuits a later
 /// unknown `mcp__<server>__*` call against the same server to the same error
 /// instead of each retrying the full [`CONNECT_TIMEOUT`] connect.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// How a dispatch-time "unknown tool" resolution for an `mcp__<server>__*`
-/// name settled (ADR-0201) — see [`try_lazy_reenable`].
-pub enum LazyReenableOutcome {
-    /// [`super::McpTier::Unknown`]: no registered tool, no configured/
-    /// bundled server under this name in any tier — the caller falls
-    /// through to the ordinary unknown-tool message, unchanged.
+/// name settled (ADR-0201) — see [`try_lazy_connect`].
+pub enum LazyConnectOutcome {
+    /// [`super::McpTier::Unknown`]: no server under this name — the caller
+    /// falls through to the ordinary unknown-tool message.
     Unknown,
-    /// [`super::McpTier::Disabled`]: the server is known but explicitly
-    /// configured off — a truthful, attributed decline
-    /// ([`super::disabled_decline`]), never the unknown-tool message.
+    /// [`super::McpTier::Disabled`]: known but configured off — a truthful,
+    /// attributed decline ([`super::disabled_decline`]).
     Disabled,
-    /// Re-enabled successfully via the `allowed`/lazy tier — the same
-    /// zero-approval path `mcp_enable`/`/enable mcp` use (ADR-0152: the tier
-    /// itself is the consent boundary, not a fresh approval prompt). The
-    /// caller must re-fetch its registry snapshot (this registered the
-    /// tools into the *live* registry, invisible to an already-cloned one)
-    /// and continue the dispatch ladder exactly as if the tool had been
-    /// registered all along.
-    Enabled,
+    /// Connected (now or earlier). The caller must re-fetch its registry
+    /// snapshot (this registered into the *live* registry, invisible to an
+    /// already-cloned one) and continue the dispatch ladder — the call is
+    /// still graded like any other.
+    Connected,
     /// The connect failed — fresh, or short-circuited by the
     /// [`FAILURE_COOLDOWN`] guard with the same message.
     Failed(String),
 }
 
-/// Self-heal a dispatch-time "unknown tool" for an `mcp__<server>__*` name
-/// whose server isn't currently registered (ADR-0201) — the resume-
-/// coherence gap: a resumed session's replay restores its tool-overlay/
-/// permission state (so the call is never masked) but never re-registers a
-/// bundled server's tools — `ToolRegistry` is process-lifetime, never
-/// persisted, and nothing re-enables on resume. Classifies `server` per
-/// [`AvailableMcp::tier_of`] first — exactly the check `mcp_enable`/
-/// `/enable mcp` make — so a `disabled` tier or a truly unknown name is
-/// answered truthfully rather than lazily connected or misreported as
-/// unknown. `http: None` (no HTTP client wired into the caller) is treated
-/// as a connect failure, never a panic — every in-tree head wires one; only
-/// a hand-rolled embedder omitting `DiscoverySurface::http` while still
-/// populating `mcp_avail` would ever see it.
-pub async fn try_lazy_reenable(
+/// Resolve a dispatch-time "unknown tool" for an `mcp__<server>__*` name whose
+/// server isn't connected yet (ADR-0201's dispatch-time connect, kept by
+/// ADR-0226 for a direct `mcp(...)` on a server never read with `mcp_tools`).
+/// `http: None` (no HTTP client wired into the caller) is a connect failure,
+/// never a panic — every in-tree head wires one.
+pub async fn try_lazy_connect(
     avail: &AvailableMcp,
     server: &str,
-    session: &SessionId,
     registry: &SharedRegistry,
     active: &ActiveServers,
     http: Option<&entanglement_core::HttpClient>,
-) -> LazyReenableOutcome {
+) -> LazyConnectOutcome {
     match avail.tier_of(server) {
-        super::McpTier::Unknown => return LazyReenableOutcome::Unknown,
-        super::McpTier::Disabled => return LazyReenableOutcome::Disabled,
-        super::McpTier::Eligible => {}
+        super::McpTier::Unknown => return LazyConnectOutcome::Unknown,
+        super::McpTier::Disabled => return LazyConnectOutcome::Disabled,
+        super::McpTier::Available => {}
     }
-    if avail.recently_failed_enable(server, FAILURE_COOLDOWN) {
-        return LazyReenableOutcome::Failed(format!(
-            "mcp server `{server}` could not be re-enabled: recent connect failure, retry shortly"
+    // Connected wins over a stale cooldown: a `/mcp connect` may have
+    // succeeded since the last failure.
+    if connected_tools(active, server).is_some() {
+        return LazyConnectOutcome::Connected;
+    }
+    // Missing credentials are a user action away, not a transport failure:
+    // never start a cooldown that would outlive a successful `/mcp connect`.
+    if let Some(server_cfg) = avail.get(server) {
+        if avail.needs_auth(server, &server_cfg.config) {
+            return LazyConnectOutcome::Failed(auth_hint(server));
+        }
+    }
+    if avail.recently_failed_connect(server, FAILURE_COOLDOWN) {
+        return LazyConnectOutcome::Failed(format!(
+            "mcp server `{server}` could not be connected: recent connect failure, retry shortly"
         ));
     }
     let Some(http) = http else {
-        return LazyReenableOutcome::Failed(format!(
-            "mcp server `{server}` could not be re-enabled: no HTTP client configured for lazy \
-             MCP re-enablement"
+        return LazyConnectOutcome::Failed(format!(
+            "mcp server `{server}` could not be connected: no HTTP client configured for lazy \
+             MCP connects"
         ));
     };
-    match enable_for_session(avail, server, session, registry, active, http).await {
+    match ensure_connected(avail, server, registry, active, http).await {
         Ok(_tools) => {
-            avail.clear_enable_failure(server);
-            tracing::info!(
-                %session,
-                server,
-                "MCP server: dispatch-time lazy re-enable (resume self-heal, ADR-0201)"
-            );
-            LazyReenableOutcome::Enabled
+            avail.clear_connect_failure(server);
+            LazyConnectOutcome::Connected
         }
         Err(e) => {
-            avail.record_enable_failure(server);
-            LazyReenableOutcome::Failed(format!(
-                "mcp server `{server}` could not be re-enabled: {e:#}"
+            avail.record_connect_failure(server);
+            LazyConnectOutcome::Failed(format!(
+                "mcp server `{server}` could not be connected: {e:#}"
             ))
         }
     }
 }
 
-/// Disconnect a lazily-connected available server entirely (the `/mcp remove`
-/// arm for a bundled name): unregister its tools, drop the connection, clear
-/// every session's enablement mark. Nothing is persisted — the server stays
-/// *available* and can be re-enabled.
-pub fn disconnect(
+/// Resolve a dispatch for an unregistered `mcp__*` name (ADR-0201, kept by
+/// ADR-0226): find the owning server by its registered prefix, connect it
+/// lazily, and hand back a fresh registry snapshot holding the tool — the
+/// caller's own snapshot predates the connect. `Err` is the decline to reply.
+pub async fn resolve_unregistered(
     avail: &AvailableMcp,
-    name: &str,
+    tool: &str,
     registry: &SharedRegistry,
     active: &ActiveServers,
-) {
-    registry
-        .write()
-        .unwrap()
-        .unregister_prefix(&format!("mcp__{name}__"));
-    active.lock().unwrap().remove(name);
-    avail.enabled.lock().unwrap().remove(name);
+    http: Option<&entanglement_core::HttpClient>,
+) -> Result<crate::tools::ToolRegistry, String> {
+    let Some(server) = avail.server_for_tool(tool) else {
+        let shown = super::server_name_of(tool).unwrap_or(tool);
+        return Err(super::unknown_server_decline(shown));
+    };
+    match try_lazy_connect(avail, &server, registry, active, http).await {
+        LazyConnectOutcome::Connected => {}
+        LazyConnectOutcome::Unknown => return Err(super::unknown_server_decline(&server)),
+        LazyConnectOutcome::Disabled => return Err(super::disabled_decline(&server)),
+        LazyConnectOutcome::Failed(msg) => return Err(msg),
+    }
+    let snapshot = registry
+        .read()
+        .expect("tool registry lock poisoned")
+        .clone();
+    if snapshot.contains(tool) {
+        Ok(snapshot)
+    } else {
+        Err(super::missing_tool_decline(&server, tool))
+    }
+}
+
+/// Drop a server's connection and tools (the `/mcp remove` arm for a bundled
+/// name). Nothing is persisted — the server stays available and the next
+/// `mcp_tools`/`mcp(...)` reconnects it.
+pub fn disconnect(name: &str, registry: &SharedRegistry, active: &ActiveServers) {
+    drop_server(registry, active, name);
     tracing::info!("MCP server `{name}`: disconnected (still available)");
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use crate::mcp::live::ActiveServer;
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::*;
@@ -237,59 +222,72 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
-    /// [`super::McpTier::Unknown`] short-circuits before any connect
-    /// attempt — no `http` client is even consulted.
     #[tokio::test]
-    async fn unknown_server_short_circuits_without_a_connect_attempt() {
-        let avail = AvailableMcp::default();
-        let out = try_lazy_reenable(
-            &avail,
-            "nope",
-            &SessionId::new("s"),
-            &registry(),
-            &active(),
-            None,
-        )
-        .await;
-        assert!(matches!(out, LazyReenableOutcome::Unknown));
-    }
-
-    /// [`super::McpTier::Disabled`] likewise short-circuits — a known name,
-    /// truthfully declined, never treated as eligible for a connect.
-    #[tokio::test]
-    async fn disabled_server_short_circuits_without_a_connect_attempt() {
+    async fn unknown_and_disabled_servers_short_circuit_without_a_connect() {
         let mut avail = AvailableMcp::default();
         avail.disabled_names.insert("off".to_string());
-        let out = try_lazy_reenable(
-            &avail,
-            "off",
-            &SessionId::new("s"),
-            &registry(),
-            &active(),
-            None,
-        )
-        .await;
-        assert!(matches!(out, LazyReenableOutcome::Disabled));
+        let unknown = try_lazy_connect(&avail, "nope", &registry(), &active(), None).await;
+        assert!(matches!(unknown, LazyConnectOutcome::Unknown));
+        let off = try_lazy_connect(&avail, "off", &registry(), &active(), None).await;
+        assert!(matches!(off, LazyConnectOutcome::Disabled));
     }
 
-    /// A tier-eligible server with no `http` client wired (`DiscoverySurface
-    /// { http: None, .. }`) fails cleanly — never panics — and says why.
     #[tokio::test]
-    async fn eligible_with_no_http_client_fails_cleanly_not_a_panic() {
+    async fn an_available_server_with_no_http_client_fails_cleanly() {
         let avail = AvailableMcp::default();
-        avail.mark_enabled("lazy", &SessionId::new("s0"));
-        let out = try_lazy_reenable(
-            &avail,
-            "lazy",
-            &SessionId::new("s"),
-            &registry(),
-            &active(),
-            None,
-        )
-        .await;
-        match out {
-            LazyReenableOutcome::Failed(msg) => assert!(msg.contains("no HTTP client"), "{msg}"),
+        avail.insert_user("lazy", crate::mcp::available::tests::stdio("true"));
+        match try_lazy_connect(&avail, "lazy", &registry(), &active(), None).await {
+            LazyConnectOutcome::Failed(msg) => assert!(msg.contains("no HTTP client"), "{msg}"),
             _ => panic!("expected a Failed outcome"),
         }
+    }
+
+    /// S2 / #818 review: `mcp_tools` on an OAuth server with no credential
+    /// answers the auth hint without starting a cooldown, and once `/mcp
+    /// connect` has connected it (simulated: the server lands in `active`,
+    /// as `mcp_reconnect` does) the very next read works — even past a
+    /// recorded failure.
+    #[tokio::test]
+    async fn auth_required_starts_no_cooldown_and_a_later_connect_is_used_at_once() {
+        let avail =
+            AvailableMcp::default().with_token_store(crate::config::McpTokenStore::at(None));
+        let mut cfg = crate::mcp::available::tests::stdio("true");
+        cfg.oauth = Some(Default::default());
+        avail.insert_user("kb", cfg);
+        let (reg, act) = (registry(), active());
+        match try_lazy_connect(&avail, "kb", &reg, &act, None).await {
+            LazyConnectOutcome::Failed(msg) => assert!(msg.contains("/mcp connect kb"), "{msg}"),
+            _ => panic!("expected the auth hint"),
+        }
+        assert!(!avail.recently_failed_connect("kb", FAILURE_COOLDOWN));
+        avail.record_connect_failure("kb");
+        act.lock().unwrap().insert(
+            "kb".to_string(),
+            ActiveServer {
+                client: Arc::new(crate::mcp::available::tests::fake_client()),
+                tools: vec!["mcp__kb__search".into()],
+                transport: "stdio".into(),
+            },
+        );
+        assert!(matches!(
+            try_lazy_connect(&avail, "kb", &reg, &act, None).await,
+            LazyConnectOutcome::Connected
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unspawnable_server_fails_and_registers_nothing() {
+        let avail = AvailableMcp::default();
+        avail.insert_user(
+            "broken",
+            crate::mcp::available::tests::stdio("definitely-not-a-real-binary-xyz"),
+        );
+        let (reg, act) = (registry(), active());
+        let http = crate::test_http_client();
+        assert!(ensure_connected(&avail, "broken", &reg, &act, &http)
+            .await
+            .is_err());
+        assert!(reg.read().unwrap().is_empty());
+        assert!(act.lock().unwrap().is_empty());
     }
 }

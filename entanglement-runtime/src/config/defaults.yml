@@ -115,18 +115,6 @@ editor: null
 # (ADR-0213).
 session_retention_days: 30
 
-# Tool advertising (ADR-0196): how a session's tools are surfaced to the
-# model — "tool_search" (the default: a lean kernel plus explore/describe
-# discovery, the rest reachable after discovery) or "full" (today's
-# behavior, entire surface advertised). This is the install-wide override; a
-# model can also set its own preference via `tool_advertising:` in
-# providers.yml, and precedence is this key > the catalog entry >
-# tool_search (no env override, ADR-0213). The mode is resolved once per
-# session from its initial model and fixed for the session's lifetime (a
-# live /model switch keeps it). `null` (the default) leaves the choice to
-# the catalog.
-tool_advertising: null
-
 # Terminal-UI preferences (ADR-0213), live-reloaded by a running TUI.
 # `notify` adds an OSC 9 desktop notification to the attention bell; `mouse`
 # captures the mouse (wheel scroll, clickable blocks) — false restores the

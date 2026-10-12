@@ -63,7 +63,7 @@ async fn advertised_tools_are_byte_identical_across_agents() {
         entanglement_core::ToolSpec::new("read", "read a file"),
         entanglement_core::ToolSpec::new("edit", "edit a file"),
     ];
-    tool_specs.extend(entanglement_runtime::subagent::agent_specs(&profiles));
+    tool_specs.extend(entanglement_runtime::subagent::agent_specs());
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_factory = seen.clone();

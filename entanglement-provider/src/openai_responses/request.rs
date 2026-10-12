@@ -5,23 +5,12 @@
 //!
 //! The Responses wire is flat and typed: `input` is an array of items, not
 //! Chat Completions' role+content messages. A `function_call` correlates to
-//! its `function_call_output` by `call_id`; this client's reserved
-//! `tool_search_call`/`tool_search_output` pair (ADR-0196 §3) does the same,
-//! keyed off [`super::TOOL_SEARCH_CALL_TOOL`] on the assistant side and
-//! [`ContentPart::ToolSearchOutput`] on the reply side.
+//! its `function_call_output` by `call_id`.
 
 use crate::{
     ContentPart, GenerationParams, ImageSource, Message, MessageRole, ThinkingSpec, ToolSpec,
 };
 use serde_json::{json, Value};
-
-use super::TOOL_SEARCH_CALL_TOOL;
-
-/// The provider tag [`ContentPart::ToolSearchOutput::provider`] is stamped
-/// with and matched on replay — mirrors [`crate::ContentPart::Reasoning`]'s
-/// per-wire `provider` tag (ADR-0160's "opaque to anyone but its author"
-/// contract, reused here for the `tool_search_output` payload).
-const WIRE_NAME: &str = "openai_responses";
 
 pub(super) fn build_body(
     model: &str,
@@ -39,11 +28,7 @@ pub(super) fn build_body(
     if !system.is_empty() {
         body["instructions"] = json!(system);
     }
-    let any_deferred = tools.iter().any(|t| t.defer_loading);
-    let mut tool_entries = convert_tools(tools);
-    if any_deferred {
-        tool_entries.push(tool_search_entry());
-    }
+    let tool_entries = convert_tools(tools);
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
     }
@@ -67,13 +52,10 @@ pub(super) fn build_body(
     body
 }
 
-/// Map history to Responses `input` items. An assistant tool call named
-/// [`TOOL_SEARCH_CALL_TOOL`] becomes a `tool_search_call` item instead of
-/// `function_call`; the paired reply carries a
-/// [`ContentPart::ToolSearchOutput`] minted by this wire and becomes a
-/// `tool_search_output` item instead of `function_call_output`. Every other
-/// shape (text, images, a foreign-wire `ToolReference`/`ToolSearchOutput`
-/// block) degrades the same way the OpenAI-compat client does.
+/// Map history to Responses `input` items. Every shape (text, images, a
+/// persisted `ToolReference`/`ToolSearchOutput` block from a pre-ADR-0226
+/// session) degrades the same way the OpenAI-compat client does — neither
+/// block is minted any more, but both must keep replaying from old logs.
 pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
@@ -87,78 +69,48 @@ pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     out.push(json!({ "role": "assistant", "content": text }));
                 }
                 for tc in &m.tool_calls {
-                    if tc.name == TOOL_SEARCH_CALL_TOOL {
-                        let arguments: Value =
-                            serde_json::from_str(&tc.input).unwrap_or_else(|_| json!({}));
-                        out.push(json!({
-                            "type": "tool_search_call",
-                            "execution": "client",
-                            "call_id": tc.id,
-                            "status": "completed",
-                            "arguments": arguments,
-                        }));
+                    let arguments = if tc.input.is_empty() {
+                        "{}".to_string()
                     } else {
-                        let arguments = if tc.input.is_empty() {
-                            "{}".to_string()
-                        } else {
-                            tc.input.clone()
-                        };
-                        out.push(json!({
-                            "type": "function_call",
-                            "call_id": tc.id,
-                            "name": tc.name,
-                            "arguments": arguments,
-                        }));
-                    }
+                        tc.input.clone()
+                    };
+                    out.push(json!({
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": arguments,
+                    }));
                 }
             }
             MessageRole::Tool => {
                 let call_id = m.tool_call_id.clone().unwrap_or_default();
-                let search_data = m.content.iter().find_map(|p| match p {
-                    ContentPart::ToolSearchOutput { provider, data, .. }
-                        if provider == WIRE_NAME =>
-                    {
-                        Some(data.clone())
-                    }
-                    _ => None,
-                });
-                if let Some(tools_data) = search_data {
-                    out.push(json!({
-                        "type": "tool_search_output",
-                        "execution": "client",
-                        "call_id": call_id,
-                        "status": "completed",
-                        "tools": tools_data,
-                    }));
-                } else {
-                    let mut text = m.text();
-                    for p in &m.content {
-                        match p {
-                            ContentPart::ToolReference { tool_name } => {
-                                if !text.is_empty() {
-                                    text.push('\n');
-                                }
-                                text.push_str(&crate::tool_reference_fallback_text(tool_name));
+                let mut text = m.text();
+                for p in &m.content {
+                    match p {
+                        ContentPart::ToolReference { tool_name } => {
+                            if !text.is_empty() {
+                                text.push('\n');
                             }
-                            // A `ToolSearchOutput` minted by a *different*
-                            // provider (history replayed after a live
-                            // `/model` switch onto this wire) — degrade to
-                            // its portable summary rather than drop it.
-                            ContentPart::ToolSearchOutput { summary, .. } => {
-                                if !text.is_empty() {
-                                    text.push('\n');
-                                }
-                                text.push_str(summary);
-                            }
-                            _ => {}
+                            text.push_str(&crate::tool_reference_fallback_text(tool_name));
                         }
+                        // A `ToolSearchOutput` minted by *any* provider (a
+                        // pre-ADR-0226 session replaying after a live `/model`
+                        // switch onto this wire) — degrade to its portable
+                        // summary rather than drop it.
+                        ContentPart::ToolSearchOutput { summary, .. } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(summary);
+                        }
+                        _ => {}
                     }
-                    out.push(json!({
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": text,
-                    }));
                 }
+                out.push(json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": text,
+                }));
                 let images: Vec<ContentPart> = m
                     .content
                     .iter()
@@ -234,44 +186,57 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {
-            let mut entry = json!({
+            json!({
                 "type": "function",
                 "name": t.name,
                 "description": t.description,
                 "parameters": t.schema,
-            });
-            // Sent on every request regardless — the API needs the full
-            // definition to run search — mirrors the Anthropic client's
-            // `defer_loading` passthrough (ADR-0196 §3).
-            if t.defer_loading {
-                entry["defer_loading"] = json!(true);
-            }
-            entry
+            })
         })
         .collect()
 }
 
-/// The client-executed `tool_search` tools-array entry (ADR-0196 §3,
-/// wire reference §2.2/§2.5): declared only when at least one tool above
-/// carries `defer_loading` (mirrors Anthropic's "at least one non-deferred
-/// tool" requirement in spirit — here it's simply pointless to declare
-/// search with nothing to discover). The `query` field is this client's own
-/// schema choice (the API only requires *some* schema for client-execution
-/// mode) — the runtime's `tool_search` dispatch treats it as a free-text
-/// filter, same shape as `explore`'s `filter` argument.
-fn tool_search_entry() -> Value {
-    json!({
-        "type": "tool_search",
-        "execution": "client",
-        "description": "Search for tools needed to continue the task — \
-            matches against each deferred tool's name and description.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": { "type": "string" }
-            },
-            "required": ["query"],
-            "additionalProperties": false,
-        }
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ContentPart, ToolCall};
+
+    fn tool_msg(id: &str, parts: Vec<ContentPart>) -> Message {
+        Message::tool_content(id, parts)
+    }
+
+    #[test]
+    fn a_tool_search_output_block_degrades_to_its_summary() {
+        // WIRE_NAME-tagged blocks were the pre-ADR-0226 native delivery; they
+        // still replay from persisted history as plain text.
+        let msgs = [tool_msg(
+            "c1",
+            vec![ContentPart::ToolSearchOutput {
+                provider: "openai_responses".into(),
+                summary: "loaded get_weather".into(),
+                data: serde_json::json!([{"name": "get_weather"}]),
+            }],
+        )];
+        let items = convert_messages(&msgs);
+        assert_eq!(items[0]["type"], "function_call_output");
+        assert_eq!(items[0]["output"], "loaded get_weather");
+    }
+
+    #[test]
+    fn every_call_is_a_plain_function_call() {
+        let m = Message::assistant(
+            "thinking",
+            vec![ToolCall::new("c1", "mcp__gh__search", r#"{"q":"x"}"#)],
+        );
+        let items = convert_messages(std::slice::from_ref(&m));
+        assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[1]["name"], "mcp__gh__search");
+    }
+
+    #[test]
+    fn tools_carry_no_defer_loading() {
+        let specs = [ToolSpec::new("read", "read a file")];
+        let entries = convert_tools(&specs);
+        assert!(entries[0].get("defer_loading").is_none());
+    }
 }

@@ -57,21 +57,56 @@ fn default_config_dir() -> Option<PathBuf> {
     dirs::config_dir()
 }
 
-/// Drop provider keys a released-or-branch catalog once accepted but no
-/// longer carries, so `deny_unknown_fields` doesn't turn an old user file
-/// into a startup error. `advertise_discovered` (ADR-0200) was replaced by
-/// `discovery` (ADR-0204).
+/// Drop provider/model keys a released-or-branch catalog once accepted but no
+/// longer carries, so `deny_unknown_fields` doesn't turn an old user file into
+/// a startup error. `advertise_discovered` (ADR-0200) was retired by
+/// ADR-0204; `discovery` and `tool_advertising` were then both retired whole
+/// by ADR-0226 (one advertised surface, no knob), as was a bundled MCP
+/// server's three-state `state:` (registered = available) — whose `disabled`
+/// value becomes `disabled: true`, so an old opt-out never silently flips a
+/// server back on.
 pub(super) fn strip_retired_keys(mut doc: Value) -> Value {
-    const RETIRED: &[&str] = &["advertise_discovered"];
-    let providers = doc
-        .get_mut("providers")
-        .and_then(Value::as_sequence_mut)
-        .into_iter()
-        .flatten();
-    for provider in providers.filter_map(Value::as_mapping_mut) {
-        for key in RETIRED {
-            if provider.remove(*key).is_some() {
-                tracing::warn!("ignoring retired provider catalog key `{key}` (see ADR-0204)");
+    const RETIRED: &[(&str, &str)] = &[
+        ("advertise_discovered", "ADR-0204"),
+        ("discovery", "ADR-0226"),
+        ("tool_advertising", "ADR-0226"),
+    ];
+    let strip = |entry: &mut Value, scope: &str| {
+        let Some(map) = entry.as_mapping_mut() else {
+            return;
+        };
+        for (key, adr) in RETIRED {
+            if map.remove(*key).is_some() {
+                tracing::warn!("ignoring retired {scope} catalog key `{key}` ({adr})");
+            }
+        }
+    };
+    let retire_mcp_state = |server: &mut Value| {
+        let Some(map) = server.as_mapping_mut() else {
+            return;
+        };
+        if let Some(state) = map.remove("state") {
+            tracing::warn!("ignoring retired MCP server catalog key `state` (ADR-0226)");
+            if state.as_str() == Some("disabled") {
+                map.insert(Value::from("disabled"), Value::Bool(true));
+            }
+        }
+    };
+    if let Some(providers) = doc.get_mut("providers").and_then(Value::as_sequence_mut) {
+        for provider in providers {
+            strip(provider, "provider");
+            if let Some(models) = provider.get_mut("models").and_then(Value::as_sequence_mut) {
+                for model in models {
+                    strip(model, "model");
+                }
+            }
+            if let Some(servers) = provider
+                .get_mut("mcp_servers")
+                .and_then(Value::as_mapping_mut)
+            {
+                for (_, server) in servers.iter_mut() {
+                    retire_mcp_state(server);
+                }
             }
         }
     }

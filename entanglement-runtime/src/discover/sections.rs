@@ -1,150 +1,128 @@
-//! `explore`'s section taxonomy (#560 P9, ADR-0199 part 1/3): the `Kind`
-//! enum every row is classified into, `explore`'s own sectioned-text
-//! rendering, and [`IndexRow`]/[`index_rows`] — the shape the TUI `/tools`
-//! view reuses instead of re-walking the registry/MCP/skill state itself.
-//! Split out of `explore.rs` once it crossed the 400-line cap; `explore.rs`
-//! keeps the index-*building* half (`build_rows` and its row-source
-//! functions), this module keeps the *classifying and presenting* half.
-
-use entanglement_core::SessionId;
+//! The internal tool index the TUI `/tools` view browses: every host tool,
+//! runtime-owned pseudo-tool, definition-driven endpoint/skill tool, skill,
+//! and MCP server (its tools when connected), each with a kind label. Built
+//! fresh per call from live state — never cached.
 
 use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
 
-use super::explore::{build_rows, Row};
+use super::runtime_owned_specs;
 
-/// The four `explore` sections: derived from a row's `source` string rather
-/// than carried as its own field, so [`super::explore::build_index`]'s JSON
-/// row shape — `name`/`description`/`source` — stays byte-identical to what
-/// [`super::tool_search`] already depends on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
-    Tool,
-    Mcp,
-    Skill,
-    Endpoint,
-}
-
-impl Kind {
-    pub(super) fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "tool" => Some(Kind::Tool),
-            "mcp" => Some(Kind::Mcp),
-            "skill" => Some(Kind::Skill),
-            "endpoint" => Some(Kind::Endpoint),
-            _ => None,
-        }
-    }
-
-    /// The section header a `kind`'s rows render under — the MCP section
-    /// carries the clarifying line the task calls for, the rest stay terse.
-    fn header(self) -> &'static str {
-        match self {
-            Kind::Tool => "TOOLS",
-            Kind::Mcp => {
-                "MCP servers — a server bundles tools; enable the \
-                server (mcp_enable {\"server\": \"<name>\"}), then call its \
-                tools by their mcp__<server>__<tool> names:"
-            }
-            Kind::Skill => "SKILLS",
-            Kind::Endpoint => "ENDPOINTS",
-        }
-    }
-
-    /// Every section in fixed display order.
-    const ALL: [Kind; 4] = [Kind::Tool, Kind::Mcp, Kind::Skill, Kind::Endpoint];
-
-    /// The wire-facing label (matches [`explore_spec`][super::explore_spec]'s
-    /// `kind` enum values byte-for-byte) — also what the TUI `/tools` view
-    /// (#560 P9, ADR-0199 part 3) groups its own rows by, via [`IndexRow`].
-    fn label(self) -> &'static str {
-        match self {
-            Kind::Tool => "tool",
-            Kind::Mcp => "mcp",
-            Kind::Skill => "skill",
-            Kind::Endpoint => "endpoint",
-        }
-    }
-}
-
-/// A row's kind, derived from its `source` label — the single place that
-/// decodes the `source` convention every row-building function in
-/// `explore.rs` already follows (`"built-in"`, `"mcp:..."`/
-/// `"mcp (allowed)"`, `"skill"`/`"skill:..."`, `"endpoint"`).
-pub(super) fn kind_of(source: &str) -> Kind {
-    if source.starts_with("mcp") {
-        Kind::Mcp
-    } else if source == "endpoint" {
-        Kind::Endpoint
-    } else if source == "skill" || source.starts_with("skill:") {
-        Kind::Skill
-    } else {
-        Kind::Tool
-    }
-}
-
-/// `explore`'s own terse, sectioned rendering: one header per non-empty
-/// [`Kind`] (in fixed order), rows underneath as `name — description`. Plain
-/// text rather than the JSON array `build_index` still returns for
-/// `tool_search`'s internal reuse — a human/model-readable index is the
-/// point of `explore`, and headers plus the MCP clarifying line only make
-/// sense as prose.
-pub(super) fn render_sections(rows: Vec<Row>) -> String {
-    let mut out = String::new();
-    for kind in Kind::ALL {
-        let section: Vec<&Row> = rows.iter().filter(|r| kind_of(&r.source) == kind).collect();
-        if section.is_empty() {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(kind.header());
-        out.push('\n');
-        for r in section {
-            out.push_str(&format!("  {} — {}\n", r.name, r.description));
-        }
-    }
-    if out.is_empty() {
-        out.push_str("(no matches)");
-    }
-    out
-}
-
-/// A live-index row plus its derived [`Kind`] label — the shape the TUI
-/// `/tools` view (#560 P9, ADR-0199 part 3) consumes via [`index_rows`],
-/// reusing `explore.rs`'s own index-building rather than duplicating it.
-/// `pub`, not `pub(crate)`: the TUI lives in the **binary** crate
-/// (`entanglement-runtime/src/main.rs`'s `mod tui`), a separate compilation
-/// unit from this library crate, so a `pub(crate)` item here is invisible to
-/// it even though both share one source tree — the same reason
-/// `SharedRegistry`/`ToolRegistry` are plain `pub` at the crate root.
+/// One index row. `pub`, not `pub(crate)`: the TUI lives in the **binary**
+/// crate (`main.rs`'s `mod tui`), a separate compilation unit from this
+/// library crate.
 pub struct IndexRow {
     pub name: String,
     pub description: String,
     pub source: String,
+    /// `"tool"` | `"mcp"` | `"skill"` | `"endpoint"`.
     pub kind: &'static str,
 }
 
-/// The full, unfiltered live index with each row's [`Kind`] resolved —
-/// `build_rows` plus the same `kind_of` derivation [`render_sections`]
-/// groups by, just handed back as a plain struct instead of rendered text or
-/// re-parsed JSON.
+/// First line of a description — some host-tool descriptions (`bash`,
+/// `rhai`) run to several paragraphs.
+fn one_line(description: &str) -> String {
+    description.lines().next().unwrap_or_default().to_string()
+}
+
+fn row(name: String, description: &str, source: String, kind: &'static str) -> IndexRow {
+    IndexRow {
+        name,
+        description: one_line(description),
+        source,
+        kind,
+    }
+}
+
+/// The full index, name-sorted within each source.
 pub fn index_rows(
     registry: &ToolRegistry,
     avail: &AvailableMcp,
     active: &ActiveServers,
     skills: &SkillRegistry,
-    session: &SessionId,
 ) -> Vec<IndexRow> {
-    build_rows(registry, avail, active, skills, session, None, None)
-        .into_iter()
-        .map(|r| IndexRow {
-            kind: kind_of(&r.source).label(),
-            name: r.name,
-            description: r.description,
-            source: r.source,
-        })
-        .collect()
+    let mut rows = Vec::new();
+    for spec in registry.specs().into_iter().chain(runtime_owned_specs()) {
+        let (source, kind) = if spec.name.starts_with("mcp__") {
+            continue; // listed per server below
+        } else if spec.name.starts_with("endpoint__") {
+            ("endpoint".to_string(), "endpoint")
+        } else if let Some(rest) = spec.name.strip_prefix("skill__") {
+            let skill = rest.split("__").next().unwrap_or_default();
+            (format!("skill:{skill}"), "skill")
+        } else {
+            ("built-in".to_string(), "tool")
+        };
+        rows.push(row(spec.name, &spec.description, source, kind));
+    }
+    for server in crate::mcp::roster(avail, active) {
+        let source = format!("mcp:{}", server.name);
+        if server.connected {
+            for tool in &server.tools {
+                let description = registry
+                    .spec_for(tool)
+                    .map(|s| s.description)
+                    .unwrap_or_default();
+                rows.push(row(tool.clone(), &description, source.clone(), "mcp"));
+            }
+        } else {
+            let description = server
+                .description
+                .unwrap_or_else(|| "MCP server (not connected yet)".to_string());
+            rows.push(row(server.name, &description, source, "mcp"));
+        }
+    }
+    for d in skills.disclosures() {
+        rows.push(row(d.name, &d.description, "skill".to_string(), "skill"));
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows.dedup_by(|a, b| a.name == b.name);
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::tools::Tool;
+
+    struct Fake(&'static str);
+    #[async_trait]
+    impl Tool for Fake {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed(self.0)
+        }
+        fn description(&self) -> &str {
+            "first line\nsecond line"
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn rows_are_classified_by_source_and_unconnected_servers_get_one_row() {
+        let mut registry = ToolRegistry::new();
+        for name in ["glob", "endpoint__weather", "skill__git__log"] {
+            registry.register(Fake(name));
+        }
+        let avail = AvailableMcp::default();
+        avail.insert_user("kb", serde_yaml::from_str("url: https://kb/mcp").unwrap());
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let rows = index_rows(&registry, &avail, &active, &SkillRegistry::default());
+        let kind = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.kind);
+        assert_eq!(kind("glob"), Some("tool"));
+        assert_eq!(kind("list_mcp"), Some("tool"));
+        assert_eq!(kind("endpoint__weather"), Some("endpoint"));
+        assert_eq!(kind("skill__git__log"), Some("skill"));
+        assert_eq!(kind("kb"), Some("mcp"));
+        let glob = rows.iter().find(|r| r.name == "glob").unwrap();
+        assert_eq!(glob.description, "first line");
+    }
 }

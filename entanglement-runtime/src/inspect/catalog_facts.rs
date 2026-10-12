@@ -1,8 +1,8 @@
 //! `skutter inspect config`'s "advanced catalog" section (ADR-0213).
 //!
 //! The wire-fact knobs — `thinking_*`, `effort_tiers`, `supports_temperature`,
-//! `web_search_tool_version`, `prompt_cache_key`, per-model
-//! `tool_advertising`/`discovery`, rate limits — are catalog data describing
+//! `web_search_tool_version`, `prompt_cache_key`, rate limits — are catalog
+//! data describing
 //! what an endpoint/model accepts, not user preferences, so they live only in
 //! `providers.yml`. They stay visible here so "why did the request carry that
 //! shape?" still has an answer without reading YAML. Only facts that differ
@@ -26,7 +26,6 @@ pub(super) fn render(out: &mut String, catalog: &Catalog) {
         if p.prompt_cache_key {
             facts.push("prompt_cache_key=true".to_string());
         }
-        push_opt(&mut facts, "discovery", p.discovery.map(|d| d.label()));
         push_opt(
             &mut facts,
             "thinking_control",
@@ -70,12 +69,6 @@ fn model_facts(m: &ModelEntry) -> Vec<String> {
         "web_search_tool_version",
         m.web_search_tool_version.as_deref(),
     );
-    push_opt(
-        &mut facts,
-        "tool_advertising",
-        m.tool_advertising.map(|v| v.label()),
-    );
-    push_opt(&mut facts, "discovery", m.discovery.map(|d| d.label()));
     push_opt(&mut facts, "concurrency", m.concurrency);
     facts
 }
@@ -130,8 +123,7 @@ mod tests {
              \x20     - id: b\n\
              \x20       thinking_format: inline_tags\n\
              \x20       supports_temperature: false\n\
-             \x20       effort_tiers: [low, high]\n\
-             \x20       discovery: invoke\n",
+             \x20       effort_tiers: [low, high]\n",
         )
         .unwrap();
         let mut out = String::new();
@@ -146,7 +138,6 @@ mod tests {
             "thinking_format=inline_tags",
             "supports_temperature=false",
             "effort_tiers=[low,high]",
-            "discovery=invoke",
         ] {
             assert!(b.contains(fact), "{fact} in {b}");
         }

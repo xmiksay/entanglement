@@ -1,25 +1,18 @@
-//! Server connect machinery: startup [`connect`] (concurrent, fast-fail
-//! handshake — #660), the shared `connect_client`/`register_tools` helpers
-//! every connect path (startup, live `/mcp add`, lazy `/enable mcp`) funnels
-//! through, and the small OAuth/transport-label helpers connecting needs.
-//! Split out of `mcp/mod.rs` along
-//! the 400-line file cap (#559, mirroring #556's `available_enable.rs` split)
-//! — a `#[path]` sibling (not a real submodule boundary for privacy purposes:
-//! items here are `pub(crate)` so every existing `super::`-qualified call site
-//! in `live.rs`/`available_enable.rs`/`responder.rs` keeps compiling via
-//! `mod.rs`'s re-export, unchanged).
+//! Server connect machinery: the shared `connect_client`/`register_tools`
+//! helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
+//! funnels through, the last-seen tool-name record, and the small
+//! OAuth/transport-label helpers connecting needs. No startup connect exists
+//! any more (ADR-0226). Split out of `mcp/mod.rs` along the 400-line file cap
+//! (#559) — items are `pub(crate)` and re-exported by `mod.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 
 use crate::tools::{Tool, ToolRegistry};
 
-use super::{
-    ActiveServer, AvailableServer, McpClient, McpServerConfig, McpServerState, McpTool, McpToolDef,
-};
+use super::{McpClient, McpServerConfig, McpTool, McpToolCache, McpToolDef};
 
 /// `"stdio"` or `"http"`, for the [`McpServerStatus`][entanglement_core::McpServerStatus]
 /// wire label — meaningful only after [`McpServerConfig::transport`] has already
@@ -33,127 +26,6 @@ pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
     .to_string()
 }
 
-/// Fast-fail retry budget for a server's startup handshake (#660).
-///
-/// The shared endpoint pool's default [`RetryConfig`][entanglement_core::RetryConfig]
-/// is tuned for LLM request resilience mid-turn (ADR-0111): 5 attempts,
-/// geometric backoff up to ~10s, and a 120s response-header deadline per
-/// attempt. That patience is right for an in-turn LLM call but wrong for a
-/// startup handshake against a server that might simply not be running —
-/// startup only needs "reachable or not", fast, so an unrelated healthy
-/// server (and the rest of the head) isn't kept waiting. One retry with a
-/// short fixed backoff, plus a short header deadline (bounding the
-/// accepted-but-silent case ADR-0157 otherwise leaves at 120s), together cap
-/// one dead server's cost at a fraction of a second instead of ~10s. Only
-/// this startup path uses it — live `/mcp add`/`/mcp connect`/`mcp_enable`
-/// keep the pool's patient default (`None`), since a user explicitly
-/// (re)connecting can afford to wait.
-fn startup_handshake_retry() -> entanglement_core::RetryConfig {
-    entanglement_core::RetryConfig {
-        max_attempts: 2,
-        initial_backoff: Duration::from_millis(150),
-        max_backoff: Duration::from_millis(150),
-        response_header_timeout: Duration::from_secs(3),
-        ..entanglement_core::RetryConfig::default()
-    }
-}
-
-/// Connect to every configured server and register its tools into `registry`.
-///
-/// Best-effort per server: a connect/handshake/`tools/list` failure is logged and
-/// skipped so one broken server can't stop startup. The registered [`McpTool`]s
-/// hold an `Arc<McpClient>`, so keeping them in `registry` keeps each server
-/// connection alive for the process lifetime — no separate handle to retain.
-/// Returns the servers that connected, seeding [`ActiveServers`][super::ActiveServers]
-/// (#375) so a later live `/mcp list`/`remove` sees exactly what startup
-/// actually attached. `secret_env` (the catalog's provider API-key env vars,
-/// #164) is scrubbed from every stdio server's child environment. `http` is
-/// the shared endpoint pool (#559) every HTTP-transport server's traffic
-/// rides; a bundled entry's `key_env` is resolved live so its pool-key
-/// identity matches the LLM endpoint sharing the same provider key.
-///
-/// The per-server connect+handshake+`tools/list` awaits run **concurrently**
-/// (#660, `tokio::task::JoinSet`) — a sequential loop meant N unreachable
-/// servers cost N times one server's connect latency; fanning out means the
-/// wall-clock cost is just the slowest one. Combined with
-/// [`startup_handshake_retry`]'s fast-fail budget, one dead server no longer
-/// delays the rest, or startup itself, by more than a fraction of a second.
-/// The registry mutation ([`register_tools`]) stays synchronous on this
-/// function's own task as each result comes back — never done inside a
-/// spawned task, so `registry` is never touched concurrently.
-pub async fn connect(
-    servers: &HashMap<String, AvailableServer>,
-    registry: &mut ToolRegistry,
-    secret_env: &[String],
-    http: &entanglement_core::HttpClient,
-) -> HashMap<String, ActiveServer> {
-    let mut active = HashMap::new();
-    let secret_env: Arc<[String]> = Arc::from(secret_env);
-    let mut pending = tokio::task::JoinSet::new();
-    for (name, entry) in servers {
-        let cfg = entry.config.clone();
-        if cfg.effective_state() != McpServerState::Enabled {
-            tracing::info!("MCP server `{name}` is not enabled at startup; skipping");
-            continue;
-        }
-        // An OAuth server with no stored credential is skipped *quietly* and
-        // reported as "needs auth" by `/mcp list` (ADR-0153) — attempting the
-        // connect would only produce a 401 and a scarier log line, and startup
-        // must never open a browser (that is `/mcp connect`'s job).
-        if needs_auth(name, &cfg) {
-            tracing::info!(
-                "MCP server `{name}` needs authorization; run `/mcp connect {name}` to sign in"
-            );
-            continue;
-        }
-        let api_key = entry
-            .key_env
-            .as_deref()
-            .and_then(|var| std::env::var(var).ok());
-        let name = name.clone();
-        let http = http.clone();
-        let secret_env = secret_env.clone();
-        pending.spawn(async move {
-            let result = connect_client(
-                &name,
-                &cfg,
-                &secret_env,
-                &http,
-                api_key.as_deref(),
-                Some(startup_handshake_retry()),
-            )
-            .await;
-            (name, cfg, result)
-        });
-    }
-    while let Some(joined) = pending.join_next().await {
-        let (name, cfg, result) = match joined {
-            Ok(joined) => joined,
-            Err(e) => {
-                tracing::error!("MCP server connect task panicked: {e}");
-                continue;
-            }
-        };
-        match result {
-            Ok((client, defs)) => {
-                let count = defs.len();
-                let tools = register_tools(registry, &client, &name, defs, &cfg.capabilities);
-                tracing::info!("MCP server `{name}`: registered {count} tool(s)");
-                active.insert(
-                    name.clone(),
-                    ActiveServer {
-                        client,
-                        tools,
-                        transport: transport_label(&cfg),
-                    },
-                );
-            }
-            Err(e) => tracing::warn!("MCP server `{name}`: {e:#}"),
-        }
-    }
-    active
-}
-
 /// The two network-I/O awaits (connect + `tools/list`), with no registry
 /// involved — split out of the old single-shot `connect_one` (#375) so a live
 /// `mcp_add` can run these *before* taking the registry's write lock, never
@@ -162,9 +34,7 @@ pub async fn connect(
 /// server's key already budgets for LLM traffic; `api_key` is `None` for a
 /// user-declared or OAuth-authenticated server (still pooled, just unkeyed).
 /// `handshake_retry` (#660) overrides the HTTP transport's retry ladder for
-/// just the `initialize` handshake — only the startup [`connect`] path passes
-/// `Some(...)`; every other caller (`mcp_add`, `/mcp connect`, `mcp_enable`)
-/// passes `None` and keeps the pool's patient default.
+/// just the `initialize` handshake; `None` keeps the pool's patient default.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_client(
     name: &str,
@@ -234,15 +104,6 @@ fn oauth_token_source(
     )))
 }
 
-/// Does this server want OAuth but have no stored credential yet (ADR-0153)?
-///
-/// Drives the "needs auth" state in `/mcp list` and the non-fatal startup skip:
-/// an unauthenticated OAuth server is a normal, recoverable condition (run
-/// `/mcp connect <name>`), not a transport failure worth alarming about.
-pub fn needs_auth(name: &str, cfg: &McpServerConfig) -> bool {
-    cfg.oauth.is_some() && !crate::config::McpTokenStore::load().has(name)
-}
-
 /// Register every discovered tool def into `registry`, synchronous (no
 /// `.await`) so it is safe to run under a held write lock. Returns the
 /// registered (already-namespaced) tool names. `capabilities` is the
@@ -265,4 +126,28 @@ pub(crate) fn register_tools(
             tool_name
         })
         .collect()
+}
+
+/// Record `server`'s freshly registered `tools` in `cache`, as the bare names
+/// `list_mcp` shows — on the blocking pool, since the write takes a file
+/// lock. A failure only costs the next process a tool list for an
+/// unconnected server, so it is logged, never surfaced.
+pub(crate) async fn record_last_seen(
+    cache: &McpToolCache,
+    server: &str,
+    cfg: &McpServerConfig,
+    tools: &[String],
+) {
+    let prefix = super::tool::namespaced_tool_name(server, "");
+    let names: Vec<String> = tools
+        .iter()
+        .map(|t| t.strip_prefix(&prefix).unwrap_or(t).to_string())
+        .collect();
+    let (cache, server, target) = (cache.clone(), server.to_string(), cfg.target());
+    let written = tokio::task::spawn_blocking(move || cache.record(&server, &target, &names)).await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("recording MCP tool names failed: {e:#}"),
+        Err(e) => tracing::warn!("recording MCP tool names panicked: {e}"),
+    }
 }

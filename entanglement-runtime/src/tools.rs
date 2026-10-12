@@ -275,9 +275,8 @@ impl ToolRegistry {
     }
 
     /// One registered tool's advertised spec, byte-identical to what
-    /// [`specs`][Self::specs] would produce for it — the lookup `describe`
-    /// (ADR-0196 §4) needs to answer "the exact schema for this one name"
-    /// without rebuilding the whole sorted array.
+    /// [`specs`][Self::specs] would produce for it — "the exact schema for
+    /// this one name" without rebuilding the whole sorted array.
     pub fn spec_for(&self, name: &str) -> Option<ToolSpec> {
         self.tools
             .get(name)
@@ -376,9 +375,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// The closest registered name to `name` by edit distance, capped so a wildly
 /// different name (or an empty/tiny registry) doesn't surface a useless hint.
-/// `pub(crate)`: also reused by `discover::describe` (ADR-0196 §4) for the
-/// same "did you mean" hint over a wider candidate list (registry names plus
-/// the runtime-owned pseudo-tools describe also answers for).
+/// `pub(crate)`: also reused by `arg_validate` for its "did you mean" hint
+/// over a schema's property names.
 pub(crate) fn closest_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
     let max_distance = (name.chars().count() / 2).max(2);
     candidates

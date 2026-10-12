@@ -28,8 +28,7 @@ use crate::system_prompt::PromptContext;
 /// prompt length — plus which lower-layer definitions it overrode.
 pub fn inspect_agents(cwd: &Path, name: Option<&str>) -> Result<()> {
     let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
-    let mut ctx = PromptContext::load(cwd);
-    ctx.skills = skill_registry.disclosures();
+    let ctx = PromptContext::load(cwd);
 
     let resolved =
         agents::resolve_registry(cwd, &ctx, &skill_registry).context("resolving agent registry")?;

@@ -12,7 +12,6 @@ use crate::hooks::Hooks;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::skills::SkillRegistry;
-use crate::tool_advertising::AdvertisingInputs;
 use crate::tools::{SharedRegistry, ToolRegistry};
 
 use super::{DiscoverySurface, EscapeRoot, ToolExecutor};
@@ -73,7 +72,7 @@ pub fn spawn_tool_executor_with_policy(
     mode_table: Arc<crate::mode::ModeTable>,
     plan_files: Arc<PlanFileRegistry>,
     mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
-    advertising_inputs: Option<Arc<AdvertisingInputs>>,
+    catalog: Option<Arc<entanglement_core::Catalog>>,
     discovery: Option<DiscoverySurface>,
 ) -> tokio::task::JoinHandle<()> {
     let mut b = ToolExecutor::builder(holly, tools)
@@ -97,8 +96,8 @@ pub fn spawn_tool_executor_with_policy(
     if let Some(scopes) = mcp_scopes {
         b = b.mcp_scopes(scopes);
     }
-    if let Some(inputs) = advertising_inputs {
-        b = b.advertising_inputs(inputs);
+    if let Some(catalog) = catalog {
+        b = b.catalog(catalog);
     }
     b.spawn()
 }

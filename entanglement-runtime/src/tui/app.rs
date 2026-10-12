@@ -143,9 +143,8 @@ pub struct App {
     // of any outstanding query.
     mcp_panel: crate::tui::mcp_panel::McpPanel,
 
-    // Per-session enablement of `allowed` MCP servers (#542): the handles
-    // `/enable mcp <name>` needs to lazily connect an available server the
-    // same way the `mcp_enable` tool does. `None` in tests.
+    // The MCP roster handles the `/tools` view lists servers and connected
+    // tools from. `None` in tests.
     mcp_handles: Option<crate::mcp::McpHandles>,
 
     // Per-session live tool overlays (#539, ADR-0149), folded from
@@ -163,9 +162,8 @@ pub struct App {
     // `/enable` session-tools checklist.
     tool_roster: Vec<String>,
 
-    // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
-    // P9, ADR-0199 part 3): read-only here — `/tools`' status column
-    // (kernel/advertised/discoverable) is the only consumer. `None` in
+    // The shared advertising state (ADR-0226): read-only here — `/tools`'
+    // status column (advertised/hidden) is the only consumer. `None` in
     // tests degrades every row's status to "n/a" rather than guessing.
     advertising: Option<std::sync::Arc<crate::tool_advertising::AdvertisingState>>,
     // `/tools`' own read-heavy browser (#560 P9, ADR-0199 part 3): grouped by

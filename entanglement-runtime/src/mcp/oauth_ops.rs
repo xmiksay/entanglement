@@ -233,7 +233,7 @@ mod tests {
             capabilities: HashMap::new(),
             oauth,
             disabled: false,
-            state: None,
+            description: None,
         }
     }
 

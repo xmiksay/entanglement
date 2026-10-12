@@ -30,15 +30,12 @@ mod run;
 mod services;
 mod tui;
 
-#[cfg(feature = "rhai")]
-use entanglement_runtime::script;
 use entanglement_runtime::{
-    agents, arg_validate, ask_user, aux_llm, capability, config, discover, endpoint, extra_roots,
+    agents, arg_validate, aux_llm, capability, config, discover, endpoint, extra_roots,
     file_backup, history, host, inspect, layers, logging, mcp, mode, narrate, permission_path,
-    persistence, plan_files, plan_tasks, plan_watch, policy, poll, propose_plan, request_mode,
-    retained_output, script_ops, session_store, session_title, skills, slash_commands, subagent,
-    system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, watch,
-    workdir, SharedRegistry, ToolRegistry,
+    persistence, plan_files, plan_watch, policy, retained_output, script_ops, session_store,
+    session_title, skills, slash_commands, subagent, system_prompt, system_prompt_mode, throttle,
+    tool_advertising, tool_names, tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
 };
 
 use anyhow::{Context, Result};
@@ -206,9 +203,15 @@ async fn main() -> Result<()> {
     // there is caught too; `eprintln!` like the scaffold notices above, so it
     // shows without `--verbose` and stays in the scrollback after a TUI exit.
     let provider_names: Vec<&str> = catalog.providers.iter().map(|p| p.name.as_str()).collect();
+    // A server dropped for a tool-name clash is a config problem like a
+    // retired key: report it alongside, not only in the debug log.
+    let mcp_clashes = mcp::AvailableMcp::from_config(&catalog, &user_config.mcp, Vec::new())
+        .clash_warnings()
+        .to_vec();
     for warning in config_warnings
         .iter()
         .cloned()
+        .chain(mcp_clashes)
         .chain(config::retired::process_env_warnings(&provider_names))
     {
         eprintln!("skutter: warning: {warning}");

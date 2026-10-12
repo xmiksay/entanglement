@@ -116,8 +116,15 @@ pub enum OutEvent {
         servers: Vec<McpServerStatus>,
     },
     /// An MCP server was hot-added or removed (lifecycle event, no `seq`), in
-    /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375).
-    McpChanged { name: String, action: McpAction },
+    /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). `error` set
+    /// means the op was refused or failed and nothing changed (serde-defaulted,
+    /// so an older peer's frames still parse).
+    McpChanged {
+        name: String,
+        action: McpAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Engine-global (no `session`, no `seq`), in reply to
     /// [`InMsg::McpAuth`] (ADR-0153). A `Connect` emits this twice: once
     /// carrying `authorize_url` while the browser consent is pending, then
@@ -325,7 +332,8 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_meta: Option<serde_json::Value>,
         /// The call exactly as the model emitted it, when core unwrapped an
-        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// `mcp` envelope (ADR-0226; `invoke`, ADR-0204, in an older log):
+        /// `tool`/`input` then name the inner
         /// call. Absent for every ordinary call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         envelope: Option<ToolEnvelope>,
@@ -361,7 +369,8 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         agent: String,
         /// The call exactly as the model emitted it, when core unwrapped an
-        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// `mcp` envelope (ADR-0226; `invoke`, ADR-0204, in an older log):
+        /// `tool`/`input` then name the inner
         /// call. Absent for every ordinary call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         envelope: Option<ToolEnvelope>,
@@ -421,7 +430,8 @@ pub enum OutEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
         /// The call exactly as the model emitted it, when core unwrapped an
-        /// `invoke` envelope (ADR-0204): `tool`/`input` then name the inner
+        /// `mcp` envelope (ADR-0226; `invoke`, ADR-0204, in an older log):
+        /// `tool`/`input` then name the inner
         /// call. Absent for every ordinary call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         envelope: Option<ToolEnvelope>,

@@ -159,7 +159,7 @@ pub(super) async fn permission(
     overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     tool: String,
     // The call exactly as the model emitted it, when core unwrapped an
-    // `invoke` envelope (ADR-0204) — carried through to `dispatch`'s
+    // `mcp` envelope (ADR-0226) — carried through to `dispatch`'s
     // duplicate-key re-scan; `None` for an ordinary native call.
     envelope: Option<ToolEnvelope>,
     session: SessionId,
@@ -265,10 +265,16 @@ pub(super) async fn permission(
         // connect failure) is the call's tool error.
         let tools = match &mcp_scopes {
             Some(scopes) => {
-                match scopes
+                let overlaid = scopes
                     .overlay_registry_for_call(&session, tools, &tool)
                     .await
-                {
+                    .and_then(
+                        |tools| match scopes.scope_decline(&session, &tools, &tool) {
+                            Some(decline) => Err(decline),
+                            None => Ok(tools),
+                        },
+                    );
+                match overlaid {
                     Ok(tools) => tools,
                     Err(msg) => {
                         seam::reply(&holly, session, request_id, msg, true).await;

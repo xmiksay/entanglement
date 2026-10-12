@@ -23,7 +23,6 @@ use crate::policy::{GrantStore, PermissionResolver};
 use crate::retained_output::RetainedOutputRegistry;
 use crate::script_ops::ScriptRegistry;
 use crate::skills::SkillRegistry;
-use crate::tool_advertising::AdvertisingInputs;
 use crate::tools::SharedRegistry;
 
 use super::{DiscoverySurface, EscapeRoot};
@@ -56,7 +55,7 @@ impl ToolExecutor {
             mode_table: None,
             plan_files: Arc::new(PlanFileRegistry::new()),
             mcp_scopes: None,
-            advertising_inputs: None,
+            catalog: None,
             discovery: DiscoverySurface::default(),
             workdirs: crate::workdir::SessionWorkdirs::default(),
         }
@@ -85,7 +84,7 @@ pub struct ToolExecutorBuilder {
     pub(super) mode_table: Option<Arc<ModeTable>>,
     pub(super) plan_files: Arc<PlanFileRegistry>,
     pub(super) mcp_scopes: Option<Arc<McpScopes>>,
-    pub(super) advertising_inputs: Option<Arc<AdvertisingInputs>>,
+    pub(super) catalog: Option<Arc<entanglement_core::Catalog>>,
     pub(super) discovery: DiscoverySurface,
     pub(super) workdirs: crate::workdir::SessionWorkdirs,
 }
@@ -228,14 +227,15 @@ impl ToolExecutorBuilder {
         self
     }
 
-    /// Tool-advertising resolution inputs (ADR-0196): the user config and
-    /// catalog tiers. Default: none — every session resolves `tool_search`.
-    pub fn advertising_inputs(mut self, inputs: Arc<AdvertisingInputs>) -> Self {
-        self.advertising_inputs = Some(inputs);
+    /// The provider/model catalog `list_models` lists and `agent`'s `model`
+    /// parameter is validated against. Default: none — both report "no
+    /// catalog configured".
+    pub fn catalog(mut self, catalog: Arc<entanglement_core::Catalog>) -> Self {
+        self.catalog = Some(catalog);
         self
     }
 
-    /// `explore`/`describe`'s shared state (ADR-0196 §4), shared with the
+    /// The discovery tools' shared state (ADR-0226), shared with the
     /// caller's tool-spec resolver. Default: [`DiscoverySurface::default`] —
     /// private state and an empty MCP roster.
     pub fn discovery(mut self, discovery: DiscoverySurface) -> Self {
@@ -278,7 +278,7 @@ mod tests {
         );
         assert!(b.escape_root.is_none());
         assert!(b.mcp_scopes.is_none());
-        assert!(b.advertising_inputs.is_none());
+        assert!(b.catalog.is_none());
         assert!(b.hooks.is_empty());
         assert!(b.active.lock().unwrap().is_empty());
         assert!(b.perm_modes.lock().unwrap().is_empty());

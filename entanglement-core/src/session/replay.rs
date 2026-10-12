@@ -161,7 +161,8 @@ impl Session {
                     fold.push_block(ctx, part.clone())
                 }
                 // Context gets the call as emitted: the fold rebuilds an
-                // unwrapped `invoke` call from its envelope (ADR-0204).
+                // unwrapped `mcp` call (or an old log's `invoke`) from its
+                // envelope (ADR-0226).
                 OutEvent::ToolCall {
                     request_id,
                     tool,

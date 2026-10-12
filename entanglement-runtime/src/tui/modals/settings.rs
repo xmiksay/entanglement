@@ -1,7 +1,7 @@
 //! Draws bare `/set`'s tabbed settings dialog and its re-pin confirmation.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
@@ -10,7 +10,7 @@ use ratatui::{
 
 use super::centered_rect;
 use crate::tui::app::App;
-use crate::tui::settings_dialog::{RowView, Stage, Tab};
+use crate::tui::settings_dialog::{RowView, Tab};
 use crate::tui::theme::{Slot, Theme};
 
 const TAB_SEPARATOR: &str = "│";
@@ -68,12 +68,7 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
     let Some(dialog) = app.settings_dialog() else {
         return;
     };
-    let (active, stage, rows, focused) = (
-        dialog.tab(),
-        dialog.stage(),
-        dialog.rows(),
-        dialog.focused_row(),
-    );
+    let (active, rows, focused) = (dialog.tab(), dialog.rows(), dialog.focused_row());
     let pending = dialog.pending();
 
     let area = centered_rect(80, 80, f.area());
@@ -143,46 +138,11 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
     }
     f.render_widget(footer, chunks[2]);
     app.set_settings_rects(tabs_rect, body_rect);
-
-    if stage == Stage::ConfirmRepin {
-        draw_repin_confirm(f, area, &pending, &theme);
-    }
-}
-
-fn draw_repin_confirm(f: &mut Frame, over: Rect, pending: &[String], theme: &Theme) {
-    let area = centered_rect(80, 60, over);
-    f.render_widget(Clear, area);
-    let changes: Vec<&String> = pending
-        .iter()
-        .filter(|p| p.starts_with("tool advertising") || p.starts_with("discovery"))
-        .collect();
-    let mut lines = vec![Line::from(Span::styled(
-        "Re-pin tool advertising for this session?",
-        Style::default().bold(),
-    ))];
-    lines.extend(changes.iter().map(|c| Line::from(format!("  {c}"))));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "This rebuilds the prompt cache and changes the tool surface for this session.",
-        theme.fg(Slot::Warning),
-    )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Enter/y: apply all · n: back · Esc: cancel",
-        Style::default().dim(),
-    )));
-    let para = Paragraph::new(lines).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Confirm re-pin"),
-    );
-    f.render_widget(para, area);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::settings_dialog::RowId;
     use entanglement_core::SessionId;
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -219,25 +179,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_at_60_columns_and_the_repin_confirmation() {
+    fn renders_at_60_columns() {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.open_settings_dialog();
         let text = screen(&mut app, 60, 24);
         assert!(text.contains("Session") && text.contains("agent"), "{text}");
-
-        // Stand in an advertising state so the mode row is live.
-        app.set_advertising_state(std::sync::Arc::new(
-            crate::tool_advertising::AdvertisingState::new(),
-        ));
-        app.open_settings_dialog();
-        let d = app.settings_dialog_mut().unwrap();
-        d.set_tab(Tab::Tools);
-        let mode = d.rows().iter().position(|r| r.id == RowId::Mode).unwrap();
-        d.focus_row(mode);
-        d.activate(true);
-        let _ = d.confirm();
-        let text = screen(&mut app, 60, 24);
-        assert!(text.contains("prompt cache"), "{text}");
     }
 
     #[test]

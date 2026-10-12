@@ -28,7 +28,7 @@
 //! session-start `ModeChanged`) gets a chance to run. A one-time push at
 //! session start would therefore land *after* the first prompt on replay but
 //! *before* it live — a real, provable divergence (caught by this stage's own
-//! test suite: several `replay_equality`/`hibernate`/`invoke_envelope` cases
+//! test suite: several `replay_equality`/`hibernate`/envelope cases
 //! failed on exactly this ordering before the fix). Deriving the notice from
 //! `mode` at request time sidesteps the hazard entirely: nothing about it is
 //! persisted or pairing-dependent, so replay never needs to reconstruct it —

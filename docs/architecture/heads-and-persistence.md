@@ -103,7 +103,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (issue #187, `runtime::logging`). Cold-start attribution (#703):
   `RUST_LOG=skutter::startup=debug` logs the wall-clock since process start at
   each phase boundary (`config+prune+logging`, `skills+agents`,
-  `tools+mcp connect`, `engine+responders ready`, `tui first frame`); the TUI's
+  `tools`, `engine+responders ready`, `tui first frame`); the TUI's
   syntect syntax/theme sets load on the first fenced code block, not before
   the first frame. `inspect config` (#172) prints the resolved
   user config with per-field provenance — every fallback setting in
@@ -112,14 +112,16 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   and the `tui:` block (#558, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)), any retired key a layer still carries
   (as a `warnings:` section), and an **advanced catalog** section listing each
   provider/model's non-default wire facts (`thinking_*`, `effort_tiers`,
-  `discovery`, rate limits, … — [provider](provider.md) §advanced catalog). Four more
+  rate limits, … — [provider](provider.md) §advanced catalog). Four more
   engine-free CLI-only views round out the managed-file/live-state blind spots
   (#558): `inspect aux-models` prints the
   persisted `/aux-model` pins (`aux-models.yml`); `inspect mcp-tokens` prints
   which MCP servers hold a stored OAuth credential (`mcp-tokens.yml`,
   ADR-0153), redacted — never a token value; `inspect mcp` prints the resolved
-  bundled/available MCP server roster (provider-bundled servers folded with the
-  user `mcp:` map, #542) — which servers auto-connect vs. wait for `/enable`;
+  MCP server roster (provider-bundled servers folded with the user `mcp:` map,
+  #542) — every registered server with its provider, description, OAuth posture
+  and last-seen tool names (registered = available, nothing connects at startup,
+  [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
   `inspect session <id>` folds one **root** session's persisted log into its
   resolved agent/model/name plus its live tool overlay (ADR-0149) — the one
   piece of session state with no managed file of its own, so it is read
@@ -225,18 +227,18 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).
   Every call renders by its **real name** with a readable summary
-  ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md) §6;
+  ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md) §6,
+  kept by [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
   `tui::tool_render`, one renderer per tool family, sharing the ratatui-free
   `run::summary` helpers with the `run` text head's `→`/`=` lines): the header
   is `{tool}  {primary_arg}` (`mcp__server__tool` reads `server › tool`), and the
   expanded body shows arguments as indented `key: value` lines and JSON outputs
   the same way — never escaped JSON — with a failed call's output marked
-  `✗ error`. A call made through `invoke` looks exactly like a direct call of the
-  inner tool (core unwraps it; a still-streaming envelope is unwrapped for
-  display too), and the discovery calls are ordinary visible blocks: `explore`
-  shows its filter and `name — description` rows per source section, `describe`
-  its requested names, the `Loaded: …` line and a parameter summary (name,
-  type, required) per schema.
+  `✗ error`. A call made through the `mcp` envelope looks exactly like a direct
+  call of the inner `mcp__server__tool` (core unwraps it before any event), and
+  the discovery calls are ordinary visible blocks: `list_agents`/`list_models`/
+  `list_skills`/`list_mcp` show their rows readably, `mcp_tools` the server name
+  and one `- tool: description` line plus its `call as:` line per tool.
   The bottom **info line** (`draw_input_info`) reads
   `zai · GLM-5.2 | ctx 87.3k/200k 44% | $1.2345 | last: 51.2k in (94% cached) · out 1.1k`
   ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §7,
@@ -613,24 +615,20 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   catalog's concrete default because `SetGeneration` merges and cannot clear
   (a field with no catalog default is reported, not sent), with an inline
   note that effort/thinking changes rebuild the prompt cache; **Tools** —
-  (a) the per-session overlay rows and (b) whole-server MCP rows bare
-  `/enable` uses, (c) advertising mode and client-side discovery strategy
-  (discovery shown disabled with its reason off `client_side` or under
-  `full`); **Aux** — the per-purpose pins. Each tab has its own "save as
+  the per-session overlay rows bare `/enable` uses (the advertising-mode and
+  discovery rows and whole-server MCP enable rows are gone with
+  [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md):
+  one surface, MCP registered = available); **Aux** — the per-purpose pins. Each tab has its own "save as
   default": Session → the agent-models pin (ADR-0081), Generation → the
   agent-generation store once `GenerationChanged` confirms (ADR-0095), Tools →
   the overlay materialized as the agent's user-layer allowlist (ADR-0083,
-  next restart); mode/discovery have no managed writer, so that checkbox is
-  disabled, and Aux pins are process-wide and always persisted (checkbox
+  next restart), and Aux pins are process-wide and always persisted (checkbox
   always on). Confirming runs one plan in a fixed order — agent → model →
   generation (validated against the final model, incl. an agent pin the
-  switch rebinds to) → overlay/MCP (lazy connect of `allowed` servers) →
-  re-pin → aux — each step through its single-purpose path, stopping at the
+  switch rebinds to) → overlay → aux — each step through its single-purpose path, stopping at the
   first failure; one `settings` transcript line names what applied, what
   failed and what didn't run (the effort cache warning stays the reducer's
-  own). A pending mode/discovery change first opens a **second confirmation**
-  stating it rebuilds the prompt cache and changes the session's tool
-  surface; only then does `AdvertisingState::repin` run, live.
+  own).
 
 ## 6c. Managed provider-key env file — [ADR-0073](../adr/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
 
@@ -872,8 +870,10 @@ assistant/tool messages and the model appears to forget the conversation.
   implementation. Resume restores every *replayable* piece of runtime-side
   state (tool overlay, permission grants) but **not** MCP tool registration —
   `ToolRegistry` is process-lifetime, never logged; a re-offered
-  `mcp__<server>__*` call self-heals at dispatch time instead
+  `mcp__<server>__*` call connects its server lazily at dispatch time, like any
+  first call
   ([ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md),
+  [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
   §"MCP client" in [gates & host tools](gates-and-host-tools.md)).
 - **Every compaction forks a successor — nothing is ever mutated in place**
   (#324, [ADR-0082](../adr/0082-single-shot-session-ops-and-persisted-compaction.md)

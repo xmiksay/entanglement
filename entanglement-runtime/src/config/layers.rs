@@ -134,7 +134,6 @@ pub(super) fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> 
         "auto_compact",
         "editor",
         "session_retention_days",
-        "tool_advertising",
         "tui",
         "undo",
     ];

@@ -62,14 +62,13 @@ mod arg_validate;
 mod ask_user;
 mod aux_models;
 mod compact_fork;
+mod discovery_tools;
 #[cfg(feature = "serve")]
 mod endpoint;
 mod executor_builder;
 mod hook_events;
 mod hooks;
 mod host_tools;
-mod invoke_envelope;
-mod invoke_schema_violation;
 mod launch_mode_typo;
 mod list_operations;
 mod list_pending;
@@ -77,14 +76,16 @@ mod load_skill;
 mod log_compat_v060;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_compat;
+mod mcp_envelope_runtime;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_http;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
-mod mcp_lazy_reenable;
+mod mcp_lazy_connect;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_refresh;
+mod mcp_schema_violation;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_scoped;
 #[cfg(feature = "provider")]

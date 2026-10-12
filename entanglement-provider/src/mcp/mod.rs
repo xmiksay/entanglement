@@ -4,9 +4,9 @@
 //! lives in the leaf crate and *policy* stays in the head: this module knows how
 //! to speak the streamable-HTTP transport and how to obtain an OAuth token for
 //! it, but nothing about `config.yml`, the `ToolRegistry`, permission profiles,
-//! or the three-state activation (#542) — all of which remain runtime-owned.
+//! or server availability — all of which remain runtime-owned.
 //! The runtime consumes these types through core's re-export (ADR-0053), the
-//! same path [`McpServerState`][crate::provider_mcp::McpServerState] already
+//! same path [`ProviderMcpServer`][crate::provider_mcp::ProviderMcpServer]
 //! takes, so the lean `--no-default-features` runtime build reaches them without
 //! naming the optional `entanglement-provider` dependency directly.
 //!

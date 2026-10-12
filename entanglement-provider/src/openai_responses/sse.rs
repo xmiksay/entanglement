@@ -20,14 +20,11 @@
 use crate::{LlmEvent, StopReason, ToolCall, Usage};
 use serde_json::Value;
 
-use super::TOOL_SEARCH_CALL_TOOL;
-
-/// Per-stream state `handle_event` folds into: whether any tool call (real or
-/// `tool_search_call`) was emitted this turn (decides the `Finish` stop
-/// reason, ADR-0118), and whether a terminal event
-/// (`response.completed`/`.incomplete`) was already seen — `mod.rs`'s outer
-/// loop uses this to tell "the stream reported its own end" from "the
-/// connection just closed" and skips a duplicate `Finish`.
+/// Per-stream state `handle_event` folds into: whether any tool call was
+/// emitted this turn (decides the `Finish` stop reason, ADR-0118), and
+/// whether a terminal event (`response.completed`/`.incomplete`) was already
+/// seen — `mod.rs`'s outer loop uses this to tell "the stream reported its
+/// own end" from "the connection just closed" and skips a duplicate `Finish`.
 #[derive(Default)]
 pub(super) struct StreamState {
     pub emitted_any_tool_call: bool,
@@ -187,14 +184,10 @@ fn note_usage(value: Option<&Value>, usage: &mut Usage) {
 }
 
 /// Map a completed output item to a [`ToolCall`]: a `function_call` (a real
-/// tool) or a `tool_search_call` (client-execution mode only — mapped onto
-/// the reserved [`TOOL_SEARCH_CALL_TOOL`] name so it rides the existing
-/// `ToolCall`/`ToolExec` machinery). A hosted-mode `tool_search_call`
-/// (`execution: "server"`, `call_id: null`) is skipped — this client only
-/// ever declares client execution (`request::tool_search_entry`), so seeing
-/// one would mean the server ignored that, and there is no `call_id` to
-/// correlate a reply against anyway. `message`/`reasoning`/anything else
-/// returns `None`.
+/// tool). A `tool_search_call` returns `None` — ADR-0226 removed the
+/// client-executed search surface this client once declared, so nothing
+/// minted by this build ever arrives as one. `message`/`reasoning`/anything
+/// else returns `None` too.
 fn tool_call_from_item(item: &Value) -> Option<ToolCall> {
     let kind = item.get("type").and_then(|v| v.as_str())?;
     match kind {
@@ -209,20 +202,11 @@ fn tool_call_from_item(item: &Value) -> Option<ToolCall> {
             Some(ToolCall::new(call_id, name, arguments))
         }
         "tool_search_call" => {
-            let execution = item.get("execution").and_then(|v| v.as_str());
-            if execution != Some("client") {
-                return None;
-            }
-            let call_id = item.get("call_id").and_then(|v| v.as_str())?.to_string();
-            let arguments = item
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| Value::Object(Default::default()));
-            Some(ToolCall::new(
-                call_id,
-                TOOL_SEARCH_CALL_TOOL,
-                arguments.to_string(),
-            ))
+            // ADR-0226 removed the client-executed `tool_search` surface: we
+            // never declare it, so a stream emitting one anyway (a stale
+            // server config, a hand-built request) is not ours to answer.
+            // Ignore it rather than mis-map it onto a real tool name.
+            None
         }
         _ => None,
     }
@@ -271,31 +255,20 @@ mod tests {
     }
 
     #[test]
-    fn client_tool_search_call_maps_to_reserved_name() {
-        let mut frames = frames_of(&[
-            r#"data: {"type":"response.output_item.done","item":{"type":"tool_search_call","execution":"client","call_id":"call_2","status":"completed","arguments":{"query":"weather"}}}"#,
-        ]);
-        let mut state = StreamState::default();
-        let mut usage = Usage::default();
-        let (events, _) = drain_available_frames(&mut frames, &mut state, &mut usage).unwrap();
-        let LlmEvent::ToolCall(call) = &events[0] else {
-            panic!("expected a ToolCall event: {events:?}");
-        };
-        assert_eq!(call.id, "call_2");
-        assert_eq!(call.name, TOOL_SEARCH_CALL_TOOL);
-        assert_eq!(call.input, r#"{"query":"weather"}"#);
-    }
-
-    #[test]
-    fn hosted_tool_search_call_is_ignored() {
-        let mut frames = frames_of(&[
-            r#"data: {"type":"response.output_item.done","item":{"type":"tool_search_call","execution":"server","call_id":null,"arguments":{"paths":["crm"]}}}"#,
-        ]);
-        let mut state = StreamState::default();
-        let mut usage = Usage::default();
-        let (events, _) = drain_available_frames(&mut frames, &mut state, &mut usage).unwrap();
-        assert!(events.is_empty());
-        assert!(!state.emitted_any_tool_call);
+    fn tool_search_call_is_ignored() {
+        // ADR-0226: the client-executed search surface is gone — neither a
+        // client nor a hosted `tool_search_call` maps onto a real tool.
+        for execution in ["client", "server"] {
+            let mut frames = frames_of(&[format!(
+                r#"{{"type":"response.output_item.done","item":{{"type":"tool_search_call","execution":"{execution}","call_id":"call_2","status":"completed","arguments":{{"query":"weather"}}}}}}"#
+            )
+            .as_str()]);
+            let mut state = StreamState::default();
+            let mut usage = Usage::default();
+            let (events, _) = drain_available_frames(&mut frames, &mut state, &mut usage).unwrap();
+            assert!(events.is_empty(), "{execution}: {events:?}");
+            assert!(!state.emitted_any_tool_call);
+        }
     }
 
     #[test]

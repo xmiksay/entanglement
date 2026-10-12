@@ -122,8 +122,7 @@ pub fn agent_detail(
     let build = || -> Result<Option<String>> {
         let skill_registry =
             skills::load_registry_in(cwd, user).context("loading skill definitions")?;
-        let mut ctx = PromptContext::load_with(cwd, sessions);
-        ctx.skills = skill_registry.disclosures();
+        let ctx = PromptContext::load_with(cwd, sessions);
         let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
             .context("resolving agent registry")?;
         Ok(resolved
@@ -157,8 +156,7 @@ fn tui_prompt(cwd: &Path, user: &UserLayer, sessions: &SessionStore, agent: &str
     let build = || -> Result<String> {
         let skill_registry =
             skills::load_registry_in(cwd, user).context("loading skill definitions")?;
-        let mut ctx = PromptContext::load_with(cwd, sessions);
-        ctx.skills = skill_registry.disclosures();
+        let ctx = PromptContext::load_with(cwd, sessions);
         let report = crate::agents::prompt_report_in(cwd, user, agent, &ctx, &skill_registry)
             .context("assembling agent prompt")?
             .with_context(|| format!("unknown agent `{agent}` (no matching definition found)"))?;
@@ -180,8 +178,7 @@ fn tui_agent_views(
     let build = || -> Result<(Vec<InspectItem>, String)> {
         let skill_registry =
             skills::load_registry_in(cwd, user).context("loading skill definitions")?;
-        let mut ctx = PromptContext::load_with(cwd, sessions);
-        ctx.skills = skill_registry.disclosures();
+        let ctx = PromptContext::load_with(cwd, sessions);
         let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
             .context("resolving agent registry")?;
 

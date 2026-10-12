@@ -1,11 +1,11 @@
 //! `App` surface for `/tools` (#560 P9, ADR-0199 part 3): builds a fresh row
-//! set on open (never cached, mirroring `explore`'s own pull-only posture),
-//! owns the view's open/close/navigation, and enables the highlighted row on
-//! `Enter` via the same path a typed `/enable` takes (ADR-0199 part 4).
+//! set on open (never cached), owns the view's open/close/navigation, and
+//! enables the highlighted row on `Enter` via the same path a typed
+//! `/enable` takes (ADR-0199 part 4).
 //!
-//! Row building reuses [`crate::discover::index_rows`] — the exact live
-//! index `explore`/`tool_search` already serve — for name/description/kind,
-//! then layers this session's own overlay/advertising status on top. No
+//! Row building reuses [`crate::discover::index_rows`] — the runtime's one
+//! live tool index — for name/description/kind, then layers this session's
+//! own overlay and advertised-surface status on top (ADR-0226). No
 //! profile-borne mask or permission grade exists to layer any more (ADR-0207
 //! moved both onto the session's independent permission mode), so `masked`
 //! reflects the overlay alone and `grade` has nothing local left to report.
@@ -13,20 +13,19 @@
 
 use std::sync::Arc;
 
-use entanglement_core::{Holly, ToolAdvertising, ToolOverlayEntry};
+use entanglement_core::{Holly, ToolOverlayEntry};
 use ratatui::widgets::ListState;
 
 use crate::discover::IndexRow;
 use crate::tool_advertising::AdvertisingState;
-use crate::tool_names;
 use crate::tui::tools_view::{ToolsView, ToolsViewRow};
 
 use super::App;
 
 impl App {
-    /// Install the shared ADR-0196 §2-3 pinned-mode/discovered-set handle —
-    /// the same `Arc` the tool executor and the resolver closures in
-    /// `boot.rs` read/write. `/tools`' status column is read-only against it.
+    /// Install the shared advertising state — the same `Arc` the tool
+    /// executor and the resolver closures in `boot.rs` read/write. `/tools`'
+    /// status column is read-only against it.
     pub fn set_advertising_state(&mut self, advertising: Arc<AdvertisingState>) {
         self.advertising = Some(advertising);
     }
@@ -113,32 +112,19 @@ impl App {
                 // own posture of re-running discovery with no engine.
                 let skills = crate::skills::load_registry_in(self.root(), &self.inspect.user_layer)
                     .unwrap_or_default();
-                crate::discover::index_rows(
-                    &registry,
-                    &handles.avail,
-                    &handles.active,
-                    &skills,
-                    &session,
-                )
+                crate::discover::index_rows(&registry, &handles.avail, &handles.active, &skills)
             }
             None => Vec::new(),
         };
 
-        let mode = self.advertising.as_ref().map(|a| a.mode(&session));
-        let discovered = self
+        let advertised = self
             .advertising
             .as_ref()
-            .map(|a| {
-                a.discovered
-                    .lock()
-                    .expect("discovered-tool mutex poisoned")
-                    .names(&session)
-            })
-            .unwrap_or_default();
+            .and_then(|a| a.advertised_names(&session));
 
         let mut rows: Vec<ToolsViewRow> = index
             .into_iter()
-            .map(|r| build_row(r, &overlay, mode, &discovered))
+            .map(|r| build_row(r, &overlay, advertised.as_deref()))
             .collect();
         rows.sort_by(|a, b| a.kind.cmp(b.kind).then_with(|| a.name.cmp(&b.name)));
         rows
@@ -148,55 +134,33 @@ impl App {
 fn build_row(
     row: IndexRow,
     overlay: &[ToolOverlayEntry],
-    mode: Option<ToolAdvertising>,
-    discovered: &[String],
+    advertised: Option<&[String]>,
 ) -> ToolsViewRow {
     // Every profile inherits every tool now (ADR-0207) — the session's own
     // overlay is the only thing left that can mask a row here.
     let effective = ToolOverlayEntry::disposition(overlay, &row.name).unwrap_or(true);
-    // No profile-borne permission grade exists any more either (ADR-0207
-    // moved it onto the session's mode, not wired into this view yet) — the
-    // column has nothing local left to report.
-    let grade = None;
     ToolsViewRow {
-        status: status_for(&row.name, mode, discovered),
+        status: status_for(&row.name, advertised),
         name: row.name,
         description: row.description,
         kind: row.kind,
         masked: !effective,
-        grade,
+        // No profile-borne permission grade exists any more (ADR-0207 moved
+        // it onto the session's mode, not wired into this view yet).
+        grade: None,
     }
 }
 
-/// A name's advertising status: `Full` mode is universal (ADR-0192), so
-/// every row reads `"advertised"`; `ToolSearch` mode distinguishes the fixed
-/// lean kernel from a name already in this session's discovered tail
-/// (ADR-0196 §2-3) from one still only reachable via `explore`/`describe`.
-fn status_for(name: &str, mode: Option<ToolAdvertising>, discovered: &[String]) -> &'static str {
-    match mode {
+/// A name's advertising status against the session's surface snapshot
+/// (ADR-0226): in it ⇒ "advertised"; otherwise "hidden" — a script-only
+/// tool or an MCP tool reached through `mcp`. No snapshot yet (the session
+/// hasn't run a round) or no handle ⇒ "n/a" rather than a guess.
+fn status_for(name: &str, advertised: Option<&[String]>) -> &'static str {
+    match advertised {
         None => "n/a",
-        Some(ToolAdvertising::Full) => "advertised",
-        Some(ToolAdvertising::ToolSearch) => {
-            if is_kernel(name) {
-                "kernel"
-            } else if discovered.iter().any(|n| n == name) {
-                "advertised"
-            } else {
-                "discoverable"
-            }
-        }
+        Some(names) if names.iter().any(|n| n == name) => "advertised",
+        Some(_) => "hidden",
     }
-}
-
-/// Kernel membership per ADR-0196 §2: the fixed `TOOL_SEARCH_KERNEL` list,
-/// the discovery pair itself (non-maskable, `explore`/`describe`), plus the
-/// profile-defining specs threaded in separately from that list
-/// (`propose_plan`, the spawn enum) — the same carve-out `tool_names.rs`
-/// documents on `TOOL_SEARCH_KERNEL`.
-fn is_kernel(name: &str) -> bool {
-    tool_names::TOOL_SEARCH_KERNEL.contains(&name)
-        || tool_names::is_non_maskable(name)
-        || matches!(name, "propose_plan" | "agent" | "agent_send")
 }
 
 #[cfg(test)]
@@ -214,46 +178,19 @@ mod tests {
     }
 
     #[test]
-    fn full_mode_reports_every_row_advertised() {
-        let row = build_row(
-            index_row("bash", "tool"),
-            &[],
-            Some(ToolAdvertising::Full),
-            &[],
-        );
-        assert_eq!(row.status, "advertised");
+    fn status_follows_the_session_surface_snapshot() {
+        let surface = vec!["bash".to_string(), "mcp".to_string()];
+        let shown = build_row(index_row("bash", "tool"), &[], Some(&surface));
+        assert_eq!(shown.status, "advertised");
+        let hidden = build_row(index_row("mcp__docs__search", "mcp"), &[], Some(&surface));
+        assert_eq!(hidden.status, "hidden");
+        let script_only = build_row(index_row("glob", "tool"), &[], Some(&surface));
+        assert_eq!(script_only.status, "hidden");
     }
 
     #[test]
-    fn tool_search_mode_distinguishes_kernel_discoverable_and_discovered() {
-        let kernel = build_row(
-            index_row("bash", "tool"),
-            &[],
-            Some(ToolAdvertising::ToolSearch),
-            &[],
-        );
-        assert_eq!(kernel.status, "kernel");
-
-        let undiscovered = build_row(
-            index_row("mcp__docs__search", "mcp"),
-            &[],
-            Some(ToolAdvertising::ToolSearch),
-            &[],
-        );
-        assert_eq!(undiscovered.status, "discoverable");
-
-        let discovered = build_row(
-            index_row("mcp__docs__search", "mcp"),
-            &[],
-            Some(ToolAdvertising::ToolSearch),
-            &["mcp__docs__search".to_string()],
-        );
-        assert_eq!(discovered.status, "advertised");
-    }
-
-    #[test]
-    fn no_advertising_handle_reports_n_a() {
-        let row = build_row(index_row("bash", "tool"), &[], None, &[]);
+    fn no_snapshot_reports_n_a() {
+        let row = build_row(index_row("bash", "tool"), &[], None);
         assert_eq!(row.status, "n/a");
     }
 
@@ -261,30 +198,18 @@ mod tests {
     fn masked_reflects_the_overlay_since_no_profile_mask_exists_any_more() {
         // ADR-0207: every profile inherits every tool, so only the session's
         // own overlay can mask a row here.
-        let unmasked = build_row(index_row("bash", "tool"), &[], None, &[]);
+        let unmasked = build_row(index_row("bash", "tool"), &[], None);
         assert!(!unmasked.masked);
 
         let overlay = vec![ToolOverlayEntry::deny("bash")];
-        let masked = build_row(index_row("bash", "tool"), &overlay, None, &[]);
+        let masked = build_row(index_row("bash", "tool"), &overlay, None);
         assert!(masked.masked, "a deny overlay entry masks the row");
     }
 
     #[test]
     fn grade_has_no_profile_local_source_left() {
-        let row = build_row(index_row("read", "tool"), &[], None, &[]);
+        let row = build_row(index_row("read", "tool"), &[], None);
         assert_eq!(row.grade, None);
-    }
-
-    #[test]
-    fn is_kernel_covers_the_fixed_list_and_the_profile_defining_specs() {
-        assert!(is_kernel("bash"));
-        assert!(is_kernel("explore"));
-        assert!(is_kernel("describe"));
-        assert!(is_kernel("propose_plan"));
-        assert!(is_kernel("agent"));
-        assert!(is_kernel("agent_send"));
-        assert!(!is_kernel("mcp__docs__search"));
-        assert!(!is_kernel("call"));
     }
 
     #[tokio::test]

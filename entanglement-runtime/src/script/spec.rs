@@ -58,7 +58,7 @@ pub fn rhai_spec() -> ToolSpec {
         format!(
             "Run a Rhai script (https://rhai.rs) in a capability-sandboxed \
              engine — multi-step logic (loops, branching, JSON/YAML parsing) \
-             in one call instead of several read/grep/edit calls or shelling \
+             in one call instead of several read/edit calls or shelling \
              out to python/node. Prefer it whenever a task needs more than one \
              conditional or a transform over structured data; prefer a direct \
              tool call for a single simple operation.\n\n{BINDING_REFERENCE}\n\n\

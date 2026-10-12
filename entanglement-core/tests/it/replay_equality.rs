@@ -5,7 +5,7 @@
 
 mod harness;
 
-use entanglement_core::{AgentState, ContentPart, SessionId, StopReason, ToolSpec, INVOKE_TOOL};
+use entanglement_core::{AgentState, ContentPart, SessionId, StopReason, ToolSpec, MCP_TOOL};
 use harness::{
     assert_resume_from, assert_resume_is_byte_identical, call, replayed_messages, shape,
     text_round, tool_round, Run, Step,
@@ -156,14 +156,14 @@ async fn ambiguous_stop_retry_nudges() {
 }
 
 #[tokio::test]
-async fn invoke_envelope_then_text_round() {
+async fn mcp_envelope_then_text_round() {
     let specs = vec![
         ToolSpec::new("read", "read a file"),
-        ToolSpec::new(INVOKE_TOOL, "call a discovered tool"),
+        ToolSpec::new(MCP_TOOL, "call an MCP tool"),
     ];
-    let raw = r#"{"name":"read","args":{"path":"x"}}"#;
+    let raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
     let scripts = vec![
-        tool_round(vec![call("c1", INVOKE_TOOL, raw)]),
+        tool_round(vec![call("c1", MCP_TOOL, raw)]),
         text_round("done"),
     ];
     let mut live = Run::start(scripts, specs);
@@ -172,7 +172,7 @@ async fn invoke_envelope_then_text_round() {
     live.result("c1", "contents").await;
     live.until_done().await;
     let history = assert_resume_is_byte_identical(live).await;
-    assert_eq!(history[1].tool_calls[0].name, INVOKE_TOOL);
+    assert_eq!(history[1].tool_calls[0].name, MCP_TOOL);
     assert_eq!(history[1].tool_calls[0].input, raw);
 }
 

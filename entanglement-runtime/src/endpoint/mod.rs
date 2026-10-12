@@ -9,13 +9,11 @@
 //! registered under `skill__<skill>__<name>` instead — see that module.
 //!
 //! Schema derivation ([`config::build_schema`]) means P4's pre-dispatch
-//! argument validation and `describe()` work for an endpoint tool exactly
-//! like any other registered tool, with zero extra wiring — both already
-//! operate generically over the [`crate::tools::ToolRegistry`]. Likewise
-//! `explore`'s index and `describe`'s by-name lookup need no endpoint-
-//! specific code beyond a distinct `source` label
-//! ([`crate::discover::explore`]) — registration into the shared registry is
-//! the whole integration surface.
+//! argument validation works for an endpoint tool exactly like any other
+//! registered tool, with zero extra wiring — it operates generically over the
+//! [`crate::tools::ToolRegistry`]. Registered `endpoint__*` tools ride the
+//! advertised surface until #819 retires them (ADR-0226) — registration into
+//! the shared registry is the whole integration surface.
 //!
 //! Execution rides `entanglement_core::call_endpoint` — the shared
 //! per-endpoint pool/retry/rate-limit machinery ([`entanglement_provider::client::HttpClient`]),

@@ -41,8 +41,8 @@ use crate::tool_advertising::SharedAdvertisingState;
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
-    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL,
-    PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
+    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL,
 };
 use crate::tools::SharedRegistry;
 
@@ -84,16 +84,12 @@ pub(super) enum Intercept {
     /// `propose_plan`: the plan agent's finalize step (#141, ADR-0042),
     /// force-parked on the `Ask` path since user approval *is* its semantics.
     ProposePlan,
-    /// `explore`/`describe` (#560, ADR-0196 §4) plus the reserved
-    /// `responses_tool_search` call name (P7, ADR-0196 §3 — a streamed
-    /// client-executed `tool_search_call` from the OpenAI Responses wire,
-    /// never a name the model chose from an advertised schema): the
-    /// always-on discovery trio — read-only catalog introspection, starting
-    /// nothing and touching no host resource. Exempt from the
-    /// `Allow`/`Ask`/`Deny` ladder like every other runtime-owned
-    /// orchestration tool (`is_non_maskable` still marks these two for the
-    /// TUI's own tool-state rendering, `tool_state.rs` — unrelated to
-    /// dispatch since ADR-0207).
+    /// `list_agents`/`list_models`/`list_skills`/`list_mcp`/`mcp_tools`
+    /// (ADR-0226): read-only catalog lookups, starting nothing and touching
+    /// no host resource — `mcp_tools` may connect an MCP server, but reading
+    /// a catalog grants nothing; every call through `mcp` is still graded.
+    /// (`load_skill`, the sixth, is a registry tool taking the `Control`
+    /// bypass in `dispatch`.)
     Discover,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
@@ -115,7 +111,8 @@ impl Intercept {
             POLL_TOOL => Self::Poll,
             ASK_USER_TOOL => Self::AskUser,
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
-            EXPLORE_TOOL | DESCRIBE_TOOL | RESPONSES_TOOL_SEARCH_TOOL => Self::Discover,
+            LIST_AGENTS_TOOL | LIST_MODELS_TOOL | LIST_SKILLS_TOOL | LIST_MCP_TOOL
+            | MCP_TOOLS_TOOL => Self::Discover,
             #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
@@ -176,8 +173,7 @@ pub(super) struct LadderCtx {
     pub validation: Arc<crate::arg_validate::LoopBreaker>,
     pub denials: Arc<crate::run_limits::DenialTracker>,
     /// The active provider/model catalog (#560 P12, ADR-0207 §12): read by
-    /// `explore`/`describe`'s `models` kind and by `agent`'s `model`
-    /// parameter validation. `None` — every lean/test wrapper with no
+    /// `list_models` and by `agent`'s `model` parameter validation. `None` — every lean/test wrapper with no
     /// catalog wired — degrades both to "no catalog configured" rather than
     /// panicking.
     pub catalog: Option<Arc<Catalog>>,
@@ -195,7 +191,7 @@ pub(super) async fn route_tool_exec(
     overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     route: Intercept,
     // The call exactly as the model emitted it, when core unwrapped an
-    // `invoke` envelope (ADR-0204). Only the `Permission` route's schema
+    // `mcp` envelope (ADR-0226). Only the `Permission` route's schema
     // validation needs it (`graded::permission`'s duplicate-key re-scan) —
     // every other route ignores it, same as `tool`/`input` themselves are
     // ignored by routes that never dispatch a call.
@@ -264,8 +260,8 @@ mod tests {
     #[cfg(feature = "rhai")]
     use crate::tool_names::RHAI_TOOL;
     use crate::tool_names::{
-        AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL,
-        PROPOSE_PLAN_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
+        AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DISCOVERY_TOOLS, LOAD_SKILL_TOOL, MCP_TOOL,
+        POLL_TOOL, PROPOSE_PLAN_TOOL,
     };
 
     #[test]
@@ -278,12 +274,9 @@ mod tests {
             Intercept::classify(PROPOSE_PLAN_TOOL),
             Intercept::ProposePlan
         );
-        assert_eq!(Intercept::classify(EXPLORE_TOOL), Intercept::Discover);
-        assert_eq!(Intercept::classify(DESCRIBE_TOOL), Intercept::Discover);
-        assert_eq!(
-            Intercept::classify(RESPONSES_TOOL_SEARCH_TOOL),
-            Intercept::Discover
-        );
+        for tool in DISCOVERY_TOOLS.iter().filter(|t| **t != LOAD_SKILL_TOOL) {
+            assert_eq!(Intercept::classify(tool), Intercept::Discover, "{tool}");
+        }
         #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
     }
@@ -298,6 +291,10 @@ mod tests {
             "bash",
             "call",
             crate::tool_names::UPDATE_TASKS_TOOL,
+            // A registry tool (Control bypass in `dispatch`), and the envelope
+            // core declined to unwrap (declined there as malformed).
+            LOAD_SKILL_TOOL,
+            MCP_TOOL,
             "",
         ] {
             assert_eq!(

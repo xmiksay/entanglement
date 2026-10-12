@@ -16,12 +16,14 @@ use super::centered_rect;
 use crate::tui::app::App;
 use crate::tui::theme::Slot;
 
-/// Draw the `/mcp list` result panel (#373, selectable since #539): connected
-/// servers, transport, status, and tools. `Up`/`Down`/`j`/`k` move the server
-/// selection (`▶`), `e`/`d` enable/disable the selected server for the active
-/// session (a `mcp__<name>__*` overlay entry — the tag after the status shows
-/// the session's current override), `c`/`t` run the OAuth connect/check for it
-/// (ADR-0153), `PageUp`/`PageDown` scroll, `Esc` closes.
+/// Draw the `/mcp list` result panel (#373, selectable since #539): every
+/// registered server, transport, status (connected / available / auth
+/// required), and tools; a tag shows the session's `mcp__<name>__*` overlay
+/// override, if any. `Up`/`Down`/`j`/`k` move the server selection (`▶`),
+/// `d` denies the selected server for the active session (a
+/// `mcp__<name>__*` overlay entry), `c`/`t` run the OAuth connect/check for it
+/// (ADR-0153),
+/// `PageUp`/`PageDown` scroll, `Esc` closes.
 pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
     let theme = app.theme();
     let servers = app.mcp_servers();
@@ -34,7 +36,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
         // `/mcp add` syntax inline so the path to attach a server is visible
         // right where the gap is.
         lines.push(Line::from(Span::styled(
-            "No MCP servers connected.",
+            "No MCP servers configured.",
             Style::default().dim(),
         )));
         let usage = [
@@ -50,19 +52,18 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
         }
     } else {
         for (i, s) in servers.iter().enumerate() {
-            // Three-state display (#542): an `allowed` server that isn't
-            // connected is *available* (enable it with `e` / `/enable mcp
-            // <name>`), not broken — don't paint it red.
-            let status = if s.auth.as_deref() == Some("needs auth") {
-                // An OAuth server awaiting sign-in (ADR-0153) is not broken
-                // either — it just needs `c`. Say so instead of "disconnected".
-                Span::styled("needs auth (sign in with c)", theme.fg(Slot::Warning))
-            } else if s.connected {
+            // Registered = available (ADR-0226): an unconnected server just
+            // hasn't been used yet — it connects on its first call, so it is
+            // not painted as broken.
+            let status = if s.connected {
                 Span::styled("connected", theme.fg(Slot::Success))
-            } else if s.state.as_deref() == Some("allowed") {
-                Span::styled("available (enable with e)", theme.fg(Slot::Warning))
+            } else if s.auth.as_deref() == Some("needs auth") {
+                Span::styled(
+                    format!("auth required (/mcp connect {}, or c)", s.name),
+                    theme.fg(Slot::Warning),
+                )
             } else {
-                Span::styled("disconnected", theme.fg(Slot::Error))
+                Span::styled("available", theme.fg(Slot::Muted))
             };
             let marker = if i == selected { "▶ " } else { "  " };
             let name_style = if i == selected {
@@ -77,8 +78,8 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
                 status,
             ];
             // The active session's overlay override for this server (#539):
-            // an exact `mcp__<name>__*` entry, as the `e`/`d` keys write it.
-            let server_pattern = format!("mcp__{}__*", s.name);
+            // an exact `mcp__<name>__*` entry, as `d` or `/disable tool` writes it.
+            let server_pattern = crate::mcp::tool::server_tools_pattern(&s.name);
             if let Some(e) = overlay.iter().find(|e| e.pattern == server_pattern) {
                 let tag = if e.deny {
                     Span::styled("  session: off", theme.fg(Slot::Error))
@@ -97,7 +98,11 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
                 )));
             } else if s.tools.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "    (no tools)",
+                    if s.connected {
+                        "    (no tools)"
+                    } else {
+                        "    (connects on first use)"
+                    },
                     Style::default().dim(),
                 )));
             } else {
@@ -112,7 +117,7 @@ pub fn draw_mcp_panel(f: &mut Frame, app: &mut App) {
     let para = Paragraph::new(lines).scroll((app.mcp_scroll(), 0)).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("MCP Servers (e/d: enable/disable, c/t: sign in/check, ↑↓: select, Esc: close)"),
+            .title("MCP Servers (d: deny for session, c/t: sign in/check, ↑↓: select, Esc: close)"),
     );
 
     let area = centered_rect(70, 60, f.area());
@@ -230,4 +235,44 @@ pub fn draw_tools_view(f: &mut Frame, app: &mut App) {
     let area = centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, app.tools_view_state());
+}
+
+#[cfg(test)]
+mod tests {
+    use entanglement_core::{McpServerStatus, OutEvent, SessionId};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use super::*;
+
+    /// ADR-0226: every server is on by default, so the panel offers the
+    /// per-session deny (`d`) and the OAuth keys — never an enable key — and
+    /// an unconnected server reads "available", not broken.
+    #[test]
+    fn the_panel_offers_deny_but_no_enable_and_shows_availability() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.record_pending_mcp_list("c1".into());
+        app.handle_out_event(OutEvent::McpList {
+            correlation_id: "c1".into(),
+            servers: vec![McpServerStatus {
+                name: "kb".into(),
+                transport: "http".into(),
+                connected: false,
+                tools: vec![],
+                error: None,
+                state: None,
+                auth: None,
+            }],
+        });
+        assert!(app.showing_mcp_panel());
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| draw_mcp_panel(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..30)
+            .flat_map(|y| (0..140).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("d: deny for session"), "{text}");
+        assert!(!text.contains("e/d"), "{text}");
+        assert!(text.contains("available"), "{text}");
+    }
 }

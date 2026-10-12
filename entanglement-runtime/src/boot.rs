@@ -48,7 +48,6 @@ pub(crate) struct Engine {
     pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
     pub(crate) aux_registry: crate::aux_llm::AuxLlmRegistry,
     pub(crate) advertising_state: Arc<tool_advertising::AdvertisingState>,
-    pub(crate) advertising_inputs: Arc<tool_advertising::AdvertisingInputs>,
 }
 
 /// Discover definitions, build the engine config and spawn the engine.
@@ -59,12 +58,11 @@ pub(crate) async fn boot(
 ) -> Result<Engine> {
     // Discover file-based agent definitions (#112): embedded built-ins, then the
     // user dir, then the project dir. A malformed file is a loud error. Each
-    // agent body is composed with the shared preamble, project brief, env block,
-    // and skill index into its final system prompt (#113) as it is loaded.
+    // agent body is composed with the shared preamble, project brief and env
+    // block into its final system prompt (#113) as it is loaded.
     // Discover skills (#114): embedded stock skills, then user, then project. A
-    // malformed SKILL.md is a loud error. Only `name` + `description` reach the
-    // model, folded into the assembled system prompt as a tier-1 disclosure list
-    // (user_only skills withheld) — selection stays the model's own reasoning.
+    // malformed SKILL.md is a loud error. The model learns them from
+    // `list_skills` (ADR-0226 — the roster left the system prompt).
     let skill_registry =
         std::sync::Arc::new(skills::load_registry(cwd).context("loading skill definitions")?);
     // The runtime's own live-reloadable mirror (#329, ADR-0084): a definitions
@@ -73,8 +71,7 @@ pub(crate) async fn boot(
     // core's own copy (built into `engine_config` below) has no such seam.
     let live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>> =
         Arc::new(RwLock::new(skill_registry.clone()));
-    let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
-    prompt_ctx.skills = skill_registry.disclosures();
+    let prompt_ctx = system_prompt::PromptContext::load(cwd);
     // The MCP capability index (#426): config-side `capabilities:` hints on
     // `user_config.mcp` *and* every catalog-bundled server (e.g. z.ai's
     // `web_search_prime`, which never joins `user_config.mcp` — #542),
@@ -89,8 +86,7 @@ pub(crate) async fn boot(
         .entry("call".to_string())
         .or_default()
         .extend(endpoint::call_capability_names(&user_config.endpoints));
-    // The skill registry also resolves per-agent `skills:` preload bodies (#117),
-    // orthogonal to the tier-1 disclosures above and to the `load_skill` mask.
+    // The skill registry also resolves per-agent `skills:` preload bodies (#117).
     let mut profiles = agents::load_registry(cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
         .context("loading agent definitions")?;
     // Per-agent model pins (#323, ADR-0081): overlay the persisted
@@ -126,8 +122,8 @@ pub(crate) async fn boot(
         crate::session_store::SessionStore::for_cwd(cwd),
         user_config.undo,
     );
-    // The skill registry is shared: its tier-1 disclosures fed the system prompt
-    // above, and `load_skill` (#115) resolves tier-2 bodies against it at runtime.
+    // The skill registry is shared: `list_skills` and `load_skill` (#115)
+    // resolve against it at runtime.
     let (
         mut engine_config,
         model_info,
@@ -151,26 +147,21 @@ pub(crate) async fn boot(
         file_backups.clone(),
     )
     .await;
-    logging::startup_mark("tools+mcp connect");
+    logging::startup_mark("tools");
     // Per-agent generation-parameter overrides (#374, ADR-0094): resolved by
     // profile name at session start / `SetAgent`, same precedence tier the model
     // pin's persisted file occupies (persisted store > profile/catalog default).
     engine_config.generation_resolver = Some(
         config::agent_generation::AgentGenerationStore::resolver(live_agent_generation.clone()),
     );
-    // `explore`/`describe`'s shared state (#560, ADR-0196 §2-4): the pinned
-    // session→mode map plus the `client_side`-encoding discovered-tool set.
-    // Constructed once, here, so the *same* `Arc` is visible to the system-
-    // prompt resolver just below, the tool-spec resolver further down, and
-    // the tool executor (`services::start`) — Phase P1's loop-local-only map
-    // is gone.
+    // The per-session advertising state (ADR-0226): surface snapshots, the
+    // delivered-schema set, the env-date pin. One `Arc`, shared by the
+    // system-prompt resolver just below, the tool-spec resolver further
+    // down, and the tool executor (`services::start`).
     let advertising_state = std::sync::Arc::new(tool_advertising::AdvertisingState::new());
-    // Per-session system prompt (#566, #560): folds the `<env>` date-freshness
-    // patch with the ADR-0196 §5 `ToolSearch`-mode prompt slimming into the
-    // one `SystemPromptResolver` slot — consulted once per turn, a no-op for
-    // a `Full`-mode session except on the date's actual rollover, always-Some
-    // for a `ToolSearch`-mode one (the slimmed prompt, byte-stable per
-    // session since the mode never changes mid-session).
+    // Per-session system prompt (#566): the `<env>` date pin (ADR-0202 §5)
+    // in the one `SystemPromptResolver` slot — a no-op except on a date
+    // rollover, keeping the cached system block byte-stable per session.
     engine_config.system_prompt_resolver =
         Some(system_prompt_mode::resolver(advertising_state.clone()));
     // The static "what modes exist" preamble (ADR-0207 §9/§12): the runtime
@@ -210,30 +201,19 @@ pub(crate) async fn boot(
     // path) through the `summarize` pin when one is set — core calls this with
     // the purpose string and falls back to the session's own backend on `None`.
     engine_config.aux_llm_resolver = Some(aux_registry.clone().resolver());
-    // Dynamic `ToolRegistry` (#372, ADR-0096) behind the per-session resolver
-    // core consults every round (ADR-0076) — shaped per the session's pinned
-    // advertising mode/encoding/discovery (ADR-0196, ADR-0204). Lives in the
-    // library (`tool_advertising::surface`) so tests run the same resolver.
-    // The resolver pins each session at its first resolution from the model
-    // core hands it — the startup backend when none is bound (ADR-0204).
-    let advertising_inputs = Arc::new(
-        tool_advertising::AdvertisingInputs::new(
-            Arc::new(user_config.clone()),
-            Some(Arc::new(catalog.clone())),
-        )
-        .with_default_model(provider_name.clone(), model_info.id.clone()),
-    );
+    // The one advertised surface (ADR-0226) behind the per-session resolver
+    // core consults every round (ADR-0076): snapshotted at a session's first
+    // resolution, identical on every wire. Lives in the library
+    // (`tool_advertising::surface`) so tests run the same resolver.
     engine_config.tool_spec_resolver = Some(tool_advertising::surface::tool_spec_resolver(
         tool_advertising::surface::SurfaceSources {
             tools: tools.clone(),
-            avail: mcp_available.clone(),
             advertising: advertising_state.clone(),
-            inputs: advertising_inputs.clone(),
-            agent_specs: subagent::agent_specs(&engine_config.agents),
+            agent_specs: subagent::agent_specs(),
         },
     ));
-    // Live MCP server management (#375): `ActiveServers` was seeded by
-    // `build_config` from the servers it actually connected; `ServerConfigs`
+    // Live MCP server management (#375): `ActiveServers` starts empty (no
+    // startup connect, ADR-0226); `ServerConfigs`
     // starts from the *whole* user-configured set (including a disabled/failed
     // one) — the wider map `save_mcp` must round-trip so a live add/remove
     // never drops an unrelated entry. Catalog-bundled servers (#542) are
@@ -285,6 +265,5 @@ pub(crate) async fn boot(
         live_aux_models,
         aux_registry,
         advertising_state,
-        advertising_inputs,
     })
 }

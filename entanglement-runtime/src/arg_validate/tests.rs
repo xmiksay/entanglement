@@ -110,23 +110,25 @@ fn decline_text_includes_schema_and_example_when_not_yet_delivered() {
 }
 
 #[test]
-fn decline_text_for_invoke_wraps_only_the_example_call() {
-    let spec = ToolSpec::with_schema("read", "read a file", schema());
+fn an_mcp_tools_example_is_the_mcp_envelope_call() {
+    let spec = ToolSpec::with_schema("mcp__gh__read", "read a file", schema());
     let v = validate(&schema(), "{}").unwrap();
-    let msg = decline_text_for(&spec, &v, false, true);
+    let msg = decline_text(&spec, &v, false);
     let example = msg
-        .split("example call:\n")
+        .split("example call (through mcp):\n")
         .nth(1)
         .expect("example section");
     let example: Value = serde_json::from_str(example).expect("example is JSON");
     assert_eq!(
         example,
-        json!({"name": "read", "args": {"path": "example"}})
+        json!({"server": "gh", "tool": "read", "args": {"path": "example"}})
     );
-    assert_eq!(
-        decline_text_for(&spec, &v, false, false),
-        decline_text(&spec, &v, false)
+    let native = decline_text(
+        &ToolSpec::with_schema("read", "read a file", schema()),
+        &v,
+        false,
     );
+    assert!(native.contains("example call:\n"), "{native}");
 }
 
 #[test]

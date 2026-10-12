@@ -1,6 +1,6 @@
 //! The generic readable body (ADR-0204 §6) for every tool without a dedicated
 //! renderer — MCP `mcp__<server>__<tool>`, `endpoint__*`/`skill__*`,
-//! `mcp_enable`, unknown names — plus the output and error tails every
+//! unknown names — plus the output and error tails every
 //! expanded call shares. Arguments and JSON outputs become indented
 //! `key: value` lines ([`summary::readable_lines`]) wrapped to the panel,
 //! never escaped JSON.
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_tool_and_mcp_enable_use_the_readable_fallback() {
+    fn skill_and_unknown_tools_use_the_readable_fallback() {
         let text = expand(
             "skill__arch__check",
             r#"{"strict":true}"#,
@@ -159,12 +159,12 @@ mod tests {
         );
         assert_eq!(lines(&text), vec!["  strict: true", "  all good"]);
         let text = expand(
-            "mcp_enable",
-            r#"{"server":"github"}"#,
-            Some("enabled github"),
+            "endpoint__weather",
+            r#"{"city":"Prague"}"#,
+            Some("sunny"),
             false,
         );
-        assert_eq!(lines(&text), vec!["  server: github", "  enabled github"]);
+        assert_eq!(lines(&text), vec!["  city: Prague", "  sunny"]);
         let text = expand("mystery", "{}", None, false);
         assert_eq!(lines(&text), vec!["  (no arguments)"]);
     }

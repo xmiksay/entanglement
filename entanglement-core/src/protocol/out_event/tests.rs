@@ -310,12 +310,22 @@ fn mcp_list_and_changed_events_roundtrip() {
     let changed_ev = OutEvent::McpChanged {
         name: "everything".into(),
         action: McpAction::Added,
+        error: None,
     };
     assert_eq!(changed_ev.seq(), None);
     assert_eq!(changed_ev.session(), None);
     let json = serde_json::to_string(&changed_ev).unwrap();
     assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), changed_ev);
     assert!(json.contains(r#""action":"added""#), "{json}");
+    assert!(!json.contains("error"), "{json}");
+    // A failed op carries its reason; an older frame without `error` parses.
+    let failed = OutEvent::McpChanged {
+        name: "everything".into(),
+        action: McpAction::Added,
+        error: Some("refused".into()),
+    };
+    let json = serde_json::to_string(&failed).unwrap();
+    assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), failed);
 }
 
 #[test]

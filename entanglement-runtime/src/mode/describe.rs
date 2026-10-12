@@ -1,9 +1,9 @@
 //! Human/model-facing text for the four built-in modes (#560 P12, ADR-0207
 //! §9/§12): a short "what does this mode permit" summary per mode, used by
-//! three surfaces that must agree on the same wording rather than each
+//! the surfaces that must agree on the same wording rather than each
 //! inventing its own — `EngineConfig::modes_preamble` (folded once into the
-//! cached system prompt), `explore(kind: "modes")` (so a blocked model can
-//! explain itself), and the TUI `/mode` picker + `/set` dialog.
+//! cached system prompt, so a blocked model can explain itself) and the TUI
+//! `/mode` picker + `/set` dialog.
 //!
 //! **Must stay static** (ADR-0207 §9): the preamble sits in the provider's
 //! cached prefix, so this is a hand-written constant describing the shipped
@@ -61,26 +61,6 @@ pub fn modes_preamble() -> String {
     out
 }
 
-/// `explore(kind: "modes")`'s plain-text index — the same four summaries,
-/// framed as a listing rather than a preamble sentence (used by a model that
-/// wants to check what a mode permits mid-session, e.g. after a denial).
-pub fn modes_index() -> String {
-    let mut out = String::from("MODES:");
-    for (name, summary) in MODE_SUMMARIES {
-        out.push_str(&format!("\n  {name} — {summary}"));
-    }
-    out
-}
-
-/// One mode's summary, for `describe(["mode:<name>"])`. `None` for an
-/// unknown name.
-pub fn mode_summary(name: &str) -> Option<&'static str> {
-    MODE_SUMMARIES
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, s)| *s)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,19 +73,5 @@ mod tests {
         for (name, _) in MODE_SUMMARIES {
             assert!(a.contains(name), "{a}");
         }
-    }
-
-    #[test]
-    fn index_lists_every_mode() {
-        let idx = modes_index();
-        for (name, _) in MODE_SUMMARIES {
-            assert!(idx.contains(name), "{idx}");
-        }
-    }
-
-    #[test]
-    fn mode_summary_resolves_known_and_rejects_unknown() {
-        assert!(mode_summary("build").is_some());
-        assert!(mode_summary("nonexistent").is_none());
     }
 }

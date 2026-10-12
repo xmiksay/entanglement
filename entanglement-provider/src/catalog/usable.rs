@@ -1,6 +1,6 @@
 //! Provider usability predicate (#560 P12 follow-up to ADR-0207 §12): whether
 //! a catalog entry can possibly authenticate *right now*, so a model-facing
-//! listing (the sub-agent spawn `model` refusal, `explore(kind: "models")`)
+//! listing (the sub-agent spawn `model` refusal, `list_models`)
 //! offers only providers that could actually serve a request instead of the
 //! whole catalog. Split out of `catalog.rs` to stay clear of its 400-line
 //! code-line cap.
@@ -20,7 +20,7 @@ impl ProviderEntry {
     /// managed `.env` is loaded into the process env once at startup
     /// (`env_file::load`), strictly before the catalog is handed to any
     /// consumer of this predicate — `select_provider`, agent/session
-    /// construction, and every live spawn/`explore` call all run after.
+    /// construction, and every live spawn/`list_models` call all run after.
     pub fn is_usable(&self) -> bool {
         self.is_usable_with(|var| std::env::var(var).ok())
     }

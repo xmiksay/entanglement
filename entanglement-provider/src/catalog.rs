@@ -33,23 +33,19 @@ use serde_yaml::Value;
 // User-file resolution + the pre-deserialization deep merge, split out for the
 // 400-line file cap. The merge semantics themselves stay documented above,
 // where a reader of `Catalog` needs them.
-mod discovery;
 mod effort;
 mod generation;
 mod merge;
 mod pricing;
 mod thinking;
-mod tool_advertising;
 mod usable;
 
-pub use discovery::Discovery;
 pub use effort::{clamp_within, EffortTiers, ResolvedEffort};
 use merge::{merge_value, providers_file_path};
 pub use pricing::ModelPricing;
 pub use thinking::{
     AnthropicModelSpec, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle,
 };
-pub use tool_advertising::ToolAdvertising;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
 
@@ -115,11 +111,6 @@ pub struct ProviderEntry {
     /// other wires have no equivalent field and ignore it.
     #[serde(default)]
     pub prompt_cache_key: bool,
-    /// How a `tool_search`/`client_side` session reaches a discovered tool
-    /// (ADR-0204, see [`Discovery`]); a model's own `discovery` wins. `None`
-    /// here and on the model resolves to `append` in the runtime.
-    #[serde(default)]
-    pub discovery: Option<Discovery>,
     /// How this endpoint is told to think, OpenAI-compat wire only (see
     /// [`ThinkingControl`]). `None` — the default, and every non-z.ai entry —
     /// sends no `thinking` object at all: OpenAI proper 400s on the unknown
@@ -129,8 +120,8 @@ pub struct ProviderEntry {
 }
 
 // Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
-// so `catalog::McpServerState`/`catalog::ProviderMcpServer` stay valid paths.
-pub use crate::provider_mcp::{McpServerState, ProviderMcpServer};
+// so `catalog::ProviderMcpServer` stays a valid path.
+pub use crate::provider_mcp::ProviderMcpServer;
 
 /// Which concrete client talks to a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -147,8 +138,7 @@ pub enum Wire {
     Gemini,
     /// OpenAI's native Responses API `/responses` wire (ADR-0196 §3, P7):
     /// flat typed input/output items instead of Chat Completions'
-    /// role+content messages, and the one wire with a native client-executed
-    /// `tool_search` primitive. Opt-in per catalog entry — `openai` stays on
+    /// role+content messages. Opt-in per catalog entry — `openai` stays on
     /// Chat Completions; a user (or a future embedded default) picks this
     /// wire explicitly for a model that supports it (`gpt-5.4`+).
     #[serde(rename = "openai_responses")]
@@ -209,18 +199,9 @@ pub struct ModelEntry {
     /// changes what the next request carries.
     #[serde(default)]
     pub replay_thinking: Option<bool>,
-    /// Per-model tool-advertising preference (ADR-0196): `full` |
-    /// `tool_search`. Same Option-shaped catalog-preference pattern as
-    /// `thinking_style`/`thinking_format` — absent means "no catalog
-    /// preference", not `tool_search`; the runtime's
-    /// `tool_advertising::resolve_advertising` layers the install-wide
-    /// `config.yml`/env override on top of this, falling back to
-    /// `tool_search` only if nothing decides. See [`ToolAdvertising`].
-    #[serde(default)]
-    pub tool_advertising: Option<ToolAdvertising>,
-    /// Per-model override of the provider's [`Discovery`] strategy (ADR-0204).
-    #[serde(default)]
-    pub discovery: Option<Discovery>,
+    // `tool_advertising`/`discovery` are retired (ADR-0226): stripped before
+    // deserialize by `merge::strip_retired_keys`, so an old `providers.yml`
+    // still carrying one keeps loading.
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]
@@ -710,44 +691,26 @@ mod tests {
     }
 
     #[test]
-    fn discovery_defaults_follow_adr_0204() {
-        let c = Catalog::builtin();
-        let of = |name: &str| c.provider(name).unwrap().discovery;
-        assert_eq!(of("zai"), Some(Discovery::NativeFirst));
-        assert_eq!(of("zai_paas"), Some(Discovery::NativeFirst));
-        assert_eq!(of("gemini"), Some(Discovery::Invoke));
-        assert_eq!(of("openai"), Some(Discovery::Invoke));
-        assert_eq!(of("ollama"), Some(Discovery::Append));
-        // Native encodings have their own deferral primitive and ignore it.
-        assert_eq!(of("anthropic"), None);
-        assert_eq!(of("openai_responses"), None);
-        for p in &c.providers {
-            for m in &p.models {
-                assert_eq!(m.discovery, None, "{}.{} overrides nothing", p.name, m.id);
-            }
-        }
-    }
-
-    #[test]
-    fn discovery_merges_per_provider_and_per_model() {
-        let c = merge_str(
+    fn retired_discovery_and_tool_advertising_keys_are_ignored_not_rejected() {
+        // ADR-0226 removed both knobs; a user file still carrying them (at
+        // provider *or* model level) must keep loading despite
+        // `deny_unknown_fields`, with siblings and models untouched.
+        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+        let over: Value = serde_yaml::from_str(
             "providers:\n\
-             \x20 - name: ollama\n\
+             \x20 - name: zai\n\
              \x20   discovery: invoke\n\
+             \x20   tool_advertising: full\n\
              \x20   models:\n\
-             \x20     - id: mistral\n\
-             \x20       discovery: native_first\n",
-        );
-        assert_eq!(
-            c.provider("ollama").unwrap().discovery,
-            Some(Discovery::Invoke)
-        );
-        assert_eq!(
-            c.model("ollama", "mistral").unwrap().discovery,
-            Some(Discovery::NativeFirst)
-        );
-        // Sibling fields and models are untouched by the merge.
-        assert_eq!(c.model("ollama", "llama3.1").unwrap().discovery, None);
+             \x20     - id: glm-5.3\n\
+             \x20       discovery: append\n\
+             \x20       tool_advertising: tool_search\n",
+        )
+        .unwrap();
+        let merged = merge_value(base, over);
+        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
+        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
         assert_eq!(c.provider("ollama").unwrap().default_model, "llama3.1");
     }
 
@@ -762,10 +725,7 @@ mod tests {
         let merged = merge_value(base, over);
         assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
         let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
-        assert_eq!(
-            c.provider("zai").unwrap().discovery,
-            Some(Discovery::NativeFirst)
-        );
+        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
     }
 
     #[test]
@@ -956,8 +916,8 @@ mod tests {
     fn zai_ships_the_three_bundled_mcp_servers() {
         // #542: web_search_prime / web_reader / zread ride the catalog as data,
         // HTTP transport, keyed by the provider's own ZAI_API_KEY header, all
-        // tools hinted read-only (#426), state unset (⇒ the runtime's
-        // `allowed` default).
+        // tools hinted read-only (#426), each with a `list_mcp` description,
+        // none disabled (ADR-0226: registered = available).
         let c = Catalog::builtin();
         let zai = c.provider("zai").unwrap();
         assert_eq!(zai.mcp_servers.len(), 3);
@@ -978,7 +938,8 @@ mod tests {
                 s.headers.get("Authorization").map(String::as_str),
                 Some("Bearer ${ZAI_API_KEY}")
             );
-            assert!(s.state.is_none(), "{name}: default state must stay unset");
+            assert!(!s.disabled, "{name}: bundled servers default on");
+            assert!(s.description.is_some(), "{name}: needs a description");
             assert!(!s.capabilities.is_empty());
             assert!(s.capabilities.values().all(|c| c == "read"));
         }
@@ -992,8 +953,8 @@ mod tests {
     }
 
     #[test]
-    fn bundled_mcp_server_state_is_user_overridable_field_wise() {
-        // A user providers.yml can flip one bundled server's state without
+    fn bundled_mcp_server_disabled_is_user_overridable_field_wise() {
+        // A user providers.yml can switch one bundled server off without
         // re-declaring (or losing) its url/headers — the mapping merges
         // key-wise like every other catalog mapping.
         let c = merge_str(
@@ -1001,30 +962,49 @@ mod tests {
              \x20 - name: zai\n\
              \x20   mcp_servers:\n\
              \x20     web_reader:\n\
-             \x20       state: disabled\n",
+             \x20       disabled: true\n",
         );
         let zai = c.provider("zai").unwrap();
         let reader = zai.mcp_servers.get("web_reader").unwrap();
-        assert_eq!(reader.state, Some(McpServerState::Disabled));
+        assert!(reader.disabled);
         assert!(reader.url.as_deref().unwrap().contains("web_reader"));
         // Siblings untouched.
-        assert!(zai.mcp_servers.get("zread").unwrap().state.is_none());
-        // And a user can bundle a server onto another provider entirely.
-        let c = merge_str(
+        assert!(!zai.mcp_servers.get("zread").unwrap().disabled);
+    }
+
+    #[test]
+    fn a_retired_bundled_mcp_state_disabled_still_opts_out() {
+        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+        let over: Value = serde_yaml::from_str(
             "providers:\n\
-             \x20 - name: openai\n\
+             \x20 - name: zai\n\
              \x20   mcp_servers:\n\
-             \x20     myserver:\n\
-             \x20       url: https://example.com/mcp\n\
+             \x20     zread:\n\
+             \x20       state: disabled\n",
+        )
+        .unwrap();
+        let merged = merge::strip_retired_keys(merge_value(base, over));
+        let c: Catalog = serde_yaml::from_value(merged).unwrap();
+        assert!(c.provider("zai").unwrap().mcp_servers["zread"].disabled);
+    }
+
+    #[test]
+    fn a_retired_bundled_mcp_state_key_is_ignored_not_rejected() {
+        // ADR-0226 retired ADR-0152's `state:`; an old user file keeps loading.
+        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
+        let over: Value = serde_yaml::from_str(
+            "providers:\n\
+             \x20 - name: zai\n\
+             \x20   mcp_servers:\n\
+             \x20     zread:\n\
              \x20       state: enabled\n",
-        );
-        let my = c
-            .provider("openai")
-            .unwrap()
-            .mcp_servers
-            .get("myserver")
-            .unwrap();
-        assert_eq!(my.state, Some(McpServerState::Enabled));
+        )
+        .unwrap();
+        let merged = merge_value(base, over);
+        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
+        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
+        let zread = c.provider("zai").unwrap().mcp_servers.get("zread").unwrap();
+        assert!(!zread.disabled);
     }
 
     #[test]

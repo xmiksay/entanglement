@@ -379,8 +379,8 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
 | `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |
-| `advertising_inputs(Arc<AdvertisingInputs>)` | none — every session resolves `tool_search` |
-| `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private state, empty MCP roster) |
+| `catalog(Arc<Catalog>)` | none — `list_models` and `agent`'s `model` validation report "no catalog configured" |
+| `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private advertising state, empty MCP roster) |
 
 **Persisted grants are opt-in.** A single-user head that wants `Always`
 approvals written to the managed `grants.yml` must say so —
@@ -450,8 +450,9 @@ after): `spawn_tool_executor(h, t, a, b)` →
 `spawn_tool_executor_with_hooks` adds `.hooks(hooks)`;
 `spawn_tool_executor_with_policy(h, t, …)` maps each positional argument onto
 the setter of the same name (`agents` → `live_agents`, `skills` →
-`live_skills`, an `Option` argument → its setter only when `Some`). Drop any
-setter whose argument was just the default above.
+`live_skills`, an `Option` argument → its setter only when `Some`; its former
+`advertising_inputs` argument is now `catalog: Option<Arc<Catalog>>`). Drop
+any setter whose argument was just the default above.
 
 ### The policy seams
 
@@ -561,8 +562,9 @@ against its own `RecordSink`.
 
 ## 6. Attaching MCP servers programmatically
 
-The YAML `mcp:` config section (`mcp::connect`,
-[ADR-0067](adr/0067-mcp-client-as-runtime-tool-provider.md)) is one static
+The YAML `mcp:` config section (`mcp::AvailableMcp::from_config`, connected
+lazily on first use — [ADR-0067](adr/0067-mcp-client-as-runtime-tool-provider.md),
+[ADR-0226](adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) is one static
 `command`/`url` per server, shared by every session — not what a multi-tenant
 embedder needs when each tenant has their own remote server or their own
 per-user auth token. `mcp::HttpClient::connect(server, url, headers)`
@@ -589,7 +591,7 @@ target); set `MCP_HTTP_URL` to actually connect it to a server.
 Hand-registering like this shares one client across every session. When each
 *user* needs their own servers and credentials routed per session, use the
 managed seam instead — `mcp::scoped::McpScopes` in §7 (#684) does the caching,
-lazy connecting, and per-session advertisement/dispatch replacement for you.
+lazy connecting, and per-session discovery/dispatch replacement for you.
 
 ## 7. Multi-user: per-user providers, permissions, tokens
 
@@ -670,9 +672,11 @@ seam implementations over it. Per seam:
   (replace semantics — the global MCP set disappears for scoped sessions;
   same-named servers across users stay distinct via the `(scope key, server)`
   connection cache). Close an `McpScopeResolver` over your session→user map,
-  hand the `McpScopes` to `ToolExecutor::builder(..).mcp_scopes(scopes)`
-  (leaving the setter out keeps single-user behavior), and wrap your
-  `tool_spec_resolver` with `overlay_specs`:
+  and hand the `McpScopes` to `ToolExecutor::builder(..).mcp_scopes(scopes)`
+  (leaving the setter out keeps single-user behavior). MCP schemas are never
+  advertised ([ADR-0226](adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)), so there is no spec overlay to wire: a scoped
+  session's `list_mcp`/`mcp_tools` resolve through its scope and its
+  `mcp(...)` calls dispatch over it.
 
   ```rust,ignore
   let scopes = McpScopes::new(Arc::new(move |session| {
@@ -683,15 +687,12 @@ seam implementations over it. Per seam:
           token_store: Some(user_scoped(store.clone(), user.clone())),
       })
   }), http_client.clone(), secret_env);
-  // advertisement: engine_config.tool_spec_resolver = Some(Arc::new({
-  //     let (scopes, tools) = (scopes.clone(), tools.clone());
-  //     move |s, _model| scopes.overlay_specs(s, tools.read().unwrap().specs())
-  // }));
   ```
 
-  The resolver runs on the sync advertisement path — keep it an in-memory
-  lookup, never I/O. Await `scopes.prewarm(&session)` between `Spawn` and the
-  first `Prompt` so the scope's tools are listed and advertised; call
+  The resolver runs per discovery read and per MCP dispatch — keep it an
+  in-memory lookup, never I/O. Optionally await `scopes.prewarm(&session)`
+  between `Spawn` and the first `Prompt` so `list_mcp` already shows the
+  scope's tools (otherwise the first `mcp_tools`/`mcp(...)` connects); call
   `scopes.evict_scope(key)` on logout or whenever a user's server set or
   credentials change (the cache keys on `key` alone). An `oauth:` server
   whose slice holds no token fails the call with
@@ -701,6 +702,45 @@ seam implementations over it. Per seam:
   the in-tree profile expansion, which is process-global — fold
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
+
+## Migrating to one advertised surface (ADR-0226, #818)
+
+[ADR-0226](adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) removed the advertising modes and MCP's three states. What an
+embedder has to change:
+
+- **Removed types/consts:** `ToolAdvertising`, `Discovery`, `INVOKE_TOOL`,
+  `TOOL_SEARCH_CALL_TOOL`, `McpServerState`, `ToolSpec.defer_loading` (drop
+  the field from any struct literal), `tool_advertising::AdvertisingInputs`
+  (and its pin/repin/encoding API), `mcp::McpEnableTool`, `mcp::connect` (there
+  is no startup connect), `McpScopes::overlay_specs` (MCP schemas are never
+  advertised).
+- **Added:** `MCP_TOOL` (`"mcp"`, re-exported by core) — the envelope name
+  core unwraps; `discover::{mcp_spec, list_*_spec, mcp_tools_spec}`;
+  `mcp::McpToolCache` (the managed `mcp-tools.yml`); `McpScopes::rows`.
+- **Renamed/reshaped:** `AvailableMcp::partition(..) -> (startup, roster)` →
+  `AvailableMcp::from_config(..) -> roster`. It reads OAuth credentials from
+  the managed `mcp-tokens.yml` by default (`.with_token_store(..)` pins
+  another store), but records no last-seen tool names until you chain
+  `.with_tool_cache(McpToolCache::managed())` (as `skutter` does); the free
+  `mcp::needs_auth` → `AvailableMcp::needs_auth`; `ToolExecutorBuilder::
+  advertising_inputs(..)` → `.catalog(Arc<Catalog>)` (the deprecated
+  `spawn_tool_executor_with_policy` takes `catalog: Option<Arc<Catalog>>` in
+  the same slot); `subagent::agent_specs()` takes no argument (the spec is
+  session-invariant); `tool_advertising::surface::SurfaceSources` is
+  `{ tools, advertising, agent_specs }`; `PromptContext.skills` →
+  `tool_conventions: Option<&'static str>` (the skill roster left the prompt
+  for `list_skills`); `McpServerConfig.state` → `description` (`disabled` is
+  the one opt-out); `ProviderMcpServer.state` → `description` + `disabled`.
+- **Retired config/catalog keys** (ignored with one warning each):
+  `config.yml` `tool_advertising:`, `discovery:`, `mcp.<name>.state:`;
+  `providers.yml` provider/model `discovery`/`tool_advertising` and a bundled
+  server's `state`.
+- **Wire:** `McpServerStatus.state` stays serde-defaulted for old logs but is
+  always `None`; heads should read `connected` and `auth`.
+  `OutEvent::McpChanged` gains a serde-defaulted `error: Option<String>` — set
+  when an `McpAdd`/`McpRemove` was refused or failed (a match on the variant
+  needs `..` or the new field). Old logs carrying
+  `invoke` envelopes still deserialize and replay.
 
 ## TLS and the rustls crypto provider
 

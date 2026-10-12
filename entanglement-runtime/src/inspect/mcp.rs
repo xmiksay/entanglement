@@ -1,14 +1,13 @@
 //! `skutter inspect mcp` (#558).
 //!
-//! Surfaces the *resolved* MCP server universe — provider-bundled servers
+//! Surfaces the *resolved* MCP server roster — provider-bundled servers
 //! (#542) folded with the user's `mcp:` config entries — without spawning the
-//! engine or connecting to anything: which servers auto-connect at session
-//! start (`enabled`), which wait for a per-session `/enable` (`allowed`), the
-//! bundling provider (`None` for a user-declared server), and whether an
-//! OAuth-protected one already has a stored credential. This is the static
-//! availability picture; live connection status is `/mcp list`'s job.
+//! engine or connecting to anything: every registered server (ADR-0226:
+//! registered = available, nothing connects at startup), its bundling
+//! provider, its description, whether an OAuth-protected one already has a
+//! stored credential, and the last-seen tool names. This is the static
+//! picture; live connection status is `/mcp list`'s job.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -16,7 +15,7 @@ use anyhow::{Context, Result};
 use entanglement_core::Catalog;
 
 use crate::config::{Config, McpTokenStore};
-use crate::mcp::{transport_label, AvailableMcp};
+use crate::mcp::{transport_label, AvailableMcp, McpToolCache};
 
 /// Resolve the catalog + user config for `cwd` and print the bundled/available
 /// MCP server roster.
@@ -24,44 +23,25 @@ pub fn inspect_mcp(cwd: &Path) -> Result<()> {
     let catalog = Catalog::load().context("loading provider catalog")?;
     let resolved = Config::resolve(cwd).context("resolving user config")?;
     let token_store = McpTokenStore::load();
-    print!("{}", render_mcp(&catalog, &resolved.config, &token_store));
+    let cache = McpToolCache::managed();
+    print!(
+        "{}",
+        render_mcp(&catalog, &resolved.config, &token_store, &cache)
+    );
     Ok(())
 }
 
-fn render_mcp(catalog: &Catalog, config: &Config, tokens: &McpTokenStore) -> String {
-    let provider_of: HashMap<String, String> = catalog
-        .providers
-        .iter()
-        .flat_map(|p| {
-            p.mcp_servers
-                .keys()
-                .map(move |name| (name.clone(), p.name.clone()))
-        })
-        .collect();
-
-    let secret_env = catalog.key_envs();
-    let (startup, avail) = AvailableMcp::partition(catalog, &config.mcp, secret_env);
-
+fn render_mcp(
+    catalog: &Catalog,
+    config: &Config,
+    tokens: &McpTokenStore,
+    cache: &McpToolCache,
+) -> String {
+    let avail = AvailableMcp::from_config(catalog, &config.mcp, catalog.key_envs());
     let mut out = String::new();
-    let _ = writeln!(out, "startup-connected (state: enabled):");
-    if startup.is_empty() {
-        let _ = writeln!(out, "  (none)");
-    } else {
-        let mut names: Vec<&String> = startup.keys().collect();
-        names.sort();
-        for name in names {
-            let cfg = &startup[name].config;
-            let provider = provider_of
-                .get(name)
-                .map(String::as_str)
-                .unwrap_or("user-defined");
-            let _ = writeln!(out, "  {name}: {provider} ({})", transport_label(cfg));
-        }
-    }
-
     let _ = writeln!(
         out,
-        "\navailable (state: allowed — needs /enable mcp <name>):"
+        "registered MCP servers (available; connect on first mcp_tools/mcp call):"
     );
     let available_names = avail.available_names();
     if available_names.is_empty() {
@@ -86,6 +66,12 @@ fn render_mcp(catalog: &Catalog, config: &Config, tokens: &McpTokenStore) -> Str
                 "  {name}: {provider} ({}){auth}",
                 transport_label(&server.config)
             );
+            if let Some(d) = &server.config.description {
+                let _ = writeln!(out, "    {d}");
+            }
+            if let Some(tools) = cache.lookup(name, &server.config.target()) {
+                let _ = writeln!(out, "    tools (last seen): {}", tools.join(", "));
+            }
         }
     }
     out
@@ -95,6 +81,7 @@ fn render_mcp(catalog: &Catalog, config: &Config, tokens: &McpTokenStore) -> Str
 mod tests {
     use super::*;
     use entanglement_core::{Permission, PermissionProfile};
+    use std::collections::HashMap;
 
     fn empty_catalog() -> Catalog {
         Catalog { providers: vec![] }
@@ -118,25 +105,25 @@ mod tests {
             auto_compact: None,
             editor: None,
             session_retention_days: 30,
-            tool_advertising: None,
             tui: Default::default(),
             undo: Default::default(),
         }
     }
 
     #[test]
-    fn empty_config_reports_no_startup_or_available_servers() {
-        let catalog = empty_catalog();
-        let config = empty_config();
-        let tokens = McpTokenStore::at(None);
-        let rendered = render_mcp(&catalog, &config, &tokens);
-        assert!(rendered.contains("startup-connected (state: enabled):\n  (none)"));
-        assert!(rendered.contains("available (state: allowed"));
-        assert!(rendered.contains("  (none)"));
+    fn empty_config_reports_no_servers() {
+        let rendered = render_mcp(
+            &empty_catalog(),
+            &empty_config(),
+            &McpTokenStore::at(None),
+            &McpToolCache::at(None),
+        );
+        assert!(rendered.contains("registered MCP servers"), "{rendered}");
+        assert!(rendered.contains("  (none)"), "{rendered}");
     }
 
     #[test]
-    fn a_user_allowed_server_shows_up_as_user_defined_and_available() {
+    fn a_user_server_shows_up_with_its_description_and_last_seen_tools() {
         let catalog = empty_catalog();
         let mut config = empty_config();
         config.mcp.insert(
@@ -150,11 +137,20 @@ mod tests {
                 disabled: false,
                 capabilities: HashMap::new(),
                 oauth: None,
-                state: Some(entanglement_core::McpServerState::Allowed),
+                description: Some("project docs".to_string()),
             },
         );
-        let tokens = McpTokenStore::at(None);
-        let rendered = render_mcp(&catalog, &config, &tokens);
-        assert!(rendered.contains("docs: user-defined (stdio)"));
+        let dir = tempfile::tempdir().unwrap();
+        let cache = McpToolCache::at(Some(dir.path().join("mcp-tools.yml")));
+        cache
+            .record("docs", "docs-server", &["search".into()])
+            .unwrap();
+        let rendered = render_mcp(&catalog, &config, &McpTokenStore::at(None), &cache);
+        assert!(
+            rendered.contains("docs: user-defined (stdio)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("    project docs"), "{rendered}");
+        assert!(rendered.contains("tools (last seen): search"), "{rendered}");
     }
 }

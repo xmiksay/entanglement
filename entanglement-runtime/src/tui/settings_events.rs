@@ -9,7 +9,6 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::app::App;
 use super::hit_test::rect_contains;
 use super::modals::settings_tab_at;
-use super::settings_dialog::Stage;
 
 /// Returns `Ok(true)` only for the `Ctrl+Q` quit escape hatch.
 pub(super) async fn handle_settings_key(
@@ -23,25 +22,18 @@ pub(super) async fn handle_settings_key(
     let Some(dialog) = app.settings_dialog_mut() else {
         return Ok(false);
     };
-    match (dialog.stage(), key.code) {
-        (_, KeyCode::Esc) => app.close_settings_dialog(),
-        (Stage::ConfirmRepin, KeyCode::Enter | KeyCode::Char('y')) => {
-            app.confirm_settings_dialog(holly).await
-        }
-        (Stage::ConfirmRepin, KeyCode::Char('n') | KeyCode::Backspace) => dialog.back(),
-        (Stage::ConfirmRepin, _) => {}
-        (Stage::Editing, KeyCode::Enter) => app.confirm_settings_dialog(holly).await,
-        (Stage::Editing, KeyCode::Tab) => dialog.next_tab(),
-        (Stage::Editing, KeyCode::BackTab) => dialog.prev_tab(),
-        (Stage::Editing, KeyCode::Up | KeyCode::Char('k')) => dialog.move_focus(-1),
-        (Stage::Editing, KeyCode::Down | KeyCode::Char('j')) => dialog.move_focus(1),
-        (Stage::Editing, KeyCode::Left | KeyCode::Char('h')) => dialog.activate(false),
-        (Stage::Editing, KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ')) => {
-            dialog.activate(true)
-        }
-        (Stage::Editing, KeyCode::Char('a')) => dialog.toggle_allow(),
-        (Stage::Editing, KeyCode::PageUp) => dialog.page(false),
-        (Stage::Editing, KeyCode::PageDown) => dialog.page(true),
+    match key.code {
+        KeyCode::Esc => app.close_settings_dialog(),
+        KeyCode::Enter => app.confirm_settings_dialog(holly).await,
+        KeyCode::Tab => dialog.next_tab(),
+        KeyCode::BackTab => dialog.prev_tab(),
+        KeyCode::Up | KeyCode::Char('k') => dialog.move_focus(-1),
+        KeyCode::Down | KeyCode::Char('j') => dialog.move_focus(1),
+        KeyCode::Left | KeyCode::Char('h') => dialog.activate(false),
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => dialog.activate(true),
+        KeyCode::Char('a') => dialog.toggle_allow(),
+        KeyCode::PageUp => dialog.page(false),
+        KeyCode::PageDown => dialog.page(true),
         _ => {}
     }
     app.mark_dirty();
@@ -56,9 +48,6 @@ pub(super) fn click_settings(app: &mut App, column: u16, row: u16) {
     let Some(dialog) = app.settings_dialog_mut() else {
         return;
     };
-    if dialog.stage() != Stage::Editing {
-        return;
-    }
     if rect_contains(tabs, column, row) {
         if let Some(tab) = settings_tab_at(tabs.x, column) {
             dialog.set_tab(tab);

@@ -6,9 +6,9 @@
 //! to the LLM on its first turn, asserting:
 //!
 //! - an agent that flags `include_brief` gets
-//!   `preamble + body + brief + env + skills`;
+//!   `preamble + body + brief + env + tool conventions`;
 //! - a spawned agent that does not flag it gets `preamble + body + env +
-//!   skills` — env/skills are unconditional now (ADR-0207 §4 retires the old
+//!   tool conventions` — env/conventions are unconditional (ADR-0207 §4 retires the old
 //!   `Subagent`-mode reduced form; any agent may be a session root or a
 //!   spawn target) — but never the project brief the sibling agent included
 //!   (a spawned agent never inherits the parent's prompt; each is composed
@@ -25,7 +25,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::agents::load_registry_in;
 use entanglement_runtime::mcp::McpCapabilityIndex;
-use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, SkillDisclosure};
+use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, TOOL_CONVENTIONS};
 
 const PREAMBLE: &str = "SHARED-PREAMBLE-RULES";
 const BRIEF: &str = "PROJECT-BRIEF-TEXT";
@@ -56,7 +56,7 @@ impl Llm for RecordingLlm {
 }
 
 #[tokio::test]
-async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
+async fn spawned_child_system_has_env_and_conventions_but_not_the_parent_brief() {
     // A file-defined agent that opts into the brief, and one that does not —
     // identity only now (ADR-0207 §4), no `mode:` frontmatter key left.
     let project = tempfile::tempdir().unwrap();
@@ -74,7 +74,7 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
         &format!("---\nname: child\ndescription: leaf\n---\n{CHILD_BODY}"),
     );
 
-    // Explicit composition inputs: real preamble, brief, env, and one skill.
+    // Explicit composition inputs: real preamble, brief, env, conventions.
     let ctx = PromptContext {
         preamble: Some(PREAMBLE.into()),
         brief: Some(BRIEF.into()),
@@ -84,10 +84,7 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
             date: "2026-07-10".into(),
             scratch: None,
         }),
-        skills: vec![SkillDisclosure {
-            name: "git".into(),
-            description: "commit helpers".into(),
-        }],
+        tool_conventions: Some(TOOL_CONVENTIONS),
         ..Default::default()
     };
 
@@ -168,11 +165,13 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
     assert!(parent_sys.contains(BRIEF), "flagged the brief in");
     assert!(parent_sys.contains("<env>"), "gets the env block");
     assert!(
-        parent_sys.contains("git: commit helpers"),
-        "gets the skill index"
+        parent_sys.contains(TOOL_CONVENTIONS),
+        "gets the tool conventions"
     );
+    // ADR-0226: the skill roster left the prompt for `list_skills`.
+    assert!(!parent_sys.contains("Available skills"), "{parent_sys}");
 
-    // `child`: preamble + body + env + skills — env/skills are unconditional
+    // `child`: preamble + body + env + conventions — both unconditional
     // now (ADR-0207 §4) — but never the parent's brief (it never flagged
     // `include_brief`) or the parent's own body/prompt.
     assert!(child_sys.contains(PREAMBLE), "keeps the preamble");
@@ -183,8 +182,8 @@ async fn spawned_child_system_has_env_and_skills_but_not_the_parent_brief() {
     );
     assert!(child_sys.contains("<env>"), "gets the env block too");
     assert!(
-        child_sys.contains("git: commit helpers"),
-        "gets the skill index too"
+        child_sys.contains(TOOL_CONVENTIONS),
+        "gets the tool conventions too"
     );
     // And it is composed from its own body, not the parent's.
     assert!(

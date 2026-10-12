@@ -83,10 +83,13 @@
 #  stop:
 #    - command: "jq -c . >> ~/.local/state/entanglement-turns.jsonl"
 
-# MCP servers — attach external tool servers (#198, #312). Each entry registers a
-# server's tools into the engine, named `mcp__<server>__<tool>`. They are graded by
-# the session's permission mode exactly like host tools. A server that fails to connect is logged and
-# skipped, never fatal. Each block picks ONE transport — `command` XOR `url`:
+# MCP servers — attach external tool servers (#198, #312). Registered = available
+# (ADR-0226): the model lists servers with `list_mcp`, reads one server's tools
+# with `mcp_tools`, and calls them through `mcp(server, tool, args)` — every call
+# graded by the session's permission mode like a host tool, named
+# `mcp__<server>__<tool>` in rules. Nothing connects at startup: the first
+# `mcp_tools`/`mcp(...)` on a server connects it, and a failed connect is a tool
+# error, never fatal. Each block picks ONE transport — `command` XOR `url`:
 #
 #   stdio (local subprocess, JSON-RPC over stdio):
 #     command   — executable to spawn (looked up on PATH)
@@ -102,16 +105,13 @@
 #                 discovery). Authenticate with `/mcp connect <name>`; tokens
 #                 persist in the managed mcp-tokens.yml.
 #
-#   disabled     — skip this server without deleting the block (both transports)
-#   state        — (#542) three-state activation: `enabled` (connect at startup,
-#                  the default), `allowed` (available — connect on demand per
-#                  session via `/enable mcp <name>` or the agent's `mcp_enable`
-#                  tool), `disabled`. Overrides the `disabled` bool when set.
-#                  Provider-bundled servers (z.ai web_search_prime / web_reader /
-#                  zread, unlocked by ZAI_API_KEY) default to `allowed`; a
-#                  same-name entry here overrides them field-wise — e.g.
-#                  `zread: { state: disabled }` hides one, `state: enabled`
-#                  connects it at startup.
+#   description  — one line `list_mcp` shows for the server
+#   disabled     — the one opt-out: a disabled server is never listed or
+#                  connected. Provider-bundled servers (z.ai web_search_prime /
+#                  web_reader / zread, unlocked by ZAI_API_KEY) are on while the
+#                  key resolves; a same-name entry here overrides them
+#                  field-wise — e.g. `zread: { disabled: true }` hides one.
+#                  (The old three-state `state:` key is retired, ADR-0226.)
 #   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call`.
 #                  Every MCP tool currently grades as the fail-safe
 #                  Capability::Write regardless of this hint (ADR-0207 §3 left
@@ -137,8 +137,8 @@
 
 # Definition-driven HTTP endpoint tools (#560): a map of name → endpoint
 # definition, each registered as `endpoint__<name>` — an HTTP call tool whose
-# schema is derived from `params` (so argument validation and `describe()`
-# work the same as any native tool). Fields:
+# schema is derived from `params` (so argument validation works the same as for
+# any native tool). Fields:
 #   method      — GET/POST/PUT/PATCH/DELETE/HEAD, case-insensitive (default GET)
 #   url         — a template; `{{param}}` tokens are substituted (percent-encoded)
 #                 from the tool call's arguments at call time
@@ -215,13 +215,6 @@
 # read-only data dir is logged and skipped (never fatal). Leave commented for
 # the 30-day default.
 #session_retention_days: 30
-
-# Tool advertising (ADR-0196): "tool_search" (the default: a lean kernel
-# plus explore/describe discovery, the rest reachable after discovery) or
-# "full" (entire tool surface advertised). Leave commented to decide per
-# model via `tool_advertising:` in providers.yml (falling back to
-# tool_search). Resolved once per session and fixed for its lifetime.
-#tool_advertising: tool_search
 
 # File backups behind /undo and /rewind (ADR-0212): before write/edit/
 # apply_patch replace a file, its prior content is kept beside the session

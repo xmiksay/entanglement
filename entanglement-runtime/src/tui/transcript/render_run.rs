@@ -219,10 +219,11 @@ pub(super) fn tool_header_spans(
     available_width: u16,
     status_suffix: Option<(&str, Color)>,
 ) -> Vec<Span<'static>> {
-    // A frame still carrying an `invoke` envelope (a streamed call before its
-    // `ToolCall` lands) is named by its inner tool, like core's unwrapped
-    // events (ADR-0204); MCP/skill/endpoint names read `owner › tool`.
-    let (tool, input) = summary::unwrap_invoke(tool, input);
+    // A frame still carrying an `mcp` envelope (a streamed call before its
+    // `ToolCall` lands, or an old log's `invoke`) is named by its inner tool,
+    // like core's unwrapped events (ADR-0226); MCP/skill/endpoint names read
+    // `owner › tool`.
+    let (tool, input) = summary::unwrap_envelope(tool, input);
     let name = summary::display_name(&tool);
     let mut header = vec![
         Span::styled(format!("{arrow} "), Style::default().fg(fg)),

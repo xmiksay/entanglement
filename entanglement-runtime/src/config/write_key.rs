@@ -44,27 +44,9 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use entanglement_core::ToolAdvertising;
 use serde_yaml::Value;
 
 use super::{atomic::atomic_write, lock, user_config_path, CONFIG_FILE_ENV, TEMPLATE_YML};
-
-const ADVERTISING_COMMENT: &str =
-    "Tool advertising (ADR-0196): full | tool_search. Saved from the /set dialog.";
-/// Write `tool_advertising: <mode>` — the `/set` dialog's "save as default"
-/// for **new** sessions. (The per-provider `discovery:` map it once wrote too
-/// is retired, ADR-0213: the catalog decides.)
-pub fn save_tool_advertising(mode: ToolAdvertising) -> Result<PathBuf> {
-    save_key(
-        "tool_advertising",
-        ADVERTISING_COMMENT,
-        advertising_value(mode),
-    )
-}
-
-fn advertising_value(mode: ToolAdvertising) -> impl FnOnce(Option<&Value>) -> Result<Value> {
-    move |_| Ok(Value::String(mode.label().to_string()))
-}
 
 /// Set one top-level `key` of the user config to whatever `value` returns for
 /// the key's current value (`None` when the file doesn't set it), preserving
@@ -122,7 +104,7 @@ pub fn save_key_at(
     })
 }
 
-/// `key` and its value as YAML lines — `tool_advertising: full`, or a
+/// `key` and its value as YAML lines — `session_retention_days: 7`, or a
 /// mapping header with one indented line per entry.
 fn render_block(key: &str, value: &Value) -> Result<String> {
     let mut map = serde_yaml::Mapping::new();
@@ -275,9 +257,9 @@ fn commented_block_end(segments: &[&str], start: usize) -> usize {
 }
 
 /// Whether `segment` is a commented *child* of the line above — `#` followed
-/// by at least two spaces of YAML indent (`#  zai: native_first`). WHY the
-/// indent test: the scaffold writes prose with exactly one space (`# Tool
-/// advertising …`), so the indent is what tells an example value apart from
+/// by at least two spaces of YAML indent (`#  notify: false`). WHY the
+/// indent test: the scaffold writes prose with exactly one space (`# File
+/// backups …`), so the indent is what tells an example value apart from
 /// the next setting's explanation, which must never be eaten.
 fn commented_child(segment: &str) -> bool {
     let c = content(segment);
@@ -294,42 +276,42 @@ mod tests {
     use crate::config::Config;
     use std::path::Path;
 
-    fn save_adv(path: &Path, mode: ToolAdvertising) -> Result<PathBuf> {
+    fn save_days(path: &Path, days: u64) -> Result<PathBuf> {
         save_key_at(
             path.to_path_buf(),
-            "tool_advertising",
-            ADVERTISING_COMMENT,
-            advertising_value(mode),
+            "session_retention_days",
+            "Session retention.",
+            move |_| Ok(Value::Number(days.into())),
         )
     }
 
-    fn advertising(mode: &str) -> String {
-        format!("tool_advertising: {mode}\n")
+    fn retention(days: &str) -> String {
+        format!("session_retention_days: {days}\n")
     }
 
     #[test]
     fn writing_into_the_untouched_scaffold_uncomments_the_key_in_place() {
         let out = upsert_block(
             TEMPLATE_YML,
-            "tool_advertising",
-            &advertising("full"),
+            "session_retention_days",
+            &retention("7"),
             "unused",
         );
 
-        assert!(out.contains("\ntool_advertising: full\n"));
+        assert!(out.contains("\nsession_retention_days: 7\n"));
         assert!(
-            !out.contains("#tool_advertising: tool_search"),
+            !out.contains("#session_retention_days: 30"),
             "the placeholder became the real key"
         );
         // Every other line of the scaffold survives, comments included.
         for line in TEMPLATE_YML.lines() {
-            if line.starts_with("#tool_advertising") {
+            if line.starts_with("#session_retention_days") {
                 continue;
             }
             assert!(out.contains(line), "lost scaffold line {line:?}");
         }
         // And it parses back to exactly the intended value.
-        verify(&out, "tool_advertising", &Value::String("full".into())).unwrap();
+        verify(&out, "session_retention_days", &Value::Number(7.into())).unwrap();
     }
 
     #[test]
@@ -348,11 +330,11 @@ mod tests {
 
     #[test]
     fn replacing_an_existing_value_touches_only_that_line() {
-        let text = "# lead-in\nprovider: zai\n\n# mode\ntool_advertising: tool_search\n\n# tail\nverbose: true\n";
-        let out = upsert_block(text, "tool_advertising", &advertising("full"), "unused");
+        let text = "# lead-in\nprovider: zai\n\n# mode\nsession_retention_days: 30\n\n# tail\nverbose: true\n";
+        let out = upsert_block(text, "session_retention_days", &retention("7"), "unused");
         assert_eq!(
             out,
-            "# lead-in\nprovider: zai\n\n# mode\ntool_advertising: full\n\n# tail\nverbose: true\n"
+            "# lead-in\nprovider: zai\n\n# mode\nsession_retention_days: 7\n\n# tail\nverbose: true\n"
         );
     }
 
@@ -369,20 +351,20 @@ mod tests {
     #[test]
     fn a_missing_key_is_appended_with_its_comment() {
         let text = "# lead-in\nprovider: zai\n";
-        let out = upsert_block(text, "tool_advertising", &advertising("full"), "why");
+        let out = upsert_block(text, "session_retention_days", &retention("7"), "why");
         assert_eq!(
             out,
-            "# lead-in\nprovider: zai\n\n# why\ntool_advertising: full\n"
+            "# lead-in\nprovider: zai\n\n# why\nsession_retention_days: 7\n"
         );
     }
 
     #[test]
     fn crlf_line_endings_survive_both_paths() {
-        let text = "# lead-in\r\ntool_advertising: tool_search\r\n# tail\r\nverbose: true\r\n";
-        let out = upsert_block(text, "tool_advertising", &advertising("full"), "why");
+        let text = "# lead-in\r\nsession_retention_days: 30\r\n# tail\r\nverbose: true\r\n";
+        let out = upsert_block(text, "session_retention_days", &retention("7"), "why");
         assert_eq!(
             out,
-            "# lead-in\r\ntool_advertising: full\r\n# tail\r\nverbose: true\r\n"
+            "# lead-in\r\nsession_retention_days: 7\r\n# tail\r\nverbose: true\r\n"
         );
         assert!(!out.contains("full\n# tail"), "no bare LF introduced");
 
@@ -399,16 +381,16 @@ mod tests {
     #[test]
     fn a_file_without_a_trailing_newline_keeps_not_having_one() {
         // Replacing the very last line: no newline is invented.
-        let text = "provider: zai\ntool_advertising: tool_search";
-        let out = upsert_block(text, "tool_advertising", &advertising("full"), "why");
-        assert_eq!(out, "provider: zai\ntool_advertising: full");
+        let text = "provider: zai\nsession_retention_days: 30";
+        let out = upsert_block(text, "session_retention_days", &retention("7"), "why");
+        assert_eq!(out, "provider: zai\nsession_retention_days: 7");
 
         // Appending after it completes the last line first, so the file stays
         // parseable rather than gluing two keys onto one line.
         let out = upsert_block(text, "tui", "tui:\n  notify: true\n", "why");
         assert_eq!(
             out,
-            "provider: zai\ntool_advertising: tool_search\n\n# why\ntui:\n  notify: true\n"
+            "provider: zai\nsession_retention_days: 30\n\n# why\ntui:\n  notify: true\n"
         );
     }
 
@@ -420,10 +402,16 @@ mod tests {
         assert!(commented_key("# tui:\n", "tui"));
         assert!(commented_child("#  notify: false\n"));
         assert!(!commented_child("# Terminal-UI preferences\n"));
-        // An indented `tool_advertising:` inside some other block is not the
+        // An indented `session_retention_days:` inside some other block is not the
         // top-level key.
-        assert!(!live_key("  tool_advertising: full\n", "tool_advertising"));
-        assert!(live_key("tool_advertising: full", "tool_advertising"));
+        assert!(!live_key(
+            "  session_retention_days: 7\n",
+            "session_retention_days"
+        ));
+        assert!(live_key(
+            "session_retention_days: 7",
+            "session_retention_days"
+        ));
     }
 
     #[test]
@@ -434,8 +422,8 @@ mod tests {
         // No file yet: the writer scaffolds from the template, then edits it;
         // a second write rewrites the key in place, and a mapping key lands
         // beside it.
-        save_adv(&path, ToolAdvertising::Full).unwrap();
-        save_adv(&path, ToolAdvertising::ToolSearch).unwrap();
+        save_days(&path, 7).unwrap();
+        save_days(&path, 14).unwrap();
         save_key_at(path.clone(), "tui", "unused", |_| {
             Ok(serde_yaml::from_str("{notify: true}")?)
         })
@@ -444,7 +432,7 @@ mod tests {
         let resolved = Config::load_with(dir.path(), Some(&path)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
 
-        assert_eq!(resolved.tool_advertising, Some(ToolAdvertising::ToolSearch));
+        assert_eq!(resolved.session_retention_days, 14);
         assert!(resolved.tui.notify && resolved.tui.mouse);
         // Sibling settings and the scaffold's documentation are still there.
         assert!(text.contains("# entanglement — user configuration."));
@@ -465,7 +453,7 @@ mod tests {
         let path = dir.path().join("nested").join("config.yml");
         // A missing parent dir is created, not an error — the first persist on
         // a machine with no config dir yet must still work.
-        let written = save_adv(&path, ToolAdvertising::Full).unwrap();
+        let written = save_days(&path, 7).unwrap();
         assert_eq!(written, path);
         assert!(path.exists());
     }

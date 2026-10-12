@@ -28,7 +28,7 @@ pub(super) async fn run_and_reply(
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
     // The call exactly as the model emitted it, when core unwrapped an
-    // `invoke` envelope (ADR-0204) — `None` for an ordinary native call.
+    // `mcp` envelope (ADR-0226) — `None` for an ordinary native call.
     // Needed only for duplicate-key re-scanning below; every other use of
     // `tool`/`input` in this function already means the *inner* call either
     // way.
@@ -65,7 +65,7 @@ pub(super) async fn run_and_reply(
     // construction — nothing to validate against.
     if let Some(spec) = tools.spec_for(&tool) {
         if let Some(mut violation) = arg_validate::validate(&spec.schema, &input) {
-            // Core's `invoke` unwrap has to parse the outer envelope to pull
+            // Core's `mcp` unwrap has to parse the outer envelope to pull
             // out `args`, which collapses a duplicate key inside it exactly
             // like `validate`'s own parse of `input` just did above — so a
             // duplicate that lived under `args` is already gone from `input`
@@ -80,31 +80,19 @@ pub(super) async fn run_and_reply(
                 violation = ?violation.lines(),
                 "tool call failed pre-dispatch schema validation"
             );
-            let already_delivered = advertising
-                .discovered
-                .lock()
-                .expect("discovered-tool mutex poisoned")
-                .contains(&session, &tool);
-            if !already_delivered {
-                advertising
-                    .discovered
+            // An MCP tool's schema reaches the model only inside a tool result
+            // (`mcp_tools`, or an earlier decline) — the delivered set covers
+            // both, so a repeat violation points back instead of resending it.
+            let already_delivered = {
+                let mut delivered = advertising
+                    .delivered
                     .lock()
-                    .expect("discovered-tool mutex poisoned")
-                    .mark(&session, &tool);
-            }
-            let via_invoke = tool_advertising::example_via_invoke(advertising, &session, &tool);
-            // The delivered-schema dedup guard (ADR-0196 §6) only ever applies
-            // to a *native* call: that tool's schema sits in the `tools` array
-            // every round, so repeating it in a decline is genuinely
-            // redundant. A tool reached through `invoke` is never in `tools`
-            // — the model sees its schema nowhere else but inside a tool
-            // result — so "already provided above" would point it at
-            // something it cannot see. Never suppress here, no matter how
-            // many times this tool has already violated its schema this
-            // session.
-            let suppress_schema = already_delivered && !via_invoke;
-            let mut output =
-                arg_validate::decline_text_for(&spec, &violation, suppress_schema, via_invoke);
+                    .expect("delivered-schema mutex poisoned");
+                let seen = delivered.contains(&session, &tool);
+                delivered.mark(&session, &tool);
+                seen
+            };
+            let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
             if validation.note(&session, &tool, &input, true) {
                 output.push_str("\n\n");
                 output.push_str(arg_validate::LOOP_BREAKER_NOTE);

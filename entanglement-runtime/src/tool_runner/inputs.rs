@@ -34,7 +34,7 @@ impl EscapeRoot {
     }
 }
 
-/// `explore`/`describe`'s shared inputs (#560, ADR-0196 §4), bundled into one
+/// The discovery tools' shared inputs (ADR-0226), bundled into one
 /// struct — see [`super::ToolExecutorBuilder::discovery`].
 /// `Default` gives every field's own empty/private state: an advertising
 /// state no external resolver shares, an empty MCP roster, and a private
@@ -49,11 +49,9 @@ pub struct DiscoverySurface {
     /// since it's session-keyed state alongside `advertising`, read/written
     /// by the same `dispatch`/`run_and_reply` call sites.
     pub validation: Arc<arg_validate::LoopBreaker>,
-    /// The shared endpoint-pool `HttpClient` a dispatch-time lazy MCP
-    /// re-enable rides (ADR-0201, `mcp::available::try_lazy_reenable`) —
-    /// `None` (the builder default, most tests) degrades a
-    /// would-be re-enable to a clean tool error rather than a panic; those
-    /// callers' `mcp_avail` is also the empty default, so the path is never
-    /// actually exercised.
+    /// The shared endpoint-pool `HttpClient` every lazy MCP connect rides
+    /// (`mcp_tools`, or a dispatch, `mcp::available::try_lazy_connect`) —
+    /// `None` (the builder default, most tests) degrades a would-be connect
+    /// to a clean tool error rather than a panic.
     pub http: Option<entanglement_core::HttpClient>,
 }

@@ -97,7 +97,7 @@ pub(crate) fn emit_turn_done(
 }
 
 /// Display a tool call. `call` is the dispatch form; `envelope` is set when it
-/// was unwrapped from `invoke` (ADR-0204).
+/// was unwrapped from an `mcp` envelope (ADR-0226).
 pub(crate) fn emit_tool_call(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
@@ -236,16 +236,10 @@ fn tool_output_display(content: &[ContentPart]) -> String {
             // tool executor does not — but the match is exhaustive, and showing
             // nothing is the right answer if one ever appeared.
             ContentPart::Reasoning { .. } => String::new(),
-            // `describe()`'s reply on an `anthropic_native` ToolSearch session
-            // (ADR-0196 §3) carries one of these per discovered tool, alongside
-            // its schema text — reuse the same portable rendering a foreign
-            // wire's request converter falls back to, so a head shows the same
-            // "discovered X" line regardless of which wire is live.
+            // Legacy-only: a pre-ADR-0226 log's discovery replies carry these
+            // (nothing mints them now); show the same portable text every
+            // wire's request converter falls back to.
             ContentPart::ToolReference { tool_name } => tool_reference_fallback_text(tool_name),
-            // `tool_search` (P7)'s reply on a `responses_native` ToolSearch
-            // session carries one of these instead — same "show it as text
-            // regardless of wire" rendering, using its own human-readable
-            // `summary` rather than synthesizing one from a bare name.
             ContentPart::ToolSearchOutput { summary, .. } => summary.clone(),
         })
         .collect()

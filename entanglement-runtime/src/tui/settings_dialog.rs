@@ -1,6 +1,6 @@
 //! Bare `/set`'s tabbed session-settings dialog: Session (agent + model),
-//! Generation (only the knobs the selected model accepts), Tools (overlay,
-//! MCP servers, advertising re-pin) and Aux (per-purpose pins). Pure state —
+//! Generation (only the knobs the selected model accepts), Tools (the
+//! per-session overlay) and Aux (per-purpose pins). Pure state —
 //! `app/settings.rs` seeds it and runs the confirmed plan, `modals/settings.rs`
 //! draws it, `settings_events.rs` routes keys and clicks.
 //!
@@ -23,7 +23,7 @@ pub use aux::AuxTab;
 pub use generation::GenField;
 pub use rows::{RowId, RowView};
 pub use session::{mode_names, model_options, SessionTab};
-pub use tools::{discovery_label, server_of, AdvertisingRows, ToolsTab};
+pub use tools::ToolsTab;
 
 use entanglement_provider::GenerationParams;
 use ratatui::widgets::ListState;
@@ -55,26 +55,16 @@ impl Tab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    Editing,
-    /// The second step a pending advertising/discovery re-pin requires.
-    ConfirmRepin,
-}
-
 pub enum Confirm {
     /// Nothing pending — just close.
     Close,
-    NeedsRepinConfirmation,
     Apply(Vec<ApplyStep>),
 }
 
 pub const AUX_PERSIST_REASON: &str = "aux pins are process-wide and always persisted";
-pub const ADVERTISING_PERSIST_REASON: &str = "advertising state isn't wired into this head";
 
 pub struct SettingsDialog {
     tab: Tab,
-    stage: Stage,
     /// Focus per tab, as an index into that tab's focusable rows.
     focus: [usize; 4],
     list: ListState,
@@ -97,7 +87,6 @@ impl SettingsDialog {
         let caps = session.final_model().caps;
         Self {
             tab: Tab::Session,
-            stage: Stage::Editing,
             focus: [0; 4],
             list: ListState::default(),
             persist: [false; 2],
@@ -112,17 +101,12 @@ impl SettingsDialog {
         self.tab
     }
 
-    pub fn stage(&self) -> Stage {
-        self.stage
-    }
-
     pub fn list_state(&mut self) -> &mut ListState {
         &mut self.list
     }
 
     pub fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
-        self.stage = Stage::Editing;
     }
 
     pub fn next_tab(&mut self) {
@@ -203,9 +187,6 @@ impl SettingsDialog {
             RowId::PermMode => self.session.cycle_mode(forward),
             RowId::Gen(f) => self.generation.cycle(f, forward),
             RowId::Tool(i) => self.tools.toggle(i),
-            RowId::Mode => self.tools.adv.cycle_mode(),
-            RowId::AdvertisingPersist => self.tools.adv.toggle_persist(),
-            RowId::Discovery => self.tools.adv.cycle_discovery(forward),
             RowId::Aux(p) => self.aux.cycle(p, forward),
             RowId::Persist | RowId::Note => {}
         }
@@ -255,24 +236,14 @@ impl SettingsDialog {
             .collect()
     }
 
-    /// `Enter`. A pending re-pin first moves to [`Stage::ConfirmRepin`]; only
-    /// confirming there yields a plan containing it.
+    /// `Enter`: the plan of every pending change, or close when there is none.
     pub fn confirm(&mut self) -> Confirm {
-        if self.stage == Stage::Editing && self.tools.adv.repin().is_some() {
-            self.stage = Stage::ConfirmRepin;
-            return Confirm::NeedsRepinConfirmation;
-        }
         let plan = self.plan();
         if plan.is_empty() {
             Confirm::Close
         } else {
             Confirm::Apply(plan)
         }
-    }
-
-    /// Leave the re-pin confirmation without applying anything.
-    pub fn back(&mut self) {
-        self.stage = Stage::Editing;
     }
 
     fn plan(&self) -> Vec<ApplyStep> {
@@ -297,8 +268,6 @@ impl SettingsDialog {
             });
         }
         plan.extend(self.tools.overlay_step());
-        plan.extend(self.tools.adv.repin());
-        plan.extend(self.tools.adv.persist_step());
         plan.extend(
             self.aux
                 .changes()

@@ -42,7 +42,7 @@ pub(super) async fn await_decision(
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
     // The call exactly as the model emitted it, when core unwrapped an
-    // `invoke` envelope (ADR-0204) — carried across the approval park to
+    // `mcp` envelope (ADR-0226) — carried across the approval park to
     // `execute::run_and_reply`'s duplicate-key re-scan on approval.
     envelope: Option<ToolEnvelope>,
     pending: &crate::pending::PendingDecisions,

@@ -1,5 +1,5 @@
-//! `ENTANGLEMENT_STATE_DIR` (ADR-0213): one directory relocates all seven
-//! managed-state files. (That it moves none of the hand-edited inputs is
+//! `ENTANGLEMENT_STATE_DIR` (ADR-0213): one directory relocates all eight
+//! managed-state files (the eighth, `mcp-tools.yml`, ADR-0226). (That it moves none of the hand-edited inputs is
 //! unit-tested on each input's pure path resolver — `config.yml`, `.env`,
 //! `providers.yml` — without touching process env or the real config dir.)
 //!
@@ -20,6 +20,7 @@ use entanglement_runtime::config::state_dir::{self, STATE_DIR_ENV};
 use entanglement_runtime::config::McpTokenStore;
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::grants::FileGrantStore;
+use entanglement_runtime::mcp::McpToolCache;
 
 const PROBE: &str = "state-dir-probe";
 
@@ -40,7 +41,7 @@ fn auth() -> StoredAuth {
     }
 }
 
-/// Write one probe into each of the seven files under `dir`, by file name.
+/// Write one probe into each of the eight files under `dir`, by file name.
 fn seed(dir: &Path) {
     let file = |name: &str| Some(dir.join(name));
     let session = SessionId::new("seed");
@@ -72,10 +73,13 @@ fn seed(dir: &Path) {
     McpTokenStore::at(file(state_dir::LLM_TOKENS_FILE))
         .save(PROBE, &auth())
         .unwrap();
+    McpToolCache::at(file(state_dir::MCP_TOOLS_FILE))
+        .record(PROBE, "probe-target", &[PROBE.to_string()])
+        .unwrap();
 }
 
 #[test]
-fn the_state_dir_relocates_all_seven_managed_files() {
+fn the_state_dir_relocates_all_eight_managed_files() {
     let dir = tempfile::tempdir().unwrap();
     seed(dir.path());
 
@@ -88,6 +92,8 @@ fn the_state_dir_relocates_all_seven_managed_files() {
     let extra_roots = ExtraRootStore::load();
     let mcp = McpTokenStore::load();
     let llm = McpTokenStore::load_llm();
+    let tool_cache = McpToolCache::managed();
+    let seen = tool_cache.lookup(PROBE, "probe-target");
     std::env::remove_var(STATE_DIR_ENV);
     drop(_g);
 
@@ -98,4 +104,5 @@ fn the_state_dir_relocates_all_seven_managed_files() {
     assert!(extra_roots.is_durably_allowed("read", Path::new("/state-dir-probe")));
     assert_eq!(mcp.servers(), vec![PROBE.to_string()]);
     assert_eq!(llm.servers(), vec![PROBE.to_string()]);
+    assert_eq!(seen, Some(vec![PROBE.to_string()]));
 }

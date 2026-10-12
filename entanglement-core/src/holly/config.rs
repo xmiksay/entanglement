@@ -30,7 +30,7 @@ use super::{AgentCatalog, UnknownSession, DEFAULT_AGENT};
 ///
 /// The second argument is the model the session is bound to at this round
 /// ([`SessionModel`]). WHY: a resolver that pins per-session facts from the
-/// session's model (the runtime's tool-advertising mode, ADR-0196/0204) must
+/// session's model must
 /// pin them at the first resolution itself — learning the model from a
 /// broadcast event races the first round and changes the tools array between
 /// rounds 1 and 2, a full prompt-cache miss. Within one round core resolves

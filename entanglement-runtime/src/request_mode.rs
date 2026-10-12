@@ -6,7 +6,7 @@
 //! `tool_runner::dispatch` already gives every Control tool (§3) applies here
 //! automatically, with nothing to add for grading. What *is* special-cased,
 //! narrowly, inside that same bypass branch is orchestration: unlike
-//! `update_tasks`/`load_skill`/`mcp_enable` (which just run and reply),
+//! `update_tasks`/`load_skill`/the discovery tools (which just run and reply),
 //! `request_mode` force-parks an approval exactly like `propose_plan` —
 //! asking to widen a session's authority is a decision only the user makes,
 //! never something a mode grade can wave through. It has no `Intercept`
@@ -57,7 +57,7 @@ fn widens(from: &str, to: &str) -> bool {
 
 /// The `request_mode` tool schema. Advertised **unconditionally** (ADR-0207
 /// §10), riding [`crate::discover::runtime_owned_specs`] and the
-/// `tool_search` kernel like `propose_plan` — a blocked model must always be
+/// [`KERNEL`][crate::tool_names::KERNEL] like `propose_plan` — a blocked model must always be
 /// able to name what it needs, in every mode including the one that would
 /// deny the ask itself. The `enum` names only the two real widening targets;
 /// `run_request_mode` still validates at the widening-pair level regardless,

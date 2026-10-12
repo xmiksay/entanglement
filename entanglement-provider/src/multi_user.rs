@@ -339,7 +339,6 @@ mod tests {
                 concurrency: None,
                 mcp_servers: Default::default(),
                 prompt_cache_key: false,
-                discovery: None,
                 thinking_control: None,
                 default_model: "glm-5.2".into(),
                 models: vec![ModelEntry {
@@ -355,8 +354,6 @@ mod tests {
                     thinking_style: None,
                     thinking_format: None,
                     replay_thinking: None,
-                    tool_advertising: None,
-                    discovery: None,
                     default_reasoning_effort: None,
                     effort_tiers: None,
                     thinking_required: false,

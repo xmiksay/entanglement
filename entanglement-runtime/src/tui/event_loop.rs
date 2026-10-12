@@ -189,9 +189,10 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
         return Ok(false);
     }
     // `/mcp list` panel (#373, selectable since #539):
-    // `Up`/`Down`/`j`/`k` move the server selection, `e`/`d`
-    // enable/disable the highlighted server for the active session
-    // (a `mcp__<name>__*` tool-overlay entry), `c`/`t` run the
+    // `Up`/`Down`/`j`/`k` move the server selection, `d` withdraws the
+    // highlighted server from the active session (a `mcp__<name>__*` deny
+    // overlay entry — every registered server is on by default, ADR-0226, so
+    // the per-session opt-out is the user control left), `c`/`t` run the
     // OAuth connect/check for it (ADR-0153),
     // `PageUp`/`PageDown` scroll, `Esc` closes.
     if app.showing_mcp_panel() {
@@ -199,22 +200,10 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
             KeyCode::Esc => app.close_mcp_panel(),
             KeyCode::Up | KeyCode::Char('k') => app.mcp_select_prev(),
             KeyCode::Down | KeyCode::Char('j') => app.mcp_select_next(),
-            KeyCode::Char('e') => {
-                if let Some(name) = app.mcp_selected_server() {
-                    crate::tui::enable_command::upsert_enable(
-                        app,
-                        holly,
-                        format!("mcp__{name}__*"),
-                        false,
-                        None,
-                    )
-                    .await;
-                }
-            }
             KeyCode::Char('d') => {
                 if let Some(name) = app.mcp_selected_server() {
-                    crate::tui::enable_command::upsert_deny(app, holly, format!("mcp__{name}__*"))
-                        .await;
+                    let pattern = crate::mcp::tool::server_tools_pattern(&name);
+                    crate::tui::enable_command::upsert_deny(app, holly, pattern).await;
                 }
             }
             // OAuth row actions (ADR-0153). The panel is closed

@@ -71,45 +71,17 @@ pub enum ContentPart {
         text: String,
         data: serde_json::Value,
     },
-    /// A `tool_reference` block (ADR-0196 §3, the Anthropic `anthropic_native`
-    /// `ToolSearch` encoding): appears in a tool-result message's content
-    /// answering a client-executed `describe()` call, naming one tool the API
-    /// should auto-expand into context from its (already-sent, `defer_loading:
-    /// true`) full definition. Request-side only — the API expands a
-    /// referenced tool before Claude sees it, so this variant is never parsed
-    /// back out of a response.
-    ///
-    /// Unlike [`ProviderSearch`][ContentPart::ProviderSearch] and
-    /// [`Reasoning`][ContentPart::Reasoning], this carries no opaque
-    /// provider-private payload and no `provider` tag: the wire shape is
-    /// exactly one field (`tool_name`), nothing to stash verbatim, and the
-    /// Anthropic converter renders it the same way regardless of which
-    /// provider the request targets (it's the only wire with a native
-    /// `tool_reference` mechanism). Every other converter degrades it to
-    /// [`tool_reference_fallback_text`] — the same "keep it visible as text"
-    /// contract `ProviderSearch::summary` gives a foreign wire, but
-    /// synthesized here since there's no separate human-readable field to
-    /// fall back to.
+    /// A `tool_reference` block from a pre-ADR-0226 log (the retired
+    /// Anthropic `anthropic_native` encoding, ADR-0196 §3) — deserialization
+    /// only: nothing mints one any more, and every wire's converter, Anthropic
+    /// included, degrades it to [`tool_reference_fallback_text`] so an old
+    /// session still replays with the "discovered X" outcome visible.
     ToolReference { tool_name: String },
-    /// A `tool_search_output` input item (ADR-0196 §3, the OpenAI Responses
-    /// `responses_native` `ToolSearch` encoding): the runtime's reply to a
-    /// client-executed `tool_search_call`, persisted so the next request can
-    /// replay the same input item verbatim (`call_id` correlation rides the
-    /// enclosing tool-result message's own `tool_call_id`, exactly like
-    /// [`ToolReference`][ContentPart::ToolReference] needs none of its own).
-    ///
-    /// `data` is opaque JSON — the `tools` array (full tool definitions, one
-    /// per discovered name) the Responses client echoes back verbatim inside
-    /// the `tool_search_output` item — and round-trips only to the
-    /// `provider` that minted it, the same opaque-payload contract as
-    /// [`ProviderSearch`][ContentPart::ProviderSearch] /
-    /// [`Reasoning`][ContentPart::Reasoning]. `summary` is the portable,
-    /// human-readable degrade-to-text rendering every foreign converter falls
-    /// back to (mirrors `ProviderSearch::summary`) — unlike `ToolReference`,
-    /// which has no separate human field and synthesizes its fallback from
-    /// `tool_name` alone, this variant already carries one because the
-    /// underlying wire event has no single name to fall back to (a search can
-    /// discover zero, one, or many tools at once).
+    /// A `tool_search_output` item from a pre-ADR-0226 log (the retired
+    /// Responses `responses_native` encoding, ADR-0196 §3) — deserialization
+    /// only: nothing mints one any more. `summary` is the human-readable text
+    /// every converter degrades it to; `data`/`provider` are kept so the old
+    /// log still round-trips through serde unchanged.
     ToolSearchOutput {
         provider: String,
         summary: String,

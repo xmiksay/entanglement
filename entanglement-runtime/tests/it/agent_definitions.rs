@@ -154,10 +154,7 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
 
     let skills = entanglement_runtime::skills::load_registry_in(root, &crate::no_user(root))
         .expect("load skills");
-    let ctx = PromptContext {
-        skills: skills.disclosures(),
-        ..Default::default()
-    };
+    let ctx = PromptContext::default();
     let reg = load_registry_in(
         root,
         &crate::no_user(root),
@@ -570,19 +567,16 @@ fn prompt_report_includes_env_and_skill_index_for_every_agent() {
     // ADR-0207 §4 retires the old `Subagent`-mode reduced form: any agent
     // may be a session root or a spawn target, so composition no longer
     // varies — `debug` (the old reference "leaf") gets the env block and
-    // tier-1 skill index too now.
+    // the tool conventions too (ADR-0226: no skill roster any more).
     let empty = tempfile::tempdir().unwrap();
-    let mut ctx = PromptContext::load_with(
+    let ctx = PromptContext::load_with(
         empty.path(),
         &SessionStore::at(empty.path().join(".sessions")),
     );
-    ctx.skills = vec![entanglement_runtime::system_prompt::SkillDisclosure {
-        name: "git".into(),
-        description: "commit helpers".into(),
-    }];
     let report = report_for(empty.path(), "debug", &ctx).expect("debug resolves");
     assert!(report.parts.iter().any(|p| p.label == "environment"));
-    assert!(report.parts.iter().any(|p| p.label == "skill index"));
+    assert!(report.parts.iter().any(|p| p.label == "tool conventions"));
+    assert!(!report.parts.iter().any(|p| p.label == "skill index"));
 }
 
 // ---------------------------------------------------------------------------

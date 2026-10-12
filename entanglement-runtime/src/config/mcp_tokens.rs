@@ -81,7 +81,8 @@ struct McpTokensFile {
 /// Credentials change rarely and the file is tiny, so the simplicity of always
 /// reading current state beats caching — and it means a token another instance
 /// refreshed is picked up with no invalidation logic.
-#[derive(Debug, Clone)]
+/// `Default` is the backing-file-less store: reads empty, refuses writes.
+#[derive(Debug, Clone, Default)]
 pub struct McpTokenStore {
     path: Option<PathBuf>,
 }

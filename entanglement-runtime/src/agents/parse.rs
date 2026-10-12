@@ -238,12 +238,10 @@ pub(super) fn build_agent(
     } else {
         "none".to_string()
     };
-    let skills_in_prompt = ctx.skills.len();
     tracing::debug!(
         agent = %agent.name,
         prompt_len = agent.system_prompt.len(),
         brief = %brief,
-        skills = skills_in_prompt,
         "assembled agent system prompt",
     );
     Ok(agent)

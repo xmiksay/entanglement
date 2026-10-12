@@ -9,42 +9,28 @@
 //! `SharedRegistry` + `ActiveServers` + live server-config map these ops read
 //! and mutate.
 //!
-//! A failed `McpAdd`/`McpRemove` is logged, not surfaced as an `OutEvent` —
-//! there is no session to attach an error to, and this matches the existing
-//! MCP philosophy throughout this module: a server attach is best-effort,
-//! failures are diagnostic, never fatal to the caller's turn.
+//! A refused or failed `McpAdd`/`McpRemove` is logged and reported as an
+//! `OutEvent::McpChanged` carrying `error` — engine-global like the success
+//! reply, since there is no session to attach an `Error` to — so the head that
+//! asked learns why nothing changed.
 
 use std::sync::Arc;
 
-use entanglement_core::{
-    Holly, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerStatus, OutEvent,
-};
+use entanglement_core::{Holly, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerStatus};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::tools::SharedRegistry;
 
 use super::available::{self, AvailableMcp};
-use super::live::{mcp_add, mcp_list, mcp_remove, ActiveServers, ServerConfigs};
-use super::transport_label;
+use super::live::{mcp_add, mcp_remove, ActiveServers, ServerConfigs};
 
 /// Spawns a subscriber that answers `InMsg::McpList`/`McpAdd`/`McpRemove`.
 /// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
-/// from any stdio server a live add spawns. `avail` (#542) contributes the
-/// available-but-unconnected `allowed` servers to `McpList` (keyless bundles
-/// stay silently absent) and routes a `McpRemove` of a lazily-connected
-/// bundled server to a plain disconnect instead of a config-map removal.
-/// `http` (#559) is the shared endpoint pool every live add/reconnect's HTTP
-/// transport rides.
-///
-/// Also folds the engine-wide `SessionStarted`/`SessionEnded` broadcast into
-/// `avail`'s own lifecycle bookkeeping (#630): a `SessionStarted` records the
-/// new session's parent, so a spawned child inherits whichever ancestor
-/// enabled a lazy server (`avail.spec_visible`'s ancestor walk); a
-/// `SessionEnded` drops the ended session from both that parent map and every
-/// server's enablement set, so neither grows for the process lifetime. This
-/// is the only place that owns `avail` across the whole engine lifetime, so
-/// it is the natural fold point — an outbound-broadcast fold answering
-/// inbound requests, one per `OutEvent` family it cares about.
+/// from any stdio server a live add spawns. `avail` is the server roster
+/// (ADR-0226): `McpList` lists every registered server, a live add/remove
+/// keeps it in step, and a `McpRemove` of a bundled server is a plain
+/// disconnect (it stays available) instead of a config-map removal. `http`
+/// (#559) is the shared endpoint pool every live add/reconnect rides.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,
@@ -56,7 +42,6 @@ pub fn spawn_mcp_responder(
 ) -> tokio::task::JoinHandle<()> {
     let emitter = holly.clone();
     let mut inbound = holly.subscribe_inbound();
-    let mut outbound = holly.subscribe();
 
     tokio::spawn(async move {
         // Tracks the detached `McpAuth` ops below so they're reachable at
@@ -82,42 +67,26 @@ pub fn spawn_mcp_responder(
                         in_flight_auth.remove(&name);
                     }
                 }
-                ev = outbound.recv() => {
-                    match ev {
-                        Ok(OutEvent::SessionStarted { session, parent, .. }) => {
-                            available::record_parent(&avail, session, parent);
-                        }
-                        Ok(OutEvent::SessionEnded { session, .. }) => {
-                            available::forget_session(&avail, &session);
-                        }
-                        Ok(_) => {}
-                        // A dropped broadcast frame under lag can only delay
-                        // (b)'s cleanup or (a)'s inheritance link until the
-                        // next matching event — `SessionStarted` never
-                        // recurs for the same id outside a hibernate/resume
-                        // cycle (which re-emits it), and a missed
-                        // `SessionEnded` just means the stale marks live a
-                        // little longer, self-correcting the next time this
-                        // responder catches up. Never data loss the way a
-                        // dropped `McpAdd`/`McpRemove` reply would be.
-                        Err(RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                "MCP responder lagged, skipped {n} outbound events"
-                            );
-                        }
-                        Err(RecvError::Closed) => break,
-                    }
-                }
                 msg = inbound.recv() => {
                     match msg {
                         Ok(InMsg::McpList { correlation_id }) => {
-                            let servers = full_list(&active, &avail, &configs);
+                            let servers = full_list(&active, &avail);
                             emitter.emit_mcp_list(correlation_id, servers);
                         }
                         Ok(InMsg::McpAdd { name, config }) => {
+                            if let Some(other) = avail.clashing_name(&name) {
+                                let why = format!(
+                                    "its tool names would collide with server `{other}`'s \
+                                     — rename one"
+                                );
+                                tracing::warn!(server = %name, "MCP add refused: {why}");
+                                emitter.emit_mcp_change_failed(name, McpAction::Added, why);
+                                continue;
+                            }
+                            let config: super::McpServerConfig = config.into();
                             match mcp_add(
                                 name.clone(),
-                                config.into(),
+                                config.clone(),
                                 &registry,
                                 &active,
                                 &configs,
@@ -127,25 +96,45 @@ pub fn spawn_mcp_responder(
                             .await
                             {
                                 Ok(tools) => {
+                                    super::record_last_seen(
+                                        avail.tool_cache(),
+                                        &name,
+                                        &config,
+                                        &tools,
+                                    )
+                                    .await;
+                                    avail.insert_user(&name, config);
                                     tracing::info!(server = %name, tools = tools.len(), "MCP: live-added");
                                     emitter.emit_mcp_changed(name, McpAction::Added);
                                 }
-                                Err(e) => tracing::warn!(server = %name, "MCP add failed: {e:#}"),
+                                Err(e) => {
+                                    tracing::warn!(server = %name, "MCP add failed: {e:#}");
+                                    let why = format!("{e:#}");
+                                    emitter.emit_mcp_change_failed(name, McpAction::Added, why);
+                                }
                             }
                         }
                         Ok(InMsg::McpRemove { name }) => {
-                            // A bundled/`allowed` server (#542) has no config-map
-                            // entry to remove — disconnect it (it stays
-                            // *available*) instead of erroring halfway through
-                            // `mcp_remove`.
-                            if avail.is_lazy(&name) || avail.get(&name).is_some() {
-                                super::available::disconnect(&avail, &name, &registry, &active);
+                            // A bundled server (#542) has no config-map entry to
+                            // remove — disconnect it (it stays available)
+                            // instead of erroring halfway through `mcp_remove`.
+                            if avail.is_bundled(&name) {
+                                available::disconnect(&name, &registry, &active);
                                 emitter.emit_mcp_changed(name, McpAction::Removed);
                             } else {
                                 match mcp_remove(&name, &registry, &active, &configs) {
-                                    Ok(()) => emitter.emit_mcp_changed(name, McpAction::Removed),
+                                    Ok(()) => {
+                                        avail.remove(&name);
+                                        emitter.emit_mcp_changed(name, McpAction::Removed)
+                                    }
                                     Err(e) => {
-                                        tracing::warn!(server = %name, "MCP remove failed: {e:#}")
+                                        tracing::warn!(server = %name, "MCP remove failed: {e:#}");
+                                        let why = format!("{e:#}");
+                                        emitter.emit_mcp_change_failed(
+                                            name,
+                                            McpAction::Removed,
+                                            why,
+                                        );
                                     }
                                 }
                             }
@@ -172,8 +161,8 @@ pub fn spawn_mcp_responder(
                             // is safe; `auth_ops` keeps it reachable for abort
                             // at shutdown instead of leaking its `Holly` clone.
                             let emitter = emitter.clone();
-                            let (registry, active, configs) =
-                                (registry.clone(), active.clone(), configs.clone());
+                            let (registry, active, configs, avail) =
+                                (registry.clone(), active.clone(), configs.clone(), avail.clone());
                             let secret_env = secret_env.clone();
                             let http = http.clone();
                             let op_name = name.clone();
@@ -185,6 +174,7 @@ pub fn spawn_mcp_responder(
                                     &registry,
                                     &active,
                                     &configs,
+                                    &avail,
                                     &secret_env,
                                     &http,
                                 )
@@ -225,6 +215,7 @@ async fn run_auth_op(
     registry: &SharedRegistry,
     active: &ActiveServers,
     configs: &ServerConfigs,
+    avail: &AvailableMcp,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
 ) {
@@ -270,6 +261,17 @@ async fn run_auth_op(
     match result {
         Ok(outcome) => {
             tracing::info!(server = %name, "MCP auth: {}", outcome.as_str());
+            // A `Connect` reconnected the server: record its tools like any
+            // other connect so the next process lists them as last seen.
+            let tools = active
+                .lock()
+                .expect("MCP active-server mutex poisoned")
+                .get(&name)
+                .map(|s| s.tools.clone());
+            if let (Some(tools), Some(server)) = (tools, avail.get(&name)) {
+                avail.clear_connect_failure(&name);
+                super::record_last_seen(avail.tool_cache(), &name, &server.config, &tools).await;
+            }
             report(McpAuthStatus {
                 name,
                 action,
@@ -295,64 +297,29 @@ async fn run_auth_op(
     }
 }
 
-/// The `McpList` snapshot (#542): every connected server (state `enabled`,
-/// or `allowed` when it was lazily connected) plus every available-but-
-/// unconnected `allowed` server — keyless bundles silently absent. Sorted by
-/// name for stable output.
-fn full_list(
-    active: &ActiveServers,
-    avail: &AvailableMcp,
-    configs: &ServerConfigs,
-) -> Vec<McpServerStatus> {
-    let mut list = mcp_list(active);
-    for s in &mut list {
-        let state = if avail.is_lazy(&s.name) {
-            "allowed"
-        } else {
-            "enabled"
-        };
-        s.state = Some(state.to_string());
-    }
-    // OAuth servers still awaiting sign-in (ADR-0153) are configured but
-    // neither connected nor "available", so they would otherwise be missing
-    // from the listing entirely — precisely the case the user needs to see.
-    for (name, cfg) in configs.lock().unwrap().iter() {
-        if cfg.oauth.is_none() {
-            continue;
-        }
-        match list.iter_mut().find(|s| &s.name == name) {
-            Some(existing) => existing.auth = Some("authenticated".to_string()),
-            None => list.push(McpServerStatus {
-                name: name.clone(),
-                transport: transport_label(cfg),
-                connected: false,
-                tools: Vec::new(),
-                error: None,
-                state: Some("enabled".to_string()),
-                auth: Some("needs auth".to_string()),
+/// The `McpList` snapshot: every registered server (ADR-0226), connected or
+/// not, with its OAuth posture (ADR-0153) — an unauthenticated server is
+/// listed `needs auth` so the user learns `/mcp connect` is what's missing.
+/// `state` is retired and left `None` (kept on the wire for old logs).
+fn full_list(active: &ActiveServers, avail: &AvailableMcp) -> Vec<McpServerStatus> {
+    super::roster(avail, active)
+        .into_iter()
+        .map(|row| McpServerStatus {
+            auth: row.oauth.then(|| {
+                if row.auth_required {
+                    "needs auth".to_string()
+                } else {
+                    "authenticated".to_string()
+                }
             }),
-        }
-    }
-    for name in avail.available_names() {
-        if list.iter().any(|s| s.name == name) {
-            continue;
-        }
-        let transport = avail
-            .get(&name)
-            .map(|s| transport_label(&s.config))
-            .unwrap_or_default();
-        list.push(McpServerStatus {
-            name,
-            transport,
-            connected: false,
-            tools: Vec::new(),
+            name: row.name,
+            transport: row.transport,
+            connected: row.connected,
+            tools: row.tools,
             error: None,
-            state: Some("allowed".to_string()),
-            auth: None,
-        });
-    }
-    list.sort_by(|a, b| a.name.cmp(&b.name));
-    list
+            state: None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -369,74 +336,48 @@ mod tests {
         Holly::spawn(EngineConfig::default())
     }
 
-    /// #542: an available (`allowed`, unconnected) server rides the `McpList`
-    /// snapshot with `connected: false` and `state: "allowed"`.
+    fn http_cfg(oauth: bool) -> crate::mcp::McpServerConfig {
+        crate::mcp::McpServerConfig {
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("https://example.com/mcp".into()),
+            headers: HashMap::new(),
+            disabled: false,
+            capabilities: HashMap::new(),
+            oauth: oauth.then(Default::default),
+            description: None,
+        }
+    }
+
+    /// ADR-0226: a registered, unconnected server rides the `McpList`
+    /// snapshot with `connected: false` and no retired `state`.
     #[test]
-    fn full_list_includes_available_servers() {
+    fn full_list_includes_unconnected_servers() {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let mut user = HashMap::new();
-        user.insert(
-            "mine".to_string(),
-            crate::mcp::McpServerConfig {
-                command: None,
-                args: vec![],
-                env: HashMap::new(),
-                url: Some("https://example.com/mcp".into()),
-                headers: HashMap::new(),
-                disabled: false,
-                capabilities: HashMap::new(),
-                oauth: None,
-                state: Some(crate::mcp::McpServerState::Allowed),
-            },
-        );
-        let (_, avail) = AvailableMcp::partition(
-            &entanglement_core::Catalog { providers: vec![] },
-            &user,
-            vec![],
-        );
-        let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
-        let list = full_list(&active, &avail, &configs);
+        let avail = AvailableMcp::default();
+        avail.insert_user("mine", http_cfg(false));
+        let list = full_list(&active, &avail);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "mine");
         assert!(!list[0].connected);
-        assert_eq!(list[0].state.as_deref(), Some("allowed"));
+        assert_eq!(list[0].state, None);
         assert_eq!(list[0].transport, "http");
         assert!(list[0].tools.is_empty());
         // Not an OAuth server → no auth posture reported.
         assert!(list[0].auth.is_none());
     }
 
-    /// An OAuth server with no stored credential is skipped at startup, so it
-    /// is neither connected nor "available" — `full_list` must still surface it
-    /// as `needs auth` (ADR-0153), or the user has no way to discover that
-    /// `/mcp connect` is what's missing.
+    /// An OAuth server with no stored credential lists as `needs auth`
+    /// (ADR-0153), so the user learns `/mcp connect` is what's missing.
     #[test]
     fn full_list_surfaces_an_unauthenticated_oauth_server() {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let (_, avail) = AvailableMcp::partition(
-            &entanglement_core::Catalog { providers: vec![] },
-            &HashMap::new(),
-            vec![],
-        );
-        let mut cfgs = HashMap::new();
-        cfgs.insert(
-            "remote".to_string(),
-            crate::mcp::McpServerConfig {
-                command: None,
-                args: vec![],
-                env: HashMap::new(),
-                url: Some("https://example.com/mcp".into()),
-                headers: HashMap::new(),
-                disabled: false,
-                capabilities: HashMap::new(),
-                oauth: Some(Default::default()),
-                state: None,
-            },
-        );
-        let configs: ServerConfigs = Arc::new(Mutex::new(cfgs));
-        let list = full_list(&active, &avail, &configs);
+        let avail =
+            AvailableMcp::default().with_token_store(crate::config::McpTokenStore::at(None));
+        avail.insert_user("remote-0226-unauthed", http_cfg(true));
+        let list = full_list(&active, &avail);
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].name, "remote");
         assert!(!list[0].connected);
         assert_eq!(list[0].auth.as_deref(), Some("needs auth"));
     }
@@ -482,8 +423,37 @@ mod tests {
         handle.abort();
     }
 
+    /// The next `McpChanged` the responder emits, as `(name, error)`.
+    async fn next_change(
+        sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    ) -> (String, Option<String>) {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), sub.recv())
+                .await
+                .expect("timed out waiting for McpChanged")
+                .unwrap()
+            {
+                OutEvent::McpChanged { name, error, .. } => return (name, error),
+                _ => continue,
+            }
+        }
+    }
+
+    fn spec(disabled: bool) -> McpServerSpec {
+        McpServerSpec {
+            command: Some("definitely-not-a-real-binary-xyz".into()),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            disabled,
+        }
+    }
+
+    /// A refused (disabled) add replies with an `McpChanged` carrying the
+    /// reason, and nothing lands.
     #[tokio::test]
-    async fn mcp_add_of_a_disabled_server_is_logged_not_replied() {
+    async fn a_refused_mcp_add_replies_with_its_error() {
         let holly = empty_engine();
         let mut sub = holly.subscribe();
         let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
@@ -498,169 +468,55 @@ mod tests {
             Vec::new(),
             crate::test_http_client(),
         );
-
         holly
             .send(InMsg::McpAdd {
                 name: "srv".into(),
-                config: McpServerSpec {
-                    command: Some("definitely-not-a-real-binary-xyz".into()),
-                    args: vec![],
-                    env: HashMap::new(),
-                    url: None,
-                    headers: HashMap::new(),
-                    disabled: true,
-                },
+                config: spec(true),
             })
             .await
             .unwrap();
-
-        // A failed/refused add never replies with McpChanged; confirm via a
-        // McpList round-trip that nothing landed instead of racing a timeout.
-        holly
-            .send(InMsg::McpList {
-                correlation_id: "check".into(),
-            })
-            .await
-            .unwrap();
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(2), sub.recv())
-                .await
-                .expect("timed out")
-                .unwrap()
-            {
-                OutEvent::McpChanged { .. } => panic!("a disabled server must not be added"),
-                OutEvent::McpList {
-                    correlation_id,
-                    servers,
-                } if correlation_id == "check" => {
-                    assert!(servers.is_empty());
-                    break;
-                }
-                _ => continue,
-            }
-        }
+        let (name, error) = next_change(&mut sub).await;
+        assert_eq!(name, "srv");
+        assert!(
+            error.as_deref().unwrap_or("").contains("disabled"),
+            "{error:?}"
+        );
         assert!(registry.read().unwrap().is_empty());
         assert!(active.lock().unwrap().is_empty());
         handle.abort();
     }
 
-    /// #630, end to end through the live responder wiring: (a) a session
-    /// spawned under a parent that had a lazy server enabled inherits its
-    /// visibility, and (b) once the parent's session ends, both its own mark
-    /// and the child's inherited one are gone — while an unrelated session
-    /// that also enabled the same server keeps its own visibility (the #561
-    /// "last session drops the entry" semantics don't fire here, so this
-    /// isn't just re-testing that the whole server reverted to globally
-    /// visible).
+    /// A live add whose name clashes with a registered server's tool names
+    /// (`my_docs` vs `my.docs`) is refused before any connect, with the reason
+    /// on the wire.
     #[tokio::test]
-    async fn responder_folds_session_lifecycle_into_available_mcp() {
+    async fn a_clashing_mcp_add_is_refused_on_the_wire() {
         let holly = empty_engine();
         let mut sub = holly.subscribe();
-        let registry: SharedRegistry = Arc::new(RwLock::new(ToolRegistry::new()));
-        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let configs: ServerConfigs = Arc::new(Mutex::new(HashMap::new()));
-        let avail = Arc::new(AvailableMcp::default());
+        let avail = AvailableMcp::default();
+        avail.insert_user("my.docs", crate::mcp::available::tests::stdio("true"));
         let handle = spawn_mcp_responder(
             &holly,
-            registry,
-            active,
-            configs,
-            avail.clone(),
+            Arc::new(RwLock::new(ToolRegistry::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(avail),
             Vec::new(),
             crate::test_http_client(),
         );
-
-        let parent = entanglement_core::SessionId::new("630-parent");
-        let child = entanglement_core::SessionId::new("630-child");
-        let other = entanglement_core::SessionId::new("630-other");
-
         holly
-            .send(InMsg::prompt(parent.clone(), "hi"))
-            .await
-            .unwrap();
-        recv_until(
-            &mut sub,
-            |e| matches!(e, OutEvent::Done { session, .. } if *session == parent),
-        )
-        .await;
-        // Simulates a prior `mcp_enable("zread")` on both sessions — the real
-        // path connects a server, which this test has no need to do. `other`
-        // stays enabled throughout so the server's `enabled` entry never
-        // empties out and reverts to globally visible (#561) — this test is
-        // about *parent*'s own mark and *child*'s inherited one specifically.
-        avail.mark_enabled("zread", &parent);
-        avail.mark_enabled("zread", &other);
-
-        holly
-            .send(InMsg::Spawn {
-                session: child.clone(),
-                parent: Some(parent.clone()),
-                predecessor: None,
-                agent: "general".into(),
-                prompt: "subtask".into(),
-                user: None,
-                model: None,
-                mode: None,
-                workdir: None,
+            .send(InMsg::McpAdd {
+                name: "my_docs".into(),
+                config: spec(false),
             })
             .await
             .unwrap();
-        recv_until(
-            &mut sub,
-            |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
-        )
-        .await;
-
-        // The responder folds `SessionStarted` off its own subscription,
-        // independent of `sub` above — poll instead of racing a single recv.
-        wait_until(|| avail.spec_visible("mcp__zread__search_doc", &child)).await;
-
-        holly
-            .send(InMsg::CloseSession {
-                session: parent.clone(),
-            })
-            .await
-            .unwrap();
-        recv_until(
-            &mut sub,
-            |e| matches!(e, OutEvent::SessionEnded { session, .. } if *session == parent),
-        )
-        .await;
-
-        wait_until(|| !avail.spec_visible("mcp__zread__search_doc", &parent)).await;
+        let (name, error) = next_change(&mut sub).await;
+        assert_eq!(name, "my_docs");
         assert!(
-            !avail.spec_visible("mcp__zread__search_doc", &child),
-            "the child's inherited visibility must die with the parent's own mark"
-        );
-        assert!(
-            avail.spec_visible("mcp__zread__search_doc", &other),
-            "an unrelated session that also enabled it must be untouched"
+            error.as_deref().unwrap_or("").contains("`my.docs`"),
+            "{error:?}"
         );
         handle.abort();
-    }
-
-    async fn recv_until(
-        sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
-        pred: impl Fn(&OutEvent) -> bool,
-    ) {
-        loop {
-            let ev = tokio::time::timeout(std::time::Duration::from_secs(2), sub.recv())
-                .await
-                .expect("timed out waiting for event")
-                .unwrap();
-            if pred(&ev) {
-                return;
-            }
-        }
-    }
-
-    async fn wait_until(mut pred: impl FnMut() -> bool) {
-        for _ in 0..100 {
-            if pred() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(pred(), "condition never became true within the deadline");
     }
 }

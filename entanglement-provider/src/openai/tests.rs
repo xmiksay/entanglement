@@ -634,17 +634,16 @@ fn tool_result_tool_reference_degrades_to_portable_text() {
 fn request_body_with_a_tool_reference_never_emits_the_native_key() {
     // Regression guard for the whole request, not just the one message:
     // `defer_loading` and `tool_reference` are Anthropic-only wire concepts
-    // that must never appear on this wire's JSON, whatever the tool's flag
-    // or the message content carries.
-    let mut deferred = ToolSpec::new("search_files", "search the workspace");
-    deferred.defer_loading = true;
+    // that must never appear on this wire's JSON, whatever the message
+    // content carries (a pre-ADR-0226 session's persisted blocks replay).
+    let tool = ToolSpec::new("search_files", "search the workspace");
     let tool_result =
         Message::tool_content("call_1", vec![ContentPart::tool_reference("search_files")]);
     let body = build_body(
         "glm-5.2",
         "sys",
         &[msg(MessageRole::User, "hi"), tool_result],
-        &[deferred],
+        &[tool],
         None,
         None,
         None,
