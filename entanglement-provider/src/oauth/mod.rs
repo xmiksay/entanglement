@@ -61,7 +61,7 @@ pub use web::{PendingWebAuthorization, WebFlow};
 /// The optional `oauth:` block on an MCP server's config. Every field is an
 /// *override* — with the block present but empty, discovery and dynamic client
 /// registration resolve everything. Declared here (not in the runtime) for the
-/// same reason [`McpServerState`][crate::provider_mcp::McpServerState] is: it is
+/// same reason [`ProviderMcpServer`][crate::provider_mcp::ProviderMcpServer] is: it is
 /// data the mechanism defines and the runtime merely parses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

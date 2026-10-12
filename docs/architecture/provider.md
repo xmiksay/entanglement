@@ -202,8 +202,7 @@ trait Llm: Send {
   char-count proxy for Gemini's undocumented per-model minimum token count)
   or any create-call failure resolves to `None`, falling back to inlining
   `system`/`tools` exactly as before — cache creation never fails the turn.
-  A resource replaced by a key change (every tool-set change on the
-  `client_side` encoding mints a new one) is `DELETE`d in a detached task,
+  A resource replaced by a key change is `DELETE`d in a detached task,
   failures only debug-logged, so it stops accruing storage before its 1h TTL.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
@@ -226,38 +225,21 @@ trait Llm: Send {
   image blocks ride as trailing `inlineData` parts alongside the
   `functionResponse` part in the same turn (#447).
 
-**Tool search / deferred loading**
-([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md))
-— a `ToolSearch`-mode session reaches most of its registry through discovery
-rather than up-front advertisement, and two of the three per-wire encodings
-that carry a discovered schema to the model are provider-crate seams, not
-runtime-side workarounds: `ToolSpec.defer_loading: bool` (serde-default
-`false`, absent-when-false on every wire) marks a non-kernel tool so the
-Anthropic client omits it from the rendered/cached prompt until discovered,
-per Anthropic's own `defer_loading` contract — cache breakpoints skip
-deferred tools (Anthropic 400s `cache_control` on a deferred entry).
-`ContentPart::ToolReference` carries the `tool_reference` blocks a
-`describe()` tool result returns on that wire, which the API auto-expands
-into the full definition (request-side only, since the client-executed flow
-means the API expands references before the model sees them — a foreign
-wire degrades a `ToolReference` to text). The `openai_responses` client
-(`entanglement-provider::openai_responses`, opt-in catalog `wire:`, never a
-default) speaks OpenAI's distinct flat `input`/`output` item shape (not
-`/chat/completions`' `messages` array) for the `responses_native` encoding: a
-`function_call`/`function_call_output` pair correlates by `call_id`; when any
-advertised `defer_loading` tool is present the request declares
-`{"type":"tool_search","execution":"client"}`; a streamed `tool_search_call`
-output item rides the existing `ToolCall`/`LlmEvent::ToolCall` machinery
-under the reserved name `TOOL_SEARCH_CALL_TOOL` (never a real registered
-tool — the runtime's dispatch ladder intercepts it exactly like the
-`explore`/`describe` pseudo-tools and replies with a
-`ContentPart::ToolSearchOutput` block, which replays as a native
-`tool_search_call`/`tool_search_output` input-item pair). Split across
-`mod.rs` (client + streaming loop), `request` (request-body construction),
-`sse` (SSE event parsing) — the `openai/` file-cap pattern. The third
-encoding, `client_side` (the z.ai-priority path, plus Ollama/Gemini), needs
-no provider-crate change at all — it rides the existing `tool_spec_resolver`
-seam entirely runtime-side. This section stays brief by design: the seam is
+**One advertised surface, no deferral** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), superseding
+[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
+§1–§4) — every wire receives the same pinned `tools` array, so the provider
+crate carries no tool-search machinery: `ToolSpec` has no `defer_loading`, the
+Anthropic client sends no `defer_loading`/`tool_reference`, and the
+`openai_responses` client declares no `tool_search` primitive. The
+`ContentPart::ToolReference`/`ToolSearchOutput` variants survive only so old
+logs deserialize; every wire degrades them to text on replay. The leaf crate
+owns one shared name for the runtime and core: `MCP_TOOL` (`"mcp"`), the
+`mcp(server, tool, args)` envelope core unwraps. The `openai_responses`
+client (opt-in catalog `wire:`, never a default) speaks OpenAI's flat
+`input`/`output` item shape: a `function_call`/`function_call_output` pair
+correlates by `call_id`. Split across `mod.rs` (client + streaming loop),
+`request` (request-body construction), `sse` (SSE event parsing) — the
+`openai/` file-cap pattern. This section stays brief by design: the seam is
 what belongs here, the full wire contracts (request/response JSON, streaming
 event shapes, per-provider quirks) live in
 `scratch/tool-search-wire-reference.md`.
@@ -699,8 +681,7 @@ provider is what makes user-defined providers work with **zero code
 change** — any OpenAI-compatible endpoint (proxy, local vLLM, new vendor) is
 `wire: openai` + `base_url` + `key_env`. `openai_responses` (ADR-0196 §3, P7)
 is OpenAI's distinct Responses API — flat input/output items instead of
-Chat Completions' role+content messages, and the one wire with a native
-client-executed `tool_search` primitive; opt-in per catalog entry, never a
+Chat Completions' role+content messages; opt-in per catalog entry, never a
 default (`openai` itself stays on Chat Completions). **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
 [ADR-0189](../adr/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
 an `oauth:` block (the same `OauthConfig` override fields the `mcp:` blocks
@@ -722,8 +703,9 @@ selected explicitly); a multi-user embedder registers a per-user source via
 `oauth:` block. A provider entry may also **bundle MCP servers** (#542,
 [ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
 `mcp_servers: {name → ProviderMcpServer}` — transport (`command` XOR `url`,
-validated runtime-side), `${VAR}` headers, the #426 capability hint, and a
-default `McpServerState` (`None` ⇒ `allowed`). The embedded defaults ship
+validated runtime-side), `${VAR}` headers, the #426 capability hint, a
+`description` for `list_mcp`, and `disabled` (the one opt-out — registered =
+available, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); a retired `state:` key is stripped with a warning). The embedded defaults ship
 z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
 `ZAI_API_KEY`; the runtime (`entanglement-runtime::mcp::available`) owns all
 interpretation — the provider crate only carries the data. `ModelEntry`
@@ -732,14 +714,7 @@ gates TUI image paste, #736),
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
 `thinking_budget_tokens`, `thinking_style`, `thinking_format`,
 `replay_thinking`, `effort_tiers`, `thinking_required`; provider-level
-`thinking_control`), the client-side discovery strategy `discovery`
-(`append`/`native_first`/`invoke`, provider-level with a per-model override;
-embedded defaults `zai`/`zai_paas` `native_first`, `openai`/`gemini`
-`invoke`, `ollama` `append`, none on the native Anthropic/Responses entries;
-interpreted only by the runtime, [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)
-— catalog data only: this model entry > this provider entry > `append`; the
-former `config.yml` `discovery:` override map is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md), see
-[gates & host tools](gates-and-host-tools.md)) and **pricing**
+`thinking_control`) and **pricing**
 (USD/M tokens:
 `input`/`output`/`cached_input`/`cache_write`, all optional). Lookups:
 `Catalog::{builtin,load,load_from}`, `provider(name)`, `model(provider,id)`,
@@ -777,8 +752,10 @@ The knobs below describe **what an endpoint or model accepts on the wire** —
 not preferences — so they are catalog data only (`providers.yml`, no env var,
 no `config.yml` key, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
 `thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
-`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, the
-model-level `tool_advertising`/`discovery`, and the `rpm`/`concurrency` caps.
+`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, and the
+`rpm`/`concurrency` caps. The former `tool_advertising`/`discovery` knobs are
+retired ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
+loads with one warning per key.
 A user only touches them to describe an endpoint the embedded defaults don't
 know (or know wrongly). `skutter inspect config` lists every non-default value
 per provider/model under "advanced catalog", so the effective facts stay

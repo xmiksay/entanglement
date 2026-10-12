@@ -15,15 +15,16 @@
 //!    read whatever the ecosystem already puts in the repo — no bespoke file.
 //! 4. **environment block** — cwd/root, platform, date; *generated* here so the
 //!    model never has to guess them.
-//! 5. **skill index** — tier-1 disclosure lines (`name` + `description` only)
-//!    generated from the skill registry, never hand-written into an agent body.
+//! 5. **tool conventions** — one line naming the call conventions (ADR-0226):
+//!    native calls for the advertised tools, `mcp(server, tool, args)` for
+//!    MCP, `rhai` for everything else. The skill roster that used to sit here
+//!    moved to the `list_skills` tool.
 //! 6. **preloaded skill bodies** — full bodies of the skills an agent names in its
 //!    `skills:` frontmatter (#117), resolved through the same substitution
-//!    pipeline as `load_skill`. Preload only, never an allowlist; runtime skill
-//!    *access* is the orthogonal `load_skill` tool mask.
+//!    pipeline as `load_skill`. Preload only, never an allowlist.
 //!
-//! Every agent gets the full composition — env block and tier-1 skill index
-//! included — and none inherits a parent's assembled prompt: each agent is
+//! Every agent gets the full composition and none inherits a parent's
+//! assembled prompt: each agent is
 //! composed independently from its own body and its own `include_brief`/
 //! `skills` frontmatter. Before ADR-0207 a `Subagent`-mode agent got a
 //! reduced form (env/skill index omitted); that distinction is retired along
@@ -57,10 +58,9 @@ verify before you report success.
 - Output: be concise and direct. State what you did, what failed, and what \
 remains — never claim a result you have not verified.";
 
-/// A tier-1 skill disclosure: the two fields exposed to the model (`name` +
-/// one-line `description`). Generated from the skill registry, never authored
-/// into an agent body (#113). Filtering by tool mask / `user_only` is the
-/// caller's job (#115/#116); [`assemble`] renders whatever list it is handed.
+/// A skill disclosure: the two fields exposed to the model (`name` + one-line
+/// `description`) — what `list_skills` lists. Generated from the skill
+/// registry (`user_only` skills withheld), never authored into an agent body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDisclosure {
     pub name: String,
@@ -108,6 +108,17 @@ impl EnvBlock {
     }
 }
 
+/// The one line naming the call conventions (ADR-0226) — static, so the
+/// cached system block never varies by session.
+#[cfg(feature = "rhai")]
+pub const TOOL_CONVENTIONS: &str = "Tool conventions: call the advertised tools directly; reach \
+     every MCP tool by calling the `mcp` tool with {server, tool, args} — list_mcp and mcp_tools \
+     show what exists; use rhai for anything else.";
+#[cfg(not(feature = "rhai"))]
+pub const TOOL_CONVENTIONS: &str = "Tool conventions: call the advertised tools directly; reach \
+     every MCP tool by calling the `mcp` tool with {server, tool, args} — list_mcp and mcp_tools \
+     show what exists.";
+
 /// Shared inputs for [`assemble`], loaded once at startup. Each part is optional;
 /// the [`Default`] value is an identity composition (`assemble` returns just the
 /// trimmed body) which the parsing tests rely on.
@@ -121,7 +132,9 @@ pub struct PromptContext {
     pub preamble: Option<String>,
     pub brief: Option<String>,
     pub env: Option<EnvBlock>,
-    pub skills: Vec<SkillDisclosure>,
+    /// [`TOOL_CONVENTIONS`] when loaded for a real head; `None` (the
+    /// default) composes without it.
+    pub tool_conventions: Option<&'static str>,
     /// File the shared preamble was read from; `None` ⇒ the built-in default.
     pub preamble_source: Option<PathBuf>,
     /// File the project brief was read from; `None` ⇒ no brief was found.
@@ -144,11 +157,7 @@ pub struct PromptPart {
 impl PromptContext {
     /// Discover the composition inputs for `root`: the shared preamble (built-in
     /// default unless a file overrides it), the project brief (if a brief file
-    /// exists), and the generated environment block. The skill index is left
-    /// empty here; the head populates it from
-    /// [`crate::skills::SkillRegistry::disclosures`] (#114) before handing the
-    /// context to the agent loader. Per-agent tool-mask filtering of that list is
-    /// deferred (#116).
+    /// exists), the generated environment block, and the tool conventions.
     pub fn load(root: &Path) -> Self {
         Self::load_with(root, &SessionStore::for_cwd(root))
     }
@@ -169,7 +178,7 @@ impl PromptContext {
             preamble,
             brief,
             env: Some(EnvBlock::detect(root, sessions)),
-            skills: Vec::new(),
+            tool_conventions: Some(TOOL_CONVENTIONS),
             preamble_source,
             brief_path,
         }
@@ -178,8 +187,8 @@ impl PromptContext {
 
 /// Compose one agent's system prompt deterministically (#113).
 ///
-/// Order: preamble, body, brief (only if `include_brief`), env, tier-1 skill
-/// index, preloaded skill bodies — each emitted only when present/non-empty,
+/// Order: preamble, body, brief (only if `include_brief`), env, tool
+/// conventions, preloaded skill bodies — each emitted only when present/non-empty,
 /// joined by blank lines. Every agent gets the full composition now
 /// (ADR-0207 §4/§6 retires the old `Subagent`-mode reduced form — any agent
 /// may be a session root or a spawn target, so there is no more "leaf-only"
@@ -187,9 +196,8 @@ impl PromptContext {
 ///
 /// `preloaded` (#117) are full skill bodies resolved from the agent definition's
 /// `skills:` frontmatter (same substitution pipeline as `load_skill`). Preload is
-/// a distinct mechanism from the tier-1 index and from runtime access (the
-/// `load_skill` tool mask) — **additive**, never an allowlist, so the index
-/// still discloses every other skill.
+/// distinct from runtime access (`list_skills`/`load_skill`) — **additive**,
+/// never an allowlist.
 pub fn assemble(
     body: &str,
     include_brief: bool,
@@ -259,15 +267,11 @@ pub fn assemble_parts(
             content: env.render(),
         });
     }
-    if !ctx.skills.is_empty() {
+    if let Some(conventions) = ctx.tool_conventions {
         parts.push(PromptPart {
-            label: "skill index",
-            source: format!(
-                "skill registry ({} skill{})",
-                ctx.skills.len(),
-                if ctx.skills.len() == 1 { "" } else { "s" }
-            ),
-            content: render_skills(&ctx.skills),
+            label: "tool conventions",
+            source: "built-in".to_string(),
+            content: conventions.to_string(),
         });
     }
     if !preloaded.is_empty() {
@@ -279,16 +283,6 @@ pub fn assemble_parts(
     }
 
     parts
-}
-
-/// Render the tier-1 skill index: a header plus one `name: description` line per
-/// skill. Only the two disclosed fields appear — no bodies, no tool lists.
-pub(crate) fn render_skills(skills: &[SkillDisclosure]) -> String {
-    let mut out = String::from("Available skills (load with the `load_skill` tool before use):");
-    for s in skills {
-        out.push_str(&format!("\n- {}: {}", s.name, s.description));
-    }
-    out
 }
 
 /// Render the preloaded-skill section (#117): a header explaining these bodies
@@ -394,35 +388,27 @@ mod tests {
                 date: "2026-07-10".into(),
                 scratch: None,
             }),
-            skills: vec![
-                SkillDisclosure {
-                    name: "git".into(),
-                    description: "commit and branch helpers".into(),
-                },
-                SkillDisclosure {
-                    name: "review".into(),
-                    description: "review a diff".into(),
-                },
-            ],
+            tool_conventions: Some(TOOL_CONVENTIONS),
             preamble_source: None,
             brief_path: None,
         }
     }
 
     #[test]
-    fn primary_assembly_is_ordered_preamble_body_brief_env_skills() {
+    fn primary_assembly_is_ordered_preamble_body_brief_env_conventions() {
         let out = assemble("BODY", true, &ctx_full(), &[]);
         let p = out.find("PREAMBLE").unwrap();
         let b = out.find("BODY").unwrap();
         let br = out.find("BRIEF").unwrap();
         let env = out.find("<env>").unwrap();
-        let sk = out.find("Available skills").unwrap();
+        let tc = out.find("Tool conventions:").unwrap();
         assert!(
-            p < b && b < br && br < env && env < sk,
+            p < b && b < br && br < env && env < tc,
             "order wrong:\n{out}"
         );
         assert!(out.contains("Working directory: /work"));
-        assert!(out.contains("- git: commit and branch helpers"));
+        // ADR-0226: no skill roster in the prompt; `list_skills` carries it.
+        assert!(!out.contains("Available skills"), "{out}");
     }
 
     #[test]
@@ -448,12 +434,12 @@ mod tests {
         };
         assert!(!assemble("BODY", true, &ctx, &[]).contains("<env>"));
 
-        // No skills.
+        // No tool conventions.
         let ctx = PromptContext {
-            skills: vec![],
+            tool_conventions: None,
             ..ctx_full()
         };
-        assert!(!assemble("BODY", true, &ctx, &[]).contains("Available skills"));
+        assert!(!assemble("BODY", true, &ctx, &[]).contains("Tool conventions"));
     }
 
     /// #524, ADR-0142: the env block names the scratch dir (steering the model
@@ -483,29 +469,23 @@ mod tests {
 
     #[test]
     fn every_agent_gets_the_full_composition() {
-        // ADR-0207 §4/§6: the old `Subagent`-mode reduced form (env/skill
-        // index omitted) is retired — any agent may be a session root or a
-        // spawn target now, so composition no longer varies.
+        // ADR-0207 §4/§6: the old `Subagent`-mode reduced form is retired —
+        // any agent may be a session root or a spawn target now.
         let out = assemble("BODY", true, &ctx_full(), &[]);
         assert!(out.contains("PREAMBLE"));
         assert!(out.contains("BODY"));
         assert!(out.contains("BRIEF"));
         assert!(out.contains("<env>"));
-        assert!(out.contains("Available skills"));
+        assert!(out.contains("the `mcp` tool with {server, tool, args}"));
     }
 
     #[test]
-    fn preloaded_bodies_render_after_the_skill_index() {
-        // Preload (#117) is additive, never an allowlist: the tier-1 index
-        // still renders and the preloaded body comes after it.
+    fn preloaded_bodies_render_after_the_conventions() {
         let prim = assemble("BODY", false, &ctx_full(), &["SKILL_BODY".into()]);
         assert!(prim.contains("SKILL_BODY"), "{prim}");
-        let idx = prim.find("Available skills").unwrap();
+        let idx = prim.find("Tool conventions").unwrap();
         let pre = prim.find("Preloaded skills").unwrap();
-        assert!(
-            idx < pre,
-            "preloaded body must follow the tier-1 index:\n{prim}"
-        );
+        assert!(idx < pre, "preloaded body must come last:\n{prim}");
     }
 
     #[test]
@@ -562,6 +542,7 @@ mod tests {
         assert_eq!(src("preamble"), Some("built-in default"));
         assert_eq!(src("project brief"), Some("/work/CLAUDE.md"));
         assert_eq!(src("environment"), Some("generated"));
+        assert_eq!(src("tool conventions"), Some("built-in"));
         assert_eq!(src("preloaded skills"), Some("skills: frontmatter"));
     }
 

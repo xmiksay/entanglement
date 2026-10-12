@@ -40,15 +40,15 @@ pub struct McpServerStatus {
     pub tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Three-state activation (#542): `"enabled"` (startup-connected) or
-    /// `"allowed"` (available for per-session enablement — possibly already
-    /// lazily connected, see `connected`). `None` from a pre-#542 peer; the
-    /// runtime MCP responder always fills it.
+    /// Retired three-state activation (#542, superseded by ADR-0226:
+    /// registered = available). Kept serde-defaulted so an old log still
+    /// deserializes; the runtime always leaves it `None` now — `connected`
+    /// and `auth` carry the state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// OAuth posture (ADR-0153): `"authenticated"` (a credential is stored) or
-    /// `"needs auth"` (the server declares `oauth:` but has none yet, so it was
-    /// skipped at startup — run `/mcp connect <name>`). `None` for a server that
+    /// `"needs auth"` (the server declares `oauth:` but has none yet, so it
+    /// cannot connect — run `/mcp connect <name>`). `None` for a server that
     /// does not use OAuth at all, and from a pre-ADR-0153 peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,

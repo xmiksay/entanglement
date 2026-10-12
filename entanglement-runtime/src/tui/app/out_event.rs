@@ -59,8 +59,13 @@ impl App {
         {
             self.handle_mcp_list(correlation_id, servers.clone());
         }
-        if let OutEvent::McpChanged { name, action } = &event {
-            self.handle_mcp_changed(name, *action);
+        if let OutEvent::McpChanged {
+            name,
+            action,
+            error,
+        } = &event
+        {
+            self.handle_mcp_changed(name, *action, error.as_deref());
         }
         // MCP OAuth progress (ADR-0153) — engine-global like `McpChanged`.
         if let OutEvent::McpAuthChanged { status } = &event {

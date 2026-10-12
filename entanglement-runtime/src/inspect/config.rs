@@ -115,23 +115,6 @@ fn render_config(resolved: &Resolved) -> String {
         c.session_retention_days,
         from("session_retention_days")
     );
-    // Tool advertising (ADR-0196): the global view resolves the config tier
-    // only — the catalog tier is per model (`tool_advertising:` in
-    // providers.yml), so name that fact rather than pretending this line is
-    // the whole answer.
-    let mode = c.tool_advertising.unwrap_or_default();
-    let _ = writeln!(
-        out,
-        "  tool_advertising: {:<12} ← {} (per-model catalog \
-         `tool_advertising:` preference applies when unset; resolved per \
-         session at start)",
-        mode.label(),
-        if c.tool_advertising.is_some() {
-            from("tool_advertising")
-        } else {
-            "default"
-        }
-    );
     let _ = writeln!(
         out,
         "  tui:      notify={} mouse={} ← {}",

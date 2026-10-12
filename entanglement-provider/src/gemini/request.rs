@@ -175,7 +175,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                             result_text.push_str(&crate::tool_reference_fallback_text(tool_name));
                         }
                         // Same fold-into-text fallback for a `responses_native`
-                        // `tool_search_output` block (ADR-0196 §3).
+                        // `tool_search_output` block from a pre-ADR-0226 log.
                         ContentPart::ToolSearchOutput { summary, .. } => {
                             if !result_text.is_empty() {
                                 result_text.push('\n');

@@ -2,17 +2,15 @@
 //! seeding it from the live session + managed stores, and running the
 //! confirmed plan through [`LiveEffects`][super::settings_apply::LiveEffects].
 
-use entanglement_core::{Holly, SessionId};
-use entanglement_provider::{Catalog, Discovery, ToolAdvertising};
+use entanglement_core::Holly;
+use entanglement_provider::Catalog;
 use ratatui::layout::Rect;
 
 use super::settings_apply::LiveEffects;
 use super::App;
 use crate::config::aux_models::Purpose;
-use crate::tool_advertising::Encoding;
 use crate::tui::settings_dialog::{
-    mode_names, model_options, run_plan, AdvertisingRows, AuxTab, Confirm, SessionTab,
-    SettingsDialog, ToolsTab,
+    mode_names, model_options, run_plan, AuxTab, Confirm, SessionTab, SettingsDialog, ToolsTab,
 };
 
 /// The dialog (`None` = closed, so cancelling discards by construction), the
@@ -71,10 +69,8 @@ impl App {
 
     /// Open the dialog seeded from the active session: its agent and model,
     /// its last confirmed generation params (else the agent's persisted
-    /// override), its effective tool availability, its pinned advertising
-    /// facts, and the aux pins.
+    /// override), its effective tool availability, and the aux pins.
     pub fn open_settings_dialog(&mut self) {
-        let session_id = self.active_session_id().clone();
         let agent = self.agent().to_string();
         let models = model_options(&self.settings.catalog);
         let aux_models = models
@@ -98,24 +94,20 @@ impl App {
                 store.lock().ok()?.get(&agent)
             })
             .unwrap_or_default();
-        let tools = ToolsTab::new(
-            self.session_tool_rows(&self.roster_server_patterns()),
-            self.advertising_rows(&session_id),
-        );
+        let tools = ToolsTab::new(self.session_tool_rows());
         let aux = AuxTab::new(aux_models, &self.aux_pins());
         self.settings.dialog = Some(SettingsDialog::new(session, current, tools, aux));
         self.mark_dirty();
     }
 
-    /// `Enter` on the dialog: advance to the re-pin confirmation, close when
-    /// nothing is pending, or run the plan and record one summary line.
+    /// `Enter` on the dialog: close when nothing is pending, or run the plan
+    /// and record one summary line.
     pub async fn confirm_settings_dialog(&mut self, holly: &Holly) {
         let Some(dialog) = self.settings.dialog.as_mut() else {
             return;
         };
         match dialog.confirm() {
             Confirm::Close => self.close_settings_dialog(),
-            Confirm::NeedsRepinConfirmation => self.mark_dirty(),
             Confirm::Apply(plan) => {
                 let notes = dialog.notes();
                 self.close_settings_dialog();
@@ -125,42 +117,6 @@ impl App {
                     .record_status("settings", report.summary(&notes));
                 self.mark_dirty();
             }
-        }
-    }
-
-    /// One whole-server row per MCP server whose tools are in the roster —
-    /// `allowed` servers already get theirs from `session_tool_rows`.
-    fn roster_server_patterns(&self) -> Vec<String> {
-        let mut servers: Vec<String> = self
-            .tool_roster
-            .iter()
-            .filter_map(|name| {
-                let (server, _) = name.strip_prefix("mcp__")?.split_once("__")?;
-                Some(format!("mcp__{server}__*"))
-            })
-            .collect();
-        servers.sort();
-        servers.dedup();
-        servers
-    }
-
-    fn advertising_rows(&self, session: &SessionId) -> AdvertisingRows {
-        match &self.advertising {
-            Some(adv) => {
-                // `session_*` include a re-pin still pending the first resolution.
-                let mode = adv
-                    .session_mode(session)
-                    .unwrap_or_else(|| adv.mode(session));
-                let discovery = adv.session_discovery(session).unwrap_or_default();
-                let client_side = adv.encoding(session) == Encoding::ClientSide;
-                AdvertisingRows::new(true, client_side, mode, discovery)
-            }
-            None => AdvertisingRows::new(
-                false,
-                false,
-                ToolAdvertising::default(),
-                Discovery::default(),
-            ),
         }
     }
 
@@ -179,7 +135,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::tui::settings_dialog::{RowId, Tab};
-    use entanglement_core::{EngineConfig, InMsg};
+    use entanglement_core::{EngineConfig, InMsg, SessionId};
 
     fn focus(app: &mut App, id: RowId) {
         let d = app.settings_dialog_mut().expect("dialog open");
@@ -261,7 +217,7 @@ mod tests {
     /// #560 P12, ADR-0207 §12: cycling the Session tab's mode row and
     /// confirming sends a live `InMsg::SetMode` for the active session —
     /// the natural slot the read-only agent row's retirement (ADR-0207 §9)
-    /// left, unlike the Tools tab's unrelated tool-advertising `RowId::Mode`.
+    /// left.
     #[tokio::test]
     async fn confirm_sends_the_mode_switch_and_records_one_summary() {
         let holly = Holly::spawn(EngineConfig::default());

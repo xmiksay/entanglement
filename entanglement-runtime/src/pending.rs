@@ -34,8 +34,8 @@ mod park;
 pub use park::{approval, list_pending, park_approval, scopes_for};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
-/// alongside the waiter so an `explore(kind: "pending")` listing can describe
-/// a parked approval without a second, drifting registry. `kind` is one of
+/// alongside the waiter so a listing (`InMsg::ListPending`) can describe a
+/// parked approval without a second, drifting registry. `kind` is one of
 /// `"tool"` (a permission `Ask`), `"plan"` (`propose_plan`), `"mode"`
 /// (`request_mode`), `"rhai"` (a script binding's own `Ask`), or `"ask_user"`
 /// (an `ask_user` call — carried here too for completeness, though a
@@ -53,8 +53,7 @@ pub struct Parked {
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
 
-/// One parked decision, as reported to a #560 P12 `explore(kind: "pending")`
-/// listing. Sorted by `(session, request_id)` for a deterministic reply,
+/// One parked decision, as a pending listing reports it. Sorted by `(session, request_id)` for a deterministic reply,
 /// mirroring [`crate::questions::OpenQuestions::snapshot`].
 pub struct PendingApproval {
     pub session: SessionId,
@@ -145,9 +144,8 @@ impl PendingDecisions {
     }
 
     /// Snapshot every parked decision, optionally filtered to one `session`.
-    /// `None` spans every session — the `explore(kind: "pending")` aggregator's
-    /// own use, which filters to a whole spawn sub-tree locally rather than
-    /// calling this once per member session.
+    /// `None` spans every session, for a caller filtering to a whole spawn
+    /// sub-tree locally rather than calling this once per member session.
     pub fn snapshot(&self, session: Option<&SessionId>) -> Vec<PendingApproval> {
         let guard = self.lock();
         let mut list: Vec<PendingApproval> = guard

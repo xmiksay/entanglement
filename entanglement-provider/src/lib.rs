@@ -50,9 +50,8 @@ pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
-    AnthropicModelSpec, Catalog, Discovery, EffortTiers, McpServerState, ModelEntry, ModelPricing,
-    ProviderEntry, ProviderMcpServer, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle,
-    ToolAdvertising, Wire,
+    AnthropicModelSpec, Catalog, EffortTiers, ModelEntry, ModelPricing, ProviderEntry,
+    ProviderMcpServer, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle, Wire,
 };
 pub use client::{
     prune_stale, HttpClient, RetryConfig, SharedStateLocation, StreamGuard, ThrottleStatus,
@@ -64,10 +63,10 @@ pub use endpoint::{
 };
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
-    fixed_model_concurrency, fixed_thinking_spec, AuxLlmResolver, DummyLlm, EchoLlm,
+    fixed_model_concurrency, fixed_thinking_spec, mcp_tool_name, AuxLlmResolver, DummyLlm, EchoLlm,
     GenerationParams, GenerationResolver, Llm, LlmEvent, LlmFactory, LlmRequest, LlmStream,
     ModelConcurrencyResolver, ModelResolver, ReasoningEffort, ResolvedModel, StopReason,
-    ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId, INVOKE_TOOL,
+    ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId, MCP_TOOL,
 };
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather
@@ -91,8 +90,6 @@ pub use oauth::{
 pub use openai::{
     openai_factory, OpenAiLlm, OLLAMA_BASE, OPENAI_BASE, ZAI_CODING_PLAN_BASE, ZAI_GENERAL_BASE,
 };
-pub use openai_responses::{
-    openai_responses_factory, OpenAiResponsesLlm, OPENAI_RESPONSES_BASE, TOOL_SEARCH_CALL_TOOL,
-};
+pub use openai_responses::{openai_responses_factory, OpenAiResponsesLlm, OPENAI_RESPONSES_BASE};
 pub use response::{stream_from_response, LlmResponse};
 pub use web_search::WebSearchConfig;

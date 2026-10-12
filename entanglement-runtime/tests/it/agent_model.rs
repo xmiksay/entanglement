@@ -1,8 +1,7 @@
 //! Integration tests for `agent`'s `model` parameter (#560 P12, ADR-0207
 //! §12): a spawning model may pick the child's model, validated against the
 //! catalog before any child is minted. Drives the real tool executor with a
-//! real catalog wired (`ToolExecutor::builder` +
-//! `AdvertisingInputs`, mirroring `advertising_pin.rs`'s harness) so
+//! real catalog wired (`ToolExecutor::builder().catalog(..)`) so
 //! `resolve_model` sees genuine catalog data, not a stub.
 
 use std::sync::{Arc, Mutex};
@@ -17,7 +16,6 @@ use entanglement_core::{
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::tool_advertising::AdvertisingInputs;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
@@ -110,25 +108,14 @@ fn engine_config(model_arg: &'static str) -> EngineConfig {
     }
 }
 
-/// Wire the real executor with a genuine catalog (`AdvertisingInputs`), a
-/// permissive single-mode table, and no advertising/system-prompt resolvers
-/// — this test only cares about `agent`'s `model` validation, not what gets
-/// advertised.
-fn load_config() -> entanglement_runtime::config::Config {
-    // No user layer: never the real `config.yml` of whoever runs the test.
-    let dir = tempfile::tempdir().expect("tempdir");
-    entanglement_runtime::config::Config::load_with(dir.path(), None).expect("config loads")
-}
-
+/// Wire the real executor with a genuine catalog, a permissive single-mode
+/// table, and no advertising/system-prompt resolvers — this test only cares
+/// about `agent`'s `model` validation, not what gets advertised.
 fn spawn_executor(
     holly: &Holly,
     agents: entanglement_core::AgentCatalog,
 ) -> tokio::task::JoinHandle<()> {
     let catalog: Catalog = serde_yaml::from_str(CATALOG).expect("catalog yaml");
-    let inputs = Arc::new(AdvertisingInputs::new(
-        Arc::new(load_config()),
-        Some(Arc::new(catalog)),
-    ));
     let tools = ToolRegistry::new().shared();
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -152,7 +139,7 @@ fn spawn_executor(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
         ))
-        .advertising_inputs(inputs)
+        .catalog(Arc::new(catalog))
         .spawn()
 }
 

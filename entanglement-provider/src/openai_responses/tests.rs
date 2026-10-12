@@ -4,7 +4,6 @@
 use serde_json::json;
 
 use super::request::{build_body, convert_messages};
-use super::TOOL_SEARCH_CALL_TOOL;
 use crate::{
     ContentPart, GenerationParams, Message, MessageRole, ReasoningEffort, ThinkingSpec, ToolCall,
     ToolSpec,
@@ -76,15 +75,17 @@ fn generation_params_map_to_responses_field_names() {
 }
 
 #[test]
-fn tools_are_flat_function_entries_with_defer_loading_passthrough() {
-    let mut deferred = ToolSpec::new("search_files", "search the workspace");
-    deferred.defer_loading = true;
+fn tools_are_flat_function_entries_with_no_defer_loading() {
+    // ADR-0226: nothing is deferred on this wire any more — every entry is a
+    // plain `function` with no `defer_loading` key and no `tool_search`
+    // primitive declared alongside.
     let kernel = ToolSpec::new("read", "read a file");
+    let other = ToolSpec::new("search_files", "search the workspace");
     let body = build_body(
         "gpt-5.4",
         "",
         &[],
-        &[kernel, deferred],
+        &[kernel, other],
         None,
         ThinkingSpec::default(),
     );
@@ -95,34 +96,10 @@ fn tools_are_flat_function_entries_with_defer_loading_passthrough() {
     assert_eq!(read_entry["type"], "function");
     assert_eq!(read_entry["description"], "read a file");
     assert!(read_entry.get("defer_loading").is_none());
-    let deferred_entry = tools.iter().find(|t| t["name"] == "search_files").unwrap();
-    assert_eq!(deferred_entry["defer_loading"], true);
-}
-
-#[test]
-fn tool_search_entry_is_declared_only_when_a_tool_is_deferred() {
-    let plain = ToolSpec::new("read", "read a file");
-    let body = build_body("gpt-5.4", "", &[], &[plain], None, ThinkingSpec::default());
-    let tools = body["tools"].as_array().unwrap();
+    let other_entry = tools.iter().find(|t| t["name"] == "search_files").unwrap();
+    assert!(other_entry.get("defer_loading").is_none());
+    // And no `tool_search` primitive is declared alongside them.
     assert!(!tools.iter().any(|t| t["type"] == "tool_search"));
-
-    let mut deferred = ToolSpec::new("search_files", "search the workspace");
-    deferred.defer_loading = true;
-    let body = build_body(
-        "gpt-5.4",
-        "",
-        &[],
-        &[deferred],
-        None,
-        ThinkingSpec::default(),
-    );
-    let tools = body["tools"].as_array().unwrap();
-    let search = tools
-        .iter()
-        .find(|t| t["type"] == "tool_search")
-        .expect("tool_search entry present once a tool is deferred");
-    assert_eq!(search["execution"], "client");
-    assert_eq!(search["parameters"]["required"][0], "query");
 }
 
 #[test]
@@ -164,18 +141,21 @@ fn function_call_and_output_pair_by_call_id() {
 }
 
 #[test]
-fn tool_search_call_and_output_pair_uses_the_native_item_types() {
-    // The assistant's call: a ToolCall named the reserved sentinel, as the
-    // SSE parser would have produced from a `tool_search_call` output item.
+fn a_persisted_tool_search_pair_degrades_to_plain_items() {
+    // ADR-0226: this build never mints a `tool_search_call`/`tool_search_output`
+    // pair, but an old session's persisted history still carries one. Replay
+    // must not invent native item types for it — the assistant call renders
+    // as the plain `function_call` its name says, and the reply folds to the
+    // part's portable `summary` text inside a `function_call_output`.
     let call = ToolCall::new(
         "call_9",
-        TOOL_SEARCH_CALL_TOOL,
+        "responses_tool_search",
         r#"{"query":"weather tools"}"#,
     );
     let reply = ContentPart::tool_search_output(
         "openai_responses",
         "discovered: get_weather",
-        json!([{ "type": "function", "name": "get_weather", "defer_loading": true }]),
+        json!([{ "type": "function", "name": "get_weather" }]),
     );
     let history = vec![
         Message::assistant_content(vec![], vec![call]),
@@ -185,21 +165,18 @@ fn tool_search_call_and_output_pair_uses_the_native_item_types() {
     assert_eq!(
         items[0],
         json!({
-            "type": "tool_search_call",
-            "execution": "client",
+            "type": "function_call",
             "call_id": "call_9",
-            "status": "completed",
-            "arguments": { "query": "weather tools" },
+            "name": "responses_tool_search",
+            "arguments": r#"{"query":"weather tools"}"#,
         })
     );
     assert_eq!(
         items[1],
         json!({
-            "type": "tool_search_output",
-            "execution": "client",
+            "type": "function_call_output",
             "call_id": "call_9",
-            "status": "completed",
-            "tools": [{ "type": "function", "name": "get_weather", "defer_loading": true }],
+            "output": "discovered: get_weather",
         })
     );
 }

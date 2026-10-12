@@ -115,7 +115,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         mode_table,
         plan_files,
         mcp_scopes,
-        advertising_inputs,
+        catalog,
         discovery,
         workdirs,
     } = b;
@@ -259,11 +259,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             hooks,
             validation,
             denials,
-            // #560 P12, ADR-0207 §12: read off the same `advertising_inputs`
-            // every session-start resolution already consults.
-            catalog: advertising_inputs
-                .as_ref()
-                .and_then(|i| i.catalog().cloned()),
+            catalog,
             workdirs,
         };
         background::spawn_file_change_listener(&mut background, &ctx);
@@ -285,28 +281,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             budget_sub,
             ctx.mode_table.clone(),
         ));
-        lifecycle::run(sub, &ctx, &active, advertising_inputs.as_deref()).await;
+        lifecycle::run(sub, &ctx, &active).await;
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::tool_names::{
-        is_non_maskable, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL, RESPONSES_TOOL_SEARCH_TOOL,
-    };
-
-    #[test]
-    fn explore_and_describe_are_non_maskable() {
-        assert!(is_non_maskable(EXPLORE_TOOL));
-        assert!(is_non_maskable(DESCRIBE_TOOL));
-        // P7: the wire declares `tool_search` itself whenever a tool is
-        // deferred — the model never chose it from an advertised name — so
-        // masking it out would strand the round-trip with no way to answer.
-        assert!(is_non_maskable(RESPONSES_TOOL_SEARCH_TOOL));
-        assert!(
-            !is_non_maskable(POLL_TOOL),
-            "poll's mask exemption was retired by ADR-0192"
-        );
-        assert!(!is_non_maskable("bash"));
-    }
 }

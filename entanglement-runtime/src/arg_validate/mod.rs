@@ -1,6 +1,6 @@
 //! Pre-dispatch argument validation against a tool's advertised [`ToolSpec`]
-//! schema (#560, ADR-0196 §6) — the three-way error taxonomy `tool_search.md`
-//! §7 settles:
+//! schema (#560, ADR-0196 §6, carried forward by ADR-0226) — the three-way
+//! error taxonomy:
 //!
 //! | case | reply |
 //! | --- | --- |
@@ -18,10 +18,11 @@
 //!
 //! Two guards ride alongside the taxonomy: [`LoopBreaker`] (two identical
 //! failing calls in a row get an explicit note — the schema was never the
-//! problem) and the delivered-schema dedup, which reuses
-//! [`crate::tool_advertising::DiscoveredSet`] (shared with the P3 `describe`
-//! tracking, ADR-0196 §4) so a repeat violation never re-sends a schema
-//! already in context.
+//! problem) and the delivered-schema dedup,
+//! [`crate::tool_advertising::DeliveredSchemas`] (shared with `mcp_tools`,
+//! ADR-0226), so a repeat violation never re-sends a schema already in
+//! context. An MCP call through the `mcp` envelope is validated here like any
+//! native call: a violation never reaches the server.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -35,7 +36,7 @@ mod duplicate_keys;
 
 /// Duplicate JSON object keys in `input`, at any nesting depth (#560
 /// remainder). Exposed for [`crate::tool_runner::dispatch::execute`]: an
-/// `invoke`-unwrapped call's dispatched input already lost this information
+/// `mcp`-unwrapped call's dispatched input already lost this information
 /// (core had to parse the outer envelope to extract `args`, which collapses
 /// a duplicate the same way `validate` below does) — the caller re-scans the
 /// envelope's raw, still-duplicated text instead.
@@ -286,25 +287,14 @@ pub fn minimal_example(schema: &Value) -> Value {
 
 /// Build the full schema-violation decline: what was wrong, plus — unless
 /// `schema_already_delivered` (the delivered-schema dedup guard, ADR-0196
-/// §6) — the tool's full schema (byte-identical to `describe`'s rendering,
-/// [`crate::discover::spec_to_json`]) and one minimal example call.
+/// §6) — the tool's full schema ([`crate::discover::spec_to_json`], the one
+/// rendering `mcp_tools` also shows) and one minimal example call. An MCP
+/// tool's example is shaped as the `mcp` envelope call that reaches it — a
+/// native-shaped one would teach a call the model can't make.
 pub fn decline_text(
     spec: &ToolSpec,
     violation: &Violation,
     schema_already_delivered: bool,
-) -> String {
-    decline_text_for(spec, violation, schema_already_delivered, false)
-}
-
-/// [`decline_text`] with the example call wrapped as `{"name", "args"}` when
-/// the session reaches this tool through the `invoke` envelope (ADR-0204,
-/// [`crate::tool_advertising::example_via_invoke`]) — a native-shaped example
-/// would teach a call the model can't make.
-pub fn decline_text_for(
-    spec: &ToolSpec,
-    violation: &Violation,
-    schema_already_delivered: bool,
-    via_invoke: bool,
 ) -> String {
     let mut msg = format!(
         "schema violation calling `{}`: {}",
@@ -317,13 +307,13 @@ pub fn decline_text_for(
         let schema_json = crate::discover::spec_to_json(spec);
         msg.push_str("\n\ncorrect usage:\n");
         msg.push_str(&serde_json::to_string_pretty(&schema_json).unwrap_or_default());
-        msg.push_str("\n\nexample call:\n");
-        let example = minimal_example(&spec.schema);
-        let example = if via_invoke {
-            json!({ "name": spec.name, "args": example })
-        } else {
-            example
+        let args = minimal_example(&spec.schema);
+        let (label, example) = match crate::tool_advertising::mcp_example(&spec.name, args.clone())
+        {
+            Some(call) => ("example call (through mcp)", call),
+            None => ("example call", args),
         };
+        msg.push_str(&format!("\n\n{label}:\n"));
         msg.push_str(&serde_json::to_string_pretty(&example).unwrap_or_default());
     }
     msg
@@ -381,7 +371,7 @@ impl LoopBreaker {
     }
 
     /// Release an ended/hibernated session's entry — mirrors
-    /// [`crate::tool_advertising::DiscoveredSet::forget`].
+    /// [`crate::tool_advertising::DeliveredSchemas::forget`].
     pub fn forget(&self, session: &SessionId) {
         self.last
             .lock()

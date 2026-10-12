@@ -23,23 +23,21 @@ pub use holly::{
 pub use id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
-// The tool-advertising mode (`full`/`tool_search`, ADR-0196) rides the same
-// path: it is catalog data (the per-model `tool_advertising:` preference),
-// but the runtime's `Config` and mode-resolution plumbing carry it in the
-// lean build too, so core re-exports it beside `Catalog` rather than the
-// runtime naming a provider path of its own.
+// The `mcp` envelope's reserved name rides the same path (ADR-0226): the
+// runtime advertises the envelope and core unwraps it, so both need one
+// spelling.
 pub use entanglement_provider::{
-    call_endpoint, content_text, stream_from_response, AuxLlmResolver, Catalog, ContentPart,
-    DebugFlags, Discovery, DummyLlm, EchoLlm, EndpointMethod, EndpointResponse, GenerationParams,
+    call_endpoint, content_text, mcp_tool_name, stream_from_response, AuxLlmResolver, Catalog,
+    ContentPart, DebugFlags, DummyLlm, EchoLlm, EndpointMethod, EndpointResponse, GenerationParams,
     GenerationResolver, HttpClient, ImageSource, Llm, LlmEvent, LlmFactory, LlmRequest,
-    LlmResponse, LlmStream, McpServerState, Message, MessageRole, ModelEntry, ModelPricing,
-    ModelResolver, ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig,
-    SharedStateLocation, StopReason, ToolAdvertising, ToolCall, ToolSpec, Usage, UserId,
-    WebSearchConfig, Wire, DEBUG_ENV, ENDPOINT_RESPONSE_CAP, INVOKE_TOOL, TOOL_SEARCH_CALL_TOOL,
+    LlmResponse, LlmStream, Message, MessageRole, ModelEntry, ModelPricing, ModelResolver,
+    ProviderMcpServer, ReasoningEffort, ResolvedModel, RetryConfig, SharedStateLocation,
+    StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire, DEBUG_ENV,
+    ENDPOINT_RESPONSE_CAP, MCP_TOOL,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so
-// the runtime reaches these types on the same path `McpServerState` already
+// the runtime reaches these types on the same path `ProviderMcpServer` already
 // takes, including in the lean build that names no provider dependency of its
 // own. Nothing in core calls them. `HttpClient` above (#559) is what the MCP
 // HTTP transport is handed so its traffic shares the same per-endpoint

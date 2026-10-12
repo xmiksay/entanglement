@@ -36,8 +36,9 @@ pub enum CompactionMode {
     Prune,
 }
 
-/// An `invoke {name, args}` call as the model emitted it (ADR-0204): the outer
-/// tool name and the raw argument string, verbatim. Carried on
+/// An `mcp {server, tool, args}` call as the model emitted it (ADR-0226; an
+/// older log may carry ADR-0204's `invoke {name, args}`): the outer tool name
+/// and the raw argument string, verbatim. Carried on
 /// [`ToolCall`][OutEvent::ToolCall]/[`ToolExec`][OutEvent::ToolExec]/
 /// [`ToolOutput`][OutEvent::ToolOutput] when core unwrapped the call, so heads,
 /// gates and hooks see the inner tool while replay can rebuild the emitted

@@ -31,7 +31,7 @@ mod compaction_request;
 mod emit;
 mod fork;
 mod immediate;
-mod invoke_envelope;
+mod mcp_envelope;
 mod mode;
 mod ops;
 mod replay;

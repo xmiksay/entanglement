@@ -2,25 +2,17 @@
 //! that render, keys and mouse all read. Split out of
 //! `settings_dialog.rs` (#745).
 
-use super::{aux, discovery_label, server_of, GenField, SettingsDialog, Tab, AUX_PERSIST_REASON};
+use super::{aux, GenField, SettingsDialog, Tab, AUX_PERSIST_REASON};
 use crate::config::aux_models::Purpose;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowId {
     Persist,
     Model,
-    /// Permission mode (#560 P12, ADR-0207 §12), Session tab. Distinct from
-    /// `Mode` below (the Tools tab's *tool-advertising* mode, full/tool_search
-    /// — an unrelated axis that happens to share the English word).
+    /// Permission mode (#560 P12, ADR-0207 §12), Session tab.
     PermMode,
     Gen(GenField),
     Tool(usize),
-    Mode,
-    Discovery,
-    /// "Save mode/discovery as default" — no other persist flag on the Tools
-    /// tab any more (ADR-0207 retired the per-agent allowlist the overlay
-    /// used to optionally materialize).
-    AdvertisingPersist,
     Aux(Purpose),
     /// Headers, hints and disabled read-only lines — never focusable.
     Note,
@@ -139,10 +131,9 @@ impl SettingsDialog {
     pub(super) fn tools_rows(&self) -> Vec<RowView> {
         let t = &self.tools;
         let mut rows = vec![note(
-            "── (a) tools this session · Space: toggle, a: auto-allow ──",
+            "── tools this session · Space: toggle, a: auto-allow ──",
         )];
-        for i in t.indices(false) {
-            let r = &t.rows()[i];
+        for (i, r) in t.rows().iter().enumerate() {
             let tag = match (r.checked, r.profile_default, r.allow) {
                 (true, false, true) => "  +session (allow)",
                 (true, false, false) => "  +session",
@@ -158,48 +149,6 @@ impl SettingsDialog {
                 )
             });
         }
-        rows.push(note("── (b) MCP servers ──"));
-        for i in t.indices(true) {
-            let r = &t.rows()[i];
-            let name = server_of(&r.name).unwrap_or(&r.name);
-            rows.push(RowView {
-                changed: t.row_changed(i),
-                ..row(RowId::Tool(i), name, checkbox(r.checked).to_string())
-            });
-        }
-        rows.push(note(
-            "── (c) advertising · re-pins live, asks to confirm ──",
-        ));
-        rows.push(RowView {
-            changed: t.adv.mode_changed(),
-            disabled: t.adv.mode_disabled(),
-            ..row(
-                RowId::Mode,
-                "advertising mode",
-                t.adv.mode().label().to_string(),
-            )
-        });
-        rows.push(RowView {
-            changed: t.adv.discovery_changed(),
-            disabled: t.adv.discovery_disabled(),
-            ..row(
-                RowId::Discovery,
-                "discovery",
-                discovery_label(t.adv.discovery()).to_string(),
-            )
-        });
-        rows.push(RowView {
-            changed: t.adv.persist(),
-            disabled: t.adv.persist_disabled(),
-            ..row(
-                RowId::AdvertisingPersist,
-                "save mode as default",
-                format!(
-                    "{} for new sessions (config.yml)",
-                    checkbox(t.adv.persist())
-                ),
-            )
-        });
         rows
     }
 }

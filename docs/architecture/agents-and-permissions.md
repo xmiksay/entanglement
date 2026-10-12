@@ -100,8 +100,9 @@ below realize one model:
   inspect`) as the mitigation rather than an enforced boundary
   ([ADR-0047](../adr/0047-local-trust-boundary.md)).
 - **Progressive disclosure, recursively** — the model sees only *descriptions*
-  until it acts: spawn-target `name: description` in the `agent` tool
-  schema (agents) → tier-1 `name: description` index in the prompt (skills) →
+  until it acts: `name: description` rows from `list_agents` (agents) and
+  `list_skills` (skills) — no roster in the `agent` schema or the prompt any
+  more, so both stay byte-stable ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) →
   full body on `load_skill` **or** preload (skills tier-2) → the definition body
   *becomes* a child's own assembled prompt at spawn.
 - **Model decides *whether*, harness decides *how*** — selection is LLM reasoning
@@ -156,8 +157,9 @@ below realize one model:
   [Capability]` — `Read`/`Write`/`Exec`/`Plan`/`Control`, a **slice** because
   `call`/`rhai` are genuinely multi-capability (`Read`+`Write`+`Exec`); the
   handful of runtime-owned pseudo-tools with no `ToolRegistry` entry
-  (`agent`/`agent_send`/`poll`/`ask_user`/`explore`/`describe`/
-  `update_tasks`/`request_mode` ⇒ `Control`, `propose_plan` ⇒ `Plan`) resolve
+  (`agent`/`agent_send`/`poll`/`ask_user`/`list_agents`/`list_models`/
+  `list_skills`/`list_mcp`/`mcp_tools`/`update_tasks`/`request_mode` ⇒
+  `Control`; the registry tool `load_skill` is `Control` too, `propose_plan` ⇒ `Plan`) resolve
   through a small hardcoded table (`capability::runtime_owned`) instead. A
   **`Capability::Control`-only tool is never graded** — checked by capability,
   not a second interception table, so it automatically covers every current
@@ -268,7 +270,7 @@ below realize one model:
   never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
   **managed** file `<state dir>/grants.yml` (the managed-state dir,
   `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
-  seven managed files, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
+  eight managed files, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
   loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
   `DefaultGrantStore::load_from` take an explicit path, or `None` for an
   in-memory-only store — the `ToolExecutor::builder` default every test
@@ -625,22 +627,10 @@ below realize one model:
   typing `/set …`/`/show` directly, or from the `Ctrl+P` palette (a palette
   pick of `/set` prefills the input with `/set ` since the palette carries no
   trailing args, while `/show` runs immediately).
-- **Tool-advertising mode knob — an unrelated, older "mode"**
-  ([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
-  superseding ADR-0193's `native`/`invoke` split): `ToolAdvertising`'s
-  `Full | ToolSearch` predates and is orthogonal to the permission **mode**
-  this section is otherwise about — it governs how much of the tool surface
-  is advertised up front, never what a call may do. The per-session
-  `Full | ToolSearch` mode (see [engine](engine.md) §turn loop) resolves from
-  the session's initial model via `ModelEntry.tool_advertising` — the same
-  `Option<Enum>` catalog pattern as `thinking_style` — with precedence
-  **`config.yml` `tool_advertising` > catalog > default `ToolSearch`** (the
-  env tier is retired, [ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)). The mode is held in a runtime-side
-  session→mode map (the resolver and executor are engine-global and
-  session-multiplexed; per-profile model pins mean concurrent sessions can
-  differ), is **fixed at session start** — a live `SetModel` keeps it, logged
-  when the new model's catalog preference differs — and a subagent resolves
-  its own at spawn. `skutter inspect config` prints the resolved mode.
+- **No tool-advertising mode** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): ADR-0196's `Full | ToolSearch` knob
+  (orthogonal to the permission mode) is removed along with its
+  `config.yml`/catalog keys — one surface, pinned per session, identical on
+  every wire; a stale `tool_advertising:` warns once and is ignored.
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
   `${config_dir}/entanglement/`, the managed-state dir (`ENTANGLEMENT_STATE_DIR`)
@@ -717,18 +707,17 @@ below realize one model:
   surface that is stable **within** a session keeps that cache warm; what is
   traded away is only "the model cannot even attempt the call" — every
   attempt is now visibly graded instead, and no capability changes hands.
-  The universal, session-stable surface is the registry tools
-  (`read`/`write`/`edit`/`glob`/`grep`/`call`, `rhai` when the feature is
-  on), `bash` (registered at startup, ADR-0195), `update_tasks`, `ask_user`,
-  `load_skill`, `poll`, `propose_plan` and `request_mode` — the **lean
-  kernel** `ToolSearch` mode narrows this to
-  ([ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md);
-  see [engine](engine.md) §turn loop) — plus the discovery pair `explore`/
-  `describe`, advertised in **both** modes and, unlike every other tool,
-  **fully non-maskable**: no session overlay deny can withdraw them even at
-  dispatch (the ADR-0190 `poll` pattern, extended to two more tools —
-  contrast `poll` itself, whose *dispatch* a mode can still decline, just not
-  un-advertise). With `Agent` carrying no more authority, **nothing
+  The universal, session-stable surface is the compiled-in `KERNEL`
+  ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); see [engine](engine.md) §turn loop): `read`/`edit`/`write`/
+  `apply_patch`/`bash`/`web_fetch`, `rhai` when the feature is on,
+  `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
+  `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
+  `list_agents`/`list_models`/`list_skills`/`load_skill`/`list_mcp`/
+  `mcp_tools` — which, unlike every other tool, are **fully non-maskable**:
+  no session overlay deny can withdraw them even at dispatch (the ADR-0190
+  `poll` pattern — contrast `poll` itself, whose *dispatch* a mode can still
+  decline, just not un-advertise). `glob`/`grep`/`call` stay registered as
+  script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
   now, bounded only by the mode's `max_depth`/`max_agents`, neither of which
@@ -799,57 +788,42 @@ below realize one model:
   uses (`permission::overlay_grade_entry`/`ancestor_chain`), and the `rhai`
   `BindingPolicy` snapshot consults the identical lookup (a script's
   `bash()` binding grades identically to a direct `bash` call).
-  The TUI drives it via `/enable mcp <server>` / `/enable tool <name>`
-  [`--allow [<pattern>]`] and `/disable` (upserts a deny; bare = reset) — the
+  The TUI drives it via `/enable tool <name>` [`--allow [<pattern>]`] and
+  `/disable tool <name>` (upserts a deny; bare = reset) and the
   bare-`/enable` session-tools checklist dialog (checkboxes over the full
   roster seeded from effective availability; `Enter` submits the overlay as
-  a diff against the mode's own grade), and the `/mcp` panel's `e`/`d` keys
-  on the highlighted server; see the protocol doc for the wire shape. A
+  a diff against the mode's own grade); see the protocol doc for the wire
+  shape. (`/enable mcp`/`/disable mcp` and the `/mcp` panel's `e` key are
+  gone: an MCP server is available the moment it is registered, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
+  the panel's `d` key stays — a per-session deny of the server's
+  `mcp__<name>__*` tools.) A
   typed `/enable <name-or-glob> [--allow […]]` also reports how many
   currently-registered tools the pattern matched, as a transcript status
   line (#560 P9,
   [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md)).
   **`/tools`** (same ADR) is a separate, read-heavy *browser* — not an
   overlay editor — over the session's whole reachable surface (host tools,
-  MCP servers + their tools, skills, endpoints via `discover::index_rows`,
-  the exact live index `explore` itself serves): each row shows its kind,
-  advertising status (`kernel`/`advertised`/`discoverable`/`n/a`, from the
-  same `AdvertisingState` the resolver reads, now also shared with the TUI),
-  and the mode's own effective grade; a typeahead filter plus a `Tab`-cycled
-  category narrow the list, and `Enter` on a row enables it through the same
-  `/enable` path (closing the view). Under `client_side` encoding's `append`
-  discovery strategy ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)),
-  a **new** overlay enable entry from *any* writer (this dialog, a typed
-  `/enable`, or an approval-derived `Session`-scope grant) also joins the
-  session's `client_side` discovered-tool set (ADR-0196 §3), so the resolver
-  advertises the matching tool(s) the very next round instead of waiting on
-  a redundant `describe()` — a one-shot snapshot against the registry at the
-  moment of the change, not a retroactive subscription.
-- **The discovery pair gained non-tool kinds** (#560 P12,
+  MCP servers + their tools, skills, endpoints via `discover::index_rows`):
+  each row shows its kind, advertising status (`advertised` when the name is
+  in the session's surface snapshot, `hidden` otherwise — script-only tools,
+  MCP tools reached through `mcp` — `n/a` before the first round; from the
+  same `AdvertisingState` the resolver writes), and the mode's own effective
+  grade; a typeahead filter plus a `Tab`-cycled category narrow the list, and
+  `Enter` on a row enables it through the same `/enable` path (closing the
+  view). An enable never changes the advertised array — only how a call is
+  graded.
+- **Discovery is six plain tools** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), amending
   [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §12, amending [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)):
-  `explore(kind?)`/`describe(names)` (still `Capability::Control`, always-on,
-  non-maskable, [ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md))
-  index five kinds now beyond the default tool roster — `agents` (name +
-  description of every registered agent), `skills` (name + description of
-  every discoverable skill), `models` (the active catalog: id, context
-  window, capability flags), `modes` (the four built-in modes' summaries and
-  rules — the same wording `EngineConfig::modes_preamble` and the TUI
-  `/mode` picker use, so a blocked model can explain itself: "why can't I
-  write in research mode?"), and **`pending`** — everything in flight for
-  the session's spawn sub-tree: running sub-agents, background jobs and
-  scripts, retained outputs, open questions, parked approvals. `poll`
-  requires a handle already held, which makes a handle something the model
-  must hoard in context to avoid losing — and a real failure, not a
-  convenience gap: a compaction fork keeps only a summary plus the kept tail
-  (ADR-0205), and a handle (`x-…` for a job, an `agent_id` for a sub-agent)
-  outside that tail is unreachable — the work keeps running, finishes, and
-  its result is silently orphaned; the same applies across a
-  hibernate/resume cycle. `explore(kind: "pending")` makes every such handle
-  **recoverable** instead of hoarded. Like the rest of the discovery pair,
-  `pending` is read-only session introspection that starts nothing and
-  touches no host resource, so it is available in every mode, `auto`
-  included.
+  §12's `explore`/`describe` kinds): `list_agents` (name, description, model
+  pin), `list_models` (the usable catalog: provider/id, display name, context
+  window), `list_skills` (name + description), `load_skill`, `list_mcp` and
+  `mcp_tools` (see [gates & host tools](gates-and-host-tools.md) §MCP) — each
+  with no argument or one `name`, all `Capability::Control`, always-on,
+  non-maskable ([ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)
+  pattern), available in every mode. The old `modes` kind is covered by the
+  static modes preamble in the system prompt; the old `pending` kind's
+  in-flight recovery is the handle-less `poll` (a session's own outstanding
+  jobs, scripts and sub-agents).
 - **`request_mode` — a blocked model's escape hatch**
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   §10): a `Capability::Control` tool advertised unconditionally, so a blocked
@@ -1058,21 +1032,22 @@ below realize one model:
   `AGENTS.md` / `.agents/AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`, first
   found wins — no bespoke file — only when the frontmatter sets
   `include_brief: true`) + **generated env block** (cwd/root, platform, date —
-  never model-guessed) + **skill index** (tier-1 `name`+`description` disclosure
-  lines from the skill registry) + **preloaded skill bodies** (frontmatter
+  never model-guessed) + **tool conventions** (one static line,
+  `system_prompt::TOOL_CONVENTIONS`: call the advertised tools directly, MCP
+  through `mcp(server, tool, args)`, `rhai` for anything else — the skill
+  roster that used to sit here moved to `list_skills`, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) + **preloaded skill bodies** (frontmatter
   `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load(root)`
   (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
   `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets `preamble + body (+ brief)` +
-  any preloaded bodies — no env/skill-index, and never the parent's assembled
+  any preloaded bodies — and never the parent's assembled
   prompt (each agent is composed from *its own* body + `include_brief` flag).
   Composition is a pure, unit-tested harness function baked into
   `Agent.system_prompt` at load time, so session start / spawn
   both read the finished prompt and core stays a verbatim pass-through into
   `LlmRequest.system` — there is no more live `SetAgent` to re-read it on
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §9). The skill index is populated from the skill registry
-  (✅ #114, below); there is no per-agent tool mask left to filter it by any
-  more — the index lists every discoverable skill regardless of session mode.
+  §9). `list_skills` reads the skill registry (✅ #114, below) and lists every
+  discoverable skill regardless of session mode.
   **Per-turn prompt override (✅ #310, [ADR-0078](../adr/0078-per-turn-dynamic-system-prompt.md)):**
   an optional `EngineConfig.system_prompt_resolver: Option<Arc<dyn Fn(&SessionId,
   &Agent) -> Option<String> + Send + Sync>>` (type alias
@@ -1118,8 +1093,8 @@ below realize one model:
   [ADR-0194](../adr/0194-skills-are-additive-only.md); skills are
   additive-only). Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
-  emits one `name: description` line per non-`user_only` skill into the assembled
-  system prompt (~100 tokens/skill); bodies are never preloaded. **Selection stays
+  yields one `name: description` row per non-`user_only` skill, which `list_skills`
+  returns on request ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) — no longer in the system prompt); bodies are never preloaded. **Selection stays
   the model's own reasoning** — no keyword router or embedding gate; the model
   matches its task against the `description` in its forward pass, so description
   quality is the contract. Bodies + payload (`references/`/`scripts/`) are tier-2,

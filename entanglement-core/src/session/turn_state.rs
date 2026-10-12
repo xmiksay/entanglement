@@ -22,10 +22,10 @@ pub struct TurnState {
     /// Unresolved tool calls of the current batch, in emit order. Empty while
     /// a round is streaming; filled by [`Self::begin_batch`]; drained by
     /// [`Self::resolve`] as results arrive (any order). Held in dispatch form:
-    /// an unwrapped `invoke` call (ADR-0204) by its inner name and args.
+    /// an unwrapped `mcp` call (ADR-0226) by its inner name and args.
     pub pending: Vec<ToolCall>,
-    /// The envelope of each pending call core unwrapped from `invoke`
-    /// (ADR-0204), keyed by call id, so a re-offered `ToolExec` and the
+    /// The envelope of each pending call core unwrapped from `mcp`
+    /// (ADR-0226; `invoke` in an older log), keyed by call id, so a re-offered `ToolExec` and the
     /// resolving `ToolOutput` carry the same envelope as the first offer.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub envelopes: HashMap<String, ToolEnvelope>,
@@ -114,8 +114,8 @@ mod tests {
     fn resolve_returns_and_drops_the_envelope() {
         let mut t = TurnState::default();
         let envelope = ToolEnvelope {
-            tool: "invoke".into(),
-            input: r#"{"name":"tool_a"}"#.into(),
+            tool: "mcp".into(),
+            input: r#"{"server":"gh","tool":"tool_a"}"#.into(),
         };
         t.begin_batch(
             vec![call("a"), call("b")],

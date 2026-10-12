@@ -9,13 +9,13 @@ use entanglement_core::{McpAction, McpAuthAction, McpAuthStatus, McpServerStatus
 use super::App;
 
 impl App {
-    /// Wire the per-session enablement handles for `allowed` MCP servers
-    /// (#542) — set once at TUI startup, `None` in tests.
+    /// Wire the MCP roster handles the `/tools` view reads — set once at TUI
+    /// startup, `None` in tests.
     pub fn set_mcp_handles(&mut self, handles: crate::mcp::McpHandles) {
         self.mcp_handles = Some(handles);
     }
 
-    /// The enablement handles, for `/enable`/`/disable`'s lazy-connect path.
+    /// The MCP roster handles.
     pub(in crate::tui) fn mcp_handles(&self) -> Option<&crate::mcp::McpHandles> {
         self.mcp_handles.as_ref()
     }
@@ -44,7 +44,7 @@ impl App {
         self.mark_dirty();
     }
 
-    /// The highlighted server row index (#539) the panel's `e`/`d` keys act on.
+    /// The highlighted server row index (#539) the panel's `d`/`c`/`t` keys act on.
     pub fn mcp_selected(&self) -> usize {
         self.mcp_panel.selected()
     }
@@ -93,14 +93,23 @@ impl App {
         }
     }
 
-    /// Folds an `OutEvent::McpChanged` reply (#375) as a transient info-line
-    /// toast — a state-change confirmation, not transcript content.
-    pub(super) fn handle_mcp_changed(&mut self, name: &str, action: McpAction) {
-        let verb = match action {
-            McpAction::Added => "added",
-            McpAction::Removed => "removed",
+    /// Folds an `OutEvent::McpChanged` reply (#375): a success is a transient
+    /// toast; a refused/failed op persists as a transcript status line, since
+    /// the user has to read why their `/mcp add`/`remove` did nothing.
+    pub(super) fn handle_mcp_changed(
+        &mut self,
+        name: &str,
+        action: McpAction,
+        error: Option<&str>,
+    ) {
+        let (verb, done) = match action {
+            McpAction::Added => ("add", "added"),
+            McpAction::Removed => ("remove", "removed"),
         };
-        self.set_toast(format!("MCP server '{name}' {verb}"));
+        match error {
+            Some(error) => self.record_mcp_status(format!("MCP {verb} '{name}' failed: {error}")),
+            None => self.set_toast(format!("MCP server '{name}' {done}")),
+        }
     }
 
     /// Render an MCP progress/status line as transcript content (ADR-0153).
@@ -187,11 +196,25 @@ mod tests {
     #[test]
     fn mcp_changed_toasts_the_confirmation() {
         let mut app = App::new_for_test(SessionId::new("s1"));
-        app.handle_mcp_changed("srv", McpAction::Added);
+        app.handle_mcp_changed("srv", McpAction::Added, None);
         assert_eq!(app.toast(), Some("MCP server 'srv' added"));
         assert!(
             app.transcript().is_empty(),
             "a state-change confirmation must not become transcript content"
+        );
+    }
+
+    /// A refused/failed `/mcp add` is told, persistently — silence would
+    /// read as success.
+    #[test]
+    fn a_failed_mcp_change_is_transcript_content() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_mcp_changed("my_docs", McpAction::Added, Some("collides with `my.docs`"));
+        assert!(app.toast().is_none());
+        let text = format!("{:?}", app.transcript());
+        assert!(
+            text.contains("MCP add 'my_docs' failed: collides with `my.docs`"),
+            "{text}"
         );
     }
 

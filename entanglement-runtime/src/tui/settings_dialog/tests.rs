@@ -1,6 +1,4 @@
-use entanglement_provider::{
-    Catalog, Discovery, GenerationParams, ReasoningEffort, ToolAdvertising,
-};
+use entanglement_provider::{Catalog, GenerationParams, ReasoningEffort};
 
 use super::generation::{GenerationTab, ModelCaps};
 use super::session::ModelOption;
@@ -28,7 +26,7 @@ fn tool(name: &str, profile_default: bool) -> SessionToolRow {
     }
 }
 
-fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialog {
+fn dialog_on(provider: &str, model: &str) -> SettingsDialog {
     let session = SessionTab::new(
         "general".to_string(),
         options(),
@@ -36,14 +34,7 @@ fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialo
         mode_names(),
         entanglement_core::DEFAULT_MODE,
     );
-    let tools = ToolsTab::new(
-        vec![
-            tool("read", true),
-            tool("mcp__docs__search", false),
-            tool("mcp__docs__*", false),
-        ],
-        adv,
-    );
+    let tools = ToolsTab::new(vec![tool("read", true), tool("mcp__docs__search", false)]);
     let models = options()
         .into_iter()
         .map(|o| (o.provider, o.model))
@@ -56,12 +47,8 @@ fn dialog_on(provider: &str, model: &str, adv: AdvertisingRows) -> SettingsDialo
     )
 }
 
-fn live_adv() -> AdvertisingRows {
-    AdvertisingRows::new(true, true, ToolAdvertising::ToolSearch, Discovery::Append)
-}
-
 fn dialog() -> SettingsDialog {
-    dialog_on("zai", "glm-5.3", live_adv())
+    dialog_on("zai", "glm-5.3")
 }
 
 fn focus(d: &mut SettingsDialog, id: RowId) {
@@ -255,150 +242,11 @@ fn model_default_resolves_to_the_catalog_value_or_is_reported() {
     assert_eq!(unresettable, vec![GenField::ThinkingBudget]);
 }
 
-fn change_mode(d: &mut SettingsDialog) {
-    d.set_tab(Tab::Tools);
-    focus(d, RowId::Mode);
-    d.activate(true);
-}
-
 #[test]
-fn repin_needs_its_own_confirmation_step() {
-    let mut d = dialog();
-    change_mode(&mut d);
-    assert!(matches!(d.confirm(), Confirm::NeedsRepinConfirmation));
-    assert_eq!(d.stage(), Stage::ConfirmRepin);
-    d.back();
-    assert!(
-        matches!(d.confirm(), Confirm::NeedsRepinConfirmation),
-        "back re-arms it"
-    );
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("confirmed plan");
-    };
-    assert_eq!(
-        plan,
-        vec![ApplyStep::Repin {
-            mode: Some(ToolAdvertising::Full),
-            discovery: None
-        }]
-    );
-}
-
-#[test]
-fn discovery_is_disabled_with_a_reason_off_client_side_or_under_full() {
-    let native = AdvertisingRows::new(true, false, ToolAdvertising::ToolSearch, Discovery::Append);
-    assert!(native.discovery_disabled().is_some());
-    let mut d = dialog_on("anthropic", "claude-sonnet-5", native);
-    d.set_tab(Tab::Tools);
-    focus(&mut d, RowId::Discovery);
-    d.activate(true);
-    assert!(d.pending().is_empty(), "a disabled row doesn't change");
-
-    let mut full = AdvertisingRows::new(true, true, ToolAdvertising::Full, Discovery::Append);
-    assert_eq!(
-        full.discovery_disabled(),
-        Some("only applies under tool_search")
-    );
-    full.cycle_mode();
-    assert_eq!(full.discovery_disabled(), None);
-}
-
-fn persist_row(d: &SettingsDialog) -> RowView {
-    d.tools_rows()
-        .into_iter()
-        .find(|r| r.id == RowId::AdvertisingPersist)
-        .expect("the advertising persist row")
-}
-
-#[test]
-fn the_persist_checkbox_is_live_and_only_a_stateless_head_disables_it() {
-    // The managed writer exists now, so a normal session can save.
-    assert_eq!(persist_row(&dialog()).disabled, None);
-
-    let headless =
-        AdvertisingRows::new(false, false, ToolAdvertising::ToolSearch, Discovery::Append);
-    assert_eq!(
-        headless.persist_disabled(),
-        Some(ADVERTISING_PERSIST_REASON)
-    );
-    let d = dialog_on("zai", "glm-5.3", headless);
-    assert_eq!(persist_row(&d).disabled, Some(ADVERTISING_PERSIST_REASON));
-}
-
-fn toggle_persist(d: &mut SettingsDialog) {
-    d.set_tab(Tab::Tools);
-    focus(d, RowId::AdvertisingPersist);
-    d.activate(true);
-}
-
-#[test]
-fn persisting_saves_the_shown_mode_without_a_repin() {
-    let mut d = dialog();
-    toggle_persist(&mut d);
-    // Saving what is already pinned changes nothing live, so no confirmation
-    // step — the write is the whole plan. The strategy is never persisted
-    // (ADR-0213: catalog data).
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("a plan");
-    };
-    assert_eq!(
-        plan,
-        vec![ApplyStep::PersistAdvertising {
-            mode: ToolAdvertising::ToolSearch,
-        }]
-    );
-    assert!(
-        !plan[0].label().contains("discovery"),
-        "{}",
-        plan[0].label()
-    );
-}
-
-#[test]
-fn persist_off_writes_nothing_and_on_follows_the_repin() {
-    // Off: a re-pin alone never touches config.yml.
-    let mut d = dialog();
-    change_mode(&mut d);
-    let _ = d.confirm();
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("confirmed plan");
-    };
-    assert!(
-        !plan
-            .iter()
-            .any(|s| matches!(s, ApplyStep::PersistAdvertising { .. })),
-        "{plan:?}"
-    );
-
-    // On, with the mode flipped to `full`: the re-pin goes first, then the
-    // save of the shown mode.
-    let mut d = dialog();
-    toggle_persist(&mut d);
-    focus(&mut d, RowId::Mode);
-    d.activate(true);
-    let _ = d.confirm();
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("confirmed plan");
-    };
-    assert_eq!(
-        plan,
-        vec![
-            ApplyStep::Repin {
-                mode: Some(ToolAdvertising::Full),
-                discovery: None
-            },
-            ApplyStep::PersistAdvertising {
-                mode: ToolAdvertising::Full,
-            }
-        ]
-    );
-}
-
-#[test]
-fn tools_changes_become_one_overlay_step_with_server_enables() {
+fn tools_changes_become_one_overlay_step() {
     let mut d = dialog();
     d.set_tab(Tab::Tools);
-    focus(&mut d, RowId::Tool(2)); // mcp__docs__* server row
+    focus(&mut d, RowId::Tool(1));
     d.activate(true);
     let Confirm::Apply(plan) = d.confirm() else {
         panic!("a plan");
@@ -406,8 +254,7 @@ fn tools_changes_become_one_overlay_step_with_server_enables() {
     let [ApplyStep::Tools(change)] = plan.as_slice() else {
         panic!("one tools step: {plan:?}");
     };
-    assert_eq!(change.enable_servers, vec!["docs"]);
-    assert_eq!(change.entries.as_ref().map(Vec::len), Some(1));
+    assert_eq!(change.entries.len(), 1);
 }
 
 #[derive(Default)]
@@ -442,7 +289,6 @@ fn everything_changed() -> SettingsDialog {
     d.set_tab(Tab::Tools);
     focus(&mut d, RowId::Tool(0));
     d.activate(true);
-    change_mode(&mut d);
     d
 }
 
@@ -452,39 +298,27 @@ fn kind(step: &ApplyStep) -> &'static str {
         ApplyStep::PermMode { .. } => "perm-mode",
         ApplyStep::Generation { .. } => "generation",
         ApplyStep::Tools(_) => "tools",
-        ApplyStep::Repin { .. } => "repin",
-        ApplyStep::PersistAdvertising { .. } => "persist-advertising",
         ApplyStep::Aux { .. } => "aux",
     }
 }
 
 #[tokio::test]
-async fn apply_runs_in_the_settled_order_and_repin_waits_for_confirmation() {
+async fn apply_runs_in_the_settled_order() {
     let mut d = everything_changed();
     let mut fx = Recorder::default();
-    // First Enter only arms the confirmation — nothing may run yet.
-    if let Confirm::Apply(plan) = d.confirm() {
-        run_plan(&plan, &mut fx).await;
-    }
-    assert!(
-        fx.calls.is_empty(),
-        "no side effect before the re-pin is confirmed"
-    );
-
     let Confirm::Apply(plan) = d.confirm() else {
         panic!("confirmed plan");
     };
     let report = run_plan(&plan, &mut fx).await;
     let order: Vec<_> = fx.calls.iter().map(kind).collect();
-    assert_eq!(order, ["model", "generation", "tools", "repin", "aux"]);
-    assert_eq!(report.applied.len(), 5);
+    assert_eq!(order, ["model", "generation", "tools", "aux"]);
+    assert_eq!(report.applied.len(), 4);
     assert!(report.failed.is_none());
 }
 
 #[tokio::test]
 async fn a_failing_step_stops_the_plan_and_the_summary_says_what_applied() {
     let mut d = everything_changed();
-    let _ = d.confirm();
     let Confirm::Apply(plan) = d.confirm() else {
         panic!("confirmed plan");
     };
@@ -497,15 +331,12 @@ async fn a_failing_step_stops_the_plan_and_the_summary_says_what_applied() {
     assert_eq!(
         order,
         ["model", "generation", "tools"],
-        "repin/aux never attempted"
+        "aux never attempted"
     );
-    assert_eq!(report.skipped.len(), 2);
+    assert_eq!(report.skipped.len(), 1);
     let summary = report.summary(&[]);
     assert!(summary.starts_with("applied: model → "), "{summary}");
     assert!(summary.contains("FAILED: tool overlay"), "{summary}");
     assert!(summary.contains("connect refused"), "{summary}");
-    assert!(
-        summary.contains("not applied: tool advertising → full; aux narrate"),
-        "{summary}"
-    );
+    assert!(summary.contains("not applied: aux narrate"), "{summary}");
 }

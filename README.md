@@ -128,12 +128,17 @@ successors and `/fork`s inherit it; the status line shows `⚠ cd <dir>` while
 it differs from where the TUI runs. Other trusted heads send
 `InMsg::SetWorkdir` (or `Spawn.workdir`) and get `WorkdirChanged` back.
 
-A session advertises its tool surface in one of two modes (`ToolAdvertising`,
-default `ToolSearch`, ADR-0196): `full` sends every registered spec up
-front; `tool_search` sends a lean kernel plus an always-on `explore`/
-`describe` discovery pair, with the rest of the registry (MCP tools,
-endpoints, skill tools, …) reachable by real name once discovered — no
-router/envelope tool, every call by its native name either way.
+Every session is advertised **one tool surface**, identical on every wire
+and pinned for the session so the provider's prompt cache holds (ADR-0226):
+the file/exec tools, `web_fetch`, `rhai`, the orchestration tools, six
+discovery tools — `list_agents`, `list_models`, `list_skills`, `load_skill`,
+`list_mcp`, `mcp_tools` — and the `mcp(server, tool, args)` envelope, the only
+way to call an MCP tool. MCP schemas are never advertised: `mcp_tools` shows a
+server's tools with their schemas, and an `mcp(...)` call's args are checked
+against the real schema before it reaches the server. Every configured or
+provider-bundled MCP server is available unless `disabled: true`; nothing
+connects at startup — the first `mcp_tools`/`mcp(...)` on a server connects it,
+and every call is graded by the session's permission mode.
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
 snapshot: the plan agent's one tool, `propose_plan(content | path)`,
@@ -313,7 +318,8 @@ config error.
 
 The few remaining environment knobs beyond provider keys/models:
 `ENTANGLEMENT_STATE_DIR` relocates every file skutter manages for you (grants,
-model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens) in one go,
+model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens, the
+last-seen MCP tool-name cache) in one go,
 and `ENTANGLEMENT_DEBUG=bodies,echo,no-shared-state` switches on developer
 diagnostics. Knobs retired in 0.7 still print one startup warning naming
 their replacement ([ADR-0213](docs/adr/0213-prune-env-vars-and-catalog-knobs.md)).

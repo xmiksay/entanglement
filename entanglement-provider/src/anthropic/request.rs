@@ -74,16 +74,9 @@ pub(super) fn build_body(
     if let Some(ws) = web_search {
         tool_entries.push(web_search_tool_entry(ws, web_search_tool_version));
     }
-    // Must land on a non-deferred entry — Anthropic 400s a `defer_loading`
-    // tool carrying `cache_control` (ADR-0196 §3) — so scan back from the end
-    // rather than assume the last entry qualifies (the alphabetically-last
-    // tool can easily be deferred under `anthropic_native`).
-    if let Some(last_cacheable) = tool_entries
-        .iter_mut()
-        .rev()
-        .find(|t| t.get("defer_loading").and_then(Value::as_bool) != Some(true))
-    {
-        last_cacheable["cache_control"] = json!({ "type": "ephemeral" });
+    // Cache breakpoint lands on the last tool entry (wire reference §1.4).
+    if let Some(last) = tool_entries.last_mut() {
+        last["cache_control"] = json!({ "type": "ephemeral" });
     }
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
@@ -292,8 +285,9 @@ pub(crate) fn append_final_user_block(messages: &mut Vec<Value>, block: Value, c
 /// additionally gated on `replay_reasoning`, and is emitted **first**: Anthropic
 /// requires the thinking block to lead the assistant message. The turn loop
 /// appends content blocks after the round's text, so the ordering is restored
-/// here rather than constraining core. [`ContentPart::ToolReference`]
-/// (ADR-0196 §3) is handled inline below.
+/// here rather than constraining core. [`ContentPart::ToolReference`] and
+/// [`ContentPart::ToolSearchOutput`] only arrive from a pre-ADR-0226 log and
+/// degrade to text, as on every other wire.
 fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Value> {
     let mut reasoning = Vec::new();
     let mut rest = Vec::new();
@@ -319,19 +313,15 @@ fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Valu
             // provider: an opaque signature is meaningless to anyone but its
             // author, so drop it rather than degrade it to text.
             ContentPart::Reasoning { .. } => {}
-            // ADR-0196 §3: the only wire with a native `tool_reference` — no
-            // "foreign provider" case to gate on, unlike the two above.
+            // A native `tool_reference` would name a tool this request no
+            // longer carries deferred (ADR-0226 sends none), which the API
+            // rejects — so an old log's block degrades to text.
             ContentPart::ToolReference { tool_name } => rest.push(json!({
-                "type": "tool_reference",
-                "tool_name": tool_name,
+                "type": "text",
+                "text": crate::tool_reference_fallback_text(tool_name),
             })),
-            // ADR-0196 §3: a `tool_search_output` block persisted from a
-            // `responses_native` session (e.g. history replaying after a
-            // live `/model` switch to this wire) has no native mechanism
-            // here — the Anthropic wire has its own `tool_reference`
-            // primitive instead — so degrade to `summary` text rather than
-            // silently dropping the "discovered X" outcome, mirroring
-            // `ProviderSearch`'s foreign-provider fallback.
+            // Same for an old `responses_native` session's search output:
+            // keep the "discovered X" outcome as text rather than drop it.
             ContentPart::ToolSearchOutput { summary, .. } => {
                 rest.push(json!({ "type": "text", "text": summary }))
             }
@@ -345,18 +335,11 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {
-            let mut entry = json!({
+            json!({
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.schema,
-            });
-            // ADR-0196 §3: sent on every request regardless (the API needs
-            // the full definition to run search + expand references) —
-            // `defer_loading` only controls prompt/cache-key rendering.
-            if t.defer_loading {
-                entry["defer_loading"] = json!(true);
-            }
-            entry
+            })
         })
         .collect()
 }

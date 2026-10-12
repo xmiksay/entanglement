@@ -1,12 +1,8 @@
-//! ADR-0196 §2 / ADR-0204: a session's advertised tools array and system
-//! prompt are byte-identical from round 1 on. The mode/encoding/discovery pin
-//! used to be taken when the executor saw `SessionStarted`, a broadcast event
-//! core's first round does not wait for — round 1 could resolve the unpinned
-//! default and round 2 the pinned value, a full prompt-cache miss. These run
-//! the production resolvers (`tool_advertising::surface`,
-//! `system_prompt_mode`) against a real engine + executor. Also pinned here:
-//! enabling a tool never changes the array — only a delivered schema does —
-//! and a `Full` session's array never shrinks when a tool disappears.
+//! ADR-0226: one advertised surface, pinned for the session — a session's
+//! tools array and system prompt are byte-identical from round 1 on, on every
+//! wire, whatever is registered, removed, or enabled later. These run the
+//! production resolvers (`tool_advertising::surface`, `system_prompt_mode`)
+//! against a real engine + executor.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -14,17 +10,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, Catalog, Discovery, EngineConfig, Holly, InMsg, Llm, LlmFactory,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, ResolvedModel,
-    SessionId, ToolAdvertising, ToolCall, ToolOverlayEntry,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmFactory, LlmRequest, LlmResponse,
+    LlmStream, OutEvent, Permission, PermissionProfile, ResolvedModel, SessionId, ToolCall,
+    ToolOverlayEntry,
 };
-use entanglement_runtime::config::Config;
-use entanglement_runtime::mcp::AvailableMcp;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
-use entanglement_runtime::tool_advertising::{AdvertisingInputs, AdvertisingState};
+use entanglement_runtime::tool_advertising::AdvertisingState;
 use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 use entanglement_runtime::{system_prompt_mode, SharedRegistry, Tool, ToolRegistry};
 
@@ -72,35 +66,16 @@ impl Tool for Echo {
     }
 }
 
-const CATALOG: &str = "providers:\n\
-  \x20 - name: tail\n\
-  \x20   default_model: t\n\
-  \x20   models:\n\
-  \x20     - id: t\n\
-  \x20 - name: p\n\
-  \x20   default_model: nf\n\
-  \x20   discovery: native_first\n\
-  \x20   models:\n\
-  \x20     - id: nf\n\
-  \x20     - id: fullm\n\
-  \x20       tool_advertising: full\n";
-
-/// An engine whose `build` profile pins `<provider>/<model>`, wired exactly
+/// An engine whose `general` profile pins `<provider>/<model>`, wired exactly
 /// like the binary: production resolvers + executor over one
-/// `AdvertisingState`, with `read` (kernel), `glob` and `gone` registered.
+/// `AdvertisingState`, with `read` (kernel), `glob` (hidden) and `gone`
+/// registered.
 pub struct Harness {
     pub holly: Holly,
     pub rec: Recorded,
-    pub advertising: Arc<AdvertisingState>,
     pub tools: SharedRegistry,
     pub sid: SessionId,
     _executor: tokio::task::JoinHandle<()>,
-}
-
-fn load_config() -> Config {
-    // No user layer: never the real `config.yml` of whoever runs the test.
-    let dir = tempfile::tempdir().expect("tempdir");
-    Config::load_with(dir.path(), None).expect("config loads")
 }
 
 pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness {
@@ -129,11 +104,6 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
     }
     let tools = reg.shared();
     let resolved_factory = factory.clone();
-    let catalog: Catalog = serde_yaml::from_str(CATALOG).expect("catalog yaml");
-    let inputs = Arc::new(AdvertisingInputs::new(
-        Arc::new(load_config()),
-        Some(Arc::new(catalog)),
-    ));
     let holly = Holly::spawn(EngineConfig {
         llm_factory: factory,
         agents: profiles.clone(),
@@ -148,14 +118,10 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
         })),
         tool_spec_resolver: Some(tool_spec_resolver(SurfaceSources {
             tools: tools.clone(),
-            avail: Arc::new(AvailableMcp::default()),
             advertising: advertising.clone(),
-            inputs: inputs.clone(),
-            // Mirror `main.rs`: the spawn roster reaches the model through the
+            // Mirror `boot.rs`: the spawn specs reach the model through the
             // resolver, never `cfg.tool_specs`, which the resolver replaces.
-            // This harness used to omit it, so the array it asserted on was
-            // not the array the binary renders.
-            agent_specs: entanglement_runtime::subagent::agent_specs(&profiles),
+            agent_specs: entanglement_runtime::subagent::agent_specs(),
         })),
         system_prompt_resolver: Some(system_prompt_mode::resolver(advertising.clone())),
         ..EngineConfig::default()
@@ -183,16 +149,14 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),
         ))
-        .advertising_inputs(inputs)
         .discovery(DiscoverySurface {
-            advertising: advertising.clone(),
+            advertising,
             ..Default::default()
         })
         .spawn();
     Harness {
         holly,
         rec,
-        advertising,
         tools,
         sid: SessionId::new("s1"),
         _executor: executor,
@@ -251,8 +215,12 @@ pub fn text() -> LlmResponse {
 
 /// Round 1 calls `read`, round 2 answers: both requests must carry the same
 /// bytes.
-async fn first_two_rounds(model: &str) -> Harness {
-    let h = harness("p", model, vec![text(), call("read", r#"{"path":"x"}"#)]);
+async fn first_two_rounds(provider: &str, model: &str) -> Harness {
+    let h = harness(
+        provider,
+        model,
+        vec![text(), call("read", r#"{"path":"x"}"#)],
+    );
     h.turn("go").await;
     let rec = h.requests();
     assert_eq!(rec.len(), 2, "{rec:#?}");
@@ -268,33 +236,55 @@ async fn first_two_rounds(model: &str) -> Harness {
 }
 
 #[tokio::test]
-async fn native_first_session_is_byte_stable_from_round_one() {
-    let h = first_two_rounds("nf").await;
-    assert_eq!(h.advertising.discovery(&h.sid), Discovery::NativeFirst);
-    let rec = h.requests();
-    assert!(
-        rec[0].names.contains(&"invoke".to_string()),
-        "{:?}",
-        rec[0].names
-    );
-    assert!(rec[0].system.contains("only if you cannot, call invoke"));
+async fn a_session_is_byte_stable_from_round_one() {
+    first_two_rounds("zai", "glm-5.3").await;
+}
+
+/// No mode, no per-wire encoding: an Anthropic-bound and an OpenAI-bound
+/// session advertise the very same bytes.
+#[tokio::test]
+async fn every_wire_gets_the_same_array() {
+    let a = first_two_rounds("anthropic", "claude-sonnet-5").await;
+    let b = first_two_rounds("openai", "gpt-4o").await;
+    assert_eq!(a.requests()[0].tools, b.requests()[0].tools);
+}
+
+/// The rendered round-1 request carries exactly the kernel: the `mcp`
+/// envelope and the discovery tools in, the retired surface and the
+/// script-only tools out.
+#[tokio::test]
+async fn round_one_advertises_the_kernel_only() {
+    let h = harness("zai", "glm-5.3", vec![text()]);
+    h.turn("one").await;
+    let names = &h.requests()[0].names;
+    for present in [
+        "read",
+        "mcp",
+        "list_agents",
+        "list_models",
+        "list_skills",
+        "list_mcp",
+        "mcp_tools",
+        "agent",
+        "poll",
+    ] {
+        assert!(names.iter().any(|n| n == present), "{present}: {names:?}");
+    }
+    for absent in [
+        "explore",
+        "describe",
+        "invoke",
+        "glob",
+        "gone",
+        "mcp_enable",
+    ] {
+        assert!(!names.iter().any(|n| n == absent), "{absent}: {names:?}");
+    }
 }
 
 #[tokio::test]
-async fn full_session_is_byte_stable_from_round_one() {
-    let h = first_two_rounds("fullm").await;
-    assert_eq!(h.advertising.mode(&h.sid), ToolAdvertising::Full);
-    let rec = h.requests();
-    assert!(!rec[0].system.contains("use explore to search them"));
-}
-
-#[tokio::test]
-async fn append_overlay_enable_changes_nothing_until_describe_delivers_the_schema() {
-    let h = harness(
-        "tail",
-        "t",
-        vec![text(), call("describe", r#"{"names":["glob"]}"#), text()],
-    );
+async fn an_overlay_enable_never_changes_the_array() {
+    let h = harness("zai", "glm-5.3", vec![text(), text()]);
     h.turn("one").await;
     let mut sub = h.holly.subscribe();
     h.holly
@@ -313,25 +303,25 @@ async fn append_overlay_enable_changes_nothing_until_describe_delivers_the_schem
     }
     h.turn("two").await;
     let rec = h.requests();
-    assert_eq!(rec.len(), 3, "{rec:#?}");
+    assert_eq!(rec.len(), 2, "{rec:#?}");
     assert_eq!(rec[0], rec[1], "an overlay enable changed the request");
-    let mut want = rec[1].names.clone();
-    want.push("glob".into());
-    assert_eq!(
-        rec[2].names, want,
-        "describe appends the tool once, at the end"
-    );
 }
 
+/// A tool registered mid-session (an MCP server connecting) or removed never
+/// moves the cached array; a call to the removed one declines.
 #[tokio::test]
-async fn full_array_survives_a_removed_tool_whose_call_declines() {
-    let h = harness("p", "fullm", vec![text(), call("gone", "{}"), text()]);
+async fn registry_changes_never_move_the_array() {
+    let h = harness("zai", "glm-5.3", vec![text(), call("gone", "{}"), text()]);
     h.turn("one").await;
-    h.tools.write().unwrap().unregister("gone");
+    {
+        let mut tools = h.tools.write().unwrap();
+        tools.unregister("gone");
+        tools.register(Echo("mcp__kb__search"));
+        tools.register(Echo("write"));
+    }
     let events = h.turn("two").await;
     let rec = h.requests();
     assert_eq!(rec.len(), 3, "{rec:#?}");
-    assert!(rec[0].names.contains(&"gone".to_string()));
     assert_eq!(rec[0].tools, rec[1].tools);
     assert_eq!(rec[1].tools, rec[2].tools);
     let is_error = events.iter().find_map(|e| match e {
@@ -339,29 +329,4 @@ async fn full_array_survives_a_removed_tool_whose_call_declines() {
         _ => None,
     });
     assert_eq!(is_error, Some(true), "{events:#?}");
-}
-
-/// #560 P12, ADR-0207 §12: verified against the **rendered** request, not
-/// the source — `explore`'s new `kind` enum values and `describe`'s
-/// qualified-name note must actually reach round 1 of a real
-/// `tool_search`-mode session, since both are kernel members
-/// (`TOOL_SEARCH_KERNEL`) advertised unconditionally. (`agent`'s `model`
-/// parameter is covered the same way in `agent_model.rs`'s harness, which
-/// wires `cfg.tool_specs` with the real agent roster — this harness doesn't.)
-#[tokio::test]
-async fn explore_kind_additions_reach_round_one_of_the_rendered_request() {
-    let h = harness("tail", "t", vec![text()]);
-    h.turn("one").await;
-    let rec = h.requests();
-    let tools = &rec[0].tools;
-    for kind in ["agents", "skills", "models", "modes", "pending"] {
-        assert!(
-            tools.contains(kind),
-            "explore kind enum missing {kind}: {tools}"
-        );
-    }
-    assert!(
-        tools.contains("agent:<name>"),
-        "describe's qualified-name note missing: {tools}"
-    );
 }

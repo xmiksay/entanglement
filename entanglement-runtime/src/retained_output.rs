@@ -161,9 +161,7 @@ impl RetainedOutputRegistry {
     }
 
     /// Snapshot every retained entry, optionally filtered to one `owner`
-    /// (#560 P12: the `explore(kind: "pending")` aggregator's own use, which
-    /// filters to a whole spawn sub-tree locally rather than calling this
-    /// once per member session — mirrors every other registry's `snapshot`).
+    /// (mirrors every other registry's `snapshot`).
     /// Sorted by handle for a deterministic reply. An ownerless entry (the
     /// session-less [`crate::tools::Tool::run`] path) is included only under
     /// `owner: None`, matching [`page`][Self::page]'s own visibility rule.
@@ -192,8 +190,7 @@ impl RetainedOutputRegistry {
     }
 }
 
-/// One retained-output entry, as reported to a #560 P12 `explore(kind:
-/// "pending")` listing.
+/// One retained-output entry, as a snapshot reports it.
 pub struct RetainedInfo {
     pub handle: String,
     pub owner: Option<SessionId>,

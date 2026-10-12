@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::{ToolAdvertising, WebSearchConfig};
+use entanglement_core::WebSearchConfig;
 use serde::Deserialize;
 
 use super::ceiling;
@@ -102,14 +102,9 @@ pub(super) struct RawConfig {
     /// fall through to the lower layer, exactly like every other key.
     #[serde(default)]
     pub(super) session_retention_days: Option<u64>,
-    /// Tool-advertising override (ADR-0196): `full` | `tool_search`, applied
-    /// over every model's catalog `tool_advertising:` preference. Absent ⇒
-    /// no install-wide opinion; the catalog (then the `tool_search` default)
-    /// decides per model.
-    #[serde(default)]
-    pub(super) tool_advertising: Option<ToolAdvertising>,
-    /// Terminal-UI preferences (ADR-0213). A retired `discovery:` key never
-    /// reaches this struct: [`super::retired`] strips it with a warning.
+    /// Terminal-UI preferences (ADR-0213). Retired keys (`discovery:`,
+    /// `tool_advertising:`) never reach this struct: [`super::retired`]
+    /// strips them with a warning.
     #[serde(default)]
     pub(super) tui: TuiConfig,
     /// Per-write file backups behind `/undo`/`/rewind` (#787, ADR-0212):

@@ -10,18 +10,14 @@ use std::sync::{Arc, Mutex};
 use entanglement_core::{Agent, AgentState, Holly, OutEvent, SessionId};
 use tokio::sync::broadcast::{self, error::RecvError};
 
-use crate::tool_advertising::AdvertisingInputs;
-
 use super::ladder::{self, Intercept, LadderCtx};
 
 /// Run the executor loop until the engine's outbox closes. `active` is the
-/// shared per-session agent map this loop is the sole writer of;
-/// `advertising_inputs` is `None` by the builder default.
+/// shared per-session agent map this loop is the sole writer of.
 pub(super) async fn run(
     mut sub: broadcast::Receiver<OutEvent>,
     ctx: &LadderCtx,
     active: &Mutex<HashMap<SessionId, Agent>>,
-    advertising_inputs: Option<&AdvertisingInputs>,
 ) {
     // Active agent per session. Folded from lifecycle events, but the fold
     // is a *lossy* broadcast — so it is authoritatively self-healed on every
@@ -60,16 +56,6 @@ pub(super) async fn run(
     // and per-root running sub-agent counts. Lives in this single-threaded loop, so the
     // spawn decision below is race-free.
     let mut spawn_guard = crate::subagent::SpawnGuard::new();
-    // Per-session tool advertising (ADR-0196 §2-3): pinned at session
-    // start from the session's initial model, kept across `SetModel`
-    // (logged when the new model's catalog preference differs), released
-    // on end/hibernate. `advertising` (the mode map plus the discovered-
-    // tool set `describe` writes into) is caller-constructed and shared
-    // — Phase P1's loop-local-only map is gone; the `tool_spec_resolver`/
-    // `system_prompt_resolver` closures in `boot.rs` read the same `Arc`.
-    // `advertising_inputs == None` (the builder default)
-    // keeps the fold running so the shape is identical, resolving
-    // `tool_search` throughout.
     loop {
         match sub.recv().await {
             Ok(OutEvent::SessionStarted {
@@ -79,10 +65,6 @@ pub(super) async fn run(
                 ..
             }) => {
                 spawn_guard.record_start(session.clone(), parent.clone());
-                // Tool advertising is NOT pinned here: this broadcast
-                // races core's first round, so the tool-spec resolver
-                // pins at first resolution (`AdvertisingState::
-                // ensure_pinned`, ADR-0204).
                 // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                 // for a previously-hibernated child (#609, ADR-0162 §4) — a
                 // no-op for any other session, since a fresh registration is
@@ -135,26 +117,6 @@ pub(super) async fn run(
                     overlays.remove(&session);
                 }
             }
-            // The session's model changed (`SetModel` / an agent pin
-            // re-bind, #218/#323). Tool advertising is *not* re-resolved
-            // (ADR-0196 §2): a pinned session keeps its mode — switching
-            // mid-session would bust the prompt cache the mode protects —
-            // and this only logs when the new model prefers another one.
-            Ok(OutEvent::ModelChanged {
-                session,
-                provider,
-                model,
-                ..
-            }) => {
-                if let Some(inputs) = advertising_inputs {
-                    let modes = ctx
-                        .advertising
-                        .modes
-                        .lock()
-                        .expect("tool-advertising mode mutex poisoned");
-                    inputs.note_model_changed(&modes, &session, &provider, &model);
-                }
-            }
             // A hibernated session (#318) tore down just like an ended one, so
             // its executor-side bookkeeping is equally moot — release it. Its
             // persisted "always" grants survive; a resume rebuilds the rest.
@@ -162,9 +124,8 @@ pub(super) async fn run(
             // mirror core's full-replacement semantics — an empty list
             // clears the entry entirely.
             Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
-                // An enable never touches the advertised array (ADR-0204):
-                // the tool becomes explore-visible and dispatchable, and
-                // is appended only when its schema is delivered.
+                // An enable never touches the advertised array (ADR-0226):
+                // it only changes how a call is graded.
                 if entries.is_empty() {
                     overlays.remove(&session);
                 } else {
@@ -213,9 +174,9 @@ pub(super) async fn run(
                 // The plan-file staleness binding (#513) is moot too.
                 ctx.plan_files.forget_session(&session);
                 ctx.workdirs.forget(&session);
-                // And its pinned tool advertising, discovered set, `Full`
-                // snapshot and `<env>` date (ADR-0196 §2-3, ADR-0202 §5) —
-                // a resume re-pins at its first round.
+                // And its surface snapshot, delivered-schema set and
+                // `<env>` date (ADR-0226, ADR-0202 §5) — a resume
+                // re-snapshots at its first round.
                 ctx.advertising.forget(&session);
                 // The loop-breaker's last-call tracker (#560, ADR-0196
                 // §6) is equally session-scoped — nothing to break a

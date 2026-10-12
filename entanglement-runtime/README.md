@@ -40,10 +40,12 @@ authority (ADR-0207); lifecycle
 hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch,
 and observe-only lifecycle hooks (`session_start` / `session_end` / `stop` /
 `pre_compact` / `subagent_stop` / `notification`) follow the event stream.
-A session advertises this surface in one of two modes (`full` or the default
-`tool_search`, a lean kernel plus `explore`/`describe` discovery — ADR-0196);
-every tool is still called by its real name either way, never through an
-envelope.
+Every session advertises one surface, identical on every wire and pinned for
+the session (ADR-0226): the native kernel tools, the discovery tools
+(`list_agents` / `list_models` / `list_skills` / `load_skill` / `list_mcp` /
+`mcp_tools`), `rhai`, and the `mcp` tool — every MCP tool is called through it
+with `{server, tool, args}`, its schema read with `mcp_tools`, never
+advertised.
 
 ## Providers
 

@@ -67,7 +67,8 @@ pub fn approval(
 
 /// Register `approval`'s waiter, then emit its `ToolRequest` (register-then-
 /// emit, #156, so the router can never see the decision before the waiter).
-/// `detail` is the short label `explore(kind: "pending")` shows. The prompt
+/// `detail` is the short label a pending listing (`InMsg::ListPending`) shows; a
+/// subtree-wide listing in a handle-less `poll` is #829. The prompt
 /// mints a fresh per-session seq (#157).
 pub fn park_approval(
     holly: &Holly,
@@ -90,7 +91,7 @@ pub fn park_approval(
 
 /// The `InMsg::ListPending` answer (#726): every live parked approval, or —
 /// with `root` — only those in `root`'s live spawn sub-tree (the same walk
-/// `explore(kind: "pending")` uses).
+/// [`crate::discover::subtree_sessions`] walk).
 pub fn list_pending(
     pending: &PendingDecisions,
     agents: &AgentRegistry,

@@ -136,10 +136,11 @@ or let an `Always`-scoped approval record a grant for it. (The former
 carve-out for an unregistered-but-advertised `bash` is gone: ADR-0195
 registers `bash` at startup, so there is no advertised-but-unregistered
 built-in whose decline needed its own wording. A call to a tool that is
-**registered but unadvertised** under `ToolSearch` mode — `call`/`glob`/
-`grep`/`rhai`, MCP management, endpoints — is not "unknown": ADR-0192 already
-dispatches any registered tool regardless of advertisement, so it reaches
-permission resolution normally, `explore`/`describe` first or not. Only a
+**registered but unadvertised** — the script-only `call`/`glob`/`grep` — is
+not "unknown": ADR-0192 already dispatches any registered tool regardless of
+advertisement, so it reaches permission resolution normally. An unregistered
+`mcp__<server>__*` name connects its server lazily first (§10, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)); a
+malformed `mcp` envelope is declined with the envelope's schema. Only a
 name the registry genuinely doesn't hold falls to this short-circuit, whose
 fuzzy-match hint is the unknown-tool leg of [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)'s
 error taxonomy, below.)
@@ -158,8 +159,8 @@ guessing again:
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
 | `apply_patch` | `{path, patch}` | apply a unified diff (one or more `@@ -oldStart,oldLen +newStart,newLen @@` hunks) against the current file; each hunk's context/deleted lines are matched **exactly** at the position its header declares (offset by the net line-count delta of hunks already applied in the same patch) — no fuzzy alternate-position search, a mismatch hard-errors before any write and leaves the file untouched; emits `FileChangeKind::ApplyDiff` (#455, the first producer of that previously-reserved variant). Parsing/applying is a small hand-rolled module (`host::unified_diff`), not the `diffy` crate — `diffy` is `tui`-feature-gated and named in `LEAN_FORBIDDEN` above, and `apply_patch` is unconditional lean-library code alongside `edit`/`write` |
-| `bash` ⚠ | `{command, timeout?, workdir?, background?, tail?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Output is tailed to the last `tail` lines per stream (default 30, matching `call`; `tail=0` = full, byte-cap still applies, #622), then the exit/killed status line plus that body is byte-capped **head + tail** (¼ head / ¾ tail on the body, status line always kept in full — `bounded_result`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `background: true` (renamed from `run_in_background`, #606, [ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md) §1) spawns the command **detached** and returns a job id instead of blocking — wait on it with the runtime-owned `poll` tool (#605, described below); **`timeout` still applies** to a backgrounded job ([ADR-0165](../adr/0165-background-bash-jobs-are-bounded-by-timeout.md), #617) — a deadline task kills the job's process group once it outlives the same default-120s/600s-cap bound a foreground call uses, so backgrounding no longer means unbounded. Stdin is always closed (`Stdio::null()`), never inherited from the engine — the same leaked-by-default class ADR-0092 closed for `call`, applying uniformly to both the foreground and `background` paths since both share the one command builder (#389); use shell-native `< file` redirection if a command needs input. Its spec description is the **single home of the exec-tool decision rule** (#740) — `bash` for shell syntax, `call` for one fixed argv command, `rhai` for multi-step/structured-data logic (that sentence compiled in only with the `rhai` feature), `describe` a discover-only one first, all graded by the same mode — because `bash` is the only exec tool in the `tool_search` lean kernel and its description rides the cached tools block in every advertising mode; no shipped agent body repeats it (`built_in_bodies_leave_the_exec_rule_to_the_bash_spec`) |
-| `call` ⚠ | `{command, args?, tail?, timeout?, input_file?, output_file?, workdir?, background?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; the outer byte cap is head + tail on the body, not head-only (`bounded_result`, #622) — same shape `bash` uses; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045. `input_file`/`output_file` (ADR-0092, #381), both root-contained via `resolve_under_root` and validated **before spawn** (relative to the **root**, not `workdir`): `input_file` is read and piped to the child's stdin (fed concurrently with the stdout/stderr drain to avoid a full-pipe deadlock); its **absence closes stdin** (`Stdio::null()`) rather than inheriting the engine's own (a leaked-by-default behavior until now). With an explicit `output_file`, the full **untruncated raw** stdout is persisted there (missing parent dirs created) with a `<output_file>.stderr` sibling always alongside, and its path is named in the result header (`[output: …]`, plus `[stderr: …]` when stderr is non-empty) regardless of truncation; a write failure there is a hard error. With **no** `output_file`, nothing is written to disk — a result that overflows the tail/byte cap instead mints a fresh retained-output handle (`o-…`, ADR-0164) in `RetainedOutputRegistry` and names *that* in the header instead of a path (#608, [ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md) §7); a small, untruncated result carries no header at all. Either way, **a truncated result keeps its handle** — poll it (`poll`, described below) to page the retained remainder, or to be reminded of the `output_file` path. `workdir` (#386) sets the child's **cwd** to a subdirectory validated under root via the shared `resolve_workdir` (same containment as `bash`'s); a non-directory or escaping `workdir` errors before spawn. A `command` that is really a whole shell line — multiple whitespace-separated tokens with empty `args` (a non-path `command`), or any shell metachar (`| & ; < > $ \` ( )`) — is rejected **before spawn** by `call::validate::check_no_shell` with an actionable error that names the fix (split the line into `command`+`args`, or use `bash` for a real pipeline), rather than failing with an opaque ENOENT on a "binary" named after the entire line (the loop that stranded a delegated PR review). **Registered unconditionally** ([ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md); since [ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md) `bash` registers unconditionally too — and under [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) `call` sits *outside* `ToolSearch` mode's lean kernel: registered, `explore`-listed, reachable directly by name once `describe`d, but advertised up front only under `Full` mode). `background: true` (#606, ADR-0161 §1) spawns detached into the same shared job registry `bash` uses (`CallTool::with_jobs`) and returns a job id to `poll` instead of blocking; refused up front alongside `input_file`/`output_file` — a backgrounded job's output streams through `poll`, not a file artifact, and there is no running wait left to pipe stdin into once the call has already returned |
+| `bash` ⚠ | `{command, timeout?, workdir?, background?, tail?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Output is tailed to the last `tail` lines per stream (default 30, matching `call`; `tail=0` = full, byte-cap still applies, #622), then the exit/killed status line plus that body is byte-capped **head + tail** (¼ head / ¾ tail on the body, status line always kept in full — `bounded_result`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `background: true` (renamed from `run_in_background`, #606, [ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md) §1) spawns the command **detached** and returns a job id instead of blocking — wait on it with the runtime-owned `poll` tool (#605, described below); **`timeout` still applies** to a backgrounded job ([ADR-0165](../adr/0165-background-bash-jobs-are-bounded-by-timeout.md), #617) — a deadline task kills the job's process group once it outlives the same default-120s/600s-cap bound a foreground call uses, so backgrounding no longer means unbounded. Stdin is always closed (`Stdio::null()`), never inherited from the engine — the same leaked-by-default class ADR-0092 closed for `call`, applying uniformly to both the foreground and `background` paths since both share the one command builder (#389); use shell-native `< file` redirection if a command needs input. Its spec description is the **single home of the exec-tool decision rule** (#740) — `bash` for shell syntax, `call` for one fixed argv command, `rhai` for multi-step/structured-data logic (that sentence compiled in only with the `rhai` feature), all graded by the same mode — because `bash` is the kernel's shell tool and its description rides the cached tools block every session sees; no shipped agent body repeats it (`built_in_bodies_leave_the_exec_rule_to_the_bash_spec`) |
+| `call` ⚠ | `{command, args?, tail?, timeout?, input_file?, output_file?, workdir?, background?}` | **argv, no shell** — `command`+`args` exec verbatim (no `sh -c`, so no pipe/glob/`$VAR`/metachar interpretation); output tailed to the last `tail` lines per stream (default 30, `tail=0` = full, byte-cap still applies), with a `(… N earlier lines omitted, tail=30 — rerun with tail=0 …)` notice; the outer byte cap is head + tail on the body, not head-only (`bounded_result`, #622) — same shape `bash` uses; same envelope as `bash` (`[exit N]` + stdout + `[stderr]`, 120 s/600 s, own-process-group kill on timeout #168, partial output preserved on timeout #169) — ADR-0045. `input_file`/`output_file` (ADR-0092, #381), both root-contained via `resolve_under_root` and validated **before spawn** (relative to the **root**, not `workdir`): `input_file` is read and piped to the child's stdin (fed concurrently with the stdout/stderr drain to avoid a full-pipe deadlock); its **absence closes stdin** (`Stdio::null()`) rather than inheriting the engine's own (a leaked-by-default behavior until now). With an explicit `output_file`, the full **untruncated raw** stdout is persisted there (missing parent dirs created) with a `<output_file>.stderr` sibling always alongside, and its path is named in the result header (`[output: …]`, plus `[stderr: …]` when stderr is non-empty) regardless of truncation; a write failure there is a hard error. With **no** `output_file`, nothing is written to disk — a result that overflows the tail/byte cap instead mints a fresh retained-output handle (`o-…`, ADR-0164) in `RetainedOutputRegistry` and names *that* in the header instead of a path (#608, [ADR-0161](../adr/0161-unified-async-work-background-flag-and-one-poll.md) §7); a small, untruncated result carries no header at all. Either way, **a truncated result keeps its handle** — poll it (`poll`, described below) to page the retained remainder, or to be reminded of the `output_file` path. `workdir` (#386) sets the child's **cwd** to a subdirectory validated under root via the shared `resolve_workdir` (same containment as `bash`'s); a non-directory or escaping `workdir` errors before spawn. A `command` that is really a whole shell line — multiple whitespace-separated tokens with empty `args` (a non-path `command`), or any shell metachar (`| & ; < > $ \` ( )`) — is rejected **before spawn** by `call::validate::check_no_shell` with an actionable error that names the fix (split the line into `command`+`args`, or use `bash` for a real pipeline), rather than failing with an opaque ENOENT on a "binary" named after the entire line (the loop that stranded a delegated PR review). **Registered unconditionally** ([ADR-0093](../adr/0093-call-registration-independent-of-bash-opt-in.md); since [ADR-0195](../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md) `bash` registers unconditionally too — and since [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) `call` is never advertised: registered, reachable as a `rhai` binding, graded under its own name). `background: true` (#606, ADR-0161 §1) spawns detached into the same shared job registry `bash` uses (`CallTool::with_jobs`) and returns a job id to `poll` instead of blocking; refused up front alongside `input_file`/`output_file` — a backgrounded job's output streams through `poll`, not a file artifact, and there is no running wait left to pipe stdin into once the call has already returned |
 | `rhai` | `{script, timeout?, background?}` | behind the crate's default-on `rhai` feature (#502, [ADR-0135](../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md) amending ADR-0025) — a `--no-default-features` embedder that never registers it can drop the dep entirely; every default build (incl. `skutter`) is unaffected. The **model-facing spec is self-sufficient**: it inlines the full binding signature list (`script/spec.rs`'s `BINDING_REFERENCE`, one line per binding, pinned to the registration code by `spec_description_lists_every_registered_binding`), reverting the #619 stub — spec content is cached now that the tool surface is advertised universally and cache-stably, so the catalogue costs nothing per turn, while the stub's observed failure mode was models skipping (or half-remembering) its `load_skill` instruction and scripting against *guessed* binding names. The embedded `rhai` skill (`entanglement-runtime/src/skills/rhai.md`, loaded via `load_skill`) keeps the long-form prose and the worked examples, and the spec's pointer at it is demoted to "for examples and detail" ([ADR-0037](../adr/0037-load-skill-tool-deterministic-resolution.md) progressive disclosure still governs the *rest* of that content). The same reference is appended to a script result whose error is an unknown function/method/variable (`spec::binding_hint`, wrapping `ErrorInFunctionCall` unwrapped, every other failure kind left bare) — a wrong guess self-corrects from the tool result instead of costing another turn; it rides the tail of the output, which survives the head+tail truncation. Run a Rhai script ([rhai.rs](https://rhai.rs)) in a **capability-sandboxed** engine — no fs/network/process/env access beyond what is explicitly bound; the host bindings are `read`/`glob`/`grep`/`edit`/`write` plus `read_raw` (exact file content, no line-number prefix — `read`'s `"{lineno}: {line}"` format isn't parseable as JSON/YAML; graded and masked as an alias of `read`, not a distinct permission surface, since it is never advertised as a standalone tool), plus `glob_json`/`grep_json` (script-facing structured variants, ADR-0206 — same walk/scan, output `#{files: […]}` / `#{matches: [{path, lineno, line}…], notices: […]}` parsed by the binding layer, so scripts iterate arrays instead of characters; graded/masked as aliases of `glob`/`grep` via `graded_name`), plus permission-gated process-exec — `exec(command)`/`exec(command, args)`/`exec(command, args, workdir)` (marshalled to the `call` tool) and `bash(command)`/`bash(command, workdir)` (marshalled to `bash`, bound only when the host `bash` tool is registered — otherwise an unknown-function script error, not a graded-then-refused binding) — each routed through that tool's permission check (`exec`/`bash` grade under `Capability::Exec` like their host-tool counterparts, [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §3, since `rhai` is itself a multi-`Capability` tool). The script-facing name is `exec`, not `call`: `call` is a hard-reserved Rhai keyword for function-pointer invocation the interpreter special-cases ahead of any same-named registered function; the dispatched tool name/permission grade stay the literal `call`. `exec`/`bash` additionally derive their `timeout` from the script's own remaining wall-clock budget rather than the tool's much longer default, since rhai's timeout interrupt can't reach a binding call parked on the sync/async bridge; their `Ask` approval is cached **per resolved command line + `workdir`** (#480), not per bare tool name, so approving one command/workdir pair cannot silently pre-clear a different one in the same run (every other binding keeps the coarser once-per-function cache). An explicit `workdir` (#480, [ADR-0130](../adr/0130-rhai-exec-bindings-marshal-workdir.md), amending [ADR-0115](../adr/0115-rhai-exec-bindings-call-bash.md)/[ADR-0116](../adr/0116-workdir-scoped-permission-rules-for-bash-call.md)) marshals into the delegated tool's own `workdir` field — a `tool{pattern}` workdir-scoped permission rule (#425) now resolves for a binding call exactly as it would a direct `bash`/`call` call (`BindingPolicy::decide` grades through `resolve_scoped`, not the workdir-blind `resolve`), and the same field feeds the escape-root gate below with no separate wiring. A `read`/`edit`/`write`/`exec`/`bash` binding targeting a path or `workdir` outside the project root routes through the same escape-root gate a direct call uses (#446, [ADR-0119](../adr/0119-rhai-bindings-route-through-the-escape-root-gate.md)): it forces an approval carrying the ADR-0109 "outside the project root" warning, bypassing the per-run `Ask` cache, and records the grant into the shared `ExtraRootStore` on approval; a durably-granted (`Session`/`Always`) path resolves silently, same as a direct call. (The skill-mask snapshot this row used to describe — `BindingPolicy` folding `skill_masked` alongside the agent mask, #477/[ADR-0129](../adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md) — is retired: skills never restrict since [ADR-0194](../adr/0194-skills-are-additive-only.md), and the agent-mask half it also folded is gone since [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) — `BindingPolicy` now snapshots the session's mode + overlay instead.) Also bound, pure (no IO, no permission check, since they only transform a value already in the script): `parse_json`/`to_json`/`parse_yaml`/`to_yaml`, built on Rhai's own `serde` bridge (`null` → `()`, an out-of-`i64`-range integer silently widens to an approximate float rather than erroring — same as JS's `JSON.parse`); last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30). `background: true` (#637, [ADR-0185](../adr/0185-rhai-joins-background-and-poll.md)) detaches after the launch gate and returns an `x-` handle to `poll` instead of the result: the script gets the `bash`/`call` background timeout regime (default 120 s, cap 600 — still enforced *inside* the engine by `on_progress`, `spawn_blocking` cannot be aborted), streams its `print` output into the shared `ScriptRegistry` live, survives a session `Stop` exactly like a background job (the executor skips the canceller registration), and keeps mid-run binding `Ask`s (the `ToolRequest` round-trip works detached; session-state transitions are suppressed so an idle session's status is never stranded); `poll kill=true` is cooperative — the stop flag ends the script at its next engine op, after any in-flight `exec`/`bash` binding's own budget-clamped timeout — [ADR-0046](../adr/0046-rhai-sandboxed-script-tool.md) (amended by [ADR-0115](../adr/0115-rhai-exec-bindings-call-bash.md), [ADR-0129](../adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md), and [ADR-0130](../adr/0130-rhai-exec-bindings-marshal-workdir.md)), [ADR-0098](../adr/0098-rhai-json-yaml-loader-and-read-raw.md) |
 
 - **Working directory:** each tool holds a `root` (the cwd, **canonicalized once
@@ -407,10 +408,9 @@ guessing again:
   top-level segment of a compound command, not the whole raw string, since
   [ADR-0197](../adr/0197-compound-bash-commands-grade-per-segment.md). See
   [agents & permissions](agents-and-permissions.md) §permission ceiling.
-  **Advertisement (ADR-0196):** `call` is registered but **unadvertised
-  under `ToolSearch` mode** — it sits outside the lean kernel, reachable via
-  `explore`/`describe` and then called directly by name; `bash` is in the
-  lean kernel.
+  **Advertisement ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `call` (like `glob`/`grep`) is registered but
+  **never advertised** — a script-only `rhai` binding, still graded under its
+  own name; `bash` is in the kernel.
   The overlay grade lookup that finds the applicable entry
   (`permission::overlay_grade_entry`)
   walks the session's ancestor chain nearest-first (✅ #628), so a `bash()`
@@ -571,9 +571,9 @@ it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
 http(s) URL. HTML becomes Markdown (`htmd`; script/style/head/svg dropped),
 `text` also strips link/image targets, `raw` is verbatim. Output is paged at
 the 32 KiB host-tool cap with an `offset=` pointer. A non-text body is never
-inlined: `[binary omitted: mime, size, url]`. Registered at startup, not in the
-`tool_search` kernel, so it is reached via `explore`/`describe` and never
-changes the advertised array.
+inlined: `[binary omitted: mime, size, url]`. Registered at startup and part
+of the advertised kernel ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md): with `describe` gone every model-facing host
+tool must be).
 
 **Grading.** It declares `Capability::Exec`: outbound network to a
 model-chosen URL is graded like `curl`, not like a host `read`. The shipped
@@ -726,217 +726,53 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   does to the filesystem, plan files written by `propose_plan`, and
   `!bash` passthrough commands. Every report and the model's note say so.
 
-### Discovery and lazy tool search — [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
+### One advertised surface and discovery — [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
-There is no envelope tool. A `ToolSearch`-mode session calls every tool by
-its real name, exactly like `Full` mode — what differs is which schemas are
-advertised up front and how the rest reach the model. Everything outside the
-**lean kernel** (`read`/`edit`/`write`/`apply_patch`/`bash`/`poll`/
-`ask_user`/`update_tasks`/`load_skill`/`explore`/`describe` plus the
-profile-defining specs, the ADR-0192 carve-out) — `call`, `glob`, `grep`,
-`rhai`, MCP management, all `mcp__*`, endpoints, skill tools — stays
-**registered but unadvertised**: dispatchable the moment the model calls it
-by name (ADR-0192 already dispatches any registered tool regardless of
-advertisement), discoverable via `explore`, and schema-delivered via
-`describe`.
+(Supersedes [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
+§1–§4 and [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md).)
+There is no advertising mode, per-wire encoding or discovery strategy. Every
+session on every wire is advertised the compiled-in **`KERNEL`**
+(`tool_names::KERNEL`): `read`/`edit`/`write`/`apply_patch`/`bash`/`web_fetch`,
+`poll`/`ask_user`/`update_tasks`, `propose_plan`/`request_mode`,
+`agent`/`agent_send`, `rhai`, the six discovery tools and the `mcp` envelope.
+`tool_advertising::surface` builds it from the registered and runtime-owned
+specs (deduped, name-sorted), **snapshots it at the session's first
+resolution** (`AdvertisingState::surfaces`) and returns the same bytes every
+later round — a tool registered or removed afterwards never moves the cached
+prefix, and an overlay enable or MCP connect never touches it. End/hibernate
+forgets the snapshot; a resume rebuilds the same bytes. Not advertised:
+`call`/`glob`/`grep` (script-only `rhai` bindings, graded under their own
+names, like `read_raw`/`glob_json`/`grep_json`) and every `mcp__*` tool.
+Interim: registered definition-driven `endpoint__*`/`skill__*` tools are
+appended to the snapshot until #819/#820 remove them (§Definition-driven tool
+sources).
 
-**`explore(filter?, kind?)`** — a terse index (name + one-liner + source) over
-every dynamic source: MCP servers (three-state status; an `allowed`-tier
-server shows *"enable with `mcp_enable`"* — listing *its* tools requires
-enabling it first, no auto-connect side effect), endpoints, **skills** (no
-separate tool for these — ADR-0193's `skills` tool folds into this index),
-and the unadvertised built-ins (`call`, `glob`, `grep`, `rhai`, MCP
-management). **Always live** — computed from the registry at call time,
-never cached — which is what makes announcements unnecessary: there is no
-staleness window to announce across. `kind: "tool" | "mcp" | "skill" |
-"endpoint"` (#560 P9, [ADR-0199](../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md))
-narrows the result to one section, derived from each row's own `source`
-label rather than a second field to keep in sync. The reply itself is
-sectioned plain text, one header per non-empty kind in fixed order — the MCP
-section always carries a clarifying line ("enable the server, then call its
-tools by their `mcp__<server>__<tool>` names") pointing at the exact
-two-step shape a bundled server needs.
+**The six discovery tools** — each with no argument or one `name`, all
+`Capability::Control` and non-maskable — the `poll` pattern: a Control
+tool is never graded ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §3;
+`tool_names::DISCOVERY_TOOLS`, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
+returns before the mode, overlay or ceiling are consulted, so nothing can
+withdraw or decline them. `list_agents`, `list_models` and `list_skills`
+render static rosters (`discover::lists`); `load_skill` is the registry tool;
+`list_mcp`/`mcp_tools` are the MCP pair (§10). The five non-registry ones
+route through `Intercept::Discover`. Discovery is **pull-only**: the system
+prompt carries no roster, only the static `system_prompt::TOOL_CONVENTIONS`
+line (direct calls for the advertised tools, `mcp(server, tool, args)` for
+MCP, `rhai` for anything else).
 
-**`describe(names: [string])`** — full schema per name, **byte-identical in
-shape to a native `<tools>` entry** (same JSON, same field names — not a
-friendlier rendering), including MCP (live registry lookup through the
-session-scoped view, `overlay_registry_for_call`,
-[ADR-0188](../adr/0188-session-keyed-per-user-mcp-scopes.md), so per-user MCP
-scopes resolve correctly for the asking session). Under `client_side`
-encoding (below) with the `append` discovery strategy, `describe`
-additionally appends the described tool's spec into the session's advertised
-array; under `native_first`/`invoke` the array is untouched and the JSON
-reply is preceded by one `Loaded: <names>. …` line saying how to call them
-(§Client-side discovery strategy below). Under `anthropic_native` the reply
-carries **no schema text** for a resolved name: it is one `Loaded: a, b` line,
-the JSON entries only for names that did not resolve or were already
-delivered, and one `tool_reference` block per resolved name — the reference
-expands to the still-deferred definition, so repeating the schema would
-deliver it twice ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §1). **Repeat-`describe` dedup** (#560
-follow-up: a looping model was observed calling `describe(["glob"])` up to
-131 times, each reply re-paying the full schema): a name already present in
-the session's `DiscoveredSet` — via an earlier `describe()` or an
-`arg_validate` schema-violation decline sharing the same set (§Error taxonomy
-below) — gets a short pointer line instead (`discover::describe::
-already_delivered_entry`), worded per the session's discovery strategy
-([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)): an `append` session is told the tool is ready to call, a
-`native_first`/`invoke` session gets the same call instruction as the
-`Loaded:` line, never a claim that the array grew. A mixed request resolves each
-name independently, so new names in the same call still get their full
-schema.
-
-Both are internal tools in the
-[ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)
-family — always-on (advertised in **both** advertising modes), and now
-formalized as `Capability::Control`
-([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§3): the dispatch ladder's Control bypass returns before the session's
-permission mode, the overlay, or the config ceiling are ever consulted, so
-**nothing** — not a mode `Deny`, not a session tool overlay deny entry — can
-withdraw or decline them; they are unconditionally reachable, read-only
-introspection that touches no host resource and starts nothing — extending
-ADR-0190's `poll` pattern from one tool to two.
-Discovery is **pull-only**: no announcements, no rosters pushed to the model.
-The `ToolSearch`-mode system prompt carries a one-line pointer at the pair
-instead of the roster sections (`Full` mode keeps them); under
-`native_first`/`invoke` the pointer also says how a loaded tool is called,
-pinned with the strategy so the prompt stays byte-stable.
-
-**Per-wire encoding.** Which mechanism carries a discovered schema to the
-model is a capability derived from the session's wire, not a separate
-user-visible knob:
-
-| encoding | wires | mechanism |
-| --- | --- | --- |
-| `client_side` | OpenAI-compat Chat Completions incl. **z.ai** (the priority target), Ollama, Gemini | under `append`, `describe()` appends the tool's full spec into the session's advertised array, **append-only, never removed** — one cache invalidation per discovery, not a continuous one. Rides the `tool_spec_resolver` seam (re-consulted every round) plus a session-keyed discovered-set. **Enabling never grows the array** ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md), superseding ADR-0199 part 2's overlay-enable append): a new enable entry on the session's tool overlay (ADR-0149 — the TUI dialog, a typed `/enable`, or a `Session`-scope approval) or a live MCP server enable (`mcp_enable`, `/enable mcp`) only makes the tool explore-visible and dispatchable; the tail grows only when the model loads it — `describe()` delivers its schema, or an `arg_validate` decline does because the model is already calling it. All of this growth is the `append` discovery strategy's; `native_first`/`invoke` never change the array (§Client-side discovery strategy below). |
-| `anthropic_native` | Anthropic Messages API | non-kernel tools carry `defer_loading: true` **for the whole session**, discovered or not (full defs still sent every request — the API needs them server-side — but stripped from the rendered prompt and the cache key); delivery is `describe()`'s `tool_result` carrying `tool_reference` content blocks, which the API keeps expanded while they stay in history. Un-deferring a discovered tool would rewrite the cached `tools` prefix once per discovery ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §1); the reply is the references plus a one-line name list. **Client-executed search only** — the catalog is session/project-state dependent, so Anthropic's server-side `tool_search_tool_regex`/`_bm25` tools aren't used. At least one tool (the kernel) stays non-deferred, satisfying the API's requirement trivially. |
-| `responses_native` | OpenAI Responses API (`entanglement-provider::openai_responses`) | `{"type": "tool_search", "execution": "client"}` plus `defer_loading` on function tools; the model emits `tool_search_call` under the reserved name `TOOL_SEARCH_CALL_TOOL`, which `entanglement-runtime::discover::tool_search` intercepts exactly like `explore`/`describe` (non-maskable, always-`Allow`) — it reuses the *same* live index `explore` serves and the *same* per-name resolution `describe` uses, deliberately not a third independent search implementation, and answers with a `ContentPart::ToolSearchOutput` block (capped at 8 results) instead of `describe`'s plain schema text, so the client can echo a native `tool_search_output` input item on the next request. Like `anthropic_native`, a discovered function tool stays `defer_loading` for the session — the `tool_search_output` item in history is the delivery, and un-deferring would rewrite the cached tools prefix (ADR-0202 §1). |
-
-### Client-side discovery strategy — [ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)
-
-`client_side` wires have no deferral primitive, and appending one tool to
-`tools` is a full prompt-cache miss on z.ai, while GLM-5.x refuses to call a
-tool its `tools` array doesn't declare. A **`discovery`** knob (catalog
-`ProviderEntry` with a per-`ModelEntry` override, over-ridden in turn by the
-user config — precedence below; pinned with the mode and encoding and kept
-across `SetModel`; read everywhere through `AdvertisingState::discovery`,
-which answers `append` outside `ToolSearch` + `client_side`) picks one of
-three:
-
-| strategy | advertised array | `describe` reply and prompt note | embedded defaults |
-| --- | --- | --- | --- |
-| `append` | kernel + discovered tail (ADR-0196, above) | schema JSON; the tool is advertised next round | `ollama` (unprobed) |
-| `native_first` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each directly by its name as a normal tool call; only if you cannot, call invoke {"name": "<tool>", "args": {...}}.` | `zai`, `zai_paas` |
-| `invoke` | kernel + `invoke`, fixed for the session | `Loaded: <names>. Call each through invoke {"name": "<tool>", "args": {...}}; they cannot be called directly.` | `gemini`, `openai` |
-
-**Precedence** — the model's catalog `discovery:` > its provider's > `append`
-(`tool_advertising::resolve_discovery`). **Catalog data only**: the strategy
-is a fact about what a wire accepts (does it take an undeclared function
-call?), not a preference, so the former `config.yml` `discovery:` per-provider
-override map is retired ([ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md) — a file still carrying it loads with
-one startup warning and the key ignored). A user describes a new endpoint's
-behavior in `providers.yml`; the effective value shows in `skutter inspect
-config`'s advanced-catalog section.
-
-Under the two fixed-array strategies nothing mutates `tools`:
-`tool_advertising::client_side_surface` ignores the discovered set, an
-overlay enable marks nothing, and `describe`/an `arg_validate` decline still
-record the set only for the dedup guard. `explore`/`describe`'s own
-descriptions drop the "directly callable" claim. The extra kernel spec is
-`invoke {name: string, args: object}` (`discover::invoke_spec`) — not in
-`runtime_owned_specs()`, so `Full` mode and `describe` never see it. Core
-unwraps an `invoke` call before emitting any event and keeps the emitted call
-in `Context` byte for byte ([engine](engine.md)), so every gate, hook,
-approval and `arg_validate` sees the inner tool unchanged; under `invoke`
-an `arg_validate` decline for a non-kernel tool wraps its example call as
-`{"name": "<tool>", "args": <example>}`. A `ToolExec` still named `invoke`
-(a malformed envelope, or an inner name of `invoke`/`responses_tool_search`)
-is declined where an unknown tool is,
-via `tool_advertising::unknown_tool_reply`, on the ADR-0176
-`is_error` channel with the envelope's shape and schema; in a session that
-doesn't advertise `invoke` it is an ordinary unknown tool. ADR-0200's
-`advertise_discovered` bool is gone; a user `providers.yml` still carrying
-it is stripped with a warning before validation.
-
-**Pinned at first resolution.** Mode, encoding and strategy are pinned by the
-tool-spec resolver itself (`tool_advertising::surface`, via
-`AdvertisingState::ensure_pinned`) the first time it runs for a session, from
-the model core hands it (`SessionModel` on the `ToolSpecResolver` seam; the
-startup backend when none is bound) — not from `SessionStarted`, a broadcast
-core's first round does not wait for, which let round 1 advertise the unpinned
-default and round 2 the pin. Core resolves specs before the system prompt in
-every round, so the prompt resolver's `ToolSearch` note reads the same pin.
-End/hibernate forgets it (`AdvertisingState::forget`); a resumed session
-re-pins at its first round.
-
-**`Full` fixes its surface at first resolution** (ADR-0204 §5): the sorted
-full surface is snapshotted per session. A tool that becomes available later
-(live MCP enable, `McpAdd`, an overlay enable) is explore-visible and
-dispatchable but not inserted; a `describe()` or `arg_validate` decline
-appends its spec once, at the end. A tool that disappears (MCP server removed
-or disabled) stays advertised, so the array never shrinks or reorders; a call
-to it declines at dispatch through the unknown/unregistered paths
-(`is_error`). The native encodings keep recomputing their deferred surface.
-
-**Live re-pin (TUI only).** `AdvertisingState::repin(session, mode,
-discovery)` replaces a running session's pinned mode and/or strategy (the
-encoding stays wire-derived); `session_mode`/`session_discovery` read the
-pins. Only the TUI `/set` dialog calls it, after an explicit confirmation,
-because the next round's tools array and prompt note change and the provider
-cache is rebuilt once. When the array's shape changes, a `Full` target takes a
-fresh snapshot, and the discovered set restarts unless the target is
-`native_first`/`invoke` (whose set only dedups schemas already in context): a
-name delivered under the old shape is not in the new array, so it must be
-appended by its next delivery rather than retroactively — switching to
-`append` adds nothing until the model loads a tool again, and switching to
-`native_first`/`invoke` adds the `invoke` spec and drops the tail. A re-pin
-sent before the first resolution is held and applied by the pin; hibernate
-and resume drop it.
-
-The dialog's **"save mode as default"** checkbox is the other half: it writes
-`tool_advertising` into the user `config.yml` through `config::write_key`, so
-the choice is the default for **new** sessions while the re-pin handles the
-running one. The discovery strategy re-pins live only and is never saved —
-it is catalog data (ADR-0213). The writer
-is comment-preserving by construction: it splices only that one key's lines —
-replacing a live block, uncommenting the first-run scaffold's `#key:`
-placeholder, or appending — under the shared advisory lock and `atomic_write`
-([ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md)),
-leaving every other byte, comment and blank line of a hand-edited file
-untouched, unlike the `Value`-round-tripping `mcp:` writer. `watch.rs` already
-watches the config dir, so a long-running head sees the edit within a debounce
-window, under ADR-0084's standing rule that a *running* session keeps what it
-resolved at start.
-
-**MCP management is runtime infrastructure, mode-uniform and, since
-[ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§3, unconditionally reachable like the discovery pair.**
-`mcp_enable` sits conceptually beside the runtime-owned roster (`poll`,
-`ask_user`, `update_tasks`) — it is the runtime's own plumbing, not an agent
-tool — and is advertised/callable in both advertising modes (reachable via
-`explore`/`describe` when unadvertised under `ToolSearch`). It now declares
-`Capability::Control` on its own `Tool::capabilities()` impl
-(`mcp::enable_tool::McpEnableTool`), so — unlike before ADR-0207, when it
-graded `Ask` and a masked profile could decline it — it is **never graded**
-at all: the dispatch ladder's Control bypass returns before the session's
-mode, overlay, or ceiling are consulted, on the same reasoning as
-`mcp_enable`'s own doc comment gives — enabling a server only makes its
-tools *dispatchable*, and every one of those is still graded on its own
-merits at its own call, so unconditionally allowing the enable step itself
-can't widen anything. (`mcp_add`/`mcp_remove` are not tools at all — they
-are `InMsg::McpAdd`/`InMsg::McpRemove`, wire-refused, trusted-frame-only.)
-An enable changes no advertised
-array in `Full` or client-side `ToolSearch` (above); the native encodings
-still add the server's tools as deferred definitions. `mcp_enable`'s schema is **static
-(`server: string`) in both modes** — the live roster lives in
-`explore`/`describe`, not in a schema enum — removing the last cache seam
-ADR-0192 didn't list; under `ToolSearch` its result says *"enabled, N tools —
-list with `explore`"*, nothing announced.
+**The `mcp` envelope** — `mcp {server, tool, args}` (`discover::mcp_spec`;
+the name `MCP_TOOL` is shared through the leaf crate) is the only way to call
+an MCP tool. Core unwraps it to `mcp__<server>__<tool>` before any event and
+keeps the emitted call in `Context` byte for byte ([engine](engine.md)), so
+every gate, hook, approval and `arg_validate` sees the inner tool. A
+`ToolExec` still named `mcp` (a malformed envelope core refused) is declined
+where an unknown tool is, via `tool_advertising::unknown_tool_reply`, on the
+ADR-0176 `is_error` channel with the envelope's shape and schema. Calling an
+`mcp__*` name natively is not advertised but dispatches and grades the same.
 
 ### Error taxonomy — three cases — [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) §6
 
-One wording family on the ADR-0176 `is_error` channel, shared by both
-advertising modes:
+One wording family on the ADR-0176 `is_error` channel:
 
 | case | reply |
 | --- | --- |
@@ -958,10 +794,13 @@ validates nothing: a tool with nothing structured to say makes no promise
 about the input's format, so even non-JSON/non-object input isn't a
 violation for it — schema-less tools keep their anything-goes input
 contract, and every real structured tool declares at least one of
-`properties`/`required`. Two guards ride alongside: per-session
-delivered-schema tracking (`tool_advertising::DiscoveredSet`, shared with the
-`describe` tracking above — never re-send a schema already in context; reply
-with the diff instead) and a two-identical-failures loop breaker (a repeated
+`properties`/`required`. An MCP call through the `mcp` envelope is validated
+the same way against the server's real schema, so a violation never reaches
+the server; its decline shows the example as the `mcp {server, tool, args}`
+call that reaches the tool ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)). Two guards ride alongside: per-session
+delivered-schema tracking (`tool_advertising::DeliveredSchemas`, marked by
+every `mcp_tools` delivery and every decline — never re-send a schema already
+in context; reply with the diff instead) and a two-identical-failures loop breaker (a repeated
 identical failure means the schema isn't the problem — stop retrying the
 same shape).
 
@@ -972,8 +811,8 @@ question to answer here.
 
 ### Definition-driven tool sources — endpoints, skill tools, alias rewrite (#560 P8)
 
-Two more sources join host tools and MCP as things `explore`/`describe`
-index and the dispatch ladder grades, both registered once at startup
+Two more sources join host tools and MCP as things the TUI `/tools` index
+lists and the dispatch ladder grades, both registered once at startup
 (`entanglement-runtime::endpoint`, `entanglement-runtime::skills::tools`):
 
 - **`config.yml` `endpoints:`** — each entry becomes an HTTP call tool
@@ -984,9 +823,7 @@ index and the dispatch ladder grades, both registered once at startup
   rate-limit machinery (`entanglement_provider::client::HttpClient`, see
   provider.md), never a bespoke `reqwest::Client` (ADR-0053). Schema
   derivation (`endpoint::config::build_schema`) means the pre-dispatch
-  arg-validation and `describe()` above work for an endpoint tool with zero
-  extra wiring — both already operate generically over the `ToolRegistry`;
-  `explore`'s index needs only a distinct `source` label. Registration is
+  arg-validation above works for an endpoint tool with zero extra wiring. Registration is
   **startup-only**, not live-reloaded like skills/agents/MCP servers (#710)
   — disproportionate to a feature with no evidence anyone edits an endpoint
   definition mid-session.
@@ -1004,9 +841,7 @@ index and the dispatch ladder grades, both registered once at startup
   pseudo-tool name). Registered at **skill-discovery time**, not gated behind
   `load_skill` — ADR-0194 already made `load_skill` a pure disclosure
   mechanism with no activation-switch semantics to hang tool registration
-  off of, and these tools are never in the lean kernel anyway, so under
-  `ToolSearch` mode they're reachable only via `explore`/`describe`
-  regardless of when they were registered, exactly like an MCP tool.
+  off of.
 - **Alias rewrite happens in dispatch, before grading.** `AliasTool::alias_rewrite`
   — consulted by `tool_runner::dispatch` *before* permission resolution —
   rewrites an in-flight `(tool, input)` call to the wrapped tool's own name
@@ -1034,10 +869,10 @@ index and the dispatch ladder grades, both registered once at startup
   so a ceiling rule wanting to grade it under `call` names it explicitly (#713
   tracks whether that should change); a mode's own rules grade it correctly
   regardless, via its real `Capability`.
-- Both sources surface in `explore`/`describe` with their own source labels,
-  and follow the same non-kernel `defer_loading` rule as everything else
-  outside the lean kernel on the `anthropic_native`/`responses_native`
-  encodings.
+- **Interim advertisement** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): with `describe` gone, both sources are
+  appended to the session's surface snapshot next to the kernel, so they stay
+  reachable until #819 (endpoint tools → the `http()` rhai binding) and #820
+  (skill `tools:` removal) retire them.
 
 ## 9. Lifecycle hooks — [ADR-0066](../adr/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
 
@@ -1168,14 +1003,10 @@ same `SharedRegistry` handle it hands the executor, reproducing
 `cfg.tool_specs`' composition: registry tools plus the runtime-intercepted
 pseudo-tool specs that aren't `ToolRegistry` entries
 (`update_tasks`/`ask_user`/`poll`/`bash`/`rhai`), sorted by name and deduped.
-The resolver is also where the **session's advertising mode** (ADR-0196)
-selects the shape: `Full` mode composes the full roster as today;
-`ToolSearch` mode projects the **lean kernel** (the fixed high-frequency
-list + the discovery pair + `propose_plan`/`request_mode`/`agent`/`agent_send`,
-none of which vary by session any more, [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)) out of the same
-registry — dynamic tools stay registered and dispatchable, just absent from
-the advertised array (reachable via `explore`/`describe`, §Discovery and
-lazy tool search above).
+The resolver projects the one **`KERNEL`** surface out of that roster and
+snapshots it per session ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface above) — dynamic
+tools (MCP, script-only built-ins) stay registered and dispatchable, just
+absent from the advertised array.
 Because core advertises the resolver's output verbatim now — there is no
 more per-agent mask, and the session's permission mode + overlay enforce
 only at dispatch — **this resolver is the only thing
@@ -1190,10 +1021,12 @@ Attach any external [MCP](https://modelcontextprotocol.io) tool server as a
 **runtime-side tool provider**, with **no core change**. Since the `Tool` trait +
 `ToolRegistry` live in the runtime (§ADR-0059), an external tool is the same shape
 as a host tool: a `dyn Tool` with a name, description, and `inputSchema`. The MCP
-client (`entanglement-runtime::mcp`) spawns each server, discovers its tools, and
-registers them into the same registry — so they ride `EngineConfig.tool_specs`
-(schemas) and the `ToolExec`/`ToolResult` round-trip (execution) unchanged, under
-the same permission profiles as `read`/`bash`.
+client (`entanglement-runtime::mcp`) connects each server on first use,
+discovers its tools, and registers them into the same registry — so they ride
+the `ToolExec`/`ToolResult` round-trip (execution) unchanged, graded by the
+same permission modes as `read`/`bash`. Their schemas are **never advertised**
+([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the model lists servers with `list_mcp`, reads one server's catalog with
+`mcp_tools`, and calls through the `mcp(server, tool, args)` envelope.
 
 - **Transport (`mcp::client::McpClient`):** an enum over two concrete transports,
   chosen per server by the `command` XOR `url` config (§ADR-0080/#312). `McpTool`
@@ -1249,7 +1082,7 @@ the same permission profiles as `read`/`bash`.
     (and the negotiated `MCP-Protocol-Version`). Since
     [ADR-0153](../adr/0153-mcp-server-oauth.md) the transport itself lives in
     **`entanglement-provider::mcp`** (as `McpHttpClient`) and is reached through
-    core's re-export, the same path `McpServerState` takes — mechanism in the leaf
+    core's re-export, the same path `ProviderMcpServer` takes — mechanism in the leaf
     crate, policy (config, registry, permissions, the token file, the browser
     launch) in the runtime. The runtime therefore names no `reqwest` of its own;
     `mcp-http` is now a pure compile gate deciding whether the HTTP-MCP paths are
@@ -1270,8 +1103,8 @@ the same permission profiles as `read`/`bash`.
     provider-bundled server sharing its provider's key (below) issued
     completely unmetered requests against that key's real rate limit. The
     provider key is resolved from `AvailableServer.key_env` (below) at the
-    startup connect and the lazy `/enable mcp` connect; a live `/mcp add` or an
-    OAuth reconnect passes `api_key: None` (still pooled, just unkeyed).
+    lazy connect; a live `/mcp add` or an OAuth reconnect passes
+    `api_key: None` (still pooled, just unkeyed).
   - **OAuth (✅ [ADR-0153](../adr/0153-mcp-server-oauth.md)):** a server entry may
     carry an optional `oauth:` block. Present — *even empty* — it switches that
     server from static-header auth to a browser-obtained bearer token, since most
@@ -1347,9 +1180,10 @@ the same permission profiles as `read`/`bash`.
   from its own user identity, the servers the config `mcp:` shape (capability
   hints and `oauth:` blocks included), the store typically
   `user_scoped(store, user)`. **Replace semantics:** a scoped session's
-  `mcp__*` namespace is entirely scope-owned — global MCP tools are stripped
-  from its advertised specs (`overlay_specs`, called from the embedder's
-  `tool_spec_resolver`) and from every dispatch snapshot
+  `mcp__*` namespace is entirely scope-owned — `list_mcp`/`mcp_tools` resolve
+  through the scope (`McpScopes::rows`, `overlay_registry_for_call`; a scoped
+  session never sees a global server and never reads the shared last-seen
+  cache, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) and global MCP tools are stripped from every dispatch snapshot
   (`overlay_registry_for_call`, applied in the executor's detached task before
   `dispatch`; the `rhai` arm sees cached scope tools only, no lazy connect) —
   which is what keeps same-named servers (user A's `kb`, user B's `kb`, the
@@ -1357,8 +1191,9 @@ the same permission profiles as `read`/`bash`.
   Connections are lazy, cached per `(scope key, server)` with the #556
   double-checked guard, and live for the process lifetime; eviction is the
   embedder's explicit `evict_scope` (logout, config drift under an unchanged
-  key). `prewarm(&session)` between `Spawn` and the first prompt connects and
-  lists the scope's servers so the sync advertisement path has specs to serve.
+  key). `prewarm(&session)` between `Spawn` and the first prompt connects the
+  scope's servers so `list_mcp` already shows their tools (optional —
+  `mcp_tools` and dispatch connect lazily anyway).
   An `oauth:` server with no stored credential in the scope's slice fails as a
   clean auth-required *tool error* before any connect — the embedder's cue to
   run its web-OAuth flow. A null resolver (and every in-tree head: skutter
@@ -1387,8 +1222,23 @@ the same permission profiles as `read`/`bash`.
   ([ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md));
   the `MCP tool reported an error:` text prefix stays, since no provider wire
   carries `is_error` to the model.
-  Advertised name **`mcp__<server>__<tool>`**, sanitized to the providers'
-  `^[A-Za-z0-9_-]+$` rule, so it can't collide with a host tool or another server.
+  Registered (dispatch) name **`mcp__<server>__<tool>`** — never advertised
+  ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) —
+  with every character outside `[A-Za-z0-9_-]` mapped to `_` by the one
+  shared rule (`mcp_tool_name`) that both core's `mcp` unwrap and the
+  runtime's registration use, so `my.docs` registers as `mcp__my_docs__…`.
+  A tool's owning server is resolved by the longest matching sanitized
+  `mcp__<server>__` prefix (`mcp::tool::owning_server`), never a split on
+  `__`; mode rules and the `/mcp` panel's `d` deny build their
+  `mcp__<server>__*` pattern from the same spelling. Two server names that
+  sanitize identically (`my.docs` / `my_docs`) or whose prefixes nest (`a` /
+  `a__b`) would make tool names and such patterns ambiguous, so the roster
+  keeps only the first — bundles in catalog order, then user entries, each by
+  name; only a server that can connect (not disabled, key resolved) claims a
+  name — reports the ignored one as a startup config warning, and refuses a
+  clashing live `/mcp add` with an `McpChanged` carrying `error`. A per-user
+  scope applies the same rule to its own servers (first by name wins, the
+  later is skipped with a warning).
   Governed by the same session permission mode as any host tool — there is
   no more agent tool mask to opt an MCP tool into or out of
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
@@ -1409,7 +1259,8 @@ the same permission profiles as `read`/`bash`.
   of server name → `McpServerConfig`. A block is one transport XOR the other —
   `{command, args, env}` (stdio) **or** `{url, headers, oauth}` (HTTP; `oauth` is
   the ADR-0153 block above), plus a shared
-  `disabled` and the three-state `state` (ADR-0152, below) — resolved by
+  `disabled` (the one opt-out) and `description` (shown by `list_mcp`; a
+  retired three-state `state:` is stripped with a warning, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) — resolved by
   `McpServerConfig::transport()`, which rejects both-set or
   neither-set. `deny_unknown_fields`-validated by the same loader as
   `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
@@ -1432,29 +1283,20 @@ the same permission profiles as `read`/`bash`.
   `{webSearchPrime: read}`) is invisible to `capability_index` alone;
   `mcp::capability_index_with_catalog` is what `skutter` actually calls (`boot.rs`) —
   `capability_index` plus every bundled server's hint, merged with any
-  same-name user override the same way `AvailableMcp::partition` merges one.
-- **Wiring:** `build_config` is `async` and calls `mcp::connect(&config.mcp, &mut
-  tools)` after the host tools are registered but before `tool_specs` is derived, so
-  MCP tools flow into both the advertised schemas and the executor's registry with
-  the existing code. Connection is **best-effort per server**: a spawn / handshake /
-  `tools/list` failure is logged and skipped — a down server degrades to "that tool
-  is absent," never a startup failure. The stdio path lives in the **lean library**;
-  the HTTP path rides the `mcp-http` feature, so an embedder gets stdio tool servers
-  with no CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
-  `mcp::connect` fans every server's connect+handshake+`tools/list` out
-  **concurrently** (`tokio::task::JoinSet`) rather than one after another, and
-  the HTTP transport's `initialize`/`notifications/initialized` handshake rides
-  a **fast-fail retry override** (2 attempts, a short fixed backoff, a short
-  response-header deadline) instead of the shared endpoint pool's LLM-tuned
-  ladder — so one unreachable server costs a fraction of a second instead of
-  ~10s, and no longer serializes behind every other configured server
-  (✅ #660, [ADR-0169](../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)).
-  A live `/mcp add`/`/mcp connect`/`mcp_enable` connect keeps the pool's
-  patient default — only the startup path passes the override.
+  same-name user override the same way `AvailableMcp::from_config` merges one.
+- **Wiring:** `build_config` builds the roster (`AvailableMcp::from_config`)
+  and an empty `ActiveServers`; **nothing connects at startup** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
+  retiring [ADR-0169](../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)'s
+  concurrent startup connect). The first `mcp_tools` read or `mcp(...)` call
+  on a server connects it for the process (`available::ensure_connected`,
+  per-server guard, 60 s timeout); a failure is a tool error, never a startup
+  failure. The stdio path lives in the **lean library**; the HTTP path rides
+  the `mcp-http` feature, so an embedder gets stdio tool servers with no
+  CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
 
 ### Live add/remove/list — [ADR-0096](../adr/0096-dynamic-toolregistry-sharedregistry.md) + [ADR-0097](../adr/0097-live-mcp-server-management.md) (#372, #375)
 
-The registry `mcp::connect` populates at startup is no longer frozen:
+The tool registry is not frozen:
 `entanglement_runtime::SharedRegistry` (`Arc<std::sync::RwLock<ToolRegistry>>`)
 replaces the owned `ToolRegistry` as the executor's tool input
 (`ToolExecutor::builder(holly, tools)`), and `EngineConfig.tool_spec_resolver` (§ADR-0076) is wired to
@@ -1492,8 +1334,11 @@ both dispatch and model-advertised schemas with no engine restart.
   registry's write lock across the connect/`tools/list` awaits. `mcp_remove`
   drops the tracked `Arc<McpClient>`, which is what actually kills the
   subprocess/closes the HTTP session (`StdioClient`'s `kill_on_drop`) — there
-  is no separate teardown call. `mcp_list` enumerates `ActiveServers`, sorted
-  by name.
+  is no separate teardown call. A live add/remove also updates the roster
+  (`AvailableMcp::insert_user`/`remove`), so registered = available holds with
+  no restart. The `McpList` snapshot (`mcp::roster`) lists every registered
+  server, connected or not, with its OAuth posture; `McpServerStatus.state` is
+  retired and always `None` (serde-defaulted for old logs).
 - **`config::save_mcp`** (`config/mcp_persist.rs`) persists a live add/remove
   back to `config.yml`: a **surgical `serde_yaml::Value` edit** of just the
   top-level `mcp` key (not the typed `Config`, which would drop unknown keys
@@ -1510,117 +1355,79 @@ both dispatch and model-advertised schemas with no engine restart.
   a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
   §"TUI `/mcp` command" below.
 
-### Provider-bundled servers & three-state enablement — [ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md) (#542)
+### Registered = available — [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) (bundled servers: [ADR-0152](../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md), #542)
 
 Provider-bundled MCP servers are **catalog data**: `ProviderEntry.mcp_servers`
 (name → `ProviderMcpServer` — transport, `${VAR}` headers, #426 capability
-hint, default state) ships z.ai's `web_search_prime`/`web_reader`/`zread` in
-the embedded `defaults.yml`, authenticated by the provider's own
-`key_env` (`Bearer ${ZAI_API_KEY}`), every tool hinted `read`. A same-name
-user `mcp:` entry overrides field-wise (`available::merge_user_over_bundled`);
-bundled servers never enter `ServerConfigs`/`save_mcp` — they are not
-persistable state, and a `McpRemove` of one merely disconnects it.
+hint, `description`, `disabled`) ships z.ai's `web_search_prime`/
+`web_reader`/`zread` in the embedded `defaults.yml`, authenticated by the
+provider's own `key_env` (`Bearer ${ZAI_API_KEY}`), every tool hinted
+`read`. A same-name user `mcp:` entry overrides field-wise
+(`available::merge_user_over_bundled`); bundled servers never enter
+`ServerConfigs`/`save_mcp` — they are not persistable state, and a
+`McpRemove` of one merely disconnects it (it stays available).
 
-Every MCP server now has a **three-state activation**
-(`McpServerState`, `McpServerConfig::effective_state()` — the optional
-`state:` field wins, else the legacy `disabled` bool maps `true` ⇒ `disabled`
-/ `false` ⇒ `enabled`):
+ADR-0152's three states are gone. `AvailableMcp::from_config` builds one
+roster: every bundled server whose provider key resolves (read **live**, so a
+`/key` save unlocks a bundle with no restart; keyless ⇒ silently absent) and
+every configured server, minus those with **`disabled: true`** — the single
+explicit opt-out, kept in `disabled_names` so a call to one is declined
+truthfully rather than as unknown. There is no per-session enablement, no
+`mcp_enable` tool, no `/enable mcp`/`/disable mcp`, no ancestry fold: an
+available server is available to every session, and every call to one of
+its tools is graded by the session's mode (default `prompt`, so the user
+audits it). A retired `state:` key is stripped with one warning.
 
-- **`enabled`** — connects at startup, advertised everywhere (a mode `Deny`
-  or a session overlay deny still declines a call to one of its tools).
-  The user-entry default.
-- **`allowed`** — *available*, not connected: visible to `/enable mcp <name>`,
-  the `/mcp` panel's `e` key, the `explore` discovery index, and the agent's
-  **`mcp_enable` tool** (`Capability::Control`, unconditionally reachable —
-  §permission modes above — not itself graded even though the
-  server's own tools still are; `load_skill`-shaped; its schema is
-  **static** — `server: string` — in both
-  advertising modes, the live roster living in `explore`/`describe` instead
-  of a dynamic schema `enum`, [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)).
-  Enabling lazily
-  connects (`available::enable_for_session` — `mcp_add` minus persistence)
-  and marks the calling session in `AvailableMcp`; the runtime's
-  `tool_spec_resolver` then filters a lazily-connected server's specs to its
-  enabling sessions **and their spawn descendants** (✅ #630,
-  `available_lifecycle::ancestor_enabled` walks a child→parent map
-  `spawn_mcp_responder` folds off `SessionStarted`, resolved live so an
-  ancestor's enable that happens after the child already exists is picked up
-  too — a second, independent copy of the same links `subagent::SpawnGuard`
-  tracks, since that one stays deliberately single-threaded inside the tool
-  executor's own loop), so enablement is **session-scoped and ephemeral**
-  (`/disable mcp <name>` unmarks; the connection stays up for others). The
-  bundled-entry default. Availability is **key presence read live** from the
-  process env, so a `/key` save unlocks a bundle with no restart; keyless ⇒
-  silently absent everywhere. Both the enablement marks and the parent links
-  are dropped on `SessionEnded` (`available_lifecycle::forget_session`, same
-  responder fold) so neither grows for the process lifetime — deliberately
-  **not** on `SessionHibernated`, since a lazy enable is never logged for
-  replay the way the #539 tool overlay is, so clearing it there would strand
-  a resumed session with no way to get its tools back short of re-enabling.
-  That covers an in-process hibernate/resume, where `AvailableMcp`/
-  `ToolRegistry` themselves never lost anything; a **process restart** is a
-  different gap — nothing re-registers a bundled/lazily-connected server's
-  tools on replay at all (`ToolRegistry` is process-lifetime, never
-  persisted) — closed instead at dispatch time, below
-  ([ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md)).
-- **`disabled`** — invisible; only a config edit lifts it.
+**`list_mcp`** (`discover::mcp_lists`) never connects: one row per server
+(`mcp::roster` — name, description, transport, connected, tools, OAuth
+posture) with state `connected` / `available` / `auth required` (an OAuth
+server with no stored credential, with the `/mcp connect <name>` hint), and
+tool names — live for a connected server, else the **last-seen cache**
+(`mcp::McpToolCache`, the managed `<state dir>/mcp-tools.yml`, keyed by
+server name **and** transport target (`McpServerConfig::target()`: URL or
+command line) so a repointed name never shows the old endpoint's list).
+Every successful global connect — lazy, `/mcp add`, `/mcp connect` — records
+it (`record_last_seen`); a write failure is logged, never surfaced. The
+definitions watcher ignores that file.
 
-`McpServerStatus` gains an optional `state` (`"enabled"`/`"allowed"`) and the
-responder's `McpList` snapshot appends available-unconnected servers
-(`connected: false`), which the TUI panel paints "available", not red.
+**`mcp_tools(name)`** is a read of one server's catalog — every tool with its
+JSON schema and a `call as: mcp {"server": …, "tool": …, "args": <minimal
+example>}` line — the MCP counterpart of `load_skill`. MCP has no offline
+catalog, so the first read of a server in the process connects it
+(`available::try_lazy_connect`); every listed tool is marked in the session's
+`DeliveredSchemas`. Both tools are `Capability::Control`: reading a catalog
+grants nothing.
 
-A bundled server's connect — startup (`enabled`) or lazy
-(`enable_for_session`, the `allowed` default's actual activation path) —
-resolves `AvailableServer.key_env` live and hands the value to the HTTP
-transport as `api_key` (✅ #559,
+A bundled server's lazy connect resolves `AvailableServer.key_env` live and
+hands the value to the HTTP transport as `api_key` (✅ #559,
 [ADR-0157](../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
-its traffic shares the shared endpoint pool's rate-limit budget with the
-provider's LLM endpoint using the same key — see §"MCP client" above.
+its traffic shares the endpoint pool's rate-limit budget with the provider's
+LLM endpoint using the same key — see §"MCP client" above.
 
-### Dispatch-time lazy re-enable — [ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) (#560)
+### Dispatch-time lazy connect — [ADR-0201](../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md), amended by [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
-An unknown-tool dispatch for an `mcp__<server>__*` name is no longer a flat
+An unknown-tool dispatch for an `mcp__<server>__*` name — the normal case for
+the first `mcp(...)` on a server, since nothing connects at startup, and for
+a resumed session whose registry is process-lifetime — is not a flat
 registry-membership test. `AvailableMcp::tier_of` (`mcp/available_tier.rs`)
-classifies `server` against the three-state roster above with **no connect
-attempt**: `Eligible` (`allowed`, or already lazily-connected) is
-tier-eligible for the same zero-approval connect `mcp_enable`/`/enable mcp`
-already perform; `Disabled` is a **known** name with consent withheld by
-configuration (`AvailableMcp::disabled_names`, populated by `partition` —
-previously a `disabled` entry was simply discarded, indistinguishable from
-"never configured"); `Unknown` is genuinely nothing. `server_name_of` parses
-the namespaced form (shared with `spec_visible`); `disabled_decline` renders
-the one truthful-decline string both call sites below use.
+classifies `server` with **no connect attempt**: `Available` (in the
+roster), `Disabled` (configured off), `Unknown`. `server_name_of` parses the
+namespaced form; `disabled_decline` renders the one truthful-decline string.
 
-- **`tool_runner::dispatch`'s** own unknown-tool check calls
-  `mcp::available::try_lazy_reenable`: `Eligible` attempts the real connect
-  (`enable_for_session`, same `CONNECT_TIMEOUT`/`connect_guard`), and on
-  success re-snapshots the live registry and **continues the same function**
-  — alias rewrite, grading, escape-root, hooks, approval all still run
-  unchanged, since a lazy re-enable restores registration only, never
-  permission. `Disabled` → `disabled_decline`. `Unknown` → the unchanged
-  Levenshtein-hinted unknown-tool message. A connect failure is a
-  distinguishable error (`"...could not be re-enabled: <cause>"`), never
-  confused with "unknown."
-  (The ADR-0198 mask-miss approval ladder and `mask_request.rs` this bullet
-  used to describe a two-phase connect around are both deleted by
-  [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §8 — "there is no mask left to miss." The bullet above is the whole
-  current flow: `try_lazy_reenable` connects eagerly, inside `dispatch`,
-  before mode grading ever runs, so there is no separate post-approval
-  replay step left to describe.)
-- A per-server **failure cooldown** (`AvailableMcp::recent_enable_failures`,
-  30s) guards a broken/unreachable server's `CONNECT_TIMEOUT` against a batch
-  of several calls each serially retrying it — complementary to the
-  pre-existing per-server `connect_guard` (#556), which serializes
-  *concurrent* attempts; this guards *sequential* repeats after one has
-  already failed.
-
-This closes the resume-coherence gap noted above: replay restores a
-session's tool-overlay/permission state, never MCP registration itself, so a
-resumed session's next call to a previously-enabled server self-heals here
-instead of misreporting the tool unknown. The self-heal is general, not
-resume-specific — any other registry/`AvailableMcp` desync heals the same
-way.
+- **`tool_runner::dispatch`'s** unknown-tool check calls
+  `mcp::available::try_lazy_connect`: `Available` connects
+  (`ensure_connected`, same timeout and per-server guard), re-snapshots the
+  live registry and **continues the same function** — alias rewrite,
+  grading, escape-root, hooks, approval all still run unchanged, since a
+  connect restores registration only, never permission. A connected server
+  without the named tool answers "has no tool named … — `mcp_tools` lists its
+  tools". `Disabled` → `disabled_decline`. `Unknown` → the Levenshtein-hinted
+  unknown-tool message. A connect failure is a distinguishable error
+  (`"...could not be connected: <cause>"`).
+- A per-server **failure cooldown** (30 s) guards a broken server's connect
+  timeout against a batch of calls each serially retrying it — complementary
+  to the per-server connect guard (#556), which serializes *concurrent*
+  attempts.
 
 ### TUI `/mcp` command — [ADR-0100](../adr/0100-tui-mcp-command.md) (#373)
 
@@ -1633,7 +1440,8 @@ parsing (`McpCommand::List`/`Add`/`Remove`, `parse_mcp_args`) and the async
 palette, which carries no trailing text) sends `InMsg::McpList` with a fresh
 correlation id recorded on `tui::mcp_panel::McpPanel`; the matching
 `OutEvent::McpList` opens a read-only popup (`modals::draw_mcp_panel`, `Esc`
-closes) listing each server's name, transport, connected/error status, and
+closes) listing every registered server's name, transport, state
+(`connected`, `available`, or `auth required (/mcp connect <name>)`), and
 namespaced tools — a stray reply for a different correlation id (e.g. another
 head sharing the engine) is ignored, never opening the panel with the wrong
 snapshot. `/mcp add <name> -- <command> [args...]` (stdio) / `/mcp add <name>
@@ -1641,7 +1449,8 @@ snapshot. `/mcp add <name> -- <command> [args...]` (stdio) / `/mcp add <name>
 <name>` send `InMsg::McpAdd`/`McpRemove` directly; the confirming
 `OutEvent::McpChanged` (or a parse error, caught before the engine is
 touched) renders as a transcript status line via `App::handle_mcp_changed`/
-`record_mcp_error`, mirroring `/key`'s save notice. No new wire surface — this
+`record_mcp_error`, mirroring `/key`'s save notice. The panel has no enable key
+any more ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)); `/mcp connect` (OAuth) stays. No new wire surface — this
 is entirely a head-side consumer of the `InMsg`/`OutEvent` pair #375 already
 shipped.
 

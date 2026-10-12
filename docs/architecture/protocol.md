@@ -53,8 +53,8 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
          | PendingList{correlation_id,approvals:[PendingApproval]}   // reply to InMsg::ListPending, no seq/session (#726, ADR-0217); PendingApproval = {session,request_id,kind:"tool"|"plan"|"mode"|"rhai",tool,input,reason,scopes:[ApprovalScope],since_ms} — tool/input byte-identical to the ToolRequest that prompted; ask_user parks excluded (ListQuestions lists those)
-         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); McpServerStatus.state?: "enabled"|"allowed" + available-unconnected entries (#542, ADR-0152); McpServerStatus.auth? = OAuth posture (ADR-0153)
-         | McpChanged{name,action}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375)
+         | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); every registered server, connected or not (ADR-0226: registered = available); McpServerStatus.state? retired — serde-defaulted for old logs, always None; McpServerStatus.auth? = OAuth posture (ADR-0153)
+         | McpChanged{name,action,error?}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375); `error` set = refused/failed, nothing changed (ADR-0226)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
          | Throttle{endpoint,throttled,in_flight,cap,waiters,shared_leases?,retry_in_ms?,pacing_in_ms?}   // LLM endpoint throttle transition, no seq/session — per-endpoint not per-session (#517, ADR-0141); emitted only on enter/exit, not every poll
          | PersistenceDegraded{root,error}   // the persistence tap can't append to root's session log, no seq/session — root is payload, not routing (#767, ADR-0141's model); once per outage, on its first failure
@@ -72,7 +72,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | TextDelta{session,seq,text}
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
-         | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted invoke call when core unwrapped one (ADR-0204)
+         | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted mcp call when core unwrapped one (ADR-0226; old logs may carry invoke, ADR-0204)
          | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
          | ToolExec{session,seq,request_id,tool,input,agent,envelope?,workdir?}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156); envelope as on ToolCall (ADR-0204); workdir = the session's absolute workdir, absent at the root (#764, ADR-0224)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
@@ -92,18 +92,21 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | ReasoningBlock{session,seq,part}   // persisted extended-thinking block (ContentPart::Reasoning); same replay fold as SearchResult. The *persistence* rail for reasoning — ReasoningDelta above is the *display* rail and is never folded into Context; both fire for the same thinking. Capture is unconditional; whether the block is sent back is ModelEntry::replay_thinking (ADR-0160)
 ```
 
-**`envelope` — an unwrapped `invoke` call** ([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md)).
+**`envelope` — an unwrapped `mcp` call** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 `ToolEnvelope{tool,input}` is the call exactly as the model emitted it: the
-outer name (`invoke`) and the raw argument string. It is present on
+outer name (`mcp`) and the raw argument string. It is present on
 `ToolCall`/`ToolExec`/`ToolOutput` only when the round advertised the
-`invoke {name, args}` spec and core unwrapped the call. `tool`/`input` then
-name the inner call, so heads, gates, hooks and approvals handle an ordinary
-tool call and never parse the envelope. It exists so the model-facing history
-stays unchanged: `Context` keeps the emitted call, and replay rebuilds it from
-`envelope`. A call that is not unwrapped (malformed, a reserved inner name, or
-`invoke` not advertised) keeps its emitted name and has no `envelope`.
-`skip_serializing_if` omits the field when `None`, so pre-ADR-0204 logs and
-ordinary calls serialize byte for byte as before.
+`mcp {server, tool, args}` spec and core unwrapped the call. `tool`/`input`
+then name the inner `mcp__<server>__<tool>` call (non-`[A-Za-z0-9_-]`
+characters mapped to `_`, the registered spelling) and its `args`, so heads,
+gates, hooks and approvals handle an ordinary tool call and never parse the
+envelope. It exists so the model-facing history stays unchanged: `Context`
+keeps the emitted call, and replay rebuilds it from `envelope`. A call that is
+not unwrapped (malformed, a reserved inner name, or `mcp` not advertised)
+keeps its emitted name and has no `envelope`. The type is name-agnostic, so
+logs carrying ADR-0204's retired `invoke` envelopes still deserialize and
+replay. `skip_serializing_if` omits the field when `None`, so ordinary calls
+serialize byte for byte as before.
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
@@ -159,7 +162,7 @@ is the approval counterpart: same session-less-query shape and wire-allowed
 read-only rationale, answered by `entanglement_runtime::pending::list_pending`
 from the `PendingDecisions` registry every approval parks in. `root` (not
 `session`) scopes to a whole live spawn sub-tree, walked over `AgentRegistry`
-exactly like `explore(kind: "pending")`. Every approval path (permission
+with the same sub-tree walk the approval parking uses. Every approval path (permission
 `Ask`, `propose_plan`, `request_mode`, a rhai binding's `Ask`) parks through
 `pending::park_approval`, which registers the entry and emits the
 `ToolRequest` from one `PendingApproval` value — so a reconnecting head gets
@@ -511,16 +514,19 @@ Trusted-only for an **enable** entry
 (wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
 `deny: true`, including the empty list) is wire-allowed instead (#634,
 [ADR-0177](../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending this
-ADR) — it can only withdraw tools the session already advertises, so a
-`serve`/`pipe` client can now self-restrict a session's tool surface without
-an in-process head, though it still cannot grant one. The TUI drives the full
-surface via `/enable`/`/disable` (a bare
-`/enable` being the session-tools checklist dialog (the
-overlay as a diff against the mode's own grade)), and the `/mcp` panel's `e`/`d`
-server keys.
-Stash-deferred while a turn is live, like `SetModel` — a mid-round edit
-would change the advertised tool array under a request already in flight
-(unlike `SetMode`, which changes no array and applies immediately, #560).
+ADR) — it can only withdraw tools from dispatch, so a `serve`/`pipe` client
+can self-restrict a session without an in-process head, though it still
+cannot grant anything. The TUI drives the full surface via
+`/enable`/`/disable` (a bare `/enable` being the session-tools checklist
+dialog — the overlay as a diff against the mode's own grade) and the `/mcp`
+panel's `d` key, which denies a server's `mcp__<name>__*` tools for the
+session: with every registered server on by default
+([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
+that per-session opt-out is the user control left (there is no enable key).
+The overlay never touches the advertised array (ADR-0226 pins it per
+session); it is still stash-deferred while a turn is live, like `SetModel`,
+so every call of a round is graded under the one overlay the round started
+with rather than a mid-round mix.
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/0004-structured-plan-and-task-events.md)
 

@@ -10,7 +10,7 @@
 //!
 //! Since ADR-0153 the HTTP transport, the shared JSON-RPC helpers, and the whole
 //! OAuth mechanism live in `entanglement-provider` and are reached through
-//! core's re-export (ADR-0053) — the same path `McpServerState` takes, so the
+//! core's re-export (ADR-0053) — the same path `ProviderMcpServer` takes, so the
 //! lean `--no-default-features` build gets them without naming the optional
 //! provider dependency. What stays here is policy: config, the registry, the
 //! permission-governed tool wrapper, and the stdio transport's key scrub.

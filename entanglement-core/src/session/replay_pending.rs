@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::mem::take;
 
-use super::invoke_envelope::emitted_call;
+use super::mcp_envelope::emitted_call;
 use super::TurnState;
 use crate::context::Context;
 use crate::protocol::ToolEnvelope;
@@ -22,7 +22,7 @@ pub(super) struct TurnFold {
     text: String,
     blocks: Vec<ContentPart>,
     /// The current round's calls in dispatch form, plus the envelopes of the
-    /// unwrapped `invoke` calls among them (ADR-0204).
+    /// unwrapped `mcp` calls among them (ADR-0226; `invoke` in an older log).
     calls: Vec<ToolCall>,
     envelopes: HashMap<String, ToolEnvelope>,
     /// A round event arrived since the last commit point, so the live engine

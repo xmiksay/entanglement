@@ -85,7 +85,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{PermissionProfile, ToolAdvertising, WebSearchConfig};
+use entanglement_core::{PermissionProfile, WebSearchConfig};
 use serde_yaml::Value;
 
 use crate::endpoint::EndpointConfig;
@@ -143,8 +143,6 @@ mod tests;
 #[cfg(test)]
 mod tests_retention;
 #[cfg(test)]
-mod tests_tool_advertising;
-#[cfg(test)]
 mod tests_tui;
 
 const DEFAULTS_YML: &str = include_str!("defaults.yml");
@@ -153,15 +151,6 @@ const DEFAULTS_YML: &str = include_str!("defaults.yml");
 /// session log untouched for a month is stale enough to prune without surprising
 /// a user who never set the key.
 const DEFAULT_SESSION_RETENTION_DAYS: u64 = 30;
-
-/// A parsed embedded-defaults [`Config`], for sibling crates' unit tests
-/// (e.g. `tool_advertising`'s precedence tests): constructed through the real
-/// `parse` so it can never drift from `Config`'s field list, and overridable
-/// field-by-field via struct update syntax.
-#[cfg(test)]
-pub(crate) fn bare_config() -> Config {
-    Config::embedded_defaults().expect("embedded defaults.yml is valid — guarded by test")
-}
 
 /// Resolved user configuration — the merged, validated values every head reads.
 #[derive(Debug, Clone)]
@@ -229,11 +218,6 @@ pub struct Config {
     /// override (ADR-0213). Best-effort: a read-only data dir logs and
     /// continues, never fatal.
     pub session_retention_days: u64,
-    /// Install-wide tool-advertising override (ADR-0196): `full` |
-    /// `tool_search`. `None` (the default) ⇒ per-model resolution: the
-    /// catalog entry's `tool_advertising:` preference, else `tool_search`.
-    /// No env override since ADR-0213.
-    pub tool_advertising: Option<ToolAdvertising>,
     /// Terminal-UI preferences (`tui:` block, ADR-0213).
     pub tui: TuiConfig,
     /// Per-write file backups (`undo:` block, #787): on/off and size caps,
@@ -329,7 +313,6 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         session_retention_days: raw
             .session_retention_days
             .unwrap_or(DEFAULT_SESSION_RETENTION_DAYS),
-        tool_advertising: raw.tool_advertising,
         tui: raw.tui,
         undo: raw.undo,
     };

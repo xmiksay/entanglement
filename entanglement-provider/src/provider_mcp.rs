@@ -5,31 +5,18 @@
 //! MCP servers (e.g. z.ai's `web_search_prime`/`web_reader`/`zread` in the
 //! embedded `defaults.yml`), unlocked by the provider's `key_env`. The
 //! runtime (`entanglement-runtime::mcp::available`) owns all interpretation:
-//! key gating, the user-config field-merge, and the three-state activation.
+//! key gating and the user-config field-merge. A bundled server is available
+//! while its provider key resolves; `disabled: true` is the one opt-out
+//! (ADR-0226 retired ADR-0152's three-state `state:`).
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
-/// Activation state of an MCP server (#542): `enabled` connects at startup and
-/// advertises to every session; `allowed` is *available* — not connected until
-/// a user (`/enable mcp <name>`) or the agent (the `mcp_enable` tool) enables
-/// it for a session; `disabled` is invisible. Declared here (not the runtime)
-/// because the catalog's bundled entries carry it as data; the runtime owns
-/// all interpretation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum McpServerState {
-    Enabled,
-    Allowed,
-    Disabled,
-}
+use serde::Deserialize;
 
 /// One provider-bundled MCP server (#542). Mirrors the runtime's
 /// `McpServerConfig` transport surface (`command` XOR `url` — validated by the
-/// runtime, not here) plus the capability hint (#426) and the default
-/// activation [`McpServerState`] (`None` ⇒ `allowed`: available but not
-/// connected until enabled).
+/// runtime, not here) plus the capability hint (#426), the `list_mcp`
+/// description, and the `disabled` opt-out.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderMcpServer {
@@ -48,6 +35,11 @@ pub struct ProviderMcpServer {
     /// Capability hint (#426): raw tool name → `read`/`write`/`call`.
     #[serde(default)]
     pub capabilities: HashMap<String, String>,
+    /// One line `list_mcp` shows for the server (ADR-0226).
     #[serde(default)]
-    pub state: Option<McpServerState>,
+    pub description: Option<String>,
+    /// The single explicit opt-out (ADR-0226): a disabled server is never
+    /// listed or connected.
+    #[serde(default)]
+    pub disabled: bool,
 }

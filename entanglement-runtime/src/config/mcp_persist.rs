@@ -91,7 +91,7 @@ mod tests {
             disabled: false,
             capabilities: HashMap::new(),
             oauth: None,
-            state: None,
+            description: None,
         }
     }
 

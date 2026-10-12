@@ -120,8 +120,8 @@ async fn main() -> anyhow::Result<()> {
     // its `UserTokenStore` implementation over its own storage (ADR-0184).
     // With a scope resolved, the session's `mcp__*` namespace is entirely
     // scope-owned; `scopes.prewarm(&session)` between `Spawn` and the first
-    // prompt connects and lists the scope's servers so `overlay_specs` can
-    // advertise them, and `scopes.evict_scope(key)` drops a user's
+    // prompt connects the scope's servers so `list_mcp` shows their tools, and
+    // `scopes.evict_scope(key)` drops a user's
     // connections on logout.
     let scopes = entanglement_runtime::mcp::McpScopes::new(
         Arc::new(|session: &SessionId| {

@@ -80,7 +80,7 @@ via `ENTANGLEMENT_PROVIDER=echo`
 | `ollama` | OpenAI-compat, keyless | — | `OLLAMA_MODEL` (`llama3.1`) | `OLLAMA_API_BASE` |
 | `anthropic` | `/v1/messages` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-sonnet-5`) | — |
 | `gemini` | `:streamGenerateContent` | `GEMINI_API_KEY` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_BASE` |
-| `openai_responses` (opt-in) | Responses API (ADR-0196 §3) | `OPENAI_API_KEY` | `gpt-5.4` | — |
+| `openai_responses` (opt-in) | Responses API | `OPENAI_API_KEY` | `gpt-5.4` | — |
 
 The table is **catalog data** (`entanglement-provider/src/defaults.yml`
 deep-merged with `${config_dir}/entanglement/providers.yml`; precedence env >
@@ -109,14 +109,15 @@ list; a retired var still set prints one warning naming its replacement
 | `ENTANGLEMENT_PROVIDERS_FILE` / `ENTANGLEMENT_CONFIG_FILE` / `ENTANGLEMENT_ENV_FILE` | override the provider catalog / layered `config.yml` / managed key `.env` path |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` / `ENTANGLEMENT_COMMANDS_DIR` | replace the whole user agents/skills/slash-commands layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `llm-tokens` `.yml`; default `${config_dir}/entanglement`) |
+| `ENTANGLEMENT_STATE_DIR` | relocate all eight managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `llm-tokens`, `mcp-tools` `.yml`; default `${config_dir}/entanglement`) |
 | `ENTANGLEMENT_DEBUG` | comma list: `bodies` (LLM request-body logging), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing); unknown token warns once |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
 | `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by the runtime (read-only context) |
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
-`tool_advertising`, `tui: {notify, mouse}` (also `theme`/`keybindings`/
-`statusline`), `rpm`/`concurrency` (providers.yml).
+`tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
+`rpm`/`concurrency` (providers.yml). Retired outright by ADR-0226:
+`tool_advertising`, `discovery`, MCP `state:` (one warning each).
 `ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
 The permission **mode** has no env var by design (`--mode` > `config.yml`
 `mode:` > agent `default_mode` > `build`).
@@ -149,9 +150,10 @@ doc, never here**:
   batch parks the turn as serde `TurnState`; results (structured
   `is_error`/`duration_ms`/`exit_code`/`envelope`) resolve in any order
   ([engine](../docs/architecture/engine.md), [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md)).
-- **The advertised tool array is stable within a session** — pinned at first
-  resolution, append-only, never filtered/removed/reordered, since any change
-  busts the prompt cache ([gates §discovery](../docs/architecture/gates-and-host-tools.md), [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)/[ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)/[ADR-0204](../docs/adr/0204-invoke-fallback-for-client-side-discovery.md)).
+- **One advertised surface** — the compiled-in `KERNEL`, snapshotted at a
+  session's first resolution, identical on every wire, never changed
+  mid-session (any change busts the prompt cache); no mode, no knob
+  ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
 - **Authority is the session's permission mode, not the agent** —
   `research`/`plan`/`build`/`auto`, graded at the runtime's dispatch gate by
   the longest matching rule; there is no agent tool mask
@@ -184,12 +186,15 @@ doc, never here**:
   ([gates §undo](../docs/architecture/gates-and-host-tools.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)).
 - **`rhai` is a sandboxed script tool** graded like its bindings' host tools
   ([gates §8](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)).
-- **MCP** — stdio/HTTP servers as `mcp__<server>__<tool>`; live add/remove,
-  provider-bundled three-state servers, OAuth, per-user scopes
-  ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
-- **Discovery pair + definition-driven tools** — always-`Allow`
-  `explore`/`describe` index MCP, `endpoint__*` and `skill__*` tools; alias
-  rewrite happens before grading ([gates §definition-driven](../docs/architecture/gates-and-host-tools.md), [ADR-0196](../docs/adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)).
+- **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
+  `mcp__<server>__<tool>`), schemas never advertised; registered = available
+  (`disabled: true` the one opt-out), lazy connect, live add/remove,
+  provider-bundled servers, OAuth, per-user scopes
+  ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
+- **Discovery is six `Control` tools** — `list_agents`/`list_models`/
+  `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
+  `mcp_tools` reads (and lazily connects) one server's catalog; alias rewrite
+  of definition-driven tools happens before grading ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 - **Skills are additive-only; slash commands are head-side templates**
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)).
 - **Definitions are data, layered** embedded < user < project (project

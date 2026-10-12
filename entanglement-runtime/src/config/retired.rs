@@ -1,4 +1,5 @@
-//! One-release migration warnings for the knobs ADR-0213 retired.
+//! One-release migration warnings for the knobs ADR-0213 and ADR-0226
+//! retired.
 //!
 //! A retired env var or config key is **ignored**, never fatal — but silently
 //! ignoring a setting a user still relies on is the worst failure, so each one
@@ -25,7 +26,7 @@ const RETIRED_ENV: &[(&str, &str)] = &[
     ),
     (
         "ENTANGLEMENT_TOOL_ADVERTISING",
-        "`tool_advertising:` in config.yml",
+        "nothing — one advertised surface on every wire, no knob (ADR-0226)",
     ),
     (
         "ENTANGLEMENT_MAX_CONCURRENCY",
@@ -67,11 +68,24 @@ const RETIRED_PROVIDER_SUFFIXES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Top-level `config.yml` keys no longer read, with their replacement.
-const RETIRED_CONFIG_KEYS: &[(&str, &str)] = &[(
-    "discovery",
-    "nothing — the catalog's per-provider/model `discovery:` decides",
-)];
+/// Top-level `config.yml` keys no longer read: `(key, retiring ADR, what
+/// replaces it)`.
+const RETIRED_CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    (
+        "discovery",
+        "ADR-0213",
+        "nothing — one advertised surface on every wire (ADR-0226)",
+    ),
+    (
+        "tool_advertising",
+        "ADR-0226",
+        "nothing — one advertised surface on every wire, no mode",
+    ),
+];
+
+/// What replaces a retired per-server `mcp.<name>.state:` key (ADR-0226).
+const MCP_STATE_REPLACEMENT: &str =
+    "every configured server is available; `disabled: true` is the one opt-out";
 
 /// One warning per retired env var `is_set` reports, plus one for any
 /// unknown `ENTANGLEMENT_DEBUG` token. `providers` are the catalog entry names
@@ -123,19 +137,40 @@ fn retired_line(var: &str, with: &str) -> String {
     format!("`{var}` is no longer read (ADR-0213) — use {with}")
 }
 
-/// Drop every retired top-level key from each layer **before** the merge, so
-/// `deny_unknown_fields` doesn't turn a stale line into a startup failure, and
-/// return one warning per occurrence naming the file that still carries it.
+/// Drop every retired key from each layer **before** the merge — the
+/// top-level ones and an MCP server's `state:` — so `deny_unknown_fields`
+/// doesn't turn a stale line into a startup failure, and return one warning
+/// per occurrence naming the file that still carries it.
 pub(super) fn strip_retired_keys(layers: &mut [RawLayer]) -> Vec<String> {
     let mut out = Vec::new();
     for layer in layers {
         let Value::Mapping(map) = &mut layer.doc else {
             continue;
         };
-        for (key, with) in RETIRED_CONFIG_KEYS {
+        for (key, adr, with) in RETIRED_CONFIG_KEYS {
             if map.remove(*key).is_some() {
                 out.push(format!(
-                    "{}: `{key}:` is no longer read (ADR-0213) and was ignored — {with}",
+                    "{}: `{key}:` is no longer read ({adr}) and was ignored — {with}",
+                    layer.source
+                ));
+            }
+        }
+        let Some(Value::Mapping(servers)) = map.get_mut("mcp") else {
+            continue;
+        };
+        for (name, server) in servers.iter_mut() {
+            let Some(server) = server.as_mapping_mut() else {
+                continue;
+            };
+            if let Some(state) = server.remove("state") {
+                // An old opt-out must stay an opt-out, never silently re-enable.
+                if state.as_str() == Some("disabled") {
+                    server.insert(Value::from("disabled"), Value::Bool(true));
+                }
+                let name = name.as_str().unwrap_or("?");
+                out.push(format!(
+                    "{}: `mcp.{name}.state:` is no longer read (ADR-0226) and was ignored — \
+                     {MCP_STATE_REPLACEMENT}",
                     layer.source
                 ));
             }
@@ -230,6 +265,35 @@ mod tests {
             source: source.to_string(),
             doc: serde_yaml::from_str(yaml).unwrap(),
         }
+    }
+
+    #[test]
+    fn tool_advertising_and_an_mcp_state_are_stripped_naming_adr_0226() {
+        let mut layers = vec![layer(
+            "user.yml",
+            "tool_advertising: full\nmcp:\n  kb:\n    url: https://kb/mcp\n    state: allowed\n",
+        )];
+        let w = strip_retired_keys(&mut layers);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("`tool_advertising:`") && w[0].contains("ADR-0226"));
+        assert!(w[1].contains("`mcp.kb.state:`") && w[1].contains("disabled: true"));
+        let kb = &layers[0].doc["mcp"]["kb"];
+        assert!(kb.get("state").is_none());
+        assert!(kb.get("url").is_some(), "siblings survive");
+    }
+
+    #[test]
+    fn a_retired_mcp_state_disabled_becomes_disabled_true() {
+        let mut layers = vec![layer(
+            "user.yml",
+            "mcp:\n  off:\n    url: https://off/mcp\n    state: disabled\n  on:\n    url: https://on/mcp\n    state: enabled\n",
+        )];
+        let w = strip_retired_keys(&mut layers);
+        assert_eq!(w.len(), 2, "{w:?}");
+        let mcp = &layers[0].doc["mcp"];
+        assert_eq!(mcp["off"]["disabled"], Value::Bool(true));
+        assert!(mcp["on"].get("disabled").is_none());
+        assert!(mcp["on"].get("state").is_none());
     }
 
     #[test]

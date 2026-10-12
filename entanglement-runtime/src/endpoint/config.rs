@@ -26,7 +26,7 @@ pub struct EndpointConfig {
     #[serde(default)]
     pub description: String,
     /// Declared parameters — drives both the advertised JSON Schema (so P4's
-    /// pre-dispatch validation and `describe()` work naturally) and which
+    /// pre-dispatch validation works naturally) and which
     /// `{{param}}` tokens the URL/body templates may reference.
     #[serde(default)]
     pub params: HashMap<String, EndpointParam>,
@@ -71,7 +71,7 @@ fn default_required() -> bool {
     true
 }
 
-/// Build the JSON Schema `describe()`/P4 validation and the native tools
+/// Build the JSON Schema P4 validation and the native tools
 /// array all see — the same shape for every `EndpointConfig`-backed tool,
 /// name-sorted for a deterministic, byte-stable schema across process
 /// restarts.

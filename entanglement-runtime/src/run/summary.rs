@@ -1,5 +1,5 @@
 //! One-line summaries and readable argument/output text for a tool call,
-//! shared by the `run` text head and the TUI transcript (ADR-0204 §6): both
+//! shared by the `run` text head and the TUI transcript: both
 //! heads name a call by its real tool and describe it the same way, never as
 //! raw JSON. Pure string work — no ratatui — so the text head stays UI-free.
 
@@ -14,32 +14,42 @@ const HINT_CHARS: usize = 40;
 /// Character budget for the generic first-scalar hint.
 const SCALAR_CHARS: usize = 60;
 
-/// The call to display for a frame that may still carry an `invoke`
-/// envelope. Core unwraps before emitting `ToolCall` (ADR-0204 §3), but a
-/// streamed `ToolCallDelta` names `invoke` until its `ToolCall` lands, so a
-/// well-formed `{name, args}` envelope renders as the inner call here too.
-/// Anything core would not unwrap (§4 edge rules) is returned unchanged.
-pub(crate) fn unwrap_invoke<'a>(tool: &'a str, input: &'a str) -> (Cow<'a, str>, Cow<'a, str>) {
-    let inner = (tool == "invoke")
-        .then(|| serde_json::from_str::<Value>(input).ok())
-        .flatten()
-        .and_then(|envelope| {
-            let name = envelope.get("name")?.as_str()?;
-            if name == "invoke" {
-                return None;
-            }
-            let args = match envelope.get("args") {
-                None | Some(Value::Null) => Value::Object(Default::default()),
-                Some(Value::String(s)) => serde_json::from_str(s).ok()?,
-                Some(other) => other.clone(),
-            };
-            args.is_object()
-                .then(|| (name.to_string(), args.to_string()))
-        });
+/// The call to display for a frame that may still carry an envelope. Core
+/// unwraps an `mcp {server, tool, args}` call before emitting `ToolCall`
+/// (ADR-0226), but a streamed `ToolCallDelta` names `mcp` until its `ToolCall`
+/// lands — and a pre-ADR-0226 log may carry the retired `invoke {name, args}`
+/// envelope (ADR-0204). A well-formed envelope of either kind renders as the
+/// inner call; anything core would not unwrap is returned unchanged.
+pub(crate) fn unwrap_envelope<'a>(tool: &'a str, input: &'a str) -> (Cow<'a, str>, Cow<'a, str>) {
+    let inner = match tool {
+        "mcp" | "invoke" => serde_json::from_str::<Value>(input)
+            .ok()
+            .and_then(|envelope| inner_call(tool, &envelope)),
+        _ => None,
+    };
     match inner {
         Some((name, args)) => (Cow::Owned(name), Cow::Owned(args)),
         None => (Cow::Borrowed(tool), Cow::Borrowed(input)),
     }
+}
+
+fn inner_call(tool: &str, envelope: &Value) -> Option<(String, String)> {
+    let non_empty = |key: &str| text(envelope, key).filter(|s| !s.is_empty());
+    let name = if tool == "mcp" {
+        let (server, inner) = (non_empty("server")?, non_empty("tool")?);
+        entanglement_core::mcp_tool_name(server, inner)
+    } else {
+        non_empty("name")?.to_string()
+    };
+    if name == tool {
+        return None;
+    }
+    let args = match envelope.get("args") {
+        None | Some(Value::Null) => Value::Object(Default::default()),
+        Some(Value::String(s)) => serde_json::from_str(s).ok()?,
+        Some(other) => other.clone(),
+    };
+    args.is_object().then(|| (name, args.to_string()))
 }
 
 /// The human name of a tool: `mcp__<server>__<tool>` and
@@ -82,27 +92,12 @@ fn orchestration_arg(tool: &str, value: &Value) -> Option<String> {
         "propose_plan" => Some("plan".to_string()),
         "update_tasks" => Some("snapshot".to_string()),
         "load_skill" => text(value, "skill_name").map(String::from),
-        "mcp_enable" => text(value, "server").map(String::from),
+        "mcp_tools" => text(value, "name").map(String::from),
         "rhai" => text(value, "script")?
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map(|line| truncate_chars(line, HINT_CHARS)),
-        "explore" => Some(match (text(value, "filter"), text(value, "kind")) {
-            (Some(filter), Some(kind)) => format!("\"{filter}\" in {kind}"),
-            (Some(filter), None) => format!("\"{filter}\""),
-            (None, Some(kind)) => format!("kind {kind}"),
-            (None, None) => "whole catalog".to_string(),
-        }),
-        "describe" => {
-            let names: Vec<&str> = value
-                .get("names")?
-                .as_array()?
-                .iter()
-                .filter_map(Value::as_str)
-                .collect();
-            Some(names.join(", "))
-        }
         _ => None,
     }
 }
@@ -157,7 +152,7 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
 /// `name  arg` on one line (a multi-line arg keeps its first line, marked
 /// `…`) — the text head's `→`/`?` summary.
 pub(crate) fn call_line(tool: &str, input: &str) -> String {
-    let (tool, input) = unwrap_invoke(tool, input);
+    let (tool, input) = unwrap_envelope(tool, input);
     let name = display_name(&tool);
     let Some(arg) = primary_arg(&tool, &input) else {
         return name.into_owned();
@@ -240,33 +235,50 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn unwrap_invoke_yields_the_inner_call() {
-        let (tool, input) = unwrap_invoke("invoke", r#"{"name":"edit","args":{"path":"a.rs"}}"#);
+    fn an_mcp_envelope_renders_as_its_inner_call() {
+        let (tool, input) =
+            unwrap_envelope("mcp", r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#);
+        assert_eq!(
+            (tool.as_ref(), input.as_ref()),
+            ("mcp__gh__search", r#"{"q":"x"}"#)
+        );
+        let (tool, input) = unwrap_envelope("mcp", r#"{"server":"gh","tool":"search"}"#);
+        assert_eq!((tool.as_ref(), input.as_ref()), ("mcp__gh__search", "{}"));
+        // The registered spelling, as core's unwrap produces it.
+        let (tool, _) = unwrap_envelope("mcp", r#"{"server":"my.docs","tool":"get.page"}"#);
+        assert_eq!(tool.as_ref(), "mcp__my_docs__get_page");
+    }
+
+    /// Pre-ADR-0226 logs carry the retired `invoke` envelope.
+    #[test]
+    fn an_old_invoke_envelope_still_renders_as_its_inner_call() {
+        let (tool, input) = unwrap_envelope("invoke", r#"{"name":"edit","args":{"path":"a.rs"}}"#);
         assert_eq!(
             (tool.as_ref(), input.as_ref()),
             ("edit", r#"{"path":"a.rs"}"#)
         );
         let (tool, input) =
-            unwrap_invoke("invoke", r#"{"name":"grep","args":"{\"pattern\":\"x\"}"}"#);
+            unwrap_envelope("invoke", r#"{"name":"grep","args":"{\"pattern\":\"x\"}"}"#);
         assert_eq!(
             (tool.as_ref(), input.as_ref()),
             ("grep", r#"{"pattern":"x"}"#)
         );
-        let (tool, input) = unwrap_invoke("invoke", r#"{"name":"explore"}"#);
-        assert_eq!((tool.as_ref(), input.as_ref()), ("explore", "{}"));
     }
 
     #[test]
-    fn unwrap_invoke_leaves_what_core_would_not_unwrap() {
-        for input in [
-            r#"{"name":"invoke","args":{}}"#,
-            r#"{"args":{}}"#,
-            r#"{"name":"edit","args":[1]}"#,
-            r#"{"name":"ed"#,
+    fn what_core_would_not_unwrap_is_left_alone() {
+        for (tool, input) in [
+            ("invoke", r#"{"name":"invoke","args":{}}"#),
+            ("invoke", r#"{"args":{}}"#),
+            ("invoke", r#"{"name":"edit","args":[1]}"#),
+            ("invoke", r#"{"name":"ed"#),
+            ("mcp", r#"{"server":"gh"}"#),
+            ("mcp", r#"{"server":"","tool":"t"}"#),
+            ("mcp", r#"{"server":"gh","tool":"t","args":3}"#),
         ] {
-            assert_eq!(unwrap_invoke("invoke", input).0, "invoke", "{input}");
+            assert_eq!(unwrap_envelope(tool, input).0, tool, "{input}");
         }
-        assert_eq!(unwrap_invoke("read", "{}").0, "read");
+        assert_eq!(unwrap_envelope("read", "{}").0, "read");
     }
 
     #[test]
@@ -278,24 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn primary_arg_covers_discovery_script_and_mcp_management_tools() {
+    fn primary_arg_covers_discovery_and_script_tools() {
         let arg = |tool, input| primary_arg(tool, input);
         assert_eq!(
-            arg("explore", r#"{"filter":"git"}"#).as_deref(),
-            Some("\"git\"")
+            arg("mcp_tools", r#"{"name":"github"}"#).as_deref(),
+            Some("github")
         );
-        assert_eq!(arg("explore", "{}").as_deref(), Some("whole catalog"));
-        assert_eq!(
-            arg("describe", r#"{"names":["glob","grep"]}"#).as_deref(),
-            Some("glob, grep")
-        );
+        assert_eq!(arg("list_mcp", "{}").as_deref(), None);
         assert_eq!(
             arg("rhai", r#"{"script":"\n let x = 1;\nx"}"#).as_deref(),
             Some("let x = 1;")
-        );
-        assert_eq!(
-            arg("mcp_enable", r#"{"server":"github"}"#).as_deref(),
-            Some("github")
         );
         assert_eq!(
             arg(

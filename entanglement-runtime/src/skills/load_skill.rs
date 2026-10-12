@@ -1,8 +1,9 @@
 //! `load_skill` — tier-2 skill loading (#115, epic #111, ADR-0037).
 //!
 //! One generic runtime-owned tool (not one tool per skill): the model calls
-//! `load_skill { skill_name }` after picking a skill from the tier-1 disclosure
-//! list (`name: description` lines in its system prompt, [`super::SkillRegistry::disclosures`]).
+//! `load_skill { skill_name }` after picking a skill from `list_skills`
+//! (ADR-0226; [`super::SkillRegistry::disclosures`] — the roster left the
+//! system prompt).
 //! The handler resolves it **deterministically** — never model reasoning:
 //!
 //! 1. Look the [`SkillMeta`] up by `name` in the startup index.
@@ -18,10 +19,10 @@
 //!    there is no implicit CWD fallback.
 //!
 //! Unlike `agent`/`ask_user`, `load_skill` is a **real host tool** in the
-//! [`ToolRegistry`](crate::tools::ToolRegistry): it reads the
-//! filesystem, so it goes through the *same* per-call permission gate as `read`
-//! (no special exemption). Permission (`Allow`/`Ask`/`Deny`) is the executor's
-//! job; this handler owns only resolution + substitution and returns the body as
+//! [`ToolRegistry`](crate::tools::ToolRegistry), but `Capability::Control`
+//! like the other discovery tools (ADR-0226): it reads only trusted skill
+//! definitions, never an arbitrary path, so it is never graded. This handler
+//! owns only resolution + substitution and returns the body as
 //! an ordinary `tool_result` — never a spoofed user message, so the authorship
 //! trail stays honest.
 //!
@@ -72,8 +73,8 @@ impl Tool for LoadSkillTool {
         &[Capability::Control]
     }
     fn description(&self) -> &str {
-        "Load a skill's full instructions by name (pick one from the skill index \
-         in your system prompt). Returns the skill body with every file path \
+        "Load a skill's full instructions by name (list_skills shows them). \
+         Returns the skill body with every file path \
          resolved to an absolute path, plus a list of its supporting reference \
          files — read those on demand with the `read` tool. Deterministic: the \
          skill_name must match an indexed skill exactly."
@@ -84,7 +85,7 @@ impl Tool for LoadSkillTool {
             "properties": {
                 "skill_name": {
                     "type": "string",
-                    "description": "Exact `name` of a skill from the skill index."
+                    "description": "Exact `name` of a skill from list_skills."
                 }
             },
             "required": ["skill_name"]

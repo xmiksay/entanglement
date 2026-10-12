@@ -23,8 +23,7 @@ use crate::system_prompt::PromptContext;
 /// assembled system prompt — or, with `parts`, the per-slice breakdown.
 pub fn inspect_prompt(cwd: &Path, agent: &str, parts: bool) -> Result<()> {
     let skill_registry = skills::load_registry(cwd).context("loading skill definitions")?;
-    let mut ctx = PromptContext::load(cwd);
-    ctx.skills = skill_registry.disclosures();
+    let ctx = PromptContext::load(cwd);
 
     let report = agents::prompt_report(cwd, agent, &ctx, &skill_registry)
         .context("assembling agent prompt")?

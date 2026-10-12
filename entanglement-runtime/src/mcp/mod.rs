@@ -23,9 +23,11 @@
 //! whichever transport backs it.
 //!
 //! Servers are declared in the layered user config's `mcp:` section (a map of
-//! server name → [`McpServerConfig`]). A server that fails to connect is logged
-//! and skipped — an external dependency being down must never stop the engine
-//! from starting.
+//! server name → [`McpServerConfig`]) or bundled by a provider in the catalog.
+//! Registered = available (ADR-0226): nothing connects at startup; the first
+//! `mcp_tools` read or `mcp(...)` call on a server connects it, and a connect
+//! failure is a tool error, never an engine failure. MCP tool schemas are
+//! never advertised — `mcp_tools` delivers them as a tool result.
 
 use std::collections::HashMap;
 
@@ -37,38 +39,34 @@ use crate::tool_names;
 // Via core's re-export (ADR-0053), not `entanglement_provider` directly —
 // that dep is optional (`provider` feature) and absent from the lean build.
 use entanglement_core::Catalog;
-pub use entanglement_core::{McpServerState, OauthConfig};
+pub use entanglement_core::OauthConfig;
 
 pub mod available;
 pub mod browser;
 pub mod client;
 #[path = "connect.rs"]
 mod connect_impl;
-pub mod enable_tool;
+mod last_seen;
 pub mod live;
 pub mod oauth_ops;
 pub mod responder;
 mod result;
+mod roster;
 pub mod scoped;
 pub mod stdio;
 pub mod tool;
 
 pub use available::{AvailableMcp, AvailableServer};
 pub use client::{McpClient, McpToolDef};
-// Split out of this file along the 400-line file cap (#559, mirroring #556's
-// `available_enable.rs` split). `connect`/`needs_auth` are this module's own
-// public API (unchanged paths for embedders); the rest are crate-internal
-// helpers every connect path (startup, live `/mcp add`, lazy `/enable mcp`)
-// shares — re-exported so existing `super::`-qualified call sites in
-// `live.rs`/`available_enable.rs`/`responder.rs` resolve unchanged.
-pub use connect_impl::{connect, needs_auth};
-pub(crate) use connect_impl::{connect_client, register_tools, transport_label};
-pub use enable_tool::McpEnableTool;
+pub use last_seen::McpToolCache;
+// Split out of this file along the 400-line file cap (#559): crate-internal
+// helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
+// shares.
+pub(crate) use connect_impl::{connect_client, record_last_seen, register_tools, transport_label};
 pub use scoped::{McpScope, McpScopeResolver, McpScopes};
 
-/// The handle bundle a head needs to drive per-session enablement of
-/// `allowed` servers (#542) — `/enable mcp <name>` lazily connects through
-/// these, exactly like the `mcp_enable` tool does.
+/// The handles a head reads MCP state through — the TUI `/tools` view lists
+/// the roster and connected tools from these.
 #[derive(Clone)]
 pub struct McpHandles {
     pub avail: std::sync::Arc<AvailableMcp>,
@@ -82,6 +80,7 @@ pub struct McpHandles {
 pub use entanglement_core::McpHttpClient as HttpClient;
 pub use live::{mcp_add, mcp_list, mcp_remove, ActiveServer, ActiveServers, ServerConfigs};
 pub use responder::spawn_mcp_responder;
+pub use roster::{roster, ServerRow};
 pub use stdio::StdioClient;
 pub use tool::McpTool;
 
@@ -119,9 +118,13 @@ pub struct McpServerConfig {
     /// resolve on their own. Absent ⇒ pre-ADR-0153 behavior exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OauthConfig>,
-    /// Skip this server without deleting its block.
+    /// The one explicit opt-out (ADR-0226): a disabled server is never listed
+    /// or connected. Every other configured server is available.
     #[serde(default)]
     pub disabled: bool,
+    /// One line `list_mcp` shows for this server (ADR-0226).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Config-side capability hint (#426): raw (un-namespaced) tool name → capability
     /// (`read`/`write`/`call`), the same names `tool_names::CAPABILITIES` defines.
     /// An MCP tool's `tools/list` response carries no such hint of its own, so a
@@ -133,13 +136,6 @@ pub struct McpServerConfig {
     /// (or survive across) the server actually connecting.
     #[serde(default)]
     pub capabilities: HashMap<String, String>,
-    /// Three-state activation (#542): `enabled` connects at startup, `allowed`
-    /// is available for per-session enablement (`/enable mcp <name>` / the
-    /// `mcp_enable` tool), `disabled` is invisible. `None` falls back to the
-    /// legacy `disabled` bool (`true` ⇒ `disabled`, else `enabled`) so every
-    /// pre-#542 config keeps its exact behavior.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<McpServerState>,
 }
 
 /// The resolved transport for one server — the `command` XOR `url` choice made
@@ -159,18 +155,18 @@ pub enum Transport {
 }
 
 impl McpServerConfig {
-    /// The resolved three-state activation (#542): the explicit `state` field
-    /// wins; absent, the legacy `disabled` bool maps `true` ⇒ [`Disabled`]
-    /// and `false` ⇒ [`Enabled`] — byte-identical to pre-#542 behavior.
-    ///
-    /// [`Disabled`]: McpServerState::Disabled
-    /// [`Enabled`]: McpServerState::Enabled
-    pub fn effective_state(&self) -> McpServerState {
-        self.state.unwrap_or(if self.disabled {
-            McpServerState::Disabled
-        } else {
-            McpServerState::Enabled
-        })
+    /// What the server's transport points at — the URL, or the command line —
+    /// so the last-seen tool cache never serves a list recorded for a
+    /// different endpoint under the same name.
+    pub fn target(&self) -> String {
+        match (&self.url, &self.command) {
+            (Some(url), _) => url.clone(),
+            (None, Some(command)) => std::iter::once(command.as_str())
+                .chain(self.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            (None, None) => String::new(),
+        }
     }
 
     /// Resolve the transport, enforcing the `command` XOR `url` rule.
@@ -211,7 +207,7 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
             disabled: spec.disabled,
             capabilities: HashMap::new(),
             oauth: None,
-            state: None,
+            description: None,
         }
     }
 }
@@ -280,7 +276,6 @@ pub fn capability_index_with_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::ToolRegistry;
 
     /// The gap the explore/research MCP fix closes: `capability_index` alone
     /// (user `mcp:` only) never sees a catalog-bundled server's own
@@ -322,7 +317,7 @@ mod tests {
                 disabled: false,
                 capabilities: HashMap::from([("webSearchPrime".to_string(), "call".to_string())]),
                 oauth: None,
-                state: None,
+                description: None,
             },
         );
         let index = capability_index_with_catalog(&catalog, &user_mcp).unwrap();
@@ -396,83 +391,5 @@ headers:
     #[test]
     fn unknown_field_is_a_loud_error() {
         assert!(serde_yaml::from_str::<McpServerConfig>("command: x\ntyop: 1").is_err());
-    }
-
-    /// Wrap a bare config as an unkeyed, non-bundled available entry — the
-    /// shape `partition`'s startup map now carries (#559).
-    fn available(config: McpServerConfig) -> AvailableServer {
-        AvailableServer {
-            config,
-            key_env: None,
-            provider: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn disabled_server_registers_nothing() {
-        let servers = HashMap::from([(
-            "off".to_string(),
-            available(McpServerConfig {
-                command: Some("definitely-not-a-real-binary-xyz".to_string()),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: HashMap::new(),
-                disabled: true,
-                capabilities: HashMap::new(),
-                oauth: None,
-                state: None,
-            }),
-        )]);
-        let mut registry = ToolRegistry::new();
-        let http = crate::test_http_client();
-        connect(&servers, &mut registry, &[], &http).await;
-        assert!(registry.is_empty());
-    }
-
-    #[tokio::test]
-    async fn unspawnable_server_is_skipped_not_fatal() {
-        let servers = HashMap::from([(
-            "broken".to_string(),
-            available(McpServerConfig {
-                command: Some("definitely-not-a-real-binary-xyz".to_string()),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: HashMap::new(),
-                disabled: false,
-                capabilities: HashMap::new(),
-                oauth: None,
-                state: None,
-            }),
-        )]);
-        let mut registry = ToolRegistry::new();
-        let http = crate::test_http_client();
-        // Must not panic or hang — the failure is logged and swallowed.
-        connect(&servers, &mut registry, &[], &http).await;
-        assert!(registry.is_empty());
-    }
-
-    #[tokio::test]
-    async fn unreachable_http_server_is_skipped_not_fatal() {
-        let servers = HashMap::from([(
-            "remote".to_string(),
-            available(McpServerConfig {
-                command: None,
-                args: vec![],
-                env: HashMap::new(),
-                // Reserved TEST-NET-1 address that never answers → connect fails fast.
-                url: Some("http://192.0.2.1:1/mcp".to_string()),
-                headers: HashMap::new(),
-                disabled: false,
-                capabilities: HashMap::new(),
-                oauth: None,
-                state: None,
-            }),
-        )]);
-        let mut registry = ToolRegistry::new();
-        let http = crate::test_http_client();
-        connect(&servers, &mut registry, &[], &http).await;
-        assert!(registry.is_empty());
     }
 }

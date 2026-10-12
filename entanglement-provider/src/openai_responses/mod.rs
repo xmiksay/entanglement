@@ -10,19 +10,6 @@
 //!   `function_call`/`function_call_output` pair correlates by `call_id`
 //!   instead of Chat Completions' single `tool_calls` array +
 //!   `role: "tool"` message. See [`request`].
-//! - **Native client-executed `tool_search`**: when any advertised
-//!   [`crate::ToolSpec::defer_loading`] tool is present, the request declares
-//!   `{"type":"tool_search","execution":"client"}` (our own schema, field
-//!   `query`); a streamed `tool_search_call` output item is mapped onto the
-//!   existing [`crate::ToolCall`]/[`crate::LlmEvent::ToolCall`] machinery
-//!   under the reserved name [`TOOL_SEARCH_CALL_TOOL`] — **not** a new
-//!   `LlmEvent` variant. That name is never a real registered tool; the
-//!   runtime's dispatch ladder intercepts it exactly like the `explore`/
-//!   `describe` pseudo-tools, runs the same search lookup, and replies with
-//!   a [`crate::ContentPart::ToolSearchOutput`] block. This rides the
-//!   *existing* `ToolExec`/`ToolResult` round-trip end to end — no
-//!   `InMsg`/`OutEvent`/`protocol.rs` change was needed (see the module doc
-//!   on the runtime's `discover::tool_search` for the dispatch side).
 //!
 //! Stateless: like every other client here, history replay resends the whole
 //! `input` array every request (`previous_response_id` — OpenAI's optional
@@ -46,16 +33,6 @@ use sse::{drain_available_frames, StreamState};
 
 /// OpenAI Responses API base.
 pub const OPENAI_RESPONSES_BASE: &str = "https://api.openai.com/v1";
-
-/// Reserved [`crate::ToolCall::name`] the client emits for a streamed,
-/// client-executed `tool_search_call` output item, and recognizes on replay
-/// to emit a `tool_search_call`/`tool_search_output` input-item pair instead
-/// of `function_call`/`function_call_output`. Never a real registered tool —
-/// chosen distinct from any plausible user/MCP tool name, and from the
-/// runtime's own `explore`/`describe` kernel tools (which stay independently
-/// callable; the runtime answers a search call by running that same
-/// explore+describe lookup, see `entanglement_runtime::discover::tool_search`).
-pub const TOOL_SEARCH_CALL_TOOL: &str = "responses_tool_search";
 
 /// Streaming OpenAI Responses API client. Cheap to clone (the HTTP client is
 /// `Arc`-shared internally); build one per session via

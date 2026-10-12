@@ -1,8 +1,9 @@
-//! ADR-0204 core half: when a round advertises the `invoke {name, args}` spec,
-//! an `invoke` call is unwrapped before its events are emitted —
-//! `ToolCall`/`ToolExec`/`ToolOutput` name the inner tool and carry the emitted
-//! call as `envelope` — while `Context` (and so every later request, live or
-//! resumed) keeps the call exactly as the model emitted it.
+//! ADR-0226 core half: when a round advertises the `mcp {server, tool, args}`
+//! spec, an `mcp` call is unwrapped before its events are emitted —
+//! `ToolCall`/`ToolExec`/`ToolOutput` name the inner `mcp__<server>__<tool>`
+//! and carry the emitted call as `envelope` — while `Context` (and so every
+//! later request, live or resumed) keeps the call exactly as the model
+//! emitted it.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    Message, OutEvent, SessionId, ToolCall, ToolEnvelope, ToolSpec, INVOKE_TOOL,
+    Message, OutEvent, SessionId, ToolCall, ToolEnvelope, ToolSpec, MCP_TOOL,
 };
 
 type Seen = Arc<Mutex<Vec<Vec<Message>>>>;
@@ -51,10 +52,10 @@ fn engine(responses: Vec<LlmResponse>, tool_specs: Vec<ToolSpec>) -> (Holly, See
     (Holly::spawn(cfg), seen)
 }
 
-fn with_invoke() -> Vec<ToolSpec> {
+fn with_mcp() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new("read", "read a file"),
-        ToolSpec::new(INVOKE_TOOL, "call a discovered tool"),
+        ToolSpec::new(MCP_TOOL, "call an MCP tool"),
     ]
 }
 
@@ -85,7 +86,7 @@ fn text(t: &str) -> LlmResponse {
 
 fn envelope(raw: &str) -> Option<ToolEnvelope> {
     Some(ToolEnvelope {
-        tool: INVOKE_TOOL.into(),
+        tool: MCP_TOOL.into(),
         input: raw.into(),
     })
 }
@@ -184,14 +185,15 @@ fn last_assistant_calls(messages: &[Message]) -> Vec<ToolCall> {
         .unwrap_or_default()
 }
 
-/// Case (a): specs advertise `invoke` → events show the inner `read` call with
-/// the envelope; the next request's history still holds the emitted `invoke`.
+/// Case (a): specs advertise `mcp` → events show the inner `mcp__gh__search`
+/// call with the envelope; the next request's history still holds the emitted
+/// `mcp` call.
 #[tokio::test]
-async fn advertised_invoke_unwraps_events_but_context_keeps_the_emitted_call() {
-    let raw = r#"{"name":"read","args":{"path":"x"}}"#;
+async fn advertised_mcp_unwraps_events_but_context_keeps_the_emitted_call() {
+    let raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
     let (holly, seen) = engine(
-        vec![tools(vec![call("c1", INVOKE_TOOL, raw)]), text("done")],
-        with_invoke(),
+        vec![tools(vec![call("c1", MCP_TOOL, raw)]), text("done")],
+        with_mcp(),
     );
     let sid = SessionId::new("s");
     let mut sub = holly.subscribe();
@@ -200,8 +202,8 @@ async fn advertised_invoke_unwraps_events_but_context_keeps_the_emitted_call() {
 
     let inner = (
         "c1".to_string(),
-        "read".to_string(),
-        r#"{"path":"x"}"#.to_string(),
+        "mcp__gh__search".to_string(),
+        r#"{"q":"x"}"#.to_string(),
         envelope(raw),
     );
     assert_eq!(tool_events(&log, "call"), vec![inner.clone()]);
@@ -214,28 +216,33 @@ async fn advertised_invoke_unwraps_events_but_context_keeps_the_emitted_call() {
     log.extend(until_done(&mut sub, &sid).await);
     assert_eq!(
         tool_events(&log, "output"),
-        vec![("c1".into(), "read".into(), "contents".into(), envelope(raw))]
+        vec![(
+            "c1".into(),
+            "mcp__gh__search".into(),
+            "contents".into(),
+            envelope(raw)
+        )]
     );
 
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert_eq!(
         last_assistant_calls(&requests[1]),
-        vec![call("c1", INVOKE_TOOL, raw)],
-        "the model-facing history keeps the emitted invoke call byte for byte"
+        vec![call("c1", MCP_TOOL, raw)],
+        "the model-facing history keeps the emitted mcp call byte for byte"
     );
     assert!(requests[1]
         .iter()
         .any(|m| m.tool_call_id.as_deref() == Some("c1")));
 }
 
-/// Case (b): the same call when `invoke` is not advertised stays an ordinary
-/// (unknown) `invoke` call with no envelope.
+/// Case (b): the same call when `mcp` is not advertised stays an ordinary
+/// (unknown) `mcp` call with no envelope.
 #[tokio::test]
-async fn unadvertised_invoke_is_not_unwrapped() {
-    let raw = r#"{"name":"read","args":{"path":"x"}}"#;
+async fn unadvertised_mcp_is_not_unwrapped() {
+    let raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
     let (holly, _) = engine(
-        vec![tools(vec![call("c1", INVOKE_TOOL, raw)])],
+        vec![tools(vec![call("c1", MCP_TOOL, raw)])],
         vec![ToolSpec::new("read", "read a file")],
     );
     let sid = SessionId::new("s");
@@ -244,7 +251,7 @@ async fn unadvertised_invoke_is_not_unwrapped() {
     let log = until_execs(&mut sub, &sid, None, 1).await;
     let plain = (
         "c1".to_string(),
-        INVOKE_TOOL.to_string(),
+        MCP_TOOL.to_string(),
         raw.to_string(),
         None,
     );
@@ -252,18 +259,18 @@ async fn unadvertised_invoke_is_not_unwrapped() {
     assert_eq!(tool_events(&log, "exec"), vec![plain]);
 }
 
-/// Cases (c) + (d): stringified `args` are parsed; a reserved inner name is
-/// left as an `invoke` call without an envelope.
+/// Cases (c) + (d): stringified `args` are parsed; a reserved inner `tool`
+/// name is left as an `mcp` call without an envelope.
 #[tokio::test]
 async fn string_args_unwrap_and_reserved_names_do_not() {
-    let stringified = r#"{"name":"read","args":"{\"path\":\"x\"}"}"#;
-    let reserved = r#"{"name":"invoke","args":{}}"#;
+    let stringified = r#"{"server":"gh","tool":"search","args":"{\"q\":\"x\"}"}"#;
+    let reserved = r#"{"server":"gh","tool":"mcp","args":{}}"#;
     let (holly, _) = engine(
         vec![tools(vec![
-            call("c1", INVOKE_TOOL, stringified),
-            call("c2", INVOKE_TOOL, reserved),
+            call("c1", MCP_TOOL, stringified),
+            call("c2", MCP_TOOL, reserved),
         ])],
-        with_invoke(),
+        with_mcp(),
     );
     let sid = SessionId::new("s");
     let mut sub = holly.subscribe();
@@ -274,11 +281,11 @@ async fn string_args_unwrap_and_reserved_names_do_not() {
         vec![
             (
                 "c1".into(),
-                "read".into(),
-                r#"{"path":"x"}"#.into(),
+                "mcp__gh__search".into(),
+                r#"{"q":"x"}"#.into(),
                 envelope(stringified)
             ),
-            ("c2".into(), INVOKE_TOOL.into(), reserved.into(), None),
+            ("c2".into(), MCP_TOOL.into(), reserved.into(), None),
         ]
     );
 }
@@ -286,15 +293,15 @@ async fn string_args_unwrap_and_reserved_names_do_not() {
 /// Case (e): parallel calls in one round unwrap independently, and each
 /// out-of-order result carries its own call's envelope.
 #[tokio::test]
-async fn parallel_invoke_calls_unwrap_independently() {
-    let a = r#"{"name":"read","args":{"path":"a"}}"#;
-    let b = r#"{"name":"grep","args":{"pattern":"p"}}"#;
+async fn parallel_mcp_calls_unwrap_independently() {
+    let a = r#"{"server":"gh","tool":"search","args":{"q":"a"}}"#;
+    let b = r#"{"server":"docs","tool":"read","args":{"path":"p"}}"#;
     let batch = vec![
-        call("c1", INVOKE_TOOL, a),
-        call("c2", INVOKE_TOOL, b),
+        call("c1", MCP_TOOL, a),
+        call("c2", MCP_TOOL, b),
         call("c3", "read", r#"{"path":"n"}"#),
     ];
-    let (holly, seen) = engine(vec![tools(batch.clone()), text("done")], with_invoke());
+    let (holly, seen) = engine(vec![tools(batch.clone()), text("done")], with_mcp());
     let sid = SessionId::new("s");
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
@@ -306,8 +313,8 @@ async fn parallel_invoke_calls_unwrap_independently() {
     assert_eq!(
         names,
         vec![
-            ("read".into(), envelope(a)),
-            ("grep".into(), envelope(b)),
+            ("mcp__gh__search".into(), envelope(a)),
+            ("mcp__docs__read".into(), envelope(b)),
             ("read".into(), None)
         ]
     );
@@ -326,27 +333,27 @@ async fn parallel_invoke_calls_unwrap_independently() {
     assert_eq!(
         outputs,
         vec![
-            ("c2".into(), "grep".into(), envelope(b)),
+            ("c2".into(), "mcp__docs__read".into(), envelope(b)),
             ("c3".into(), "read".into(), None),
-            ("c1".into(), "read".into(), envelope(a)),
+            ("c1".into(), "mcp__gh__search".into(), envelope(a)),
         ]
     );
     assert_eq!(last_assistant_calls(&seen.lock().unwrap()[1]), batch);
 }
 
 /// Replay of a completed turn: a fresh engine resumed from the log sends the
-/// control's exact history — the emitted `invoke` call rebuilt from its
+/// control's exact history — the emitted `mcp` call rebuilt from its
 /// envelope, paired with its result, the text round after it kept separate.
 #[tokio::test]
-async fn resumed_session_sends_the_emitted_invoke_call() {
-    let raw = r#"{"name":"read","args":{"path":"x"}}"#;
+async fn resumed_session_sends_the_emitted_mcp_call() {
+    let raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
     let (control, control_seen) = engine(
         vec![
-            tools(vec![call("c1", INVOKE_TOOL, raw)]),
+            tools(vec![call("c1", MCP_TOOL, raw)]),
             text("done"),
             text("two-reply"),
         ],
-        with_invoke(),
+        with_mcp(),
     );
     let sid = SessionId::new("s");
     let mut sub = control.subscribe();
@@ -366,10 +373,10 @@ async fn resumed_session_sends_the_emitted_invoke_call() {
     let control_two = control_seen.lock().unwrap().last().cloned().unwrap();
     assert_eq!(
         last_assistant_calls(&control_two),
-        vec![call("c1", INVOKE_TOOL, raw)]
+        vec![call("c1", MCP_TOOL, raw)]
     );
 
-    let (resumed, resumed_seen) = engine(vec![text("two-reply")], with_invoke());
+    let (resumed, resumed_seen) = engine(vec![text("two-reply")], with_mcp());
     let mut sub = resumed.subscribe();
     resumed.resume(sid.clone(), log).await.unwrap();
     resumed
@@ -381,34 +388,31 @@ async fn resumed_session_sends_the_emitted_invoke_call() {
 
     assert_eq!(
         resumed_two, control_two,
-        "resume rebuilds the control's history, the emitted invoke call included"
+        "resume rebuilds the control's history, the emitted mcp call included"
     );
 }
 
 /// Replay of a parked turn: the re-offered `ToolExec` and the resolving
 /// `ToolOutput` carry the envelope, and the continuation request keeps the
-/// emitted `invoke` call.
+/// emitted `mcp` call.
 #[tokio::test]
 async fn parked_resume_reoffers_the_unwrapped_call_with_its_envelope() {
-    let raw = r#"{"name":"read","args":{"path":"x"}}"#;
-    let (live, _) = engine(
-        vec![tools(vec![call("c1", INVOKE_TOOL, raw)])],
-        with_invoke(),
-    );
+    let raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
+    let (live, _) = engine(vec![tools(vec![call("c1", MCP_TOOL, raw)])], with_mcp());
     let sid = SessionId::new("s");
     let mut sub = live.subscribe();
     let prompt = InMsg::prompt(sid.clone(), "go");
     live.send(prompt.clone()).await.unwrap();
     let log = until_execs(&mut sub, &sid, Some(prompt), 1).await;
 
-    let (resumed, seen) = engine(vec![text("done")], with_invoke());
+    let (resumed, seen) = engine(vec![text("done")], with_mcp());
     let mut sub = resumed.subscribe();
     resumed.resume(sid.clone(), log).await.unwrap();
     let reoffer = until_execs(&mut sub, &sid, None, 1).await;
     let inner = (
         "c1".to_string(),
-        "read".to_string(),
-        r#"{"path":"x"}"#.to_string(),
+        "mcp__gh__search".to_string(),
+        r#"{"q":"x"}"#.to_string(),
         envelope(raw),
     );
     assert_eq!(tool_events(&reoffer, "exec"), vec![inner]);
@@ -420,11 +424,100 @@ async fn parked_resume_reoffers_the_unwrapped_call_with_its_envelope() {
     let rest = until_done(&mut sub, &sid).await;
     assert_eq!(
         tool_events(&rest, "output"),
-        vec![("c1".into(), "read".into(), "contents".into(), envelope(raw))]
+        vec![(
+            "c1".into(),
+            "mcp__gh__search".into(),
+            "contents".into(),
+            envelope(raw)
+        )]
     );
     let requests = seen.lock().unwrap().clone();
     assert_eq!(
         last_assistant_calls(requests.last().unwrap()),
-        vec![call("c1", INVOKE_TOOL, raw)]
+        vec![call("c1", MCP_TOOL, raw)]
+    );
+}
+
+/// Rewrite a recorded log into the shape a pre-ADR-0226 build persisted: the
+/// envelope names the retired `invoke {name, args}` and the inner call is a
+/// plain `read`.
+fn as_legacy_invoke_log(log: Log, raw: &str) -> Log {
+    let legacy = |tool: &mut String, input: &mut String, envelope: &mut Option<ToolEnvelope>| {
+        if envelope.is_some() {
+            *tool = "read".into();
+            *input = r#"{"path":"x"}"#.into();
+            *envelope = Some(ToolEnvelope {
+                tool: "invoke".into(),
+                input: raw.into(),
+            });
+        }
+    };
+    log.into_iter()
+        .map(|(msg, mut ev)| {
+            match &mut ev {
+                OutEvent::ToolCall {
+                    tool,
+                    input,
+                    envelope,
+                    ..
+                }
+                | OutEvent::ToolExec {
+                    tool,
+                    input,
+                    envelope,
+                    ..
+                } => legacy(tool, input, envelope),
+                _ => {}
+            }
+            (msg, ev)
+        })
+        .collect()
+}
+
+/// Legacy compat beyond serde (ADR-0226): an old log whose call was unwrapped
+/// from `invoke` resumes into a parked turn that re-offers the inner call with
+/// its envelope, and the continuation request replays the `invoke` call
+/// exactly as that model emitted it — even though this build no longer
+/// advertises `invoke`.
+#[tokio::test]
+async fn an_old_invoke_envelope_log_resumes_and_replays_byte_for_byte() {
+    let mcp_raw = r#"{"server":"gh","tool":"search","args":{"q":"x"}}"#;
+    let (live, _) = engine(vec![tools(vec![call("c1", MCP_TOOL, mcp_raw)])], with_mcp());
+    let sid = SessionId::new("s");
+    let mut sub = live.subscribe();
+    let prompt = InMsg::prompt(sid.clone(), "go");
+    live.send(prompt.clone()).await.unwrap();
+    let invoke_raw = r#"{"name":"read","args":{"path":"x"}}"#;
+    let log = as_legacy_invoke_log(
+        until_execs(&mut sub, &sid, Some(prompt), 1).await,
+        invoke_raw,
+    );
+
+    let (resumed, seen) = engine(vec![text("done")], with_mcp());
+    let mut sub = resumed.subscribe();
+    resumed.resume(sid.clone(), log).await.unwrap();
+    let reoffer = until_execs(&mut sub, &sid, None, 1).await;
+    let legacy_envelope = Some(ToolEnvelope {
+        tool: "invoke".into(),
+        input: invoke_raw.into(),
+    });
+    assert_eq!(
+        tool_events(&reoffer, "exec"),
+        vec![(
+            "c1".to_string(),
+            "read".to_string(),
+            r#"{"path":"x"}"#.to_string(),
+            legacy_envelope
+        )]
+    );
+    resumed
+        .send(InMsg::tool_result(sid.clone(), "c1", "contents"))
+        .await
+        .unwrap();
+    until_done(&mut sub, &sid).await;
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(
+        last_assistant_calls(requests.last().unwrap()),
+        vec![call("c1", "invoke", invoke_raw)]
     );
 }

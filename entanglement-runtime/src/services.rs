@@ -83,7 +83,6 @@ pub(crate) fn start(
         live_aux_models,
         aux_registry,
         advertising_state,
-        advertising_inputs,
     } = engine;
     // The TUI heads need their own handle too (`/tools`' status column,
     // ADR-0199 part 3) — cloned here since the executor construction below
@@ -153,19 +152,17 @@ pub(crate) fn start(
         // reads `perm_modes` directly, independent of this executor.
         .mode_table(mode_table)
         .plan_files(plan_files.clone())
-        // The same advertising inputs the resolver pins from; the executor
-        // only logs a `SetModel` onto a model preferring another mode.
-        .advertising_inputs(advertising_inputs)
-        // `explore`/`describe`'s shared state (#560, ADR-0196 §4): the same
+        // `list_models` and `agent`'s `model` validation read the catalog.
+        .catalog(Arc::new(catalog.clone()))
+        // The discovery tools' shared state (ADR-0226): the same
         // `advertising_state` the tool-spec/system-prompt resolvers `boot`
-        // wired read, plus the MCP three-state roster `explore` lists.
+        // wired, plus the MCP roster `list_mcp`/`mcp_tools` read.
         .discovery(DiscoverySurface {
             advertising: advertising_state,
             mcp_avail: mcp_available.clone(),
             mcp_active: mcp_active.clone(),
             validation: std::sync::Arc::new(crate::arg_validate::LoopBreaker::new()),
-            // ADR-0201: the same shared endpoint-pool client a dispatch-time
-            // lazy MCP re-enable rides.
+            // The shared endpoint-pool client every lazy MCP connect rides.
             http: Some(http_client.clone()),
         })
         .spawn();

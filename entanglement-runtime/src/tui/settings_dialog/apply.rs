@@ -1,25 +1,20 @@
 //! The `/set` dialog's apply pipeline: a plan of steps in the settled order
-//! (model → generation → tools/MCP → re-pin → aux — no `agent` step, ADR-0207
+//! (model → generation → tools → aux — no `agent` step, ADR-0207
 //! §9: the agent row is read-only display, there is no live switch), executed
 //! through a side-effect seam so the order and stop-on-failure rule are
 //! testable without an engine. Each live effect reuses the single-purpose
 //! command's own message/store path (`app/settings.rs`).
 
 use entanglement_core::ToolOverlayEntry;
-use entanglement_provider::{Discovery, GenerationParams, ToolAdvertising};
+use entanglement_provider::GenerationParams;
 
-use super::tools::discovery_label;
 use crate::config::aux_models::Purpose;
 
-/// Section (a)/(b) of the Tools tab, as one step.
+/// The Tools tab's overlay edit, as one step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolsChange {
     /// The full-replacement overlay.
-    pub entries: Option<Vec<ToolOverlayEntry>>,
-    /// Servers newly switched on (lazily connected when `allowed`, #542).
-    pub enable_servers: Vec<String>,
-    /// Servers newly switched off (session enablement mark withdrawn).
-    pub disable_servers: Vec<String>,
+    pub entries: Vec<ToolOverlayEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,17 +38,6 @@ pub enum ApplyStep {
         persist_for: Option<String>,
     },
     Tools(ToolsChange),
-    Repin {
-        mode: Option<ToolAdvertising>,
-        discovery: Option<Discovery>,
-    },
-    /// Write the shown advertising mode into `config.yml` as the default for
-    /// **new** sessions (`config::write_key`, comment-preserving). Orthogonal
-    /// to [`Repin`][ApplyStep::Repin], which changes the running session only.
-    /// The discovery strategy is never saved — it is catalog data (ADR-0213).
-    PersistAdvertising {
-        mode: ToolAdvertising,
-    },
     Aux {
         purpose: Purpose,
         provider: String,
@@ -100,35 +84,7 @@ impl ApplyStep {
                     saved(persist_for, "defaults")
                 )
             }
-            ApplyStep::Tools(t) => {
-                let mut parts = Vec::new();
-                if let Some(entries) = &t.entries {
-                    parts.push(format!("tool overlay ({} entries)", entries.len()));
-                }
-                if !t.enable_servers.is_empty() {
-                    parts.push(format!("mcp on: {}", t.enable_servers.join(", ")));
-                }
-                if !t.disable_servers.is_empty() {
-                    parts.push(format!("mcp off: {}", t.disable_servers.join(", ")));
-                }
-                parts.join(", ")
-            }
-            ApplyStep::Repin { mode, discovery } => {
-                let mut parts = Vec::new();
-                if let Some(m) = mode {
-                    parts.push(format!("tool advertising → {}", m.label()));
-                }
-                if let Some(d) = discovery {
-                    parts.push(format!("discovery → {}", discovery_label(*d)));
-                }
-                parts.join(", ")
-            }
-            ApplyStep::PersistAdvertising { mode } => {
-                format!(
-                    "saved for new sessions: tool_advertising → {}",
-                    mode.label()
-                )
-            }
+            ApplyStep::Tools(t) => format!("tool overlay ({} entries)", t.entries.len()),
             ApplyStep::Aux {
                 purpose,
                 provider,

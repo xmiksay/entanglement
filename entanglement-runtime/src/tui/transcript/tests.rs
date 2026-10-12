@@ -1240,15 +1240,20 @@ fn streamed_invoke_envelope_is_named_by_its_inner_tool() {
 fn discovery_calls_are_visible_with_readable_bodies() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
-    feed_tool_call(&mut app, &sid, 1, "explore", r#"{"filter":"grep"}"#);
-    feed_tool_call(&mut app, &sid, 2, "describe", r#"{"names":["grep"]}"#);
+    feed_tool_call(&mut app, &sid, 1, "list_mcp", "{}");
+    feed_tool_call(&mut app, &sid, 2, "mcp_tools", r#"{"name":"gh"}"#);
     for (seq, id, tool, output) in [
-        (3, "c1", "explore", "TOOLS\n  grep — Search file contents\n"),
+        (
+            3,
+            "c1",
+            "list_mcp",
+            "MCP servers — call through mcp\n  gh — GitHub [available]\n",
+        ),
         (
             4,
             "c2",
-            "describe",
-            "Loaded: grep. Call each directly by its name.\n\n[{\"name\":\"grep\",\"description\":\"Search\",\"schema\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}}]",
+            "mcp_tools",
+            "MCP server `gh` — tools:\n\n- search: Search\n{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}\ncall as: mcp {\"server\": \"gh\", \"tool\": \"search\", \"args\": {\"pattern\":\"example\"}}",
         ),
     ] {
         app.handle_out_event(OutEvent::ToolOutput {
@@ -1271,33 +1276,29 @@ fn discovery_calls_are_visible_with_readable_bodies() {
         .map(line_text)
         .collect();
     assert!(
-        collapsed
-            .iter()
-            .any(|l| l.contains("▸ explore") && l.contains("\"grep\"")),
+        collapsed.iter().any(|l| l.contains("▸ list_mcp")),
         "{collapsed:#?}"
     );
     assert!(
-        collapsed
-            .iter()
-            .any(|l| l.contains("▸ describe") && l.contains("grep")),
+        collapsed.iter().any(|l| l.contains("▸ mcp_tools")),
         "{collapsed:#?}"
     );
 
     app.toggle_block(0);
     let expanded = render_expanded_text(&mut app, 1).join("\n");
     for expected in [
-        "filter: grep",
-        "built-in tools",
-        "grep — Search file contents",
-        "Loaded: grep",
+        "gh — GitHub [available]",
+        "server: gh",
+        "search — Search",
         "pattern: string, required",
+        "call as: mcp",
     ] {
         assert!(
             expanded.contains(expected),
             "missing {expected:?} in {expanded}"
         );
     }
-    assert!(!expanded.contains("\"schema\""), "{expanded}");
+    assert!(!expanded.contains("\"properties\""), "{expanded}");
 }
 
 #[test]

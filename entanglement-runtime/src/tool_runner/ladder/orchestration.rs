@@ -1,6 +1,6 @@
 //! The orchestration handlers of the interception ladder (issue #451,
 //! split out of `ladder.rs`): `agent`/`agent_send`/`poll`/`ask_user`/
-//! `propose_plan`/`explore`+`describe` all touch no permission-graded host
+//! `propose_plan` and the discovery lookups all touch no permission-graded host
 //! resource (ADR-0207 §3's `Capability::Control`, or a runtime-owned prompt/
 //! finalize tool with its own unconditional semantics) — [`Intercept::
 //! bypasses_permission`][super::Intercept::bypasses_permission] is true for
@@ -13,7 +13,7 @@ use crate::discover;
 use crate::permission::{ancestor_chain, spawn_refusal};
 use crate::seam;
 use crate::subagent::SpawnGuard;
-use crate::tool_names::{DESCRIBE_TOOL, EXPLORE_TOOL, RESPONSES_TOOL_SEARCH_TOOL};
+use crate::tool_names::{LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL, MCP_TOOLS_TOOL};
 
 use super::LadderCtx;
 
@@ -273,107 +273,59 @@ pub(super) async fn discover(
     request_id: String,
     input: String,
 ) {
-    // Read-only, non-maskable, always-`Allow` (#560,
-    // ADR-0196 §4) — no permission check, no approval
-    // round-trip, just a snapshot read and a reply.
-    let registry_snapshot = ctx
-        .tools
-        .read()
-        .expect("tool registry lock poisoned")
-        .clone();
-    let skills_snapshot = ctx
-        .skills
-        .read()
-        .expect("skill registry lock poisoned")
-        .clone();
-    let mcp_avail = ctx.mcp_avail.clone();
-    let mcp_active = ctx.mcp_active.clone();
-    let mcp_scopes = ctx.mcp_scopes.clone();
-    let advertising = ctx.advertising.clone();
+    // Read-only, never graded (ADR-0226): a snapshot read and a reply. The
+    // static rosters render here in the loop; the MCP pair runs detached since
+    // `mcp_tools` may connect a server.
     let holly = ctx.holly.clone();
-    // `explore(kind: "pending")` (#560 P12, ADR-0207 §12) forks here, before
-    // either the tool-index path or `KindsCtx` build below: it needs the
-    // engine-wide job/script/retained/approval/question registries this
-    // ladder already holds, which neither `run_explore`'s nor
-    // `KindsCtx`'s shape carries — those cover only the *static* non-tool
-    // kinds (agents/skills/models/modes).
-    if tool == EXPLORE_TOOL && discover::peek_kind(&input).as_deref() == Some("pending") {
-        let src_agents = ctx.registry.clone();
-        let src_jobs = ctx.jobs.clone();
-        let src_scripts = ctx.scripts.clone();
-        let src_retained = ctx.retained.clone();
-        let src_pending = ctx.pending.clone();
-        let src_questions = ctx.open_questions.clone();
+    let static_reply = match tool.as_str() {
+        LIST_AGENTS_TOOL => Some(discover::agents_list(
+            &ctx.agents
+                .read()
+                .expect("agent-profile registry lock poisoned"),
+        )),
+        LIST_MODELS_TOOL => Some(discover::models_list(ctx.catalog.as_deref())),
+        LIST_MCP_TOOL | MCP_TOOLS_TOOL => None,
+        _ => Some(discover::skills_list(
+            &ctx.skills
+                .read()
+                .expect("skill registry lock poisoned")
+                .disclosures(),
+        )),
+    };
+    if let Some(output) = static_reply {
         tokio::spawn(async move {
-            let src = discover::PendingSources {
-                agents: &src_agents,
-                jobs: &src_jobs,
-                scripts: &src_scripts,
-                retained: &src_retained,
-                pending: &src_pending,
-                questions: &src_questions,
-            };
-            let output = discover::build_pending_report(&src, &session);
             seam::reply(&holly, session, request_id, output, false).await;
         });
         return;
     }
-    let kinds_ctx = discover::KindsCtx {
-        agents: ctx
-            .agents
-            .read()
-            .expect("agent-profile registry lock poisoned")
-            .clone(),
-        skills: skills_snapshot.clone(),
-        catalog: ctx.catalog.clone(),
-        modes: ctx.mode_table.clone(),
-    };
-    if tool == EXPLORE_TOOL {
-        tokio::spawn(async move {
-            discover::run_explore(
-                &holly,
-                &registry_snapshot,
-                &mcp_avail,
-                &mcp_active,
-                skills_snapshot.as_ref(),
-                &kinds_ctx,
-                session,
-                request_id,
-                input,
-            )
-            .await;
-        });
-    } else if tool == DESCRIBE_TOOL {
-        tokio::spawn(async move {
-            discover::run_describe(
-                &holly,
-                registry_snapshot,
-                skills_snapshot.as_ref(),
-                mcp_scopes.as_deref(),
-                &advertising,
-                Some(&kinds_ctx),
-                session,
-                request_id,
-                input,
-            )
-            .await;
-        });
-    } else {
-        debug_assert_eq!(tool, RESPONSES_TOOL_SEARCH_TOOL);
-        tokio::spawn(async move {
-            discover::run_tool_search(
-                &holly,
-                registry_snapshot,
-                &mcp_avail,
-                &mcp_active,
-                skills_snapshot.as_ref(),
-                mcp_scopes.as_deref(),
-                &advertising,
-                session,
-                request_id,
-                input,
-            )
-            .await;
-        });
-    }
+    let (avail, active, registry) = (
+        ctx.mcp_avail.clone(),
+        ctx.mcp_active.clone(),
+        ctx.tools.clone(),
+    );
+    let (scopes, http, advertising) = (
+        ctx.mcp_scopes.clone(),
+        ctx.mcp_http.clone(),
+        ctx.advertising.clone(),
+    );
+    // Registered so a `Stop` aborts a slow first connect mid-flight.
+    let reg_session = session.clone();
+    let handle = tokio::spawn(async move {
+        let src = discover::McpSources {
+            avail: &avail,
+            active: &active,
+            registry: &registry,
+            scopes: scopes.as_deref(),
+            http: http.as_ref(),
+            delivered: &advertising.delivered,
+        };
+        let (output, is_error) = if tool == LIST_MCP_TOOL {
+            (discover::list_mcp(&src, &session), false)
+        } else {
+            discover::mcp_tools(&src, &session, &input).await
+        };
+        seam::reply(&holly, session, request_id, output, is_error).await;
+    });
+    ctx.cancels
+        .register(&reg_session, TaskCanceller::task(handle.abort_handle()));
 }

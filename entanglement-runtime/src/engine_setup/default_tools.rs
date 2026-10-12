@@ -59,9 +59,8 @@ pub(crate) fn register_default_tools(root: std::path::PathBuf, opts: DefaultTool
         bash = bash.with_extra_roots(e.clone());
     }
     tools.register(bash);
-    // `web_fetch` (#736) is not in the tool-search kernel: under
-    // `tool_search` it surfaces through `explore`/`describe` like any other
-    // registered tool, so registering it never changes the advertised array.
+    // `web_fetch` (#736) is a kernel tool (ADR-0226): advertised natively
+    // whenever it is compiled in and its client builds.
     #[cfg(feature = "web-fetch")]
     match host::WebFetchTool::new() {
         Ok(tool) => tools.register(tool),

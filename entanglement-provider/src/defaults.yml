@@ -78,10 +78,6 @@ providers:
     base_url: https://api.z.ai/api/coding/paas/v4
     key_env: ZAI_API_KEY
     default_model: glm-5.3
-    # ADR-0204: a discovery never mutates `tools` (one appended tool is a
-    # full cache miss on z.ai); GLM-5.x reaches discovered tools through the
-    # `invoke` fallback, the flash models call them natively.
-    discovery: native_first
     # Send z.ai's explicit `thinking: {type: enabled|disabled}` object (plus
     # the clamped `reasoning_effort`) on every request — without it z.ai
     # silently thinks at `max` on every GLM-5.x turn.
@@ -94,26 +90,30 @@ providers:
     concurrency: 5
     # Provider-bundled MCP servers (#542): z.ai's first-party tool servers,
     # reachable with the same ZAI_API_KEY (docs.z.ai/devpack/mcp, fetched
-    # 2026-08-01). Default state is `allowed` — available for per-session
-    # enablement (`/enable mcp <name>` or the agent's `mcp_enable` tool) when
-    # the key resolves, silently absent otherwise. Override per server in your
-    # `config.yml` `mcp:` section (merge by name): `state: enabled` connects at
-    # startup, `state: disabled` hides one. The capability hints (#426) mark
-    # every tool read-only so a bare `read: allow` permission rule covers them.
+    # 2026-08-01). Registered = available (ADR-0226): listed by `list_mcp`
+    # while the key resolves, silently absent otherwise; nothing connects at
+    # startup — the first `mcp_tools`/`mcp(...)` on a server connects it.
+    # Override per server in your `config.yml` `mcp:` section (merge by
+    # name): `disabled: true` is the one opt-out. Every `mcp(...)` call is
+    # graded by the session's permission mode. The capability hints (#426)
+    # mark every tool read-only so a bare `read: allow` rule covers them.
     mcp_servers:
       web_search_prime:
+        description: z.ai web search — ranked results with titles, URLs and summaries
         url: https://api.z.ai/api/mcp/web_search_prime/mcp
         headers:
           Authorization: "Bearer ${ZAI_API_KEY}"
         capabilities:
           webSearchPrime: read
       web_reader:
+        description: z.ai web reader — fetch a URL as clean markdown with metadata
         url: https://api.z.ai/api/mcp/web_reader/mcp
         headers:
           Authorization: "Bearer ${ZAI_API_KEY}"
         capabilities:
           webReader: read
       zread:
+        description: z.ai zread — search and read public GitHub repositories' docs and code
         url: https://api.z.ai/api/mcp/zread/mcp
         headers:
           Authorization: "Bearer ${ZAI_API_KEY}"
@@ -320,7 +320,6 @@ providers:
     base_url: https://api.z.ai/api/paas/v4
     key_env: ZAI_API_KEY
     default_model: glm-5.3
-    discovery: native_first
     thinking_control: zai
     concurrency: 5
     models: *zai_models
@@ -331,9 +330,6 @@ providers:
     # OpenAI proper documents the `prompt_cache_key` routing hint (#673);
     # kept off for z.ai/Ollama until verified they tolerate the extra field.
     prompt_cache_key: true
-    # ADR-0204: Chat Completions doesn't document accepting a call to an
-    # undeclared function, so discovered tools go through `invoke`.
-    discovery: invoke
     default_model: gpt-4o
     models:
       - id: gpt-4o
@@ -362,8 +358,7 @@ providers:
     # Opt-in (ADR-0196 §3, P7): the native Responses API surface, distinct
     # from `openai` above (Chat Completions). Selecting `openai` never picks
     # this up automatically — set ENTANGLEMENT_PROVIDER=openai_responses (or
-    # a `providers.yml`/`config.yml` pin) to use it. `tool_search` (this
-    # wire's client-executed discovery primitive) needs gpt-5.4 or later.
+    # a `providers.yml`/`config.yml` pin) to use it.
     wire: openai_responses
     base_url: https://api.openai.com/v1
     key_env: OPENAI_API_KEY
@@ -376,9 +371,6 @@ providers:
   - name: ollama
     base_url: http://localhost:11434/v1
     default_model: llama3.1
-    # Unprobed (ADR-0204): keeps ADR-0196's append-on-discovery until the
-    # opt-in live tests show how local servers treat undeclared calls.
-    discovery: append
     # `max_output_tokens` set explicitly (#483, deferred-work ledger row 5): with
     # it unset, entanglement sends no `max_tokens`, so Ollama falls back to its
     # own built-in `num_predict` default (128 tokens) — a generation cut so
@@ -404,9 +396,6 @@ providers:
   - name: gemini
     wire: gemini
     key_env: GEMINI_API_KEY
-    # ADR-0204: Gemini ends a round with UNEXPECTED_TOOL_CALL on an
-    # undeclared function, so discovered tools go through `invoke`.
-    discovery: invoke
     default_model: gemini-2.5-flash
     # Native Google Gemini wire (#309): `:streamGenerateContent`, not the
     # OpenAI-compat surface — the compat endpoint drops `thoughtSignature`, which a

@@ -41,7 +41,7 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 /// Env vars whose file, if overridden, needs its parent dir watched too (the
 /// default `${config_dir}/entanglement/` catch-all below already covers the
 /// un-overridden case — this list only matters when one is relocated outside
-/// that directory, #558). The seven managed-state files move together with
+/// that directory, #558). The eight managed-state files move together with
 /// `ENTANGLEMENT_STATE_DIR` (ADR-0213), watched as a directory in
 /// [`watch_paths`].
 const MANAGED_FILE_ENVS: &[&str] = &[
@@ -133,6 +133,11 @@ struct Fingerprint(BTreeMap<PathBuf, FileStamp>);
 /// sources are `*.md`; the managed catalog/config/grants files are `*.yml`
 /// (`.yaml` tolerated); the managed key file is `.env` (no extension).
 fn is_definition_file(path: &Path) -> bool {
+    // The last-seen MCP tool cache feeds no loader and is rewritten on every
+    // MCP connect; reloading every definition for it would be pure churn.
+    if path.file_name().and_then(|n| n.to_str()) == Some(crate::config::state_dir::MCP_TOOLS_FILE) {
+        return false;
+    }
     match path.extension().and_then(|e| e.to_str()) {
         Some("md") | Some("yml") | Some("yaml") => true,
         _ => path.file_name().and_then(|n| n.to_str()) == Some(".env"),
@@ -354,8 +359,7 @@ fn watch_paths_from(
 fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = skills::load_registry(cwd)?;
     let new_commands = crate::slash_commands::load_registry(cwd)?;
-    let mut prompt_ctx = system_prompt::PromptContext::load(cwd);
-    prompt_ctx.skills = new_skills.disclosures();
+    let prompt_ctx = system_prompt::PromptContext::load(cwd);
     let mut new_profiles =
         agents::load_registry(cwd, &prompt_ctx, &new_skills, &live.mcp_capabilities)?;
 

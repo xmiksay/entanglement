@@ -15,7 +15,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::skills::{self, SkillResolution};
-use crate::system_prompt;
 
 /// Dispatch the three inspection views (see the module doc for precedence).
 pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Result<()> {
@@ -43,15 +42,15 @@ pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Resu
     Ok(())
 }
 
-/// Render the exact tier-1 disclosure block the model is handed — the same
-/// [`system_prompt::render_skills`] output the assembled prompt embeds, so what
+/// Render the exact roster the model is handed — the same
+/// [`crate::discover::skills_list`] text `list_skills` replies with, so what
 /// the author sees here is byte-for-byte what drives selection.
 pub(super) fn render_disclosures(disclosures: &[crate::system_prompt::SkillDisclosure]) -> String {
     if disclosures.is_empty() {
         return "(no skills disclosed to the model — none discovered, or all are user_only)\n"
             .to_string();
     }
-    format!("{}\n", system_prompt::render_skills(disclosures))
+    format!("{}\n", crate::discover::skills_list(disclosures))
 }
 
 /// One-line-per-skill table: name, whether it is `user_only` (withheld from the

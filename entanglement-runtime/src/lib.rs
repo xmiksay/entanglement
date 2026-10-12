@@ -48,10 +48,10 @@ pub mod cancel;
 pub mod capability;
 pub mod config;
 mod date;
-// `explore`/`describe` — the ADR-0196 §4 discovery pair (#560): always-on,
-// non-maskable internal tools that let a `ToolSearch`-mode session reach the
-// rest of the registry. Ungated — pure state/logic over core + the lean
-// `mcp` module, needed by the lean build's executor too.
+// The discovery tools (ADR-0226): `list_agents`/`list_models`/`list_skills`/
+// `list_mcp`/`mcp_tools` plus the `mcp` envelope spec. Ungated — pure
+// state/logic over core + the lean `mcp` module, needed by the lean build's
+// executor too.
 pub mod discover;
 pub mod endpoint;
 pub mod env_date;
@@ -154,10 +154,9 @@ pub mod system_prompt_mode;
 #[cfg(feature = "provider")]
 pub mod throttle;
 pub mod tool_names;
-// Tool-advertising resolution + the per-session mode map (ADR-0196): the
-// `full`/`tool_search` knob, its env > config > catalog > default precedence
-// chain, and the session→mode pinning the executor folds. Ungated — pure
-// state over core types, needed by the lean build's `Config` too.
+// The one advertised surface (ADR-0226): the kernel resolver, the per-session
+// surface snapshots and delivered-schema set. Ungated — pure state over core
+// types, needed by the lean build too.
 pub mod tool_advertising;
 pub mod tool_runner;
 // The three-state (`allowed`/`asks`/`declines`) per-tool posture the profile

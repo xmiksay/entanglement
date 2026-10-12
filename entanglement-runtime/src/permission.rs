@@ -40,20 +40,22 @@ use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId, 
 use crate::subagent::SpawnGuard;
 
 /// Target-existence gate for a spawn to `target` (ADR-0207 §6): the only
-/// check left once spawning is unconditional per profile — any registered
-/// agent is a valid spawn target now (`subagent::spawn_specs_for` advertises
-/// the full roster, so the model's own schema already constrains the
-/// argument; this is defense in depth for a malformed/out-of-schema call).
+/// check left once spawning is unconditional — any registered agent is a
+/// valid target. The `agent` spec names no agent (ADR-0226: session-invariant,
+/// `list_agents` carries the roster), so this is the real validation, and its
+/// refusal lists the valid names so the model can retry without a lookup.
 /// Returns `None` when the spawn is permitted, else the refusal message to
 /// relay to the parent's parked tool call.
 pub fn spawn_refusal(target: &str, registry: &AgentCatalog) -> Option<String> {
     if registry.get(target).is_some() {
-        None
-    } else {
-        Some(format!(
-            "sub-agent spawn refused: unknown agent profile `{target}`."
-        ))
+        return None;
     }
+    let valid: Vec<&str> = registry.iter().map(|a| a.name.as_str()).collect();
+    Some(format!(
+        "sub-agent spawn refused: unknown agent profile `{target}` — valid agents: {} \
+         (list_agents describes them).",
+        valid.join(", ")
+    ))
 }
 
 /// Resolve an `agent` call's optional `model` parameter against the active
@@ -388,6 +390,11 @@ mod tests {
         // Unknown target name is refused.
         let r = spawn_refusal("ghost", &reg).expect("unknown refused");
         assert!(r.contains("unknown agent profile"), "got: {r}");
+        // ADR-0226: the spec carries no roster, so the refusal does.
+        for name in ["general", "plan", "debug"] {
+            assert!(r.contains(name), "{name} listed: {r}");
+        }
+        assert!(r.contains("list_agents"), "got: {r}");
     }
 
     #[test]

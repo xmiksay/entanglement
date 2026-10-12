@@ -74,18 +74,19 @@ pub(crate) async fn dispatch(
     overlay_denied: bool,
     ceiling: &PermissionProfile,
     // Pre-dispatch argument-validation state (#560, ADR-0196 §6): the
-    // delivered-schema dedup (shares `advertising.discovered` with `describe`,
-    // ADR-0196 §4) and the loop-breaker's per-session last-call tracker.
+    // delivered-schema dedup (`advertising.delivered`, shared with
+    // `mcp_tools`, ADR-0226) and the loop-breaker's per-session last-call
+    // tracker.
     advertising: &tool_advertising::AdvertisingState,
     validation: &arg_validate::LoopBreaker,
-    // The call as emitted when core unwrapped an `invoke` envelope (ADR-0204)
+    // The call as emitted when core unwrapped an `mcp` envelope (ADR-0226)
     // — for `execute::run_and_reply`'s duplicate-key re-scan; `None` natively.
     envelope: Option<ToolEnvelope>,
-    // ADR-0201's dispatch-time lazy MCP re-enable: the live registry (to
+    // ADR-0201's dispatch-time lazy MCP connect: the live registry (to
     // register into, and to re-snapshot from on success — `tools` above is
     // an already-cloned snapshot that a fresh registration is invisible to),
-    // the availability roster + connected-server map `enable_for_session`
-    // needs, and the endpoint-pool client its connect rides.
+    // the roster + connected-server map `ensure_connected` needs, and the
+    // endpoint-pool client its connect rides.
     registry: &SharedRegistry,
     mcp_avail: &AvailableMcp,
     mcp_active: &ActiveServers,
@@ -143,66 +144,28 @@ pub(crate) async fn dispatch(
     // just below in the `Control` bypass — so both are exempt from this
     // registry check.
     //
-    // ADR-0201: an unregistered `mcp__<server>__*` name is not necessarily a
-    // hallucination — a resumed session's replay restores its tool-overlay/
-    // permission state (so the call reaches here, never masked) but MCP
-    // registration is process-lifetime, never persisted, so nothing
-    // re-registers on resume. Self-heal by consulting the same three-state
-    // tier `mcp_enable`/`/enable mcp` do before ever reporting "unknown":
-    // reserve that message strictly for a name matching no registered tool
-    // AND no configured/bundled server in any tier.
+    // ADR-0201/ADR-0226: an unregistered `mcp__<server>__*` name usually
+    // just means the server isn't connected yet — nothing connects at
+    // startup, and a direct `mcp(...)` may precede any `mcp_tools` read (or
+    // follow a resume, since registration is process-lifetime). Connect it
+    // lazily before ever reporting "unknown": reserve that message for a
+    // name matching no registered tool AND no registered server.
     let mut refreshed_tools: Option<ToolRegistry> = None;
     if !tools.contains(&tool)
         && !crate::plan_tasks::is_state_tool(&tool)
         && tool != REQUEST_MODE_TOOL
     {
-        match crate::mcp::available::server_name_of(&tool) {
-            Some(server) => {
-                match crate::mcp::available::try_lazy_reenable(
-                    mcp_avail, server, &session, registry, mcp_active, http,
-                )
-                .await
-                {
-                    crate::mcp::available::LazyReenableOutcome::Enabled => {
-                        // The enable registered into the *live* `registry`,
-                        // invisible to the already-cloned `tools` snapshot —
-                        // re-fetch it and let the rest of this function run
-                        // against the fresh view (alias rewrite, grading,
-                        // escape-root, hooks, the approval round-trip all
-                        // still apply below, exactly as if the tool had
-                        // been registered all along).
-                        let snap = registry
-                            .read()
-                            .expect("tool registry lock poisoned")
-                            .clone();
-                        if !snap.contains(&tool) {
-                            // Shouldn't happen (enable_for_session just
-                            // registered it) — fail safe, not panic.
-                            let output = snap.unknown_tool_message(&tool);
-                            seam::reply(holly, session, request_id, output, true).await;
-                            return;
-                        }
-                        refreshed_tools = Some(snap);
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Disabled => {
-                        let output = crate::mcp::available::disabled_decline(server);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Failed(msg) => {
-                        seam::reply(holly, session, request_id, msg, true).await;
-                        return;
-                    }
-                    crate::mcp::available::LazyReenableOutcome::Unknown => {
-                        let output = tools.unknown_tool_message(&tool);
-                        seam::reply(holly, session, request_id, output, true).await;
-                        return;
-                    }
-                }
-            }
-            None => {
-                let output =
-                    tool_advertising::unknown_tool_reply(advertising, &session, tools, &tool);
+        let resolved = if tool.starts_with("mcp__") {
+            crate::mcp::available::resolve_unregistered(
+                mcp_avail, &tool, registry, mcp_active, http,
+            )
+            .await
+        } else {
+            Err(tool_advertising::unknown_tool_reply(tools, &tool))
+        };
+        match resolved {
+            Ok(snapshot) => refreshed_tools = Some(snapshot),
+            Err(output) => {
                 seam::reply(holly, session, request_id, output, true).await;
                 return;
             }
@@ -227,11 +190,8 @@ pub(crate) async fn dispatch(
     // session state and cannot itself read, write or execute anything on the
     // host, so it is never graded — checked by *capability*, not by adding
     // another `Intercept` route to remember, so it automatically covers
-    // `update_tasks`/`load_skill`/`mcp_enable`/`request_mode` with nothing to
-    // update here for *grading*. `mcp_enable` is the one that looks like it
-    // should escalate: enabling a server only makes its tools *dispatchable*,
-    // and every one of those is still graded on its own merits at its own
-    // call, so this can't widen anything. Bypasses the overlay too
+    // `update_tasks`/`load_skill`/`request_mode` with nothing to update here
+    // for *grading*. Bypasses the overlay too
     // (`overlay_denied` below never reached) — Control is "never graded"
     // outright, the same posture `Intercept::Discover`'s sibling routes
     // already take.

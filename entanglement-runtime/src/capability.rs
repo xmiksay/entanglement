@@ -13,8 +13,9 @@
 #[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
-    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DESCRIBE_TOOL, EXPLORE_TOOL, POLL_TOOL,
-    PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RESPONSES_TOOL_SEARCH_TOOL, UPDATE_TASKS_TOOL,
+    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL,
+    UPDATE_TASKS_TOOL,
 };
 use crate::tools::ToolRegistry;
 
@@ -48,15 +49,9 @@ pub fn runtime_owned(name: &str) -> Option<&'static [Capability]> {
         return Some(&[Capability::Read, Capability::Write, Capability::Exec]);
     }
     match name {
-        AGENT_TOOL
-        | AGENT_SEND_TOOL
-        | POLL_TOOL
-        | ASK_USER_TOOL
-        | EXPLORE_TOOL
-        | DESCRIBE_TOOL
-        | RESPONSES_TOOL_SEARCH_TOOL
-        | UPDATE_TASKS_TOOL
-        | REQUEST_MODE_TOOL => Some(&[Capability::Control]),
+        AGENT_TOOL | AGENT_SEND_TOOL | POLL_TOOL | ASK_USER_TOOL | LIST_AGENTS_TOOL
+        | LIST_MODELS_TOOL | LIST_SKILLS_TOOL | LIST_MCP_TOOL | MCP_TOOLS_TOOL
+        | UPDATE_TASKS_TOOL | REQUEST_MODE_TOOL => Some(&[Capability::Control]),
         PROPOSE_PLAN_TOOL => Some(&[Capability::Plan]),
         _ => None,
     }
@@ -77,7 +72,8 @@ pub fn capability_of(name: &str, registry: &ToolRegistry) -> Option<&'static [Ca
 /// modes` (#560, ADR-0207 stage 6c) deliberately runs with "no engine"
 /// (matching every other `inspect` subcommand). Both only ever need the
 /// fixed, always-registered host quintet-plus-two
-/// ([`crate::tool_names::BINDING_TOOLS`]) plus `apply_patch`/`load_skill` —
+/// ([`crate::tool_names::BINDING_TOOLS`]) plus `apply_patch`/`load_skill`
+/// (`Control` since ADR-0226: a catalog read, like the other discovery tools) —
 /// a closed set whose capability is a compile-time fact of each `Tool` impl,
 /// not something registration state could change — so hardcoding it here
 /// (mirroring [`runtime_owned`]'s own style) is precise, not a guess, and
@@ -89,7 +85,8 @@ pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
         return Some(c);
     }
     match name {
-        "read" | "glob" | "grep" | "load_skill" => Some(&[Capability::Read]),
+        "read" | "glob" | "grep" => Some(&[Capability::Read]),
+        "load_skill" => Some(&[Capability::Control]),
         "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
         // `web_fetch` is outbound network, graded like `curl` (#736, ADR-0220).
         "bash" | "call" | "web_fetch" => Some(&[Capability::Exec]),
@@ -109,9 +106,11 @@ mod tests {
             AGENT_SEND_TOOL,
             POLL_TOOL,
             ASK_USER_TOOL,
-            EXPLORE_TOOL,
-            DESCRIBE_TOOL,
-            RESPONSES_TOOL_SEARCH_TOOL,
+            LIST_AGENTS_TOOL,
+            LIST_MODELS_TOOL,
+            LIST_SKILLS_TOOL,
+            LIST_MCP_TOOL,
+            MCP_TOOLS_TOOL,
             UPDATE_TASKS_TOOL,
             REQUEST_MODE_TOOL,
         ] {

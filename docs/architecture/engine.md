@@ -11,8 +11,8 @@ resolution — plus the small driver loop that retries in place),
 `session/round.rs` (`run_attempt`: one streamed attempt and the ADR-0118
 ambiguous-stop retry decision, split out of `turn.rs` along that retry seam,
 #436), `session/stream.rs` (one streamed round-trip), `session/turn_state.rs`
-(the parked-turn state), `session/invoke_envelope.rs` (the ADR-0204 `invoke`
-unwrap), and `session/emit.rs` (outbound-event helpers), with
+(the parked-turn state), `session/mcp_envelope.rs` (the ADR-0226 `mcp`
+envelope unwrap), and `session/emit.rs` (outbound-event helpers), with
 `session/replay.rs` holding the pure state reconstruction (its turn fold
 state machine in `session/replay_pending.rs`). `session.rs` itself keeps the
 session task's command loop (`session_loop`); its start-up (announce, model
@@ -53,55 +53,25 @@ into the base `tool_specs` unconditionally and the `agent`/`agent_send` spawn
 schema is now provably identical regardless of which session asks, so the
 old per-profile `profile_tool_specs` append is retired (see [agents &
 permissions](agents-and-permissions.md) §permission modes for the mode's
-own `Deny`/`Ask` grading and the discovery pair's non-tool kinds).
+own `Deny`/`Ask` grading and the discovery tools).
 
-**Two advertising modes** (`ToolAdvertising`,
-[ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md),
-superseding ADR-0193's `native`/`invoke` split): the surface above is what
-**`Full`** mode advertises — the full registered surface with dynamic MCP
-specs inline, snapshotted at first resolution: a tool added later is appended
-once when described, a removed one stays advertised and declines at dispatch
-(ADR-0204 §5; [gates & host tools](gates-and-host-tools.md) §Client-side
-discovery strategy). **`ToolSearch`**
-mode (**the default**) advertises instead an **immutable lean kernel**: the
-high-frequency tools (`read`/`edit`/`apply_patch`/`write`/`bash`/`poll`/
-`ask_user`/`update_tasks`/`load_skill`) plus the discovery pair
-(`explore`/`describe`) plus `propose_plan`/`request_mode`/`agent`/
-`agent_send` — the old ADR-0192 "profile-defining specs" carve-out no longer
-applies: with `Agent` carrying no authority
-([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)),
-none of these vary across sessions any more either, so they are simply part
-of the kernel now, not an exception to it. Everything
-else (`call`/`glob`/`grep`/`rhai`, MCP management, all `mcp__*`, endpoints,
-skill tools) stays **registered but unadvertised** — dispatchable by name the
-moment the model calls it, discoverable via `explore`, schema-delivered via
-`describe`. There is no router tool: a discovered tool is called exactly like
-a kernel one, by its real name.
-
-The mode is **per-session, resolved at session start** from the session's
-initial model (`ModelEntry.tool_advertising`, precedence `config.yml`
-`tool_advertising` > catalog > default `ToolSearch`; no env tier since
-[ADR-0213](../adr/0213-prune-env-vars-and-catalog-knobs.md)) and held in a runtime-side session→mode map — the
-resolver and executor are engine-global and session-multiplexed, and
-per-profile model pins mean concurrent sessions can run different modes. A
-live `SetModel` **keeps** the session's mode (logged when the new model's
-catalog preference differs — switching mid-session would bust the cache the
-mode exists to protect); subagents resolve their own mode at spawn.
-
-Mechanically the mode is the resolver's input shape, not a core concept: core
-still advertises whatever the `tool_spec_resolver` yields, re-consulted fresh
-every round. Under `ToolSearch` mode's `client_side` wire encoding (OpenAI-
-compat Chat Completions incl. z.ai, Ollama, Gemini), each `describe()` call
-grows that resolver's output by appending the described tool's spec to a
-session-keyed discovered set — **append-only, never removed**, so the
-advertised array only ever grows and each discovery costs one cache
-invalidation, not a continuous one. The `anthropic_native` and
-`responses_native` encodings instead lean on each wire's own
-`defer_loading`/`tool_search` primitive (see
-[provider](provider.md) and [gates & host tools](gates-and-host-tools.md)
-§Discovery and lazy tool search for the wire-level detail). In `ToolSearch`
-mode the system prompt drops the skills/dynamic-tool rosters for a one-line
-pointer at `explore`/`describe` (`Full` mode keeps today's sections).
+**One advertised surface** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), superseding ADR-0196 §1–§4 and
+ADR-0204): there is no advertising mode, wire encoding or discovery knob. The
+runtime's resolver yields the compiled-in kernel (`tool_names::KERNEL`: the
+file/exec tools, `web_fetch`, `poll`/`ask_user`/`update_tasks`,
+`propose_plan`/`request_mode`, `agent`/`agent_send`, `rhai`, the six
+discovery tools `list_agents`/`list_models`/`list_skills`/`load_skill`/
+`list_mcp`/`mcp_tools`, and the `mcp` envelope), snapshotted at the session's
+first resolution and returned byte-identical every later round, on every
+wire. Nothing else is advertised: MCP tools are reached only through
+`mcp(server, tool, args)`, their schemas delivered by `mcp_tools` as a tool
+result; `glob`/`grep`/`call` are script-only `rhai` bindings. (Until
+#819/#820, registered definition-driven `endpoint__*`/`skill__*` tools are
+appended to the snapshot — they have no other path.) Core still advertises
+whatever the `tool_spec_resolver` yields, re-consulted every round; that it
+never changes is the runtime's snapshot, not a core rule. The system prompt
+carries no skill roster (`list_skills` does) and one static tool-conventions
+line.
 
 The assembled tools go into `LlmRequest { system,
 model, messages, tools }` → consume the streamed `LlmEvent`s (emit `TextDelta`
@@ -128,23 +98,26 @@ unknown-handle, refused-`kill`, and script-terminal-error polls set
 `is_error`; every state report from a poll that ran — including a job exiting
 nonzero, whose status rides `exit_code` orthogonally — stays `false`.
 
-**`invoke` calls are unwrapped for display and dispatch, never in `Context`**
-([ADR-0204](../adr/0204-invoke-fallback-for-client-side-discovery.md),
-`session/invoke_envelope.rs`). Core has no policy here: the only trigger is
-"this round's advertised specs contain a spec named `INVOKE_TOOL`". When that
-holds, each `invoke` call in the batch is unwrapped before its
-`ToolCall`/`ToolExec` pair is emitted. The rules are ADR-0193's: `name` must be
-a non-empty string other than `invoke` or `responses_tool_search`; a missing
+**`mcp` calls are unwrapped for display and dispatch, never in `Context`**
+([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), carrying forward ADR-0204's mechanism, `session/mcp_envelope.rs`).
+Core has no policy here: the only trigger is "this round's advertised specs
+contain a spec named `MCP_TOOL`". When that holds, each `mcp` call in the
+batch is unwrapped before its `ToolCall`/`ToolExec` pair is emitted. `server`
+and `tool` must be non-empty strings (`tool` not `mcp` itself); a missing
 `args` becomes `{}`; `args` given as a JSON string is parsed and must yield an
 object; an object is used as is. Anything else is not unwrapped. The events
-name the inner tool, `input` is the inner args serialized compactly, and
+name the inner tool `mcp__<server>__<tool>` (characters outside
+`[A-Za-z0-9_-]` mapped to `_`, the runtime's registered spelling), `input` is
+the inner args serialized compactly, and
 `envelope` carries the emitted outer name and raw input. `TurnState` keeps the
 pending calls in this unwrapped form, plus an `envelopes` map by call id, so a
 re-offer (resume or timer) and the resolving `ToolOutput` carry the same
 envelope. The assistant message pushed into `Context` keeps the model's emitted
-`invoke` call byte for byte (name, raw input, id, `provider_meta`). Rewriting it
-to the inner name made GLM-5.2/5.3 re-`describe` on the next turn, and it would
-shift the cached prefix. The result still pairs by call id. Replay rebuilds the
+`mcp` call byte for byte (name, raw input, id, `provider_meta`). Rewriting it
+to the inner name would shift the cached prefix (and, under ADR-0204's
+`invoke`, made GLM-5.2/5.3 re-discover on the next turn). Logs from before
+ADR-0226 carrying `invoke` envelopes still replay — the envelope is
+name-agnostic. The result still pairs by call id. Replay rebuilds the
 emitted call from `envelope` when present, so a resumed session sends the same
 bytes. `ToolCallDelta` fragments stay as streamed, since they arrive before the
 call is assembled.
@@ -153,7 +126,7 @@ call is assembled.
 `Session::replay` folds events through `TurnFold` (`session/replay_pending.rs`),
 which mirrors each live commit point instead of batching per turn: one assistant
 message per model round (text, then its `ReasoningBlock`/`SearchResult` blocks,
-then the round's calls with their `provider_meta`, `invoke` calls rebuilt from
+then the round's calls with their `provider_meta`, envelope calls rebuilt from
 `envelope`), each `ToolOutput` pushed on arrival, the ADR-0118 nudge after an
 `AmbiguousRetry`, and no message at all for an empty reply — the live commit
 skips an empty assistant message on every stop, confident or ambiguous, since
@@ -590,7 +563,7 @@ forking; in that case the overlay is dropped. The overlay is logged as
 `ToolOverlayChanged` after the successor's `ModeChanged`, so neither replay
 nor the runtime reads it as cleared by a switch. Carrying it never changes
 the successor's tools array: the overlay is consulted at dispatch only, and
-an enable never edits the advertised surface by itself (ADR-0196/0204).
+an enable never edits the advertised surface ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 
 **A resumed session's overlay is re-announced and enforced again.** This
 covers any session, a successor included. The runtime grades dispatch off its

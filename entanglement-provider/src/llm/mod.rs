@@ -71,12 +71,30 @@ pub struct LlmRequest<'a> {
     pub trailing_notice: Option<String>,
 }
 
-/// Name of the client-side discovery envelope tool (ADR-0204): `invoke
-/// {name, args}` routes a call to a discovered tool the session never adds to
-/// its `tools` array, so the array — and the provider's cached prefix — stays
-/// stable. Reserved: never a registered tool name. Shared here, in the leaf
-/// crate, because core unwraps the envelope and the runtime advertises it.
-pub const INVOKE_TOOL: &str = "invoke";
+/// Name of the single MCP envelope tool (ADR-0226): `mcp {server, tool,
+/// args}` routes a call to any MCP tool without advertising its schema, so
+/// the `tools` array — and the provider's cached prefix — stays stable.
+/// Reserved: never a registered tool name. Shared here, in the leaf crate,
+/// because core unwraps the envelope and the runtime advertises it.
+pub const MCP_TOOL: &str = "mcp";
+
+/// The registered name of MCP tool `tool` on `server`: `mcp__<server>__<tool>`
+/// with every character outside `[A-Za-z0-9_-]` mapped to `_`, so it satisfies
+/// every wire's tool-name rule whatever a server calls itself. The one rule
+/// both core's `mcp` unwrap and the runtime's registration use — two copies
+/// could drift and strand a call on a name nothing registered.
+pub fn mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
 /// A boxed, owned, sendable stream of model events. `'static` so the session
 /// loop can hold it across `.await` points without borrowing the backend.

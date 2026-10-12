@@ -1,14 +1,15 @@
 //! Opt-in live probes against the real z.ai endpoint (`make test-live`).
 //!
-//! WHY: these pin the provider facts ADR-0204 rests on, so a model or
+//! WHY: these pin the provider facts ADR-0226 rests on, so a model or
 //! endpoint update that changes them shows up as a red probe instead of a
 //! silently degraded agent:
-//! - GLM-5.x will not call a tool absent from the tools array, even after
-//!   `describe` delivered its schema — but it does use an `invoke` fallback;
-//! - rewriting an emitted `invoke` call in history to the native name breaks
-//!   follow-ups, so history must keep the call exactly as emitted;
+//! - GLM-5.x reaches an MCP tool it has never seen in the tools array through
+//!   the `mcp {server, tool, args}` envelope, once `mcp_tools` delivered the
+//!   tool's schema and call line as a tool result;
+//! - history keeps the emitted `mcp` call exactly as emitted, and a follow-up
+//!   turn still reaches the tool through it;
 //! - on z.ai any change to the tools array is a full prompt-cache miss, while
-//!   appending turns keeps the cached prefix.
+//!   appending turns keeps the cached prefix — why the array is pinned.
 //!
 //! Every test is `#[ignore]` (network + a real key) and skips with a note
 //! when `ZAI_API_KEY` is unset. Env: `ZAI_API_BASE` (default: the Coding
@@ -87,16 +88,21 @@ fn function(name: &str, description: &str, parameters: Value) -> Value {
     })
 }
 
-/// The discovery surface: `get_weather` is deliberately absent.
+/// The one surface (ADR-0226): `get_weather` is never in it.
 fn kernel_tools() -> Value {
     json!([
         function(
-            "describe",
-            "Load the full schemas of tools by name so they can be called.",
+            "list_mcp",
+            "List the MCP servers you can call through mcp.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        function(
+            "mcp_tools",
+            "Show every tool of one MCP server with its JSON schema and how to call it through mcp.",
             json!({
                 "type": "object",
-                "properties": { "names": { "type": "array", "items": { "type": "string" } } },
-                "required": ["names"],
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
             }),
         ),
         function(
@@ -109,27 +115,28 @@ fn kernel_tools() -> Value {
             }),
         ),
         function(
-            "invoke",
-            "Call a tool loaded via describe by name. Fallback only.",
+            "mcp",
+            "Call a tool on an MCP server: server and tool are names from list_mcp and \
+             mcp_tools, args the tool's arguments object.",
             json!({
                 "type": "object",
-                "properties": { "name": { "type": "string" }, "args": { "type": "object" } },
-                "required": ["name", "args"],
+                "properties": {
+                    "server": { "type": "string" },
+                    "tool": { "type": "string" },
+                    "args": { "type": "object" }
+                },
+                "required": ["server", "tool"],
             }),
         ),
     ])
 }
 
 fn weather_schema() -> Value {
-    function(
-        "get_weather",
-        "Current weather for a city.",
-        json!({
-            "type": "object",
-            "properties": { "city": { "type": "string" } },
-            "required": ["city"],
-        }),
-    )
+    json!({
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"],
+    })
 }
 
 fn tool_call(id: &str, name: &str, args: Value) -> Value {
@@ -144,26 +151,24 @@ fn tool_call(id: &str, name: &str, args: Value) -> Value {
     })
 }
 
+/// The `mcp_tools` reply, in the runtime's rendering (`discover::mcp_lists`).
 fn discovery_history() -> Vec<Value> {
-    let loaded = format!(
-        "Loaded `get_weather`. Call it directly by its name; use `invoke` only as a \
-         fallback if a direct call is not possible.\n{}",
-        weather_schema()["function"]
+    let catalog = format!(
+        "MCP server `weather` (current conditions) — tools:\n\n\
+         - get_weather: Current weather for a city.\n{}\n\
+         call as: mcp {{\"server\": \"weather\", \"tool\": \"get_weather\", \"args\": {{\"city\":\"example\"}}}}",
+        weather_schema()
     );
     vec![
         json!({ "role": "system", "content": "You are a helpful agent. Use tools to answer." }),
         json!({ "role": "user", "content": "What's the weather in Prague right now?" }),
-        tool_call(
-            "call_describe_1",
-            "describe",
-            json!({ "names": ["get_weather"] }),
-        ),
-        json!({ "role": "tool", "tool_call_id": "call_describe_1", "content": loaded }),
+        tool_call("call_tools_1", "mcp_tools", json!({ "name": "weather" })),
+        json!({ "role": "tool", "tool_call_id": "call_tools_1", "content": catalog }),
     ]
 }
 
 /// Arguments arrive as a JSON string on the OpenAI wire, but a model may also
-/// nest `invoke.args` as an encoded string — accept both shapes.
+/// nest `mcp.args` as an encoded string — accept both shapes.
 fn as_object(v: &Value) -> Option<Value> {
     match v {
         Value::String(s) => serde_json::from_str(s).ok(),
@@ -171,30 +176,26 @@ fn as_object(v: &Value) -> Option<Value> {
     }
 }
 
-/// The path (`native` or `invoke`) and `city` of the first call that reaches
-/// `get_weather`, if any.
-fn weather_call(resp: &Value) -> Option<(&'static str, String)> {
+/// The `city` of the first `mcp` call that reaches `weather`/`get_weather`.
+fn weather_call(resp: &Value) -> Option<String> {
     let calls = resp.pointer("/choices/0/message/tool_calls")?.as_array()?;
     calls.iter().find_map(|call| {
-        let name = call.pointer("/function/name")?.as_str()?;
-        let args = as_object(call.pointer("/function/arguments")?)?;
-        match name {
-            "get_weather" => Some(("native", args.get("city")?.as_str()?.to_string())),
-            "invoke" if args.get("name")?.as_str()? == "get_weather" => {
-                let inner = as_object(args.get("args")?)?;
-                Some(("invoke", inner.get("city")?.as_str()?.to_string()))
-            }
-            _ => None,
+        if call.pointer("/function/name")?.as_str()? != "mcp" {
+            return None;
         }
+        let args = as_object(call.pointer("/function/arguments")?)?;
+        let reaches = args.get("server")?.as_str()? == "weather"
+            && args.get("tool")?.as_str()? == "get_weather";
+        let inner = as_object(args.get("args")?)?;
+        reaches.then(|| inner.get("city")?.as_str().map(str::to_string))?
     })
 }
 
 fn expect_weather_call(resp: &Value, city_matches: &[&str]) {
     let message = &resp["choices"][0]["message"];
-    let Some((path, city)) = weather_call(resp) else {
-        panic!("model did not reach get_weather: {message}");
+    let Some(city) = weather_call(resp) else {
+        panic!("model did not reach get_weather through mcp: {message}");
     };
-    eprintln!("reached get_weather via {path} path (city = {city:?})");
     let lower = city.to_lowercase();
     assert!(
         city_matches.iter().any(|m| lower.contains(m)),
@@ -204,7 +205,7 @@ fn expect_weather_call(resp: &Value, city_matches: &[&str]) {
 
 #[tokio::test]
 #[ignore = "live z.ai call; run via `make test-live`"]
-async fn undeclared_tool_discovery_path() {
+async fn an_mcp_tool_is_reached_through_the_envelope() {
     let Some(probe) = probe() else { return };
     let resp = probe
         .chat(&json!(discovery_history()), &kernel_tools(), 512)
@@ -214,20 +215,19 @@ async fn undeclared_tool_discovery_path() {
 
 #[tokio::test]
 #[ignore = "live z.ai call; run via `make test-live`"]
-async fn history_keeps_the_emitted_invoke_call() {
+async fn history_keeps_the_emitted_mcp_call() {
     let Some(probe) = probe() else { return };
     let mut history = discovery_history();
-    let args = json!({ "name": "get_weather", "args": { "city": "Prague" } });
+    let args = json!({ "server": "weather", "tool": "get_weather", "args": { "city": "Prague" } });
     history.extend([
-        tool_call("call_invoke_1", "invoke", args),
-        json!({ "role": "tool", "tool_call_id": "call_invoke_1", "content": "Prague: 18°C, partly cloudy" }),
+        tool_call("call_mcp_1", "mcp", args),
+        json!({ "role": "tool", "tool_call_id": "call_mcp_1", "content": "Prague: 18°C, partly cloudy" }),
         json!({ "role": "assistant", "content": "It's 18°C and partly cloudy in Prague." }),
         json!({ "role": "user", "content": "And in Brno?" }),
     ]);
     let resp = probe.chat(&json!(history), &kernel_tools(), 512).await;
     expect_weather_call(&resp, &["brno"]);
 }
-
 /// `cached_tokens / prompt_tokens` for one response (0 when the field is absent).
 fn cached_share(resp: &Value) -> f64 {
     let prompt = resp.pointer("/usage/prompt_tokens").and_then(Value::as_u64);
@@ -276,7 +276,11 @@ async fn prompt_cache_survives_appended_turns_but_not_tool_changes() {
     assert!(grown >= 0.9, "appended turn cached only {grown:.2}");
 
     let mut more_tools = tools.as_array().cloned().unwrap_or_default();
-    more_tools.push(weather_schema());
+    more_tools.push(function(
+        "get_weather",
+        "Current weather for a city.",
+        weather_schema(),
+    ));
     let changed = cached_share(&probe.chat(&json!(base), &json!(more_tools), 16).await);
     eprintln!(
         "tool appended to the tools array: {:.0}% cached",

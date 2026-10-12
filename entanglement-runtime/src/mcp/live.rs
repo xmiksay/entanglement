@@ -2,8 +2,8 @@
 //! remove a server in the running process, mirrored to `config.yml` so it
 //! survives a restart.
 //!
-//! `ActiveServers` tracks exactly what is currently connected — seeded at
-//! startup from [`super::connect`]'s return, updated by [`mcp_add`]/
+//! `ActiveServers` tracks exactly what is currently connected — empty at
+//! startup (ADR-0226), filled by lazy connects and [`mcp_add`], drained by
 //! [`mcp_remove`]. `ServerConfigs` is the separate, wider live mirror of every
 //! *configured* server (including one that failed to connect or is
 //! `disabled`) — the full set [`crate::config::save_mcp`] must write back,
@@ -83,24 +83,7 @@ pub async fn mcp_add(
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
     let (client, defs) = connect_client(&name, &cfg, secret_env, http, None, None).await?;
-    let prefix = format!("mcp__{name}__");
-    let tools = {
-        let mut reg = registry.write().expect("tool registry lock poisoned");
-        reg.unregister_prefix(&prefix);
-        register_tools(&mut reg, &client, &name, defs, &cfg.capabilities)
-    };
-    let transport = transport_label(&cfg);
-    active
-        .lock()
-        .expect("MCP active-server mutex poisoned")
-        .insert(
-            name.clone(),
-            ActiveServer {
-                client,
-                tools: tools.clone(),
-                transport,
-            },
-        );
+    let tools = install_server(registry, active, &name, client, defs, &cfg);
     {
         let mut all = configs.lock().expect("MCP server-config mutex poisoned");
         all.insert(name.clone(), cfg);
@@ -158,24 +141,7 @@ pub async fn mcp_reconnect(
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
     let (client, defs) = connect_client(name, cfg, secret_env, http, None, None).await?;
-    let prefix = format!("mcp__{name}__");
-    let tools = {
-        let mut reg = registry.write().expect("tool registry lock poisoned");
-        reg.unregister_prefix(&prefix);
-        register_tools(&mut reg, &client, name, defs, &cfg.capabilities)
-    };
-    let transport = transport_label(cfg);
-    active
-        .lock()
-        .expect("MCP active-server mutex poisoned")
-        .insert(
-            name.to_string(),
-            ActiveServer {
-                client,
-                tools: tools.clone(),
-                transport,
-            },
-        );
+    let tools = install_server(registry, active, name, client, defs, cfg);
     tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
     Ok(tools)
 }
@@ -189,18 +155,11 @@ pub fn mcp_disconnect_only(
     registry: &SharedRegistry,
     active: &ActiveServers,
 ) -> Result<()> {
-    registry
-        .write()
-        .expect("tool registry lock poisoned")
-        .unregister_prefix(&format!("mcp__{name}__"));
-    active
-        .lock()
-        .expect("MCP active-server mutex poisoned")
-        .remove(name);
+    drop_server(registry, active, name);
     Ok(())
 }
 
-/// Disconnect a server: unregister its `mcp__{name}__*` tools, drop it from
+/// Disconnect a server: unregister the tools it registered, drop it from
 /// `active` (releasing the last `Arc<McpClient>` kills the subprocess/closes
 /// the HTTP session), and persist the removal. Errors only if `name` is not in
 /// `configs` at all — removing a name that is configured but never connected
@@ -212,14 +171,7 @@ pub fn mcp_remove(
     active: &ActiveServers,
     configs: &ServerConfigs,
 ) -> Result<()> {
-    registry
-        .write()
-        .expect("tool registry lock poisoned")
-        .unregister_prefix(&format!("mcp__{name}__"));
-    active
-        .lock()
-        .expect("MCP active-server mutex poisoned")
-        .remove(name);
+    drop_server(registry, active, name);
     let mut all = configs.lock().expect("MCP server-config mutex poisoned");
     if all.remove(name).is_none() {
         bail!("no MCP server named `{name}` in the configuration");
@@ -227,6 +179,57 @@ pub fn mcp_remove(
     crate::config::save_mcp(&all)?;
     tracing::info!("MCP server `{name}`: removed live");
     Ok(())
+}
+
+/// Replace `name`'s connection: unregister exactly the tools its previous
+/// connection registered (never a name prefix — `my.docs` registers as
+/// `my_docs`, and server `a`'s prefix also covers `a__b`'s tools), register
+/// `defs`, and track the new client. Returns the registered names.
+pub(crate) fn install_server(
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    name: &str,
+    client: Arc<McpClient>,
+    defs: Vec<super::McpToolDef>,
+    cfg: &McpServerConfig,
+) -> Vec<String> {
+    let previous = active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .remove(name);
+    let tools = {
+        let mut reg = registry.write().expect("tool registry lock poisoned");
+        for tool in previous.iter().flat_map(|p| &p.tools) {
+            reg.unregister(tool);
+        }
+        register_tools(&mut reg, &client, name, defs, &cfg.capabilities)
+    };
+    active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .insert(
+            name.to_string(),
+            ActiveServer {
+                client,
+                tools: tools.clone(),
+                transport: transport_label(cfg),
+            },
+        );
+    tools
+}
+
+/// Drop `name`'s connection and exactly the tools it registered (see
+/// [`install_server`] for why never by prefix). A name never connected is a
+/// no-op.
+pub(crate) fn drop_server(registry: &SharedRegistry, active: &ActiveServers, name: &str) {
+    let previous = active
+        .lock()
+        .expect("MCP active-server mutex poisoned")
+        .remove(name);
+    let mut reg = registry.write().expect("tool registry lock poisoned");
+    for tool in previous.iter().flat_map(|p| &p.tools) {
+        reg.unregister(tool);
+    }
 }
 
 /// Enumerate every currently-connected server, sorted by name for stable
@@ -241,8 +244,8 @@ pub fn mcp_list(active: &ActiveServers) -> Vec<entanglement_core::McpServerStatu
             connected: true,
             tools: server.tools.clone(),
             error: None,
-            // Filled by the MCP responder (#542), which alone knows whether a
-            // connected server is startup-`enabled` or lazily `allowed`.
+            // Retired by ADR-0226 (registered = available); kept on the wire
+            // for old logs.
             state: None,
             // Likewise filled by the responder, which holds the token store.
             auth: None,
@@ -273,7 +276,7 @@ mod tests {
             disabled: false,
             capabilities: HashMap::new(),
             oauth: None,
-            state: None,
+            description: None,
         }
     }
 
@@ -287,7 +290,7 @@ mod tests {
             disabled: false,
             capabilities: HashMap::new(),
             oauth: None,
-            state: None,
+            description: None,
         }
     }
 
@@ -408,6 +411,70 @@ mod tests {
         assert_eq!(list[1].name, "zeta");
         assert!(list[0].connected);
         assert_eq!(list[0].tools, vec!["mcp__alpha__a".to_string()]);
+    }
+
+    fn defs(names: &[&str]) -> Vec<crate::mcp::McpToolDef> {
+        names
+            .iter()
+            .map(|n| crate::mcp::McpToolDef {
+                name: n.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            })
+            .collect()
+    }
+
+    /// A reconnect of a server whose name sanitizes (`my.docs` → `my_docs`)
+    /// drops every tool the old connection registered — none goes stale.
+    #[tokio::test]
+    async fn a_reconnect_replaces_a_sanitized_servers_tools_exactly() {
+        let registry = shared_registry();
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let cfg = stdio_cfg("x");
+        let client = Arc::new(fake_client());
+        install_server(
+            &registry,
+            &active,
+            "my.docs",
+            client.clone(),
+            defs(&["old"]),
+            &cfg,
+        );
+        assert!(registry.read().unwrap().contains("mcp__my_docs__old"));
+        install_server(&registry, &active, "my.docs", client, defs(&["new"]), &cfg);
+        let reg = registry.read().unwrap();
+        assert!(!reg.contains("mcp__my_docs__old"), "stale tool left behind");
+        assert!(reg.contains("mcp__my_docs__new"));
+    }
+
+    /// Dropping server `a` never touches `a__b`'s tools, though `mcp__a__` is
+    /// a prefix of them.
+    #[tokio::test]
+    async fn dropping_a_server_leaves_a_nested_named_servers_tools() {
+        let registry = shared_registry();
+        let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+        let cfg = stdio_cfg("x");
+        install_server(
+            &registry,
+            &active,
+            "a",
+            Arc::new(fake_client()),
+            defs(&["x"]),
+            &cfg,
+        );
+        install_server(
+            &registry,
+            &active,
+            "a__b",
+            Arc::new(fake_client()),
+            defs(&["y"]),
+            &cfg,
+        );
+        drop_server(&registry, &active, "a");
+        let reg = registry.read().unwrap();
+        assert!(!reg.contains("mcp__a__x"));
+        assert!(reg.contains("mcp__a__b__y"), "a__b's tool must survive");
+        assert!(active.lock().unwrap().contains_key("a__b"));
     }
 
     // A minimal `McpClient` to populate `ActiveServer.client` in tests that

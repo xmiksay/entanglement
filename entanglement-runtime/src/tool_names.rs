@@ -63,46 +63,57 @@ pub const UPDATE_TASKS_TOOL: &str = "update_tasks";
 /// Tool name the model calls to load a skill's full instructions (#124).
 pub const LOAD_SKILL_TOOL: &str = "load_skill";
 
-/// Tool name the model calls to search the tool catalog beyond what's
-/// advertised — MCP servers, skills, and unadvertised built-ins (#560,
-/// ADR-0196 §4). Always-on and non-maskable, like [`DESCRIBE_TOOL`].
-pub const EXPLORE_TOOL: &str = "explore";
+/// Tool name the model calls to list the registered agent roster — name,
+/// description, and model pin per agent (ADR-0226). Replaces the spawn enum
+/// the `agent` tool's own schema used to carry, so that spec is
+/// session-invariant.
+pub const LIST_AGENTS_TOOL: &str = "list_agents";
 
-/// Tool name the model calls to fetch a discovered tool's full schema, byte-
-/// identical to a native `<tools>` entry (#560, ADR-0196 §4). Under
-/// `client_side` encoding also registers the tool into the session's
-/// advertised array. Always-on and non-maskable, like [`EXPLORE_TOOL`].
-pub const DESCRIBE_TOOL: &str = "describe";
+/// Tool name the model calls to list the active catalog's model ids with
+/// display name and provider (ADR-0226) — what the `agent` tool's `model`
+/// parameter description points at.
+pub const LIST_MODELS_TOOL: &str = "list_models";
 
-/// Reserved [`entanglement_core::ToolCall::name`] the OpenAI Responses client
-/// emits for a streamed, client-executed `tool_search_call` output item (P7,
-/// ADR-0196 §3) — re-exported here (via `entanglement_core`, itself
-/// re-exporting `entanglement-provider`) so this file stays the executor's
-/// one interception-name vocabulary. Never a real registered tool, and not
-/// advertised as a [`entanglement_core::ToolSpec`] at all — the model calls
-/// it because the wire itself declares a `tool_search` primitive whenever a
-/// deferred tool exists, not because it saw a schema in the tools array.
-/// `discover::run_tool_search` answers it by running the same explore+
-/// describe lookup [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] do, replying with a
-/// `ContentPart::ToolSearchOutput` block instead of `describe`'s plain text.
-/// Always-on and non-maskable, like [`EXPLORE_TOOL`]/[`DESCRIBE_TOOL`] — the
-/// model didn't choose it from an advertised name, so masking it out would
-/// strand the wire's own round-trip with no way to answer it.
-pub use entanglement_core::TOOL_SEARCH_CALL_TOOL as RESPONSES_TOOL_SEARCH_TOOL;
+/// Tool name the model calls to list the skill index — name + one-line
+/// description each (ADR-0226). Replaces the system prompt's tier-1 skill
+/// roster.
+pub const LIST_SKILLS_TOOL: &str = "list_skills";
 
-/// The `invoke {name, args}` envelope a `native_first`/`invoke` client-side
-/// session advertises (ADR-0204). Core unwraps it, so a `ToolExec` carrying
-/// this name is one core refused to unwrap — never a registered tool, and
-/// deliberately not in [`TOOL_SEARCH_KERNEL`] or the runtime-owned roster,
-/// since only those two strategies advertise it.
-pub use entanglement_core::INVOKE_TOOL;
+/// Tool name the model calls to list every available MCP server — name,
+/// description, state, and tool names when known (ADR-0226).
+pub const LIST_MCP_TOOL: &str = "list_mcp";
+
+/// Tool name the model calls to read one MCP server's tool catalog: every
+/// tool with its JSON schema and one `mcp {"server", "tool", "args"}` call
+/// line (ADR-0226). The MCP counterpart of [`LOAD_SKILL_TOOL`] — a read, no
+/// activation semantics; the first read of a server in the process connects
+/// it as an implementation detail.
+pub const MCP_TOOLS_TOOL: &str = "mcp_tools";
+
+/// The `mcp {server, tool, args}` envelope (ADR-0226) — the only way to call
+/// an MCP tool. Advertised (a [`KERNEL`] member) but never a registered tool:
+/// core unwraps it, so a `ToolExec` still carrying this name is one core
+/// refused to unwrap (malformed, or a reserved inner name) and is declined.
+pub use entanglement_core::MCP_TOOL;
+
+/// The six ADR-0226 discovery tools: read-only catalog lookups, each with no
+/// argument or one name (`load_skill` keeps its `skill_name`), all
+/// `Capability::Control`, never graded (the `poll` pattern).
+pub const DISCOVERY_TOOLS: &[&str] = &[
+    LIST_AGENTS_TOOL,
+    LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL,
+    LOAD_SKILL_TOOL,
+    LIST_MCP_TOOL,
+    MCP_TOOLS_TOOL,
+];
 
 /// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
-/// entirely (ADR-0196 §4): read-only catalog introspection, never a
-/// capability decision. Narrow and deliberate, like ADR-0190's original
-/// (now-retired, subsumed by ADR-0192's universal dispatch mask) `poll`
-/// exemption — adding an entry removes a profile-author control.
-pub const NON_MASKABLE_TOOLS: &[&str] = &[EXPLORE_TOOL, DESCRIBE_TOOL, RESPONSES_TOOL_SEARCH_TOOL];
+/// entirely (ADR-0226): read-only catalog introspection, never a capability
+/// decision. Narrow and deliberate, like ADR-0190's original (now-retired,
+/// subsumed by ADR-0192's universal dispatch mask) `poll` exemption — adding
+/// an entry removes a profile-author control.
+pub const NON_MASKABLE_TOOLS: &[&str] = DISCOVERY_TOOLS;
 
 /// Whether `tool` is exempt from the dispatch-side mask entirely
 /// ([`NON_MASKABLE_TOOLS`]).
@@ -110,19 +121,18 @@ pub fn is_non_maskable(tool: &str) -> bool {
     NON_MASKABLE_TOOLS.contains(&tool)
 }
 
-/// The `ToolSearch`-mode advertised set (ADR-0196 §2): the fixed
-/// high-frequency host tools plus the runtime-owned roster plus the
-/// discovery pair. `propose_plan`/`request_mode` join it too (ADR-0207 §7/
-/// §9/§10): both must be advertised unconditionally and their schema never
-/// varies by profile. `agent`/`agent_send` are unconditional too now (stage
-/// 5b retires the old per-profile spawn roster, ADR-0040) — they ride the
-/// plain shared `cfg.tool_specs` alongside everything else here, not a
-/// separate per-profile table. Keeping the kernel set here (not just in
-/// [`crate::discover::runtime_owned_specs`]) is what keeps them visible from
-/// round one under the default `client_side` `tool_search` encoding, which
-/// filters its pool down to exactly this list
-/// ([`crate::tool_advertising::client_side_surface`]).
-pub const TOOL_SEARCH_KERNEL: &[&str] = &[
+/// The one advertised surface (ADR-0226; ADR-0196's `TOOL_SEARCH_KERNEL`,
+/// renamed): the fixed host tools, the runtime-owned roster, the six
+/// discovery tools and the `mcp` envelope — byte-identical on every wire and
+/// snapshotted per session. Every model-facing tool must be named here or it
+/// is unreachable: `agent`/`agent_send` and `propose_plan`/`request_mode`
+/// ride the shared spec pool like everything else, so the filter keeps only
+/// what is listed. Registered but hidden: `call`/`glob`/`grep` (script-only
+/// rhai bindings, still graded under their names) and `read_raw`/
+/// `glob_json`/`grep_json`. Interim exception, until #819/#820 remove them:
+/// registered `endpoint__*`/`skill__*` tools are advertised beside this list
+/// (`tool_advertising::surface`), since nothing else reaches them.
+pub const KERNEL: &[&str] = &[
     "read",
     "edit",
     "write",
@@ -132,20 +142,18 @@ pub const TOOL_SEARCH_KERNEL: &[&str] = &[
     ASK_USER_TOOL,
     UPDATE_TASKS_TOOL,
     LOAD_SKILL_TOOL,
-    EXPLORE_TOOL,
-    DESCRIBE_TOOL,
     PROPOSE_PLAN_TOOL,
     REQUEST_MODE_TOOL,
-    // `agent`/`agent_send` (stage 5b, ADR-0207 §6/§9): previously appended
-    // unconditionally *after* this kernel filter from the now-retired
-    // per-profile `profile_tool_specs` table, so they were always visible
-    // regardless of discovery state. Now that they ride the plain
-    // `cfg.tool_specs` pool like everything else, they must be named here
-    // too or `client_side_surface`'s kernel filter would silently drop them
-    // until an explicit `describe` — a functional regression, not just a
-    // representational one, for the default `tool_search` mode.
     AGENT_TOOL,
     AGENT_SEND_TOOL,
+    RHAI_TOOL,
+    "web_fetch",
+    LIST_AGENTS_TOOL,
+    LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL,
+    LIST_MCP_TOOL,
+    MCP_TOOLS_TOOL,
+    MCP_TOOL,
 ];
 
 /// Capability-level permission keys (#418, ADR-0114). ADR-0207 §3 replaced
@@ -166,16 +174,6 @@ pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("write", &["edit", "write", "apply_patch"]),
     ("call", &["bash"]),
 ];
-
-/// Tools that used to belong to *every* ADR-0114 capability at once for the
-/// now-retired frontmatter/ceiling expansion this fed
-/// (`agents::expand_capabilities`) — kept only as a historical marker;
-/// nothing reads it any more. Superseded by each tool's own declared
-/// [`crate::capability::Capability`] set (`call`/`rhai` both carry
-/// `Capability::Exec` directly, `rhai` several — see
-/// `crate::capability::runtime_owned`), which needs no such special-cased
-/// multi-membership list.
-pub const MULTI_GROUP: &[&str] = &["call", "rhai"];
 
 /// Whether `name` names a capability (`read`/`write`/`call`) — used by an MCP
 /// server's config-side `capabilities` annotation (#426,
@@ -218,6 +216,7 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     "bash",
     "call",
     RHAI_TOOL,
+    "web_fetch",
     ASK_USER_TOOL,
     POLL_TOOL,
     PROPOSE_PLAN_TOOL,
@@ -225,13 +224,15 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     AGENT_SEND_TOOL,
     UPDATE_TASKS_TOOL,
     LOAD_SKILL_TOOL,
+    LIST_AGENTS_TOOL,
+    LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL,
+    LIST_MCP_TOOL,
+    MCP_TOOLS_TOOL,
+    MCP_TOOL,
     "read_raw",
     "glob_json",
     "grep_json",
-    "mcp_enable",
-    EXPLORE_TOOL,
-    DESCRIBE_TOOL,
-    RESPONSES_TOOL_SEARCH_TOOL,
 ];
 
 /// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a
@@ -251,9 +252,9 @@ pub fn known_tool_names() -> &'static [&'static str] {
 /// checked against a fixed list), or an MCP tool (`mcp__<server>__<tool>`,
 /// unknowable until the server connects, #426). Anything else is very likely
 /// a stale or typo'd name — e.g. a tool retired by a rename (#605/#606:
-/// `bash_output`/`agent_poll`/`agent_spawn` replaced by `poll`/`agent`) —
-/// worth a startup warning so a masked-out config doesn't silently degrade
-/// (ADR-0161 "Config churn", ADR-0166).
+/// `bash_output`/`agent_poll`/`agent_spawn` replaced by `poll`/`agent`, or
+/// ADR-0226's retired discovery/envelope names) — worth a startup warning so a masked-out config doesn't
+/// silently degrade (ADR-0161 "Config churn", ADR-0166).
 pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
@@ -292,9 +293,58 @@ mod tests {
 
     #[test]
     fn flags_removed_and_typo_d_tool_names() {
-        assert!(!is_recognized_mask_entry("bash_output"));
-        assert!(!is_recognized_mask_entry("agent_poll"));
-        assert!(!is_recognized_mask_entry("agent_spawn"));
-        assert!(!is_recognized_mask_entry("raed"));
+        for gone in [
+            "bash_output",
+            "agent_poll",
+            "agent_spawn",
+            "raed",
+            // ADR-0226 retirements.
+            "explore",
+            "describe",
+            "invoke",
+            "mcp_enable",
+            "responses_tool_search",
+        ] {
+            assert!(!is_recognized_mask_entry(gone), "{gone} is retired");
+        }
+    }
+
+    /// ADR-0226: the kernel is exactly the one advertised surface — the
+    /// retired trio and the old envelope are out, `rhai`/`web_fetch` and the
+    /// six discovery tools plus `mcp` are in.
+    #[test]
+    fn kernel_is_the_one_advertised_surface() {
+        for gone in ["explore", "describe", "invoke", "mcp_enable"] {
+            assert!(!KERNEL.contains(&gone), "{gone} left the kernel");
+        }
+        for present in [
+            RHAI_TOOL,
+            "web_fetch",
+            LIST_AGENTS_TOOL,
+            LIST_MODELS_TOOL,
+            LIST_SKILLS_TOOL,
+            LIST_MCP_TOOL,
+            MCP_TOOLS_TOOL,
+            MCP_TOOL,
+        ] {
+            assert!(KERNEL.contains(&present), "{present} joined the kernel");
+        }
+        // Hidden-but-registered, script-only: never advertised.
+        for hidden in ["call", "glob", "grep", "read_raw", "glob_json", "grep_json"] {
+            assert!(!KERNEL.contains(&hidden), "{hidden} is not model-facing");
+        }
+    }
+
+    #[test]
+    fn the_six_discovery_tools_are_non_maskable() {
+        assert_eq!(DISCOVERY_TOOLS.len(), 6);
+        for tool in DISCOVERY_TOOLS {
+            assert!(is_non_maskable(tool), "{tool} must be non-maskable");
+        }
+        assert!(
+            !is_non_maskable(POLL_TOOL),
+            "poll's mask exemption was retired by ADR-0192"
+        );
+        assert!(!is_non_maskable("bash"));
     }
 }

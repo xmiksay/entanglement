@@ -159,22 +159,42 @@ impl McpTool {
 /// against, so a `capabilities:` annotation naming a raw tool always matches
 /// the name the registered tool actually advertises.
 pub(crate) fn namespaced_tool_name(server: &str, tool: &str) -> String {
-    sanitize(&format!("mcp__{server}__{tool}"))
+    entanglement_core::mcp_tool_name(server, tool)
 }
 
-/// Replace any character outside `[A-Za-z0-9_-]` with `_` so the advertised tool
-/// name satisfies the OpenAI/Anthropic tool-name constraint regardless of what a
-/// server named itself or its tool.
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// The overlay/rule pattern covering every tool of `server` — built from the
+/// registered spelling, so `my.docs` yields `mcp__my_docs__*`. Matches no
+/// other server's tools because the roster refuses names whose prefixes
+/// nest or coincide ([`names_clash`]).
+pub fn server_tools_pattern(server: &str) -> String {
+    format!("{}*", namespaced_tool_name(server, ""))
+}
+
+/// Whether two server names map onto overlapping registered tool names:
+/// identical after sanitizing (`my.docs` / `my_docs`), or one's
+/// `mcp__<name>__` prefix nesting the other's (`a` / `a__b`). Either makes a
+/// tool name — and an overlay or rule pattern like `mcp__a__*` — ambiguous
+/// between the two, so only the first such name is registered — by the global roster and
+/// within a per-user scope alike.
+pub(crate) fn names_clash(a: &str, b: &str) -> bool {
+    let (pa, pb) = (namespaced_tool_name(a, ""), namespaced_tool_name(b, ""));
+    pa.starts_with(&pb) || pb.starts_with(&pa)
+}
+
+/// Which of `servers` registered tool name `tool` belongs to, by the same
+/// sanitized `mcp__<server>__` prefix [`McpTool::new`] registers under — a
+/// naive split on `__` gets `my.docs` (registered `my_docs`) or `a__b` wrong.
+/// The longest prefix wins, so `a__b`'s tools never resolve to a server `a`.
+pub(crate) fn owning_server<'a>(
+    servers: impl IntoIterator<Item = &'a str>,
+    tool: &str,
+) -> Option<&'a str> {
+    servers
+        .into_iter()
+        .map(|name| (name, namespaced_tool_name(name, "")))
+        .filter(|(_, prefix)| tool.starts_with(prefix.as_str()))
+        .max_by_key(|(_, prefix)| prefix.len())
+        .map(|(name, _)| name)
 }
 
 // A client is needed to build an `McpTool`; a dead duplex is enough for
@@ -254,6 +274,43 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(t.name(), "mcp__my_server__read_file");
+    }
+
+    /// Registration and core's `mcp` unwrap must spell a name identically, or
+    /// an envelope call lands on a name nothing registered (ADR-0226).
+    #[test]
+    fn registration_matches_the_envelope_unwrap_spelling() {
+        for (server, tool, want) in [
+            ("my.docs", "get.page", "mcp__my_docs__get_page"),
+            ("my docs", "read", "mcp__my_docs__read"),
+            ("a__b", "c", "mcp__a__b__c"),
+            ("gh", "search-issues", "mcp__gh__search-issues"),
+        ] {
+            assert_eq!(namespaced_tool_name(server, tool), want);
+            assert_eq!(entanglement_core::mcp_tool_name(server, tool), want);
+        }
+    }
+
+    #[test]
+    fn a_server_pattern_uses_the_registered_spelling() {
+        let pattern = server_tools_pattern("my.docs");
+        assert_eq!(pattern, "mcp__my_docs__*");
+        let deny = entanglement_core::ToolOverlayEntry::deny(pattern);
+        assert!(deny.matches("mcp__my_docs__read"));
+        assert!(!deny.matches("mcp__other__read"));
+    }
+
+    #[test]
+    fn owning_server_matches_the_sanitized_prefix_longest_first() {
+        let servers = ["my.docs", "a", "a__b", "gh"];
+        assert_eq!(
+            owning_server(servers, "mcp__my_docs__read"),
+            Some("my.docs")
+        );
+        assert_eq!(owning_server(servers, "mcp__a__b__x"), Some("a__b"));
+        assert_eq!(owning_server(servers, "mcp__a__x"), Some("a"));
+        assert_eq!(owning_server(servers, "mcp__nope__x"), None);
+        assert_eq!(owning_server(servers, "read"), None);
     }
 
     #[tokio::test]

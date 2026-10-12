@@ -24,12 +24,12 @@ use std::sync::Arc;
 const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
 
 /// The `bash` spec description. Its last paragraph is the **single** home of
-/// the bash-vs-`call`-vs-`rhai` decision rule (#740): `bash` is the only exec
-/// tool in the `tool_search` lean kernel (`call`/`rhai` are discover-only), so
-/// its description is the one exec guidance every agent sees in every
-/// advertising mode — and it rides the cached tools block instead of being
-/// re-sent in every agent body. The `rhai` sentence is spliced in only when
-/// that tool is compiled in, so a lean build never names a tool it lacks.
+/// the bash-vs-`rhai` decision rule (#740): `bash` is the one model-facing
+/// exec tool (`call` is a script-only `rhai` binding since ADR-0226), so its
+/// description is the exec guidance every agent sees — and it rides the
+/// cached tools block instead of being re-sent in every agent body. The
+/// `rhai` sentence is spliced in only when that tool is compiled in, so a
+/// lean build never names a tool it lacks.
 macro_rules! bash_description {
     ($($rhai:literal)?) => {
         concat!(
@@ -45,14 +45,11 @@ macro_rules! bash_description {
              applies: a background job is killed once it outlives it, so pass a \
              larger `timeout` (up to 600s) for a job that must outlive the \
              default 120s.\n\n\
-             Choosing an exec tool: use `bash` when you need the shell itself \
-             (pipes, `&&`, redirects, globs, `$VAR`). For one fixed command, \
-             `call` runs `command` + `args` as a plain argv — nothing to quote \
-             or escape.",
+             Choosing an exec tool: use `bash` for shell commands (pipes, `&&`, \
+             redirects, globs, `$VAR`).",
             $($rhai,)?
-            " `describe` a tool first if it is not in your tool list. All of \
-             them are graded by the same session permission mode — a prompt or \
-             refusal is that policy, and switching tools does not route around it."
+            " Every tool is graded by the same session permission mode — a prompt \
+             or refusal is that policy, and switching tools does not route around it."
         )
     };
 }
@@ -188,8 +185,8 @@ impl Tool for BashTool {
     fn description(&self) -> &str {
         if cfg!(feature = "rhai") {
             bash_description!(
-                " For multi-step logic or JSON/YAML transforms in one call, \
-                 use `rhai`."
+                " For multi-step logic, JSON/YAML transforms, or a fixed argv with \
+                 nothing to quote (its `call` binding), use `rhai`."
             )
         } else {
             bash_description!()
@@ -391,7 +388,7 @@ mod tests {
         let tool = BashTool::new(std::env::temp_dir());
         let desc = tool.description();
         assert!(desc.contains("Choosing an exec tool"), "{desc}");
-        assert!(desc.contains("`call` runs"), "{desc}");
+        assert!(!desc.contains("describe"), "{desc}");
         assert_eq!(desc.contains("`rhai`"), cfg!(feature = "rhai"), "{desc}");
     }
 

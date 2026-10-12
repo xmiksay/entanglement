@@ -1,148 +1,118 @@
-//! `explore`/`describe` — the ADR-0196 §4 discovery pair (#560).
+//! Discovery (ADR-0226): six plain, read-only catalog tools — `list_agents`,
+//! `list_models`, `list_skills`, `load_skill`, `list_mcp`, `mcp_tools` — each
+//! with no argument or one `name`, all `Capability::Control` (never graded,
+//! the `poll` pattern), plus the `mcp {server, tool, args}` envelope that is
+//! the only way to call an MCP tool. `load_skill` is a registry tool
+//! (`crate::skills`); the other five and the envelope are runtime-owned
+//! pseudo-tools whose specs live here.
 //!
-//! Two always-on, non-maskable, always-`Allow`, read-only internal tools
-//! (the [`ADR-0190`](../../../docs/adr/0190-poll-is-always-on-non-maskable-internal-tool.md)
-//! pattern extended from `poll` to these two — see
-//! [`crate::tool_names::NON_MASKABLE_TOOLS`]) that let a `ToolSearch`-mode
-//! session reach the rest of the registry: `explore(filter?)` is a terse,
-//! always-live index over built-ins, MCP servers (three-state), and skills;
-//! `describe(names)` answers with each name's full schema, byte-identical in
-//! shape to a native `<tools>` entry, and — under `client_side` encoding —
-//! joins the session's discovered set so the next round advertises it
-//! directly.
-//!
-//! Split into [`explore`] (the index) and [`describe`] (the schema lookup)
-//! to keep each half under the 400-line file cap; this module is just the
-//! two `ToolSpec`s plus the one piece both the resolver (`boot.rs`) and
-//! `describe` need — the runtime-owned pseudo-tool specs that dispatch by
-//! name rather than living in the [`crate::tools::ToolRegistry`].
+//! [`lists`] renders the static rosters, [`mcp_lists`] the MCP pair (which
+//! may connect a server), [`sections`] the internal index the TUI `/tools`
+//! view browses, [`pending`] the spawn sub-tree walk.
 
-mod describe;
-mod explore;
-mod kinds;
+mod lists;
+mod mcp_lists;
 mod pending;
 mod sections;
-mod tool_search;
 
-pub use describe::run_describe;
-pub(crate) use describe::spec_to_json;
-pub use explore::run_explore;
-pub use kinds::{peek_kind, KindsCtx};
+pub use lists::{agents_list, models_list, skills_list};
+pub use mcp_lists::{list_mcp, mcp_tools, McpSources};
 pub(crate) use pending::subtree_sessions;
-pub use pending::{build_pending_report, PendingSources};
 pub use sections::{index_rows, IndexRow};
-pub use tool_search::run_tool_search;
 
-use entanglement_core::{Discovery, ToolSpec};
+use entanglement_core::ToolSpec;
+use serde_json::{json, Value};
 
-use crate::tool_names::{DESCRIBE_TOOL, EXPLORE_TOOL, INVOKE_TOOL};
+use crate::tool_names::{
+    LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL, LIST_SKILLS_TOOL, MCP_TOOL, MCP_TOOLS_TOOL,
+};
 
-/// The `explore` tool schema advertised to the model. `discovery` is the
-/// session's effective strategy (ADR-0204): only `append` makes a described
-/// tool directly callable, so only it says so.
-pub fn explore_spec(discovery: Discovery) -> ToolSpec {
-    let callable = match discovery {
-        Discovery::Append => " and make it directly callable",
-        Discovery::NativeFirst | Discovery::Invoke => "",
-    };
+/// A spec rendered as JSON — the same three fields a native `<tools>` entry
+/// carries, no reformatting. Shared by `mcp_tools` and the arg-validate
+/// decline so both show one rendering.
+pub(crate) fn spec_to_json(spec: &ToolSpec) -> Value {
+    json!({
+        "name": spec.name,
+        "description": spec.description,
+        "schema": spec.schema,
+    })
+}
+
+fn no_args(name: &str, description: &str) -> ToolSpec {
     ToolSpec::with_schema(
-        EXPLORE_TOOL,
-        format!(
-            "Search the tool catalog beyond what's advertised above: registered \
-             built-ins not in your kernel (e.g. call, glob, grep, rhai, MCP \
-             management), MCP servers (enabled ones list their tools; allowed-but-\
-             unconnected ones show a hint to enable with mcp_enable — enabling \
-             is never automatic), endpoints, and skills (loaded with load_skill, \
-             not describable). Always live — never stale, no need to re-check \
-             after an mcp_enable. Results are grouped under a section header per \
-             kind. Call describe on a name from the results to get its full \
-             schema{callable}. Pass kind: agents/skills/models/modes for those \
-             rosters instead (name+description each; a model's context window \
-             and pricing; what each permission mode permits), or kind: pending \
-             for everything still in flight in your whole spawn sub-tree — \
-             running sub-agents, background jobs/scripts, retained outputs, \
-             open questions, and parked approvals — the recovery path when a \
-             handle fell out of a compacted or resumed context."
-        ),
-        serde_json::json!({
+        name,
+        description,
+        json!({ "type": "object", "properties": {} }),
+    )
+}
+
+pub fn list_agents_spec() -> ToolSpec {
+    no_args(
+        LIST_AGENTS_TOOL,
+        "List the agents you can start with agent or message with agent_send: \
+         name, description, and model pin of each.",
+    )
+}
+
+pub fn list_models_spec() -> ToolSpec {
+    no_args(
+        LIST_MODELS_TOOL,
+        "List the models you can run a sub-agent on (agent's model parameter): \
+         provider/id, display name, and context window of each.",
+    )
+}
+
+pub fn list_skills_spec() -> ToolSpec {
+    no_args(
+        LIST_SKILLS_TOOL,
+        "List the skills you can load with load_skill: name and one-line \
+         description of each.",
+    )
+}
+
+pub fn list_mcp_spec() -> ToolSpec {
+    no_args(
+        LIST_MCP_TOOL,
+        "List the MCP servers you can call through mcp: name, description, \
+         state (connected / available / auth required) and tool names when \
+         known. Use mcp_tools to see a server's tools with their schemas.",
+    )
+}
+
+pub fn mcp_tools_spec() -> ToolSpec {
+    ToolSpec::with_schema(
+        MCP_TOOLS_TOOL,
+        "Show every tool of one MCP server with its JSON schema and how to call \
+         it through mcp.",
+        json!({
             "type": "object",
             "properties": {
-                "filter": {
+                "name": {
                     "type": "string",
-                    "description": "Case-insensitive substring matched against \
-                        each entry's name and description. Only applies to the \
-                        default tool catalog (ignored for agents/skills/models/\
-                        modes/pending). Omit to list everything."
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": [
-                        "tool", "mcp", "skill", "endpoint", "tools",
-                        "agents", "skills", "models", "modes", "pending"
-                    ],
-                    "description": "tool/mcp/skill/endpoint restrict the \
-                        default tool catalog to one section (tools, or \
-                        omitting kind, shows every section). agents/skills/\
-                        models/modes list those rosters instead. pending lists \
-                        everything in flight for your spawn sub-tree."
+                    "description": "The server name, as list_mcp shows it."
                 }
             },
+            "required": ["name"]
         }),
     )
 }
 
-/// The `describe` tool schema advertised to the model, its call instruction
-/// worded per the session's effective strategy (ADR-0204).
-pub fn describe_spec(discovery: Discovery) -> ToolSpec {
-    let then = match discovery {
-        Discovery::Append => ", so you can call it immediately by its real name afterward",
-        Discovery::NativeFirst => {
-            "; afterward call it directly by its real name, or through invoke if you cannot"
-        }
-        Discovery::Invoke => "; afterward call it through invoke",
-    };
+/// The `mcp {server, tool, args}` envelope. Core unwraps a call to it only
+/// when this spec is in the round's advertised set, so its name and schema
+/// are a contract with core (`entanglement_core::MCP_TOOL`).
+pub fn mcp_spec() -> ToolSpec {
     ToolSpec::with_schema(
-        DESCRIBE_TOOL,
-        format!(
-            "Get the full schema for one or more tools found with explore — \
-             byte-identical to how a natively-advertised tool's schema looks{then}. \
-             Unknown names get a closest-match hint instead of a schema. Skills \
-             aren't describable (load them with load_skill instead). Also \
-             accepts qualified names from explore's agents/skills/models/modes \
-             kinds — agent:<name>, skill:<name>, model:<provider>/<id>, \
-             mode:<name> — each answering with its own description instead of \
-             a tool schema."
-        ),
-        serde_json::json!({
+        MCP_TOOL,
+        "Call a tool on an MCP server: server and tool are names from list_mcp \
+         and mcp_tools, args the tool's arguments object.",
+        json!({
             "type": "object",
             "properties": {
-                "names": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Tool names to describe, as found via explore."
-                }
-            },
-            "required": ["names"],
-        }),
-    )
-}
-
-/// The `invoke {name, args}` envelope (ADR-0204), advertised only by
-/// `native_first`/`invoke` client-side sessions. Core unwraps a call to it
-/// only when this spec is in the round's advertised set, so its name and
-/// schema are a contract with core.
-pub fn invoke_spec() -> ToolSpec {
-    ToolSpec::with_schema(
-        INVOKE_TOOL,
-        "Call a tool loaded with describe that you cannot call directly: name is \
-         the tool's name, args its arguments object.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
+                "server": { "type": "string" },
+                "tool": { "type": "string" },
                 "args": { "type": "object" }
             },
-            "required": ["name"],
+            "required": ["server", "tool"]
         }),
     )
 }
@@ -150,9 +120,7 @@ pub fn invoke_spec() -> ToolSpec {
 /// The runtime-owned pseudo-tool specs that dispatch by name in
 /// [`crate::tool_runner`]'s interception ladder rather than living in the
 /// [`crate::tools::ToolRegistry`] — so their schema exists only as one of
-/// these pure functions. The single place that builds this list: both the
-/// `tool_spec_resolver` closure (`boot.rs`) and `describe`'s by-name lookup
-/// call it, replacing the vec each used to build separately (ADR-0190's
+/// these pure functions. The single place that builds this list (ADR-0190's
 /// original `poll`-omission bug was exactly this kind of drift).
 pub fn runtime_owned_specs() -> Vec<ToolSpec> {
     #[allow(unused_mut)] // only mutated when the `rhai` feature is on
@@ -162,6 +130,12 @@ pub fn runtime_owned_specs() -> Vec<ToolSpec> {
         crate::propose_plan::propose_plan_spec(),
         crate::request_mode::request_mode_spec(),
         crate::poll::poll_spec(),
+        list_agents_spec(),
+        list_models_spec(),
+        list_skills_spec(),
+        list_mcp_spec(),
+        mcp_tools_spec(),
+        mcp_spec(),
     ];
     #[cfg(feature = "rhai")]
     specs.push(crate::script::rhai_spec());
@@ -173,78 +147,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn specs_carry_the_right_names_and_required_fields() {
-        let explore = explore_spec(Discovery::Append);
-        assert_eq!(explore.name, "explore");
-        assert!(explore.schema["properties"]["filter"].is_object());
-
-        let describe = describe_spec(Discovery::Append);
-        assert_eq!(describe.name, "describe");
-        assert_eq!(describe.schema["required"][0], "names");
-
-        let invoke = invoke_spec();
-        assert_eq!(invoke.name, "invoke");
-        assert_eq!(
-            invoke.schema,
-            serde_json::json!({
-                "type": "object",
-                "properties": {"name": {"type": "string"}, "args": {"type": "object"}},
-                "required": ["name"]
-            })
-        );
-    }
-
-    #[test]
-    fn append_wording_is_unchanged_and_fixed_array_strategies_point_at_invoke() {
-        assert!(describe_spec(Discovery::Append)
-            .description
-            .contains("looks, so you can call it immediately by its real name afterward. Unknown"));
-        assert!(explore_spec(Discovery::Append)
-            .description
-            .contains("full schema and make it directly callable."));
-        assert!(describe_spec(Discovery::NativeFirst)
-            .description
-            .contains("directly by its real name, or through invoke if you cannot."));
-        assert!(describe_spec(Discovery::Invoke)
-            .description
-            .contains("call it through invoke."));
-        assert!(explore_spec(Discovery::Invoke)
-            .description
-            .contains("get its full schema."));
-    }
-
-    #[test]
-    fn explore_schema_advertises_every_kind_value() {
-        let schema = explore_spec(Discovery::Append).schema;
-        let values: Vec<&str> = schema["properties"]["kind"]["enum"]
-            .as_array()
-            .expect("kind is an enum")
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        for expected in ["tools", "agents", "skills", "models", "modes", "pending"] {
-            assert!(values.contains(&expected), "{values:?} missing {expected}");
+    fn every_discovery_tool_takes_no_argument_or_one_name() {
+        for spec in [
+            list_agents_spec(),
+            list_models_spec(),
+            list_skills_spec(),
+            list_mcp_spec(),
+            mcp_tools_spec(),
+        ] {
+            let props = spec.schema["properties"].as_object().unwrap();
+            let keys: Vec<&String> = props.keys().collect();
+            assert!(
+                keys.is_empty() || keys == ["name"],
+                "{}: {keys:?}",
+                spec.name
+            );
         }
     }
 
     #[test]
-    fn describe_schema_documents_qualified_names() {
-        assert!(describe_spec(Discovery::Append)
-            .description
-            .contains("agent:<name>"));
+    fn the_mcp_envelope_requires_server_and_tool() {
+        let spec = mcp_spec();
+        assert_eq!(spec.name, "mcp");
+        assert_eq!(spec.schema["required"], json!(["server", "tool"]));
+        assert_eq!(spec.schema["properties"]["args"]["type"], "object");
     }
 
     #[test]
     fn runtime_owned_specs_names_the_expected_roster() {
         let names: Vec<String> = runtime_owned_specs().into_iter().map(|s| s.name).collect();
-        assert!(names.contains(&"update_tasks".to_string()));
-        assert!(names.contains(&"ask_user".to_string()));
-        assert!(names.contains(&"poll".to_string()));
-        // ADR-0207 §7/§10: `propose_plan`/`request_mode` are advertised
-        // unconditionally — they ride this same roster now, not a per-profile
-        // scheme (#231's `cfg.profile_tool_specs`, retired by stage 4c).
-        assert!(names.contains(&"propose_plan".to_string()));
-        assert!(names.contains(&"request_mode".to_string()));
+        for expected in [
+            "update_tasks",
+            "ask_user",
+            "poll",
+            "propose_plan",
+            "request_mode",
+            "list_agents",
+            "list_models",
+            "list_skills",
+            "list_mcp",
+            "mcp_tools",
+            "mcp",
+        ] {
+            assert!(names.iter().any(|n| n == expected), "{expected}: {names:?}");
+        }
         #[cfg(feature = "rhai")]
         assert!(names.contains(&"rhai".to_string()));
     }
