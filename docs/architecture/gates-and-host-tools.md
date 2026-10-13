@@ -756,7 +756,29 @@ the surface is exactly `KERNEL`.
 tool is never graded ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §3;
 `tool_names::DISCOVERY_TOOLS`, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
 returns before the mode, overlay or ceiling are consulted, so nothing can
-withdraw or decline them. `list_agents`, `list_models` and `list_skills`
+withdraw or decline them.
+
+**Non-maskable names** (#843, `tool_names::NON_MASKABLE_TOOLS`) — the six
+discovery tools, the `mcp` envelope (core unwraps it to
+`mcp__<server>__<tool>` before dispatch, so the gates never see `mcp`) and
+the script-only `read_raw`/`glob_json`/`grep_json` (graded as
+`read`/`glob`/`grep`, `grade::graded_name`): an overlay entry or a
+mode/ceiling rule may spell one but can never match it. The runtime says so
+instead of accepting a silent no-op: the TUI's toggle roster
+(`engine_setup::toggle_roster` — `/tools`, the bare-`/enable` checklist, the
+`/set` Tools tab) leaves them out, `/enable`/`/disable` refuses one with
+`tool_names::non_maskable_reason`, a `modes:`/`permissions:` rule naming one
+warns at config load (`config::mode_warn`, alongside the stale-name check),
+and a wire `SetToolOverlay` entry naming one is applied as sent — core holds
+no tool policy to refuse it — with a runtime warning logged when the
+executor folds the `ToolOverlayChanged` (`tool_runner::overlay_warn`).
+Per-tool MCP control is a `mcp__<server>__<tool>` rule or overlay entry (a
+server-wide `mcp__<server>__*` glob only in the overlay — rule keys match
+the tool part exactly, so a mode/ceiling rule spelling a name glob also
+warns as never matching): it grades an envelope call and a script's
+`mcp::<server>::<tool>()` binding identically, since both reach
+`Dispatcher::grade` under the inner name; a server the user never wants is
+removed from config. `list_agents`, `list_models` and `list_skills`
 render static rosters (`discover::lists`); `load_skill` is the registry tool;
 `list_mcp`/`mcp_tools` are the MCP pair (§10). The five non-registry ones
 route through `Intercept::Discover`. Discovery is **pull-only**: the system

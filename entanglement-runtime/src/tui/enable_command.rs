@@ -12,7 +12,9 @@
 //! MCP servers need no enabling (ADR-0226: registered = available), so the
 //! old `mcp <server>` subcommand is gone. The `tool` subcommand grammar is clap-derived
 //! ([`crate::tui::command_args::parse_enable_via_clap`]); this module maps the
-//! parsed pieces onto [`EnableCommand`].
+//! parsed pieces onto [`EnableCommand`]. A name no overlay entry can ever
+//! match (`tool_names::NON_MASKABLE_TOOLS`: `mcp`, the discovery tools, the
+//! script-only read variants `read_raw`/`*_json`) is refused with the reason (#843).
 
 use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
@@ -67,6 +69,11 @@ pub fn parse_enable_args(text: &str, enabling: bool) -> Result<EnableCommand, St
         (true, None) => Ok(EnableCommand::Show),
         (false, None) => Ok(EnableCommand::Clear),
         (_, Some(EnableTarget::Tool { name })) => {
+            // An entry no dispatch can match would toast "tool x → off" and
+            // change nothing (#843) — say why instead.
+            if let Some(reason) = crate::tool_names::non_maskable_reason(&name) {
+                return Err(reason);
+            }
             if enabling {
                 Ok(EnableCommand::Enable {
                     pattern: name,
@@ -242,5 +249,21 @@ mod tests {
         assert!(parse_enable_args("/enable bogus x", true).is_err());
         // `--allow` is an enable-only flag.
         assert!(parse_enable_args("/disable tool bash --allow", false).is_err());
+    }
+
+    /// #843: `mcp`, a discovery tool or a read variant would be a silent
+    /// no-op entry — refused with the way out, enable and disable alike.
+    #[test]
+    fn non_maskable_names_are_refused_with_the_reason() {
+        let err = parse_enable_args("/disable tool mcp", false).unwrap_err();
+        assert!(err.contains("remove the server from config"), "{err}");
+        assert!(err.contains("mcp__<server>__"), "{err}");
+        let err = parse_enable_args("/disable tool list_mcp", false).unwrap_err();
+        assert!(err.contains("always available, not maskable"), "{err}");
+        let err = parse_enable_args("/enable tool grep_json", true).unwrap_err();
+        assert!(err.contains("name `grep`"), "{err}");
+        // A per-tool MCP name and a server glob stay ordinary entries.
+        assert!(parse_enable_args("/disable tool mcp__gh__*", false).is_ok());
+        assert!(parse_enable_args("/disable tool mcp__gh__create", false).is_ok());
     }
 }

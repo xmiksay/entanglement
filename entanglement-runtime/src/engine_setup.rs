@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentCatalog, EngineConfig};
+use entanglement_core::{AgentCatalog, EngineConfig, ToolSpec};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::factories::build_model_resolver;
@@ -256,18 +256,12 @@ pub(crate) async fn build_config(
     let agent_specs = subagent::agent_specs();
     cfg.tool_specs =
         tool_advertising::surface::build_surface(registered_specs.clone(), agent_specs.clone());
-    // `/tools` and the bare `/enable` checklist offer every tool a session
-    // could reach or a rule could name — the hidden script-only ones
-    // (`glob`/`grep`/`call`) included, since an overlay entry still grades
-    // their rhai bindings.
-    let mut tool_names: Vec<String> = registered_specs
-        .into_iter()
-        .chain(discover::runtime_owned_specs())
-        .chain(agent_specs)
-        .map(|s| s.name)
-        .collect();
-    tool_names.sort();
-    tool_names.dedup();
+    let tool_names = toggle_roster(
+        registered_specs
+            .into_iter()
+            .chain(discover::runtime_owned_specs())
+            .chain(agent_specs),
+    );
     (
         cfg,
         model_info,
@@ -283,4 +277,41 @@ pub(crate) async fn build_config(
         scripts,
         workdirs,
     )
+}
+
+/// The roster `/tools`, the bare `/enable` checklist and the `/set` Tools tab
+/// offer: every tool a session could reach or a rule could name — the hidden
+/// script-only ones (`glob`/`grep`/`call`) included, since an overlay entry
+/// still grades their rhai bindings — but no name an entry can never match
+/// (#843, `tool_names::NON_MASKABLE_TOOLS`). Sorted, deduped.
+fn toggle_roster(specs: impl IntoIterator<Item = ToolSpec>) -> Vec<String> {
+    let mut names: Vec<String> = specs
+        .into_iter()
+        .map(|s| s.name)
+        .filter(|name| !crate::tool_names::is_non_maskable(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_names::{DISCOVERY_TOOLS, MCP_TOOL};
+
+    #[test]
+    fn the_toggle_roster_leaves_out_every_non_maskable_name() {
+        let specs = discover::runtime_owned_specs()
+            .into_iter()
+            .chain(subagent::agent_specs())
+            .chain(["read", "glob_json", "load_skill"].map(|name| ToolSpec::new(name, "")));
+        let roster = toggle_roster(specs);
+        for gone in DISCOVERY_TOOLS.iter().chain(&[MCP_TOOL, "glob_json"]) {
+            assert!(!roster.iter().any(|n| n == gone), "{gone}: {roster:?}");
+        }
+        for kept in ["read", "ask_user", "poll", "agent"] {
+            assert!(roster.iter().any(|n| n == kept), "{kept}: {roster:?}");
+        }
+    }
 }

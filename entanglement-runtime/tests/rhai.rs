@@ -33,6 +33,11 @@ use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 // generated `mcp::` namespace against a stub server, `http()` grading.
 #[path = "rhai/unified.rs"]
 mod unified;
+// #843: a per-tool mode deny and an overlay deny refuse an `mcp` envelope
+// call and a script's `mcp::` binding identically.
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[path = "rhai/mcp_parity.rs"]
+mod mcp_parity;
 
 // ADR-0228: `path` runs, the constant `args` map, the XOR decline, and the
 // skill side (`tools:` refused, `load_skill` doc-commented signatures).

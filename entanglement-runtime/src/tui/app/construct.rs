@@ -52,8 +52,8 @@ impl App {
     /// old `mode ∈ {primary, all}` filter — any agent may be a session root)
     /// the (read-only, ADR-0207 §9) `/agent` picker lists, in the order the
     /// caller (the runtime head) loaded them from the `AgentCatalog`.
-    /// `tool_roster` is the full advertised tool-name roster (#330) `/tools`
-    /// and the bare `/enable` checklist offer.
+    /// `tool_roster` is the tool-name roster (#330) `/tools` and the bare
+    /// `/enable` checklist offer — every overlay-maskable name (#843).
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,

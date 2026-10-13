@@ -58,6 +58,7 @@ pub use call_grader::grade_in_scope;
 mod builder;
 mod inputs;
 mod lifecycle;
+mod overlay_warn;
 mod wrappers;
 pub use builder::{ToolExecutor, ToolExecutorBuilder};
 pub use inputs::{DiscoverySurface, EscapeRoot};

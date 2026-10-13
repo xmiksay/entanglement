@@ -126,6 +126,7 @@ pub(super) async fn run(
             Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
                 // An enable never touches the advertised array (ADR-0226):
                 // it only changes how a call is graded.
+                super::overlay_warn::warn_inert_entries(&session, overlays.get(&session), &entries);
                 if entries.is_empty() {
                     overlays.remove(&session);
                 } else {
