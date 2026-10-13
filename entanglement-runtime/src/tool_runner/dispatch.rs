@@ -96,6 +96,9 @@ pub(crate) struct Call {
     /// The call as the model emitted it when core unwrapped an `mcp`
     /// envelope (ADR-0226) — for the duplicate-key re-scan; `None` otherwise.
     pub envelope: Option<ToolEnvelope>,
+    /// The `mcp::<server>::<tool>` path a script called this by — what its
+    /// arg-validate decline shows; `None` for every other call.
+    pub rhai_path: Option<String>,
 }
 
 /// Who issued a call: the model (owed a `ToolResult`) or a running script.

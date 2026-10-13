@@ -102,7 +102,32 @@ pub fn is_background(input: &str) -> bool {
 struct BindingCall {
     tool: String,
     input: String,
+    /// The generated `mcp::…` path a namespace call came through.
+    rhai_path: Option<String>,
     reply: oneshot::Sender<Result<String, String>>,
+}
+
+/// Send one binding call across the bridge — `rhai_path` the generated
+/// namespace path it came through, if any — and block for the reply.
+fn send_binding(
+    tx: &tokio::sync::mpsc::UnboundedSender<BindingCall>,
+    tool: &str,
+    rhai_path: Option<&str>,
+    input: serde_json::Value,
+) -> Result<String, Box<rhai::EvalAltResult>> {
+    let (reply, wait) = oneshot::channel();
+    tx.send(BindingCall {
+        tool: tool.to_string(),
+        input: input.to_string(),
+        rhai_path: rhai_path.map(str::to_string),
+        reply,
+    })
+    .map_err(|_| bindings::runtime_err("rhai host bridge closed"))?;
+    match wait.blocking_recv() {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(msg)) => Err(bindings::runtime_err(&msg)),
+        Err(_) => Err(bindings::runtime_err("rhai host bridge dropped")),
+    }
 }
 
 /// What a run needs beyond the [`Dispatcher`], snapshotted by the executor

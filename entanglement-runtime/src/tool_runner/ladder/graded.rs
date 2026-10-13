@@ -155,6 +155,7 @@ pub(super) async fn permission(
         tool,
         input,
         envelope,
+        rhai_path: None,
     };
     // Registered so a `Stop` aborts the task mid-execution: dropping the
     // future drops an exec tool's child and fires its process-group SIGKILL

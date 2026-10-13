@@ -61,6 +61,11 @@ mod trusted_writes;
 // and `auto`'s `default: allow`.
 #[path = "rhai/launch_grading.rs"]
 mod launch_grading;
+// #844: a script's bad MCP call never poisons the model's delivered-schema
+// dedup or loop-breaker, and its decline shows the rhai path.
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[path = "rhai/schema_dedup.rs"]
+mod schema_dedup;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Dynamic, Engine, EvalAltResult, Position};
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::oneshot;
 
 use crate::tool_names::HTTP_TOOL;
 
@@ -349,18 +348,7 @@ pub(super) fn call_binding(
     tool: &str,
     input: serde_json::Value,
 ) -> Result<String, Box<EvalAltResult>> {
-    let (reply, wait) = oneshot::channel();
-    tx.send(BindingCall {
-        tool: tool.to_string(),
-        input: input.to_string(),
-        reply,
-    })
-    .map_err(|_| runtime_err("rhai host bridge closed"))?;
-    match wait.blocking_recv() {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(msg)) => Err(runtime_err(&msg)),
-        Err(_) => Err(runtime_err("rhai host bridge dropped")),
-    }
+    super::send_binding(tx, tool, None, input)
 }
 
 pub(super) fn runtime_err(msg: &str) -> Box<EvalAltResult> {

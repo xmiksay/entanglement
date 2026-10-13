@@ -21,18 +21,19 @@
 //! problem) and the delivered-schema dedup,
 //! [`crate::tool_advertising::DeliveredSchemas`] (shared with `mcp_tools`,
 //! ADR-0226), so a repeat violation never re-sends a schema already in
-//! context. An MCP call through the `mcp` envelope is validated here like any
-//! native call: a violation never reaches the server.
+//! context. Both guard the model's context, so a script's call ([`Reader`])
+//! touches neither (#844). An MCP call through the `mcp` envelope is
+//! validated here like any native call: a violation never reaches the server.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-use entanglement_core::{SessionId, ToolSpec};
+use entanglement_core::ToolSpec;
 use serde_json::{json, Value};
 
 use crate::tools::closest_name;
 
 mod duplicate_keys;
+mod loop_breaker;
+
+pub use loop_breaker::{LoopBreaker, LOOP_BREAKER_NOTE};
 
 /// Duplicate JSON object keys in `input`, at any nesting depth (#560
 /// remainder). Exposed for [`crate::tool_runner::dispatch::execute`]: an
@@ -285,99 +286,73 @@ pub fn minimal_example(schema: &Value) -> Value {
     Value::Object(obj)
 }
 
+/// Who a schema-violation decline is written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reader<'a> {
+    /// The model; `schema_delivered` when this session's context already
+    /// holds the tool's schema (the delivered-schema dedup, ADR-0196 §6).
+    Model { schema_delivered: bool },
+    /// A running script (ADR-0227), which never sees the model's context.
+    /// `rhai_path` is the `mcp::<server>::<tool>` path the script called an
+    /// MCP tool by — the binding's own, since a server's name can't be split
+    /// back out of the registered `mcp__<server>__<tool>` reliably.
+    Script { rhai_path: Option<&'a str> },
+}
+
 /// Build the full schema-violation decline: what was wrong, plus — unless
-/// `schema_already_delivered` (the delivered-schema dedup guard, ADR-0196
-/// §6) — the tool's full schema ([`crate::discover::spec_to_json`], the one
-/// rendering `mcp_tools` also shows) and one minimal example call. An MCP
-/// tool's example is shaped as the `mcp` envelope call that reaches it — a
-/// native-shaped one would teach a call the model can't make.
-pub fn decline_text(
-    spec: &ToolSpec,
-    violation: &Violation,
-    schema_already_delivered: bool,
-) -> String {
+/// the model already holds it — the tool's full schema
+/// ([`crate::discover::spec_to_json`], the one rendering `mcp_tools` also
+/// shows) and one minimal example call. An MCP tool's example is shaped as
+/// the call that reaches it from `reader` — the `mcp` envelope for the
+/// model, the rhai path for a script; a native-shaped one would teach a call
+/// neither can make.
+pub(crate) fn decline_text(spec: &ToolSpec, violation: &Violation, reader: Reader) -> String {
     let mut msg = format!(
         "schema violation calling `{}`: {}",
         spec.name,
         violation.lines().join("; ")
     );
-    if schema_already_delivered {
+    if let Reader::Model {
+        schema_delivered: true,
+    } = reader
+    {
         msg.push_str("\n\nschema already provided above for this session — not repeating it.");
-    } else {
-        let schema_json = crate::discover::spec_to_json(spec);
-        msg.push_str("\n\ncorrect usage:\n");
-        msg.push_str(&serde_json::to_string_pretty(&schema_json).unwrap_or_default());
-        let args = minimal_example(&spec.schema);
-        let (label, example) = match crate::tool_advertising::mcp_example(&spec.name, args.clone())
-        {
-            Some(call) => ("example call (through mcp)", call),
-            None => ("example call", args),
-        };
-        msg.push_str(&format!("\n\n{label}:\n"));
-        msg.push_str(&serde_json::to_string_pretty(&example).unwrap_or_default());
+        return msg;
     }
+    let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_default();
+    msg.push_str("\n\ncorrect usage:\n");
+    msg.push_str(&pretty(&crate::discover::spec_to_json(spec)));
+    let args = minimal_example(&spec.schema);
+    let (label, example) = match reader {
+        Reader::Script { rhai_path } => match rhai_path {
+            Some(path) => (
+                "example call (in rhai)",
+                format!("{path}({})", script_args(&args)),
+            ),
+            // A native binding takes positional arguments; this is the
+            // tool input it builds from them.
+            None => ("example input", pretty(&args)),
+        },
+        Reader::Model { .. } => {
+            match crate::tool_advertising::mcp_example(&spec.name, args.clone()) {
+                Some(call) => ("example call (through mcp)", pretty(&call)),
+                None => ("example call", pretty(&args)),
+            }
+        }
+    };
+    msg.push_str(&format!("\n\n{label}:\n{example}"));
     msg
 }
 
-/// The explicit note appended when [`LoopBreaker::note`] reports a repeat —
-/// two identical failing calls in a row. Verbatim text (design decision 8).
-pub const LOOP_BREAKER_NOTE: &str =
-    "same call failed twice — the schema is not the problem; change the arguments or use a \
-     different tool";
-
-#[derive(Clone, PartialEq)]
-struct LastCall {
-    tool: String,
-    input: String,
-    is_error: bool,
+#[cfg(feature = "rhai")]
+fn script_args(args: &Value) -> String {
+    crate::rhai_ident::rhai_literal(args)
 }
 
-/// Per-session "was the immediately preceding call this exact same
-/// `(tool, input)`, and did it also fail?" tracker — the loop-breaker guard
-/// (design decision 8): a model retrying the identical failing shape twice in
-/// a row gets an explicit nudge to change the call instead of the schema
-/// alone. Deliberately generic across every failure kind (schema violation,
-/// MCP required-param, or a runtime tool error) — the note fires on any
-/// `is_error` repeat, not only schema violations.
-#[derive(Default)]
-pub struct LoopBreaker {
-    last: Mutex<HashMap<SessionId, LastCall>>,
-}
-
-impl LoopBreaker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record this call's outcome for `session`, returning whether it
-    /// repeats the immediately preceding call's exact `(tool, input)` with
-    /// both calls having failed. Always records — a success in between
-    /// resets the streak, matching "two *consecutive* identical failures".
-    pub fn note(&self, session: &SessionId, tool: &str, input: &str, is_error: bool) -> bool {
-        let mut map = self.last.lock().expect("loop-breaker mutex poisoned");
-        let repeat = is_error
-            && map
-                .get(session)
-                .is_some_and(|prev| prev.is_error && prev.tool == tool && prev.input == input);
-        map.insert(
-            session.clone(),
-            LastCall {
-                tool: tool.to_string(),
-                input: input.to_string(),
-                is_error,
-            },
-        );
-        repeat
-    }
-
-    /// Release an ended/hibernated session's entry — mirrors
-    /// [`crate::tool_advertising::DeliveredSchemas::forget`].
-    pub fn forget(&self, session: &SessionId) {
-        self.last
-            .lock()
-            .expect("loop-breaker mutex poisoned")
-            .remove(session);
-    }
+// Without the script engine nothing builds a `Reader::Script`.
+#[cfg(not(feature = "rhai"))]
+fn script_args(args: &Value) -> String {
+    args.to_string()
 }
 
 #[cfg(test)]

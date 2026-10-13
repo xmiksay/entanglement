@@ -122,12 +122,19 @@ pub fn plan_skills(skills: &[String]) -> std::collections::HashMap<String, RhaiN
 }
 
 /// `value` as a Rhai literal — objects as `#{key: value}` maps — for the
-/// call examples `mcp_tools` renders next to each tool.
+/// call examples `mcp_tools` and a script's arg-validate decline render.
 pub fn rhai_literal(value: &serde_json::Value) -> String {
     use serde_json::Value;
     match value {
         Value::Null => "()".to_string(),
-        Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+        Value::Bool(_) => value.to_string(),
+        // Rhai's `INT` is i64: a larger integer only fits as a float.
+        // `as_f64` is always `Some` for a u64; the fallback never fires.
+        Value::Number(n) if n.is_u64() && n.as_i64().is_none() => {
+            format!("{:?}", n.as_f64().unwrap_or(f64::MAX))
+        }
+        Value::Number(_) => value.to_string(),
+        Value::String(s) => string_literal(s),
         Value::Array(items) => {
             let items: Vec<String> = items.iter().map(rhai_literal).collect();
             format!("[{}]", items.join(", "))
@@ -136,10 +143,12 @@ pub fn rhai_literal(value: &serde_json::Value) -> String {
             let fields: Vec<String> = map
                 .iter()
                 .map(|(k, v)| {
-                    let key = if rhai::is_valid_identifier(k) {
+                    // A keyword (`let`, `fn`, `this`, …) is a valid
+                    // identifier yet not a valid bare property name.
+                    let key = if rhai::is_valid_function_name(k) {
                         k.clone()
                     } else {
-                        serde_json::Value::String(k.clone()).to_string()
+                        string_literal(k)
                     };
                     format!("{key}: {}", rhai_literal(v))
                 })
@@ -147,6 +156,26 @@ pub fn rhai_literal(value: &serde_json::Value) -> String {
             format!("#{{{}}}", fields.join(", "))
         }
     }
+}
+
+/// A double-quoted Rhai string. Not JSON's escaping: Rhai has no `\b`/`\f`,
+/// so every other control character goes out as `\uXXXX`.
+fn string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -202,6 +231,34 @@ mod tests {
             rhai_literal(&v),
             r#"#{deep: #{ok: true}, "max-n": 3, q: "x", tags: ["a", ()]}"#
         );
+    }
+
+    /// Every rendering must parse, and evaluate back to the same value.
+    #[test]
+    fn every_literal_compiles_and_round_trips() {
+        let corpus = serde_json::json!({
+            "let": 1, "fn": 2, "import": 3, "if": 4, "for": 5, "in": 6, "this": 7,
+            "print": 8, "plain": 9, "max-n": 10, "": 11, "2x": 12,
+            "s": "quote \" back \\ nl \n cr \r tab \t bs \u{8} ff \u{c} nul \u{0} del \u{7f} é ${x}",
+            "nested": {"arr": [1, -2, 1.5, 1e10, 1e300, null, true, "x", [], {}]},
+            "neg": -9223372036854775808i64,
+        });
+        let engine = rhai::Engine::new_raw();
+        for value in [
+            corpus.clone(),
+            serde_json::json!(null),
+            serde_json::json!("\u{8}"),
+        ] {
+            let lit = rhai_literal(&value);
+            let ast = engine
+                .compile_expression(&lit)
+                .unwrap_or_else(|e| panic!("{lit} does not parse: {e}"));
+            let back: rhai::Dynamic = engine.eval_ast(&ast).unwrap();
+            let back: serde_json::Value = rhai::serde::from_dynamic(&back).unwrap();
+            assert_eq!(back, value, "{lit}");
+        }
+        let big = rhai_literal(&serde_json::json!(u64::MAX));
+        assert!(engine.compile_expression(&big).is_ok(), "{big}");
     }
 
     #[test]

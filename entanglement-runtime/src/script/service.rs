@@ -35,6 +35,7 @@ pub(super) async fn service_bindings(
             tool: call.tool.clone(),
             input,
             envelope: None,
+            rhai_path: call.rhai_path,
         };
         let result = match dispatcher.run(nested, Via::Script(script)).await {
             None => {

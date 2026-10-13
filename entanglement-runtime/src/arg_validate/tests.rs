@@ -1,4 +1,9 @@
 use super::*;
+use entanglement_core::SessionId;
+
+const MODEL: Reader = Reader::Model {
+    schema_delivered: false,
+};
 
 fn schema() -> Value {
     json!({
@@ -102,7 +107,7 @@ fn minimal_example_covers_only_required_fields() {
 fn decline_text_includes_schema_and_example_when_not_yet_delivered() {
     let spec = ToolSpec::with_schema("read", "read a file", schema());
     let v = validate(&schema(), "{}").unwrap();
-    let msg = decline_text(&spec, &v, false);
+    let msg = decline_text(&spec, &v, MODEL);
     assert!(msg.contains("missing required: path"), "{msg}");
     assert!(msg.contains("correct usage"), "{msg}");
     assert!(msg.contains("\"name\": \"read\""), "{msg}");
@@ -113,7 +118,7 @@ fn decline_text_includes_schema_and_example_when_not_yet_delivered() {
 fn an_mcp_tools_example_is_the_mcp_envelope_call() {
     let spec = ToolSpec::with_schema("mcp__gh__read", "read a file", schema());
     let v = validate(&schema(), "{}").unwrap();
-    let msg = decline_text(&spec, &v, false);
+    let msg = decline_text(&spec, &v, MODEL);
     let example = msg
         .split("example call (through mcp):\n")
         .nth(1)
@@ -126,16 +131,51 @@ fn an_mcp_tools_example_is_the_mcp_envelope_call() {
     let native = decline_text(
         &ToolSpec::with_schema("read", "read a file", schema()),
         &v,
-        false,
+        MODEL,
     );
     assert!(native.contains("example call:\n"), "{native}");
+}
+
+/// A script never sees the model's context, so it always gets the schema,
+/// and an MCP example in the rhai form it called the tool by (#844) — the
+/// binding's own path, since a server named `a__b` makes the registered
+/// `mcp__a__b__x` ambiguous to split.
+#[test]
+fn a_script_decline_carries_the_schema_and_a_rhai_example() {
+    let spec = ToolSpec::with_schema("mcp__a__b__x", "search", schema());
+    let v = validate(&schema(), "{}").unwrap();
+    let reader = Reader::Script {
+        rhai_path: Some("mcp::a__b::x"),
+    };
+    let msg = decline_text(&spec, &v, reader);
+    assert!(msg.contains("correct usage"), "{msg}");
+    assert!(!msg.contains("already provided"), "{msg}");
+    assert!(!msg.contains("through mcp"), "{msg}");
+    assert!(!msg.contains(r#""server""#), "envelope form: {msg}");
+    #[cfg(feature = "rhai")]
+    assert!(
+        msg.contains("example call (in rhai):\nmcp::a__b::x(#{path: \"example\"})"),
+        "{msg}"
+    );
+    let native = decline_text(
+        &ToolSpec::with_schema("read", "read a file", schema()),
+        &v,
+        Reader::Script { rhai_path: None },
+    );
+    assert!(native.contains("example input:\n"), "{native}");
 }
 
 #[test]
 fn decline_text_omits_schema_when_already_delivered() {
     let spec = ToolSpec::with_schema("read", "read a file", schema());
     let v = validate(&schema(), "{}").unwrap();
-    let msg = decline_text(&spec, &v, true);
+    let msg = decline_text(
+        &spec,
+        &v,
+        Reader::Model {
+            schema_delivered: true,
+        },
+    );
     assert!(msg.contains("missing required: path"), "{msg}");
     assert!(msg.contains("already provided above"), "{msg}");
     assert!(!msg.contains("correct usage"), "{msg}");

@@ -346,7 +346,10 @@ mod tests {
         reg.register_arc(std::sync::Arc::new(t));
         let spec = reg.spec_for("mcp__chess__get_puzzle").unwrap();
         let violation = crate::arg_validate::validate(&spec.schema, "{}").unwrap();
-        let decline = crate::arg_validate::decline_text(&spec, &violation, false);
+        let reader = crate::arg_validate::Reader::Model {
+            schema_delivered: false,
+        };
+        let decline = crate::arg_validate::decline_text(&spec, &violation, reader);
         assert!(decline.contains("missing required: id"), "{decline}");
         // The server's own `inputSchema` surfaces verbatim in the decline, not
         // a re-derived shape.
