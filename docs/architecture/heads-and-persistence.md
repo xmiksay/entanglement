@@ -83,10 +83,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   raw template.
   `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
   **skill** registry — the authoring loop was "start a session and ask the model":
-  no `name` prints a table (name, user_only, winning layer, `root_dir`,
+  no `name` prints a table (name, winning layer, `root_dir`,
   description); `--disclosures` prints the **exact** tier-1 block the model
   receives (the same `system_prompt::render_skills` output the assembled prompt
-  embeds, `user_only` skills withheld); a `name` **dry-runs the `load_skill` path
+  embeds — every skill, [ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)); a `name` **dry-runs the `load_skill` path
   substitution** (`${SKILL_DIR}` + relative-ref resolution) plus layer provenance,
   so a wrong payload path surfaces without a model. Engine-free via
   `skills::resolve_registry` (the `(layer, source, shadowed)` sidecar mirroring
@@ -567,7 +567,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   columns to show — that posture is `skutter inspect modes`' job now, not
   yet surfaced as a fourth tab here); the
   Skills tab is the exact `disclosures()` block the model sees plus the full table
-  (including `user_only`). Views resolve on open from the cwd + live agent, so
+  of every resolved skill. Views resolve on open from the cwd + live agent, so
   they stay fresh across mid-session definition edits. The Agents and Skills tabs
   are **two-level** (✅ #331): a selectable list (name + summary + winning layer)
   where `j`/`k`/arrows move the highlight and `Enter` opens the per-item detail

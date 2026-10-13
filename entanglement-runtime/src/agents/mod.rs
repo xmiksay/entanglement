@@ -360,13 +360,12 @@ mod tests {
     }
 
     /// A one-off registry holding a single embedded (built-in shape) skill.
-    fn skill_registry(name: &str, user_only: bool, body: &str) -> SkillRegistry {
+    fn skill_registry(name: &str, body: &str) -> SkillRegistry {
         use crate::skills::SkillMeta;
         let mut reg = SkillRegistry::default();
         reg.insert(SkillMeta {
             name: name.into(),
             description: "d".into(),
-            user_only,
             allowed_tools: None,
             root_dir: None,
             body: body.into(),
@@ -647,7 +646,7 @@ mod tests {
     fn skills_preload_injects_body_into_system_prompt() {
         // `skills:` preloads the full body; `load_skill` access is a runtime
         // permission-mode fact now, not anything the agent masks (#117).
-        let skills = skill_registry("git", false, "Run `git commit` carefully.");
+        let skills = skill_registry("git", "Run `git commit` carefully.");
         let p = parse_with_skills(
             "---\nname: x\ndescription: d\nskills: [git]\n---\nBody.",
             &skills,
@@ -665,23 +664,6 @@ mod tests {
         );
         assert!(
             p.system_prompt.contains("Run `git commit` carefully."),
-            "{}",
-            p.system_prompt
-        );
-    }
-
-    #[test]
-    fn preload_accepts_user_only_skills() {
-        // Preload is author config, so a `user_only` skill (withheld from the
-        // model-facing `load_skill`) is still preloadable (#117).
-        let skills = skill_registry("deploy", true, "deploy steps");
-        let p = parse_with_skills(
-            "---\nname: x\ndescription: d\nskills: [deploy]\n---\nBody.",
-            &skills,
-        )
-        .unwrap();
-        assert!(
-            p.system_prompt.contains("deploy steps"),
             "{}",
             p.system_prompt
         );

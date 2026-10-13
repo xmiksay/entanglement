@@ -880,7 +880,8 @@ an unscoped session, the last-seen tools of an unconnected one, which the
 call connects lazily — graded and executed under the real
 `mcp__<server>__<tool>` name; a scoped session lists only its scope's servers
 and never the shared cache (ADR-0188). `skill::<skill>::<fn>(…)` for every
-skill's `lib.rhai`. Identifier mapping (`rhai_ident`): non-identifier
+skill's `lib.rhai` — every skill is model-visible, there is no hidden-skill
+filter ([ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)). Identifier mapping (`rhai_ident`): non-identifier
 characters → `_`, a result with no letter before its first digit (or no
 letter at all) gets a `t_` prefix, a Rhai keyword/reserved word a `_` suffix
 — validity per Rhai's own `is_valid_identifier`/`is_valid_function_name`; one

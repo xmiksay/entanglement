@@ -220,17 +220,12 @@ fn tui_skill_views(cwd: &Path, user: &UserLayer) -> (Vec<InspectItem>, String) {
         let resolved =
             skills::resolve_registry_in(cwd, user).context("resolving skill registry")?;
 
-        // List rows: name + one-line description + winning layer. A `user_only`
-        // skill is marked so the list signals it was withheld from the model.
+        // List rows: name + one-line description + winning layer.
         let items: Vec<InspectItem> = resolved
             .iter()
             .map(|r| InspectItem {
                 name: r.meta.name.clone(),
-                summary: if r.meta.user_only {
-                    format!("{} (user_only)", r.meta.description)
-                } else {
-                    r.meta.description.clone()
-                },
+                summary: r.meta.description.clone(),
                 layer: r.layer.label().to_string(),
             })
             .collect();
@@ -238,7 +233,7 @@ fn tui_skill_views(cwd: &Path, user: &UserLayer) -> (Vec<InspectItem>, String) {
         let mut out = String::new();
         let _ = writeln!(out, "═══ disclosures (what the model sees) ═══\n");
         out.push_str(&render_disclosures(&registry.disclosures()));
-        let _ = writeln!(out, "\n═══ all skills (including user_only) ═══\n");
+        let _ = writeln!(out, "\n═══ all skills ═══\n");
         out.push_str(&render_skill_table(&resolved));
         Ok((items, out))
     };

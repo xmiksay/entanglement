@@ -1120,11 +1120,10 @@ below realize one model:
   Discovery is a recursive walk for `SKILL.md` markers; symlinked duplicates and
   directory cycles are deduped by canonical path; a malformed file is a loud
   error in the native dirs, warned-and-skipped in the cross-vendor ones (which
-  read only `name`+`description`, mapping Claude's `disable-model-invocation` to
-  `user_only` and dropping its `allowed-tools`,
-  [ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
-  Frontmatter: `name` + `description` (required), `user_only` (only explicit
-  user invocation — withheld from the model's disclosure list), and
+  read only `name`+`description`, ignoring every other key — Claude's
+  `disable-model-invocation` and `allowed-tools` included,
+  [ADR-0074](../adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)).
+  Frontmatter: `name` + `description` (required) and
   `allowed_tools` (parsed-but-ignored with a one-time load warning — the
   skill-scoped mask it named is removed by
   [ADR-0194](../adr/0194-skills-are-additive-only.md); skills are
@@ -1133,9 +1132,14 @@ below realize one model:
   a native `SKILL.md` still carrying it is **skipped** with an error-level log
   naming the replacement (`lib.rhai` functions, or a script file run with
   `rhai` `path`) — never a registry-load abort, so one stale skill cannot brick
-  startup; a foreign dir drops it like any unknown key. Each `SkillMeta` resolves its
+  startup; a foreign dir drops it like any unknown key. `user_only` is removed
+  ([ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)): **every skill is model-visible** — listed, loadable,
+  its `lib.rhai` callable from any script; a native `SKILL.md` still carrying the
+  key loads normally and warns once per sighting (`config::warn_once`: live
+  reloads stay quiet, a removed-then-restored key warns again). A skill the model must not run is a permission-mode question (rules on
+  the commands it performs), not a visibility one. Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
-  yields one `name: description` row per non-`user_only` skill, which `list_skills`
+  yields one `name: description` row per skill, which `list_skills`
   returns on request ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) — no longer in the system prompt); bodies are never preloaded. **Selection stays
   the model's own reasoning** — no keyword router or embedding gate; the model
   matches its task against the `description` in its forward pass, so description
@@ -1154,8 +1158,7 @@ below realize one model:
   that class): unlike the old read-only `explore` agent, which masked
   `load_skill` out entirely, a read-only *mode* today still lets a model
   load a skill's body — reading a skill is not writing. The handler resolves **deterministically** (never model reasoning):
-  look the `SkillMeta` up by name; reject a `user_only` skill (withheld from
-  disclosure, only an explicit user command may trigger it); then **substitute
+  look the `SkillMeta` up by name (an unknown name is a tool error); then **substitute
   every relative payload path to an absolute one** before the text reaches the
   model — closing Claude Code's bug class where the *model* resolves
   `references/x.md` against the wrong base (anthropics/claude-code#17741, #11011).
@@ -1227,9 +1230,8 @@ below realize one model:
   prompt at load, through the *same* substitution pipeline as `load_skill`
   (`SkillRegistry::preload_body` → `load_skill::render_skill`) — it is preload
   *only*, never an allowlist, and is mode-independent (a spawned subagent gets the
-  body even though its tier-1 index is withheld). Two differences from the
-  model-facing `load_skill`: a `user_only` skill *is* preloadable (author config,
-  not model self-trigger), and an unknown name is a loud load-time error.
+  body even though its tier-1 index is withheld). Unlike the model-facing
+  `load_skill`, an unknown name is a loud load-time error.
   **Access** is now the session's permission mode, not an agent field: since
   `load_skill` carries `Capability::Read`
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)

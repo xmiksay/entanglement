@@ -31,8 +31,8 @@
 //! system prompt — see [`crate::system_prompt`]). Selection stays LLM reasoning:
 //! the model matches its task against the `description` in its own forward pass.
 //! There is no keyword router or embedding gate — description quality is the
-//! contract. `user_only` skills are withheld from the disclosure list so the
-//! model cannot self-trigger them.
+//! contract. Every skill is disclosed — there is no model-hidden skill
+//! (ADR-0229 removed `user_only`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -65,9 +65,6 @@ pub struct SkillMeta {
     pub name: String,
     /// One-line summary; the only field (with `name`) disclosed to the model.
     pub description: String,
-    /// `true` ⇒ only explicit user invocation can trigger it (destructive/deploy
-    /// skills). Withheld from the model's disclosure list.
-    pub user_only: bool,
     /// Parsed but **ignored** (ADR-0194 retired the ADR-0106 enforcement
     /// this once drove): skills are additive-only, never a tool-set
     /// restriction. Kept in the struct only because `SkillFrontmatter` is
@@ -118,13 +115,10 @@ impl SkillRegistry {
     /// same substitution pipeline as `load_skill` ([`load_skill::render_skill`]).
     /// Preload (`skills:` in an agent definition) is agent-author config, distinct
     /// from the `load_skill` tool mask that controls runtime *access*: it injects
-    /// a skill's body into the agent's assembled system prompt at load time. Two
-    /// deliberate differences from the model-facing `load_skill`:
-    ///
-    /// - a `user_only` skill **is** preloadable — the author opted in explicitly,
-    ///   so the "model cannot self-trigger" guard does not apply;
-    /// - an unknown name is a hard error, surfaced loudly at load time (agent
-    ///   definitions validate loudly, never silently drop a typo'd skill).
+    /// a skill's body into the agent's assembled system prompt at load time.
+    /// Unlike the model-facing `load_skill`, an unknown name is a hard error,
+    /// surfaced loudly at load time (agent definitions validate loudly, never
+    /// silently drop a typo'd skill).
     pub fn preload_body(&self, name: &str) -> Result<String> {
         let skill = self.get(name).ok_or_else(|| {
             anyhow::anyhow!("unknown preload skill `{name}`: it is not in the skill index")
@@ -154,11 +148,9 @@ impl SkillRegistry {
     }
 
     /// Tier-1 disclosure lines for the system prompt: `name` + `description`
-    /// only, name-sorted. `user_only` skills are excluded — the model must not
-    /// see a skill it cannot self-trigger.
+    /// only, name-sorted — every skill (ADR-0229).
     pub fn disclosures(&self) -> Vec<SkillDisclosure> {
         self.iter()
-            .filter(|s| !s.user_only)
             .map(|s| SkillDisclosure {
                 name: s.name.clone(),
                 description: s.description.clone(),
@@ -187,10 +179,14 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
     // longer silent (#186): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect skills` surfaces.
     let mut winning: HashMap<String, (SkillLayer, String)> = HashMap::new();
+    let mut user_only = Vec::new();
     for raw in discovery::discover(root, user)? {
-        let Some(skill) = parse_raw(&raw)? else {
+        let Some((skill, declares_user_only)) = parse_raw(&raw)? else {
             continue;
         };
+        if declares_user_only {
+            user_only.push((skill.name.clone(), raw.source.clone()));
+        }
         if let Some((prior_layer, prior_source)) =
             winning.insert(skill.name.clone(), (raw.layer, raw.source.clone()))
         {
@@ -204,6 +200,7 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
         }
         reg.insert(skill);
     }
+    parse::warn_user_only(format!("skills\0{}\0{user:?}", root.display()), &user_only);
     Ok(reg)
 }
 
@@ -226,7 +223,7 @@ pub fn rejected_skills_in(root: &Path, user: &UserLayer) -> Result<Vec<String>> 
 /// plus the provenance the silent `insert` used to swallow — which layer/source
 /// won, and every lower-layer `SKILL.md` of the same name it overrode.
 pub struct SkillResolution {
-    /// The winning skill metadata (name/description/user_only/root_dir).
+    /// The winning skill metadata (name/description/root_dir).
     pub meta: SkillMeta,
     /// Which precedence layer the winner came from.
     pub layer: SkillLayer,
@@ -251,7 +248,7 @@ pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<SkillRes
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
     for raw in discovery::discover(root, user)? {
-        let Some(meta) = parse_raw(&raw)? else {
+        let Some((meta, _)) = parse_raw(&raw)? else {
             continue;
         };
         let name = meta.name.clone();
@@ -318,15 +315,25 @@ mod tests {
             reg.insert(s);
         }
         let rhai = reg.get("rhai").expect("rhai built-in");
-        assert!(!rhai.user_only);
         assert_eq!(rhai.root_dir, None);
         assert!(rhai.body.contains("Rhai"));
     }
 
-    /// A minimal [`tracing::Subscriber`] that counts WARN-level events —
-    /// enough to assert the ADR-0194 one-time `allowed_tools` warning fires
-    /// exactly once per parse, without pulling in a test-only tracing crate.
-    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    /// A minimal [`tracing::Subscriber`] that counts WARN-level events whose
+    /// message contains the needle (`""` counts every warning) — enough to
+    /// assert a one-time warning fires exactly once, without pulling in a
+    /// test-only tracing crate or tripping over unrelated load warnings.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>, &'static str);
+
+    struct Message(String);
+
+    impl tracing::field::Visit for Message {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
 
     impl tracing::Subscriber for WarnCounter {
         fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
@@ -338,7 +345,12 @@ mod tests {
         fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
         fn event(&self, event: &tracing::Event<'_>) {
-            if *event.metadata().level() == tracing::Level::WARN {
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            let mut msg = Message(String::new());
+            event.record(&mut msg);
+            if msg.0.contains(self.1) {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
@@ -352,7 +364,7 @@ mod tests {
     #[test]
     fn allowed_tools_frontmatter_is_parsed_but_ignored_with_one_time_warning() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone()));
+        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone(), ""));
 
         let s =
             parse("---\nname: x\ndescription: d\nallowed_tools: [bash, read]\n---\nbody").unwrap();
@@ -377,7 +389,6 @@ mod tests {
         let s = parse("---\nname: x\ndescription: d\n---\nbody").unwrap();
         assert_eq!(s.name, "x");
         assert_eq!(s.description, "d");
-        assert!(!s.user_only);
         assert_eq!(s.allowed_tools, None);
         assert_eq!(s.body, "body");
     }
@@ -549,7 +560,6 @@ mod tests {
         assert_eq!(s.description, "from claude");
         // Claude's `allowed-tools` is deliberately dropped (ADR-0074).
         assert_eq!(s.allowed_tools, None);
-        assert!(!s.user_only);
     }
 
     #[test]
@@ -631,8 +641,16 @@ mod tests {
         assert_eq!(lib.functions[0].signature, "skill::foreign::hi()");
     }
 
+    /// ADR-0229: a foreign `disable-model-invocation` is an ignored unknown
+    /// key — the skill loads and is disclosed like any other, with no warning
+    /// (foreign files are not entanglement's to correct).
     #[test]
-    fn foreign_disable_model_invocation_maps_to_user_only() {
+    fn foreign_disable_model_invocation_is_ignored() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(WarnCounter(
+            count.clone(),
+            "disable-model-invocation",
+        ));
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_skill(
@@ -642,7 +660,38 @@ mod tests {
         );
         let reg = load_registry_in(root, &no_user(root)).unwrap();
 
-        assert!(reg.get("deploy").unwrap().user_only);
+        assert!(reg.get("deploy").is_some());
+        assert!(reg.disclosures().iter().any(|d| d.name == "deploy"));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// ADR-0229: a native skill still declaring `user_only` loads, is
+    /// disclosed, and warns once — a reload re-parsing the same file stays
+    /// quiet, but a key removed and later restored warns again.
+    #[test]
+    fn native_user_only_loads_disclosed_and_warns_once_per_sighting() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone(), "user_only"));
+        let warned = || count.load(std::sync::atomic::Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skills = root.join(".entanglement").join("skills");
+        let with_key = "---\nname: ship\ndescription: d\nuser_only: true\n---\nb";
+        write_skill(&skills, "ship", with_key);
+        let reg = load_registry_in(root, &no_user(root)).unwrap();
+        assert!(reg.disclosures().iter().any(|d| d.name == "ship"));
+        assert_eq!(warned(), 1);
+
+        load_registry_in(root, &no_user(root)).unwrap();
+        assert_eq!(warned(), 1, "a reload must not repeat the removal warning");
+
+        write_skill(&skills, "ship", "---\nname: ship\ndescription: d\n---\nb");
+        load_registry_in(root, &no_user(root)).unwrap();
+        assert_eq!(warned(), 1, "a clean load never warns");
+
+        write_skill(&skills, "ship", with_key);
+        load_registry_in(root, &no_user(root)).unwrap();
+        assert_eq!(warned(), 2, "a reintroduced key warns again");
     }
 
     #[test]
@@ -698,37 +747,20 @@ mod tests {
     }
 
     #[test]
-    fn disclosures_exclude_user_only_and_are_name_sorted() {
+    fn disclosures_are_name_sorted() {
         let mut reg = SkillRegistry::default();
-        reg.insert(SkillMeta {
-            name: "zebra".into(),
-            description: "z".into(),
-            user_only: false,
-            allowed_tools: None,
-            root_dir: None,
-            body: String::new(),
-            lib: None,
-        });
-        reg.insert(SkillMeta {
-            name: "deploy".into(),
-            description: "danger".into(),
-            user_only: true,
-            allowed_tools: None,
-            root_dir: None,
-            body: String::new(),
-            lib: None,
-        });
-        reg.insert(SkillMeta {
-            name: "alpha".into(),
-            description: "a".into(),
-            user_only: false,
-            allowed_tools: None,
-            root_dir: None,
-            body: String::new(),
-            lib: None,
-        });
+        for name in ["zebra", "alpha"] {
+            reg.insert(SkillMeta {
+                name: name.into(),
+                description: "d".into(),
+                allowed_tools: None,
+                root_dir: None,
+                body: String::new(),
+                lib: None,
+            });
+        }
         let d = reg.disclosures();
-        assert_eq!(d.len(), 2, "user_only skill must be withheld: {d:?}");
+        assert_eq!(d.len(), 2);
         assert_eq!(d[0].name, "alpha");
         assert_eq!(d[1].name, "zebra");
     }
