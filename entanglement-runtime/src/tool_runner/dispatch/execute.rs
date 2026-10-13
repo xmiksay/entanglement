@@ -34,6 +34,7 @@ impl Dispatcher {
             tool,
             input,
             envelope,
+            rhai_path,
         } = call;
         let session = &self.session;
         // `update_tasks` carries no host resource (#231, ADR-0049): emit its
@@ -63,20 +64,21 @@ impl Dispatcher {
                     violation = ?violation.lines(),
                     "tool call failed pre-dispatch schema validation"
                 );
-                // An MCP schema reaches the model only in a tool result; a
-                // repeat violation points back instead of resending it.
-                let already_delivered = {
-                    let mut delivered = self
-                        .advertising
-                        .delivered
-                        .lock()
-                        .expect("delivered-schema mutex poisoned");
-                    let seen = delivered.contains(session, &tool);
-                    delivered.mark(session, &tool);
-                    seen
+                let reader = match via {
+                    // An MCP schema reaches the model only in a tool result;
+                    // a repeat violation points back instead of resending it.
+                    Via::Model => arg_validate::Reader::Model {
+                        schema_delivered: self.mark_delivered(&tool),
+                    },
+                    // A script's decline lands in the script, never in the
+                    // model's context: it neither marks the schema delivered
+                    // nor may point back at one (#844).
+                    Via::Script(_) => arg_validate::Reader::Script {
+                        rhai_path: rhai_path.as_deref(),
+                    },
                 };
-                let mut output = arg_validate::decline_text(&spec, &violation, already_delivered);
-                if self.validation.note(session, &tool, &input, true) {
+                let mut output = arg_validate::decline_text(&spec, &violation, reader);
+                if self.note_failure(via, &tool, &input, true) {
                     output.push_str("\n\n");
                     output.push_str(arg_validate::LOOP_BREAKER_NOTE);
                 }
@@ -140,7 +142,7 @@ impl Dispatcher {
         let mut output_text = entanglement_core::content_text(&content);
         // Two identical failing calls in a row mean the schema was never the
         // problem (#560, ADR-0196 §6).
-        if self.validation.note(session, &tool, &input, is_error) && is_error {
+        if self.note_failure(via, &tool, &input, is_error) && is_error {
             output_text.push_str("\n\n");
             output_text.push_str(arg_validate::LOOP_BREAKER_NOTE);
             content.push(entanglement_core::ContentPart::text(format!(
@@ -166,6 +168,27 @@ impl Dispatcher {
             duration_ms: Some(duration_ms),
             exit_code,
         }
+    }
+
+    /// Mark `tool`'s schema delivered to this session, returning whether it
+    /// already was.
+    fn mark_delivered(&self, tool: &str) -> bool {
+        let mut delivered = self
+            .advertising
+            .delivered
+            .lock()
+            .expect("delivered-schema mutex poisoned");
+        let seen = delivered.contains(&self.session, tool);
+        delivered.mark(&self.session, tool);
+        seen
+    }
+
+    /// Feed the loop-breaker, returning whether this repeats the previous
+    /// failure. Only model calls count: the streak is about the model
+    /// retrying one shape, and a script's calls in between must neither
+    /// trip nor reset it (#844).
+    fn note_failure(&self, via: Via<'_>, tool: &str, input: &str, is_error: bool) -> bool {
+        matches!(via, Via::Model) && self.validation.note(&self.session, tool, input, is_error)
     }
 }
 

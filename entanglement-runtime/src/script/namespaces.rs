@@ -16,7 +16,7 @@ use crate::rhai_ident::{plan_mcp, plan_skills, RhaiName};
 use crate::skills::SkillRegistry;
 use crate::tool_runner::Dispatcher;
 
-use super::bindings::{call_binding, runtime_err};
+use super::bindings::runtime_err;
 use super::BindingCall;
 
 /// One MCP tool a script may call.
@@ -108,10 +108,12 @@ pub(super) fn register(
             continue;
         };
         let module = modules.entry(module_path.to_string()).or_default();
-        let (t, name) = (tx.clone(), entry.registered.clone());
-        module.set_native_fn(tool_id, move |args: rhai::Map| call_mcp(&t, &name, args));
-        let (t, name) = (tx.clone(), entry.registered.clone());
-        module.set_native_fn(tool_id, move || call_mcp(&t, &name, rhai::Map::new()));
+        let (t, name, at) = (tx.clone(), entry.registered.clone(), path.clone());
+        module.set_native_fn(tool_id, move |args: rhai::Map| {
+            call_mcp(&t, &name, &at, args)
+        });
+        let (t, name, at) = (tx.clone(), entry.registered.clone(), path.clone());
+        module.set_native_fn(tool_id, move || call_mcp(&t, &name, &at, rhai::Map::new()));
     }
     for (module_path, module) in modules {
         engine.register_static_module(module_path, module.into());
@@ -139,6 +141,7 @@ pub(super) fn register(
 fn call_mcp(
     tx: &UnboundedSender<BindingCall>,
     tool: &str,
+    path: &str,
     args: rhai::Map,
 ) -> Result<String, Box<EvalAltResult>> {
     let input: serde_json::Value =
@@ -147,7 +150,7 @@ fn call_mcp(
                 "{tool}: arguments are not JSON-representable: {e}"
             ))
         })?;
-    call_binding(tx, tool, input)
+    super::send_binding(tx, tool, Some(path), input)
 }
 
 #[cfg(test)]
@@ -176,7 +179,8 @@ mod tests {
     }
 
     /// Run `script` against the generated namespaces, answering each bridge
-    /// call with its tool name + input so the script can return them.
+    /// call with its tool name + input (+ ` @<rhai path>` for a namespace
+    /// call) so the script can return them.
     fn eval(mcp: &[McpEntry], skills: &SkillRegistry, script: &str) -> Result<String, String> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BindingCall>();
         let mut engine = Engine::new_raw();
@@ -189,7 +193,10 @@ mod tests {
         register(&mut engine, tx, &view, skills);
         let responder = std::thread::spawn(move || {
             while let Some(call) = rx.blocking_recv() {
-                let _ = call.reply.send(Ok(format!("{} {}", call.tool, call.input)));
+                let at = call.rhai_path.map(|p| format!(" @{p}")).unwrap_or_default();
+                let _ = call
+                    .reply
+                    .send(Ok(format!("{} {}{at}", call.tool, call.input)));
             }
         });
         let out = engine
@@ -247,8 +254,22 @@ mod tests {
         .unwrap();
         assert_eq!(
             out,
-            r#"mcp__my-gh__search_issues {"q":"x"} | mcp__my-gh__call {}"#
+            r#"mcp__my-gh__search_issues {"q":"x"} @mcp::my_gh::search_issues | mcp__my-gh__call {} @mcp::my_gh::call_"#
         );
+    }
+
+    /// The call carries the path it was made through, which a decline shows
+    /// (#844): a server named `a__b` can't be split back out of
+    /// `mcp__a__b__x`.
+    #[test]
+    fn a_namespace_call_carries_its_own_rhai_path() {
+        let out = eval(
+            &[entry("a__b", "x")],
+            &SkillRegistry::default(),
+            "mcp::a__b::x()",
+        )
+        .unwrap();
+        assert_eq!(out, "mcp__a__b__x {} @mcp::a__b::x");
     }
 
     #[test]
@@ -280,7 +301,7 @@ mod tests {
             r#"skill::git_tools::search("bug")"#,
         )
         .unwrap();
-        assert_eq!(out, r#"mcp__gh__find {"q":"bug"}"#);
+        assert_eq!(out, r#"mcp__gh__find {"q":"bug"} @mcp::gh::find"#);
         assert!(
             eval(&[], &skills, "skill::git_tools::helper(1)").is_err(),
             "a private fn stays private"

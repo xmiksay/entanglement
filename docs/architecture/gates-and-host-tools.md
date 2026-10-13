@@ -803,10 +803,20 @@ the same way against the server's real schema, so a violation never reaches
 the server; its decline shows the example as the `mcp {server, tool, args}`
 call that reaches the tool ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)). Two guards ride alongside: per-session
 delivered-schema tracking (`tool_advertising::DeliveredSchemas`, marked by
-every `mcp_tools` delivery and every decline — never re-send a schema already
-in context; reply with the diff instead) and a two-identical-failures loop breaker (a repeated
-identical failure means the schema isn't the problem — stop retrying the
-same shape).
+every `mcp_tools` delivery and every decline to the model — never re-send a
+schema already in context; reply with the diff instead) and a
+two-identical-failures loop breaker (a repeated identical failure means the
+schema isn't the problem — stop retrying the same shape). Both are about the
+**model's** context, so only `Via::Model` calls touch them (#844): a script's
+binding call (`Via::Script`) is validated the same way but never marks a
+schema delivered, never consults the dedup, and never feeds or resets the
+loop-breaker streak. Its decline (`arg_validate::Reader::Script`) always
+carries the full schema. An MCP tool's example is the rhai call that reaches
+it: the `mcp::<server>::<tool>` path the binding itself was called through,
+carried on `dispatch::Call::rhai_path` (a server named `a__b` makes the
+registered name ambiguous to split), with `rhai_ident::rhai_literal` args —
+never the `mcp` envelope a script cannot call. A native tool's example is
+labelled as the tool input its positional binding builds.
 
 Parallel tool calls are unaffected by any of this: ADR-0061's batch
 `ToolExec` parking already resolves a batch of calls in any order with every
