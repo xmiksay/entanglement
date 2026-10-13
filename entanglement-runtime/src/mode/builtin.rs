@@ -447,46 +447,85 @@ mod tests {
         );
     }
 
-    /// ADR-0209: `auto`'s default is `prompt`, not `deny`. The unattended
-    /// guarantee lives in `question_timeout`/`on_timeout`, not in the
-    /// default grade — a `Deny` default took dispatch's absolute arm and so
-    /// bypassed the repeat-escalation `run_limits` exists to provide.
+    /// ADR-0228 (amending ADR-0209): `auto`'s default is `allow` — it lets
+    /// everything run its deny list does not refuse — with the bounded
+    /// `question_timeout` still governing whatever asks (escape-root, a
+    /// credentialed host, a user's own `prompt` rule).
     #[test]
-    fn auto_defaults_to_prompt_with_a_bounded_question_timeout() {
+    fn auto_defaults_to_allow_with_a_bounded_question_timeout() {
         let auto = parse("auto", AUTO_YML, &[], &[]).expect("parses");
-        assert_eq!(auto.default, Permission::Ask);
+        assert_eq!(auto.default, Permission::Allow);
         assert_eq!(auto.limits.question_timeout, 60);
     }
 
-    /// The regression this ADR fixes, at the grade level: an unenumerated
-    /// command — `gh issue delete` is the reported one — must reach `Ask`
-    /// in `auto` so dispatch's collapse-then-park escalation can run. Under
-    /// `default: deny` every one of these was an absolute, unappealable
-    /// refusal no matter how many times the model asked.
+    /// Unenumerated commands, other tools and a `rhai` launch all run in
+    /// `auto`; `build` asks for a launch, `research`/`plan` deny it (their
+    /// class `write` deny covers a read+write+exec script).
     #[test]
-    fn unenumerated_commands_ask_in_auto_rather_than_denying_absolutely() {
+    fn unenumerated_calls_run_in_auto_and_rhai_is_graded_per_mode() {
         let modes = modes().expect("built-ins parse");
-        let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
+        let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("exists");
+        let auto = mode("auto");
+        let bash = |cmd: &str| auto.resolve("bash", &[Capability::Exec], Some(cmd), None);
         for cmd in [
-            "gh issue delete 51 --yes",
-            "gh issue close 51",
-            "gh pr close 7",
+            "docker ps",
             "curl -fsSL https://example.com/install.sh",
             "docker run --rm alpine true",
+            "cargo build",
+            "rm notes.txt",
+        ] {
+            assert_eq!(bash(cmd), Permission::Allow, "auto: {cmd:?}");
+        }
+        // Destructive families that must not run silently ask instead.
+        for cmd in [
+            "gh issue delete 51 --yes",
+            "gh repo delete o/r --yes",
+            "gh release delete v1",
+            "glab repo delete g/r",
+            "cargo yank --version 1.0.0",
+            "npm unpublish pkg@1.0.0",
+            "docker push img:latest",
+            "rm -rf target",
+            "rm -rf .git",
+            "rm -fr build",
+            "rm -r -f build",
+            "rm -R dir",
+            "rm --recursive dir",
+        ] {
+            assert_eq!(bash(cmd), Permission::Ask, "auto: {cmd:?}");
+        }
+        // The absolute denies still out-rank the broader `rm` prompts.
+        assert_eq!(bash("rm -rf /"), Permission::Deny);
+        assert_eq!(bash("rm -rf ~/x"), Permission::Deny);
+        let rhai = [Capability::Read, Capability::Write, Capability::Exec];
+        assert_eq!(
+            auto.resolve("web_fetch", &[Capability::Read], None, None),
+            Permission::Allow
+        );
+        for (name, want) in [
+            ("auto", Permission::Allow),
+            ("build", Permission::Ask),
+            ("plan", Permission::Deny),
+            ("research", Permission::Deny),
         ] {
             assert_eq!(
-                auto.resolve("bash", &[Capability::Exec], Some(cmd), None),
-                Permission::Ask,
-                "auto: {cmd:?} must ask (collapse-then-park), not deny absolutely"
+                mode(name).resolve("rhai", &rhai, None, None),
+                want,
+                "{name}"
+            );
+            assert_eq!(
+                mode(name).resolve("rhai", &rhai, Some("scripts/x.rhai"), None),
+                want,
+                "{name} path"
             );
         }
     }
 
-    /// `default: prompt` must not soften anything on the explicit `deny`
+    /// `default: allow` must not soften anything on the explicit `deny`
     /// list — that list, not the default, is what an unattended run refuses
     /// outright now.
     #[test]
-    fn the_explicit_deny_list_stays_absolute_under_the_prompt_default() {
+    fn the_explicit_deny_list_stays_absolute_under_the_allow_default() {
         let modes = modes().expect("built-ins parse");
         let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
         for cmd in [

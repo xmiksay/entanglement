@@ -15,8 +15,6 @@ use entanglement_core::{SessionId, ToolEnvelope, ToolOverlayEntry};
 
 use crate::cancel::TaskCanceller;
 use crate::permission::ancestor_chain;
-#[cfg(feature = "rhai")]
-use crate::permission_path::grading_arg;
 use crate::subagent::SpawnGuard;
 use crate::tool_runner::dispatch::{Call, Dispatcher};
 
@@ -83,6 +81,8 @@ fn dispatcher(
         limits,
         denials: ctx.denials.clone(),
         http_gate: ctx.http_gate.clone(),
+        trust: ctx.trust.clone(),
+        files_root: ctx.plan_root.clone(),
     }
 }
 
@@ -92,22 +92,14 @@ pub(super) async fn rhai(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
     overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    tool: String,
     session: SessionId,
     seq: u64,
     request_id: String,
     input: String,
 ) {
-    // `rhai`'s own grade resolves through the same resolver + chain clamp as
-    // a direct call (ADR-0207 stage 4b), inside the detached task since a
-    // pluggable resolver may hit a DB. Root-relative (#485, ADR-0125).
-    let arg = grading_arg(
-        &tool,
-        &input,
-        ctx.escape_root.as_ref().map(|er| er.root.as_path()),
-    );
     let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
     let launch = crate::script::Launch {
+        root: ctx.plan_root.clone(),
         skills: ctx
             .skills
             .read()
@@ -130,21 +122,10 @@ pub(super) async fn rhai(
     let background = crate::script::is_background(&input);
     let cancels = ctx.cancels.clone();
     let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
-        let self_perm = crate::tool_runner::apply_grant(
-            &*dispatcher.grants,
-            &session,
-            &tool,
-            arg.as_deref(),
-            crate::tool_runner::resolve_effective(
-                &*dispatcher.resolver,
-                &dispatcher.chain,
-                &tool,
-                &input,
-            )
-            .await,
-            &dispatcher.mode,
-        );
-        crate::script::run_rhai(dispatcher, launch, self_perm, request_id, input, run_stop).await;
+        // The launch decision (trusted folder, card, unattended —
+        // ADR-0228) runs in the detached task: it may park on the card, and
+        // a pluggable resolver may hit a DB.
+        crate::script::run_rhai(dispatcher, launch, request_id, input, run_stop).await;
     }));
     if !background {
         cancels.register(

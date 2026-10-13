@@ -1,10 +1,10 @@
 //! The permission-grading primitives `dispatch` composes (issue #451, split
-//! out of `tool_runner.rs`): [`apply_grant`] upgrades a resolved `Ask` to
-//! `Allow` off an existing grant, [`resolve_effective`] walks a call's
-//! ancestor chain through the pluggable [`PermissionResolver`]. Both are
-//! `pub(crate)` and re-exported at `tool_runner::{apply_grant,
-//! resolve_effective}` — `ladder::graded` and (for `resolve_effective`
-//! alone) `propose_plan` call them by that path.
+//! out of `tool_runner.rs`): [`grade_call`] composes a call's whole grade
+//! (overlay entry or mode grade, then [`apply_grant`]'s `Ask`→`Allow` off an
+//! existing grant, then the trusted-script write floor), and
+//! [`resolve_effective`] walks a call's ancestor chain through the pluggable
+//! [`PermissionResolver`]. `resolve_effective` is re-exported at
+//! `tool_runner::resolve_effective` for `propose_plan`.
 
 use std::path::Path;
 
@@ -13,6 +13,7 @@ use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEnt
 use crate::permission::{clamp_to_base, min_permission};
 use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
+use crate::rhai_trust::Trust;
 use crate::tools::ToolRegistry;
 
 /// Everything a call's grade depends on besides the call itself — what
@@ -30,13 +31,21 @@ pub(crate) struct GradeInputs<'a> {
     pub overlay_entry: Option<&'a ToolOverlayEntry>,
     pub ceiling: &'a PermissionProfile,
     pub root: Option<&'a Path>,
+    /// The trusted folders and skill dirs plus the root a relative file-tool
+    /// `path` resolves against — for the write floor (ADR-0228); `None`
+    /// where the floor does not apply.
+    pub floor: Option<(&'a Trust, &'a Path)>,
 }
 
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
 /// on: the nearest overlay enable entry's grade (ceiling-clamped) when one
 /// matched, else the mode grade clamped across the ancestor chain — then
-/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Hooks, the
-/// escape-root gate and the overlay *deny* stay with the caller.
+/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a
+/// `write`/`edit`/`apply_patch` of a `*.rhai` file inside a `rhai.trusted`
+/// folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
+/// whatever allowed it (ADR-0228: such a file later runs or loads unasked,
+/// so authoring one is never unseen); a `Deny` stays `Deny`. Hooks, the escape-root gate and the overlay *deny* stay
+/// with the caller.
 pub(crate) async fn grade_call(
     g: &GradeInputs<'_>,
     tool: &str,
@@ -66,6 +75,14 @@ pub(crate) async fn grade_call(
         None => resolve_effective(g.resolver, g.chain, tool, input).await,
     };
     let perm = apply_grant(g.grants, g.session, tool, arg.as_deref(), base, g.mode);
+    let perm = if perm == Permission::Allow
+        && g.floor
+            .is_some_and(|(trust, root)| crate::rhai_trust::floored_write(tool, input, root, trust))
+    {
+        Permission::Ask
+    } else {
+        perm
+    };
     (perm, arg)
 }
 
@@ -112,9 +129,7 @@ pub(crate) fn apply_grant(
 /// needed. An empty chain is impossible — the leaf session is always present —
 /// but defaults to `Deny` if one ever arrives.
 ///
-/// `pub(crate)`: `rhai`'s own launch gate (`ladder::Intercept::Rhai`)
-/// resolves through it too, so a script's launch grades exactly like a
-/// direct call.
+/// `pub(crate)` for `propose_plan`'s own gate.
 pub(crate) async fn resolve_effective(
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],

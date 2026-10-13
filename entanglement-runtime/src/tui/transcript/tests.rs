@@ -391,6 +391,42 @@ fn approval_tail_footer_shows_session_and_always_shortcuts() {
     );
 }
 
+/// ADR-0228: a `rhai` launch card offers Run all / Ask per command / Reject,
+/// plus the scope letters that also grant the script's path.
+#[test]
+fn approval_tail_footer_shows_the_rhai_launch_choices() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(
+        &mut app,
+        &sid,
+        1,
+        "t1",
+        crate::tool_names::RHAI_TOOL,
+        "40 + 2",
+    );
+    let body = render_body_lines(&mut app, 100);
+    let text: String = body
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    for want in [
+        "[r]",
+        "run all",
+        "[y]",
+        "ask per command",
+        "[s]",
+        "[a]",
+        "[n]",
+        "reject",
+    ] {
+        assert!(text.contains(want), "{want}: {text:?}");
+    }
+    assert!(!text.contains("[d]"), "{text:?}");
+}
+
 #[test]
 fn approval_tail_footer_shows_plan_accept_keys_not_generic_scopes() {
     // #560, ADR-0207 §7 extension: `propose_plan` gets its own `[u]`/`[b]`

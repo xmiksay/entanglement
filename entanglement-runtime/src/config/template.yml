@@ -39,8 +39,11 @@
 # a mode allows, never loosen it. Same grammar a mode body uses: `default` sets
 # the fallback grade, `allow`/`deny`/`prompt` add rules — a tool name, `*`, a
 # capability class (read | write | exec | plan | control), or a scoped
-# `tool(pattern)`/`tool{pattern}`. Longest matching key wins. The built-in
-# default is allow-all, so an untouched block changes nothing.
+# `tool(pattern)`/`tool{pattern}`. A rule naming the tool outranks a
+# capability-class rule; a `*` rule competes with a named rule by key length
+# and with a class rule by strictness (the stricter wins); within each kind
+# the longest key wins; ties go to the stricter grade. The built-in default
+# is allow-all, so an untouched block changes nothing.
 #permissions:
 #  default: allow
 #  prompt: [bash]
@@ -48,11 +51,23 @@
 
 # Per-mode tuning (ADR-0207 §5) — adds allow/deny/prompt rules onto one of the
 # four built-in modes (research | plan | build | auto). There is no syntax to
-# define a fifth mode, or to remove a shipped rule (add a longer, more specific
-# rule instead — it out-ranks a shorter shipped one).
+# define a fifth mode, or to remove a shipped rule (add one that out-ranks it
+# instead, per the precedence under `permissions:` above — e.g. a longer rule
+# naming the same tool).
+# `auto` runs everything except its deny list; its prompt list (deletions
+# such as `gh … delete`, `cargo yank`, recursive `rm`) and writes of trusted
+# scripts or skill files still ask. `build` asks before a rhai script
+# starts. A `rhai` rule grades a script launch on its path, e.g.
+# `allow: ["rhai(scripts/deploy/*)"]`; an inline script matches only a bare
+# `rhai` rule. Cleanup allowances are yours to add: in `auto` below, the
+# exact, longer keys out-rank the shipped `bash(rm -r*)` prompt. Prefer exact
+# keys here — `*` matches spaces too, so `bash(rm -rf target*)` would also
+# match `rm -rf target /`.
 #modes:
 #  research:
 #    allow: ["bash(cargo check)"]
+#  auto:
+#    allow: ["bash(rm -rf target)", "bash(rm -rf ./target)"]
 
 # Lifecycle hooks — external commands run around tool execution and on prompt
 # ingress (policy / telemetry / formatting). Each command runs via `sh -c` with
@@ -163,6 +178,34 @@
 #  example.com:
 #    cookies:
 #      session: "${EXAMPLE_SESSION}"
+
+# Trusted rhai script folders (ADR-0228). A `rhai {"path": ...}` script (a
+# `.rhai` file — nothing else runs by path) whose real (symlink-resolved)
+# path lies inside one of these folders runs with NO approval card, and
+# every call it makes is allowed — prompts, paths outside the project root
+# and authenticated `http()` calls included. Only explicit denies still stop
+# it (a mode `deny:` rule — of `rhai` itself too — the `permissions:`
+# ceiling, a /disable, a pre_tool_use hook). Any other script is graded like
+# any tool call: allowed, it runs asking per command; asked, it is shown
+# once: run all, ask per command, or reject. Allowed in this file AND in a
+# project's `.entanglement/config.yml`; the lists add up. Project entries
+# are relative to the project root, user entries to this file's folder (`~`
+# expands). A folder from THIS file is not trusted in a mode the project's
+# config gives `prompt:` rules — in any mode if the project's `permissions:`
+# has a `prompt` list or `default: prompt` — the repository asked to be
+# consulted there.
+# SECURITY: anyone who can write into a trusted folder can run code as you,
+# with your `http_auth` credentials — trusting a repository's folder means
+# trusting every commit to it. That includes the agent: in every mode, a
+# write/edit/apply_patch of a `.rhai` file inside a trusted folder (or of a
+# skill's SKILL.md/lib.rhai) always asks, even inside a "run all" script —
+# but a `bash` command and an MCP filesystem server's writes cannot be
+# checked: if the agent can reach a trusted folder that way, anything it
+# writes there runs unasked. Keep trusted folders out of the agent's write
+# reach. Read at startup only.
+#rhai:
+#  trusted:
+#    - ~/.config/entanglement/scripts
 
 # Web search — opt-in, provider-side (#305). When enabled, the provider runs a
 # web search MID-TURN, server-side (z.ai `zai`/`zai_paas` and Anthropic only), and cites the

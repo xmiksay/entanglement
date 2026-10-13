@@ -155,15 +155,29 @@ impl Harness {
             .unwrap();
         let mut out = Vec::new();
         while let Some(ev) = next(&mut sub).await {
-            if let OutEvent::ToolRequest { request_id, .. } = &ev {
-                self.holly
-                    .send(InMsg::Reject {
+            if let OutEvent::ToolRequest {
+                request_id, tool, ..
+            } = &ev
+            {
+                // A `rhai` launch card (ADR-0228) is answered Ask per
+                // command, so the script's nested calls meet the gates
+                // under test; every other card is rejected.
+                let msg = if tool == "rhai" {
+                    InMsg::Approve {
+                        session: self.sid.clone(),
+                        request_id: request_id.clone(),
+                        scope: Default::default(),
+                        mode: None,
+                        run_all: false,
+                    }
+                } else {
+                    InMsg::Reject {
                         session: self.sid.clone(),
                         request_id: request_id.clone(),
                         reason: None,
-                    })
-                    .await
-                    .unwrap();
+                    }
+                };
+                self.holly.send(msg).await.unwrap();
             }
             let done = matches!(ev, OutEvent::Done { .. });
             out.push(ev);

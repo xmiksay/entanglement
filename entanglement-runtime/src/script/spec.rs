@@ -51,6 +51,9 @@ Generated namespaces:
   skill::<skill>::<fn>(...) -> a function from a skill's lib.rhai; load_skill lists them.
   Nested rhai, the mcp envelope and the session tools (agent, ask_user, poll, list_*, load_skill, ...) cannot be called from a script.
 
+Input:
+  args -> the call's `args` object as a constant map (#{} when none): read args.n or args["n"]; assigning to it throws. Functions defined in the script do not see it — pass values in.
+
 Pure converters — no IO, no permission check:
   parse_json(text) / to_json(value) / parse_yaml(text) / to_yaml(value); parse_* throws on invalid input; JSON/YAML null becomes ().
 
@@ -72,7 +75,15 @@ pub fn rhai_spec() -> ToolSpec {
              in one call instead of several read/edit calls or shelling \
              out to python/node. Prefer it whenever a task needs more than one \
              conditional or a transform over structured data; prefer a direct \
-             tool call for a single simple operation.\n\n{BINDING_REFERENCE}\n\n\
+             tool call for a single simple operation.\n\n\
+             Pass exactly one of `script` (inline source) or `path` (a predefined \
+             .rhai file — a project script, or one a skill ships; the runtime reads \
+             it). The launch is permission-graded like any tool (on its `path`); \
+             a script in a folder the user trusts runs without asking. When it \
+             asks, the user runs it whole, has each command asked, or rejects \
+             it. `args` is bound in the script as the constant map `args`, for \
+             either kind: {{\"path\": \"scripts/report.rhai\", \"args\": \
+             {{\"days\": 7}}}}.\n\n{BINDING_REFERENCE}\n\n\
              Load the `rhai` skill for worked examples and detail."
         ),
         serde_json::json!({
@@ -80,7 +91,18 @@ pub fn rhai_spec() -> ToolSpec {
             "properties": {
                 "script": {
                     "type": "string",
-                    "description": "Rhai source. The value of its last expression is returned."
+                    "description": "Inline Rhai source. The value of its last expression \
+                        is returned. Exactly one of script/path."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "A .rhai script file to run instead of inline source \
+                        (project-relative or absolute). Exactly one of script/path."
+                },
+                "args": {
+                    "type": "object",
+                    "description": "Named values the script reads as the constant map \
+                        `args` (args.name). Works with script and path."
                 },
                 "timeout": {
                     "type": "integer",
@@ -97,7 +119,7 @@ pub fn rhai_spec() -> ToolSpec {
                         finishes. Default false."
                 }
             },
-            "required": ["script"]
+            "required": []
         }),
     )
 }
@@ -211,6 +233,18 @@ mod tests {
             desc.contains("skill::<skill>::<fn>("),
             "skill namespace undocumented"
         );
+        // ADR-0228: the two run kinds and the constant `args` map.
+        assert!(desc.contains("exactly one of `script`"), "XOR undocumented");
+        assert!(desc.contains("constant map"), "args undocumented");
+        assert!(
+            desc.contains("trusts runs without asking") && desc.contains("graded like any tool"),
+            "trusted folders undocumented"
+        );
+        let schema = rhai_spec().schema;
+        for key in ["script", "path", "args", "timeout", "background"] {
+            assert!(schema["properties"][key].is_object(), "{key} missing");
+        }
+        assert_eq!(schema["required"], serde_json::json!([]));
     }
 
     /// The other direction: nothing in the reference is invented — each name

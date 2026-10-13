@@ -65,9 +65,8 @@ discovery tools `list_agents`/`list_models`/`list_skills`/`load_skill`/
 first resolution and returned byte-identical every later round, on every
 wire. Nothing else is advertised: MCP tools are reached only through
 `mcp(server, tool, args)`, their schemas delivered by `mcp_tools` as a tool
-result; `glob`/`grep`/`call`/`http` are script-only `rhai` bindings. (Until #820,
-registered skill-declared `skill__*` tools are appended to the snapshot —
-they have no other path.) Core still advertises
+result; `glob`/`grep`/`call`/`http` are script-only `rhai` bindings. Core
+still advertises
 whatever the `tool_spec_resolver` yields, re-consulted every round; that it
 never changes is the runtime's snapshot, not a core rule. The system prompt
 carries no skill roster (`list_skills` does) and one static tool-conventions
@@ -1060,9 +1059,13 @@ it switched to; the same turn continues, implementing the plan directly.
 
 **Which mode is the approver's choice** (#560): `InMsg::Approve` carries an
 optional `mode`. The prompt offers `[u]` accept → `auto`, `[b]` accept →
-`build`, `[n]` reject. A bare accept (no `mode`) goes to `auto`, since
-accepting a plan usually means "go do it" and `auto` is bounded by its budgets,
-its timeout and a deny list covering every network-mutating command. An
+`build`, `[n]`/`[e]` reject with a reason the model reads. A bare accept (no
+`mode`) goes to `auto`, since accepting a plan usually means "go do it". Since
+[ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+`auto` runs everything except its deny list (destructive and publishing
+commands) and its prompt list (deletions such as `gh … delete`, `cargo yank`,
+recursive `rm`), within its run budgets and `question_timeout` — the approver
+who wants each unlisted call seen picks `[b]` `build` instead. An
 unrecognised value fails *safe* to `build` rather than open to `auto` — a
 mistyped cautious choice must not run a plan unattended. `propose_plan` may
 *suggest* `build` or `auto` through its own optional `mode` argument; that only

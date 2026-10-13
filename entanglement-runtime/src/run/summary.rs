@@ -54,7 +54,8 @@ fn inner_call(tool: &str, envelope: &Value) -> Option<(String, String)> {
 
 /// The human name of a tool: `mcp__<server>__<tool>` and
 /// `skill__<skill>__<tool>` read `server › tool`; every other name is shown
-/// as is.
+/// as is. `skill__*` tools were removed (ADR-0228), but old session logs
+/// still replay calls to them.
 pub(crate) fn display_name(tool: &str) -> Cow<'_, str> {
     let namespaced = tool
         .strip_prefix("mcp__")
@@ -126,7 +127,8 @@ fn ask_user_arg(value: &Value) -> Option<String> {
 }
 
 /// The first scalar value of a JSON object — the hint for a call whose input
-/// shape is server-defined (MCP, endpoints, skill tools, unknown names).
+/// shape is server-defined (MCP tools, unknown names, and the removed
+/// endpoint/skill tools an old session log replays).
 fn first_scalar(value: &Value) -> Option<String> {
     value.as_object()?.values().find_map(|v| match v {
         Value::String(s) => Some(truncate_chars(s, SCALAR_CHARS)),

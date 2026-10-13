@@ -114,6 +114,7 @@ mod migrate_permissions;
 mod mode_warn;
 mod raw;
 pub mod retired;
+mod rhai_trusted;
 pub mod state_dir;
 pub mod statusline;
 pub mod theme;
@@ -191,6 +192,10 @@ pub struct Config {
     /// they grade, but never unlock a credentialed call in an unattended
     /// mode (ADR-0227).
     pub untrusted_http_rules: http_auth::ProjectHttpRules,
+    /// `rhai.trusted` folders by layer, canonical (ADR-0228): a
+    /// `rhai(path)` inside one runs with no launch card, force-allowed —
+    /// a user-layer one not in a mode the project config prompts in.
+    pub rhai_trusted: crate::rhai_trust::TrustedFolders,
     /// Provider-side web search (#305). Disabled by default (a no-op).
     pub web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
@@ -241,6 +246,9 @@ pub struct Resolved {
     /// One line per retired key a layer still carried (ADR-0213) — ignored,
     /// reported by the caller once logging/stderr is ready.
     pub warnings: Vec<String>,
+    /// Each `rhai.trusted` folder (canonical) with the layer that listed it
+    /// first — the lists add up across layers, so there is no single winner.
+    pub rhai_trusted: Vec<(std::path::PathBuf, ConfigLayer)>,
 }
 
 impl Config {
@@ -295,6 +303,9 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
     let mut warnings = retired::strip_retired_keys(&mut raw_layers);
     warnings.extend(http_auth::strip_project_layer(&mut raw_layers));
+    let (trusted_layers, trusted_warnings) = rhai_trusted::extract(&mut raw_layers, root);
+    let rhai_trusted = rhai_trusted::folders(&trusted_layers, &raw_layers);
+    warnings.extend(trusted_warnings);
     let raw_layers = raw_layers.as_slice();
     let (untrusted_http_rules, http_rule_warnings) = http_auth::project_http_rules(raw_layers);
     warnings.extend(http_rule_warnings);
@@ -318,6 +329,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         mcp: raw.mcp,
         http_auth: raw.http_auth,
         untrusted_http_rules,
+        rhai_trusted,
         web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
@@ -339,5 +351,6 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
             .collect(),
         provenance: provenance(raw_layers),
         warnings,
+        rhai_trusted: trusted_layers,
     })
 }

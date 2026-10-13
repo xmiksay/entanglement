@@ -1,5 +1,5 @@
 //! The internal tool index the TUI `/tools` view browses: every host tool,
-//! runtime-owned pseudo-tool, skill-declared tool, skill,
+//! runtime-owned pseudo-tool, skill,
 //! and MCP server (its tools when connected), each with a kind label. Built
 //! fresh per call from live state — never cached.
 
@@ -44,15 +44,15 @@ pub fn index_rows(
 ) -> Vec<IndexRow> {
     let mut rows = Vec::new();
     for spec in registry.specs().into_iter().chain(runtime_owned_specs()) {
-        let (source, kind) = if spec.name.starts_with("mcp__") {
+        if spec.name.starts_with("mcp__") {
             continue; // listed per server below
-        } else if let Some(rest) = spec.name.strip_prefix("skill__") {
-            let skill = rest.split("__").next().unwrap_or_default();
-            (format!("skill:{skill}"), "skill")
-        } else {
-            ("built-in".to_string(), "tool")
-        };
-        rows.push(row(spec.name, &spec.description, source, kind));
+        }
+        rows.push(row(
+            spec.name,
+            &spec.description,
+            "built-in".to_string(),
+            "tool",
+        ));
     }
     for server in crate::mcp::roster(avail, active) {
         let source = format!("mcp:{}", server.name);
@@ -107,9 +107,7 @@ mod tests {
     #[test]
     fn rows_are_classified_by_source_and_unconnected_servers_get_one_row() {
         let mut registry = ToolRegistry::new();
-        for name in ["glob", "skill__git__log"] {
-            registry.register(Fake(name));
-        }
+        registry.register(Fake("glob"));
         let avail = AvailableMcp::default();
         avail.insert_user("kb", serde_yaml::from_str("url: https://kb/mcp").unwrap());
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
@@ -117,7 +115,6 @@ mod tests {
         let kind = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.kind);
         assert_eq!(kind("glob"), Some("tool"));
         assert_eq!(kind("list_mcp"), Some("tool"));
-        assert_eq!(kind("skill__git__log"), Some("skill"));
         assert_eq!(kind("kb"), Some("mcp"));
         let glob = rows.iter().find(|r| r.name == "glob").unwrap();
         assert_eq!(glob.description, "first line");

@@ -21,7 +21,9 @@ pub enum ApprovalKind {
     Plan,
     /// `request_mode` (always parks; approving switches the session's mode).
     Mode,
-    /// A `rhai` script binding whose own call graded `Ask`.
+    /// A `rhai` script binding whose own call graded `Ask` (tool
+    /// `<name> (rhai)`), or a `rhai` **launch card** (tool exactly `rhai`,
+    /// ADR-0228) — the one answered with `Approve.run_all`.
     Rhai,
 }
 

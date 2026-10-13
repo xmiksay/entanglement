@@ -70,6 +70,9 @@ pub mod layers;
 // The identifier mapping for generated rhai namespaces (ADR-0227).
 #[cfg(feature = "rhai")]
 pub mod rhai_ident;
+// `rhai.trusted` folders on disk: containment and the trusted-script write
+// floor (ADR-0228).
+pub mod rhai_trust;
 // Env vars no child process may inherit — `http_auth`'s secrets (ADR-0227).
 pub mod secret_env;
 mod user_dirs;

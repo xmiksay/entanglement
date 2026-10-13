@@ -72,17 +72,11 @@ use crate::run_limits;
 // The dispatch seam (issue #451, ADR-0227): `Dispatcher::run` grades and
 // executes one call into an `Outcome`, `Dispatcher::dispatch` replies to core
 // with it, and a rhai binding (`crate::script`) takes it back over the
-// bridge; `apply_grant`/`resolve_effective` live in `dispatch::grade`.
+// bridge; `resolve_effective` lives in `dispatch::grade`.
 mod dispatch;
 pub(crate) use dispatch::grade::resolve_effective;
 #[cfg(feature = "rhai")]
-pub(crate) use dispatch::{Call, Dispatcher, Outcome, ScriptCall, Via};
-// `apply_grant`'s only caller outside `dispatch` is the rhai route in
-// `ladder::graded`, which is feature-gated — so an ungated re-export is an
-// unused import in the `--no-default-features` lean build (ADR-0025) and
-// `make check-lean` fails it under `-D warnings`.
-#[cfg(feature = "rhai")]
-pub(crate) use dispatch::grade::apply_grant;
+pub(crate) use dispatch::{Call, Dispatcher, Outcome, Posture, ScriptCall, Via};
 
 /// The executor body behind [`ToolExecutorBuilder::spawn`] (#724). The
 /// per-seam semantics and defaults live on the builder's setters; this only
@@ -116,6 +110,8 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         discovery,
         workdirs,
         http_gate,
+        rhai_trusted,
+        skill_dirs,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -206,7 +202,12 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         let plan_root: std::path::PathBuf = escape_root
             .as_ref()
             .map(|er| er.root.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            .unwrap_or_else(|| {
+                // Canonical, like an escape root: a script `path` is graded
+                // root-relative by stripping it (ADR-0228).
+                let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                cwd.canonicalize().unwrap_or(cwd)
+            });
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `poll` tasks (#605).
         let registry = crate::agent_registry::AgentRegistry::default();
@@ -272,6 +273,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             catalog,
             workdirs,
             http_gate,
+            trust: Arc::new(crate::rhai_trust::Trust::new(rhai_trusted, &skill_dirs)),
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);

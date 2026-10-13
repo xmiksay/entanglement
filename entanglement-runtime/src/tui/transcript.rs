@@ -65,6 +65,21 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
             lines.push(Line::from(""));
             let mut footer = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
                 plan_accept_footer(&input, &theme)
+            } else if tool == crate::tool_names::RHAI_TOOL {
+                // A `rhai` launch card (ADR-0228): run the whole script
+                // force-allowed (this run only), or grade each nested call
+                // as it comes — `s`/`a` also grant the script's path, so
+                // its next launch runs Ask per command without a card.
+                vec![
+                    Span::styled("[r]", theme.fg(Slot::Success).bold()),
+                    Span::raw(" run all  "),
+                    Span::styled("[y]", theme.fg(Slot::Success).bold()),
+                    Span::raw(" ask per command  "),
+                    Span::styled("[s]", theme.fg(Slot::Success).bold()),
+                    Span::raw(" + session  "),
+                    Span::styled("[a]", theme.fg(Slot::Success).bold()),
+                    Span::raw(" + always  "),
+                ]
             } else {
                 // The three approval scopes (#174): `y` once, `s` for the rest
                 // of the session, `a` persisted to the grants file. All three

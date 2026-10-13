@@ -38,7 +38,10 @@ verbose: false
 # default/allow/deny/prompt grammar a permission mode body uses: `default` sets
 # the fallback grade, `allow`/`deny`/`prompt` add rules (a tool name, `*`, a
 # capability class read|write|exec|plan|control, or a scoped `tool(pattern)`/
-# `tool{pattern}`), longest matching key wins. This is a global ceiling clamped
+# `tool{pattern}`). A rule naming the tool outranks a capability-class rule;
+# a `*` rule competes with a named rule by key length and with a class rule
+# by strictness (the stricter wins); within each kind the longest key wins;
+# ties go to the stricter grade. This is a global ceiling clamped
 # least-privilege against the session's own permission mode: a rule here can
 # only *tighten* what a mode allows, never loosen it. The embedded default is
 # allow-all, so an untouched config changes nothing. This block is a pure

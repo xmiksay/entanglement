@@ -103,6 +103,22 @@ fn reject_if_weakens_class_deny(
     key: &str,
     capability_of: &dyn Fn(&str) -> Option<&'static [Capability]>,
 ) -> Result<()> {
+    // A scoped `*` rule names no tool the guard can resolve, yet against a
+    // tool spelling a class's own name (`write`) — where that class key
+    // counts as naming the tool — it competes by length: a `*(scripts/*)`
+    // allow would beat `deny: [write]` for the `write` tool.
+    let reaches_a_denied_tool = || {
+        mode.rules
+            .denied_class_keys()
+            .any(|class| capability_of(class).is_some())
+    };
+    if rule_tool_name(key) == "*" && key != "*" && reaches_a_denied_tool() {
+        bail!(
+            "mode '{}': tuning rule '{key}' is a scoped `*` rule, which could reach a tool \
+             this mode class-denies — name the tool instead",
+            mode.name
+        );
+    }
     if let Some(class) = capability_class(key) {
         if mode.rules.class_is_denied(class) {
             bail!(
@@ -227,6 +243,70 @@ mod tests {
         };
         apply(&research(), &tuning, &capability_of)
             .expect_err("prompt widening must be guarded exactly like allow widening");
+    }
+
+    /// ADR-0228: `research`/`plan` cannot be tuned to run scripts — `rhai`
+    /// carries the write capability their class deny forbids.
+    #[test]
+    fn research_and_plan_cannot_be_tuned_to_run_scripts() {
+        let caps = |name: &str| match name {
+            "rhai" => Some([Capability::Read, Capability::Write, Capability::Exec].as_slice()),
+            other => capability_of(other),
+        };
+        let bare = HashMap::from([(
+            "research".to_string(),
+            ModeTuning {
+                allow: vec!["rhai".to_string()],
+                ..Default::default()
+            },
+        )]);
+        assert!(build_table(&bare, &caps).is_err());
+        let scoped = HashMap::from([(
+            "plan".to_string(),
+            ModeTuning {
+                allow: vec!["rhai(scripts/*)".to_string()],
+                ..Default::default()
+            },
+        )]);
+        assert!(build_table(&scoped, &caps).is_err());
+    }
+
+    /// A scoped `*` allow/prompt is refused in a mode with a class deny (it
+    /// could out-length `deny: [write]` for the `write` tool); a bare `*`,
+    /// or a scoped one where nothing is class-denied, is accepted.
+    #[test]
+    fn a_scoped_star_rule_is_refused_over_a_class_deny() {
+        for list in ["allow", "prompt"] {
+            let rules = vec!["*(scripts/*)".to_string()];
+            let tuning = ModeTuning {
+                allow: if list == "allow" {
+                    rules.clone()
+                } else {
+                    vec![]
+                },
+                prompt: if list == "prompt" { rules } else { vec![] },
+                ..Default::default()
+            };
+            let err = apply(&research(), &tuning, &capability_of).expect_err(list);
+            assert!(err.to_string().contains("scoped `*`"), "{err}");
+        }
+        let bare = ModeTuning {
+            allow: vec!["*".to_string()],
+            ..Default::default()
+        };
+        apply(&research(), &bare, &capability_of)
+            .expect("a bare `*` never out-lengths a class key");
+        let build = builtin::modes()
+            .expect("built-ins parse")
+            .into_iter()
+            .find(|m| m.name == "build")
+            .expect("build exists");
+        let scoped = ModeTuning {
+            allow: vec!["*(docs/*)".to_string()],
+            ..Default::default()
+        };
+        apply(&build, &scoped, &capability_of)
+            .expect("build class-denies only `plan`, which no tool is named");
     }
 
     #[test]

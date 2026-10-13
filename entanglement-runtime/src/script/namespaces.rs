@@ -171,7 +171,6 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
-            tools: Vec::new(),
             lib: Some(lib_rhai::compile(name, source).unwrap()),
         }
     }

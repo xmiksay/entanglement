@@ -1,6 +1,6 @@
 //! The generic readable body (ADR-0204 §6) for every tool without a dedicated
-//! renderer — MCP `mcp__<server>__<tool>`, `skill__*`,
-//! unknown names — plus the output and error tails every
+//! renderer — MCP `mcp__<server>__<tool>`, unknown names, and the removed
+//! `skill__*` tools (ADR-0228) an old session log still replays — plus the output and error tails every
 //! expanded call shares. Arguments and JSON outputs become indented
 //! `key: value` lines ([`summary::readable_lines`]) wrapped to the panel,
 //! never escaped JSON.

@@ -213,16 +213,6 @@ pub(crate) async fn build_config(
             }
         );
     }
-    // Skill-declared tools (#560 P8): a native/strict-layer `SKILL.md`'s
-    // `tools:` frontmatter — rhai-backed tools and aliases —
-    // registered once at skill-discovery time (this same startup pass, not
-    // gated behind `load_skill`), namespaced `skill__<skill>__<name>`. See
-    // `skills::tools`'s module doc for why discovery-time beats load-time.
-    // Snapshotted from the live wrapper *before* it's moved into
-    // `LoadSkillTool::new` below (cheap — an `Arc` clone under a brief read
-    // lock).
-    let skill_registry_snapshot = skills.read().unwrap().clone();
-    skills::tools::register_skill_tools(&mut tools, &skill_registry_snapshot);
     // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
     // `Capability::Control` like the other discovery tools (ADR-0226).
     tools.register(LoadSkillTool::new(skills));

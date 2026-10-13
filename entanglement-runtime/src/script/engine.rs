@@ -7,22 +7,27 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rhai::{Dynamic, Engine, EvalAltResult};
+use rhai::serde::to_dynamic;
+use rhai::{Dynamic, Engine, EvalAltResult, Scope};
 use tokio::sync::mpsc;
 
 use crate::tool_names::HTTP_TOOL;
-use crate::tool_runner::{Dispatcher, ScriptCall};
+use crate::tool_runner::{Dispatcher, Posture, ScriptCall};
 
 use super::{configure_engine, data, namespaces, register_bindings, service, BindingCall, Launch};
 
 pub(super) struct RunSpec {
     pub script: String,
+    /// Bound as the constant map `args` (ADR-0228).
+    pub args: serde_json::Map<String, serde_json::Value>,
     pub timeout: Duration,
     pub stop: Arc<AtomicBool>,
     /// Set when the deadline fires — the background path reports it.
     pub timed_out: Arc<AtomicBool>,
     /// A background run (#637): no session state transitions.
     pub detached: bool,
+    /// How nested calls are cleared (ADR-0228).
+    pub posture: Posture,
 }
 
 pub(super) type EvalResult = Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>;
@@ -38,10 +43,12 @@ pub(super) async fn run_engine(
 ) -> (EvalResult, bool) {
     let RunSpec {
         script,
+        args,
         timeout,
         stop,
         timed_out,
         detached,
+        posture,
     } = spec;
     let (tx, rx) = mpsc::unbounded_channel::<BindingCall>();
     let start = Instant::now();
@@ -63,9 +70,16 @@ pub(super) async fn run_engine(
         );
         namespaces::register(&mut engine, tx, &mcp, &skills);
         data::register_data_functions(&mut engine);
-        engine.eval::<Dynamic>(&script)
+        // A constant, so `args = …`/`args.n = …` fails: the caller's input
+        // is not the script's scratch space. Compiled *without* the scope:
+        // given it, the optimizer inlines the constant and Rhai panics on
+        // `args.n = …` ("cannot assign to expression") instead of refusing.
+        let mut scope = Scope::new();
+        scope.push_constant("args", to_dynamic(serde_json::Value::Object(args))?);
+        let ast = engine.compile(&script)?;
+        engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast)
     });
-    let script_call = ScriptCall::new(detached, start + timeout);
+    let script_call = ScriptCall::new(detached, posture, start + timeout);
     let stopped = service::service_bindings(
         rx,
         dispatcher,

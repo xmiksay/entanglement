@@ -40,6 +40,23 @@ pub(super) async fn handle_waiting_for_approval(
         // (no grant is ever recorded for it) — swallow them here
         // rather than let `y` silently fire the old default.
         KeyCode::Char('y' | 's' | 'a' | 'd') if is_plan_request(app) => {}
+        // A `rhai` launch card (ADR-0228): `r` runs the whole script
+        // force-allowed, this run only; `y`/`s`/`a` run it asking per
+        // command, `s`/`a` also granting the script's path (a later launch
+        // grades Allow — Ask per command, no card). `run_all` is never
+        // part of a grant.
+        KeyCode::Char('r') if is_rhai_launch(app) => {
+            send_rhai_approval(app, holly, request_id.clone(), true, ApprovalScope::Once).await;
+        }
+        KeyCode::Char(c @ ('y' | 's' | 'a')) if is_rhai_launch(app) => {
+            let scope = match c {
+                's' => ApprovalScope::Session,
+                'a' => ApprovalScope::Always,
+                _ => ApprovalScope::Once,
+            };
+            send_rhai_approval(app, holly, request_id.clone(), false, scope).await;
+        }
+        KeyCode::Char('d') if is_rhai_launch(app) => {}
         // Approve scopes (#174): `y` this once, `s` for the rest of
         // the session, `a` always (persisted).
         KeyCode::Char('y') => {
@@ -202,6 +219,7 @@ pub(super) async fn send_approval(
             request_id,
             scope,
             mode: None,
+            run_all: false,
         })
         .await;
     // Pop the answered request and surface the next parked one, if any (#273).
@@ -236,6 +254,54 @@ pub(super) fn is_plan_request(app: &App) -> bool {
         .is_some_and(|(_, tool, _)| tool == crate::tool_names::PROPOSE_PLAN_TOOL)
 }
 
+/// Whether the parked approval is a `rhai` launch card (ADR-0228) — a
+/// nested binding's card is tool `<tool> (rhai)`, never bare `rhai`.
+pub(super) fn is_rhai_launch(app: &App) -> bool {
+    app.pending_tool_request()
+        .is_some_and(|(_, tool, _)| tool == crate::tool_names::RHAI_TOOL)
+}
+
+/// Answer a `rhai` launch card: `run_all` is **Run all** (force-allow the
+/// run's nested calls), otherwise **Ask per command**; `scope` is the
+/// launch grant's lifetime.
+pub(super) async fn send_rhai_approval(
+    app: &mut App,
+    holly: &Holly,
+    request_id: String,
+    run_all: bool,
+    scope: ApprovalScope,
+) {
+    let is_path_card = app
+        .pending_tool_request()
+        .is_some_and(|(_, _, input)| input.starts_with("// path: "));
+    let _ = holly
+        .send(InMsg::Approve {
+            session: app.active_session_id().clone(),
+            request_id,
+            scope,
+            mode: None,
+            run_all,
+        })
+        .await;
+    app.advance_approval();
+    let how = if run_all {
+        "run all"
+    } else {
+        "ask per command"
+    };
+    // Only a `path` script's card earns a grant; an inline script's
+    // approval is once only, whatever the scope. The runtime writes the
+    // first line itself (`// path: …` or `// inline script`), so script
+    // text cannot forge it.
+    let grant = match scope {
+        _ if !is_path_card => "",
+        ApprovalScope::Session => ", path granted for the session",
+        ApprovalScope::Always => ", path granted always",
+        ApprovalScope::Once | ApprovalScope::SessionDir => "",
+    };
+    app.record_status("approval", format!("✓ approved rhai ({how}{grant})"));
+}
+
 /// Send the `propose_plan`-specific [`InMsg::Approve`] (#560, ADR-0207 §7
 /// extension): here the *approver* chooses the mode the session switches to —
 /// `mode` is `Some("auto")` for the `[u]` bare-accept default or
@@ -258,6 +324,7 @@ pub(super) async fn send_plan_approval(
             request_id,
             scope: ApprovalScope::Once,
             mode: Some(mode.to_string()),
+            run_all: false,
         })
         .await;
     app.advance_approval();

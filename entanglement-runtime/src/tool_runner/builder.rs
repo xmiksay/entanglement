@@ -59,6 +59,8 @@ impl ToolExecutor {
             discovery: DiscoverySurface::default(),
             workdirs: crate::workdir::SessionWorkdirs::default(),
             http_gate: None,
+            rhai_trusted: Default::default(),
+            skill_dirs: Vec::new(),
         }
     }
 }
@@ -89,6 +91,8 @@ pub struct ToolExecutorBuilder {
     pub(super) discovery: DiscoverySurface,
     pub(super) workdirs: crate::workdir::SessionWorkdirs,
     pub(super) http_gate: Option<Arc<crate::http_gate::HttpGate>>,
+    pub(super) rhai_trusted: crate::rhai_trust::TrustedFolders,
+    pub(super) skill_dirs: Vec<std::path::PathBuf>,
 }
 
 impl ToolExecutorBuilder {
@@ -243,6 +247,23 @@ impl ToolExecutorBuilder {
     /// different gates. Default: no `http` tool at all.
     pub fn http_gate(mut self, gate: Arc<crate::http_gate::HttpGate>) -> Self {
         self.http_gate = Some(gate);
+        self
+    }
+
+    /// `config.yml` `rhai.trusted` folders, canonical (ADR-0228): a
+    /// `rhai(path)` inside one runs with no launch card and every nested call
+    /// force-allowed (explicit denies still win). A plain `Vec` is trusted
+    /// unconditionally, like the project layer. Default: none.
+    pub fn rhai_trusted(mut self, folders: impl Into<crate::rhai_trust::TrustedFolders>) -> Self {
+        self.rhai_trusted = folders.into();
+        self
+    }
+
+    /// The user and project skill layer dirs ([`crate::skills::skill_dirs`]):
+    /// a `write`/`edit`/`apply_patch` of a `SKILL.md`/`lib.rhai` under one
+    /// always asks (ADR-0228). Default: none.
+    pub fn skill_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        self.skill_dirs = dirs;
         self
     }
 

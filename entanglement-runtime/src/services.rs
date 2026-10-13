@@ -145,6 +145,11 @@ pub(crate) fn start(
     );
     let tool_executor = tool_runner::ToolExecutor::builder(&holly, tools.clone())
         .http_gate(http_gate)
+        .rhai_trusted(user_config.rhai_trusted.clone())
+        .skill_dirs(entanglement_runtime::skills::skill_dirs(
+            cwd,
+            &entanglement_runtime::layers::UserLayer::FromEnv,
+        ))
         .jobs(jobs)
         .retained(retained)
         .scripts(scripts)

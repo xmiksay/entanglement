@@ -1,15 +1,11 @@
 //! The async side of the binding bridge: every script binding call goes
 //! through the dispatch seam (ADR-0227) — the same ladder a model-issued
-//! call climbs — and its outcome comes back to the blocking thread; plus the
-//! approval park for `rhai`'s own launch gate.
+//! call climbs — and its outcome comes back to the blocking thread.
 
 use std::path::PathBuf;
 
-use entanglement_core::{AgentState, ApprovalKind, Holly, SessionId};
 use tokio::sync::mpsc;
 
-use crate::pending::{self, PendingDecisions};
-use crate::seam;
 use crate::tool_names::HTTP_TOOL;
 use crate::tool_runner::{Call, Dispatcher, Outcome, ScriptCall, Via};
 
@@ -68,46 +64,6 @@ pub(super) async fn service_bindings(
 /// throw, so `try`/`catch` is the one way to handle a remote failure.
 fn throws_on_error(tool: &str) -> bool {
     tool == HTTP_TOOL || tool.starts_with("mcp__")
-}
-
-/// Outcome of `rhai`'s own launch approval.
-pub(super) enum Approval {
-    Approved,
-    Rejected(String),
-    Stopped,
-}
-
-/// Emit `rhai`'s launch `ToolRequest` and park for the head's decision via
-/// the lag-proof [`PendingDecisions`] registry (#156) — registered before
-/// emitting so a fast decision can't race the waiter.
-pub(super) async fn await_approval(
-    holly: &Holly,
-    pending: &PendingDecisions,
-    session: &SessionId,
-    request_id: &str,
-    tool: &str,
-    input: &str,
-) -> Approval {
-    let req = pending::approval(
-        session,
-        request_id,
-        ApprovalKind::Rhai,
-        tool,
-        input,
-        format!("`{tool}` graded Ask"),
-    );
-    let rx = pending::park_approval(holly, pending, req, tool);
-    holly.emit_status(session, AgentState::WaitingApproval);
-    match pending::await_decision(rx).await {
-        seam::Decision::Approve { .. } => Approval::Approved,
-        seam::Decision::Reject { reason } => {
-            Approval::Rejected(reason.unwrap_or_else(|| "user".to_string()))
-        }
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => Approval::Stopped,
-    }
 }
 
 #[cfg(test)]

@@ -134,7 +134,9 @@ base64 = { workspace = true }
 # always-compiled deps, so a lean embedder can opt out via
 # `--no-default-features`.
 # `internals` for `AST::statements` — a skill `lib.rhai` must be fn-only
-# (ADR-0227).
+# (ADR-0227). Not `metadata`: it makes the parser reject any doc-style
+# comment not followed by `fn`; lib doc comments are read as text
+# (`skills::lib_docs`, ADR-0228).
 rhai = { workspace = true, optional = true, features = ["internals"] }
 # HTML -> Markdown for `web_fetch` (behind the `web-fetch` feature, #736).
 htmd = { workspace = true, optional = true }

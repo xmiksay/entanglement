@@ -8,11 +8,12 @@ One set of serde-tagged types crosses every transport:
 
 ```
 #[serde(tag = "kind", rename_all = "snake_case")]
-InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,scope?,mode?}  // approval →
+InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,scope?,mode?,run_all?}  // approval →
          //   content: [{type:text,text} | {type:image,source:{type:base64,media_type,data}}]; legacy `text:"…"` still deserializes (#197, ADR-0064)
          | Reject{session,request_id,reason?}                         // runtime, not core (#59)
          //   scope: once (default) | session | always  — persisted grants (#174, ADR-0052)
          //   mode: build | auto, meaningful only when approving a propose_plan request (#560) — the approver's mode choice; None (a bare accept) resolves to auto in the runtime orchestrator, never evaluated by core
+         //   run_all: bool (default false, omitted), meaningful only on a `rhai` launch card (ADR-0228): true = Run all (the script's nested calls force-allowed this run, explicit denies still win; never part of a grant), false = Ask per command — an older head's frame means Ask per command; the scope still applies (a Session/Always approval grants the script's path); wire-allowed like the rest of Approve
          | ToolResult{session,request_id,content:[ContentPart],is_error=false,duration_ms?,exit_code?}   // runtime → core: tool ran (#58)
          //   content: text, or an image block when `read` opens an image (#221); legacy `output:"…"` still deserializes
          //   is_error/duration_ms (#636, ADR-0176): structured side channel alongside content's still-unchanged text — denied/masked/refused/unknown-tool/errored calls, and an MCP result flagged isError (#727), set is_error; duration_ms is measured once, generically, around the whole host-tool dispatch
@@ -27,7 +28,7 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
          | SetGeneration{session,overrides:GenerationParams}   // partial generation-knob merge, no restart, always acks; no-override = query (#374/#376, ADR-0094/0095)
          | SetSessionMeta{session,name?,action?,if_unset=false}   // display metadata merge: None leaves a field, Some("") clears; applied IMMEDIATELY, never stashed; always acks with SessionMetaChanged (ADR-0151); if_unset=true applies `name` only when the session has none yet — the session-title generator's guard against clobbering a `/name` or a name restored by resume (#553)
-         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the session's mode grade (graded Ask|Allow, optionally arg_pattern-narrowed, overriding even a mode Deny), deny entries withdraw even mode-allowed tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); now mode-scoped — dropped wholesale on a live SetMode (#560, ADR-0207 §8); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177)
+         | SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}   // replace the session's live tool overlay — enable entries exist past the session's mode grade (graded Ask|Allow, optionally arg_pattern-narrowed, overriding even a mode Deny), deny entries withdraw even mode-allowed tools (#539, ADR-0149; arg_pattern per #611, ADR-0163 — the closed-table lazy built-in registration it added is retired by ADR-0195, bash registering at startup); now mode-scoped — dropped wholesale on a live SetMode (#560, ADR-0207 §8); full replacement, empty clears; trusted-only for an enable entry, but wire-allowed when every entry is deny-only (#634, ADR-0177); a deny entry for `rhai` withdraws the script launch like any tool's (ADR-0228)
          | Oneshot{session,op,args}   // single out-of-band LLM op outside the turn loop; op="compact" today (#324, ADR-0082)
          | Spawn{session,parent:Option,predecessor:Option,agent,prompt,user?,model?:{provider,model},mode?,workdir?}   // start a session: parent=Some → child sub-agent (#60); parent=None → root, predecessor=Some(source) is the /compact successor (ADR-0110); user = owning user for multi-user deployment (#522, ADR-0147); model = the `ModelChoice` the session starts on (#725) — resolved via `model_resolver` under the effective user before the first round, wins over the agent's pin, logged as the session's first `ModelChanged`; unresolvable (or no resolver) → spawn refused with a seq-0 supervisor `Error`, never a silent default; mode = the permission mode the session starts in (#763, ADR-0218) — a head's `--mode`/config `mode:`, so a root announces one starting mode instead of a follow-up `SetMode` transition; wins over the agent's `default_mode` for a root, clamped to the parent's mode for a child (`EngineConfig::mode_ladder`), ignored by a compaction successor; a name off a non-empty ladder → spawn refused with a seq-0 `Error`; no sponsored flag any more — ADR-0207 §7 retired the propose_plan sponsored-build-child handoff (ADR-0138) it disambiguated and the field left the wire with it (an old log's `sponsored` is an ignored unknown field on replay); workdir = the working directory it starts in (#764, ADR-0224), validated like SetWorkdir's dir (relative to the parent's workdir for a child) with no approval, a bad one refuses the spawn with a seq-0 `Error`; None inherits — a child its parent's, a compaction successor or fork its source's
          | RevertFiles{session,to_turn?}   // trusted-only, wire-refused: roll back the session (+ spawn sub-tree)'s tracked write/edit/apply_patch edits made after user turn to_turn (1-based; 0 = all); None = undo the latest turn that still has edits. Deferred mid-turn/paused like SetModel; core calls EngineConfig::file_reverter (runtime per-write backups) and answers FilesReverted (#731, ADR-0212)
@@ -163,13 +164,16 @@ read-only rationale, answered by `entanglement_runtime::pending::list_pending`
 from the `PendingDecisions` registry every approval parks in. `root` (not
 `session`) scopes to a whole live spawn sub-tree, walked over `AgentRegistry`
 with the same sub-tree walk the approval parking uses. Every approval path (permission
-`Ask`, `propose_plan`, `request_mode`, a rhai binding's `Ask`) parks through
-`pending::park_approval`, which registers the entry and emits the
+`Ask`, `propose_plan`, `request_mode`, a rhai binding's `Ask`, a rhai launch
+card) parks through `pending::park_approval`, which registers the entry and emits the
 `ToolRequest` from one `PendingApproval` value — so a reconnecting head gets
 the exact prompt it missed. The decision router handles `ListPending` in
 order with `Approve`/`Reject`, so a listing after a decision never shows the
 decided call; a timed-out park removes its entry, and one whose task was
-aborted is skipped. Ownership filtering is the head's job, as with
+aborted is skipped. `kind: "rhai"` marks both a rhai binding's card (tool
+`<name> (rhai)`) and the rhai **launch card** — told apart by `tool == "rhai"`
+exactly; only the launch card is answered with `Approve.run_all`
+([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)). Ownership filtering is the head's job, as with
 `ListSessions` (a multi-tenant head must scope `root` and route the reply to
 its requesting connection only, [embedding](../embedding.md) §1); the reply
 names no session, so it is never persisted.

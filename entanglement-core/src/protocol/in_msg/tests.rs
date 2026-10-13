@@ -97,6 +97,7 @@ fn wire_allowlist_refuses_the_privileged_frames() {
             request_id: "r".into(),
             scope: ApprovalScope::Once,
             mode: None,
+            run_all: false,
         },
         InMsg::Reject {
             session: s.clone(),
@@ -259,6 +260,7 @@ fn approve_scope_defaults_to_once_and_omits_when_default() {
         request_id: "r1".into(),
         scope: ApprovalScope::Once,
         mode: None,
+        run_all: false,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(!json.contains("scope"), "default scope must be omitted");
@@ -279,6 +281,7 @@ fn approve_scope_roundtrips_when_set() {
             request_id: "r1".into(),
             scope,
             mode: None,
+            run_all: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("scope"));
@@ -296,6 +299,7 @@ fn approve_mode_roundtrips_when_set() {
         request_id: "r1".into(),
         scope: ApprovalScope::Once,
         mode: Some("build".to_string()),
+        run_all: false,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"mode\":\"build\""), "{json}");
@@ -309,8 +313,31 @@ fn approve_mode_roundtrips_when_set() {
             request_id: "r1".into(),
             scope: ApprovalScope::Once,
             mode: None,
+            run_all: false,
         }
     );
+}
+
+/// ADR-0228: `run_all` (a `rhai` launch card's **Run all**) is additive —
+/// omitted when false, and an older head's frame means Ask per command.
+#[test]
+fn approve_run_all_is_additive() {
+    let msg = InMsg::Approve {
+        session: SessionId::new("s1"),
+        request_id: "r1".into(),
+        scope: ApprovalScope::Once,
+        mode: None,
+        run_all: true,
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains("\"run_all\":true"), "{json}");
+    assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), msg);
+    let legacy = r#"{"kind":"approve","session":"s1","request_id":"r1","scope":"session"}"#;
+    match serde_json::from_str::<InMsg>(legacy).unwrap() {
+        InMsg::Approve { run_all, .. } => assert!(!run_all),
+        other => panic!("{other:?}"),
+    }
+    assert!(msg.wire_allowed(), "a head may send it over the wire");
 }
 
 #[test]

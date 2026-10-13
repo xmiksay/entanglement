@@ -34,6 +34,29 @@ use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 #[path = "rhai/unified.rs"]
 mod unified;
 
+// ADR-0228: `path` runs, the constant `args` map, the XOR decline, and the
+// skill side (`tools:` refused, `load_skill` doc-commented signatures).
+#[path = "rhai/path_args.rs"]
+mod path_args;
+// The shared harness of the ADR-0228 launch tests, and the launch-gate
+// tests themselves (unattended, overlay, hooks, workdir, background).
+#[path = "rhai/launch_gate.rs"]
+mod launch_gate;
+#[path = "rhai/launch_harness.rs"]
+mod launch_harness;
+// ADR-0228's explicit denies inside trusted / Run-all scripts, and the
+// never-hang read of a script `path`.
+#[path = "rhai/launch_denies.rs"]
+mod launch_denies;
+// ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
+// `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
+#[path = "rhai/trusted_writes.rs"]
+mod trusted_writes;
+// ADR-0228: the launch graded like any tool (overlay, path rules, grants),
+// and `auto`'s `default: allow`.
+#[path = "rhai/launch_grading.rs"]
+mod launch_grading;
+
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the
 /// executor's dispatch seam (ADR-0227) — `ModeResolver` (the seam
@@ -62,6 +85,44 @@ fn allow_all_table() -> Arc<ModeTable> {
 
 fn perm_modes() -> Arc<Mutex<HashMap<SessionId, String>>> {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// ADR-0228: every script outside a `rhai.trusted` folder raises one launch
+/// card. These tests are about what the script's nested calls do, so the card
+/// is answered **Ask per command** — nested calls graded exactly like direct
+/// calls, which is what each test asserts on.
+fn answer_launch_cards(holly: &Holly) {
+    let mut sub = holly.subscribe();
+    let holly = holly.clone();
+    tokio::spawn(async move {
+        while let Ok(ev) = sub.recv().await {
+            if let OutEvent::ToolRequest {
+                session,
+                request_id,
+                tool,
+                ..
+            } = ev
+            {
+                if tool == RHAI_TOOL {
+                    let _ = holly
+                        .send(InMsg::Approve {
+                            session,
+                            request_id,
+                            scope: Default::default(),
+                            mode: None,
+                            run_all: false,
+                        })
+                        .await;
+                }
+            }
+        }
+    });
+}
+
+/// A `rhai` launch card — answered by [`answer_launch_cards`], so the
+/// collectors leave it out of what a test asserts on.
+fn is_launch_card(ev: &OutEvent) -> bool {
+    matches!(ev, OutEvent::ToolRequest { tool, .. } if tool == RHAI_TOOL)
 }
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
@@ -144,6 +205,7 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     // `read_raw` + the script-facing search variants mirror main.rs's
     // `build_config`: registered into the same registry the executor/rhai
     // bridge use, but never advertised as standalone tools (they aren't in
@@ -219,6 +281,7 @@ fn spawn_with_rhai_exec_and_base(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(CallTool::new(root.to_path_buf()));
@@ -269,6 +332,7 @@ fn spawn_with_rhai_escape(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let store = Arc::new(ExtraRootStore::ephemeral());
     let mut tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
     tools.register(ReadRawTool::new(root.to_path_buf()));
@@ -406,6 +470,7 @@ fn spawn_with_rhai_mode(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(GlobJsonTool::new(root.to_path_buf()));
@@ -452,6 +517,7 @@ fn spawn_with_rhai_exec_mode(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     tools.register(CallTool::new(root.to_path_buf()));
@@ -510,7 +576,7 @@ async fn collect(
 ) -> Vec<OutEvent> {
     let mut out = Vec::new();
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-        if ev.session() == Some(sid) {
+        if ev.session() == Some(sid) && !is_launch_card(&ev) {
             let done = matches!(ev, OutEvent::Done { .. });
             out.push(ev);
             if done {
@@ -550,9 +616,13 @@ async fn collect_auto_approving(
                     request_id: request_id.clone(),
                     scope: Default::default(),
                     mode: None,
+                    run_all: false,
                 })
                 .await
                 .unwrap();
+        }
+        if is_launch_card(&ev) {
+            continue;
         }
         let done = matches!(ev, OutEvent::Done { .. });
         out.push(ev);
@@ -706,7 +776,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
             .await
             .expect("timed out waiting for an event")
             .expect("subscription closed");
-        if ev.session() != Some(&sid) {
+        if ev.session() != Some(&sid) || is_launch_card(&ev) {
             continue;
         }
         if let OutEvent::ToolRequest {
@@ -724,6 +794,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
                     request_id: request_id.clone(),
                     scope: ApprovalScope::Session,
                     mode: None,
+                    run_all: false,
                 })
                 .await
                 .unwrap();
@@ -837,6 +908,9 @@ async fn ask_binding_parks_then_runs_on_approve() {
     // The binding surfaces a nested ToolRequest keyed `t1:rhai:edit`.
     let mut request_id = None;
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), watch.recv()).await {
+        if is_launch_card(&ev) {
+            continue;
+        }
         if let OutEvent::ToolRequest {
             request_id: rid,
             tool,
@@ -857,6 +931,7 @@ async fn ask_binding_parks_then_runs_on_approve() {
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -1332,7 +1407,7 @@ async fn collect_through_dones(
         let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await else {
             break;
         };
-        if ev.session() != Some(sid) {
+        if ev.session() != Some(sid) || is_launch_card(&ev) {
             continue;
         }
         if matches!(ev, OutEvent::Done { .. }) {
@@ -1341,7 +1416,7 @@ async fn collect_through_dones(
         out.push(ev);
     }
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await {
-        if ev.session() == Some(sid) {
+        if ev.session() == Some(sid) && !is_launch_card(&ev) {
             out.push(ev);
         }
     }
@@ -1433,6 +1508,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
@@ -1526,6 +1602,7 @@ fn spawn_with_rhai_background(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
+    answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     let base = PermissionProfile::new(Permission::Allow);

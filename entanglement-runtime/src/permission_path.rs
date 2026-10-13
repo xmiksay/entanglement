@@ -21,7 +21,15 @@ use std::path::{Component, Path, PathBuf};
 /// filesystem path (or path glob), and therefore eligible for root-relative
 /// normalization. `bash`/`call` (a shell command line) are deliberately absent
 /// — a command line is never a path, so it must never be rewritten.
-const PATH_ARG_TOOLS: &[&str] = &["read", "edit", "write", "apply_patch", "glob", "grep"];
+const PATH_ARG_TOOLS: &[&str] = &[
+    "read",
+    "edit",
+    "write",
+    "apply_patch",
+    "glob",
+    "grep",
+    "rhai",
+];
 
 /// Whether `tool`'s argument is a path resolved against the project root —
 /// the tools whose approval prompt names that root (#762).
@@ -75,7 +83,16 @@ pub fn rooted_arg(root: &Path, tool: &str, arg: &str) -> String {
     if !PATH_ARG_TOOLS.contains(&tool) {
         return arg.to_string();
     }
-    let normalized = normalize_lexical(arg);
+    // A script's grade must follow the code that runs, so `rhai` is the one
+    // tool graded on its *canonical* file (ADR-0228): a symlink in
+    // `scripts/deploy/` pointing elsewhere grades as where it points. The
+    // launch re-checks the file it read against this. Unresolvable (missing)
+    // falls back to the lexical form — the read then fails anyway.
+    let resolved = (tool == crate::tool_names::RHAI_TOOL)
+        .then(|| root.join(arg).canonicalize().ok())
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
+    let normalized = normalize_lexical(resolved.as_deref().unwrap_or(arg));
     let path = Path::new(&normalized);
     if path.is_absolute() {
         if let Ok(stripped) = path.strip_prefix(root) {
@@ -172,6 +189,47 @@ mod tests {
         assert_eq!(
             rooted_arg(root, "read", "/etc/../etc/passwd"),
             "/etc/passwd"
+        );
+    }
+
+    /// ADR-0228: a script path grades on its canonical target —
+    /// root-relative inside the root, absolute outside it.
+    #[cfg(unix)]
+    #[test]
+    fn rooted_arg_canonicalizes_a_rhai_script_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("proj");
+        std::fs::create_dir_all(root.join("scripts/deploy")).unwrap();
+        std::fs::write(root.join("scripts/real.rhai"), "1").unwrap();
+        std::fs::write(base.join("out.rhai"), "1").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("scripts/real.rhai"),
+            root.join("scripts/deploy/x.rhai"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(base.join("out.rhai"), root.join("scripts/out.rhai")).unwrap();
+        assert_eq!(
+            rooted_arg(&root, "rhai", "scripts/deploy/x.rhai"),
+            "scripts/real.rhai"
+        );
+        let abs = root.join("scripts/./real.rhai");
+        assert_eq!(
+            rooted_arg(&root, "rhai", abs.to_str().unwrap()),
+            "scripts/real.rhai"
+        );
+        assert_eq!(
+            rooted_arg(&root, "rhai", "scripts/out.rhai"),
+            base.join("out.rhai").to_string_lossy()
+        );
+        assert_eq!(
+            rooted_arg(&root, "rhai", "scripts/./gone.rhai"),
+            "scripts/gone.rhai"
+        );
+        // `read` stays lexical (ADR-0125).
+        assert_eq!(
+            rooted_arg(&root, "read", "scripts/deploy/x.rhai"),
+            "scripts/deploy/x.rhai"
         );
     }
 

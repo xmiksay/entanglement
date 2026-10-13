@@ -37,20 +37,24 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use anyhow::Result;
 
-use crate::layers::{Strictness, UserLayer};
+use crate::layers::UserLayer;
 use crate::system_prompt::SkillDisclosure;
 
-mod alias_tool;
 mod discovery;
+// `lib.rhai` doc comments for the `load_skill` listing (ADR-0228).
+#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+mod lib_docs;
 pub mod lib_rhai;
 pub mod load_skill;
-pub mod tools;
+// `SKILL.md` frontmatter parsing, strict and lenient (ADR-0074/0228).
+mod parse;
 
+pub use discovery::skill_dirs;
 pub use load_skill::LoadSkillTool;
-pub use tools::SkillToolDef;
+
+use parse::parse_raw;
 
 /// One discovered skill: the tier-1 metadata plus the loaded body. `root_dir` is
 /// resolved **once** here at discovery (the directory holding `SKILL.md` and its
@@ -69,7 +73,7 @@ pub struct SkillMeta {
     /// restriction. Kept in the struct only because `SkillFrontmatter` is
     /// `deny_unknown_fields` — dropping the key would break every existing
     /// skill file that still carries it. A skill parsed with a non-`None`
-    /// value gets a one-time load warning (see [`parse_skill`]) pointing the
+    /// value gets a one-time load warning (see `parse::parse_skill`) pointing the
     /// author at deleting it. Still populated onto the vestigial
     /// `OutEvent::SkillActive.allowed_tools` wire field for log-replay
     /// compatibility.
@@ -79,50 +83,9 @@ pub struct SkillMeta {
     pub root_dir: Option<PathBuf>,
     /// The markdown body below the frontmatter (tier-2 content).
     pub body: String,
-    /// Skill-declared tools (#560 P8, strict/native layers only — a foreign
-    /// `SKILL.md`'s `tools:` key is silently dropped, [`parse_foreign_skill`]).
-    /// Registered once at discovery time into `skill__<skill>__<tool>`
-    /// entries — see [`tools::register_skill_tools`] for why discovery-time,
-    /// not `load_skill`-time.
-    pub tools: Vec<SkillToolDef>,
     /// The compiled `lib.rhai` beside `SKILL.md` (ADR-0227), registered in
     /// every script as `skill::<skill>`; `None` when absent or refused.
     pub lib: Option<lib_rhai::SkillLib>,
-}
-
-/// Skill frontmatter: `name` + `description` required, the rest optional.
-/// `deny_unknown_fields` makes a typo'd key a loud error, not a silent drop.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SkillFrontmatter {
-    name: String,
-    description: String,
-    #[serde(default)]
-    user_only: bool,
-    #[serde(default)]
-    allowed_tools: Option<Vec<String>>,
-    /// Skill-declared tools (#560 P8) — rhai-backed tools and aliases.
-    /// Strict layers only: [`ForeignSkillFrontmatter`] below has no such
-    /// field, so a lenient (cross-vendor) parse drops a stray `tools:` key
-    /// the same way it already drops Claude-style `allowed-tools`.
-    #[serde(default)]
-    tools: Vec<crate::skills::tools::SkillToolDef>,
-}
-
-/// Lenient frontmatter for cross-vendor skills (ADR-0074): only the tier-1
-/// contract is read, every other key (Claude Code's `allowed-tools`, `license`,
-/// `argument-hint`, …) is ignored. Claude's `disable-model-invocation` maps to
-/// [`SkillMeta::user_only`] — same semantics, the model must not self-trigger.
-/// Claude's `allowed-tools` is deliberately dropped: its tool names don't map
-/// onto entanglement's, and `SkillMeta::allowed_tools` is parsed-but-ignored
-/// even on a native skill (ADR-0194), so there is nothing for a foreign skill
-/// to populate it for.
-#[derive(Debug, Deserialize)]
-struct ForeignSkillFrontmatter {
-    name: String,
-    description: String,
-    #[serde(default, rename = "disable-model-invocation")]
-    disable_model_invocation: bool,
 }
 
 /// Named set of discovered [`SkillMeta`], keyed by `name`. [`insert`][Self::insert]
@@ -209,31 +172,6 @@ impl SkillRegistry {
 /// `name` collision — re-exported under the skills-facing name.
 pub use crate::layers::Layer as SkillLayer;
 
-use discovery::RawSkill;
-
-/// Parse one discovered `SKILL.md` honoring its layer's strictness (ADR-0074):
-/// strict → the current loud behavior (a malformed file aborts the load);
-/// lenient → `Ok(None)` after a `warn!`, so a foreign file entanglement doesn't
-/// own is skipped instead of bricking startup.
-fn parse_raw(raw: &RawSkill) -> Result<Option<SkillMeta>> {
-    match raw.strictness {
-        Strictness::Strict => parse_skill(&raw.content, raw.root_dir.clone())
-            .with_context(|| format!("parsing skill {}", raw.source))
-            .map(Some),
-        Strictness::Lenient => match parse_foreign_skill(&raw.content, raw.root_dir.clone()) {
-            Ok(meta) => Ok(Some(meta)),
-            Err(e) => {
-                tracing::warn!(
-                    source = %raw.source,
-                    error = %format!("{e:#}"),
-                    "skipping malformed foreign skill definition",
-                );
-                Ok(None)
-            }
-        },
-    }
-}
-
 /// Load the skill registry for `root`: embedded stock skills, then the user
 /// dirs, then the project dirs — later layers replace earlier ones on a `name`
 /// collision (project > user > built-in). A malformed file in a native layer
@@ -267,6 +205,21 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
         reg.insert(skill);
     }
     Ok(reg)
+}
+
+/// Native skills refused at load — the retired `tools:` key (ADR-0228) —
+/// as `source: reason` lines, so `skutter inspect skills` shows what the log
+/// only warned about.
+pub fn rejected_skills(root: &Path) -> Result<Vec<String>> {
+    rejected_skills_in(root, &UserLayer::FromEnv)
+}
+
+/// [`rejected_skills`] with an explicit user layer.
+pub fn rejected_skills_in(root: &Path, user: &UserLayer) -> Result<Vec<String>> {
+    Ok(discovery::discover(root, user)?
+        .iter()
+        .filter_map(parse::rejection)
+        .collect())
 }
 
 /// One resolved skill for `skutter inspect skills` (#186): the winning definition
@@ -329,68 +282,12 @@ pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<SkillRes
     Ok(resolved)
 }
 
-/// Parse a `SKILL.md`: split frontmatter from body, deserialize the frontmatter,
-/// and build a [`SkillMeta`] carrying the pre-resolved `root_dir`. A frontmatter
-/// carrying `allowed_tools` gets a one-time (per load) warning — ADR-0194
-/// retired its enforcement, so the field is parsed-but-ignored; permission
-/// profiles are the control now.
-fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
-    let (frontmatter, body) = crate::frontmatter::split(content)?;
-    let fm: SkillFrontmatter =
-        serde_yaml::from_str(&frontmatter).context("invalid skill frontmatter")?;
-    if fm.name.trim().is_empty() {
-        bail!("skill frontmatter `name` must not be empty");
-    }
-    if fm.allowed_tools.is_some() {
-        tracing::warn!(
-            skill = %fm.name,
-            "skill's `allowed_tools` is no longer enforced (ADR-0194: skills are \
-             additive-only) — permission profiles are the control now; remove the field",
-        );
-    }
-    let lib = lib_rhai::load(&fm.name, root_dir.as_deref());
-    Ok(SkillMeta {
-        name: fm.name,
-        description: fm.description,
-        user_only: fm.user_only,
-        allowed_tools: fm.allowed_tools,
-        lib,
-        root_dir,
-        body,
-        tools: fm.tools,
-    })
-}
-
-/// Parse a cross-vendor `SKILL.md` via the lenient [`ForeignSkillFrontmatter`]
-/// (unknown keys ignored, ADR-0074). `tools:` — like Claude's `allowed-tools`
-/// — is one such dropped key: [`ForeignSkillFrontmatter`] has no field for
-/// it, so [`SkillMeta::tools`] is always empty for a foreign-layer skill
-/// (#560 P8 is strict-layers-only).
-fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
-    let (frontmatter, body) = crate::frontmatter::split(content)?;
-    let fm: ForeignSkillFrontmatter =
-        serde_yaml::from_str(&frontmatter).context("invalid skill frontmatter")?;
-    if fm.name.trim().is_empty() {
-        bail!("skill frontmatter `name` must not be empty");
-    }
-    let lib = lib_rhai::load(&fm.name, root_dir.as_deref());
-    Ok(SkillMeta {
-        name: fm.name,
-        description: fm.description,
-        user_only: fm.disable_model_invocation,
-        allowed_tools: None,
-        lib,
-        root_dir,
-        body,
-        tools: Vec::new(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::discovery::{walk, BUILT_INS, SKILL_FILE};
+    use super::parse::{parse_skill, RetiredToolsKey};
     use super::*;
 
     /// An empty user layer: the injected stand-in for the real user dirs.
@@ -657,9 +554,8 @@ mod tests {
 
     #[test]
     fn foreign_layer_tools_key_is_dropped_like_claude_allowed_tools() {
-        // #560 P8: a `tools:` key in a foreign (cross-vendor) SKILL.md must be
-        // silently dropped, exactly like Claude's `allowed-tools` above — the
-        // lenient parse has no field for it at all.
+        // A `tools:` key in a foreign (cross-vendor) SKILL.md is just another
+        // key entanglement doesn't own — dropped like Claude's `allowed-tools`.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_skill(
@@ -668,33 +564,49 @@ mod tests {
             "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
         );
         let reg = load_registry_in(root, &no_user(root)).unwrap();
-
-        let s = reg.get("with-tools").expect("foreign skill still loads");
-        assert!(
-            s.tools.is_empty(),
-            "foreign tools: must be dropped: {:?}",
-            s.tools
-        );
+        assert!(reg.get("with-tools").is_some(), "foreign skill still loads");
     }
 
-    /// ADR-0227: a retired `kind: endpoint` skill tool never bricks startup,
-    /// in the user or the project layer.
+    /// ADR-0228: a native skill's `tools:` key is refused with the
+    /// replacement named — the skill is skipped, every other skill (in the
+    /// user and the project layer) still loads.
     #[test]
-    fn a_retired_endpoint_tool_loads_in_user_and_project_layers() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+    fn a_native_tools_key_skips_the_skill_and_names_the_replacement() {
         let md = |name: &str| {
             format!(
-                "---\nname: {name}\ndescription: d\ntools:\n  - kind: endpoint\n    name: w\n    \
-                 url: https://x\n    method: GET\n---\nbody"
+                "---\nname: {name}\ndescription: d\ntools:\n  - kind: rhai\n    name: w\n    \
+                 script: x.rhai\n---\nbody"
             )
         };
+        for empty in ["tools:\n", "tools: ~\n", "tools: []\n"] {
+            let e = parse(&format!("---\nname: e\ndescription: d\n{empty}---\nb")).unwrap_err();
+            assert!(e.is::<RetiredToolsKey>(), "{empty:?}: {e:#}");
+        }
+        let err = parse(&md("t")).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(err.is::<RetiredToolsKey>(), "{text}");
+        for hint in ["lib.rhai", "skill::<skill>::<fn>", "\"path\"", "args"] {
+            assert!(text.contains(hint), "missing `{hint}`: {text}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
         let user = root.join("user-skills");
         write_skill(&user, "u", &md("u"));
-        write_skill(&root.join(".entanglement").join("skills"), "p", &md("p"));
-        let reg = load_registry_in(root, &UserLayer::Dir(user)).unwrap();
-        assert_eq!(reg.get("u").unwrap().tools[0].name(), "w");
-        assert_eq!(reg.get("p").unwrap().tools[0].name(), "w");
+        let project = root.join(".entanglement").join("skills");
+        write_skill(&project, "p", &md("p"));
+        write_skill(&project, "ok", "---\nname: ok\ndescription: fine\n---\nb");
+        let reg = load_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
+        assert!(reg.get("u").is_none() && reg.get("p").is_none());
+        assert_eq!(reg.get("ok").unwrap().description, "fine");
+        let resolved = resolve_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
+        assert!(resolved.iter().any(|r| r.meta.name == "ok"));
+        let rejected = rejected_skills_in(root, &UserLayer::Dir(user)).unwrap();
+        assert_eq!(rejected.len(), 2, "{rejected:?}");
+        assert!(
+            rejected.iter().all(|r| r.contains("SKILL.md: skill `")),
+            "{rejected:?}"
+        );
     }
 
     /// ADR-0227: a foreign (cross-vendor) skill dir's `lib.rhai` loads too.
@@ -716,23 +628,7 @@ mod tests {
             .lib
             .as_ref()
             .expect("lib loaded");
-        assert_eq!(lib.signatures, vec!["skill::foreign::hi()"]);
-    }
-
-    #[test]
-    fn native_layer_tools_key_is_parsed() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        write_skill(
-            &root.join(".entanglement").join("skills"),
-            "with-tools",
-            "---\nname: with-tools\ndescription: d\ntools:\n  - kind: alias\n    name: x\n    target: read\n---\nbody",
-        );
-        let reg = load_registry_in(root, &no_user(root)).unwrap();
-
-        let s = reg.get("with-tools").expect("native skill loads");
-        assert_eq!(s.tools.len(), 1);
-        assert_eq!(s.tools[0].name(), "x");
+        assert_eq!(lib.functions[0].signature, "skill::foreign::hi()");
     }
 
     #[test]
@@ -811,7 +707,6 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
-            tools: Vec::new(),
             lib: None,
         });
         reg.insert(SkillMeta {
@@ -821,7 +716,6 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
-            tools: Vec::new(),
             lib: None,
         });
         reg.insert(SkillMeta {
@@ -831,7 +725,6 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: String::new(),
-            tools: Vec::new(),
             lib: None,
         });
         let d = reg.disclosures();

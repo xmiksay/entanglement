@@ -181,6 +181,8 @@ pub(super) struct LadderCtx {
     pub workdirs: crate::workdir::SessionWorkdirs,
     /// The credentialed-`http()` gate (ADR-0227).
     pub http_gate: Arc<crate::http_gate::HttpGate>,
+    /// `rhai.trusted` folders and skill dirs (ADR-0228), canonical.
+    pub trust: Arc<crate::rhai_trust::Trust>,
 }
 
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and
@@ -227,17 +229,7 @@ pub(super) async fn route_tool_exec(
         }
         #[cfg(feature = "rhai")]
         Intercept::Rhai => {
-            graded::rhai(
-                ctx,
-                spawn_guard,
-                overlays,
-                tool,
-                session,
-                seq,
-                request_id,
-                input,
-            )
-            .await;
+            graded::rhai(ctx, spawn_guard, overlays, session, seq, request_id, input).await;
         }
         Intercept::Permission => {
             graded::permission(

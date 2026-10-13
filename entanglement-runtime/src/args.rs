@@ -33,8 +33,9 @@ pub(crate) struct Cli {
     /// `default_mode` > `build` (ADR-0218). Applies to `run` (explicit and
     /// implicit), `--resume`, and the TUI (incl. its resumes) —
     /// `auto` is the unattended posture `--yes` used to approximate, now with
-    /// a bounded posture (unlisted calls refuse, then park a 60s approval —
-    /// ADR-0209), run/turn/duration budgets, and no silent widening. Global so it may follow the subcommand:
+    /// a bounded posture (everything but its deny list runs; what still asks
+    /// times out after 60s — ADR-0228), run/turn/duration budgets, and no
+    /// silent widening. Global so it may follow the subcommand:
     /// `skutter run … --mode auto`.
     #[arg(long, global = true)]
     pub(crate) mode: Option<String>,

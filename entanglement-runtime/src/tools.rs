@@ -92,23 +92,6 @@ pub trait Tool: Send + Sync {
         ))
     }
 
-    /// Definition-driven skill tools (#560 P8): a skill-declared **alias**
-    /// (a renamed/preset-args wrapper over an existing registered tool, or
-    /// over a runtime-owned pseudo-tool like `rhai`) must not launder
-    /// permission through its own namespaced name — it grades and executes
-    /// exactly as if the model had called the tool it wraps directly.
-    /// `crate::tool_runner::dispatch` consults this *before* permission
-    /// resolution: `Some((target, merged_input))` rewrites the in-flight
-    /// `(tool, input)` pair to the wrapped tool's real name and its
-    /// preset-args-merged input, so every downstream decision — grading,
-    /// grant lookup/record, the escape-root gate, the `ToolExec`/
-    /// `ToolRequest` the user approves — operates on the real tool, not the
-    /// alias. Default `None`: a tool that never rewrites (everything but
-    /// `skills::alias_tool::AliasTool`) is untouched.
-    fn alias_rewrite(&self, _input: &str) -> Option<(String, String)> {
-        None
-    }
-
     /// What this tool does to the host or session (ADR-0207 §3) — vocabulary
     /// only in this stage, nothing reads it yet. Default is `Write`,
     /// deliberately the *most* restrictive answer a read-only mode can act
@@ -257,9 +240,7 @@ impl ToolRegistry {
     }
 
     /// Look one registered tool up by name, cloning the shared `Arc` (cheap —
-    /// a refcount bump). Used by the alias-rewrite check
-    /// (`crate::tool_runner::dispatch`) to consult a tool's own
-    /// [`Tool::alias_rewrite`] before grading.
+    /// a refcount bump).
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }

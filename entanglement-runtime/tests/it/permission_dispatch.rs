@@ -329,6 +329,7 @@ async fn ask_emits_request_then_runs_on_approve() {
             request_id: "t1".into(),
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -662,6 +663,7 @@ async fn session_grant_skips_the_second_prompt() {
             request_id: "t1".into(),
             scope: entanglement_core::ApprovalScope::Session,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -823,6 +825,7 @@ async fn session_grant_on_relative_spelling_covers_the_absolute_spelling() {
             request_id: "t1".into(),
             scope: ApprovalScope::Session,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -1011,6 +1014,7 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
             request_id: "t1".into(),
             scope: ApprovalScope::SessionDir,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -1467,6 +1471,7 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
             request_id: "t1".into(),
             scope: entanglement_core::ApprovalScope::Session,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();

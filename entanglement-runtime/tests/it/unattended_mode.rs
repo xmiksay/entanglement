@@ -285,6 +285,7 @@ async fn a_second_identical_call_parks_an_approval() {
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -505,19 +506,48 @@ fn retired_yes_flag_errors_with_a_pointer_to_mode_auto() {
     );
 }
 
-/// ADR-0209, end-to-end on the **real** built-in `auto` table rather than a
-/// synthetic single-mode fixture: an unenumerated command — `gh issue
-/// delete`, the reported case — must reach the collapse-then-park
-/// escalation the tests above exercise.
-///
-/// This is the regression pin that matters. Every other test in this file
-/// builds its own `Permission::Ask` mode, so all of them passed while the
-/// shipped `auto` had `default: deny` and took dispatch's *absolute* arm
-/// instead — two identical calls produced two identical unappealable
-/// denials and no prompt, ever. The machinery was fully tested and
-/// completely unreachable from the mode that ships.
+/// ADR-0228 (amending ADR-0209), end-to-end on the **real** built-in `auto`
+/// table: its default is `allow`, so a harmless unenumerated command runs
+/// at once, every time, with no collapsed denial and no parked approval.
 #[tokio::test]
-async fn the_real_auto_mode_escalates_an_unenumerated_command_on_the_second_call() {
+async fn the_real_auto_mode_runs_an_unenumerated_command() {
+    let mut reg = ToolRegistry::new();
+    reg.register(EchoBash);
+    let input = r#"{"command":"docker ps"}"#;
+    let holly = spawn_with_policy(
+        reg,
+        Arc::new(ModeTable::builtin().expect("built-in modes parse")),
+        vec![bash_call("t1", input), bash_call("t2", input), done_text()],
+    );
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "auto".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "nothing parks: {events:?}"
+    );
+    let ran = events
+        .iter()
+        .filter(|e| matches!(e, OutEvent::ToolOutput { output, .. } if *output == format!("ran: {input}")))
+        .count();
+    assert_eq!(ran, 2, "both calls ran: {events:?}");
+}
+
+/// A destructive family `auto` lists under `prompt:` — `gh issue delete`,
+/// ADR-0209's reported case — still asks: unattended, the first call
+/// collapses to a refusal and an identical repeat parks a bounded approval.
+#[tokio::test]
+async fn the_real_auto_mode_prompts_for_gh_issue_delete() {
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
     let cmd = "gh issue delete 51 --yes";
@@ -560,16 +590,15 @@ async fn the_real_auto_mode_escalates_an_unenumerated_command_on_the_second_call
             }
         }
     }
-    let request_id = request_id.expect(
-        "the repeated identical call must park an approval — under `default: deny` \
-         it was refused absolutely instead, with no escalation at any retry count",
-    );
+    let request_id = request_id
+        .expect("the repeated identical call must park an approval (auto's `prompt` rule)");
     holly
         .send(InMsg::Approve {
             session: sid.clone(),
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -601,7 +630,7 @@ async fn the_real_auto_mode_escalates_an_unenumerated_command_on_the_second_call
     );
 }
 
-/// The other half of ADR-0209: `default: prompt` must not have softened the
+/// The other half: `default: allow` must not have softened the
 /// explicit `deny` list into something approvable. A destructive command
 /// stays absolute in `auto` — refused identically however many times it is
 /// called, with no `ToolRequest` ever parked.

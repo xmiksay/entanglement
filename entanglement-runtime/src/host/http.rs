@@ -240,6 +240,37 @@ mod tests {
         assert_eq!(out, "failed: Bearer [redacted] at [redacted]");
     }
 
+    /// ADR-0228: inside a trusted / **Run all** script's call, an
+    /// `Ask`-graded redirect hop is followed like the call itself was; a
+    /// `Deny` hop still stops. Outside one, the `Ask` hop stops.
+    #[tokio::test]
+    async fn a_run_all_call_follows_an_ask_hop_but_never_a_deny_hop() {
+        use crate::mode::{Limits, Mode, Rules};
+        use crate::tool_runner::call_grader::{scope, test_support::grader_for};
+        let mode = || Mode {
+            name: "build".into(),
+            default: Permission::Ask,
+            rules: Rules::from_lists(&["http(GET https://evil.example/*)".into()], &[], &[]),
+            limits: Limits::default(),
+            sandbox: None,
+            sandbox_network: false,
+        };
+        let hops = || async {
+            (
+                check_hop("GET".into(), "https://ok.example/x".into()).await,
+                check_hop("GET".into(), "https://evil.example/x".into()).await,
+            )
+        };
+        let mut grader = grader_for(mode(), crate::tools::ToolRegistry::new());
+        grader.run_all = true;
+        let (ask, deny) = scope(grader, hops()).await;
+        assert!(ask.is_ok(), "{ask:?}");
+        assert!(deny.unwrap_err().to_string().contains("denied"));
+        let grader = grader_for(mode(), crate::tools::ToolRegistry::new());
+        let (ask, _) = scope(grader, hops()).await;
+        assert!(ask.unwrap_err().to_string().contains("needs approval"));
+    }
+
     fn tool() -> HttpTool {
         let gate = HttpGate::new(
             serde_yaml::from_str(

@@ -8,6 +8,20 @@
 //! point: a reader can determine the outcome by inspection without knowing
 //! an evaluation order.
 //!
+//! **Precedence** (ADR-0228): a rule naming the tool outranks a
+//! capability-class rule; a `*` rule competes with a named rule by key
+//! length and with a class rule by strictness (the stricter wins); within
+//! each kind the longest key wins; ties go to the stricter grade. Named over
+//! class because a multi-capability tool — `rhai` is read+write+exec —
+//! would otherwise be decided by whichever class key happens to be longer
+//! (`write`, 5 chars, beats a bare `rhai`, 4), so no mode could ask for
+//! scripts while allowing writes. `*` vs class by strictness because the
+//! tuning guard cannot see what a wildcard reaches, so a long `*(…)` allow
+//! must not out-rank a class deny; `*` vs named keeps length, so
+//! `deny: ["*(*credentials*)"]` still beats `bash(cat*)`. A key spelling a
+//! tool's own name counts as naming it even when it is also a class (`read`
+//! for the `read` tool).
+//!
 //! **Tie-break** (equal key length): the more restrictive grade wins —
 //! `deny` > `prompt` (core's `Permission::Ask`) > `allow`. The task this
 //! module implements didn't pin a tiebreak; this file does, deliberately,
@@ -81,6 +95,14 @@ impl Rules {
             grade,
             class: capability_class(key),
         });
+    }
+
+    /// The keys of every class-`deny` rule (`write`, `plan`, …).
+    pub(super) fn denied_class_keys(&self) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(|e| e.class.is_some() && e.grade == Permission::Deny)
+            .map(|e| e.key.as_str())
     }
 
     /// Whether `class` carries an exact (unscoped) `deny` entry — the
@@ -179,7 +201,7 @@ fn most_restrictive(a: Permission, b: Permission) -> Permission {
 }
 
 /// Resolve one call (no compound-command splitting) against `rules` +
-/// `default`: the longest matching key wins, ties break to the more
+/// `default`: the best matching key wins ([`best_match`]), ties break to the more
 /// restrictive grade, no match falls through to `default`.
 fn resolve_single(
     rules: &Rules,
@@ -218,7 +240,40 @@ pub(crate) fn scoped_grade(
     best_match(&scoped, tool, &[], arg, None)
 }
 
-/// The longest matching entry's grade (ties to the more restrictive).
+/// The precedence in one sentence — what `skutter inspect modes` prints.
+pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class rule; a `*` \
+    rule competes with a named rule by key length and with a class rule by strictness (the \
+    stricter wins); within each kind the longest key wins; ties go to the stricter grade.";
+
+/// Which kind of key matched, for ranking (module doc).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The key's tool part is the call's tool itself (bare or scoped).
+    Named,
+    /// A capability class (`read`/`write`/...).
+    Class,
+    /// The `*` tool wildcard, bare or scoped (`*`, `*(scripts/*)`).
+    Glob,
+}
+
+/// A key spelling the tool's own name counts as naming it even when it is
+/// also a class (`read` for the `read` tool); for any other tool it is the
+/// class.
+fn kind(entry: &Entry, tool: &str) -> Kind {
+    if canonical_tool(rule_tool_name(&canonicalize_key(&entry.key))) == canonical_tool(tool) {
+        Kind::Named
+    } else if entry.class.is_some() {
+        Kind::Class
+    } else {
+        Kind::Glob
+    }
+}
+
+/// The winning grade (module doc): with a rule naming the tool, it and the
+/// best `*` rule compete by key length (ties to the stricter grade) and
+/// class rules are ignored; without one, the best class rule and the best
+/// `*` rule compete by strictness. Within a kind the longest key wins, ties
+/// to the stricter grade.
 fn best_match(
     rules: &Rules,
     tool_name: &str,
@@ -226,7 +281,7 @@ fn best_match(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Option<Permission> {
-    let mut best: Option<(usize, Permission)> = None;
+    let mut best: [Option<(usize, Permission)>; 3] = [None; 3];
     for entry in &rules.entries {
         let matches = match entry.class {
             Some(class) => capabilities.contains(&class),
@@ -235,8 +290,9 @@ fn best_match(
         if !matches {
             continue;
         }
+        let slot = &mut best[kind(entry, tool_name) as usize];
         let len = entry.key.chars().count();
-        best = Some(match best {
+        *slot = Some(match *slot {
             None => (len, entry.grade),
             Some((best_len, _)) if len > best_len => (len, entry.grade),
             Some((best_len, best_grade)) if len == best_len => {
@@ -245,7 +301,22 @@ fn best_match(
             Some(existing) => existing,
         });
     }
-    best.map(|(_, grade)| grade)
+    let [named, class, glob] = best;
+    match (named, glob) {
+        // Named vs `*`: by key length, ties to the stricter grade. A class
+        // rule never decides once a rule names the tool.
+        (Some((nl, ng)), Some((gl, gg))) => Some(match nl.cmp(&gl) {
+            std::cmp::Ordering::Greater => ng,
+            std::cmp::Ordering::Less => gg,
+            std::cmp::Ordering::Equal => most_restrictive(ng, gg),
+        }),
+        (Some((_, ng)), None) => Some(ng),
+        // No named rule: class vs `*` by strictness.
+        (None, glob) => match (class, glob) {
+            (Some((_, cg)), Some((_, gg))) => Some(most_restrictive(cg, gg)),
+            (c, g) => c.or(g).map(|(_, grade)| grade),
+        },
+    }
 }
 
 /// Per-segment grading for `bash`/`call` (ADR-0197, extended to `call` by
@@ -474,6 +545,93 @@ mod tests {
             ),
             Permission::Deny
         );
+    }
+
+    /// ADR-0228: a rule naming the tool outranks a longer class rule, so a
+    /// mode can ask for scripts while allowing writes; a tool-name glob
+    /// still competes by length, and a scoped key keeps beating a bare one.
+    #[test]
+    fn a_rule_naming_the_tool_outranks_a_class_rule() {
+        let caps = [Capability::Read, Capability::Write, Capability::Exec];
+        let rules = Rules::from_lists(
+            &[],
+            &[
+                "write".to_string(),
+                "*".to_string(),
+                "rhai(ok/*)".to_string(),
+            ],
+            &["rhai".to_string()],
+        );
+        let g = |arg| resolve(&rules, Permission::Deny, "rhai", &caps, arg, None);
+        assert_eq!(g(None), Permission::Ask);
+        assert_eq!(g(Some("ok/x.rhai")), Permission::Allow);
+        assert_eq!(g(Some("other/x.rhai")), Permission::Ask);
+        let glob = Rules::from_lists(&["write".to_string()], &["*".to_string()], &[]);
+        assert_eq!(
+            resolve(
+                &glob,
+                Permission::Allow,
+                "edit",
+                &[Capability::Write],
+                None,
+                None
+            ),
+            Permission::Deny,
+            "a bare `*` never outranks a class deny"
+        );
+    }
+
+    /// ADR-0228's precedence for `*` rules: against a named rule by key
+    /// length (both directions), against a class rule by strictness.
+    #[test]
+    fn a_star_rule_competes_by_length_with_named_and_by_strictness_with_class() {
+        let exec = [Capability::Exec];
+        let r = |deny: &[&str], allow: &[&str]| {
+            let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            Rules::from_lists(&l(deny), &l(allow), &[])
+        };
+        // Regression (master behaviour): a long `*` deny beats a shorter
+        // named allow.
+        let creds = r(&["*(*credentials*)"], &["bash(cat*)"]);
+        let g = |rules: &Rules, tool, caps: &[Capability], arg| {
+            resolve(rules, Permission::Ask, tool, caps, arg, None)
+        };
+        assert_eq!(
+            g(&creds, "bash", &exec, Some("cat ~/.aws/credentials")),
+            Permission::Deny
+        );
+        assert_eq!(
+            g(&creds, "bash", &exec, Some("cat notes")),
+            Permission::Allow
+        );
+        // The other direction: a longer named rule beats a shorter `*`.
+        let named = r(&["*(cat*)"], &["bash(cat notes*)"]);
+        assert_eq!(
+            g(&named, "bash", &exec, Some("cat notes.md")),
+            Permission::Allow
+        );
+        // `deny: ["*"]` + `allow: [read]`: the `read` tool is named by `read`
+        // (4 > 1) and runs; `grep` only shares the class, which loses to the
+        // stricter `*` deny.
+        let star = r(&["*"], &["read"]);
+        assert_eq!(
+            g(&star, "read", &[Capability::Read], None),
+            Permission::Allow
+        );
+        assert_eq!(
+            g(&star, "grep", &[Capability::Read], None),
+            Permission::Deny
+        );
+        // A long scoped `*` allow loses to a class deny.
+        let class = r(&["write"], &["*(scripts/*)", "exec"]);
+        assert_eq!(
+            g(&class, "edit", &[Capability::Write], Some("scripts/x")),
+            Permission::Deny
+        );
+        // And a `*` deny still beats a class allow.
+        let curl = r(&["*(curl *)"], &["exec"]);
+        assert_eq!(g(&curl, "call", &exec, Some("curl x")), Permission::Deny);
+        assert_eq!(g(&curl, "call", &exec, Some("ls")), Permission::Allow);
     }
 
     #[test]

@@ -1,9 +1,13 @@
 //! `rhai` — embedded, capability-sandboxed script engine (ADR-0046, amended by
-//! ADR-0115 (exec bindings), ADR-0130 (`workdir`) and ADR-0227 (one binding
-//! path, namespaces, `http()`, skill libraries)).
+//! ADR-0115 (exec bindings), ADR-0130 (`workdir`), ADR-0227 (one binding
+//! path, namespaces, `http()`, skill libraries) and ADR-0228 (`path`/`args`)).
 //!
 //! A runtime-owned tool that runs a [Rhai](https://rhai.rs) script in one
-//! call. A fresh engine has **no** filesystem, network, process or env
+//! call — inline `script` source, or a predefined script file named by
+//! `path` (read by the runtime; a `rhai.trusted` folder's scripts run with no
+//! launch card, any other script is shown once on a Run all / Ask per command
+//! / Reject card — [`gate`]) — with an optional `args` object bound as the
+//! constant map `args`. A fresh engine has **no** filesystem, network, process or env
 //! access: every capability is a function registered here, so the sandbox is
 //! deny-by-default. The bindings are the host file tools, process exec
 //! (`exec`/`bash`), `http()`, per-run generated `mcp::<server>::<tool>`
@@ -31,13 +35,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use entanglement_core::{AgentState, Permission};
-use serde::Deserialize;
 use tokio::sync::oneshot;
 
 use crate::seam;
 use crate::skills::SkillRegistry;
-use crate::tool_names::RHAI_TOOL;
 use crate::tool_runner::Dispatcher;
 
 // The detached `background: true` path (#637, ADR-0185).
@@ -47,6 +48,10 @@ mod background;
 mod data;
 // The shared engine run behind both the blocking and the background path.
 mod engine;
+// `rhai`'s own launch: trusted folders, the launch card, the unattended posture.
+mod gate;
+// The validated input: `script` XOR `path`, `args` (ADR-0228).
+mod input;
 // The model-facing tool spec and its binding reference.
 mod spec;
 // The sandboxed engine and its registered fixed bindings.
@@ -61,8 +66,8 @@ mod service;
 pub use spec::rhai_spec;
 
 use bindings::{configure_engine, register_bindings};
+use gate::Verdict;
 use output::{format_output, result_line};
-use service::{await_approval, Approval};
 
 /// Default wall-clock budget for a script, in seconds, when the model omits
 /// `timeout`. Clamped to [`MAX_TIMEOUT_SECS`].
@@ -80,17 +85,6 @@ const MAX_CALL_LEVELS: usize = 64;
 const MAX_STRING_SIZE: usize = 256 * 1024;
 const MAX_ARRAY_SIZE: usize = 100_000;
 const MAX_MAP_SIZE: usize = 100_000;
-
-/// Parsed `rhai` tool input.
-#[derive(Deserialize)]
-struct ScriptInput {
-    script: String,
-    #[serde(default)]
-    timeout: Option<u64>,
-    /// Detach and return an `x-` handle instead of the result (#637).
-    #[serde(default)]
-    background: bool,
-}
 
 /// Whether a `rhai` call's input requests the detached path (#637) — read by
 /// the executor to skip the session-Stop canceller registration: a
@@ -114,6 +108,9 @@ struct BindingCall {
 /// What a run needs beyond the [`Dispatcher`], snapshotted by the executor
 /// at launch.
 pub(crate) struct Launch {
+    /// The project root a relative script `path` resolves under when no
+    /// escape-root policy is wired (the policy's own root wins otherwise).
+    pub root: PathBuf,
     /// The skill registry whose `lib.rhai` modules this run registers.
     pub skills: Arc<SkillRegistry>,
     /// `(project root, session workdir)` when the session works below the
@@ -123,22 +120,21 @@ pub(crate) struct Launch {
     pub scripts: crate::script_ops::ScriptRegistry,
 }
 
-/// Orchestrate one `rhai` call: gate the tool itself (`self_perm`), then run
-/// the script with every binding going through `dispatcher`.
+/// Orchestrate one `rhai` call: validate the input, gate the launch through
+/// the same gates as a direct call, then run the source with every binding
+/// going through `dispatcher`.
 pub(crate) async fn run_rhai(
     dispatcher: Dispatcher,
     launch: Launch,
-    self_perm: Permission,
     request_id: String,
     input: String,
     stop: Arc<AtomicBool>,
 ) {
     let holly = dispatcher.holly.clone();
     let session = dispatcher.session.clone();
-    let parsed: ScriptInput = match serde_json::from_str(&input) {
+    let parsed = match input::parse(&input) {
         Ok(p) => p,
-        Err(e) => {
-            let out = format!("rhai: invalid input: {e}");
+        Err(out) => {
             seam::reply(&holly, session, request_id, out, true).await;
             return;
         }
@@ -154,57 +150,38 @@ pub(crate) async fn run_rhai(
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS)
     });
-    match self_perm {
-        Permission::Deny => {
-            let out = format!(
-                "tool `{RHAI_TOOL}` denied by mode `{}` — use /mode to switch",
-                dispatcher.mode
-            );
-            seam::reply(&holly, session, request_id, out, true).await;
-            return;
-        }
-        Permission::Ask => {
-            // The launch gate runs inside the live turn even for a background
-            // script (the turn is parked on this very ToolExec).
-            let approval = await_approval(
-                &holly,
-                &dispatcher.pending,
-                &session,
-                &request_id,
-                RHAI_TOOL,
-                &parsed.script,
-            )
-            .await;
-            match approval {
-                Approval::Approved => holly.emit_status(&session, AgentState::Thinking),
-                Approval::Rejected(reason) => {
-                    holly.emit_status(&session, AgentState::Thinking);
-                    let out = format!("tool `{RHAI_TOOL}` rejected: {reason}");
-                    seam::reply(&holly, session, request_id, out, true).await;
-                    return;
-                }
-                // Stop unwinds silently: core cancels the turn on the same Stop.
-                Approval::Stopped => return,
+    // The launch gate runs inside the live turn even for a background
+    // script (the turn is parked on this very ToolExec).
+    let (script, posture) =
+        match gate::gate(&dispatcher, &launch, &request_id, &input, &parsed).await {
+            Verdict::Run { script, posture } => (script, posture),
+            Verdict::Refuse(out) => {
+                seam::reply(&holly, session, request_id, out, true).await;
+                return;
             }
-        }
-        Permission::Allow => {}
-    }
+            Verdict::Stopped => return,
+        };
+    let label = match &parsed.source {
+        input::Source::Path(path) => format!("rhai: {path}"),
+        input::Source::Inline(_) => background::script_label(&script),
+    };
+    let run = engine::RunSpec {
+        script,
+        args: parsed.args,
+        timeout,
+        stop: stop.clone(),
+        timed_out: Arc::new(AtomicBool::new(false)),
+        detached: parsed.background,
+        posture,
+    };
     // The launch is the graded decision (ADR-0161 §3): a background script
     // detaches only after Allow/approval.
     if parsed.background {
-        background::run_background(dispatcher, launch, request_id, parsed.script, timeout, stop)
-            .await;
+        background::run_background(dispatcher, launch, request_id, label, run).await;
         return;
     }
     let prints = Arc::new(Mutex::new(String::new()));
     let sink = prints.clone();
-    let run = engine::RunSpec {
-        script: parsed.script,
-        timeout,
-        stop: stop.clone(),
-        timed_out: Arc::new(AtomicBool::new(false)),
-        detached: false,
-    };
     let (eval_result, stopped) =
         engine::run_engine(&dispatcher, &launch, &request_id, run, move |text| {
             if let Ok(mut buf) = sink.lock() {

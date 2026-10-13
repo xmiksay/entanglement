@@ -481,6 +481,7 @@ async fn a_direct_mcp_call_connects_at_dispatch_and_is_still_graded() {
             request_id: "t1".into(),
             scope: entanglement_core::ApprovalScope::Once,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();

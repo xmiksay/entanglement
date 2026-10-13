@@ -35,6 +35,11 @@ allow:
 # The truly destructive forms (`git push --force*` etc.) stay `deny` above;
 # a longer `prompt` entry here could never win against them anyway.
 prompt:
+  # A script launch asks (ADR-0228): the card shows the source and offers
+  # Run all / Ask per command. A rule naming the tool outranks the class
+  # allows above (`write`/`exec`), so this one line is enough; a launch
+  # grant, or a `rhai(scripts/*)` allow rule in config.yml, lifts it per path.
+  - rhai
   - "bash(git push*)"
   - "bash(gh pr create*)"
   - "bash(gh pr merge*)"

@@ -28,7 +28,7 @@ pub(crate) mod summary;
 /// would park until the 60s `recv` timeout below kills the whole run.
 /// `--yes` (#554) used to offer an auto-approve escape hatch for this; it is
 /// retired (ADR-0207 §11) — `--mode auto` is the real unattended posture now
-/// (bounded default-prompt posture per ADR-0209, run/turn/duration budgets,
+/// (allow-but-deny-list posture per ADR-0228, run/turn/duration budgets,
 /// no silent widening), so this
 /// head no longer takes a flag to override its default.
 ///
@@ -131,23 +131,50 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
         // 60s `recv` timeout kills the whole run. Settle it immediately with a
         // reason the model can act on (retry inside the root, run `--mode auto`
         // for an unattended posture, or rerun interactively via `tui`) instead.
+        //
+        // The one exception is a `rhai` launch card (ADR-0228): with nobody to
+        // pick **Run all**, the script starts at once **Ask per command** —
+        // each nested call is still graded, and a nested `Ask` lands here as
+        // its own `<tool> (rhai)` card and is refused like any other.
         if let OutEvent::ToolRequest {
-            request_id, tool, ..
+            request_id,
+            tool,
+            input,
+            ..
         } = &ev
         {
-            holly
-                .send(InMsg::Reject {
-                    session: session.clone(),
-                    request_id: request_id.clone(),
-                    reason: Some(reject_reason(tool).to_string()),
-                })
-                .await?;
+            let answer = headless_answer(&session, request_id, tool, input);
+            holly.send(answer).await?;
         }
         if matches!(ev, OutEvent::Done { .. }) {
             break;
         }
     }
     Ok(())
+}
+
+/// This head's answer to a `ToolRequest`: a `rhai` launch card starts the
+/// script **Ask per command** (a `Once` approval, never `run_all`) — unless
+/// the script lies outside the project root, which no one approved; every
+/// other card — a nested `<tool> (rhai)` one included — is rejected.
+fn headless_answer(session: &SessionId, request_id: &str, tool: &str, card: &str) -> InMsg {
+    let (session, request_id) = (session.clone(), request_id.to_string());
+    let escapes = card.contains(entanglement_runtime::rhai_trust::LAUNCH_ESCAPE_NOTE);
+    if tool == crate::tool_names::RHAI_TOOL && !escapes {
+        InMsg::Approve {
+            session,
+            request_id,
+            scope: entanglement_core::ApprovalScope::Once,
+            mode: None,
+            run_all: false,
+        }
+    } else {
+        InMsg::Reject {
+            session,
+            request_id,
+            reason: Some(reject_reason(tool).to_string()),
+        }
+    }
 }
 
 /// Whether the relay loop prints `ev` for the run bound to `session`: its own
@@ -164,7 +191,9 @@ fn relays(ev: &OutEvent, session: &SessionId) -> bool {
 /// The auto-reject reason for a `ToolRequest` this one-shot head has no
 /// interactive user to answer. `propose_plan` gets its own message (accepting
 /// a plan is a mode switch this head can't observe or drive either way);
-/// every other tool gets the generic pointer to `--mode auto` or `tui`.
+/// every other tool gets the generic pointer to `--mode auto`, a
+/// `rhai.trusted` folder (a script there runs with every nested call
+/// allowed, ADR-0228) or `tui`.
 ///
 /// Deliberately takes no mode/flag input (#560, ADR-0207 §7 extension): this
 /// head auto-rejects a plan **unconditionally**, `--mode auto` included — an
@@ -175,7 +204,8 @@ fn reject_reason(tool: &str) -> &'static str {
         "non-interactive head cannot accept a plan; run interactively (tui) to accept"
     } else {
         "non-interactive head auto-rejects tool approval requests; \
-         rerun with --mode auto for an unattended run, or interactively (tui) to decide"
+         rerun with --mode auto for an unattended run, put a script in a `rhai.trusted` \
+         folder (config.yml) to run it unasked, or run interactively (tui) to decide"
     }
 }
 
@@ -191,6 +221,51 @@ mod tests {
         let reason = reject_reason(crate::tool_names::PROPOSE_PLAN_TOOL);
         assert!(reason.contains("cannot accept a plan"), "{reason}");
         assert!(!reason.contains("--mode auto"), "{reason}");
+    }
+
+    /// ADR-0228: the generic reason names `rhai.trusted` beside `--mode
+    /// auto` — a trusted script runs here with no card at all.
+    #[test]
+    fn the_generic_reason_names_the_unattended_ways_out() {
+        let reason = reject_reason("bash");
+        assert!(
+            reason.contains("--mode auto") && reason.contains("rhai.trusted"),
+            "{reason}"
+        );
+    }
+
+    /// ADR-0228: a launch card starts the script Ask per command; a nested
+    /// card is refused like any other.
+    #[test]
+    fn a_rhai_launch_runs_ask_per_command_and_a_nested_card_is_rejected() {
+        let sid = SessionId::new("s");
+        match headless_answer(&sid, "r1", "rhai", "// path: \"x.rhai\"\n1") {
+            InMsg::Approve { scope, run_all, .. } => {
+                assert_eq!(scope, entanglement_core::ApprovalScope::Once);
+                assert!(!run_all);
+            }
+            other => panic!("{other:?}"),
+        }
+        for tool in ["write (rhai)", "bash", "rhai_extra"] {
+            assert!(
+                matches!(
+                    headless_answer(&sid, "r2", tool, "{}"),
+                    InMsg::Reject { .. }
+                ),
+                "{tool}"
+            );
+        }
+        let escape = format!(
+            "1\n\n{}: /elsewhere/x.rhai",
+            entanglement_runtime::rhai_trust::LAUNCH_ESCAPE_NOTE
+        );
+        assert!(
+            matches!(
+                headless_answer(&sid, "r3", "rhai", &escape),
+                InMsg::Reject { .. }
+            ),
+            "an out-of-root launch is refused"
+        );
     }
 
     #[test]

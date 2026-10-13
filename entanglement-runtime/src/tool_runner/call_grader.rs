@@ -33,6 +33,10 @@ pub(crate) struct CallGrader {
     pub overlay_denied: bool,
     pub ceiling: PermissionProfile,
     pub root: Option<PathBuf>,
+    /// The call is a nested call of a trusted or **Run all** script
+    /// (ADR-0228): a target it reaches mid-call (a redirect hop) passes an
+    /// `Ask` exactly as the call itself did. Denies still win.
+    pub run_all: bool,
 }
 
 impl CallGrader {
@@ -52,8 +56,13 @@ impl CallGrader {
             overlay_entry: self.overlay_entry.as_ref(),
             ceiling: &self.ceiling,
             root: self.root.as_deref(),
+            // A mid-call target is a fetch, never a file write.
+            floor: None,
         };
-        grade_call(&inputs, tool, input).await.0
+        match grade_call(&inputs, tool, input).await.0 {
+            Permission::Ask if self.run_all => Permission::Allow,
+            grade => grade,
+        }
     }
 
     pub(crate) fn mode(&self) -> &str {
@@ -108,6 +117,7 @@ pub(crate) mod test_support {
             overlay_denied: false,
             ceiling: PermissionProfile::new(Permission::Allow),
             root: None,
+            run_all: false,
         }
     }
 }
@@ -148,6 +158,21 @@ mod tests {
         assert_eq!(graded.0, Some((Permission::Deny, research())));
         assert_eq!(graded.1, Some((Permission::Allow, research())));
         assert_eq!(graded.2, Some((Permission::Ask, research())));
+    }
+
+    /// A trusted / **Run all** script's call passes an `Ask` hop like the
+    /// call itself did; a `Deny` and an overlay deny still stop it.
+    #[tokio::test]
+    async fn run_all_passes_an_ask_but_never_a_deny() {
+        let mut grader = grader_for(mode(), ToolRegistry::new());
+        grader.run_all = true;
+        let graded = scope(grader, async { (grade("make").await, grade("rm x").await) }).await;
+        assert_eq!(graded.0.map(|g| g.0), Some(Permission::Allow));
+        assert_eq!(graded.1.map(|g| g.0), Some(Permission::Deny));
+        let mut grader = grader_for(mode(), ToolRegistry::new());
+        (grader.run_all, grader.overlay_denied) = (true, true);
+        let graded = scope(grader, grade("make")).await;
+        assert_eq!(graded.map(|g| g.0), Some(Permission::Deny));
     }
 
     #[tokio::test]

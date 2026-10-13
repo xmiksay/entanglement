@@ -3,9 +3,8 @@
 //! There is no advertising *mode* any more: every session on every wire gets
 //! the same [`KERNEL`][crate::tool_names::KERNEL] — native host tools, the
 //! six discovery tools, `rhai`, and the `mcp` envelope (`{server, tool,
-//! args}`) — plus, until #820 removes them, the registered `skill__*`
-//! tools — snapshotted at its first resolution and
-//! never changed afterwards, so the
+//! args}`) — snapshotted at its first resolution and never changed
+//! afterwards, so the
 //! provider's cached `tools` prefix holds for the whole session. MCP tool
 //! schemas are never advertised; `mcp_tools` delivers them as a tool result.
 //!

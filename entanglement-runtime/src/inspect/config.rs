@@ -170,8 +170,8 @@ fn render_config(resolved: &Resolved) -> String {
 
     let _ = writeln!(
         out,
-        "\npermissions ceiling (← {}, longest matching rule wins, same grammar \
-         as a permission mode — see `inspect modes`):",
+        "\npermissions ceiling (← {}, same grammar and precedence as a permission \
+         mode — see `inspect modes`):",
         from("permissions")
     );
     let _ = writeln!(out, "  default: {:?}", c.permissions.default);
@@ -221,6 +221,31 @@ fn render_config(resolved: &Resolved) -> String {
             };
             let _ = writeln!(out, "  {name}{state}: {transport}");
         }
+    }
+
+    let _ = writeln!(
+        out,
+        "\nrhai.trusted (the layers' lists add up; canonical folder ← listing layer):"
+    );
+    if resolved.rhai_trusted.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    }
+    for (dir, layer) in &resolved.rhai_trusted {
+        let _ = writeln!(out, "  {} ← {}", dir.display(), layer.label());
+    }
+    let suppressed = &c.rhai_trusted.user_suppressed;
+    if !c.rhai_trusted.user.is_empty() && c.rhai_trusted.user_suppressed_everywhere {
+        let _ = writeln!(
+            out,
+            "  user-layer trust suppressed in every mode — the project's `permissions:` asks for prompts"
+        );
+    } else if !c.rhai_trusted.user.is_empty() && !suppressed.is_empty() {
+        let modes: Vec<&str> = suppressed.iter().map(String::as_str).collect();
+        let _ = writeln!(
+            out,
+            "  user-layer trust suppressed in mode(s) {} — the project config adds `prompt` rules there",
+            modes.join(", ")
+        );
     }
 
     let _ = writeln!(out, "\nweb search (← {}):", from("web_search"));
@@ -273,100 +298,4 @@ fn render_hook_list(out: &mut String, point: &str, hooks: &[crate::hooks::HookSp
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_defaults_report_the_default_layer_and_engine_fallback_text() {
-        let dir = tempfile::tempdir().unwrap();
-        let resolved = Config::resolve_with(dir.path(), None).unwrap();
-        let rendered = render_config(&resolved);
-
-        assert!(rendered.contains("max_turns: 200") && rendered.contains("← default"));
-        assert!(rendered.contains("idle_ttl_secs: (disabled — no auto-hibernation sweep)"));
-        assert!(rendered.contains("auto_compact: true"));
-        assert!(rendered.contains("editor:   ($VISUAL → $EDITOR → vi)"));
-        assert!(rendered.contains("session_retention_days: 30") && rendered.contains("← default"));
-        assert!(
-            rendered.contains(
-                "undo:     enabled=true max_file_bytes=8 MiB max_root_bytes=256 MiB ← default"
-            ),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn undo_block_renders_effective_sizes_and_its_layer() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_file = dir.path().join("user-config.yml");
-        std::fs::write(&user_file, "undo: {enabled: false, max_root_bytes: 1GiB}\n").unwrap();
-        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
-
-        let rendered = render_config(&resolved);
-        assert!(
-            rendered.contains(
-                "undo:     enabled=false max_file_bytes=8 MiB max_root_bytes=1 GiB ← user"
-            ),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn user_layer_overrides_report_their_winning_layer() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_file = dir.path().join("user-config.yml");
-        std::fs::write(
-            &user_file,
-            "max_turns: 50\nidle_ttl_secs: 120\nauto_compact: false\neditor: \"code --wait\"\n",
-        )
-        .unwrap();
-
-        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
-
-        let rendered = render_config(&resolved);
-        assert!(rendered.contains("max_turns: 50") && rendered.contains("← user"));
-        assert!(rendered.contains("idle_ttl_secs: 120") && rendered.contains("← user"));
-        assert!(rendered.contains("auto_compact: false") && rendered.contains("← user"));
-        assert!(rendered.contains("editor:   code --wait") && rendered.contains("← user"));
-    }
-
-    #[test]
-    fn tui_block_and_retired_key_warnings_are_rendered() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_file = dir.path().join("user-config.yml");
-        std::fs::write(
-            &user_file,
-            "tui: {notify: true, statusline: {right: '{mode}', command: 'echo hi'}, \
-             theme: {base: light, slots: {diff.add: '#2e7d32'}}, \
-             keybindings: {pick_model: [ctrl+o, leader o], export: ctrl+g}}\n\
-             discovery: {zai: invoke}\n",
-        )
-        .unwrap();
-        let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
-
-        let rendered = render_config(&resolved);
-        assert!(
-            rendered.contains("tui:      notify=true mouse=true ← user"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"tui.statusline: template="{repo} › {cwd_rel}  ⎇ {branch} {worktree}" right="{mode}" command="echo hi" timeout_ms=1000 ← user"#),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("tui.theme: light [diff.add=#2e7d32] ← user"),
-            "{rendered}"
-        );
-        assert!(
-            rendered
-                .contains("tui.keybindings: [export=ctrl+g, pick_model=ctrl+o|leader o] ← user"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("warnings:") && rendered.contains("`discovery:`"),
-            "{rendered}"
-        );
-        // The export/jump_attention clash is a warning, not a load failure.
-        assert!(rendered.contains("`jump_attention`"), "{rendered}");
-    }
-}
+mod tests;
