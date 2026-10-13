@@ -71,11 +71,10 @@ pub fn build_surface(registry_specs: Vec<ToolSpec>, agent_specs: Vec<ToolSpec>) 
     specs
 }
 
-/// Kernel tools, plus the skill-declared `skill__*` tools until #820
-/// retires skill `tools:`: with `describe` gone they have no other
-/// model-facing path. (ADR-0227 removed the `endpoint__*` half.)
+/// Kernel tools only (ADR-0226; ADR-0228 retired the interim `skill__*`
+/// exception with skill `tools:`).
 fn is_advertised(name: &str) -> bool {
-    KERNEL.contains(&name) || name.starts_with("skill__")
+    KERNEL.contains(&name)
 }
 
 #[cfg(test)]
@@ -107,7 +106,14 @@ mod tests {
         .collect();
         let specs = build_surface(registry, vec![spec("agent")]);
         let got = names(&specs);
-        for hidden in ["glob", "grep", "call", "read_raw", "mcp__gh__search"] {
+        for hidden in [
+            "glob",
+            "grep",
+            "call",
+            "read_raw",
+            "mcp__gh__search",
+            "skill__git__log",
+        ] {
             assert!(
                 !got.contains(&hidden),
                 "{hidden} is not model-facing: {got:?}"
@@ -117,7 +123,6 @@ mod tests {
             "read",
             "write",
             "agent",
-            "skill__git__log",
             "mcp",
             "list_mcp",
             "mcp_tools",

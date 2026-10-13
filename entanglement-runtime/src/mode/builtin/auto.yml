@@ -1,45 +1,33 @@
-# auto: unattended run (ADR-0207 §11, amended by ADR-0209). `default: prompt`
-# — not `deny` — because the unattended guarantee comes from
-# `question_timeout`, never from the default grade.
+# auto: unattended run (ADR-0207 §11; ADR-0209, amended by ADR-0228).
+# `default: allow` — `auto` lets everything run that its `deny` list below
+# does not refuse: direct calls and a script's nested calls alike (one rule
+# set, ADR-0228), a `rhai` launch included (no card, Ask per command — and
+# with nothing left to ask, every nested call that is not denied runs).
 #
-# The original cut spelled this `default: deny`, reasoning that nobody is
-# watching so anything unlisted should be refused outright rather than park a
-# prompt that will never be answered. That reasoning was right about
-# *parking* and wrong about the *grade*. A `Deny` is absolute — it takes
-# dispatch's `Permission::Deny` arm and replies immediately — so it bypassed
-# the very escalation ADR-0207 §11 built for this mode:
-# `run_limits::collapses_ask` refuses a first `Ask` *without* parking, and
-# `DenialTracker::record_repeat` parks a bounded approval on a **second**
-# identical call, "since a model insisting twice may genuinely need it".
-# With `default: deny` that path was unreachable for every command not
-# explicitly enumerated — i.e. nearly all of them — so an attended `auto`
-# session could never approve anything, and a model's correct retry was
-# refused identically forever.
+# ADR-0209 had `default: prompt`, so an unlisted call collapsed to a refusal
+# first and parked a bounded approval on a repeat (`question_timeout`). In
+# practice that made `auto` stop on every unenumerated command; the user
+# decided (#820) that `auto` means "run". What still asks here:
+#   - the `prompt:` list below — destructive families that are recoverable
+#     enough to approve but must never run silently;
+#   - the escape-root gate (a path outside the project root, ADR-0109) —
+#     unattended it parks up to `question_timeout`, then refuses;
+#   - a credentialed `http()` call's per-host approval (ADR-0227) —
+#     unattended it is refused unless an explicit user-layer `http(...)`
+#     allow rule names it;
+#   - a `write`/`edit`/`apply_patch` of a trusted script or a skill's
+#     `SKILL.md`/`lib.rhai` (ADR-0228's write floor, every mode).
+# A `prompt` rule's call follows ADR-0207 §11's ladder: unattended, the first
+# call collapses to a refusal and an identical repeat parks up to
+# `question_timeout`, then refuses.
 #
-# `default: prompt` restores the ladder without weakening the posture,
-# because the timeout does the work: genuinely unattended, the first call
-# collapses to a denial, the second parks, nobody answers, and
-# `on_timeout: deny` refuses it 60s later — the same outcome, one prompt
-# later. Attended, the user gets to decide.
-#
-# What stays: the `deny` list below is absolute regardless of the default,
-# and exec is still an **explicit command list**, never the `exec` capability
-# class. That distinction is the one ADR-0207 §11 actually needed — a class
-# allow would run unenumerated commands *silently*, which is a different
-# thing from prompting for them. `bash` and `call` share these rules
-# (ADR-0207 §4), so one spelling covers both.
-#
-# The exec allow list is the shared read-only set (`readonly_exec.yml`,
-# spliced in by `builtin.rs`) plus this mode's own build-tooling extras —
-# it used to carry its own hand-copied read-only subset that disagreed with
-# `research`'s (different git coverage, no `sed`/`awk`/`diff`); that drift
-# is exactly what a single shared list removes.
-#
-# The `deny` entries below carry more weight under `default: prompt` than
-# they did under `default: deny`: they are now the only grade an unattended
-# run refuses *without* an escalation path, so everything genuinely
-# irreversible belongs there rather than relying on the default.
-default: prompt
+# The `deny` entries are what an unattended run refuses outright with no
+# escalation path, so everything genuinely irreversible belongs there; the
+# `prompt` entries are destructive but worth one human look. Exec is no
+# longer an explicit allow list: the `allow` entries are kept as the
+# documentation of what this mode was built for, and the shared read-only
+# set (`readonly_exec.yml`) is still spliced in by `builtin.rs`.
+default: allow
 deny:
   - plan
   - "bash(rm -rf /*)"
@@ -88,6 +76,38 @@ deny:
   - "bash(glab api --method DELETE*)"
   - "bash(npm publish*)"
   - "bash(cargo publish*)"
+# Destructive, silent under `default: allow` without these. Each out-ranks
+# the broader allow it would otherwise match (the shared `gh`/`glab` read
+# set, `bash(cargo *)`) by length; the absolute `rm -rf /*`/`~*` denies above
+# out-rank the `rm` entries the same way. The `rm` spellings are a
+# best-effort list — a shell command line cannot be fully enumerated.
+prompt:
+  - "bash(gh issue delete*)"
+  - "bash(gh repo delete*)"
+  - "bash(gh release delete*)"
+  - "bash(gh label delete*)"
+  - "bash(gh secret delete*)"
+  - "bash(gh variable delete*)"
+  - "bash(gh run delete*)"
+  - "bash(gh cache delete*)"
+  - "bash(gh gist delete*)"
+  - "bash(glab repo delete*)"
+  - "bash(glab issue delete*)"
+  - "bash(glab mr delete*)"
+  - "bash(glab release delete*)"
+  - "bash(glab label delete*)"
+  - "bash(glab variable delete*)"
+  - "bash(cargo yank*)"
+  - "bash(npm unpublish*)"
+  - "bash(docker push*)"
+  - "bash(rm -r*)"
+  - "bash(rm -R*)"
+  - "bash(rm -f -r*)"
+  - "bash(rm -f -R*)"
+  - "bash(rm -fr*)"
+  - "bash(rm -fR*)"
+  - "bash(rm --recursive*)"
+  - "bash(rm -f --recursive*)"
 allow:
   - read
   - write

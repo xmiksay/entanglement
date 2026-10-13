@@ -14,8 +14,7 @@
 //! `ToolRequest` → `Approve`/`Reject` round-trip works detached, parking the
 //! script (whose deadline keeps counting) until the head answers.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::seam;
 use crate::tool_runner::Dispatcher;
@@ -26,20 +25,23 @@ use super::{result_line, Launch};
 /// Register, reply with the handle, then run the script to completion with
 /// output streaming into the registry. Runs on the executor-spawned task the
 /// blocking path would have used — the task simply outlives its `ToolResult`.
+/// `label` names the run in the pending-operations listing; `run` is
+/// already `detached`.
 pub(super) async fn run_background(
     dispatcher: Dispatcher,
     launch: Launch,
     request_id: String,
-    script: String,
-    timeout: std::time::Duration,
-    stop: Arc<AtomicBool>,
+    label: String,
+    run: RunSpec,
 ) {
+    let timeout = run.timeout;
     let secs = timeout.as_secs();
+    let timed_out = run.timed_out.clone();
     let (id, op) = launch.scripts.register(
-        script_label(&script),
+        label,
         Some(dispatcher.session.clone()),
         timeout,
-        stop.clone(),
+        run.stop.clone(),
     );
     seam::reply(
         &dispatcher.holly,
@@ -57,15 +59,7 @@ pub(super) async fn run_background(
     )
     .await;
 
-    let timed_out = Arc::new(AtomicBool::new(false));
     let print_op = op.clone();
-    let run = RunSpec {
-        script,
-        timeout,
-        stop,
-        timed_out: timed_out.clone(),
-        detached: true,
-    };
     // Unlike the blocking path, a `Stop`-unwound run still records a terminal
     // state: nothing else ever resolves this handle, so a poll of a killed
     // script must see *something* final rather than `running` forever.
@@ -81,9 +75,9 @@ pub(super) async fn run_background(
     op.finish(&line, is_error);
 }
 
-/// The listing label for a script (#607): its first non-empty line, truncated
-/// — a whole script would bloat every pending-operations reply.
-fn script_label(script: &str) -> String {
+/// The listing label for an inline script (#607): its first non-empty line,
+/// truncated — a whole script would bloat every pending-operations reply.
+pub(super) fn script_label(script: &str) -> String {
     let line = script
         .lines()
         .map(str::trim)

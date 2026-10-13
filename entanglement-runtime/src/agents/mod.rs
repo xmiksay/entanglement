@@ -370,7 +370,6 @@ mod tests {
             allowed_tools: None,
             root_dir: None,
             body: body.into(),
-            tools: Vec::new(),
             lib: None,
         });
         reg

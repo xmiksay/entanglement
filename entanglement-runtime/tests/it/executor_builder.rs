@@ -170,6 +170,7 @@ async fn grants_seam_persists_an_always_approval_to_the_given_file() {
             request_id: "p".into(),
             scope: ApprovalScope::Always,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();

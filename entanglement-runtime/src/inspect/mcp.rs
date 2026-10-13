@@ -100,6 +100,7 @@ mod tests {
             mcp: HashMap::new(),
             http_auth: Default::default(),
             untrusted_http_rules: Default::default(),
+            rhai_trusted: Default::default(),
             web_search: Default::default(),
             max_turns: None,
             idle_ttl: None,

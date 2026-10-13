@@ -156,9 +156,11 @@ doc, never here**:
   mid-session (any change busts the prompt cache); no mode, no knob
   ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
 - **Authority is the session's permission mode, not the agent** —
-  `research`/`plan`/`build`/`auto`, graded at the runtime's dispatch gate by
-  the longest matching rule; there is no agent tool mask
-  ([agents & permissions §3](../docs/architecture/agents-and-permissions.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)).
+  `research`/`plan`/`build`/`auto` (`auto` = allow all but its deny/prompt lists),
+  graded at the runtime's dispatch gate (a rule naming the tool outranks a
+  class rule; a `*` rule meets a named one by length, a class one by
+  strictness; longest within a kind); there is no agent tool mask
+  ([agents & permissions §3](../docs/architecture/agents-and-permissions.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 - **The tool overlay is the user's own trusted voice** — per-session,
   mode-scoped enable/deny entries over the mode's grade
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).
@@ -187,8 +189,13 @@ doc, never here**:
   ([gates §undo](../docs/architecture/gates-and-host-tools.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)).
 - **`rhai` is a sandboxed script tool whose every binding runs the executor's
   dispatch seam** — `mcp::<server>::<tool>`/`skill::<skill>::<fn>`
-  namespaces, `http()` with user-layer-only `http_auth` credentials
-  ([gates §script surface](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)).
+  namespaces, `http()` with user-layer-only `http_auth` credentials; inline
+  `script` or a script file `path`, `args` a constant map; the launch is
+  graded like any tool on its `path` (Allow → Ask per command, Ask → one Run
+  all / Ask per command / Reject card); a `rhai.trusted` folder's script runs
+  force-allowed with no card; writes of trusted scripts and skill files
+  always ask, in every mode
+  ([gates §script surface](../docs/architecture/gates-and-host-tools.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 - **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
   `mcp__<server>__<tool>`), schemas never advertised; registered = available
   (`disabled: true` the one opt-out), lazy connect, live add/remove,
@@ -196,10 +203,11 @@ doc, never here**:
   ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
-  `mcp_tools` reads (and lazily connects) one server's catalog; alias rewrite
-  of skill-declared tools happens before grading ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
-- **Skills are additive-only; slash commands are head-side templates**
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)).
+  `mcp_tools` reads (and lazily connects) one server's catalog
+  ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
+- **Skills are additive-only; slash commands are head-side templates** — a
+  skill ships `lib.rhai` functions and script files, no `tools:` frontmatter
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
   trusted); managed files are advisory-locked and live-reloaded
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads-and-persistence.md), [ADR-0047](../docs/adr/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)).

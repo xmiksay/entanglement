@@ -85,6 +85,9 @@ pub enum Decision {
     Approve {
         scope: ApprovalScope,
         mode: Option<String>,
+        /// A `rhai` launch card's **Run all** (ADR-0228,
+        /// [`InMsg::Approve::run_all`]); every other orchestrator ignores it.
+        run_all: bool,
     },
     /// `Reject` — carries the optional reason.
     Reject { reason: Option<String> },
@@ -127,7 +130,16 @@ impl Decision {
                 request_id,
                 scope,
                 mode,
-            } => Some((session, request_id, Decision::Approve { scope, mode })),
+                run_all,
+            } => Some((
+                session,
+                request_id,
+                Decision::Approve {
+                    scope,
+                    mode,
+                    run_all,
+                },
+            )),
             InMsg::Reject {
                 session,
                 request_id,

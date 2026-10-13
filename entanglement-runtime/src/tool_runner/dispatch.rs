@@ -6,8 +6,8 @@
 //! script over the bridge (`crate::script`), so core never sees a result for
 //! an id it never parked on.
 //!
-//! The ladder itself lives in [`gates`] (unknown/lazy-MCP resolution, alias
-//! rewrite, the `Control` bypass, overlay deny, mode grade + grants, hooks,
+//! The ladder itself lives in [`gates`] (unknown/lazy-MCP resolution, the
+//! `Control` bypass, overlay deny, mode grade + grants, hooks,
 //! escape-root, the credentialed-`http` gate), the approval park in
 //! [`decision`], the run-against-the-registry step in [`execute`].
 
@@ -40,6 +40,8 @@ use crate::tools::{SharedRegistry, ToolRegistry};
 
 use super::EscapeRoot;
 
+#[cfg(feature = "rhai")]
+pub(crate) use script::Posture;
 pub(crate) use script::ScriptCall;
 
 /// Everything one session's calls are graded and executed against, owned so
@@ -79,6 +81,11 @@ pub(crate) struct Dispatcher {
     pub limits: Limits,
     pub denials: Arc<DenialTracker>,
     pub http_gate: Arc<HttpGate>,
+    /// `rhai.trusted` folders and skill dirs, canonical (ADR-0228): what a
+    /// launch trusts and what a file-tool write is floored at `Ask` for.
+    pub trust: Arc<crate::rhai_trust::Trust>,
+    /// The project root a relative file-tool `path` resolves against.
+    pub files_root: std::path::PathBuf,
 }
 
 /// One call to grade and run.

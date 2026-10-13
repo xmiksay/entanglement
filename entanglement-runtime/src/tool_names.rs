@@ -129,10 +129,7 @@ pub fn is_non_maskable(tool: &str) -> bool {
 /// ride the shared spec pool like everything else, so the filter keeps only
 /// what is listed. Registered but hidden: `call`/`glob`/`grep` (script-only
 /// rhai bindings, still graded under their names) and `read_raw`/
-/// `glob_json`/`grep_json`, and `http` (ADR-0227). Interim exception, until
-/// #820 removes skill `tools:`: registered `skill__*` tools are advertised
-/// beside this list (`tool_advertising::surface`), since nothing else
-/// reaches them.
+/// `glob_json`/`grep_json`, and `http` (ADR-0227).
 pub const KERNEL: &[&str] = &[
     "read",
     "edit",
@@ -261,10 +258,6 @@ pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
         || entry.starts_with("mcp__")
-        // A skill-declared tool (`skill__<skill>__<name>`, #560 P8) isn't
-        // knowable from a fixed compile-time list either, exactly like an
-        // MCP tool above.
-        || entry.starts_with("skill__")
         || is_capability_name(entry)
         || KNOWN_TOOL_NAMES.contains(&entry)
 }

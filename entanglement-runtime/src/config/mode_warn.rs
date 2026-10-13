@@ -32,9 +32,9 @@ const GRADE_KEYS: [&str; 3] = ["allow", "deny", "prompt"];
 /// exact-argument scoped rule like `bash(cargo check)` carries no wildcard of
 /// its own and must not false-positive just because the whole entry isn't a
 /// known literal. `is_recognized_mask_entry` already narrows the check to
-/// the compile-time built-in vocabulary — a `mcp__*`/`skill__*`
-/// name, a capability class, or a glob pattern is never flagged, since
-/// MCP/skill tools register after config load.
+/// the compile-time built-in vocabulary — a `mcp__*` name, a capability
+/// class, or a glob pattern is never flagged, since MCP tools register after
+/// config load.
 pub(super) fn stale_mode_tuning_names(layers: &[RawLayer]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for layer in layers {
@@ -197,11 +197,24 @@ mod tests {
         assert!(stale_mode_tuning_names(&layers).is_empty());
     }
 
+    /// ADR-0228 retired skill-declared `skill__*` tools: a rule naming one
+    /// is stale now.
     #[test]
-    fn a_skill_tool_does_not_warn() {
+    fn a_retired_skill_tool_warns() {
         let layers = vec![layer(
             ConfigLayer::Project,
             "modes:\n  build:\n    prompt: [\"skill__deploy__ship\"]\n",
+        )];
+        assert_eq!(stale_mode_tuning_names(&layers).len(), 1);
+    }
+
+    /// ADR-0228: the launch grades on its script `path`, so a scoped
+    /// `rhai(...)` rule is as valid as a bare `rhai`.
+    #[test]
+    fn scoped_and_bare_rhai_rules_do_not_warn() {
+        let layers = vec![layer(
+            ConfigLayer::Project,
+            "modes:\n  build:\n    allow: [\"rhai(scripts/*)\", \"rhai\"]\n",
         )];
         assert!(stale_mode_tuning_names(&layers).is_empty());
     }

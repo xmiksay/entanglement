@@ -77,8 +77,11 @@ A **permission mode** carries every permission fact: `research` | `plan` |
 `config.yml` `modes:`; `skutter inspect modes` shows the resolved rules).
 Each mode grades a call `Allow`/`Ask`/`Deny` from its rule table — keys are a
 tool name, `*`, argument-scoped `tool(pattern)`, workdir-scoped
-`tool{pattern}`, or a capability class (`read`/`write`/`exec`/`plan`); the
-longest matching key wins:
+`tool{pattern}`, or a capability class (`read`/`write`/`exec`/`plan`). A
+rule naming the tool outranks a capability-class rule; a `*` rule competes
+with a named rule by key length and with a class rule by strictness (the
+stricter wins); within each kind the longest key wins; ties go to the
+stricter grade. The `permissions:` ceiling grades the same way:
 
 - `research` — read-only Q&A: `read` allowed, `write` and `plan` denied, a
   curated read-only shell set allowed, everything else asks.
@@ -87,13 +90,15 @@ longest matching key wins:
   write is denied (ADR-0142/ADR-0145).
 - `build` (the default) — `read`/`write`/`exec` allowed outright, bar a short
   destructive-command deny list (`rm -rf /`, `git push --force`,
-  `git reset --hard`, …) and a publishing list that asks (`git push`,
-  `gh pr create`, `cargo publish`, …).
-- `auto` — the unattended posture: read/write, `cargo`/`make` and the same
-  curated read-only shell set as `research` allowed, publishing and
-  destructive commands denied outright, anything else is
-  refused once and parks a bounded (60s) approval on an identical retry
-  ([ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
+  `git reset --hard`, …) and a list that asks (`git push`,
+  `gh pr create`, `cargo publish`, …, and launching a `rhai` script).
+- `auto` — the unattended posture: everything runs except what its deny
+  list refuses outright (publishing and destructive commands); deletions
+  (`gh … delete`, `cargo yank`, recursive `rm`, …), a path outside the
+  project root, a credentialed `http()` host and writes of trusted scripts
+  still ask, bounded by a 60s timeout
+  ([ADR-0228](docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
+  amending [ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
 
 Select a mode with `--mode` on `run`/`tui` (or `config.yml` `mode:`) and
 switch it live with `/mode` in the TUI. With neither set, a fresh session

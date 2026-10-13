@@ -118,7 +118,7 @@ pub(super) async fn upsert_enable(
     arg_pattern: Option<String>,
 ) {
     // ADR-0199 part 4: report what the pattern matched, so a hand-typed glob
-    // ("mcp__docs__*", "skill__research__*") gets immediate feedback on how
+    // ("mcp__docs__*") gets immediate feedback on how
     // many currently-registered tools it actually reaches, before the
     // overlay confirmation round-trips back.
     app.record_enable_match_count(&pattern);
@@ -224,6 +224,16 @@ mod tests {
                 pattern: "mcp__chessbase__*".to_string(),
             })
         );
+    }
+
+    /// ADR-0228: `/disable rhai` is an ordinary deny — the launch is graded
+    /// like any tool, so the entry withdraws it.
+    #[test]
+    fn disabling_rhai_is_an_ordinary_deny() {
+        assert!(matches!(
+            parse_enable_args("/disable tool rhai", false),
+            Ok(EnableCommand::Disable { pattern }) if pattern == "rhai"
+        ));
     }
 
     #[test]

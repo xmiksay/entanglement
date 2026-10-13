@@ -260,6 +260,7 @@ async fn approval_switches_the_session_mode() {
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();

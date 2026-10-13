@@ -776,6 +776,73 @@ and removes the declared endpoint tools. What an embedder has to change:
   warning) — express an HTTP API as a skill `lib.rhai` function calling
   `http()`, with credentials in the user-layer `http_auth:`.
 
+## Migrating to `rhai(path)` and skill tools' removal (ADR-0228, #820)
+
+[ADR-0228](adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+gives `rhai` a `path`/`args` input and removes skill `tools:` frontmatter.
+What an embedder has to change:
+
+- **Removed:** `skills::tools` (`register_skill_tools`, `SkillToolDef`) and
+  `SkillMeta::tools` (drop `tools: Vec::new()` from a struct literal);
+  `Tool::alias_rewrite` (an impl overriding it no longer compiles — nothing
+  consults it); the `skill__*` advertisement exception.
+- **Reshaped:** `skills::lib_rhai::SkillLib::signatures: Vec<String>` →
+  `functions: Vec<LibFn { signature, doc }>`; `rhai`'s schema no longer
+  requires `script` (exactly one of `script`/`path`, checked at dispatch).
+  `InMsg::Approve` and `seam::Decision::Approve` gain `run_all: bool` (a
+  struct literal needs `run_all: false`; the wire field is serde-defaulted, so
+  old frames parse); `Config` gains `rhai_trusted`
+  (`rhai_trust::TrustedFolders` — `project`, `user`, the modes where the
+  user layer's trust is suppressed, and `user_suppressed_everywhere` — a
+  project `permissions:` `prompt` list or `default: prompt`).
+- **Added:** `ToolExecutorBuilder::rhai_trusted(folders)` (a
+  `TrustedFolders`, or a plain `Vec` of canonical paths trusted like the
+  project layer; `Config::rhai_trusted` is what `config.yml` `rhai.trusted`
+  resolves to), `ToolExecutorBuilder::skill_dirs(dirs)` (the skill-file
+  write floor — `skills::skill_dirs(root, &UserLayer::FromEnv)`; none wired,
+  no floor), `rhai_trust::LAUNCH_ESCAPE_NOTE` and `skills::rejected_skills`.
+- **Behaviour:** the `rhai` launch is graded like any tool — overlay
+  (deny and enable), mode rules on the script's canonical `path`
+  (`permission_arg` returns it; `rhai(scripts/*)` rules work, an inline
+  script matches only a bare `rhai` rule), ceiling, grants, `pre_tool_use`.
+  Deny refuses (trusted paths too); Allow runs with no card, Ask per
+  command; Ask parks one approval card (`ApprovalKind::Rhai`, tool `rhai`,
+  the script source as its input) — a head must offer **Run all**
+  (`Approve{run_all: true}`) and **Ask per command** (`run_all: false`, also
+  what an older head's plain approve means), and may offer a scope: a
+  `Session`/`Always` approval grants the exact path (never `run_all`, never
+  an inline script). With the mode's `question_timeout` set, an unanswered
+  card runs the script Ask per command. A trusted script runs with no card
+  and its nested calls force-allowed; only overlay/hook/mode/ceiling denies
+  stop them — and that includes credentialed `http()` for a project-layer
+  trusted folder. An overlay deny entry for `rhai` is an ordinary deny (no
+  supervisor `Error` any more). A non-trusted out-of-root `path` warns on
+  the card (the text ends with `LAUNCH_ESCAPE_NOTE`); with no
+  `.escape_root(..)` wired, **every** out-of-root `path` — trusted or not —
+  is refused outright. `skutter run` answers a launch card with Ask per
+  command and rejects nested cards. Rule precedence changed for every tool,
+  in modes and the `permissions:` ceiling: a rule naming the tool outranks a
+  capability-class rule (was: longest key, so `deny: [write]` +
+  `allow: [edit]` now allows `edit`); a `*` rule competes with a named rule
+  by key length and with a class rule by strictness (was: length, so a long
+  `*(…)` allow no longer beats a class deny); within each kind the longest
+  key wins; ties go to the stricter grade. A scoped `*` allow/prompt is
+  refused in a mode class-denying `read`/`write`. The built-in `auto` mode
+  now defaults to `allow`, with `prompt` rules for destructive families.
+  A `write`/`edit`/`apply_patch` of a `*.rhai` file inside a trusted folder,
+  or of a skill's `SKILL.md`/`lib.rhai`, is graded at least `Ask` (in every mode),
+  whatever a mode rule, grant or overlay enable says
+  — inside a Run-all script too (an explicit deny still denies; `bash` and
+  MCP filesystem servers are not covered, so keep trusted folders out of the
+  agent's write reach). For every tool, an escape
+  approval that also cleared an `Ask` records both grants. A native `SKILL.md` with `tools:` is
+  skipped with an error-level log — `load_registry` still succeeds.
+  `load_skill`'s result orders body → documented signatures → refs.
+- **Skill authors:** a `kind: rhai` tool becomes a script file run with
+  `rhai {"path": "<skill_dir>/x.rhai", "args": {…}}`; a `kind: alias` tool
+  becomes a `lib.rhai` function calling the wrapped binding with the preset
+  values.
+
 ## TLS and the rustls crypto provider
 
 `entanglement-provider` talks TLS through rustls with the **ring** provider and

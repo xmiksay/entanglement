@@ -266,7 +266,9 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
 
 /// The argument string an argument-scoped permission rule (#173) matches
 /// against: the shell command for `bash`, the `command`+`args` line for `call`,
-/// the target path for `edit`/`write`/`read`/`apply_patch` (#455), the search
+/// the target path for `edit`/`write`/`read`/`apply_patch` (#455) and for
+/// `rhai`'s script `path` (ADR-0228 — an inline script has none, so only a
+/// bare `rhai` rule matches it), the search
 /// pattern (itself a path glob) for `glob`, and the optional file filter for
 /// `grep` (#417 — a path, distinct from `grep`'s `pattern` which is a regex,
 /// not a path). `None` for any other tool, a `grep` call with no `path`
@@ -292,7 +294,9 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             }
             Some(line)
         }
-        "edit" | "write" | "read" | "apply_patch" => value.get("path")?.as_str().map(String::from),
+        "edit" | "write" | "read" | "apply_patch" | "rhai" => {
+            value.get("path")?.as_str().map(String::from)
+        }
         "glob" => {
             let pattern = value.get("pattern")?.as_str()?;
             // ADR-0150: the optional `path` base dir joins onto the pattern
@@ -338,14 +342,14 @@ pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
 
 /// The **filesystem path** a call would touch, for the escape-root gate
 /// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
-/// `bash`/`call`). It's the `path` for `read`/`edit`/`write`/`apply_patch` and
-/// the `workdir` for `bash`/`call` (absent → the tool defaults to root, never
-/// an escape), the same value [`permission_workdir`] extracts for permission
-/// scoping. `None` for any other tool or on malformed input, so those never
+/// `bash`/`call`). It's the `path` for `read`/`edit`/`write`/`apply_patch`
+/// (and `rhai`'s script `path`, ADR-0228) and the `workdir` for
+/// `bash`/`call` (absent → the tool defaults to root, never an escape), the
+/// same value [`permission_workdir`] extracts for permission scoping. `None` for any other tool or on malformed input, so those never
 /// trip the gate.
 pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
     match tool {
-        "read" | "edit" | "write" | "apply_patch" => {
+        "read" | "edit" | "write" | "apply_patch" | "rhai" => {
             let value: serde_json::Value = serde_json::from_str(input).ok()?;
             value.get("path")?.as_str().map(String::from)
         }
@@ -688,6 +692,42 @@ mod tests {
     }
 
     #[test]
+    fn the_ceiling_ranks_a_tool_named_rule_above_a_class_rule() {
+        // ADR-0228: the ceiling grades through the same engine as a mode, so
+        // `deny: [write]` + `allow: [edit]` lets `edit` through — the rule
+        // naming the tool outranks the longer class key.
+        let caps = [crate::capability::Capability::Write];
+        let base = PermissionProfile::new(Permission::Allow)
+            .with("write", Permission::Deny)
+            .with("edit", Permission::Allow);
+        assert_eq!(
+            clamp_to_base(Permission::Allow, &base, "edit", &caps, None, None),
+            Permission::Allow
+        );
+        assert_eq!(
+            clamp_to_base(Permission::Allow, &base, "apply_patch", &caps, None, None),
+            Permission::Deny
+        );
+        // A `*` rule meets a named one by length: the long credentials deny
+        // beats `bash(cat*)`.
+        let creds = PermissionProfile::new(Permission::Allow)
+            .with("*(*credentials*)", Permission::Deny)
+            .with("bash(cat*)", Permission::Allow);
+        let exec = [crate::capability::Capability::Exec];
+        assert_eq!(
+            clamp_to_base(
+                Permission::Allow,
+                &creds,
+                "bash",
+                &exec,
+                Some("cat .credentials"),
+                None
+            ),
+            Permission::Deny
+        );
+    }
+
+    #[test]
     fn clamp_to_base_is_a_least_privilege_ceiling() {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);
@@ -748,6 +788,24 @@ mod tests {
             ),
             Permission::Allow
         );
+    }
+
+    /// ADR-0228: a `path` run is graded and escape-checked on its path; an
+    /// inline script has no argument, so only a bare `rhai` rule matches it.
+    #[test]
+    fn rhai_path_is_its_permission_argument_and_escape_root_target() {
+        let path = r#"{"path":"scripts/x.rhai","args":{"n":1}}"#;
+        assert_eq!(
+            permission_arg("rhai", path).as_deref(),
+            Some("scripts/x.rhai")
+        );
+        assert_eq!(
+            escape_root_target("rhai", path).as_deref(),
+            Some("scripts/x.rhai")
+        );
+        let inline = r#"{"script":"read(\"/etc/x\")"}"#;
+        assert_eq!(escape_root_target("rhai", inline), None);
+        assert_eq!(permission_arg("rhai", inline), None);
     }
 
     #[test]

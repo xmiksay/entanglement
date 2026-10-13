@@ -62,6 +62,13 @@ pub enum InMsg {
         scope: ApprovalScope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// Meaningful only on a `rhai` launch card (ADR-0228): `true` is
+        /// **Run all** — the script's nested calls run force-allowed for this
+        /// run (explicit denies still win); `false`, the wire default an
+        /// older head sends, is **Ask per command** — nested calls graded like
+        /// direct calls. Every other approval ignores it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        run_all: bool,
     },
     /// Reject a pending tool request.
     Reject {

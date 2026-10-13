@@ -3,8 +3,9 @@ name: rhai
 description: >-
   Long-form guide to the `rhai` tool: worked examples plus the detail behind the
   signature list the tool spec already carries — permission grading, escape-root
-  gating, `http()`, the `mcp::`/`skill::` namespaces, chaining calls, background
-  runs, output and limits. Load it when a script needs more than the signatures.
+  gating, running a script file by `path` with `args`, `http()`, the
+  `mcp::`/`skill::` namespaces, chaining calls, background runs, output and
+  limits. Load it when a script needs more than the signatures.
 ---
 
 # `rhai` guide
@@ -16,6 +17,39 @@ Rhai (https://rhai.rs) syntax resembles Rust (`fn`, `let`) but is **not**
 Rust: no `use`/crates/`std`. Rhai's own stdlib (strings, arrays, maps, math,
 loops) is built in, no `import`. `import`/`eval` are disabled — a script
 cannot pull in modules or re-enter the parser.
+
+## `script` or `path`, and `args`
+
+Pass exactly one of `script` (inline source) or `path` (a `.rhai` file —
+project-relative or absolute). With `path` the runtime reads and runs the
+file; you never need to `read` it first. Launching a script is
+permission-checked like any other tool call, on its `path` (an inline
+script only by a plain `rhai` rule): denied, it fails with an error you can
+read; allowed, it runs and each call inside it is checked as if you made it
+directly; otherwise the user sees it once and runs it whole, has each
+command asked as it comes, or rejects it. A script in a folder the user
+trusts (their `rhai.trusted` config) runs **without asking**, every call in
+it allowed except what the user's rules explicitly deny. Writing or editing
+a `.rhai` file inside a trusted folder, or a skill's `SKILL.md`/`lib.rhai`,
+always asks the user first.
+
+`args` (an object) is available in the script as the constant map `args`,
+for both kinds — `#{}` when you pass none. Read it, don't assign to it
+(that throws), and pass values into your own functions explicitly — a
+function body cannot see `args`:
+
+```json
+{"path": "scripts/report.rhai", "args": {"days": 7, "author": "me"}}
+```
+
+```rhai
+// scripts/report.rhai
+fn since(days) { `--since=${days}.days` }
+exec("git", ["log", since(args.days), `--author=${args.author}`, "--oneline"])
+```
+
+A skill's own scripts run the same way: `load_skill` prints the skill's
+`skill_dir` and lists its files, so `{"path": "<skill_dir>/check.rhai"}`.
 
 ## Host I/O bindings
 
@@ -94,8 +128,9 @@ shows each tool's rhai name. A server not yet connected connects on the
 first call.
 
 A skill that ships a `lib.rhai` next to its `SKILL.md` adds its functions as
-`skill::<skill>::<fn>(...)`; `load_skill` lists them. A lib function can call
-every binding and namespace above.
+`skill::<skill>::<fn>(...)`; `load_skill` lists their signatures with the
+`///` doc comments written above them. A lib function can call every binding
+and namespace above.
 
 Nested `rhai`, the `mcp` envelope and the session tools (`agent`,
 `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`,

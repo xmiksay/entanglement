@@ -75,9 +75,11 @@ impl Tool for LoadSkillTool {
     fn description(&self) -> &str {
         "Load a skill's full instructions by name (list_skills shows them). \
          Returns the skill body with every file path \
-         resolved to an absolute path, plus a list of its supporting reference \
-         files — read those on demand with the `read` tool. Deterministic: the \
-         skill_name must match an indexed skill exactly."
+         resolved to an absolute path, the script functions its lib.rhai adds \
+         (signatures with their docs), plus a list of its supporting reference \
+         files — read those on demand with the `read` tool, run a .rhai one with \
+         `rhai` `path`. Deterministic: the skill_name must match an indexed skill \
+         exactly."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -128,9 +130,10 @@ fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
     Ok(render_skill_in(registry, skill))
 }
 
-/// Render one skill's full instructions the way `load_skill` returns them:
-/// path-substituted body + `available_refs` listing, under a `skill_id` header,
-/// then its `lib.rhai` function signatures.
+/// Render one skill's full instructions the way `load_skill` returns them
+/// (ADR-0228): under a `skill_id` header, the path-substituted body, its
+/// `lib.rhai` function signatures with their doc comments, then the
+/// `available_refs` listing.
 /// Shared by the model-facing [`load`] and the agent-definition **preload**
 /// (#117), so a preloaded skill reads identically to one the model loads itself.
 /// Carries no `user_only` gate — that policy belongs to the caller (`load`
@@ -153,20 +156,35 @@ fn render_skill_with(skill: &super::SkillMeta, collision: Option<String>) -> Str
         Some(dir) => (substitute_paths(&skill.body, dir), list_refs(dir)),
         None => (skill.body.clone(), Vec::new()),
     };
-    let mut out = render(&skill.name, skill.root_dir.as_deref(), &content, &refs);
-    if let Some(lib) = skill.lib.as_ref().filter(|l| !l.signatures.is_empty()) {
-        match collision {
-            Some(other) => out.push_str(&format!(
-                "\n\nscript functions: no rhai name (collides with {other}) — not callable \
-                 from a script"
-            )),
-            None => {
-                // Signatures only: #826 found them the most accurate listing shape.
-                out.push_str("\n\nscript functions (call from a `rhai` script):");
-                for sig in &lib.signatures {
-                    out.push_str(&format!("\n  {sig}"));
-                }
-            }
+    let functions = skill
+        .lib
+        .as_ref()
+        .filter(|l| !l.functions.is_empty())
+        .map(|lib| lib_listing(&lib.functions, collision));
+    render(
+        &skill.name,
+        skill.root_dir.as_deref(),
+        &content,
+        functions.as_deref(),
+        &refs,
+    )
+}
+
+/// The `script functions` block: one signature per line, its doc comment
+/// indented below it — signature first, as #826 found that listing shape
+/// the most accurate. A lib whose `skill::` segment another skill claimed
+/// first lists nothing callable.
+fn lib_listing(functions: &[super::lib_rhai::LibFn], collision: Option<String>) -> String {
+    if let Some(other) = collision {
+        return format!(
+            "script functions: no rhai name (collides with {other}) — not callable from a script"
+        );
+    }
+    let mut out = String::from("script functions (call from a `rhai` script):");
+    for f in functions {
+        out.push_str(&format!("\n  {}", f.signature));
+        for line in f.doc.lines() {
+            out.push_str(&format!("\n      {line}"));
         }
     }
     out
@@ -246,8 +264,15 @@ fn collect_refs(root: &Path, dir: &Path, refs: &mut Vec<PathBuf>) {
 }
 
 /// Render the tool result: `skill_id` + skill dir header, the path-substituted
-/// body, then the (loaded-on-demand) reference listing.
-fn render(name: &str, skill_dir: Option<&Path>, content: &str, refs: &[PathBuf]) -> String {
+/// body, the lib's script functions, then the (loaded-on-demand) reference
+/// listing.
+fn render(
+    name: &str,
+    skill_dir: Option<&Path>,
+    content: &str,
+    functions: Option<&str>,
+    refs: &[PathBuf],
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("skill_id: {name}\n"));
     if let Some(dir) = skill_dir {
@@ -256,10 +281,17 @@ fn render(name: &str, skill_dir: Option<&Path>, content: &str, refs: &[PathBuf])
     out.push('\n');
     out.push_str(content.trim_end());
     out.push_str("\n\n");
+    if let Some(functions) = functions {
+        out.push_str(functions);
+        out.push_str("\n\n");
+    }
     if refs.is_empty() {
         out.push_str("available_refs: none");
     } else {
-        out.push_str("available_refs (read on demand with the `read` tool):\n");
+        out.push_str(
+            "available_refs (read on demand with the `read` tool; run a `.rhai` script \
+             with `rhai` {\"path\": ..., \"args\": {...}}):\n",
+        );
         for r in refs {
             out.push_str(&format!("- {}\n", r.display()));
         }
@@ -274,15 +306,22 @@ mod tests {
     use super::*;
     use crate::skills::SkillMeta;
 
-    /// ADR-0227: a skill's `lib.rhai` functions are listed after its body.
+    /// ADR-0227/0228: a skill's `lib.rhai` functions are listed after its
+    /// body, each with its doc comment, before the refs.
     #[cfg(feature = "rhai")]
     #[test]
     fn a_loaded_skill_lists_its_lib_signatures() {
         let mut s = skill("git", false, None, "Body.");
-        s.lib = Some(crate::skills::lib_rhai::compile("git", "fn log(n) { n }").unwrap());
+        s.lib = Some(
+            crate::skills::lib_rhai::compile("git", "/// Last n commits.\nfn log(n) { n }")
+                .unwrap(),
+        );
         let out = render_skill(&s);
         assert!(
-            out.ends_with("script functions (call from a `rhai` script):\n  skill::git::log(n)"),
+            out.contains(
+                "Body.\n\nscript functions (call from a `rhai` script):\n  skill::git::log(n)\n      \
+                 Last n commits.\n\navailable_refs: none"
+            ),
             "{out}"
         );
         assert!(!render_skill(&skill("git", false, None, "Body.")).contains("script functions"));
@@ -307,7 +346,6 @@ mod tests {
             allowed_tools: None,
             root_dir,
             body: body.into(),
-            tools: Vec::new(),
             lib: None,
         }
     }

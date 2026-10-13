@@ -19,18 +19,43 @@ pub(crate) struct ScriptCall {
     approved: Mutex<HashSet<String>>,
     /// A `background: true` run (#637): no session state transitions.
     pub detached: bool,
+    posture: Posture,
     /// When the script's own wall-clock budget runs out.
     deadline: Instant,
 }
 
+/// How a script run's nested calls are cleared (ADR-0228).
+// The lean build has no script engine, so only tests construct a posture.
+#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Posture {
+    /// Graded exactly like direct calls; an `Ask` prompts per call.
+    AskPerCommand,
+    /// The user chose **Run all** on the launch card: every nested `Ask`
+    /// passes, except a floored write (its own card).
+    RunAll,
+    /// A `rhai.trusted` script: like Run all, floored writes included.
+    Trusted,
+}
+
 impl ScriptCall {
     #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-    pub(crate) fn new(detached: bool, deadline: Instant) -> Self {
+    pub(crate) fn new(detached: bool, posture: Posture, deadline: Instant) -> Self {
         Self {
             approved: Mutex::default(),
             detached,
+            posture,
             deadline,
         }
+    }
+
+    /// Force-allow this run's nested calls. Explicit denies still win.
+    pub(crate) fn run_all(&self) -> bool {
+        self.posture != Posture::AskPerCommand
+    }
+
+    pub(crate) fn trusted(&self) -> bool {
+        self.posture == Posture::Trusted
     }
 
     pub(super) fn was_approved(&self, tool: &str, input: &str) -> bool {
@@ -95,7 +120,7 @@ mod tests {
 
     #[test]
     fn the_cache_keys_on_the_full_input() {
-        let sc = ScriptCall::new(false, Instant::now());
+        let sc = ScriptCall::new(false, Posture::AskPerCommand, Instant::now());
         sc.approve("edit", r#"{"path":"a"}"#);
         assert!(sc.was_approved("edit", r#"{"path":"a"}"#));
         assert!(!sc.was_approved("edit", r#"{"path":"b"}"#));
@@ -128,7 +153,11 @@ mod tests {
 
     #[test]
     fn bash_and_call_keep_their_own_timeout() {
-        let sc = ScriptCall::new(false, Instant::now() + Duration::from_secs(5));
+        let sc = ScriptCall::new(
+            false,
+            Posture::AskPerCommand,
+            Instant::now() + Duration::from_secs(5),
+        );
         let via = Via::Script(&sc);
         for exempt in ["bash", "call", "write", "edit", "apply_patch"] {
             assert!(via.budget(exempt).is_none(), "{exempt}");

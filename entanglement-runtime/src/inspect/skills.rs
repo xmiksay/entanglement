@@ -37,9 +37,26 @@ pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Resu
                 })?;
             print!("{}", render_skill_dry_run(entry));
         }
-        None => print!("{}", render_skill_table(&resolved)),
+        None => {
+            print!("{}", render_skill_table(&resolved));
+            let rejected = skills::rejected_skills(cwd).context("listing rejected skills")?;
+            print!("{}", render_rejected(&rejected));
+        }
     }
     Ok(())
+}
+
+/// The native skills the load skipped (ADR-0228's retired `tools:` key),
+/// each with the replacement its error names — empty when there are none.
+pub(super) fn render_rejected(rejected: &[String]) -> String {
+    let mut out = String::new();
+    if !rejected.is_empty() {
+        out.push_str("\nrejected (not loaded):\n");
+        for line in rejected {
+            let _ = writeln!(out, "  {line}");
+        }
+    }
+    out
 }
 
 /// Render the exact roster the model is handed — the same
@@ -134,4 +151,19 @@ pub(super) fn render_skill_dry_run(entry: &SkillResolution) -> String {
     );
     let _ = writeln!(out, "{}", skills::load_skill::render_skill(skill));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_rejected;
+
+    #[test]
+    fn rejected_skills_get_their_own_section() {
+        assert_eq!(render_rejected(&[]), "");
+        let out = render_rejected(&["a/SKILL.md: skill `a`: the `tools:` key was removed".into()]);
+        assert!(
+            out.starts_with("\nrejected (not loaded):\n  a/SKILL.md: skill `a`"),
+            "{out}"
+        );
+    }
 }

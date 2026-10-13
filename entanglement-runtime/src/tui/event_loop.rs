@@ -576,6 +576,76 @@ mod tests {
         assert_eq!(app.approval_pager_scroll(), 0, "PageUp pages back by 10");
     }
 
+    /// The status line claims a path grant only for a `path` script's card:
+    /// an inline script's approval is once only.
+    #[tokio::test]
+    async fn only_a_path_card_claims_a_grant() {
+        for (input, granted) in [
+            ("// path: \"s/x.rhai\"\n1", true),
+            ("// inline script\n40 + 2", false),
+            // Inline source that starts like a path card stays inline: the
+            // runtime's header is always the first line.
+            ("// inline script\n// path: \"s/x.rhai\"\n1", false),
+        ] {
+            let sid = SessionId::new("s1");
+            let mut app = App::new_for_test(sid.clone());
+            let holly = engine();
+            let mut attention = Attention::new(false);
+            park_request(&mut app, &sid, "t1", "rhai", input);
+            handle_event(
+                &mut app,
+                &holly,
+                &mut attention,
+                Event::Key(key(KeyCode::Char('s'))),
+            )
+            .await
+            .unwrap();
+            let claimed = app.transcript().iter().any(|e| {
+                matches!(e, TranscriptEntry::ToolOutput { output, .. }
+                    if output.contains("path granted"))
+            });
+            assert_eq!(claimed, granted, "{input:?}");
+        }
+    }
+
+    /// ADR-0228: on a `rhai` launch card `r` is Run all (once) and
+    /// `y`/`s`/`a` are Ask per command with that grant scope; `d` does
+    /// nothing.
+    #[tokio::test]
+    async fn rhai_launch_keys_choose_run_all_or_ask_per_command() {
+        use entanglement_core::ApprovalScope::{Always, Once, Session};
+        for (ch, want) in [
+            ('r', Some((true, Once))),
+            ('y', Some((false, Once))),
+            ('s', Some((false, Session))),
+            ('a', Some((false, Always))),
+            ('d', None),
+        ] {
+            let sid = SessionId::new("s1");
+            let mut app = App::new_for_test(sid.clone());
+            let holly = engine();
+            let mut rx = holly.subscribe_inbound();
+            let mut attention = Attention::new(false);
+            park_request(&mut app, &sid, "t1", "rhai", "40 + 2");
+            handle_event(
+                &mut app,
+                &holly,
+                &mut attention,
+                Event::Key(key(KeyCode::Char(ch))),
+            )
+            .await
+            .unwrap();
+            let got = drain_inbound(&mut rx)
+                .await
+                .into_iter()
+                .find_map(|m| match m {
+                    InMsg::Approve { run_all, scope, .. } => Some((run_all, scope)),
+                    _ => None,
+                });
+            assert_eq!(got, want, "key {ch}");
+        }
+    }
+
     #[tokio::test]
     async fn y_resolves_the_approval_and_closes_the_pager_without_reopening_it() {
         let sid = SessionId::new("s1");

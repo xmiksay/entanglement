@@ -61,6 +61,19 @@ pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawSkill>> {
     )
 }
 
+/// Every user and project skill layer dir [`discover`] reads, existing or
+/// not — what the write floor protects (ADR-0228): a `SKILL.md`/`lib.rhai`
+/// written under one is a skill every later session loads.
+pub fn skill_dirs(root: &Path, user: &UserLayer) -> Vec<PathBuf> {
+    let record = |_: SkillLayer, dir: &Path, _: Strictness, acc: &mut Vec<PathBuf>| {
+        acc.push(dir.to_path_buf());
+        Ok(())
+    };
+    // The recorder never fails, so neither does the walk over candidates.
+    crate::layers::load_layers(root, "skills", SKILLS_DIR_ENV, user, Vec::new(), record)
+        .unwrap_or_default()
+}
+
 /// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to
 /// `raws`. A missing dir is fine; an unreadable dir or file is an error.
 /// Symlinked duplicates (a link to an already-seen file, or a directory cycle)
@@ -106,4 +119,23 @@ pub(super) fn walk(
     crate::layers::walk_files(dir, found, seen, &|p| {
         p.file_name().and_then(|n| n.to_str()) == Some(SKILL_FILE)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_dirs_are_every_project_layer_and_the_user_layer() {
+        let root = Path::new("/proj");
+        let dirs = skill_dirs(root, &UserLayer::Dir(PathBuf::from("/mine/skills")));
+        for want in [
+            "/proj/.entanglement/skills",
+            "/proj/.claude/skills",
+            "/proj/.agents/skills",
+            "/mine/skills",
+        ] {
+            assert!(dirs.contains(&PathBuf::from(want)), "{want}: {dirs:?}");
+        }
+    }
 }

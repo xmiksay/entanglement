@@ -283,6 +283,7 @@ fn restore_from_records_rebuilds_transcript_and_switches() {
             request_id: "r1".to_string(),
             scope: Default::default(),
             mode: None,
+            run_all: false,
         }),
     );
 

@@ -1,10 +1,9 @@
 //! Relative path arguments → root-relative (#764, ADR-0224).
 //!
-//! Applied once, to the call as the model sent it, before alias rewrite,
-//! grading, the escape-root gate or execution — the same "rewrite before
-//! anything reads it" placement alias rewrite uses, so a workdir can't be
-//! used to smuggle a path past a rule: every later stage sees the path the
-//! call really names, spelled exactly as it would be with no workdir.
+//! Applied once, to the call as the model sent it, before grading, the
+//! escape-root gate or execution, so a workdir can't be used to smuggle a
+//! path past a rule: every later stage sees the path the call really names,
+//! spelled exactly as it would be with no workdir.
 
 use std::path::Path;
 
@@ -16,8 +15,8 @@ use crate::permission_path::normalize_lexical;
 /// under `root`, or `None` when nothing changes — no workdir, a workdir equal
 /// to the root, a tool with no path argument, or only absolute paths.
 ///
-/// - `read`/`read_raw`/`edit`/`write`/`apply_patch`: a relative `path` joins
-///   onto the workdir.
+/// - `read`/`read_raw`/`edit`/`write`/`apply_patch`, and `rhai`'s script
+///   `path` (ADR-0228): a relative `path` joins onto the workdir.
 /// - `glob`/`glob_json`/`grep`/`grep_json`: a relative `path` joins, an absent
 ///   one becomes the workdir (a `glob` with an absolute `pattern` excepted).
 /// - `bash`/`call`: a relative `workdir` joins, an absent one becomes the
@@ -32,7 +31,9 @@ pub(crate) fn rewrite(
     let mut value: Value = serde_json::from_str(input).ok()?;
     let args = value.as_object_mut()?;
     let changed = match tool {
-        "read" | "read_raw" | "edit" | "write" | "apply_patch" => join(args, "path", &base),
+        "read" | "read_raw" | "edit" | "write" | "apply_patch" | "rhai" => {
+            join(args, "path", &base)
+        }
         "glob" | "glob_json" => {
             let absolute_pattern = args
                 .get("pattern")
@@ -117,13 +118,19 @@ mod tests {
 
     #[test]
     fn file_tools_join_a_relative_path_root_relative() {
-        for tool in ["read", "read_raw", "edit", "write", "apply_patch"] {
+        for tool in ["read", "read_raw", "edit", "write", "apply_patch", "rhai"] {
             assert_eq!(
                 run("/p/sub", tool, json!({"path": "a.rs", "x": 1})),
                 Some(json!({"path": "sub/a.rs", "x": 1})),
                 "{tool}"
             );
         }
+    }
+
+    /// ADR-0228: an inline `rhai` script has no path to rewrite.
+    #[test]
+    fn an_inline_rhai_script_is_untouched() {
+        assert_eq!(run("/p/sub", "rhai", json!({"script": "1"})), None);
     }
 
     #[test]

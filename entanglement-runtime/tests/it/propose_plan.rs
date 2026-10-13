@@ -312,6 +312,7 @@ async fn approve_with_explicit_build_choice_switches_the_session_to_build_mode()
             request_id,
             scope: Default::default(),
             mode: Some("build".to_string()),
+            run_all: false,
         })
         .await
         .unwrap();
@@ -355,6 +356,7 @@ async fn approve_with_no_mode_named_defaults_to_auto() {
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -416,6 +418,7 @@ async fn a_models_suggested_mode_pre_selects_but_never_decides() {
             request_id: request_id.unwrap(),
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -449,6 +452,7 @@ async fn an_explicit_opposite_choice_overrides_the_models_suggestion() {
             request_id,
             scope: Default::default(),
             mode: Some("build".to_string()),
+            run_all: false,
         })
         .await
         .unwrap();
@@ -890,6 +894,7 @@ async fn every_phase_re_parks_on_ask_independently() {
             request_id: request_id_1.clone(),
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -915,6 +920,7 @@ async fn every_phase_re_parks_on_ask_independently() {
                         request_id: request_id.clone(),
                         scope: Default::default(),
                         mode: None,
+                        run_all: false,
                     })
                     .await
                     .unwrap();
@@ -1162,6 +1168,7 @@ async fn approved_write_lands_in_the_same_turn_under_build() {
             request_id,
             scope: Default::default(),
             mode: Some("build".to_string()),
+            run_all: false,
         })
         .await
         .unwrap();
@@ -1210,6 +1217,7 @@ async fn approved_write_lands_in_the_same_turn_under_auto() {
             request_id,
             scope: Default::default(),
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();
@@ -1261,6 +1269,7 @@ async fn the_approved_mode_survives_a_replay_round_trip() {
             request_id,
             scope: Default::default(),
             mode: Some("build".to_string()),
+            run_all: false,
         })
         .await
         .unwrap();

@@ -122,7 +122,7 @@ pub(super) fn render_mode_detail(m: &Mode) -> String {
     let _ = writeln!(out, "name:    {}", m.name);
     let _ = writeln!(out, "default: {:?}", m.default);
 
-    let _ = writeln!(out, "\nrules (longest matching key wins):");
+    let _ = writeln!(out, "\nrules ({}):", crate::mode::rules::PRECEDENCE);
     let mut any = false;
     for (key, grade) in m.rules.iter() {
         any = true;
@@ -231,7 +231,7 @@ mod tests {
         let detail = render_mode_detail(research);
         assert!(detail.contains("name:    research"), "{detail}");
         assert!(
-            detail.contains("rules (longest matching key wins):"),
+            detail.contains(&format!("rules ({}):", crate::mode::rules::PRECEDENCE)),
             "{detail}"
         );
         assert!(detail.contains("write: Deny"), "{detail}");

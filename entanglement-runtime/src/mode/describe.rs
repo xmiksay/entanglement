@@ -31,16 +31,17 @@ pub const MODE_SUMMARIES: [(&str, &str); 4] = [
         "build",
         "implement changes: read/write/exec allowed; plan authorship and a \
          short destructive-command list (rm -rf /, force-push, hard reset, \
-         ...) denied; everything else prompts.",
+         ...) denied; a rhai script launch and everything else prompts.",
     ),
     (
         "auto",
-        "unattended run: a curated allowlist (read, write, cargo, make, \
-         git status/diff/log) runs outright and a short destructive list \
-         (rm -rf, push, hard reset, publish, gh/glab writes) is denied \
-         outright; anything else is refused on first call and parks a \
-         bounded approval if you call it again — which expires as a denial \
-         after 60s when nobody is watching.",
+        "unattended run: everything runs except a destructive/publishing \
+         deny list (rm -rf /, push, hard reset, publish, gh/glab creates). \
+         Deletions and publishing (gh/glab ... delete, cargo yank, npm \
+         unpublish, docker push, recursive rm), paths outside the root, credentialed http \
+         hosts and writes of trusted scripts or skill files still ask: a \
+         first call is usually refused, and a repeat parks a bounded \
+         approval that expires as a denial after 60s.",
     ),
 ];
 

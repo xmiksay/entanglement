@@ -143,7 +143,8 @@ fn builtin_modes_grade_web_fetch_like_an_outbound_command() {
     assert_eq!(grade("build"), Permission::Allow);
     assert_eq!(grade("research"), Permission::Ask);
     assert_eq!(grade("plan"), Permission::Ask);
-    assert_eq!(grade("auto"), Permission::Ask);
+    // ADR-0228: `auto`'s default is `allow`.
+    assert_eq!(grade("auto"), Permission::Allow);
 }
 
 #[test]

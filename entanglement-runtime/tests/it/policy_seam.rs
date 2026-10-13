@@ -296,6 +296,7 @@ async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
             request_id: "t1".into(),
             scope: ApprovalScope::Always,
             mode: None,
+            run_all: false,
         })
         .await
         .unwrap();

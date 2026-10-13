@@ -175,8 +175,10 @@ below realize one model:
   keyed by a bare tool name, `*`, an **argument-scoped** `tool(pattern)`
   (unchanged ADR-0051/#173 grammar — the `*`/`?` glob matches the command for
   `bash`/`call`, the target path for `edit`/`write`/`read`/`apply_patch`,
-  the `pattern` for `glob`, the file filter for `grep`; path args still grade
-  **root-relative**, ADR-0125), a workdir-scoped `tool{pattern}` (unchanged
+  the `pattern` for `glob`, the file filter for `grep`, and the script
+  `path` for `rhai` — canonicalized, so a link grades as where it points
+  ([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md));
+  path args grade **root-relative**, ADR-0125), a workdir-scoped `tool{pattern}` (unchanged
   ADR-0116/#425 grammar), or a bare capability-class name
   (`read`/`write`/`exec`/`plan`/`control` — a scoped key always names the
   literal tool instead, since scoping has no class grammar; this is how
@@ -188,8 +190,22 @@ below realize one model:
   **The longest matching key wins** — not a tier order, not first-or-last
   declared: `write(docs/*)` (13 chars) out-ranks bare `write` (5 chars) with
   no separate "scoped beats bare" rule needed, and a reader determines the
-  outcome by inspection alone. A tie (equal key length) breaks to the more
-  restrictive grade (`deny` > `prompt` > `allow`). **`bash` and `call` share
+  outcome by inspection alone. Refined by
+  [ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+  (amending ADR-0207 §4), for modes and the `permissions:` ceiling alike:
+  **a rule naming the tool outranks a capability-class rule; a `*` rule
+  competes with a named rule by key length and with a class rule by
+  strictness (the stricter wins); within each kind the longest key wins;
+  ties go to the stricter grade** (`deny` > `prompt` > `allow`). Otherwise a
+  multi-capability tool like `rhai` (read+write+exec) would be decided by
+  whichever class key is longer, and `build` could never ask for scripts
+  while allowing writes. A key spelling a tool's own name counts as naming
+  it even when it is also a class (`read` for the `read` tool); the tuning
+  guard refuses a scoped `*` allow/prompt in a mode that class-denies such
+  a class. The `rhai` launch is graded like any tool, on its canonical
+  script `path` (`rhai(scripts/deploy/*)`; an inline script matches only a
+  bare `rhai` rule), and a script's nested calls by the same rules as direct
+  calls — one rule set. **`bash` and `call` share
   one rule set** — two spellings of the same `Exec` capability, so a rule
   written for either grades both (`mode::rules::canonicalize_key`); a
   compound command (`&&`/`||`/`;`/`|`/`&`, ADR-0197, now covering `call` too)
@@ -201,12 +217,9 @@ below realize one model:
   **absolute**: a flat decline naming the mode and the way out (`` tool `x`
   denied by mode `research` — use /mode to switch ``), no prompt, no escape
   hatch except the user's own `/mode`/`request_mode`; `Ask` parks an ordinary
-  approval exactly as before. **Alias rewrite still happens before grading**
-  (`Tool::alias_rewrite`, consulted by `tool_runner::dispatch` ahead of
-  capability resolution and every gate below it): the overlay, capability,
-  grants, and the escape-root gate all see the underlying tool, never the alias — an
-  alias cannot launder a denied tool by presenting it under a
-  differently-permissioned name. MCP tools grade like any other tool by name
+  approval exactly as before. (The skill-alias rewrite that used to precede
+  grading is gone with skill `tools:`, [ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md).)
+  MCP tools grade like any other tool by name
   or pattern; today every `mcp__*` tool's `Capability` is hardcoded to
   `Write` (`McpTool::capabilities`, a deliberate fail-safe — an external
   server is opaque, it could do anything) with no per-server capability hint
@@ -332,7 +345,7 @@ below realize one model:
   stays single-user (ADR-0048).
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../adr/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
-  path or a `bash`/`call` `workdir` that resolves **outside** root is detected in
+  path, a `rhai` script `path` or a `bash`/`call` `workdir` that resolves **outside** root is detected in
   the executor (`permission::escape_root_target` + `host::escaping_path`) and
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins). The approval is recorded in a **separate** store from the
@@ -502,8 +515,8 @@ below realize one model:
   | --- | --- | --- | --- |
   | `research` | `prompt` | `deny: [write, plan]`; `allow: [read]` + the shared read-only exec set; `prompt` + the shared api-mutating escalation set — read-only investigation, no plan authorship | `max_depth: 2`, `max_agents: 4` |
   | `plan` | `prompt` | `deny: [write]`; `allow: [read, plan, "write(.entanglement/plans/*.md)"]` + the shared read-only exec set; `prompt` + the shared api-mutating escalation set — the plans-folder carve-out out-ranks the class deny by longest match; anything outside the shared set falls through to `prompt` | `max_depth: 2`, `max_agents: 4` |
-  | `build` (default) | `prompt` — a deliberate change from the old `build` agent's `default: allow` | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push --force*)", "bash(git push -f*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)"]`; `allow: [read, write, exec]`; `prompt: ["bash(git push*)", gh/glab issue-or-PR/MR "create"/"merge", "bash(npm publish*)", "bash(cargo publish*)"]` + the shared api-mutating escalation set — broad allow, a short destructive-command deny list stays absolute regardless, and the network-mutating `prompt` entries out-rank the bare `exec` allow the same way; plan authorship denied (revise via `/mode plan`, not a mid-build overwrite) | `max_depth: 4`, `max_agents: 8` |
-  | `auto` | `prompt` — the unattended guarantee is `question_timeout`, not the default grade ([ADR-0209](../adr/0209-auto-mode-defaults-to-prompt-not-deny.md)) | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)", gh/glab issue-or-PR/MR "create"/"merge", every mutating `gh api`/`glab api` spelling, "bash(npm publish*)", "bash(cargo publish*)"]`; `allow: [read, write, "bash(cargo *)", "bash(make *)"]` + the shared read-only exec set — exec is an **explicit command list**, never the `exec` class, so an unenumerated command is never run *silently*; it collapses to a refusal on first call and parks a bounded approval on an identical second call (`run_limits`), which expires as a denial after 60s when nobody answers; the explicit `deny` list — destructive and network-mutating commands — stays absolute with no escalation path | `max_depth: 2`, `max_agents: 4`, `question_timeout: 60` |
+  | `build` (default) | `prompt` — a deliberate change from the old `build` agent's `default: allow` | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push --force*)", "bash(git push -f*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)"]`; `allow: [read, write, exec]`; `prompt: [rhai, "bash(git push*)", gh/glab issue-or-PR/MR "create"/"merge", "bash(npm publish*)", "bash(cargo publish*)"]` + the shared api-mutating escalation set — broad allow, a short destructive-command deny list stays absolute regardless, and the network-mutating `prompt` entries out-rank the bare `exec` allow the same way; plan authorship denied (revise via `/mode plan`, not a mid-build overwrite); a `rhai` launch asks (the bare `rhai` rule names the tool, so it outranks the class allows) | `max_depth: 4`, `max_agents: 8` |
+  | `auto` | `allow` — everything runs but what the deny and prompt lists catch ([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md), amending [ADR-0209](../adr/0209-auto-mode-defaults-to-prompt-not-deny.md)); `question_timeout` bounds whatever asks | `deny: [plan, "bash(rm -rf /*)", "bash(rm -rf ~*)", "bash(git push*)", "bash(git reset --hard*)", "bash(git clean -f*)", "bash(git branch -D*)", gh/glab issue-or-PR/MR "create"/"merge", every mutating `gh api`/`glab api` spelling, "bash(npm publish*)", "bash(cargo publish*)"]`; `allow: [read, write, "bash(cargo *)", "bash(make *)"]` + the shared read-only exec set (documentation now — the default already allows); an unenumerated command, tool, MCP call, `web_fetch` or `rhai` launch runs. What still asks: its own `prompt` rules (below), what no rule grades — the escape-root gate and a credentialed `http()` host — the write floor, and any `prompt:` rule a user adds. Unattended, such a rule's call collapses to a refusal first and parks a bounded approval on an identical repeat (`run_limits`); an escape-root card parks bounded at once; a credentialed host is refused unless an explicit user-layer `http(...)` allow names it — every park expiring as a denial after 60s. The explicit `deny` list — destructive and network-mutating commands — stays absolute. `prompt` rules ask for destructive families that must not run silently (`gh`/`glab` `* delete`, `cargo yank`, `npm unpublish`, `docker push`, recursive `rm`). The trusted-script / skill-file write floor applies here too | `max_depth: 2`, `max_agents: 4`, `question_timeout: 60` |
 
   None of the four declares `sandbox` — ADR-0104 shipped bubblewrap
   confinement as an **opt-in** (`ENTANGLEMENT_SANDBOX=bwrap`); declaring it
@@ -985,9 +998,14 @@ below realize one model:
   **Which mode is the *approver's* choice, not a hardcoded `build` (#560):**
   `InMsg::Approve` carries an optional `mode` (`"build"` or `"auto"`) — the
   approval prompt offers both, defaulting a bare accept (`mode: None`) to
-  `auto` (bounded by its own `max_turns`/`max_duration`/timeout/deny-list,
-  §11 — "go implement this" is usually what an accept means, and `auto` is
-  the safe posture for that) with an explicit opt-in to `build` available too.
+  `auto` ("go implement this" is usually what an accept means) with an
+  explicit opt-in to `build` available too, and a reject that carries the
+  approver's reason back to the model (TUI `[u]`/`[b]`/`[n]`/`[e]`). Since
+  [ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+  `auto` runs everything except its deny list and its prompt list of
+  destructive deletions, bounded by its `max_turns`/`max_duration` budgets
+  and `question_timeout` — an approver who wants each unlisted call seen
+  picks `build`.
   `propose_plan` itself gains an optional `mode` argument (`"build"`/`"auto"`
   only) letting the model *suggest* which option the prompt pre-selects — a
   suggestion never decides, only the approver's own keystroke does. This is
@@ -1091,7 +1109,12 @@ below realize one model:
   `allowed_tools` (parsed-but-ignored with a one-time load warning — the
   skill-scoped mask it named is removed by
   [ADR-0194](../adr/0194-skills-are-additive-only.md); skills are
-  additive-only). Each `SkillMeta` resolves its
+  additive-only). The `tools:` key is retired
+  ([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
+  a native `SKILL.md` still carrying it is **skipped** with an error-level log
+  naming the replacement (`lib.rhai` functions, or a script file run with
+  `rhai` `path`) — never a registry-load abort, so one stale skill cannot brick
+  startup; a foreign dir drops it like any unknown key. Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
   yields one `name: description` row per non-`user_only` skill, which `list_skills`
   returns on request ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) — no longer in the system prompt); bodies are never preloaded. **Selection stays
@@ -1121,10 +1144,12 @@ below realize one model:
   ref that does not resolve under the skill dir (a project-root path) is left
   untouched; no implicit CWD fallback; a `${SKILL_DIR}` placeholder is the
   author's explicit escape hatch. The result is an ordinary `tool_result` carrying
-  `skill_id`, the substituted body, and `available_refs` (supporting files listed
-  as absolute paths, **not** loaded) — never a spoofed user message, so the
-  authorship trail stays honest — then, when the skill ships one, its
-  `lib.rhai` function signatures.
+  `skill_id` + `skill_dir`, the substituted body, then — when the skill ships
+  one — its `lib.rhai` public function signatures, each followed by its
+  `///`/`/** */` doc comment ([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
+  then `available_refs` (supporting files listed as absolute paths, **not**
+  loaded; a `.rhai` file among them runs via `rhai` `path`) — never a spoofed
+  user message, so the authorship trail stays honest.
 - **Skill libraries — `lib.rhai` (✅ #819, [ADR-0227](../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)):**
   a `lib.rhai` beside `SKILL.md` — any layer, foreign skill dirs included
   (`root_dir` is pre-resolved by both parsers) — compiles once at discovery
@@ -1137,14 +1162,23 @@ below realize one model:
   lib with a warning. A lib function calls every binding a script can —
   including `http()` with the user's `http_auth` credentials, which is why a
   credentialed call still forces a per-host approval. Live-reloaded with the
-  skill registry; `load_skill` lists the public signatures (signature-first,
-  #826).
+  skill registry; `load_skill` lists the public signatures with their doc
+  comments (signature-first, #826). A skill's predefined *scripts* (the
+  retired `tools:` `rhai` kind) are plain files run with
+  `rhai {"path": "<skill_dir>/x.rhai", "args": {…}}` — a launch graded
+  like any tool on that path (an `Ask` grade shows the launch card: Run all
+  · Ask per command · Reject), or run unasked when the user lists the
+  skill's folder in `config.yml` `rhai.trusted`
+  ([ADR-0228](../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+  Writing a skill's `SKILL.md`/`lib.rhai` (any user or project skill dir)
+  always asks, in every mode — the trusted-code write floor
+  ([gates & host tools](gates-and-host-tools.md)).
 - **Skills are additive-only — the `allowed_tools` mask is removed (✅ ADR-0194,
   [0194](../adr/0194-skills-are-additive-only.md), superseding
   [ADR-0106](0106-skill-scoped-allowed-tools-enforcement.md) and retiring
   [ADR-0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
-  a skill adds capabilities (its body, its `lib.rhai` functions, rhai-backed
-  tools, aliases) and **never restricts** the session's tool set. The session-keyed
+  a skill adds capabilities (its body, its `lib.rhai` functions, its script
+  files) and **never restricts** the session's tool set. The session-keyed
   `ActiveSkill` map, `permission::skill_masked`, the `load_skill`
   result-header activation parse, and the rhai binding policy's skill-mask
   snapshot are deleted; the dispatch ladder loses its skill arm. WHY: the mask's

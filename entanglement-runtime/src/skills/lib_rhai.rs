@@ -15,12 +15,21 @@ use std::path::Path;
 /// The `lib.rhai` file name.
 pub const LIB_FILE: &str = "lib.rhai";
 
+/// One public function of a lib, as `load_skill` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibFn {
+    /// `skill::<skill>::<fn>(<params>)`.
+    pub signature: String,
+    /// The function's `///`/`/** */` doc comment, comment leaders stripped;
+    /// empty when it has none.
+    pub doc: String,
+}
+
 /// One skill's compiled library.
 #[derive(Clone)]
 pub struct SkillLib {
-    /// `skill::<skill>::<fn>(<params>)` per public function, name-sorted —
-    /// what `load_skill` lists.
-    pub signatures: Vec<String>,
+    /// Every public function, signature-sorted — what `load_skill` lists.
+    pub functions: Vec<LibFn>,
     #[cfg(feature = "rhai")]
     pub(crate) module: rhai::Shared<rhai::Module>,
 }
@@ -28,7 +37,7 @@ pub struct SkillLib {
 impl fmt::Debug for SkillLib {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SkillLib")
-            .field("signatures", &self.signatures)
+            .field("functions", &self.functions)
             .finish_non_exhaustive()
     }
 }
@@ -37,7 +46,7 @@ impl fmt::Debug for SkillLib {
 // itself has no meaningful equality.
 impl PartialEq for SkillLib {
     fn eq(&self, other: &Self) -> bool {
-        self.signatures == other.signatures
+        self.functions == other.functions
     }
 }
 impl Eq for SkillLib {}
@@ -91,18 +100,26 @@ pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
         );
     }
     let ns = namespace(skill);
-    let mut signatures: Vec<String> = ast
+    let docs = super::lib_docs::fn_docs(source);
+    let mut functions: Vec<LibFn> = ast
         .iter_functions()
         .filter(|f| f.access == rhai::FnAccess::Public)
-        .map(|f| format!("{ns}::{}({})", f.name, f.params.join(", ")))
+        .map(|f| LibFn {
+            signature: format!("{ns}::{}({})", f.name, f.params.join(", ")),
+            doc: docs
+                .iter()
+                .find(|d| d.name == f.name && d.arity.is_none_or(|n| n == f.params.len()))
+                .map(|d| d.doc.clone())
+                .unwrap_or_default(),
+        })
         .collect();
-    signatures.sort();
+    functions.sort_by(|a, b| a.signature.cmp(&b.signature));
     // Encapsulated: a lib function resolves its sibling functions inside the
     // lib, and the engine's bindings (`read`, `http`, `mcp::…`) at call time.
     let module = rhai::Module::eval_ast_as_new(rhai::Scope::new(), &ast, &engine)
         .map_err(|e| format!("does not load: {e}"))?;
     Ok(SkillLib {
-        signatures,
+        functions,
         module: rhai::Shared::new(module),
     })
 }
@@ -110,6 +127,10 @@ pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
 #[cfg(all(test, feature = "rhai"))]
 mod tests {
     use super::*;
+
+    fn signatures(lib: &SkillLib) -> Vec<&str> {
+        lib.functions.iter().map(|f| f.signature.as_str()).collect()
+    }
 
     #[test]
     fn a_fn_only_lib_compiles_and_lists_public_signatures() {
@@ -119,12 +140,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            lib.signatures,
+            signatures(&lib),
             vec![
                 "skill::git_tools::changed(dir)",
                 "skill::git_tools::count()"
             ]
         );
+    }
+
+    /// ADR-0228: both doc-comment forms reach the listing, leaders stripped;
+    /// a plain `//` comment is not a doc comment.
+    #[test]
+    fn doc_comments_of_both_forms_are_captured() {
+        let lib = compile(
+            "s",
+            "/// Count lines.\n/// Returns an int.\nfn count(text) { 1 }\n\
+             /**\n * Greet someone.\n * Politely.\n */\nfn greet(name) { name }\n\
+             // not a doc\nfn plain() { 1 }",
+        )
+        .unwrap();
+        let doc = |sig: &str| {
+            lib.functions
+                .iter()
+                .find(|f| f.signature == sig)
+                .map(|f| f.doc.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            doc("skill::s::count(text)"),
+            "Count lines.\nReturns an int."
+        );
+        assert_eq!(doc("skill::s::greet(name)"), "Greet someone.\nPolitely.");
+        assert_eq!(doc("skill::s::plain()"), "");
+    }
+
+    /// A file-header block comment and a stray `///` above a non-`fn` line
+    /// are ordinary comments — the lib still loads (ADR-0228).
+    #[test]
+    fn a_header_comment_does_not_reject_the_lib() {
+        let lib = compile(
+            "s",
+            "/** Helpers for s. */\n\n/// Hi.\nfn hi() { 1 }\n/// trailing doc",
+        )
+        .unwrap();
+        assert_eq!(lib.functions[0].doc, "Hi.");
     }
 
     #[test]
@@ -144,7 +203,7 @@ mod tests {
         assert!(load("s", Some(dir.path())).is_none(), "no lib.rhai, no lib");
         std::fs::write(dir.path().join(LIB_FILE), "fn hi() { \"hi\" }").unwrap();
         assert_eq!(
-            load("s", Some(dir.path())).unwrap().signatures,
+            signatures(&load("s", Some(dir.path())).unwrap()),
             vec!["skill::s::hi()"]
         );
         std::fs::write(dir.path().join(LIB_FILE), "print(1);").unwrap();
