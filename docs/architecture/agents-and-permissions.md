@@ -726,10 +726,10 @@ below realize one model:
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
   `list_agents`/`list_models`/`list_skills`/`load_skill`/`list_mcp`/
-  `mcp_tools` — which, unlike every other tool, are **fully non-maskable**:
-  no session overlay deny can withdraw them even at dispatch (the ADR-0190
-  `poll` pattern — contrast `poll` itself, whose *dispatch* a mode can still
-  decline, just not un-advertise). `glob`/`grep`/`call` stay registered as
+  `mcp_tools` — which are **fully non-maskable**: no mode rule, ceiling
+  rule or session overlay deny can withdraw them even at dispatch (the
+  ADR-0190 `poll` pattern; the TUI refuses such an entry and a config rule
+  naming one warns, #843). `glob`/`grep`/`call` stay registered as
   script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
@@ -809,7 +809,26 @@ below realize one model:
   shape. (`/enable mcp`/`/disable mcp` and the `/mcp` panel's `e` key are
   gone: an MCP server is available the moment it is registered, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
   the panel's `d` key stays — a per-session deny of the server's
-  `mcp__<name>__*` tools.) A
+  `mcp__<name>__*` tools.) **Names no entry can match** (#843,
+  `tool_names::NON_MASKABLE_TOOLS`) are kept off the checklist, the `/set`
+  Tools tab and `/tools`, and a typed `/enable`/`/disable` naming one is
+  refused with the reason: `mcp` (core unwraps the envelope to
+  `mcp__<server>__<tool>` before dispatch — per-tool control is a
+  `mcp__<server>__<tool>` entry or rule, a server-wide `mcp__<server>__*`
+  glob an overlay entry only, and a server the user never wants is removed
+  from config), the six discovery tools (always
+  available, not maskable — below) and the script-only read variants
+  `read_raw`/`glob_json`/`grep_json` (graded as `read`/`glob`/`grep`). A
+  wire `SetToolOverlay` entry naming one is still applied (core holds no tool
+  policy) but the runtime logs that it has no effect when it folds the
+  `ToolOverlayChanged`; a `modes:` or `permissions:` rule naming one warns
+  at config load like a stale name (`config::mode_warn`), as does a rule
+  whose tool part is a name glob (rule keys never glob the tool part; only
+  a bare `*` is a wildcard). A per-tool rule or overlay entry
+  (`mcp__<server>__<tool>`) or a server-wide overlay glob
+  (`mcp__<server>__*`, overlay only — rules never glob) grades an envelope
+  call and a script's `mcp::<server>::<tool>()` binding identically — both reach the same dispatch seam under
+  the inner name. A
   typed `/enable <name-or-glob> [--allow […]]` also reports how many
   currently-registered tools the pattern matched, as a transcript status
   line (#560 P9,

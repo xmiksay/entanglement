@@ -133,7 +133,7 @@ impl Rules {
 /// class-scoped grammar) — that's the one way to write a rule for the
 /// literal `write`/`read`/`exec`/`plan`/`control`-named tool, and it's what
 /// the built-in `plan` mode uses for its plans-folder carve-out.
-pub(super) fn capability_class(key: &str) -> Option<Capability> {
+pub(crate) fn capability_class(key: &str) -> Option<Capability> {
     match key {
         "read" => Some(Capability::Read),
         "write" => Some(Capability::Write),

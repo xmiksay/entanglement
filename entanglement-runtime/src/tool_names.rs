@@ -108,17 +108,55 @@ pub const DISCOVERY_TOOLS: &[&str] = &[
     MCP_TOOLS_TOOL,
 ];
 
-/// Tools exempt from the #116 agent-mask / session-overlay / deny-entry check
-/// entirely (ADR-0226): read-only catalog introspection, never a capability
-/// decision. Narrow and deliberate, like ADR-0190's original (now-retired,
-/// subsumed by ADR-0192's universal dispatch mask) `poll` exemption — adding
-/// an entry removes a profile-author control.
-pub const NON_MASKABLE_TOOLS: &[&str] = DISCOVERY_TOOLS;
+/// The names an overlay entry or a mode/ceiling rule can spell but never
+/// match (#843): the six discovery tools take the dispatch `Control` bypass
+/// before any overlay or rule is read (ADR-0226 Maskability), core unwraps
+/// the `mcp` envelope to `mcp__<server>__<tool>` before dispatch, and the
+/// script-only read variants grade as the tool they ride on
+/// (`dispatch::grade::graded_name`). The TUI's toggle roster leaves them out,
+/// `/enable`/`/disable` refuses them, and a config rule or a wire overlay
+/// entry naming one warns ([`non_maskable_reason`]).
+pub const NON_MASKABLE_TOOLS: &[&str] = &[
+    LIST_AGENTS_TOOL,
+    LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL,
+    LOAD_SKILL_TOOL,
+    LIST_MCP_TOOL,
+    MCP_TOOLS_TOOL,
+    MCP_TOOL,
+    "read_raw",
+    "glob_json",
+    "grep_json",
+];
 
-/// Whether `tool` is exempt from the dispatch-side mask entirely
-/// ([`NON_MASKABLE_TOOLS`]).
+/// Whether `tool` is one of the [`NON_MASKABLE_TOOLS`].
 pub fn is_non_maskable(tool: &str) -> bool {
     NON_MASKABLE_TOOLS.contains(&tool)
+}
+
+/// Why an overlay entry or rule naming `tool` can never take effect, and
+/// what to name instead — `None` for any other name (globs included: a
+/// pattern may still match real tools).
+pub fn non_maskable_reason(tool: &str) -> Option<String> {
+    if !is_non_maskable(tool) {
+        return None;
+    }
+    Some(match tool {
+        MCP_TOOL => "`mcp` is the MCP call envelope, graded under each inner \
+                     `mcp__<server>__<tool>` name — name those, or remove the \
+                     server from config"
+            .to_string(),
+        "read_raw" => "`read_raw` is graded as the `read` tool — name `read(<pattern>)` \
+                       (the tool); a bare `read` rule is the whole read class \
+                       (read/grep/glob)"
+            .to_string(),
+        "glob_json" => "`glob_json` is graded as `glob` — name `glob` instead".to_string(),
+        "grep_json" => "`grep_json` is graded as `grep` — name `grep` instead".to_string(),
+        discovery => format!(
+            "`{discovery}` is a read-only discovery tool — always available, \
+             not maskable (ADR-0226)"
+        ),
+    })
 }
 
 /// The one advertised surface (ADR-0226; ADR-0196's `TOOL_SEARCH_KERNEL`,
@@ -329,15 +367,27 @@ mod tests {
     }
 
     #[test]
-    fn the_six_discovery_tools_are_non_maskable() {
-        assert_eq!(DISCOVERY_TOOLS.len(), 6);
-        for tool in DISCOVERY_TOOLS {
+    fn non_maskable_names_are_the_ones_dispatch_never_grades_by_name() {
+        for tool in DISCOVERY_TOOLS
+            .iter()
+            .chain(&[MCP_TOOL, "read_raw", "glob_json", "grep_json"])
+        {
             assert!(is_non_maskable(tool), "{tool} must be non-maskable");
+            assert!(non_maskable_reason(tool).is_some(), "{tool} needs a reason");
         }
+        for maskable in ["bash", "read", "glob", RHAI_TOOL, "mcp__gh__x", "mcp__*"] {
+            assert!(non_maskable_reason(maskable).is_none(), "{maskable}");
+        }
+        let mcp = non_maskable_reason(MCP_TOOL).unwrap();
+        assert!(mcp.contains("remove the server from config"), "{mcp}");
+        let glob = non_maskable_reason("glob_json").unwrap();
+        assert!(glob.contains("name `glob`"), "{glob}");
+        let raw = non_maskable_reason("read_raw").unwrap();
         assert!(
-            !is_non_maskable(POLL_TOOL),
-            "poll's mask exemption was retired by ADR-0192"
+            raw.contains("read(<pattern>)") && raw.contains("read class"),
+            "{raw}"
         );
-        assert!(!is_non_maskable("bash"));
+        let list = non_maskable_reason(LIST_MCP_TOOL).unwrap();
+        assert!(list.contains("not maskable"), "{list}");
     }
 }

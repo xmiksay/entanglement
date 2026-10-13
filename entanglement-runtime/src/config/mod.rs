@@ -41,9 +41,13 @@
 //!   removal syntax unnecessary). Applied over
 //!   [`crate::mode::ModeTable::builtin`] once a live tool registry exists to
 //!   validate a tuning rule's capability against ([`mode::apply_tuning`]). A
-//!   rule naming a tool outside the compile-time vocabulary (a typo, or a
-//!   name retired by a rename) logs a non-fatal startup warning naming the
-//!   file, the mode and the entry ([`mode_warn`], reviving ADR-0166's
+//!   rule — here or in `permissions:` — naming a tool outside the
+//!   compile-time vocabulary (a typo, or a name retired by a rename), one
+//!   dispatch never grades by name (`mcp`, the discovery tools, the
+//!   script-only read variants `read_raw`/`*_json`; #843), or a tool-name
+//!   glob (`mcp__gh__*`, `list_?` — rule keys match the tool part exactly,
+//!   only a bare `*` is a wildcard), logs a non-fatal startup warning naming the file, the mode (or
+//!   `permissions`) and the entry ([`mode_warn`], reviving ADR-0166's
 //!   posture for this rule language).
 //! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
 //!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
@@ -310,7 +314,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     let (untrusted_http_rules, http_rule_warnings) = http_auth::project_http_rules(raw_layers);
     warnings.extend(http_rule_warnings);
     ceiling_warn::warn_project_permission_overrides(raw_layers, root);
-    mode_warn::warn_stale_mode_tuning_names(raw_layers, root);
+    mode_warn::warn_stale_rule_names(raw_layers, root);
     let mut merged = Value::Null;
     for rl in raw_layers {
         merged = merge_value(merged, rl.doc.clone());

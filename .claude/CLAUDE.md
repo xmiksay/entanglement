@@ -203,7 +203,9 @@ doc, never here**:
   ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
-  `mcp_tools` reads (and lazily connects) one server's catalog
+  `mcp_tools` reads (and lazily connects) one server's catalog; they, `mcp`
+  and the script-only read variants (`read_raw`/`*_json`) are non-maskable — an overlay entry or rule
+  naming one is refused/warned, never a silent no-op (#843)
   ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 - **Skills are additive-only; slash commands are head-side templates** — a
   skill ships `lib.rhai` functions and script files, no `tools:` frontmatter
