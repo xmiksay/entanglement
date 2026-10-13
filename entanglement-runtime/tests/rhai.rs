@@ -66,6 +66,10 @@ mod launch_grading;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 #[path = "rhai/schema_dedup.rs"]
 mod schema_dedup;
+// ADR-0229: a skill still declaring the removed `user_only` is listed,
+// loaded and scriptable like any other.
+#[path = "rhai/every_skill_visible.rs"]
+mod every_skill_visible;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

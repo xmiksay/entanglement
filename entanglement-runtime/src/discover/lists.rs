@@ -26,8 +26,8 @@ pub fn agents_list(agents: &AgentCatalog) -> String {
     out
 }
 
-/// `list_skills`: name + description of every model-loadable skill (the
-/// registry's disclosures, `user_only` withheld) — the roster the system
+/// `list_skills`: name + description of every skill (the registry's
+/// disclosures) — the roster the system
 /// prompt no longer carries. `skutter inspect skills --disclosures` prints
 /// the same text.
 pub fn skills_list(disclosures: &[SkillDisclosure]) -> String {
@@ -106,7 +106,6 @@ mod tests {
         skills.insert(crate::skills::SkillMeta {
             name: "git".to_string(),
             description: "commit helpers".to_string(),
-            user_only: false,
             allowed_tools: None,
             root_dir: None,
             body: String::new(),

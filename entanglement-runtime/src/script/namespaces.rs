@@ -170,7 +170,6 @@ mod tests {
         SkillMeta {
             name: name.into(),
             description: "d".into(),
-            user_only: false,
             allowed_tools: None,
             root_dir: None,
             body: String::new(),

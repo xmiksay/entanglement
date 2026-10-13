@@ -2,8 +2,8 @@
 //!
 //! Closes the skill-authoring blind spot: skill selection is "description quality
 //! is the contract," yet the author could not see the exact tier-1
-//! `disclosures()` block the model gets, whether `user_only` withheld a skill,
-//! which layer won a collision, or whether a `${SKILL_DIR}` payload path resolves.
+//! `disclosures()` block the model gets, which layer won a collision, or
+//! whether a `${SKILL_DIR}` payload path resolves.
 //! Three views over the engine-free skill registry:
 //! - `--disclosures`: the exact tier-1 block the model receives (takes priority);
 //! - a `name`: a dry-run of the `load_skill` path substitution for that skill;
@@ -64,15 +64,13 @@ pub(super) fn render_rejected(rejected: &[String]) -> String {
 /// the author sees here is byte-for-byte what drives selection.
 pub(super) fn render_disclosures(disclosures: &[crate::system_prompt::SkillDisclosure]) -> String {
     if disclosures.is_empty() {
-        return "(no skills disclosed to the model — none discovered, or all are user_only)\n"
-            .to_string();
+        return "(no skills disclosed to the model — none discovered)\n".to_string();
     }
     format!("{}\n", crate::discover::skills_list(disclosures))
 }
 
-/// One-line-per-skill table: name, whether it is `user_only` (withheld from the
-/// model), winning layer, its `root_dir`, and the description that drives
-/// selection. Includes `user_only` skills — the author must see what was withheld.
+/// One-line-per-skill table: name, winning layer, its `root_dir`, and the
+/// description that drives selection.
 pub(super) fn render_skill_table(resolved: &[SkillResolution]) -> String {
     if resolved.is_empty() {
         return "no skill definitions found\n".to_string();
@@ -83,7 +81,6 @@ pub(super) fn render_skill_table(resolved: &[SkillResolution]) -> String {
         .map(|r| {
             vec![
                 r.meta.name.clone(),
-                if r.meta.user_only { "yes" } else { "no" }.to_string(),
                 r.layer.label().to_string(),
                 r.meta
                     .root_dir
@@ -95,10 +92,7 @@ pub(super) fn render_skill_table(resolved: &[SkillResolution]) -> String {
         })
         .collect();
 
-    super::render_table(
-        &["NAME", "USER_ONLY", "LAYER", "ROOT_DIR", "DESCRIPTION"],
-        &rows,
-    )
+    super::render_table(&["NAME", "LAYER", "ROOT_DIR", "DESCRIPTION"], &rows)
 }
 
 /// Dry-run the `load_skill` resolution for one skill without a model: identity +
@@ -111,7 +105,6 @@ pub(super) fn render_skill_dry_run(entry: &SkillResolution) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "name:        {}", skill.name);
     let _ = writeln!(out, "description: {}", skill.description);
-    let _ = writeln!(out, "user_only:   {}", skill.user_only);
     let _ = writeln!(out, "layer:       {}", entry.layer.label());
     let _ = writeln!(out, "source:      {}", entry.source);
     match &skill.root_dir {
@@ -133,16 +126,6 @@ pub(super) fn render_skill_dry_run(entry: &SkillResolution) -> String {
         for (layer, source) in &entry.shadowed {
             let _ = writeln!(out, "  - {} ({source})", layer.label());
         }
-    }
-
-    if skill.user_only {
-        // `load_skill` refuses a `user_only` skill to a model; this authoring
-        // dry-run renders it anyway — call out that the model never sees it.
-        let _ = writeln!(
-            out,
-            "\nnote: user_only — the model can never load this via `load_skill`; \
-             shown here for authoring only."
-        );
     }
 
     let _ = writeln!(

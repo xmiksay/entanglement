@@ -38,7 +38,7 @@ pub(super) fn scope(kind: &str, root: Option<&Path>, layers: &[RawLayer]) -> Str
 
 /// Which of `findings` are new for `scope` since its previous call (in
 /// order), remembering exactly `findings` as the scope's current set.
-pub(super) fn fresh(scope: String, findings: &[String]) -> Vec<bool> {
+pub(crate) fn fresh(scope: String, findings: &[String]) -> Vec<bool> {
     static SEEN: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
     let mut seen = SEEN
         .get_or_init(Default::default)

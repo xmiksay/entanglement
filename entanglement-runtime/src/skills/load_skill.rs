@@ -7,10 +7,7 @@
 //! The handler resolves it **deterministically** — never model reasoning:
 //!
 //! 1. Look the [`SkillMeta`] up by `name` in the startup index.
-//! 2. Reject a `user_only` skill: it is withheld from disclosure and only an
-//!    explicit user command may trigger it, a channel the headless engine has no
-//!    model-driven equivalent for — so a model-issued `load_skill` is refused.
-//! 3. Read the `SKILL.md` body and **substitute every relative payload path to an
+//! 2. Read the `SKILL.md` body and **substitute every relative payload path to an
 //!    absolute one** before the text reaches the model. This closes Claude Code's
 //!    known bug class (anthropics/claude-code#17741, #11011): the *model* resolving
 //!    `references/x.md` against the wrong base and guessing. `SKILL_DIR` and the
@@ -37,7 +34,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::capability::Capability;
 use crate::tools::Tool;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
@@ -107,7 +104,7 @@ impl Tool for LoadSkillTool {
 /// Parse the `skill_id: <name>\n` header a successful [`render`] result begins
 /// with. `None` for anything else — in particular the "tool `load_skill`
 /// failed: …" text [`crate::tools::ToolRegistry::execute`] synthesizes for an
-/// `Err` (unknown/`user_only` skill) — so the runtime skill-active posture
+/// `Err` (unknown skill) — so the runtime skill-active posture
 /// (#400, ADR-0106; posture-only since ADR-0194) only activates on an actual
 /// load, never a failed attempt.
 pub fn parse_skill_id(content: &str) -> Option<&str> {
@@ -115,18 +112,12 @@ pub fn parse_skill_id(content: &str) -> Option<&str> {
 }
 
 /// Deterministic resolution of `skill_name` against `registry`. Pure over the
-/// registry + filesystem so it is unit-tested directly (unknown / user_only /
+/// registry + filesystem so it is unit-tested directly (unknown skill /
 /// path substitution). Separated from [`Tool::run`] for exactly that reason.
 fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
     let skill = registry
         .get(skill_name)
         .ok_or_else(|| anyhow!("unknown skill `{skill_name}`: it is not in the skill index"))?;
-    if skill.user_only {
-        bail!(
-            "skill `{skill_name}` is user_only and can only be triggered by an \
-             explicit user command, not a model-issued load_skill"
-        );
-    }
     Ok(render_skill_in(registry, skill))
 }
 
@@ -136,8 +127,6 @@ fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
 /// `available_refs` listing.
 /// Shared by the model-facing [`load`] and the agent-definition **preload**
 /// (#117), so a preloaded skill reads identically to one the model loads itself.
-/// Carries no `user_only` gate — that policy belongs to the caller (`load`
-/// enforces it; preload is author config and does not).
 pub(crate) fn render_skill(skill: &super::SkillMeta) -> String {
     render_skill_with(skill, None)
 }
@@ -311,7 +300,7 @@ mod tests {
     #[cfg(feature = "rhai")]
     #[test]
     fn a_loaded_skill_lists_its_lib_signatures() {
-        let mut s = skill("git", false, None, "Body.");
+        let mut s = skill("git", None, "Body.");
         s.lib = Some(
             crate::skills::lib_rhai::compile("git", "/// Last n commits.\nfn log(n) { n }")
                 .unwrap(),
@@ -324,12 +313,12 @@ mod tests {
             ),
             "{out}"
         );
-        assert!(!render_skill(&skill("git", false, None, "Body.")).contains("script functions"));
+        assert!(!render_skill(&skill("git", None, "Body.")).contains("script functions"));
         // A lib that lost its `skill::` segment lists no callable names.
         let mut reg = SkillRegistry::default();
-        let mut other = skill("git-x", false, None, "B.");
+        let mut other = skill("git-x", None, "B.");
         other.lib = Some(crate::skills::lib_rhai::compile("git-x", "fn a() { 1 }").unwrap());
-        let mut loser = skill("git.x", false, None, "B.");
+        let mut loser = skill("git.x", None, "B.");
         loser.lib = Some(crate::skills::lib_rhai::compile("git.x", "fn b() { 1 }").unwrap());
         reg.insert(other);
         reg.insert(loser.clone());
@@ -338,11 +327,10 @@ mod tests {
         assert!(!out.contains("skill::git_x::b()"), "{out}");
     }
 
-    fn skill(name: &str, user_only: bool, root_dir: Option<PathBuf>, body: &str) -> SkillMeta {
+    fn skill(name: &str, root_dir: Option<PathBuf>, body: &str) -> SkillMeta {
         SkillMeta {
             name: name.into(),
             description: "d".into(),
-            user_only,
             allowed_tools: None,
             root_dir,
             body: body.into(),
@@ -369,7 +357,7 @@ mod tests {
 
     #[test]
     fn parse_skill_id_reads_the_header_of_a_successful_load() {
-        let reg = registry(vec![skill("commit", false, None, "run `git commit`")]);
+        let reg = registry(vec![skill("commit", None, "run `git commit`")]);
         let out = load(&reg, "commit").unwrap();
         assert_eq!(parse_skill_id(&out), Some("commit"));
     }
@@ -391,17 +379,24 @@ mod tests {
         assert!(format!("{err:#}").contains("unknown skill"), "got: {err:#}");
     }
 
+    /// ADR-0229: a skill still declaring the removed `user_only` key loads
+    /// for the model like any other.
     #[test]
-    fn user_only_skill_is_rejected() {
-        let reg = registry(vec![skill("deploy", true, None, "danger")]);
-        let err = load(&reg, "deploy").unwrap_err();
-        assert!(format!("{err:#}").contains("user_only"), "got: {err:#}");
+    fn formerly_user_only_skill_loads() {
+        let deploy = crate::skills::parse::parse_skill(
+            "---\nname: deploy\ndescription: d\nuser_only: true\n---\ndanger",
+            None,
+        )
+        .unwrap();
+        let out = load(&registry(vec![deploy]), "deploy").unwrap();
+        assert_eq!(parse_skill_id(&out), Some("deploy"));
+        assert!(out.contains("danger"), "{out}");
     }
 
     #[test]
     fn built_in_body_returned_verbatim_with_skill_id() {
         // No root_dir ⇒ no substitution, no refs.
-        let reg = registry(vec![skill("commit", false, None, "run `git commit`")]);
+        let reg = registry(vec![skill("commit", None, "run `git commit`")]);
         let out = load(&reg, "commit").unwrap();
         assert!(out.contains("skill_id: commit"), "got: {out}");
         assert!(out.contains("run `git commit`"), "got: {out}");
@@ -418,7 +413,7 @@ mod tests {
         // Body mixes a skill-dir ref (exists under the skill dir), a project-root
         // ref (does not), and a placeholder.
         let body = "See references/guide.md for details. Edit src/main.rs. Dir is ${SKILL_DIR}.";
-        let reg = registry(vec![skill("myskill", false, Some(skill_dir.clone()), body)]);
+        let reg = registry(vec![skill("myskill", Some(skill_dir.clone()), body)]);
         let out = load(&reg, "myskill").unwrap();
 
         let abs_ref = skill_dir.join("references/guide.md");
@@ -457,12 +452,7 @@ mod tests {
         std::fs::write(skill_dir.join("references/a.md"), "a").unwrap();
         std::fs::write(skill_dir.join("scripts/run.sh"), "s").unwrap();
 
-        let reg = registry(vec![skill(
-            "myskill",
-            false,
-            Some(skill_dir.clone()),
-            "body",
-        )]);
+        let reg = registry(vec![skill("myskill", Some(skill_dir.clone()), "body")]);
         let out = load(&reg, "myskill").unwrap();
 
         assert!(out.contains("available_refs"), "got: {out}");

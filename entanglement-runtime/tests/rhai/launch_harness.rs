@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use entanglement_core::{
@@ -22,6 +22,7 @@ use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::rhai_trust::TrustedFolders;
+use entanglement_runtime::skills::{LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 use entanglement_runtime::workdir::{self, SessionWorkdirs};
@@ -75,6 +76,9 @@ pub struct Setup {
     pub scope: ApprovalScope,
     /// The skill layer dirs the write floor protects.
     pub skill_dirs: Vec<PathBuf>,
+    /// The live skill registry: `list_skills`, `load_skill` and the
+    /// scripts' `skill::` namespaces all read it.
+    pub skills: SkillRegistry,
 }
 
 impl Setup {
@@ -92,6 +96,7 @@ impl Setup {
             mode: None,
             scope: ApprovalScope::Once,
             skill_dirs: Vec::new(),
+            skills: SkillRegistry::default(),
         }
     }
 }
@@ -173,15 +178,17 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         ..EngineConfig::default()
     });
     let workdirs = SessionWorkdirs::default();
-    let tools = host_tools_with(
+    let skills = Arc::new(RwLock::new(Arc::new(setup.skills)));
+    let mut tools = host_tools_with(
         root.to_path_buf(),
         HostToolOptions {
             extra_roots: setup.escape_root.then(|| store.clone()),
             backups: None,
             workdirs: Some(workdirs.clone()),
         },
-    )
-    .shared();
+    );
+    tools.register(LoadSkillTool::new(skills.clone()));
+    let tools = tools.shared();
     let base = setup.ceiling.clone();
     let modes = Arc::new(Mutex::new(HashMap::new()));
     let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
@@ -203,6 +210,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         .http_gate(setup.gate)
         .rhai_trusted(setup.trusted)
         .skill_dirs(setup.skill_dirs)
+        .live_skills(skills)
         .mode_table(setup.table);
     if setup.escape_root {
         builder = builder.escape_root(EscapeRoot {

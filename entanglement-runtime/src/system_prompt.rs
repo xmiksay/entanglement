@@ -60,7 +60,7 @@ remains — never claim a result you have not verified.";
 
 /// A skill disclosure: the two fields exposed to the model (`name` + one-line
 /// `description`) — what `list_skills` lists. Generated from the skill
-/// registry (`user_only` skills withheld), never authored into an agent body.
+/// registry (every skill, ADR-0229), never authored into an agent body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDisclosure {
     pub name: String,

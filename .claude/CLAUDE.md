@@ -207,9 +207,11 @@ doc, never here**:
   and the script-only read variants (`read_raw`/`*_json`) are non-maskable — an overlay entry or rule
   naming one is refused/warned, never a silent no-op (#843)
   ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
-- **Skills are additive-only; slash commands are head-side templates** — a
-  skill ships `lib.rhai` functions and script files, no `tools:` frontmatter
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+- **Skills are additive-only and all model-visible; slash commands are
+  head-side templates** — a skill ships `lib.rhai` functions and script
+  files; `tools:`/`user_only` frontmatter removed (`tools:` skips the skill,
+  `user_only` loads with a warning)
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/0229-every-skill-is-model-visible-user-only-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
   trusted); managed files are advisory-locked and live-reloaded
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads-and-persistence.md), [ADR-0047](../docs/adr/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)).

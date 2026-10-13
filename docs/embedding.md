@@ -843,6 +843,30 @@ What an embedder has to change:
   becomes a `lib.rhai` function calling the wrapped binding with the preset
   values.
 
+## Migrating to every skill model-visible (ADR-0229, #845)
+
+[ADR-0229](adr/0229-every-skill-is-model-visible-user-only-removed.md)
+removes `user_only`. What an embedder has to change:
+
+- **Removed:** `SkillMeta::user_only` (drop `user_only: …` from a struct
+  literal).
+- **Behaviour:** `SkillRegistry::disclosures` returns every skill, so
+  `list_skills` lists it; `load_skill` renders it; its `lib.rhai` is
+  callable as `skill::<skill>::*` from any script. A native `SKILL.md`
+  still declaring `user_only:` loads with one warning (repeated only if the
+  key is removed and later restored); a foreign skill's
+  `disable-model-invocation` is ignored. `skutter inspect skills` drops
+  its `USER_ONLY` column.
+- **Skill authors:** delete `user_only:`. In `auto`, or any mode where the
+  skill's commands match no `prompt`/`deny` rule, the model can now pick a
+  formerly `user_only` skill, load it and run its `lib.rhai` from an inline
+  script with no card — and a `~/.claude/skills` skill marked
+  `disable-model-invocation` becomes visible with no warning. To prevent
+  that, grade its effects in the permission mode (e.g. a `prompt:` or
+  `deny:` rule on the deploy command), remove the skill (or its dir) from
+  the discovered skill dirs, or set `ENTANGLEMENT_SKILLS_DIR`, which
+  replaces the whole user layer ([ADR-0074](adr/0074-cross-vendor-skill-and-agent-discovery.md)).
+
 ## TLS and the rustls crypto provider
 
 `entanglement-provider` talks TLS through rustls with the **ring** provider and
