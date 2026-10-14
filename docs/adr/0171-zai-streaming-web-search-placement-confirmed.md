@@ -85,7 +85,7 @@ removed.
   [0075](0075-provider-side-web-search-mvp.md)'s "Accepted MVP limitations"
   are annotated (not rewritten) to record this as closed, per each ADR's own
   standing convention of an inline amendment note rather than a body rewrite.
-  [docs/deferred-work-ledger.md](../deferred-work-ledger.md) row 3 moves to
+  [docs/deferred-work-ledger.md](https://github.com/xmiksay/entanglement/issues) row 3 moves to
   Resolved.
 
 ## Consequences

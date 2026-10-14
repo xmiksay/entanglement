@@ -240,7 +240,7 @@ Built entirely on the existing #311 seams, no core change:
   [ADR-0094](0094-reasoning-effort-and-per-profile-generation-persistence.md):
   the `ModelResolver`/`GenerationResolver` resolver-closure precedent this
   ADR's `ModelResolver` widening follows
-- [ADR-0076](0076-per-session-tool-spec-override.md)/[ADR-0078](0078-per-turn-system-prompt-override.md):
+- [ADR-0076](0076-per-session-dynamic-tool-specs.md)/[ADR-0078](0078-per-turn-dynamic-system-prompt.md):
   `ToolSpecResolver`/`SystemPromptResolver`, the `Fn(&SessionId, ...)`
   snapshot-cache pattern this ADR's seams mirror
 - [ADR-0110](0110-compaction-successor-closes-predecessor.md): the

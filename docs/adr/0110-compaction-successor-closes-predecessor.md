@@ -113,5 +113,5 @@ interactive session right after. Add explicit two-way lineage (`children`,
   compaction, not merely styled differently — a live, promptable source is the
   confusion being removed.
 
-[ADR-0024]: 0024-ancestor-permission-clamp.md
+[ADR-0024]: 0024-subagent-permission-gating.md
 [ADR-0106]: 0106-skill-scoped-allowed-tools-enforcement.md

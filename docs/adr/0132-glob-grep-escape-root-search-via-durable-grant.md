@@ -15,7 +15,7 @@ recursive search has no single path to approve ("which external root? the
 whole filesystem?"), and deferred the capability "until a concrete need —
 reading a specific external file via `read` + approval covers the practical
 case." That deferral is tracked as row 4 of the
-[deferred-work ledger](../deferred-work-ledger.md) (#396), filed as #482.
+[deferred-work ledger](https://github.com/xmiksay/entanglement/issues) (#396), filed as #482.
 
 In practice the asymmetry is awkward: a user who grants `Always` `read` access
 to an external directory (say `/opt/some-lib`) still cannot ask the model to

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Fixes the default-open permission/mask fallback (#156) in the runtime tool executor of [0006](0006-core-dependency-hygiene-gate.md)/[0059](0059-tool-trait-and-registry-live-in-the-runtime.md); hardens the sub-agent gating of [0024](0024-subagent-privilege-ceiling.md)/[0038](0038-physical-tool-restriction.md) and the shared-counter seam of [0068](0068-shared-per-session-seq-counter.md). Part of #153.
+- Fixes the default-open permission/mask fallback (#156) in the runtime tool executor of [0006](0006-core-dependency-hygiene-gate.md)/[0059](0059-tool-trait-and-registry-live-in-the-runtime.md); hardens the sub-agent gating of [0024](0024-subagent-permission-gating.md)/[0038](0038-physical-per-agent-tool-restriction.md) and the shared-counter seam of [0068](0068-shared-per-session-seq-counter.md). Part of #153.
 
 ## Context
 

@@ -97,7 +97,7 @@ carries it; no new wire variant.
   which silently drops out-of-root matches, and their pattern-relative search
   has no single path to approve. Letting a recursive search descend into an
   approved external directory was deferred until a concrete need (tracked as
-  [deferred-work ledger](../deferred-work-ledger.md) row 4, #482) — reading a
+  [deferred-work ledger](https://github.com/xmiksay/entanglement/issues) row 4, #482) — reading a
   specific external file via `read` + approval covered the practical case.
   ADR-0132 closes that gap without forcing a new prompt: search rides an
   existing durable (`Session`/`Always`) `read`-tool grant instead of

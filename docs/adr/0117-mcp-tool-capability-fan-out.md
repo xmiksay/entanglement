@@ -20,7 +20,7 @@ profile author who writes `read: allow` gets every built-in read-only tool
 plus `call`/`rhai`'s least-privilege clamp, but an MCP-provided read-only tool
 falls straight through as an ungrouped literal name — it only ever grades via
 its own `mcp__<server>__<tool>: allow` line. ADR-0114 flagged this as a
-deferred gap (tracked in [`../deferred-work-ledger.md`](../deferred-work-ledger.md)
+deferred gap (tracked in [`../deferred-work-ledger.md`](https://github.com/xmiksay/entanglement/issues)
 as #426) rather than solving it, because an MCP tool isn't self-describing: its
 `tools/list` response carries a name, description, and JSON schema, but no
 capability tag, and the MCP spec defines no such annotation to read one from.
