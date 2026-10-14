@@ -53,7 +53,8 @@ impl Session {
         // Reconstruct `target`'s live `children` by inverting the parent edges
         // recorded across the shared root log (#child-lineage): a child's
         // `SessionStarted { parent: target }` adds it, its `SessionEnded` /
-        // `SessionHibernated` removes it. The supervisor's `parent_links` stays
+        // `SessionHibernated` removes it, and a `ParentChanged` (ADR-0234)
+        // moves it toward or away from `target`. The supervisor's `parent_links` stays
         // the authoritative tree; this only re-seeds the per-session mirror so a
         // resumed session still knows its live children. Only direct children of
         // `target` (grandchildren belong to their own parent).
@@ -69,8 +70,17 @@ impl Session {
                         children.push(child.clone());
                     }
                 }
+                OutEvent::ParentChanged {
+                    session: child,
+                    parent,
+                } if parent == target => {
+                    if !children.contains(child) {
+                        children.push(child.clone());
+                    }
+                }
                 OutEvent::SessionEnded { session: gone, .. }
-                | OutEvent::SessionHibernated { session: gone, .. } => {
+                | OutEvent::SessionHibernated { session: gone, .. }
+                | OutEvent::ParentChanged { session: gone, .. } => {
                     children.retain(|c| c != gone);
                 }
                 _ => {}
@@ -228,6 +238,7 @@ impl Session {
                     session.mode = mode.clone();
                 }
                 OutEvent::WorkdirChanged { dir, .. } => session.workdir = Some(dir.clone()),
+                OutEvent::ParentChanged { parent, .. } => session.parent = Some(parent.clone()),
                 // Re-bind a resumed session to the model it was switched to
                 // (#218) so the continued turn runs under the same provider/model
                 // + generation + context budget the user picked. Best-effort: an
@@ -389,6 +400,28 @@ mod tests {
         let s = Session::replay(&records, &cfg, &SessionId::new("root")).unwrap();
         assert_eq!(s.parent, None);
         assert_eq!(s.children, vec![SessionId::new("child-a")]);
+    }
+
+    /// ADR-0234: a `ParentChanged` moves a child out of its old parent's
+    /// mirror and into the new one's, and re-links the child itself.
+    #[test]
+    fn replay_folds_a_parent_change() {
+        let cfg = EngineConfig::default();
+        let moved = || OutEvent::ParentChanged {
+            session: SessionId::new("child"),
+            parent: SessionId::new("succ"),
+        };
+        let records: Vec<(Option<InMsg>, OutEvent)> = vec![
+            (None, started("pred", None, None)),
+            (None, started("child", Some("pred"), None)),
+            (None, moved()),
+        ];
+        let pred = Session::replay(&records, &cfg, &SessionId::new("pred")).unwrap();
+        assert!(pred.children.is_empty(), "{:?}", pred.children);
+        let succ = Session::replay(&records, &cfg, &SessionId::new("succ")).unwrap();
+        assert_eq!(succ.children, vec![SessionId::new("child")]);
+        let child = Session::replay(&records, &cfg, &SessionId::new("child")).unwrap();
+        assert_eq!(child.parent, Some(SessionId::new("succ")));
     }
 
     /// A successor's `predecessor` is reconstructed from its own `SessionStarted`.

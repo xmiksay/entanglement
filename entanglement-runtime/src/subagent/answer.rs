@@ -121,7 +121,10 @@ pub async fn collect_child_answer(
                 if text.trim().is_empty() {
                     if let Some(message) = error.take() {
                         text.clear();
-                        holly.emit_for_session(parent, |seq| OutEvent::Error {
+                        // The parent may have compacted while it waited
+                        // (ADR-0234); tell the session that carries on.
+                        let parent = holly.successor_of(parent).unwrap_or_else(|| parent.clone());
+                        holly.emit_for_session(&parent, |seq| OutEvent::Error {
                             session: parent.clone(),
                             seq,
                             message: format!(
@@ -135,7 +138,22 @@ pub async fn collect_child_answer(
                 }
                 break;
             }
-            Ok(OutEvent::SessionEnded { .. }) | Ok(OutEvent::SessionHibernated { .. }) => break,
+            // The successor's `SessionStarted` comes from another task, so it
+            // can trail the retired id's end, or be lost to lag: the engine's
+            // directory says whether this end is a compaction (ADR-0234).
+            Ok(OutEvent::SessionEnded { .. }) => {
+                match holly
+                    .successor_of(&child)
+                    .filter(|s| holly.session_info(s).is_some())
+                {
+                    Some(successor) => {
+                        tracing::debug!(%child, %successor, "sub-agent watch follows the compaction successor (directory)");
+                        child = successor;
+                    }
+                    None => break,
+                }
+            }
+            Ok(OutEvent::SessionHibernated { .. }) => break,
             Ok(_) => {}
             // A lagging watcher could miss the child's `Done` and park the parent
             // forever; surface what we have instead of blocking indefinitely.

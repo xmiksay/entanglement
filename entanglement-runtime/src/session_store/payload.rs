@@ -5,7 +5,8 @@ use entanglement_core::{InMsg, OutEvent, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT
 use serde::{Deserialize, Serialize};
 
 /// Payload of a log record: either an inbound message, an outbound event, a
-/// gap tombstone, or a frame whose variant has since been retired.
+/// gap tombstone, an adoption pointer, or a frame whose variant has since been
+/// retired.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "direction",
@@ -26,6 +27,15 @@ pub enum LogPayload {
     Gap {
         dropped: u64,
     },
+    /// Adoption pointer (ADR-0234): the record's session moved under a
+    /// session of *this* root's tree while its history stays in root `from`'s
+    /// file (the tap routes by spawn-time root). Written by the tap into the
+    /// adopting root on `OutEvent::ParentChanged`; `SessionStore::read_tree`
+    /// follows it so a resume of this root restores the moved sub-tree. Carries
+    /// no state of its own.
+    Adopted {
+        from: entanglement_core::SessionId,
+    },
     /// A frame an older release logged whose `kind` names a variant removed
     /// since (`entanglement_core::RETIRED_IN_MSG_KINDS` /
     /// `RETIRED_OUT_EVENT_KINDS`, e.g. 0.6.0's `set_agent`). Never written by
@@ -45,6 +55,7 @@ enum Strict {
     In(InMsg),
     Out(OutEvent),
     Gap { dropped: u64 },
+    Adopted { from: entanglement_core::SessionId },
     Retired { kind: String },
 }
 
@@ -60,6 +71,7 @@ impl TryFrom<serde_json::Value> for LogPayload {
             Ok(Strict::In(m)) => return Ok(Self::In(m)),
             Ok(Strict::Out(e)) => return Ok(Self::Out(e)),
             Ok(Strict::Gap { dropped }) => return Ok(Self::Gap { dropped }),
+            Ok(Strict::Adopted { from }) => return Ok(Self::Adopted { from }),
             Ok(Strict::Retired { kind }) => return Ok(Self::Retired { kind }),
             Err(err) => err,
         };
@@ -110,6 +122,9 @@ mod tests {
     fn live_shapes_round_trip_unchanged() {
         for payload in [
             LogPayload::Gap { dropped: 3 },
+            LogPayload::Adopted {
+                from: entanglement_core::SessionId::new("p"),
+            },
             LogPayload::Retired {
                 kind: "set_agent".into(),
             },

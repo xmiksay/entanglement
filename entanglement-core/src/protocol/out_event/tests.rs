@@ -676,3 +676,23 @@ fn only_nested_call_events_are_live_only() {
     assert!(!content.is_live_only());
     assert!(!lifecycle.is_live_only());
 }
+
+/// #862 (ADR-0234): `ParentChanged` is a seq-less lifecycle event routed by
+/// the moved session, with a stable wire shape.
+#[test]
+fn parent_changed_has_a_stable_wire_shape() {
+    let ev = OutEvent::ParentChanged {
+        session: SessionId::new("kid"),
+        parent: SessionId::new("succ"),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    assert_eq!(
+        json,
+        r#"{"kind":"parent_changed","session":"kid","parent":"succ"}"#
+    );
+    assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    assert_eq!(
+        (ev.seq(), ev.session()),
+        (None, Some(&SessionId::new("kid")))
+    );
+}

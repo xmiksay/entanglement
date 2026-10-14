@@ -37,6 +37,9 @@ pub fn pair_records(records: &[LogRecord]) -> Vec<(Option<InMsg>, OutEvent)> {
             // last-write-wins, so the session resumes under the last agent it
             // switched to (when that agent is still in the catalog).
             LogPayload::Retired { .. } => {}
+            // A pointer to another root's file (ADR-0234), resolved by
+            // `read_tree` before pairing; nothing of its own to replay.
+            LogPayload::Adopted { .. } => {}
         }
     }
     paired

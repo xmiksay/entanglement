@@ -5,9 +5,12 @@
 //!
 //! The two frames this sends are exactly the pair the TUI used to send
 //! head-side for `/compact` (ADR-0101/0110): `Spawn { parent: None,
-//! predecessor: Some(source) }` mints the successor as a *root* that records
-//! its lineage without joining the source's spawn sub-tree, and
-//! `CloseSession { source }` retires the source right after. Moving them here
+//! predecessor: Some(source) }` mints the successor, and `CloseSession {
+//! source }` retires the source right after. The supervisor places the
+//! successor where the source was — a root stays a root, a sub-agent stays
+//! under its parent — and moves the source's live sub-agents under it while
+//! handling the `Spawn`, so the close cascade that follows ends only the
+//! source (ADR-0234). Moving them here
 //! is what makes the automatic paths work for every head — `pipe`, `serve` and
 //! an embedder have no compaction-fork code of their own, and a mid-turn
 //! overflow has no head to ask.
@@ -130,7 +133,8 @@ pub(crate) fn fork_successor(
 ) -> Option<PendingFork> {
     let engine = s.engine.clone()?;
     // Minted in the source's lineage so the default generator keeps its
-    // tenant prefix — the successor is a root, so nothing else would (ADR-0211).
+    // tenant prefix — the successor may be a root, with nothing else to
+    // supply it (ADR-0211).
     let ctx = IdContext::successor_of(session).with_user(s.user.as_ref());
     let successor = SessionId::new(cfg.id_gen.next(IdKind::Session, &ctx));
 
@@ -154,9 +158,10 @@ pub(crate) fn fork_successor(
             inherit: Some(Inherited::of(s)),
             msg: InMsg::Spawn {
                 session: successor,
-                // A root, not a child: the `CloseSession` below cascades over the
-                // source's spawn sub-tree, which the successor must not be in
-                // (ADR-0110).
+                // Never the source itself: the `CloseSession` below cascades
+                // over the source's spawn sub-tree, which the successor must
+                // not be in (ADR-0110). The supervisor inherits the source's
+                // own parent from its links (ADR-0234).
                 parent: None,
                 predecessor: Some(session.clone()),
                 // The successor runs under the source's profile; its live model
@@ -321,7 +326,10 @@ mod tests {
                 prompt,
                 ..
             } => {
-                assert_eq!(parent, None, "the successor is a root, not a child");
+                assert_eq!(
+                    parent, None,
+                    "the supervisor, not the fork, places the successor"
+                );
                 assert_eq!(predecessor, Some(session.clone()));
                 assert_eq!(agent, "general", "the source's profile carries over");
                 assert!(prompt.contains("the gist"));

@@ -137,7 +137,7 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | RevertFiles | ForkSession | SetWorkdir | HibernateSession | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList
           | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged
-          | ToolOverlayChanged | WorkdirChanged | McpList | McpChanged | McpAuthChanged | Throttle
+          | ToolOverlayChanged | WorkdirChanged | ParentChanged | McpList | McpChanged | McpAuthChanged | Throttle
           | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
@@ -175,8 +175,10 @@ doc, never here**:
 - **Model/generation switching is live; aux models resolve per purpose**
   ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads-and-persistence.md), [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)).
 - **Compaction always forks a successor session** — no path rewrites a live
-  context, so every log replays exactly; `/fork` is the non-compacting copy
-  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)).
+  context, so every log replays exactly; the successor keeps the source's
+  place in the spawn tree and its live sub-agents; `/fork` is the
+  non-compacting copy
+  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/0234-live-sub-agents-survive-compaction.md)).
 - **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
   idle TTL, unknown-session policy, tenant-prefixed ids
   ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads-and-persistence.md), [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)).

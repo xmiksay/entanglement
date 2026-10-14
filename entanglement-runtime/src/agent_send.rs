@@ -141,7 +141,11 @@ pub async fn run_agent_send(
     };
     let child = SessionId::new(parsed.agent_id.clone());
 
-    let (status_tx, started) = match begin(&registry, &parent, &child, &parsed.agent_id) {
+    // The lifecycle fold that moves a handle across compactions reads a lossy
+    // broadcast; re-derive ownership and the live session from the engine's
+    // directory first (ADR-0234).
+    registry.heal_from(&holly);
+    let (status_tx, started, target) = match begin(&registry, &parent, &child, &parsed.agent_id) {
         Ok(v) => v,
         Err(refusal) => {
             reply(&holly, parent, request_id, refusal, true).await;
@@ -152,7 +156,7 @@ pub async fn run_agent_send(
     let content = vec![ContentPart::text(parsed.prompt)];
     if holly
         .send(InMsg::Prompt {
-            session: child.clone(),
+            session: target.clone(),
             content,
         })
         .await
@@ -185,7 +189,7 @@ pub async fn run_agent_send(
         holly.emit_status(&parent, AgentState::WaitingAgent);
     }
 
-    let answer = collect_child_answer(&holly, &parent, &mut events, &child).await;
+    let answer = collect_child_answer(&holly, &parent, &mut events, &target).await;
     let elapsed = started.elapsed();
     let _ = status_tx.send(crate::agent_registry::AgentStatus::Complete {
         answer: answer.clone(),
@@ -219,11 +223,12 @@ fn begin(
     (
         tokio::sync::watch::Sender<crate::agent_registry::AgentStatus>,
         std::time::Instant,
+        SessionId,
     ),
     String,
 > {
     match registry.begin_send(parent, child) {
-        SendOutcome::Ok(tx, started) => Ok((tx, started)),
+        SendOutcome::Ok(tx, started, target) => Ok((tx, started, target)),
         SendOutcome::Unknown => Err(unknown_message(agent_id)),
         SendOutcome::Closed => Err(closed_message(agent_id)),
         SendOutcome::Hibernated => Err(hibernated_message(agent_id)),

@@ -13,6 +13,7 @@ use super::{ActivityRegistry, EngineConfig, SeqRegistry, SessionDirectory, FORK_
 use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::session::{ForkFrame, Inherited, SessionCmd};
 
+mod relink;
 mod resume;
 mod spawn;
 mod starting_mode;
@@ -20,22 +21,20 @@ mod subtree;
 mod unknown;
 mod workdir;
 
-use subtree::{
-    collect_subtree, hibernate_subtree, successor_of, sweep_idle_sessions, sweep_period,
-};
+use subtree::{collect_subtree, hibernate_subtree, sweep_idle_sessions, sweep_period};
 
 /// The supervisor loop's state, threaded through the per-message handlers.
 struct Supervisor {
     sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>>,
-    // source → successor (ADR-0205), so a tool result still addressed to a
-    // session that compacted away resolves against the session that took over
-    // its turn instead of hitting the closed-id refusal.
-    successors: HashMap<SessionId, SessionId>,
     // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
     // can answer without folding the outbound broadcast (ADR-0028). A session
     // task only exits when its channel is dropped (CloseSession / shutdown), so
     // `sessions` is the liveness source of truth and this never drifts.
     // Shared with `Holly::session_info` for synchronous reads (ADR-0211).
+    // Also holds the source → successor chain (ADR-0205), so a tool result
+    // still addressed to a session that compacted away resolves against the
+    // session that took over its turn, and the runtime can follow a
+    // compacted sub-agent losslessly (ADR-0234).
     session_meta: SessionDirectory,
     // Tombstone set of session ids retired by `CloseSession`. Ids are single-use
     // (ADR-0028): once closed, no path — lazy prompt, `Resume`, or `Spawn` — may
@@ -47,8 +46,8 @@ struct Supervisor {
     // previously nothing ever inserted here, so every session was a root.
     parent_links: HashMap<SessionId, Option<SessionId>>,
     // session → its live mode (ADR-0207 §6), the supervisor's own cache — not
-    // the wire `SessionInfo`, which stays a spawn-time snapshot like its other
-    // fields. Written on every `SetMode` cascade and on `Spawn`/resume, read
+    // the wire `SessionInfo`, whose fields stay spawn-time facts (only its
+    // `parent` follows a re-link, ADR-0234). Written on every `SetMode` cascade and on `Spawn`/resume, read
     // only to seed a fresh child's `initial_mode` from its parent. Sparse: an
     // absent entry means `DEFAULT_MODE`, so a session never explicitly set
     // never needs an entry. Cleared on `CloseSession` (the id is retired for
@@ -112,7 +111,6 @@ pub(super) async fn supervisor(
     let mut sweep = ttl.map(|ttl| tokio::time::interval(sweep_period(ttl)));
     let mut sup = Supervisor {
         sessions: HashMap::new(),
-        successors: HashMap::new(),
         session_meta,
         closed: HashSet::new(),
         parent_links: HashMap::new(),
@@ -229,7 +227,9 @@ impl Supervisor {
         let session_id = if matches!(msg, InMsg::ToolResult { .. })
             && !self.sessions.contains_key(&session_id)
         {
-            successor_of(&self.successors, &session_id).unwrap_or(session_id)
+            self.session_meta
+                .successor_of(&session_id)
+                .unwrap_or(session_id)
         } else {
             session_id
         };

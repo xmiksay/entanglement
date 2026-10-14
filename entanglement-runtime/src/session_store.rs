@@ -12,6 +12,7 @@ mod payload;
 mod prefix;
 mod resume_check;
 mod store;
+mod tree;
 pub use listing::{children_of, first_prompt_snippet, root_of, SessionMeta};
 pub use pairing::pair_records;
 pub use payload::LogPayload;

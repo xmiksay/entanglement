@@ -581,8 +581,20 @@ registered after the fold, is adopted before the poll reads anything. The
 heal is one hop: it reaches the immediate predecessor only. Closing the predecessor never
 killed these entries, so ordering against its `SessionEnded` does not
 matter. A `/fork` copy carries no `predecessor` and leaves its live source
-owning everything. The predecessor's sub-agents are still closed by the
-close cascade (#862). `poll` is
+owning everything. **Sub-agents follow too**
+([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)): core moves the
+predecessor's live children under the successor (`OutEvent::ParentChanged`),
+and an `AgentRegistry` entry stays keyed by the handle its parent was given
+while aliasing the live `session` that answers for it. The lifecycle loop
+folds `ParentChanged` (`reparent`) and a successor's `SessionStarted`
+(`follow_successor`, for a compacted child) eagerly; `poll`, `agent_send`,
+`ListOperations` and `ListPending` first run `AgentRegistry::heal_from`, which
+re-derives every entry's live session (`Holly::successor_of`) and parent
+(`Holly::session_info`) from the supervisor's directory. So after a parent
+compacts, the successor's handle-less `poll` lists the running children,
+`poll { handle }` collects their answers and `agent_send` reaches them; after
+a child compacts, its parent's handle resolves to the successor's answer and
+the subtree walk (handle, then live session) keeps its sub-tree. `poll` is
 intercepted before permission resolution exactly like `agent`
 — it starts nothing and touches no host resource, only reading state a
 previously-graded launch produced —

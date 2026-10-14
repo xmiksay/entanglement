@@ -181,3 +181,30 @@ fn for_cwd_refuses_the_real_data_dir_under_test() {
     // The #747 guard: a unit test can never reach the developer's live logs.
     let _ = SessionStore::for_cwd(Path::new("/some/project"));
 }
+
+/// ADR-0234: prune stays stat-only. A file moved sub-agents were adopted
+/// from is kept because the tap `touch`ed it when it wrote the pointer, not
+/// because prune read anything — every file here is unparseable garbage, and
+/// an unrelated stale one is still pruned.
+#[test]
+fn prune_keeps_a_just_pointed_file_by_its_fresh_mtime_alone() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::at(temp.path());
+    let (pointed, unrelated) = (SessionId::new("pointed"), SessionId::new("unrelated"));
+    for s in [&pointed, &unrelated] {
+        let path = store.session_path(s).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not a log record\n").unwrap();
+        backdate(&path, 40);
+    }
+    store.touch(&pointed).unwrap();
+    store.touch(&SessionId::new("never-written")).unwrap();
+
+    assert_eq!(store.prune(30).unwrap(), 1);
+    assert!(store.session_path(&pointed).unwrap().exists());
+    assert!(!store.session_path(&unrelated).unwrap().exists());
+    assert!(!store
+        .session_path(&SessionId::new("never-written"))
+        .unwrap()
+        .exists());
+}

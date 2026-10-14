@@ -224,6 +224,18 @@ pub enum OutEvent {
     /// the model learns it from the per-round trailing notice, never from
     /// `Context`, so the system prompt and history never change.
     WorkdirChanged { session: SessionId, dir: String },
+    /// The session was re-linked under a new spawn parent (point-in-time, no
+    /// `seq`, ADR-0234): its parent compacted, and a live sub-agent moves
+    /// under the compaction successor instead of dying in the source's close
+    /// cascade. `parent` is the new parent. The only way a session's parent
+    /// changes after its [`SessionStarted`][OutEvent::SessionStarted]: a head
+    /// tracking the spawn tree re-nests the session, and replay folds it by
+    /// overwrite. A sub-agent that compacts itself needs no such notice — its
+    /// successor's own `SessionStarted` already names the parent.
+    ParentChanged {
+        session: SessionId,
+        parent: SessionId,
+    },
     /// The session switched to a different model/provider mid-run (point-in-time,
     /// no `seq`), in reply to [`InMsg::SetModel`] (#218). Carries the resolved
     /// `provider`/`model` and the new `context_window` (tokens) so a head can
@@ -266,7 +278,7 @@ pub enum OutEvent {
     /// folded on replay by overwrite (last write wins). Heads fold it into
     /// their session views (the `AgentChanged` pattern) — it is deliberately
     /// **not** mirrored into [`SessionInfo`]/[`SessionList`][OutEvent::SessionList],
-    /// whose supervisor directory records creation-time facts only.
+    /// whose supervisor directory records lineage facts only.
     SessionMetaChanged {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]

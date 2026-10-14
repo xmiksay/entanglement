@@ -25,13 +25,14 @@ pub(crate) fn subtree_sessions(agents: &AgentRegistry, root: &SessionId) -> Hash
     while !frontier.is_empty() && steps < MAX_WALK_STEPS {
         let mut next = Vec::new();
         for parent in &frontier {
-            for child in every_child
-                .iter()
-                .filter(|c| &c.session == parent)
-                .map(|c| SessionId::new(c.handle.clone()))
-            {
-                if seen.insert(child.clone()) {
-                    next.push(child);
+            for c in every_child.iter().filter(|c| &c.session == parent) {
+                // A compacted child is reached under its handle and walked
+                // from its live session, which is what owns its own
+                // sub-agents and parks its approvals (ADR-0234).
+                let handle_new = seen.insert(SessionId::new(c.handle.clone()));
+                let live_new = seen.insert(c.child_session.clone());
+                if handle_new || live_new {
+                    next.push(c.child_session.clone());
                 }
             }
             steps += 1;
@@ -60,5 +61,25 @@ mod tests {
         let tree = subtree_sessions(&agents, &root);
         assert!(tree.contains(&root) && tree.contains(&child) && tree.contains(&grandchild));
         assert!(!tree.contains(&sibling));
+    }
+
+    /// ADR-0234: a child that compacted is walked from its live successor,
+    /// so the successor's own sub-agents stay in the tree.
+    #[test]
+    fn the_walk_follows_a_compacted_child_to_its_successor() {
+        let agents = AgentRegistry::default();
+        let (root, child, succ, grandchild) = (
+            SessionId::new("root"),
+            SessionId::new("child"),
+            SessionId::new("child-succ"),
+            SessionId::new("grandchild"),
+        );
+        agents.register(child.clone(), root.clone(), "a".into());
+        agents.follow_successor(&child, &succ);
+        agents.register(grandchild.clone(), succ.clone(), "b".into());
+        let tree = subtree_sessions(&agents, &root);
+        for id in [&root, &child, &succ, &grandchild] {
+            assert!(tree.contains(id), "{id} missing from {tree:?}");
+        }
     }
 }

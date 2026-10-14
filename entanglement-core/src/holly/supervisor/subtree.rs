@@ -9,25 +9,6 @@ use crate::holly::{ActivityRegistry, SessionDirectory};
 use crate::protocol::SessionId;
 use crate::session::SessionCmd;
 
-/// Follow the compaction-successor chain from `session` to the live session
-/// that inherited its turn (ADR-0205). A long-running session can compact
-/// repeatedly, so a result dispatched before an early fork must walk the whole
-/// chain, not one link. Bounded by the map size so a cycle (which the
-/// single-use id rule already prevents) can't spin.
-pub(super) fn successor_of(
-    successors: &HashMap<SessionId, SessionId>,
-    session: &SessionId,
-) -> Option<SessionId> {
-    let mut current = successors.get(session)?.clone();
-    for _ in 0..successors.len() {
-        match successors.get(&current) {
-            Some(next) => current = next.clone(),
-            None => break,
-        }
-    }
-    Some(current)
-}
-
 /// Collect `root` plus every transitive descendant from the child→parent
 /// `parent_links` map (breadth-first). Backs the `CloseSession` cascade (#180):
 /// closing a session must retire its whole sub-tree so no spawned sub-agent is
