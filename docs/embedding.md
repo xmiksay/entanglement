@@ -733,7 +733,8 @@ embedder has to change:
   for `list_skills`); `McpServerConfig.state` → `description` (`disabled` is
   the one opt-out); `ProviderMcpServer.state` → `description` + `disabled`.
 - **Retired config/catalog keys** (ignored with one warning each):
-  `config.yml` `tool_advertising:`, `discovery:`, `mcp.<name>.state:`;
+  `config.yml` `tool_advertising:`, `mcp.<name>.state:` (and `discovery:`,
+  already retired by [ADR-0213](adr/0213-prune-env-vars-and-catalog-knobs.md));
   `providers.yml` provider/model `discovery`/`tool_advertising` and a bundled
   server's `state`.
 - **Wire:** `McpServerStatus.state` stays serde-defaulted for old logs but is
