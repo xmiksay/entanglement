@@ -147,8 +147,9 @@ impl SkillRegistry {
         None
     }
 
-    /// Tier-1 disclosure lines for the system prompt: `name` + `description`
-    /// only, name-sorted — every skill (ADR-0229).
+    /// Tier-1 disclosure lines for the `list_skills` roster (ADR-0226; the
+    /// system prompt carries none): `name` + `description` only, name-sorted
+    /// — every skill (ADR-0229).
     pub fn disclosures(&self) -> Vec<SkillDisclosure> {
         self.iter()
             .map(|s| SkillDisclosure {

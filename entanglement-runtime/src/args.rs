@@ -149,13 +149,13 @@ pub(crate) enum InspectCmd {
         name: Option<String>,
     },
     /// List resolved skills with their winning layer + `root_dir` (no `name`),
-    /// print the exact tier-1 disclosure block the model gets (`--disclosures`),
+    /// print the exact `list_skills` roster the model gets (`--disclosures`),
     /// or dry-run the `load_skill` path substitution for one skill (a `name`).
     Skills {
         /// Skill to dry-run through the `load_skill` path substitution. Omit for
         /// the table.
         name: Option<String>,
-        /// Print the exact tier-1 `disclosures()` block the model receives.
+        /// Print the exact `list_skills` roster the model receives.
         #[arg(long)]
         disclosures: bool,
     },
