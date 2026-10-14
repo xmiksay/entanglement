@@ -21,7 +21,7 @@ they land in the exact same `EndpointState`, and `HttpClient::endpoint`'s
 "first caller wins" sizing means whichever user's session happens to resolve
 first sets the endpoint's aggregate rpm/concurrency for both. ADR-0147 called
 this out explicitly and scoped it out of v1 (its "Consequences" section,
-[deferred-work-ledger row 12](../deferred-work-ledger.md),
+[deferred-work-ledger row 12](https://github.com/xmiksay/entanglement/issues),
 [#632](https://github.com/xmiksay/entanglement/issues/632)), recommending
 either a user dimension in the pool key, or a per-user admission gate layered
 above it.

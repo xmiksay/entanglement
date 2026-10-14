@@ -125,7 +125,7 @@ No wire/protocol shape changed: no new `InMsg`/`OutEvent` variant, no new
   log (only the assistant's reply is folded, via the `Done` flush). This
   predates and is orthogonal to the cascade fix here — filed as
   [issue #421](https://github.com/xmiksay/entanglement/issues/421) and tracked
-  in [`../deferred-work-ledger.md`](../deferred-work-ledger.md) rather than
+  in [`../deferred-work-ledger.md`](https://github.com/xmiksay/entanglement/issues) rather than
   folded into this change.
 
 ## Alternatives considered

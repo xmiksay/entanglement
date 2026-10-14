@@ -126,7 +126,7 @@ tool's semantics; each phase re-asks independently (a multi-phase test,
 Allow-all throughout and the tool still re-prompts every time). On approve,
 `launch_sponsored_build` sends `InMsg::Spawn` for a **sponsored** `build`
 child (ADR-0138), parks the plan session on `WaitingAgent`
-([ADR-0139](0139-waitingagent-and-workingtool-turn-substates.md)), and
+([ADR-0139](0139-visible-session-states-working-and-waitingagent.md)), and
 `.await`s `collect_child_answer` — the **existing** blocking-wait
 implementation, reused as-is. The child's **full final report** folds back
 as the tool result (now prefixed with the plan file's path); the plan agent
@@ -234,7 +234,7 @@ as before; `path` is additive.
   — `Ctrl+C` is a two-stage **quit**, not a turn-level `Stop`. Building the
   modal properly means first adding that missing general capability, which
   is its own scoped piece of work, not a `propose_plan`-specific one. Logged
-  in [`../deferred-work-ledger.md`](../deferred-work-ledger.md). The backend
+  in [`../deferred-work-ledger.md`](https://github.com/xmiksay/entanglement/issues). The backend
   primitive (detach vs. two-`Stop`-cascade) is implemented and tested either
   way; only the interactive prompt is deferred. **Closed by
   [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md)**: the prerequisite
@@ -298,7 +298,7 @@ as before; `path` is additive.
 - #329, [ADR-0084](0084-runtime-live-reload-and-managed-file-locking.md): the
   definitions watcher considered (and rejected) for the deferred
   watcher-edit-notice
-- [ADR-0139](0139-waitingagent-and-workingtool-turn-substates.md):
+- [ADR-0139](0139-visible-session-states-working-and-waitingagent.md):
   `WaitingAgent`, reused unchanged
 - [ADR-0060](0060-filechange-audit-via-executor-as-path-kind-hash.md): the
   `FileChange` audit event the staleness guard's passive listener consumes

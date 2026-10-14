@@ -109,7 +109,7 @@ sponsored session in that loop would defeat the point of a bulk action.
   `stop_command.rs`, `modals/stop_confirm.rs`) rather than growing any of the
   already-over-cap `event_loop.rs`/`modal_events.rs` — those two only gained
   the minimal call-site routing.
-- [docs/deferred-work-ledger.md](../deferred-work-ledger.md) row 6 moves to
+- [docs/deferred-work-ledger.md](https://github.com/xmiksay/entanglement/issues) row 6 moves to
   Resolved.
 
 ## Rejected alternatives

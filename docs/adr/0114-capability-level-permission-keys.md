@@ -134,7 +134,7 @@ absorbed into the diff.
   asymmetry pinned by
   `a_looser_literal_rhai_grade_still_wins_for_rhai_itself` in
   `agents::mod::tests`.
-- Deferred (tracked in [`../deferred-work-ledger.md`](../deferred-work-ledger.md)):
+- Deferred (tracked in [`../deferred-work-ledger.md`](https://github.com/xmiksay/entanglement/issues)):
   `call`'s capability fan-out has no file-path scoping (only command-pattern
   scoping, since `call`/`bash` have no notion of a target path independent of
   their command line); MCP tools (`mcp__<server>__<tool>`) are not assigned to

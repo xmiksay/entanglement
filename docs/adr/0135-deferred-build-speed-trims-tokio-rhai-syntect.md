@@ -180,7 +180,7 @@ this ADR trims *feature scope*, not the regex engine.
 ## References
 
 - Issue [#502](https://github.com/xmiksay/entanglement/issues/502): this ADR's issue
-- [Deferred-work ledger](../deferred-work-ledger.md) row 4 (moved to Resolved by this change)
+- [Deferred-work ledger](https://github.com/xmiksay/entanglement/issues) row 4 (moved to Resolved by this change)
 - [ADR-0025](0025-runtime-cargo-feature-gates.md): `entanglement-runtime` cargo feature gates (amended: tokio feature scope, "zero cfg(feature)" claim)
 - [ADR-0046](0046-rhai-sandboxed-script-tool.md): `rhai` sandboxed script tool (the tool itself is unchanged; only its compile-time optionality)
 - [ADR-0115](0115-rhai-exec-bindings-call-bash.md) / [ADR-0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) / [ADR-0130](0130-rhai-exec-bindings-marshal-workdir.md): the `rhai` binding machinery this ADR gates as a unit, unmodified in behavior

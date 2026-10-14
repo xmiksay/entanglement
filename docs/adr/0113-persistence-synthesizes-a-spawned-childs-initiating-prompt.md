@@ -5,7 +5,7 @@
 - Issue [#421](https://github.com/xmiksay/entanglement/issues/421), surfaced as
   a non-goal while fixing [#415](https://github.com/xmiksay/entanglement/issues/415)
   ([ADR-0112](0112-resume-cascades-over-the-spawn-subtree.md)). Tracked in
-  [`../deferred-work-ledger.md`](../deferred-work-ledger.md), part of epic #396.
+  [`../deferred-work-ledger.md`](https://github.com/xmiksay/entanglement/issues), part of epic #396.
 
 ## Context
 

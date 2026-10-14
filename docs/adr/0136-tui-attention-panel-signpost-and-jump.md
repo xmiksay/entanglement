@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-24
 - Head-side only (no wire change), on top of
-  [0014](0014-tui-inline-tool-approval.md) (inline approval cards),
+  [0014](0014-tool-approval-inline-modal.md) (inline approval cards),
   [0061](0061-parked-turn-state-batch-tool-resolution.md) (batch-parked
   approvals), and the #488 `ask_user` question flow.
 

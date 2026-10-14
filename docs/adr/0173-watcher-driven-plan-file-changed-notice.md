@@ -138,7 +138,7 @@ one-line arm for non-TUI heads.
   created after startup. Acceptable for the same reason the definitions
   watcher accepts it — a restart is already how any live-reload gap in this
   codebase self-heals, and a project's plans folder, once created, persists.
-- [docs/deferred-work-ledger.md](../deferred-work-ledger.md) row 7 moves to
+- [docs/deferred-work-ledger.md](https://github.com/xmiksay/entanglement/issues) row 7 moves to
   Resolved.
 
 ## Rejected alternatives
