@@ -82,7 +82,7 @@ pub async fn mcp_add(
     {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None, None).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
     let tools = install_server(registry, active, &name, client, defs, &cfg);
     {
         let mut all = configs.lock().expect("MCP server-config mutex poisoned");
@@ -140,7 +140,7 @@ pub async fn mcp_reconnect(
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let (client, defs) = connect_client(name, cfg, secret_env, http, None, None).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env, http, None).await?;
     let tools = install_server(registry, active, name, client, defs, cfg);
     tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
     Ok(tools)

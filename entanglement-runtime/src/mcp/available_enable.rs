@@ -99,7 +99,6 @@ async fn connect_locked(
         avail.secret_env(),
         http,
         api_key.as_deref(),
-        None,
     );
     let (client, defs) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(result) => result?,
