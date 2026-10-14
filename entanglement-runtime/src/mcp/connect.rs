@@ -33,32 +33,26 @@ pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
 /// HTTP transport so its traffic shares the endpoint pool a provider-bundled
 /// server's key already budgets for LLM traffic; `api_key` is `None` for a
 /// user-declared or OAuth-authenticated server (still pooled, just unkeyed).
-/// `handshake_retry` (#660) overrides the HTTP transport's retry ladder for
-/// just the `initialize` handshake; `None` keeps the pool's patient default.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_client(
     name: &str,
     cfg: &McpServerConfig,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
     api_key: Option<&str>,
-    handshake_retry: Option<entanglement_core::RetryConfig>,
 ) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
-    connect_client_with_store(name, cfg, secret_env, http, api_key, handshake_retry, None).await
+    connect_client_with_store(name, cfg, secret_env, http, api_key, None).await
 }
 
 /// [`connect_client`] with the OAuth credential source made explicit (#684):
 /// `token_store` is the per-scope store a session-keyed MCP scope supplies
 /// ([`super::scoped::McpScopes`]), and `None` falls back to the process-global
 /// managed file — byte-identical to every pre-#684 caller.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_client_with_store(
     name: &str,
     cfg: &McpServerConfig,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
     api_key: Option<&str>,
-    handshake_retry: Option<entanglement_core::RetryConfig>,
     #[cfg_attr(not(feature = "mcp-http"), allow(unused_variables))] token_store: Option<
         Arc<dyn entanglement_core::TokenStore>,
     >,
@@ -71,11 +65,10 @@ pub(crate) async fn connect_client_with_store(
         oauth_token_source(name, cfg, token_store),
         http,
         api_key,
-        handshake_retry,
     )
     .await?;
     #[cfg(not(feature = "mcp-http"))]
-    let client = McpClient::connect(name, cfg, secret_env, http, api_key, handshake_retry).await?;
+    let client = McpClient::connect(name, cfg, secret_env, http, api_key).await?;
     let defs = client.list_tools().await?;
     Ok((client, defs))
 }

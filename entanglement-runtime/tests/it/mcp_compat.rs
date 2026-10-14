@@ -113,7 +113,6 @@ async fn connect(fake: Fake, concurrency: usize) -> HttpClient {
         &HashMap::new(),
         test_http_client(concurrency),
         None,
-        None,
     )
     .await
     .expect("handshake")

@@ -58,9 +58,9 @@ impl HttpClient {
     /// unaffected either way (they key off `endpoint`, not `config`): only
     /// the failure-path knobs (`max_attempts`, backoff, `response_header_
     /// timeout`) change. Exists for a caller with a legitimately different
-    /// patience budget than ordinary LLM traffic — e.g. a startup MCP
-    /// handshake that should fail fast rather than eat the LLM-tuned retry
-    /// ladder (#660) — while still riding the same endpoint's RPM/
+    /// patience budget than ordinary LLM traffic — e.g. a display-only aux
+    /// request (narrate/session-title) that should fail fast rather than eat the LLM-tuned retry
+    /// ladder (#660, #560) — while still riding the same endpoint's RPM/
     /// concurrency/429 admission as everyone else.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_retry<F, Fut>(

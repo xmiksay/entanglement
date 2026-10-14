@@ -22,10 +22,9 @@
 //! traffic, instead of an unmetered bare `reqwest::Client` (matters for
 //! provider-bundled servers sharing their provider's key/budget with its LLM
 //! endpoint). `connect`/`connect_authenticated` take the caller's `HttpClient`,
-//! an optional `api_key` for pool-key identity (own [`EndpointState`](crate::client)
-//! bucket regardless, keyed by URL), and an optional `handshake_retry` (#660)
-//! that fails `initialize` fast instead of riding the pool's LLM-tuned ladder
-//! — `None` for every caller except a startup connect.
+//! and an optional `api_key` for pool-key identity (own
+//! [`EndpointState`](crate::client) bucket regardless, keyed by URL). Every
+//! request, the handshake included, rides the pool's own retry ladder.
 //!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
 
@@ -38,7 +37,7 @@ use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
-use crate::client::{HttpClient, RetryConfig, StreamGuard};
+use crate::client::{HttpClient, StreamGuard};
 
 use super::headers::build_headers;
 pub use super::headers::resource_metadata_url;
@@ -91,16 +90,15 @@ pub struct McpHttpClient {
 
 impl McpHttpClient {
     /// Build a client against `url` with static `headers`, then complete the
-    /// handshake. `http`/`api_key`/`handshake_retry` — see the module docs.
+    /// handshake. `http`/`api_key` — see the module docs.
     pub async fn connect(
         server: &str,
         url: &str,
         headers: &HashMap<String, String>,
         http: HttpClient,
         api_key: Option<String>,
-        handshake_retry: Option<RetryConfig>,
     ) -> Result<Self> {
-        Self::connect_with(server, url, headers, None, http, api_key, handshake_retry).await
+        Self::connect_with(server, url, headers, None, http, api_key).await
     }
 
     /// Like [`connect`][Self::connect], but the `Authorization` header comes
@@ -113,21 +111,10 @@ impl McpHttpClient {
         auth: Arc<dyn AccessTokenSource>,
         http: HttpClient,
         api_key: Option<String>,
-        handshake_retry: Option<RetryConfig>,
     ) -> Result<Self> {
-        Self::connect_with(
-            server,
-            url,
-            headers,
-            Some(auth),
-            http,
-            api_key,
-            handshake_retry,
-        )
-        .await
+        Self::connect_with(server, url, headers, Some(auth), http, api_key).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn connect_with(
         server: &str,
         url: &str,
@@ -135,7 +122,6 @@ impl McpHttpClient {
         auth: Option<Arc<dyn AccessTokenSource>>,
         http: HttpClient,
         api_key: Option<String>,
-        handshake_retry: Option<RetryConfig>,
     ) -> Result<Self> {
         let headers =
             build_headers(headers).with_context(|| format!("MCP server `{server}` headers"))?;
@@ -151,14 +137,14 @@ impl McpHttpClient {
             next_id: AtomicI64::new(1),
         };
         client
-            .handshake(handshake_retry)
+            .handshake()
             .await
             .with_context(|| format!("MCP server `{server}` handshake"))?;
         Ok(client)
     }
 
-    /// `initialize` then the `notifications/initialized` ack, both riding `retry`.
-    async fn handshake(&self, retry: Option<RetryConfig>) -> Result<()> {
+    /// `initialize` then the `notifications/initialized` ack.
+    async fn handshake(&self) -> Result<()> {
         let res = self
             .request(
                 "initialize",
@@ -167,7 +153,6 @@ impl McpHttpClient {
                     "capabilities": {},
                     "clientInfo": { "name": "skutter", "version": env!("CARGO_PKG_VERSION") },
                 }),
-                retry,
             )
             .await
             .context("initialize")?;
@@ -182,15 +167,14 @@ impl McpHttpClient {
             .protocol_version
             .lock()
             .expect("MCP protocol-version mutex poisoned") = Some(negotiated);
-        self.notify("notifications/initialized", json!({}), retry)
-            .await?;
+        self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
 
     /// Discover the server's tools, following `nextCursor` across pages
-    /// (#727; patient retry default — no override).
+    /// (#727).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        list_tools_paginated(|params| self.request("tools/list", params, None))
+        list_tools_paginated(|params| self.request("tools/list", params))
             .await
             .context("tools/list")
     }
@@ -200,7 +184,6 @@ impl McpHttpClient {
         self.request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
-            None,
         )
         .await
         .with_context(|| format!("tools/call `{name}`"))
@@ -212,15 +195,10 @@ impl McpHttpClient {
     /// the SSE drain or the JSON body read — so an in-flight MCP call counts
     /// against the endpoint's cap for its full duration, mirroring the LLM
     /// clients' `spawn_byte_stream` (#559).
-    async fn request(
-        &self,
-        method: &str,
-        params: Value,
-        retry: Option<RetryConfig>,
-    ) -> Result<Value> {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let (response, _guard) = self.send(&frame, method, retry).await?;
+        let (response, _guard) = self.send(&frame, method).await?;
         self.capture_session_id(response.headers());
         if !response.status().is_success() {
             return Err(self.status_error(response, method).await);
@@ -239,9 +217,9 @@ impl McpHttpClient {
 
     /// Fire-and-forget notification (no `id`). A well-behaved server answers
     /// `202 Accepted` with no body; anything 2xx is fine.
-    async fn notify(&self, method: &str, params: Value, retry: Option<RetryConfig>) -> Result<()> {
+    async fn notify(&self, method: &str, params: Value) -> Result<()> {
         let frame = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let (response, _guard) = self.send(&frame, method, retry).await?;
+        let (response, _guard) = self.send(&frame, method).await?;
         self.capture_session_id(response.headers());
         if !response.status().is_success() {
             return Err(self.status_error(response, method).await);
@@ -253,15 +231,10 @@ impl McpHttpClient {
     /// against a force-refreshed token on a `401` with an OAuth source wired —
     /// a second `401` means the refresh itself wasn't enough (revoked grant,
     /// changed scopes), so the user must re-authorize.
-    async fn send(
-        &self,
-        frame: &Value,
-        method: &str,
-        retry: Option<RetryConfig>,
-    ) -> Result<(reqwest::Response, StreamGuard)> {
-        let (response, guard) = self.post_once(frame, method, false, retry).await?;
+    async fn send(&self, frame: &Value, method: &str) -> Result<(reqwest::Response, StreamGuard)> {
+        let (response, guard) = self.post_once(frame, method, false).await?;
         if response.status() == StatusCode::UNAUTHORIZED && self.auth.is_some() {
-            return self.post_once(frame, method, true, retry).await;
+            return self.post_once(frame, method, true).await;
         }
         Ok((response, guard))
     }
@@ -275,7 +248,6 @@ impl McpHttpClient {
         frame: &Value,
         method: &str,
         force_refresh: bool,
-        retry: Option<RetryConfig>,
     ) -> Result<(reqwest::Response, StreamGuard)> {
         let headers = self.request_headers(force_refresh).await?;
         self.http
@@ -286,7 +258,7 @@ impl McpHttpClient {
                 None,
                 "",
                 None,
-                retry,
+                None,
                 || {
                     self.http
                         .client()

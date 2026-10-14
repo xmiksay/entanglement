@@ -50,10 +50,11 @@ pub struct LlmRequest<'a> {
     /// (aux fail-fast, #560 follow-up), forwarded verbatim to
     /// [`crate::client::HttpClient::execute_with_retry`]'s own `retry`
     /// parameter. `None` (every primary-turn request) leaves the endpoint's
-    /// pooled `RetryConfig` in force; the aux narrate/session-title/summarize
-    /// paths set `Some(RetryConfig::minimal())` when they resolved a purpose
-    /// pin, so a dead pinned endpoint fails one caller's probe fast instead of
-    /// retry-storming through the LLM-tuned ladder on every call.
+    /// pooled `RetryConfig` in force; the display-only narrate/session-title
+    /// paths always set `Some(RetryConfig::minimal())`, and summarize does
+    /// when it resolved a `summarize` pin, so a dead aux endpoint fails one
+    /// caller's probe fast instead of retry-storming through the LLM-tuned
+    /// ladder on every call.
     pub retry: Option<crate::client::RetryConfig>,
     /// A short, ephemeral line appended after the conversation — e.g. core's
     /// per-round permission-mode notice (ADR-0207 §9) — rendered as the

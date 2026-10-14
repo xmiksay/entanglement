@@ -201,7 +201,6 @@ async fn two_scopes_with_the_same_server_name_use_their_own_endpoint_and_bearer(
         &HashMap::new(),
         test_http_client(),
         None,
-        None,
     )
     .await
     .expect("global handshake");

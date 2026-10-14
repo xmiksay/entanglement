@@ -53,35 +53,21 @@ impl McpClient {
     /// `command` XOR `url` fields, and return a shareable handle. `secret_env`
     /// is scrubbed from a stdio server's child environment (#164 parity); the
     /// HTTP transport spawns nothing, so it ignores the list. `http`/`api_key`
-    /// (#559) are forwarded to the HTTP transport only. `handshake_retry`
-    /// (#660) overrides the HTTP transport's retry ladder for just the
-    /// `initialize` handshake — `None` (every caller but the startup connect
-    /// path) keeps the patient default; ignored by the stdio transport, which
-    /// has no retry ladder to override.
+    /// (#559) are forwarded to the HTTP transport only.
     pub async fn connect(
         server: &str,
         cfg: &McpServerConfig,
         secret_env: &[String],
         http: &entanglement_core::HttpClient,
         api_key: Option<&str>,
-        handshake_retry: Option<entanglement_core::RetryConfig>,
     ) -> Result<Arc<Self>> {
         #[cfg(feature = "mcp-http")]
         {
-            Self::connect_with_auth(
-                server,
-                cfg,
-                secret_env,
-                None,
-                http,
-                api_key,
-                handshake_retry,
-            )
-            .await
+            Self::connect_with_auth(server, cfg, secret_env, None, http, api_key).await
         }
         #[cfg(not(feature = "mcp-http"))]
         {
-            let _ = (http, api_key, handshake_retry);
+            let _ = (http, api_key);
             Self::connect_inner(server, cfg, secret_env).await
         }
     }
@@ -92,9 +78,7 @@ impl McpClient {
     /// pool (#559) the HTTP transport's traffic rides; `api_key` is the
     /// provider key this server shares with its LLM endpoint, when known
     /// (`None` for a user-declared or OAuth-authenticated server).
-    /// `handshake_retry` — see [`connect`][Self::connect].
     #[cfg(feature = "mcp-http")]
-    #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_auth(
         server: &str,
         cfg: &McpServerConfig,
@@ -102,7 +86,6 @@ impl McpClient {
         auth: Option<Arc<dyn AccessTokenSource>>,
         http: &entanglement_core::HttpClient,
         api_key: Option<&str>,
-        handshake_retry: Option<entanglement_core::RetryConfig>,
     ) -> Result<Arc<Self>> {
         let client = match cfg.transport()? {
             super::Transport::Stdio { command, args, env } => McpClient::Stdio(
@@ -117,7 +100,6 @@ impl McpClient {
                         auth,
                         http.clone(),
                         api_key.map(str::to_string),
-                        handshake_retry,
                     )
                     .await?
                 }
@@ -128,7 +110,6 @@ impl McpClient {
                         &headers,
                         http.clone(),
                         api_key.map(str::to_string),
-                        handshake_retry,
                     )
                     .await?
                 }
