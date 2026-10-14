@@ -269,10 +269,11 @@ guessing again:
   the `is_durably_allowed_under` search-widening above (ADR-0132) — no
   separate wiring for `glob`/`grep`. Not per-tool (a trusted *location*, not a
   one-off tool approval) and never persisted (re-derived from the cwd at
-  every startup, nothing to revoke). Only the escape-root tax disappears — a
-  profile's own permission grade for the tool (e.g. `explore`'s `bash: ask`)
-  is untouched, since the scratch dir being the `workdir` says nothing about
-  the command being run there. The generated `<env>` system-prompt block
+  every startup, nothing to revoke). Only the escape-root tax disappears — the
+  session mode's own grade for the call (e.g. `research` mode's `default:
+  prompt` for a `bash` command outside its spliced read-only exec allow list,
+  such as `cargo build`) is untouched, since the scratch dir being the
+  `workdir` says nothing about the command being run there. The generated `<env>` system-prompt block
   (`system_prompt::EnvBlock`) names the scratch dir and steers the model to
   prefer it over `/tmp`.
 - **The trust boundary for exec, stated plainly:** root containment applies to
@@ -796,7 +797,7 @@ where an unknown tool is, via `tool_advertising::unknown_tool_reply`, on the
 ADR-0176 `is_error` channel with the envelope's shape and schema. Calling an
 `mcp__*` name natively is not advertised but dispatches and grades the same.
 
-### Error taxonomy — three cases — [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) §6
+### Error taxonomy — five cases — [ADR-0196](../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) §6
 
 One wording family on the ADR-0176 `is_error` channel:
 
@@ -1295,7 +1296,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     outright — never `axum`, which must not reach the leaf crate). Credentials
     live in the managed `mcp-tokens.yml` (`0600`, atomic + `fd-lock`ed like the
     sibling managed files in the managed-state dir, `ENTANGLEMENT_STATE_DIR`) **together
-    with the resolved endpoints and client id**, so a startup connect skips
+    with the resolved endpoints and client id**, so a later (lazy) connect skips
     discovery/registration entirely — those run only during an explicit
     `/mcp connect`. Tokens refresh on expiry and once more on a `401`; every
     `Debug` impl redacts secrets. Driven by the trusted-only, **wire-refused**
@@ -1390,7 +1391,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   never an image `ContentPart`. WHY: binary through MCP bloats the context,
   and a part the provider rejects is replayed on every later request (and on
   resume), poisoning the session; an agent that needs the bytes fetches them
-  through an endpoint/API tool instead. `isError: true` sets
+  through rhai's `http()` binding or `web_fetch` instead. `isError: true` sets
   `ToolRun::is_error`, so the call
   reaches `OutEvent::ToolOutput`/hooks with the structured `is_error` flag
   ([ADR-0176](../adr/0176-structured-tool-result-is-error-and-duration-fields.md));
