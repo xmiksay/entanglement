@@ -288,11 +288,13 @@ async fn catch_loops_against_a_failing_server_connect_once() {
 }
 
 /// Spend a `secs`-second run's budget down to 0.25 s before its deadline —
-/// under the 50 ms connect floor once the 300 ms grace is taken off. The
-/// spin stays under a second: a longer one trips the operation cap.
+/// under the 50 ms connect floor once the 300 ms grace is taken off. Host
+/// `bash` sleeps, never a busy spin: rhai counts every loop iteration
+/// against its operation cap, so a spin's length in operations depends on
+/// the CPU, and a fast CI runner trips the cap.
 fn burn(secs: f64) -> String {
     format!(
-        "let t = timestamp(); while t.elapsed < {} {{}}",
+        "let t = timestamp(); while t.elapsed < {} {{ bash(\"sleep 0.05\"); }}",
         secs - 0.25
     )
 }
@@ -314,7 +316,9 @@ async fn a_spent_budget_starts_no_connect() {
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-floor");
     let script = format!("{} {SCRIPT}", burn(1.0));
-    let (holly, sub, sid) = start(&script, &dir.path, setup_for(&url, &dir)).await;
+    let mut setup = setup_for(&url, &dir);
+    setup.bash = true;
+    let (holly, sub, sid) = start(&script, &dir.path, setup).await;
     let out = first_rhai(&collect_timed(&holly, sub, &sid, Instant::now()).await);
     assert!(out.contains("no connect was started"), "{out}");
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -335,12 +339,11 @@ async fn a_connected_server_skips_the_floor() {
     let dir = TempDir::new("connect-budget-fast");
     // Five seconds: the test client paces this endpoint ~1.2 s per request,
     // so the connect (three requests) plus the first call take ~3.6 s; host
-    // `bash` sleeps cover most of the rest so the final spin stays short.
+    // `bash` sleeps (see `burn`) wait out the rest.
     let script = r#"
         let t = timestamp();
         let a = mcp::slow_srv::ping(#{});
-        while t.elapsed < 4.5 { bash("sleep 0.1"); }
-        while t.elapsed < 4.75 {}
+        while t.elapsed < 4.75 { bash("sleep 0.05"); }
         let b = "";
         try { b = mcp::slow_srv::ping(#{}); } catch (e) { b = "caught: " + e; }
         a + "|" + b
