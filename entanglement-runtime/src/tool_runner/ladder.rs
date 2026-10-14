@@ -2,9 +2,10 @@
 //! every route below grades from the session's permission mode instead):
 //! [`Intercept::classify`] routes a `ToolExec` by tool name, and
 //! [`route_tool_exec`] is the thin dispatcher that hands each route to its
-//! handler — [`orchestration`] for the routes that bypass permission
-//! entirely (`Capability::Control`, or a tool with its own unconditional
-//! semantics) and [`graded`] for the two that resolve a grade first. Split
+//! handler — [`orchestration`] for the runtime-owned routes (the bookkeeping
+//! and discovery ones bypass permission; `agent`/`agent_send` climb the
+//! dispatch ladder before launching, ADR-0232) and [`graded`] for the two
+//! that dispatch through the ladder outright. Split
 //! out of `tool_runner.rs` (issue #451) — the executor loop (`lifecycle.rs`) folds
 //! lifecycle events and calls into this module once per `ToolExec`;
 //! everything about *which* handler a tool name reaches, and how that
@@ -60,19 +61,19 @@ use super::EscapeRoot;
 /// exhaustiveness rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Intercept {
-    /// `agent`: session orchestration only (touches no host resource), gated by
-    /// the per-profile spawn control, not per-tool approval (#60/#119/#120;
-    /// #606, ADR-0161 §1). Blocks for the answer by default; the parsed
+    /// `agent`: starts a child session (#60/#119/#120; #606, ADR-0161 §1),
+    /// bounded by the mode's spawn limits and graded like any tool before it
+    /// launches (ADR-0232). Blocks for the answer by default; the parsed
     /// `background` flag picks the non-blocking launch instead — one guard
     /// path, two return shapes.
     Spawn,
     /// `agent_send`: sends a follow-up prompt to a sub-agent already launched
     /// with `agent` — steer a running child, or follow up a finished one
     /// (#609, ADR-0162; ADR-0207 §7 retires the `propose_plan` sponsored
-    /// build this once also re-engaged). Session orchestration only, like
-    /// `Spawn` — gated by
+    /// build this once also re-engaged). Graded like `Spawn` (ADR-0232),
+    /// then gated by
     /// [`crate::agent_registry::AgentRegistry::begin_send`]'s ownership +
-    /// lifecycle check instead of per-tool approval.
+    /// lifecycle check.
     AgentSend,
     /// `poll`: joins a background `bash` job or a launched sub-agent (#605,
     /// ADR-0161 §1-4, replacing `bash_output`/`agent_poll`) — it reads
@@ -119,20 +120,16 @@ impl Intercept {
         }
     }
 
-    /// Whether this route skips the per-tool `Allow | Ask | Deny` decision. The
-    /// spawn/poll/prompt/plan/discover routes touch no host resource, so
-    /// permission does not apply; `Rhai` resolves permission itself inside the
-    /// script task; the generic `Permission` route *is* the permission
-    /// decision.
+    /// Whether this route skips the per-tool `Allow | Ask | Deny` decision.
+    /// The poll/prompt/plan/discover routes touch no host resource, so
+    /// permission does not apply (`propose_plan` grades only its own `plan`
+    /// class); the spawning routes climb the dispatch ladder before launching
+    /// (ADR-0232); `Rhai` resolves permission itself inside the script task;
+    /// the generic `Permission` route *is* the permission decision.
     pub(super) fn bypasses_permission(self) -> bool {
         matches!(
             self,
-            Self::Spawn
-                | Self::AgentSend
-                | Self::Poll
-                | Self::AskUser
-                | Self::ProposePlan
-                | Self::Discover
+            Self::Poll | Self::AskUser | Self::ProposePlan | Self::Discover
         )
     }
 }
@@ -210,10 +207,10 @@ pub(super) async fn route_tool_exec(
 ) {
     match route {
         Intercept::Spawn => {
-            orchestration::spawn(ctx, spawn_guard, session, request_id, input).await;
+            orchestration::spawn(ctx, spawn_guard, overlays, session, request_id, input).await;
         }
         Intercept::AgentSend => {
-            orchestration::agent_send(ctx, session, request_id, input).await;
+            orchestration::agent_send(ctx, spawn_guard, overlays, session, request_id, input).await;
         }
         Intercept::Poll => {
             orchestration::poll(ctx, session, request_id, input).await;
@@ -300,11 +297,12 @@ mod tests {
     }
 
     #[test]
-    fn only_orchestration_routes_bypass_permission() {
-        // The spawn/poll/prompt/plan routes touch no host resource; `rhai`
-        // resolves permission itself and the generic path *is* the decision.
-        assert!(Intercept::Spawn.bypasses_permission());
-        assert!(Intercept::AgentSend.bypasses_permission());
+    fn only_bookkeeping_routes_bypass_permission() {
+        // The poll/prompt/plan routes touch no host resource; spawning is
+        // graded (ADR-0232); `rhai` resolves permission itself and the
+        // generic path *is* the decision.
+        assert!(!Intercept::Spawn.bypasses_permission());
+        assert!(!Intercept::AgentSend.bypasses_permission());
         assert!(Intercept::Poll.bypasses_permission());
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());

@@ -14,7 +14,8 @@
 //! ([`crate::tui::command_args::parse_enable_via_clap`]); this module maps the
 //! parsed pieces onto [`EnableCommand`]. A name no overlay entry can ever
 //! match (`tool_names::NON_MASKABLE_TOOLS`: `mcp`, the discovery tools, the
-//! script-only read variants `read_raw`/`*_json`) is refused with the reason (#843).
+//! script-only read variants `read_raw`/`*_json`, the bookkeeping Control
+//! tools) is refused with the reason (#843, #849).
 
 use entanglement_core::{Holly, InMsg, SessionId, ToolOverlayEntry};
 
@@ -265,5 +266,33 @@ mod tests {
         // A per-tool MCP name and a server glob stay ordinary entries.
         assert!(parse_enable_args("/disable tool mcp__gh__*", false).is_ok());
         assert!(parse_enable_args("/disable tool mcp__gh__create", false).is_ok());
+    }
+
+    /// #849: the bookkeeping Control tools are refused with their reason,
+    /// enable and disable alike; `agent`/`agent_send` are ordinary entries
+    /// (graded, ADR-0232), so `/disable agent` really stops spawning.
+    #[test]
+    fn bookkeeping_tools_are_refused_but_spawning_is_maskable() {
+        for (tool, why) in [
+            ("poll", "bookkeeping"),
+            ("ask_user", "bookkeeping"),
+            ("update_tasks", "bookkeeping"),
+            ("request_mode", "parks an approval"),
+            ("propose_plan", "name `plan` instead"),
+        ] {
+            for (text, enabling) in [
+                (format!("/disable tool {tool}"), false),
+                (format!("/enable tool {tool}"), true),
+            ] {
+                let err = parse_enable_args(&text, enabling).unwrap_err();
+                assert!(err.contains(why), "{text}: {err}");
+            }
+        }
+        for tool in ["agent", "agent_send"] {
+            assert!(matches!(
+                parse_enable_args(&format!("/disable tool {tool}"), false),
+                Ok(EnableCommand::Disable { pattern }) if pattern == tool
+            ));
+        }
     }
 }

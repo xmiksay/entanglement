@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use entanglement_core::{Permission, ToolOverlayEntry};
 
-use crate::capability::{self, Capability};
+use crate::capability;
 use crate::permission::{overlay_denies, overlay_grade_entry};
 use crate::tools::ToolRegistry;
 use crate::{mode, run_limits};
@@ -43,8 +43,9 @@ impl Dispatcher {
             Err(msg) => return Some(Outcome::Refused(msg)),
         };
         // ADR-0207 §3: a Control-only tool reads/orchestrates session state
-        // and is never graded (a script never gets here — `unreachable`).
-        if capability::capability_of(&call.tool, &tools) == Some([Capability::Control].as_slice()) {
+        // and is never graded (a script never gets here — `unreachable`);
+        // the spawning pair is the exception (ADR-0232), gated in [`Self::gate`].
+        if capability::bypasses_grading(&call.tool, capability::capability_of(&call.tool, &tools)) {
             return Some(self.execute(&tools, call, via, None, None).await);
         }
         Some(match self.clear(&tools, &call, via).await? {
@@ -53,6 +54,18 @@ impl Dispatcher {
                     .await
             }
             Cleared::Refused(why) => Outcome::Refused(why),
+        })
+    }
+
+    /// The whole ladder for a model call whose route runs its own handler
+    /// once cleared — `agent`/`agent_send` (ADR-0232): overlay deny, grade,
+    /// hooks, mode deny, the unattended collapse and the approval park, the
+    /// same rungs as any tool. `Err` is the refusal text the model sees;
+    /// `None` when a `Stop` unwound the park.
+    pub(crate) async fn gate(&self, call: &Call) -> Option<Result<(), String>> {
+        Some(match self.clear(&self.tools, call, Via::Model).await? {
+            Cleared::Run(..) => Ok(()),
+            Cleared::Refused(why) => Err(why),
         })
     }
 

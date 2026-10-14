@@ -127,7 +127,9 @@ fn spawn_engine(retained: RetainedOutputRegistry, jobs: JobRegistry) -> Holly {
         ModeTable::new(vec![Mode {
             name: "build".into(),
             default: Permission::Ask,
-            rules: Rules::default(),
+            // Spawning is graded (ADR-0232); allow it like the built-ins do,
+            // so the child's own calls are what park.
+            rules: Rules::from_lists(&[], &["control".to_string()], &[]),
             limits: Limits::default(),
             sandbox: None,
             sandbox_network: false,

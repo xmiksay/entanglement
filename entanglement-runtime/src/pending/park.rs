@@ -105,6 +105,19 @@ pub fn park_approval(
     approval: PendingApproval,
     detail: impl Into<String>,
 ) -> oneshot::Receiver<Decision> {
+    park_approval_as(holly, pending, approval, detail, false)
+}
+
+/// [`park_approval`], marking the park `detached` for a background script's
+/// nested call — it survives its session's end or hibernate
+/// ([`PendingDecisions::stop_attached`]).
+pub fn park_approval_as(
+    holly: &Holly,
+    pending: &PendingDecisions,
+    approval: PendingApproval,
+    detail: impl Into<String>,
+    detached: bool,
+) -> oneshot::Receiver<Decision> {
     let session = approval.session.clone();
     let event = |seq| OutEvent::ToolRequest {
         session: approval.session.clone(),
@@ -115,7 +128,7 @@ pub fn park_approval(
         reason: approval.card_reason,
         scopes: approval.scopes.clone(),
     };
-    let rx = pending.register_approval(approval.clone(), detail);
+    let rx = pending.register_approval(approval.clone(), detail, detached);
     holly.emit_for_session(&session, event);
     rx
 }
@@ -222,6 +235,7 @@ mod tests {
         drop(pending.register_approval(
             approval(&s, "r", ApprovalKind::Tool, "bash", "ls", "why", None),
             "bash",
+            false,
         ));
         assert!(pending.approvals(|_| true).is_empty());
         assert!(pending.snapshot(None).is_empty());
@@ -236,6 +250,7 @@ mod tests {
         let _ra = pending.register_approval(
             approval(&a, "ra", ApprovalKind::Tool, "bash", "ls", "r", None),
             "bash",
+            false,
         );
         let _rb = pending.register_approval(
             approval(
@@ -248,6 +263,7 @@ mod tests {
                 None,
             ),
             "build",
+            false,
         );
         let all = list_pending(&pending, &agents, None);
         assert_eq!(

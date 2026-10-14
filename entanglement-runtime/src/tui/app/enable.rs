@@ -77,7 +77,8 @@ impl App {
     /// they need no enabling (ADR-0226), and a `mcp__<server>__*` overlay
     /// glob is still typed with `/enable tool`. Nor does a name no entry can
     /// match (`mcp`, the discovery tools, the script-only read variants
-    /// `read_raw`/`*_json` — #843): the roster is built without them (`engine_setup::toggle_roster`).
+    /// `read_raw`/`*_json`, the bookkeeping Control tools — #843/#849): the
+    /// roster is built without them (`engine_setup::toggle_roster`).
     pub fn open_session_tools_dialog(&mut self) {
         let rows = self.session_tool_rows();
         self.session_tools_dialog.show(rows);

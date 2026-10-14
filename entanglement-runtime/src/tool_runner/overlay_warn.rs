@@ -63,4 +63,35 @@ mod tests {
             .collect();
         assert_eq!(names, ["glob_json"]);
     }
+
+    /// #849: a wire overlay entry naming a bookkeeping Control tool warns;
+    /// one naming `agent`/`agent_send` is a real entry (graded, ADR-0232).
+    #[test]
+    fn bookkeeping_control_tool_entries_are_reported_spawning_is_not() {
+        let next: Vec<ToolOverlayEntry> = [
+            "poll",
+            "ask_user",
+            "update_tasks",
+            "request_mode",
+            "propose_plan",
+            "agent",
+            "agent_send",
+        ]
+        .map(ToolOverlayEntry::deny)
+        .to_vec();
+        let names: Vec<&str> = new_inert_entries(&[], &next)
+            .iter()
+            .map(|(p, _)| *p)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "poll",
+                "ask_user",
+                "update_tasks",
+                "request_mode",
+                "propose_plan"
+            ]
+        );
+    }
 }

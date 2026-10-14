@@ -20,7 +20,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::capability::{static_capability_of, Capability};
+use crate::capability::{bypasses_grading, static_capability_of};
 use crate::config::Config;
 use crate::mode::{self, Mode, ModeTable};
 
@@ -186,11 +186,14 @@ pub(super) fn render_mode_detail(m: &Mode) -> String {
     let rows: Vec<Vec<String>> = ROSTER
         .iter()
         .map(|tool| {
-            let capabilities = static_capability_of(tool).unwrap_or(&[]);
-            let outcome = if capabilities.contains(&Capability::Control) {
+            let capabilities = static_capability_of(tool);
+            let outcome = if bypasses_grading(tool, capabilities) {
                 "control (never graded)".to_string()
             } else {
-                format!("{:?}", m.resolve(tool, capabilities, None, None))
+                format!(
+                    "{:?}",
+                    m.resolve(tool, capabilities.unwrap_or(&[]), None, None)
+                )
             };
             vec![(*tool).to_string(), outcome]
         })
@@ -243,8 +246,14 @@ mod tests {
         // per-tool outcome column.
         assert!(detail.contains("edit"), "{detail}");
         assert!(detail.contains("Deny"), "{detail}");
-        // A Control tool never grades.
+        // A bookkeeping Control tool never grades; spawning does (ADR-0232),
+        // and research allows it by default.
         assert!(detail.contains("control (never graded)"), "{detail}");
+        let agent = detail
+            .lines()
+            .find(|l| l.trim_start().starts_with("agent "))
+            .expect("agent row");
+        assert!(agent.contains("Allow"), "{agent}");
     }
 
     #[test]

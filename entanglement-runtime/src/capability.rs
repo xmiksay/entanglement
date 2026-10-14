@@ -2,7 +2,8 @@
 //! [`crate::mode::rules`]'s grading (a bare `read`/`write`/`exec`/`plan`/
 //! `control` rule key matches a tool by capability, not name) and by
 //! `tool_runner::dispatch`'s `Control` bypass, which skips mode grading
-//! entirely for a `Capability::Control`-only tool.
+//! entirely for a `Capability::Control`-only tool — except `agent`/
+//! `agent_send`, which are graded ([`bypasses_grading`], ADR-0232).
 //!
 //! `Capability::Plan` and `Capability::Control` didn't exist under the old
 //! `tool_names.rs` capability-key table (`read`/`write`/`call` only) —
@@ -64,6 +65,18 @@ pub fn runtime_owned(name: &str) -> Option<&'static [Capability]> {
 /// path; this function doesn't guess one.
 pub fn capability_of(name: &str, registry: &ToolRegistry) -> Option<&'static [Capability]> {
     runtime_owned(name).or_else(|| registry.get(name).map(|tool| tool.capabilities()))
+}
+
+/// Whether `name` skips grading entirely: a `Control`-only tool other than
+/// the spawning pair. `agent`/`agent_send` stay `Control` (a `control` class
+/// rule reaches them) but are graded like any tool (ADR-0232): a spawn
+/// starts a session that runs tools, unlike the bookkeeping and discovery
+/// tools, which only read or report state already authorized.
+/// `capabilities` is `name`'s resolved set ([`capability_of`] or, with no
+/// registry in hand, [`static_capability_of`]).
+pub fn bypasses_grading(name: &str, capabilities: Option<&[Capability]>) -> bool {
+    !matches!(name, AGENT_TOOL | AGENT_SEND_TOOL)
+        && capabilities == Some([Capability::Control].as_slice())
 }
 
 /// [`capability_of`] for call sites that have no live [`ToolRegistry`] in
@@ -136,6 +149,24 @@ mod tests {
             runtime_owned(RHAI_TOOL),
             Some([Capability::Read, Capability::Write, Capability::Exec].as_slice())
         );
+    }
+
+    /// ADR-0232: spawning is graded; every other Control tool bypasses.
+    #[test]
+    fn only_the_spawning_pair_of_control_tools_is_graded() {
+        let ungraded = |name| bypasses_grading(name, static_capability_of(name));
+        for graded in [AGENT_TOOL, AGENT_SEND_TOOL, PROPOSE_PLAN_TOOL, "read"] {
+            assert!(!ungraded(graded), "{graded}");
+        }
+        for bypass in [
+            POLL_TOOL,
+            ASK_USER_TOOL,
+            UPDATE_TASKS_TOOL,
+            REQUEST_MODE_TOOL,
+        ] {
+            assert!(ungraded(bypass), "{bypass}");
+        }
+        assert!(ungraded("load_skill"));
     }
 
     #[test]

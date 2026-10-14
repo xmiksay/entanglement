@@ -22,6 +22,10 @@ deny:
   - "bash(git branch -D*)"
 allow:
   - read
+  # Spawning (`agent`/`agent_send`, Capability::Control) is graded like any
+  # tool (ADR-0232) and allowed by default; `deny: [agent]` in config.yml
+  # `modes:` names the tool and so outranks this class allow.
+  - control
   - write
   - exec
 # Network-mutating commands: `build` class-allows the whole `exec`

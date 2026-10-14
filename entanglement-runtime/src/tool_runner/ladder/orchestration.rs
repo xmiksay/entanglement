@@ -1,36 +1,72 @@
 //! The orchestration handlers of the interception ladder (issue #451,
 //! split out of `ladder.rs`): `agent`/`agent_send`/`poll`/`ask_user`/
-//! `propose_plan` and the discovery lookups all touch no permission-graded host
-//! resource (ADR-0207 §3's `Capability::Control`, or a runtime-owned prompt/
-//! finalize tool with its own unconditional semantics) — [`Intercept::
-//! bypasses_permission`][super::Intercept::bypasses_permission] is true for
-//! every route handled here.
+//! `propose_plan` and the discovery lookups. The bookkeeping and discovery
+//! routes touch no permission-graded host resource and bypass grading
+//! (ADR-0207 §3's `Capability::Control`; `propose_plan` grades its own
+//! `plan` class). The spawning pair climbs the dispatch ladder first
+//! ([`gate`], ADR-0232) — a spawn starts a session that runs tools.
 
-use entanglement_core::SessionId;
+use std::collections::HashMap;
+
+use entanglement_core::{SessionId, ToolOverlayEntry};
 
 use crate::cancel::TaskCanceller;
 use crate::discover;
 use crate::permission::{ancestor_chain, spawn_refusal};
 use crate::seam;
 use crate::subagent::SpawnGuard;
-use crate::tool_names::{LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL, MCP_TOOLS_TOOL};
+use crate::tool_names::{
+    AGENT_SEND_TOOL, AGENT_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL, MCP_TOOLS_TOOL,
+};
+use crate::tool_runner::dispatch::{Call, Dispatcher};
 
 use super::LadderCtx;
+
+/// Climb the dispatch ladder for a spawning call (ADR-0232): `true` when it
+/// cleared; on a refusal the model gets it as an error result, and a `Stop`
+/// during an approval park owes nothing (core cancels the turn).
+async fn gate(
+    dispatcher: Dispatcher,
+    tool: &str,
+    session: &SessionId,
+    request_id: &str,
+    input: &str,
+) -> bool {
+    let call = Call {
+        request_id: request_id.to_string(),
+        tool: tool.to_string(),
+        input: input.to_string(),
+        envelope: None,
+        rhai_path: None,
+    };
+    match dispatcher.gate(&call).await {
+        Some(Ok(())) => true,
+        Some(Err(why)) => {
+            let holly = dispatcher.holly.clone();
+            seam::reply(&holly, session.clone(), request_id.to_string(), why, true).await;
+            false
+        }
+        None => false,
+    }
+}
 
 pub(super) async fn spawn(
     ctx: &LadderCtx,
     spawn_guard: &mut SpawnGuard,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    // Spawn control (ADR-0207 §6): the only refusal left
-    // is an unknown target name — spawning itself is
-    // never graded and any registered agent is a valid
-    // target. Bounded instead by the session's mode
-    // `max_depth`/`max_agents` (`SpawnGuard::try_spawn`).
-    // Subscribe *before* handing off so the child's
-    // `Done` can't race ahead of the watcher.
+    // Spawn control: an unknown target name or model refuses here, and the
+    // session's mode bounds the tree (`max_depth`/`max_agents`,
+    // `SpawnGuard::try_spawn`, ADR-0207 §6). Past those, the call climbs the
+    // dispatch ladder like any tool (ADR-0232) inside the detached task — an
+    // approval park must not hold the loop. The slot is reserved first (the
+    // guard is loop state) and released if the ladder refuses.
+    // Subscribe (after the gate, inside the task) *before* the child is
+    // spawned so its `Done` can't race ahead of the watcher.
+    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, overlays, &session);
     let blocking = !crate::subagent::is_background(&input);
     let target = crate::subagent::target_agent(&input);
     // The child's optional model override (#560 P12, ADR-0207 §12): resolved
@@ -76,7 +112,6 @@ pub(super) async fn spawn(
             // two checks above refuse together (`refusal`'s `or_else` folds
             // a model error in), never independently.
             let model_pin = model_result.ok().flatten();
-            let child_events = ctx.holly.subscribe();
             let registry = ctx.registry.clone();
             let retained = ctx.retained.clone();
             let holly = ctx.holly.clone();
@@ -85,6 +120,14 @@ pub(super) async fn spawn(
                 // watch the child to the end), so the mode's `max_agents`
                 // counts running sub-agents, not spawns ever made.
                 let _slot = slot;
+                if !gate(dispatcher, AGENT_TOOL, &session, &request_id, &input).await {
+                    return;
+                }
+                // Subscribed only now: the gate may park on an approval card
+                // for as long as the user takes, and a receiver held across
+                // that would lag past the outbox capacity and lose the
+                // child's answer. Still before the child's `Spawn` is sent.
+                let child_events = holly.subscribe();
                 // The default blocks and parks for the
                 // answer; `background: true` hands the
                 // handle back at once — one guard path,
@@ -130,23 +173,29 @@ pub(super) async fn spawn(
 
 pub(super) async fn agent_send(
     ctx: &LadderCtx,
+    spawn_guard: &SpawnGuard,
+    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    // No spawn-budget/depth gate here (#609): this is a
-    // *reply* into an already-authorized child, not a
-    // new spawn — `AgentRegistry::begin_send` (run
-    // inside the task) is the whole gate: ownership
-    // (only the launching session may send) plus the
-    // lifecycle check (ADR-0162 §4). Subscribe *before*
-    // handing off, mirroring `Spawn`, so the child's
-    // events can't race ahead of the watcher.
-    let child_events = ctx.holly.subscribe();
+    // No spawn-budget/depth gate here (#609): this is a *reply* into an
+    // already-authorized child, not a new spawn. The dispatch ladder grades
+    // it like any tool (ADR-0232), then `AgentRegistry::begin_send` (run
+    // inside the task) checks ownership (only the launching session may
+    // send) and lifecycle (ADR-0162 §4). Subscribe after the gate (an
+    // approval park must not lag the receiver) but before the follow-up is
+    // sent, mirroring `Spawn`, so the child's events can't race ahead of the
+    // watcher.
+    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, overlays, &session);
     let registry = ctx.registry.clone();
     let retained = ctx.retained.clone();
     let holly = ctx.holly.clone();
     tokio::spawn(async move {
+        if !gate(dispatcher, AGENT_SEND_TOOL, &session, &request_id, &input).await {
+            return;
+        }
+        let child_events = holly.subscribe();
         crate::agent_send::run_agent_send(
             holly,
             child_events,

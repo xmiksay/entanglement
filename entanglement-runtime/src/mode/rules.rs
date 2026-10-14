@@ -284,13 +284,24 @@ fn best_match(
     let mut best: [Option<(usize, Permission)>; 3] = [None; 3];
     for entry in &rules.entries {
         let matches = match entry.class {
+            // `control` reaches only a pure orchestration tool (ADR-0232):
+            // as the longest class key it would otherwise out-rank `write`/
+            // `exec` for a mixed tool and widen it past the mode's deny.
+            Some(Capability::Control) => capabilities == [Capability::Control],
             Some(class) => capabilities.contains(&class),
             None => tool_rule_matches(&entry.key, tool_name, arg, workdir),
         };
         if !matches {
             continue;
         }
-        let slot = &mut best[kind(entry, tool_name) as usize];
+        let entry_kind = kind(entry, tool_name);
+        // A rule naming a non-maskable tool is inert (ADR-0232): only its
+        // class (`propose_plan`'s `plan`) or a `*` rule grades it, which is
+        // what the config warning (`config::mode_warn`) promises.
+        if entry_kind == Kind::Named && crate::tool_names::is_non_maskable(tool_name) {
+            continue;
+        }
+        let slot = &mut best[entry_kind as usize];
         let len = entry.key.chars().count();
         *slot = Some(match *slot {
             None => (len, entry.grade),
@@ -746,5 +757,72 @@ mod tests {
             Permission::Deny,
             "Opaque grades at whatever `default` the mode has, not a fixed fallback"
         );
+    }
+
+    /// ADR-0232: a rule naming a non-maskable tool never matches — the plan
+    /// class stays `propose_plan`'s only gate, both ways, and a `*` rule
+    /// still reaches it.
+    #[test]
+    fn a_rule_naming_propose_plan_is_inert_its_class_decides() {
+        let plan = [Capability::Plan];
+        let g = |deny: &[&str], allow: &[&str]| {
+            let s = |l: &[&str]| l.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+            let rules = Rules::from_lists(&s(deny), &s(allow), &[]);
+            resolve(&rules, Permission::Ask, "propose_plan", &plan, None, None)
+        };
+        assert_eq!(g(&["plan"], &["propose_plan"]), Permission::Deny);
+        assert_eq!(g(&["propose_plan"], &["plan"]), Permission::Allow);
+        assert_eq!(
+            g(&["propose_plan"], &[]),
+            Permission::Ask,
+            "falls to default"
+        );
+        assert_eq!(
+            g(&["*"], &["plan"]),
+            Permission::Deny,
+            "`*` still reaches it"
+        );
+        // Every other tool keeps its named rules.
+        let rules = Rules::from_lists(&["agent".to_string()], &["control".to_string()], &[]);
+        let control = [Capability::Control];
+        assert_eq!(
+            resolve(&rules, Permission::Ask, "agent", &control, None, None),
+            Permission::Deny
+        );
+    }
+
+    /// ADR-0232: the built-ins' `control` allow must not widen a tool that
+    /// also carries another class — it follows that class instead.
+    #[test]
+    fn the_control_class_only_matches_a_pure_control_tool() {
+        let research = Rules::from_lists(
+            &["write".to_string(), "plan".to_string()],
+            &["read".to_string(), "control".to_string()],
+            &[],
+        );
+        let g = |rules: &Rules, caps: &[Capability]| {
+            resolve(rules, Permission::Ask, "mixed", caps, None, None)
+        };
+        let write_control = [Capability::Write, Capability::Control];
+        let exec_control = [Capability::Exec, Capability::Control];
+        assert_eq!(g(&research, &write_control), Permission::Deny);
+        assert_eq!(
+            g(&research, &exec_control),
+            Permission::Ask,
+            "exec: default"
+        );
+        let plan = Rules::from_lists(
+            &["write".to_string()],
+            &[
+                "read".to_string(),
+                "plan".to_string(),
+                "control".to_string(),
+            ],
+            &[],
+        );
+        assert_eq!(g(&plan, &exec_control), Permission::Ask);
+        assert_eq!(g(&plan, &[Capability::Control]), Permission::Allow);
+        let build = Rules::from_lists(&[], &["exec".to_string(), "control".to_string()], &[]);
+        assert_eq!(g(&build, &exec_control), Permission::Allow);
     }
 }

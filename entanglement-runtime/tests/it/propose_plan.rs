@@ -1133,6 +1133,87 @@ async fn plan_mode_still_force_parks_propose_plan() {
     );
 }
 
+/// ADR-0232: `propose_plan` is non-maskable — a rule naming it is skipped by
+/// the matcher, so a named allow cannot open it where the `plan` class is
+/// denied. (Config tuning refuses such a rule at load; a hand-built table
+/// proves the matcher holds even past that guard.)
+#[tokio::test]
+async fn a_rule_naming_propose_plan_cannot_open_it_outside_plan_mode() {
+    let dir = tempdir();
+    let root = dir.path();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("ok"),
+    ]);
+    let mode = entanglement_runtime::mode::Mode {
+        name: "build".to_string(),
+        default: entanglement_core::Permission::Allow,
+        rules: entanglement_runtime::mode::Rules::from_lists(
+            &["plan".to_string()],
+            &["propose_plan".to_string()],
+            &[],
+        ),
+        limits: entanglement_runtime::mode::Limits::default(),
+        sandbox: None,
+        sandbox_network: false,
+    };
+    let holly = spawn_with_root_and_table(
+        root,
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid")),
+    );
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect_until_done(&mut sub, &sid, Duration::from_secs(3)).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "the class deny holds — no approval parked: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { tool, output, is_error: true, .. }
+                if tool == PROPOSE_PLAN_TOOL && output.contains("denied by mode")
+        )),
+        "a named allow must not open propose_plan: {events:?}"
+    );
+}
+
+/// ADR-0232: an overlay entry naming `propose_plan` is inert (non-maskable) —
+/// in `plan` mode the call still reaches its approval park.
+#[tokio::test]
+async fn an_overlay_deny_does_not_withdraw_propose_plan_in_plan_mode() {
+    let dir = tempdir();
+    let scripted = Arc::new(vec![
+        propose_plan_call("p1", serde_json::json!({"content": "# Ship it"})),
+        text_response("ok"),
+    ]);
+    let holly = spawn_with_root_and_table(
+        dir.path(),
+        Arc::new(move || Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>),
+        Arc::new(ModeTable::builtin().expect("built-in modes must parse")),
+    );
+    let sid = SessionId::new("s1");
+    set_mode_and_wait(&holly, &sid, "plan").await;
+    let mut sub = holly.subscribe();
+    holly
+        .send(InMsg::SetToolOverlay {
+            session: sid.clone(),
+            entries: vec![entanglement_core::ToolOverlayEntry::deny(PROPOSE_PLAN_TOOL)],
+        })
+        .await
+        .unwrap();
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
+        if matches!(ev, OutEvent::ToolOverlayChanged { .. }) {
+            break;
+        }
+    }
+    await_request(&holly, &sid).await;
+}
+
 /// #560, the property ADR-0207 §7's "same turn continues" promise exists for:
 /// a `write` issued *right after* approval — in the same turn, no new
 /// `Prompt` — must be graded under the mode the approver just picked, not

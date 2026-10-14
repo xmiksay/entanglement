@@ -109,13 +109,17 @@ pub const DISCOVERY_TOOLS: &[&str] = &[
 ];
 
 /// The names an overlay entry or a mode/ceiling rule can spell but never
-/// match (#843): the six discovery tools take the dispatch `Control` bypass
-/// before any overlay or rule is read (ADR-0226 Maskability), core unwraps
-/// the `mcp` envelope to `mcp__<server>__<tool>` before dispatch, and the
-/// script-only read variants grade as the tool they ride on
-/// (`dispatch::grade::graded_name`). The TUI's toggle roster leaves them out,
-/// `/enable`/`/disable` refuses them, and a config rule or a wire overlay
-/// entry naming one warns ([`non_maskable_reason`]).
+/// match (#843, #849): the six discovery tools and the bookkeeping Control
+/// tools take a bypass before any overlay or rule is read (ADR-0226
+/// Maskability, ADR-0232), core unwraps the `mcp` envelope to
+/// `mcp__<server>__<tool>` before dispatch, and the script-only read variants
+/// grade as the tool they ride on (`dispatch::grade::graded_name`).
+/// `propose_plan` is graded, but only by its `plan` class — a rule naming it
+/// is skipped by the matcher (`mode::rules`), so the class is the one gate.
+/// The TUI's toggle roster leaves them out, `/enable`/`/disable` refuses
+/// them, and a config rule or a wire overlay entry naming one warns
+/// ([`non_maskable_reason`]). `agent`/`agent_send` are absent on purpose:
+/// they are graded like any tool (ADR-0232).
 pub const NON_MASKABLE_TOOLS: &[&str] = &[
     LIST_AGENTS_TOOL,
     LIST_MODELS_TOOL,
@@ -127,6 +131,11 @@ pub const NON_MASKABLE_TOOLS: &[&str] = &[
     "read_raw",
     "glob_json",
     "grep_json",
+    POLL_TOOL,
+    ASK_USER_TOOL,
+    UPDATE_TASKS_TOOL,
+    REQUEST_MODE_TOOL,
+    PROPOSE_PLAN_TOOL,
 ];
 
 /// Whether `tool` is one of the [`NON_MASKABLE_TOOLS`].
@@ -152,6 +161,17 @@ pub fn non_maskable_reason(tool: &str) -> Option<String> {
             .to_string(),
         "glob_json" => "`glob_json` is graded as `glob` — name `glob` instead".to_string(),
         "grep_json" => "`grep_json` is graded as `grep` — name `grep` instead".to_string(),
+        POLL_TOOL | ASK_USER_TOOL | UPDATE_TASKS_TOOL => format!(
+            "`{tool}` is session bookkeeping — it only collects or reports work already \
+             authorized, so it is always available, not maskable (ADR-0232)"
+        ),
+        REQUEST_MODE_TOOL => "`request_mode` only asks the user to widen the mode — it always \
+                              parks an approval and is refused in `auto`; always available, \
+                              not maskable (ADR-0232)"
+            .to_string(),
+        PROPOSE_PLAN_TOOL => "`propose_plan` is gated by the `plan` capability class alone \
+                              (allowed only in `plan` mode) — name `plan` instead (ADR-0232)"
+            .to_string(),
         discovery => format!(
             "`{discovery}` is a read-only discovery tool — always available, \
              not maskable (ADR-0226)"
@@ -389,5 +409,22 @@ mod tests {
         );
         let list = non_maskable_reason(LIST_MCP_TOOL).unwrap();
         assert!(list.contains("not maskable"), "{list}");
+    }
+
+    /// #849: the bookkeeping Control tools join the set, each with a reason;
+    /// `agent`/`agent_send` stay maskable — they are graded (ADR-0232).
+    #[test]
+    fn bookkeeping_control_tools_are_non_maskable_but_spawning_is_not() {
+        for tool in [POLL_TOOL, ASK_USER_TOOL, UPDATE_TASKS_TOOL] {
+            let why = non_maskable_reason(tool).unwrap();
+            assert!(why.contains("bookkeeping"), "{tool}: {why}");
+        }
+        let mode = non_maskable_reason(REQUEST_MODE_TOOL).unwrap();
+        assert!(mode.contains("parks an approval"), "{mode}");
+        let plan = non_maskable_reason(PROPOSE_PLAN_TOOL).unwrap();
+        assert!(plan.contains("name `plan` instead"), "{plan}");
+        for graded in [AGENT_TOOL, AGENT_SEND_TOOL] {
+            assert!(!is_non_maskable(graded), "{graded} is graded");
+        }
     }
 }

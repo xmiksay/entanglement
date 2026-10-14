@@ -171,6 +171,14 @@ pub(super) async fn run(
                 overlays.remove(&session);
                 // Its in-flight tool bookkeeping is moot once the session ends.
                 ctx.cancels.forget_session(&session);
+                // Unwind the cards of its turn (ADR-0232): a parked spawn
+                // would otherwise pin its `max_agents` slot forever, and a
+                // resume re-offers a parked `ToolExec` (the dedupe set is
+                // cleared below), which parks a fresh card. Unlike a `Stop`,
+                // a background script's card stays: the script outlives the
+                // session (a compaction successor inherits it, ADR-0231) and
+                // nothing re-offers it.
+                ctx.pending.stop_attached(&session);
                 // Drop the re-offer dedupe set (#274): its request ids can
                 // never recur once the session is gone.
                 in_flight.remove(&session);

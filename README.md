@@ -106,7 +106,8 @@ starts in its agent's `default_mode` (the built-in `plan` agent starts in
 `plan`; a hint is never wider than `build`, so never `auto`), else `build`; a spawned child only ever takes a `default_mode` no
 wider than its parent's mode, and a resumed session keeps its replayed mode
 ([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)); a blocked model may ask to widen via
-`request_mode`. Spawning is bounded by the mode's `max_depth`/`max_agents`.
+`request_mode`. Spawning is graded like any tool (`/disable agent` or a mode
+`deny: [agent]` stops it) and bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.
 
 **Undo / rewind** (ADR-0212): `write`/`edit`/`apply_patch` back up each

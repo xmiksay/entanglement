@@ -301,10 +301,22 @@ mod tests {
             .chain(subagent::agent_specs())
             .chain(["read", "glob_json", "load_skill"].map(|name| ToolSpec::new(name, "")));
         let roster = toggle_roster(specs);
-        for gone in DISCOVERY_TOOLS.iter().chain(&[MCP_TOOL, "glob_json"]) {
+        let bookkeeping = [
+            "poll",
+            "ask_user",
+            "update_tasks",
+            "request_mode",
+            "propose_plan",
+        ];
+        for gone in DISCOVERY_TOOLS
+            .iter()
+            .chain(&[MCP_TOOL, "glob_json"])
+            .chain(&bookkeeping)
+        {
             assert!(!roster.iter().any(|n| n == gone), "{gone}: {roster:?}");
         }
-        for kept in ["read", "ask_user", "poll", "agent"] {
+        // #849: spawning is graded, so `/disable agent` has something to do.
+        for kept in ["read", "agent", "agent_send"] {
             assert!(roster.iter().any(|n| n == kept), "{kept}: {roster:?}");
         }
     }
