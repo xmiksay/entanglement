@@ -1,11 +1,11 @@
 //! `skutter inspect skills [name] [--disclosures]` (#186).
 //!
 //! Closes the skill-authoring blind spot: skill selection is "description quality
-//! is the contract," yet the author could not see the exact tier-1
-//! `disclosures()` block the model gets, which layer won a collision, or
-//! whether a `${SKILL_DIR}` payload path resolves.
+//! is the contract," yet the author could not see the exact `list_skills`
+//! roster the model gets, which layer won a collision, or whether a
+//! `${SKILL_DIR}` payload path resolves.
 //! Three views over the engine-free skill registry:
-//! - `--disclosures`: the exact tier-1 block the model receives (takes priority);
+//! - `--disclosures`: the exact `list_skills` roster the model receives (takes priority);
 //! - a `name`: a dry-run of the `load_skill` path substitution for that skill;
 //! - neither: a table of every resolved skill with its winning layer + provenance.
 

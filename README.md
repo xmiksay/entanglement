@@ -25,9 +25,9 @@ InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQues
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
-          | RevertFiles | ForkSession | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
+          | RevertFiles | ForkSession | SetWorkdir | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
-          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged | WorkdirChanged
           | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
@@ -43,7 +43,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | Head | Status | What it is |
 | --- | --- | --- |
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
-| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, layer, root_dir, description), the exact tier-1 disclosure block the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill; `skutter inspect commands [name]` lists the user slash commands. |
+| **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, layer, root_dir, description), the exact `list_skills` roster the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill; `skutter inspect commands [name]` lists the user slash commands. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable); `dark`/`light` themes with per-slot colour overrides (`NO_COLOR` honoured) and remappable keys (`Ctrl+X` leader by default; `Ctrl+X ?` lists the bindings in effect). |
 | **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
 
@@ -135,7 +135,9 @@ it differs from where the TUI runs. Other trusted heads send
 
 Every session is advertised **one tool surface**, identical on every wire
 and pinned for the session so the provider's prompt cache holds (ADR-0226):
-the file/exec tools, `web_fetch`, `rhai`, the orchestration tools, six
+the compiled-in `KERNEL` — the file tools `read`/`write`/`edit`/`apply_patch`,
+`bash`, `web_fetch`, `rhai`, the orchestration tools (`agent`/`agent_send`,
+`poll`, `ask_user`, `update_tasks`, `propose_plan`, `request_mode`), six
 discovery tools — `list_agents`, `list_models`, `list_skills`, `load_skill`,
 `list_mcp`, `mcp_tools` — and the `mcp(server, tool, args)` envelope, the only
 way to call an MCP tool. MCP schemas are never advertised: `mcp_tools` shows a
@@ -146,7 +148,7 @@ connects at startup — the first `mcp_tools`/`mcp(...)` on a server connects it
 and every call is graded by the session's permission mode.
 
 A plan is a **file** (`.entanglement/plans/<id>.md`), not an in-memory
-snapshot: the plan agent's one tool, `propose_plan(content | path)`,
+snapshot: `propose_plan(content | path)`, allowed only in `plan` mode,
 materializes or binds one, force-parks for approval, and — on approve —
 switches the session's mode in place to the approver's pick (`build` or
 `auto`; a bare accept means `auto`) so the same turn continues into implementation
@@ -169,11 +171,12 @@ body with `$ARGUMENTS` / `$1`..`$9` filled in. Frontmatter `description` and
 `argument-hint` show in the slash popup; `agent`, `model` and `allowed-tools`
 are ignored, and `` !`cmd` `` / `@file` are sent literally — a command is
 plain text, never shell or file access. Built-in TUI commands win on a name
-clash; `skutter inspect commands` lists what resolved. Beyond the root-contained sextet (`read`/`write`/`edit`/
-`glob`/`grep`/`apply_patch`), both exec tools — `bash` (a real shell) and
-`call` (argv exec, no shell) — are always registered
+clash; `skutter inspect commands` lists what resolved. Beyond the root-contained file tools, `bash` (a real shell) is always registered
 ([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
-and graded by the session's mode like everything else; the sandboxed `rhai`
+and graded by the session's mode like everything else. `glob`, `grep` and
+`call` (argv exec, no shell) are registered but never advertised: they are
+script-only `rhai` bindings (`call` as `exec`), each call graded under its own
+name. The sandboxed `rhai`
 scripting tool ships in every default build (droppable via
 `--no-default-features`, #502) — every call a script makes goes through the
 same permission path as a direct one, MCP tools are callable as
@@ -183,7 +186,7 @@ visible to the model; the first use per host is always approved,
 [ADR-0227](docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as
 Markdown behind an SSRF guard: private, loopback, link-local and metadata
 addresses are refused, DNS answers are pinned, and every redirect is checked
-again. It is graded like `curl` (allowed in `build`, prompted elsewhere) and
+again. It is graded like `curl` (allowed in `build` and `auto`, prompted in `research`/`plan`) and
 can be dropped with the `web-fetch` feature
 ([ADR-0220](docs/adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
 In the TUI, `Ctrl+V` pastes a clipboard image into the prompt when the model's
