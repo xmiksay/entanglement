@@ -1197,8 +1197,8 @@ below realize one model:
   ([gates & host tools](gates-and-host-tools.md)).
 - **Skills are additive-only — the `allowed_tools` mask is removed (✅ ADR-0194,
   [0194](../adr/0194-skills-are-additive-only.md), superseding
-  [ADR-0106](0106-skill-scoped-allowed-tools-enforcement.md) and retiring
-  [ADR-0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
+  [ADR-0106](../adr/0106-skill-scoped-allowed-tools-enforcement.md) and retiring
+  [ADR-0129](../adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
   a skill adds capabilities (its body, its `lib.rhai` functions, its script
   files) and **never restricts** the session's tool set. The session-keyed
   `ActiveSkill` map, `permission::skill_masked`, the `load_skill`

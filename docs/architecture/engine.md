@@ -443,18 +443,21 @@ an unknown model (`EchoLlm`, or an env-override id absent from the catalog) fall
 back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core now tries three
 recovery steps in order (#398,
 [ADR-0103](../adr/0103-auto-summarize-on-context-overflow.md)):
-1. **Auto-summarize in place**, gated by `EngineConfig::auto_compact` (default
+1. **Auto-summarize into a successor**, gated by `EngineConfig::auto_compact` (default
    `true`, exposed to users as `config.yml`'s `auto_compact:` — copied onto the
    engine config in `build_config` beside `max_turns`/`idle_ttl_secs`, the
-   ADR-0105 wiring shape): `try_auto_compact` calls the same `session/summarize.rs::summarize`
+   ADR-0105 wiring shape): `run_round` checks `Context::within_limit` once per
+   round and, over budget, calls `session/turn.rs::enforce_context_window`,
+   which runs these three steps in order; step 1 (`try_summary_fork`) calls the
+   same `session/summarize.rs::summarize`
    the manual `"compact"` op below uses — on the same aux-resolved backend too
    (`summarize::AuxBackend::for_summarize(cfg)` then
    `aux.resolve(&mut *s.llm, model, s.generation)`; see *Auxiliary models*
    below): an overflow recovery is a side transformation, so it runs on the
    pinned `summarize` model when one is set — requesting a small fixed keep-tail
    (`AUTO_COMPACT_KEEP_TAIL`, clamped to a safe turn boundary by
-   `Context::safe_kept` exactly as #397/ADR-0102 does), then applies the result
-   and **forks a successor session** seeded with that summary plus the verbatim
+   `Context::safe_kept` exactly as #397/ADR-0102 does), then **forks a
+   successor session** seeded with that summary plus the verbatim
    kept tail (`summarize::compose_report`) — the live `Context` is never
    mutated ([ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md)
    amends ADR-0103's in-place design; a turn mid-flight no longer needs a head
@@ -487,7 +490,9 @@ recovery steps in order (#398,
    oldest tool outputs, newest-first-preserved) when auto-summarize is
    disabled, its own guard trips (a rendered transcript or kept tail over the
    input limit, an LLM error, a tool call on the rendered attempt, a truncated
-   summary), or the result still doesn't fit. It prunes a **clone** of the
+   summary), or the successor fork is unavailable (no engine handle). There
+   is no post-summary fit check: the kept tail is guarded on its own, but
+   summary + tail is not re-measured. It prunes a **clone** of the
    context and forks a successor seeded with the pruned transcript, emitting
    `OutEvent::Compacted { auto: true, mode: prune, .. }` (ADR-0205) — the
    source's own history is left exactly as its log describes. Prunes in one
@@ -496,8 +501,9 @@ recovery steps in order (#398,
    otherwise re-trip this fallback every round or two as new content trickles
    in — busting a provider's cached prefix right when requests are largest.
 3. **Refuse the turn** via `emit_turn_error` (a `"context window exceeded"`
-   `Error` + `Done` + `Status`) if pruning also doesn't fit — sending an
-   over-window request just burns a paid round-trip and errors at the provider.
+   `Error` + `Done` + `Status`) if pruning also doesn't fit (or the fork is
+   unavailable) — sending an over-window request just burns a paid
+   round-trip and errors at the provider.
 
 **Both compacting steps fork; neither mutates** (ADR-0205). Steps 1 and 2
 each produce a successor session and retire the source unchanged at the fork
@@ -710,7 +716,7 @@ one-shot client is built from the same `llm_factory` a `SetModel` switch
 would use, so it inherits the warm per-endpoint pool (ADR-0050) instead of
 opening its own. Both compaction paths — the manual `"compact"` op
 (`session/ops.rs`) and the auto-summarize overflow path
-(`session/turn.rs::try_auto_compact`) — resolve
+(`session/turn.rs::enforce_context_window` → `try_summary_fork`) — resolve
 `summarize::AuxBackend::for_summarize(cfg)` and then
 `aux.resolve(&mut *s.llm, model, s.generation)`: `AuxBackend` owns the built
 `Box<dyn Llm>` (one-shot, dropped when it goes out of scope), which is what

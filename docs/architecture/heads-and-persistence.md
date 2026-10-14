@@ -74,7 +74,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   vocabulary the old `inspect agents` view used, now attached to the mode
   rather than the agent. Engine-free means no registry there either: the
   roster is the compile-time built-in vocabulary plus the runtime-owned
-  pseudo-tools (`capability::static_capability_of`), and MCP/endpoint tools
+  pseudo-tools (`capability::static_capability_of`), and MCP tools
   are necessarily absent — a dynamic, environment-dependent surface out of
   scope for a static report.
   `skutter inspect commands [name]` (#733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)) lists the
@@ -84,9 +84,12 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `skutter inspect skills [name] [--disclosures]` (#186) does the same for the
   **skill** registry — the authoring loop was "start a session and ask the model":
   no `name` prints a table (name, winning layer, `root_dir`,
-  description); `--disclosures` prints the **exact** tier-1 block the model
-  receives (the same `system_prompt::render_skills` output the assembled prompt
-  embeds — every skill, [ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)); a `name` **dry-runs the `load_skill` path
+  description); `--disclosures` prints the **exact** roster the model is handed
+  — every skill ([ADR-0229](../adr/0229-every-skill-is-model-visible-user-only-removed.md)),
+  the same `discover::skills_list` text the `list_skills` discovery tool
+  replies with (`inspect/skills.rs::render_disclosures`; the roster is no
+  longer in the system prompt, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
+  a `name` **dry-runs the `load_skill` path
   substitution** (`${SKILL_DIR}` + relative-ref resolution) plus layer provenance,
   so a wrong payload path surfaces without a model. Engine-free via
   `skills::resolve_registry` (the `(layer, source, shadowed)` sidecar mirroring
