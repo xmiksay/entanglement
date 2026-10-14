@@ -116,9 +116,9 @@ list; a retired var still set prints one warning naming its replacement
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
 `tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
-`rpm`/`concurrency` (providers.yml). Retired outright by ADR-0226:
-`tool_advertising`, `discovery`, MCP `state:` (one warning each); by
-ADR-0227: `endpoints:`.
+`rpm`/`concurrency` (providers.yml). Retired outright (one warning each) by
+ADR-0213: `discovery:`; by ADR-0226: `tool_advertising:`, the catalog
+`discovery`/`tool_advertising` knobs, MCP `state:`; by ADR-0227: `endpoints:`.
 `ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
 The permission **mode** has no env var by design (`--mode` > `config.yml`
 `mode:` > agent `default_mode` > `build`).
