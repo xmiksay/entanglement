@@ -76,11 +76,10 @@ test-unit: ## unit tests only (HOME/XDG-sandboxed)
 test-integration: ## integration tests only (tests/ dirs, HOME/XDG-sandboxed)
 	@CARGO='$(CARGO)' sh scripts/test-isolated.sh test --workspace --test '*'
 
-# Opt-in live z.ai probes pinning ADR-0204's provider facts (network + a real
+# Opt-in live z.ai probes pinning ADR-0226's provider facts (network + a real
 # ZAI_API_KEY; each test skips when it is unset). Kept out of `test`/`verify`.
-test-live: ## live z.ai + Anthropic tool-discovery/cache probes (each skips without ZAI_API_KEY / ANTHROPIC_API_KEY)
+test-live: ## live z.ai tool-discovery/cache probes (skip without ZAI_API_KEY)
 	$(CARGO) test -p entanglement-provider --test live_tool_discovery -- --ignored --nocapture --test-threads=1
-	$(CARGO) test -p entanglement-provider --test live_anthropic_cache -- --ignored --nocapture --test-threads=1
 
 test-live-matrix: ## live z.ai tool-use matrix: every GLM model × call encodings × discovery shapes × tasks (#826); JSONL + markdown under scratch/
 	$(CARGO) test -p entanglement-provider --test live_tool_matrix -- --ignored --nocapture --test-threads=1
