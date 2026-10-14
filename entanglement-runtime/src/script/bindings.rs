@@ -71,7 +71,8 @@ pub(super) fn configure_engine(
 /// as a function pointer instead of dispatched to ours). The tool name
 /// dispatched to the bridge, its permission grade, and its `BINDING_TOOLS`/
 /// capability membership all stay the literal `call` (matching the
-/// model-facing `call` tool) — only the script-facing identifier differs.
+/// registered, script-only `call` tool) — only the script-facing identifier
+/// differs.
 /// `exec`/`bash` additionally stamp a `timeout` derived from this run's own
 /// remaining wall-clock budget (`start`/`timeout`, #419 fix B): rhai's
 /// `on_progress` interrupt can't reach into a binding call blocked on

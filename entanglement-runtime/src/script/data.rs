@@ -22,7 +22,7 @@ pub(super) const DATA_FUNCTIONS: [&str; 4] = ["parse_json", "to_json", "parse_ya
 /// serializer falls back i64 -> decimal (off by default) -> float, same as
 /// JS's `JSON.parse` — well-formed JSON already encodes such values as strings
 /// to avoid exactly this, so scripts should too). Rhai's UFCS means each is
-/// also callable as a method, e.g. `read(path).parse_json()`.
+/// also callable as a method, e.g. `read_raw(path).parse_json()`.
 pub(super) fn register_data_functions(engine: &mut Engine) {
     engine.register_fn("parse_json", parse_json);
     engine.register_fn("to_json", to_json);
