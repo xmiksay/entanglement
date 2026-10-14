@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, ToolOverlayEntry};
+use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, ToolOverlayEntry};
 
 use crate::run_limits;
 use crate::seam::Decision;
@@ -65,6 +65,16 @@ fn card_text(
     }
 }
 
+/// The structured reason a head decides on (ADR-0230). The floor wins over
+/// the escape: it is what makes a wider approval worthless.
+fn card_reason(prompt: &Prompt, floored: bool) -> Option<CardReason> {
+    match prompt {
+        _ if floored => Some(CardReason::FlooredWrite),
+        Prompt::Escape { .. } => Some(CardReason::RootEscape),
+        Prompt::Grade | Prompt::Host(_) => None,
+    }
+}
+
 impl Dispatcher {
     pub(super) async fn park(
         &self,
@@ -96,6 +106,7 @@ impl Dispatcher {
             &card_tool,
             shown,
             reason,
+            card_reason(&prompt, floored),
         );
         let rx = crate::pending::park_approval(&self.holly, &self.pending, req, card_tool);
         // A background script's Ask arrives outside any live turn (#637):
@@ -201,5 +212,21 @@ mod tests {
         assert_eq!(graded, FLOOR_NOTE);
         let (_, graded) = card_text(&Prompt::Grade, "{}", false, "build", "write");
         assert_eq!(graded, "mode `build` grades `write` Ask");
+    }
+
+    #[test]
+    fn the_floor_outranks_the_escape_in_the_card_reason() {
+        let escape = Prompt::Escape {
+            abs: PathBuf::from("/elsewhere/x"),
+            graded_ask: true,
+        };
+        assert_eq!(card_reason(&escape, true), Some(CardReason::FlooredWrite));
+        assert_eq!(card_reason(&escape, false), Some(CardReason::RootEscape));
+        assert_eq!(
+            card_reason(&Prompt::Grade, true),
+            Some(CardReason::FlooredWrite)
+        );
+        assert_eq!(card_reason(&Prompt::Grade, false), None);
+        assert_eq!(card_reason(&Prompt::Host("h".into()), false), None);
     }
 }

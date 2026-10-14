@@ -31,8 +31,8 @@ pub fn draw_approval_pager(f: &mut Frame, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(title);
 
     let lines: Vec<Line<'static>> = match (app.approval_mode(), app.pending_tool_request()) {
-        (ApprovalMode::WaitingForApproval { .. }, Some((_, tool, input))) => {
-            render_approval_tool_body(app, tool, input, area.width.saturating_sub(2))
+        (ApprovalMode::WaitingForApproval { .. }, Some(req)) => {
+            render_approval_tool_body(app, &req.tool, &req.input, area.width.saturating_sub(2))
         }
         // Defensive only: `advance_approval`/`clear_approval` close the pager
         // the moment the approval they're showing resolves, so this arm

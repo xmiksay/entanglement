@@ -944,8 +944,10 @@ reads off the async runtime (256 KiB cap on the bytes read) *before* the
 card, shows on the launch card (headed `// path: "<quoted>"`/`// args:`)
 and evaluates verbatim; the model never reads it. An inline script's card
 opens with the runtime's own `// inline script` line instead, so script
-text can never pass itself off as a path card (the TUI offers a path grant
-only on one). The read canonicalizes
+text can never pass itself off as a path card. A head tells the two apart
+by the card's `reason` (`script_launch` / `inline_launch`), and an inline
+card's `scopes` are `[once]`, so no path grant is offered for it
+([ADR-0230](../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). The read canonicalizes
 once, opens that canonical path (non-blocking, no final-symlink follow — a
 FIFO is refused as "not a file" instead of hanging the launch), checks the
 opened file's `(dev, ino)` against the canonical path's and reads from that
@@ -990,9 +992,11 @@ allows, [agents & permissions](agents-and-permissions.md)), `research`/`plan`
 deny (class `write` deny), `auto` allows. **No answerer**: an `Ask` card
 waits for the head unless the mode has `question_timeout`; on that timeout
 it runs Ask per command (an out-of-root launch is refused instead).
-`skutter run` answers a launch card at once with Ask per command (refusing an
-out-of-root one, `rhai_trust::LAUNCH_ESCAPE_NOTE`) and rejects every nested
-card.
+`skutter run` answers a launch card at once with Ask per command and rejects
+every nested card. It decides on the card's `reason`, never its text
+(`pending::headless_starts`, [ADR-0230](../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
+only `script_launch`/`inline_launch` start, so an out-of-root launch
+(`launch_escape`) is refused.
 
 *Force-allowed* is a branch of the shared seam (`Dispatcher::clear` with a
 `run_all` script): the overlay deny, the hook veto and a mode/ceiling
@@ -1037,7 +1041,10 @@ stays `Deny`; unattended, the `Ask` collapses per the mode
 own writes, and it applies in every mode, `auto` included (unattended it
 collapses to a refusal, then parks up to `question_timeout` on a repeat). Other files in the folder grade normally — safe because a
 non-`.rhai` file can never run by `path`. When the escape-root card is what
-parks a floored write, its reason names the floor too. `bash` (and a
+parks a floored write, its reason names the floor too. A floored card
+carries `reason: floored_write` (which outranks `root_escape`) and
+`scopes: [once]`, because a wider approval would never be consulted
+([ADR-0230](../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). `bash` (and a
 `call`/`exec` command) cannot be parsed reliably, and an **MCP filesystem
 server**'s writes are not host-tool writes, so neither is covered: a
 trusted folder the agent can reach that way is effectively an auto-allow

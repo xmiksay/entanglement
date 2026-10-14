@@ -230,8 +230,17 @@ impl SessionView {
                 request_id,
                 tool,
                 input,
+                scopes,
                 ..
-            } => self.fold_tool_request(seq, request_id, tool, input),
+            } => self.fold_tool_request(
+                seq,
+                PendingRequest {
+                    request_id,
+                    tool,
+                    input,
+                    scopes,
+                },
+            ),
             OutEvent::UserQuestion {
                 seq,
                 request_id,

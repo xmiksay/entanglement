@@ -6,6 +6,7 @@ use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Theme};
 use crate::tui::transcript::cache::RenderCache;
 
+mod approval;
 mod cost;
 mod generation;
 mod question;
@@ -15,6 +16,7 @@ mod scroll;
 mod tests;
 mod usage;
 
+pub use approval::PendingRequest;
 pub use cost::CostLedger;
 pub use question::PendingQuestion;
 pub use usage::RoundUsage;
@@ -107,11 +109,11 @@ pub struct SessionView {
     last_content_height: usize,
     last_viewport_height: usize,
     approval_mode: ApprovalMode,
-    /// FIFO of parked `(request_id, tool, input)` approvals. Core batch-emits a
+    /// FIFO of parked approval cards. Core batch-emits a
     /// turn's tool calls (#270, ADR-0061), so several `ToolRequest`s can be
     /// outstanding at once; only the front is prompted, and resolving it
     /// promotes the next (#273). `approval_mode` always refers to the front.
-    pending_tool_requests: VecDeque<(String, String, String)>,
+    pending_tool_requests: VecDeque<PendingRequest>,
     /// FIFO of parked `ask_user` questions — same batch rationale as approvals.
     pending_questions: VecDeque<PendingQuestion>,
     /// Snippet of the session's first user prompt — the live "what is this
@@ -313,46 +315,6 @@ impl SessionView {
 
     pub fn approval_mode(&self) -> &ApprovalMode {
         &self.approval_mode
-    }
-
-    /// The front of the approval queue — the request currently prompted.
-    pub fn pending_tool_request(&self) -> Option<&(String, String, String)> {
-        self.pending_tool_requests.front()
-    }
-
-    /// Approvals parked behind the prompted one (#273).
-    pub fn queued_approvals(&self) -> usize {
-        self.pending_tool_requests.len().saturating_sub(1)
-    }
-
-    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
-        self.approval_mode = mode;
-    }
-
-    /// Pops the front approval (just answered) and promotes the next queued
-    /// request, if any, so its prompt surfaces immediately (#273).
-    pub fn advance_approval(&mut self) {
-        self.pending_tool_requests.pop_front();
-        self.approval_mode = match self.pending_tool_requests.front() {
-            Some((request_id, ..)) => ApprovalMode::WaitingForApproval {
-                request_id: request_id.clone(),
-            },
-            None => ApprovalMode::Normal,
-        };
-    }
-
-    /// Drops the whole approval queue — a turn interrupt or terminal status
-    /// invalidates every parked request, not just the prompted one.
-    pub fn clear_approval(&mut self) {
-        self.approval_mode = ApprovalMode::Normal;
-        self.pending_tool_requests.clear();
-    }
-
-    pub fn is_waiting_approval(&self) -> bool {
-        matches!(
-            self.approval_mode,
-            ApprovalMode::WaitingForApproval { .. } | ApprovalMode::EnteringRejectReason { .. }
-        )
     }
 
     /// The session's first-prompt snippet, if a user message was recorded.

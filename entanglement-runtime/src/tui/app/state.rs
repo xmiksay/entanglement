@@ -13,7 +13,7 @@ impl App {
         self.sessions.active_view().approval_mode()
     }
 
-    pub fn pending_tool_request(&self) -> Option<&(String, String, String)> {
+    pub fn pending_tool_request(&self) -> Option<&crate::tui::session_view::PendingRequest> {
         self.sessions.active_view().pending_tool_request()
     }
 

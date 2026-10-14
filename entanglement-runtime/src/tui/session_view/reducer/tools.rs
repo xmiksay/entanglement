@@ -1,7 +1,7 @@
 //! The tool-call family of [`SessionView::apply_event`]'s fold: streamed
 //! args, the assembled call, approval/question queues, and output folding.
 
-use entanglement_core::Questions;
+use entanglement_core::{ApprovalScope, Questions};
 
 use super::*;
 
@@ -87,20 +87,19 @@ impl SessionView {
     }
 
     /// `OutEvent::ToolRequest`.
-    pub(super) fn fold_tool_request(
-        &mut self,
-        seq: u64,
-        request_id: String,
-        tool: String,
-        input: String,
-    ) -> bool {
+    pub(super) fn fold_tool_request(&mut self, seq: u64, mut req: PendingRequest) -> bool {
         if seq > self.last_seen_seq {
             self.last_seen_seq = seq;
+            // An older producer sent no scopes: offer only what every
+            // approval honors (ADR-0230).
+            if req.scopes.is_empty() {
+                req.scopes.push(ApprovalScope::Once);
+            }
+            let request_id = req.request_id.clone();
             // Core batch-emits a turn's tool calls (#270, ADR-0061), so
             // more requests can land while one is already prompted —
             // queue them; only the front drives `approval_mode` (#273).
-            self.pending_tool_requests
-                .push_back((request_id.clone(), tool, input));
+            self.pending_tool_requests.push_back(req);
             if matches!(self.approval_mode, ApprovalMode::Normal) {
                 self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
             }

@@ -803,7 +803,7 @@ What an embedder has to change:
   project layer; `Config::rhai_trusted` is what `config.yml` `rhai.trusted`
   resolves to), `ToolExecutorBuilder::skill_dirs(dirs)` (the skill-file
   write floor — `skills::skill_dirs(root, &UserLayer::FromEnv)`; none wired,
-  no floor), `rhai_trust::LAUNCH_ESCAPE_NOTE` and `skills::rejected_skills`.
+  no floor) and `skills::rejected_skills`.
 - **Behaviour:** the `rhai` launch is graded like any tool — overlay
   (deny and enable), mode rules on the script's canonical `path`
   (`permission_arg` returns it; `rhai(scripts/*)` rules work, an inline
@@ -820,7 +820,7 @@ What an embedder has to change:
   stop them — and that includes credentialed `http()` for a project-layer
   trusted folder. An overlay deny entry for `rhai` is an ordinary deny (no
   supervisor `Error` any more). A non-trusted out-of-root `path` warns on
-  the card (the text ends with `LAUNCH_ESCAPE_NOTE`); with no
+  the card (`ToolRequest.reason` is `launch_escape`, ADR-0230); with no
   `.escape_root(..)` wired, **every** out-of-root `path` — trusted or not —
   is refused outright. `skutter run` answers a launch card with Ask per
   command and rejects nested cards. Rule precedence changed for every tool,
@@ -869,6 +869,30 @@ removes `user_only`. What an embedder has to change:
   `deny:` rule on the deploy command), remove the skill (or its dir) from
   the discovered skill dirs, or set `ENTANGLEMENT_SKILLS_DIR`, which
   replaces the whole user layer ([ADR-0074](adr/0074-cross-vendor-skill-and-agent-discovery.md)).
+
+## Structured card reason and honest scopes (ADR-0230, #836/#846)
+
+- **Wire:** `OutEvent::ToolRequest` gains `reason: Option<CardReason>`
+  (`root_escape` / `floored_write` / `script_launch` / `inline_launch` /
+  `launch_escape`; absent on an ordinary card) and `scopes:
+  Vec<ApprovalScope>`. These are the scopes an `Approve` honors, starting with
+  `Once`. Both are serde-defaulted and omitted when empty, so an old frame or
+  log record still parses (and re-serializes byte-identically); a current
+  runtime always sends `scopes`. The runtime enforces them: an `Approve`
+  with a scope the card did not offer is clamped to `Once`.
+  `PendingApproval` gains `card_reason` under the same rule. Build approval
+  options from `scopes` and branch on `reason`; never parse `input`. Treat an
+  empty `scopes` (an older producer) as `[Once]`.
+- **Behaviour:** a floored write and an inline `rhai` launch now advertise
+  `[Once]` only, since neither ever recorded a wider grant.
+- **Changed:** `pending::approval` takes a trailing `Option<CardReason>`;
+  `pending::scopes_for` takes the card reason too. **Added:**
+  `pending::headless_starts(reason)`, the "nobody to ask" decision `skutter
+  run` uses. **Removed:** `rhai_trust::LAUNCH_ESCAPE_NOTE`. It was added
+  earlier in this release cycle; match on `CardReason::LaunchEscape`
+  instead.
+- **Constructing `OutEvent::ToolRequest`** (for example, in a test head)
+  needs the two new fields: `reason: None, scopes: Vec::new()`.
 
 ## TLS and the rustls crypto provider
 

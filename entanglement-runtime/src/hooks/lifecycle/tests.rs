@@ -185,6 +185,8 @@ fn approval_and_question_park_fire_notification() {
             request_id: "r1".into(),
             tool: "bash".into(),
             input: r#"{"command":"ls"}"#.into(),
+            reason: None,
+            scopes: Vec::new(),
         })
         .unwrap();
     assert_eq!(f.event, HookEvent::Notification);

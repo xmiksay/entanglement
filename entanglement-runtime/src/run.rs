@@ -6,7 +6,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
-use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{CardReason, Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
 pub(crate) mod render;
@@ -132,18 +132,19 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
         // reason the model can act on (retry inside the root, run `--mode auto`
         // for an unattended posture, or rerun interactively via `tui`) instead.
         //
-        // The one exception is a `rhai` launch card (ADR-0228): with nobody to
+        // The one exception is an in-root `rhai` launch card (ADR-0228, told
+        // by its `reason`, ADR-0230): with nobody to
         // pick **Run all**, the script starts at once **Ask per command** —
         // each nested call is still graded, and a nested `Ask` lands here as
         // its own `<tool> (rhai)` card and is refused like any other.
         if let OutEvent::ToolRequest {
             request_id,
             tool,
-            input,
+            reason,
             ..
         } = &ev
         {
-            let answer = headless_answer(&session, request_id, tool, input);
+            let answer = headless_answer(&session, request_id, tool, *reason);
             holly.send(answer).await?;
         }
         if matches!(ev, OutEvent::Done { .. }) {
@@ -156,11 +157,16 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
 /// This head's answer to a `ToolRequest`: a `rhai` launch card starts the
 /// script **Ask per command** (a `Once` approval, never `run_all`) — unless
 /// the script lies outside the project root, which no one approved; every
-/// other card — a nested `<tool> (rhai)` one included — is rejected.
-fn headless_answer(session: &SessionId, request_id: &str, tool: &str, card: &str) -> InMsg {
+/// other card — a nested `<tool> (rhai)` one included — is rejected. Decided
+/// on the card's structured `reason` (ADR-0230), never its text.
+fn headless_answer(
+    session: &SessionId,
+    request_id: &str,
+    tool: &str,
+    reason: Option<CardReason>,
+) -> InMsg {
     let (session, request_id) = (session.clone(), request_id.to_string());
-    let escapes = card.contains(entanglement_runtime::rhai_trust::LAUNCH_ESCAPE_NOTE);
-    if tool == crate::tool_names::RHAI_TOOL && !escapes {
+    if entanglement_runtime::pending::headless_starts(reason) {
         InMsg::Approve {
             session,
             request_id,
@@ -234,38 +240,36 @@ mod tests {
         );
     }
 
-    /// ADR-0228: a launch card starts the script Ask per command; a nested
-    /// card is refused like any other.
+    /// ADR-0228/ADR-0230: a launch card starts the script Ask per command;
+    /// a nested card, an out-of-root launch and a card with no launch
+    /// reason are refused — whatever the card text says.
     #[test]
     fn a_rhai_launch_runs_ask_per_command_and_a_nested_card_is_rejected() {
         let sid = SessionId::new("s");
-        match headless_answer(&sid, "r1", "rhai", "// path: \"x.rhai\"\n1") {
-            InMsg::Approve { scope, run_all, .. } => {
-                assert_eq!(scope, entanglement_core::ApprovalScope::Once);
-                assert!(!run_all);
+        for reason in [CardReason::ScriptLaunch, CardReason::InlineLaunch] {
+            match headless_answer(&sid, "r1", "rhai", Some(reason)) {
+                InMsg::Approve { scope, run_all, .. } => {
+                    assert_eq!(scope, entanglement_core::ApprovalScope::Once);
+                    assert!(!run_all);
+                }
+                other => panic!("{other:?}"),
             }
-            other => panic!("{other:?}"),
         }
-        for tool in ["write (rhai)", "bash", "rhai_extra"] {
+        for (tool, reason) in [
+            ("write (rhai)", None),
+            ("write (rhai)", Some(CardReason::FlooredWrite)),
+            ("bash", Some(CardReason::RootEscape)),
+            ("rhai", None),
+            ("rhai", Some(CardReason::LaunchEscape)),
+        ] {
             assert!(
                 matches!(
-                    headless_answer(&sid, "r2", tool, "{}"),
+                    headless_answer(&sid, "r2", tool, reason),
                     InMsg::Reject { .. }
                 ),
-                "{tool}"
+                "{tool} {reason:?}"
             );
         }
-        let escape = format!(
-            "1\n\n{}: /elsewhere/x.rhai",
-            entanglement_runtime::rhai_trust::LAUNCH_ESCAPE_NOTE
-        );
-        assert!(
-            matches!(
-                headless_answer(&sid, "r3", "rhai", &escape),
-                InMsg::Reject { .. }
-            ),
-            "an out-of-root launch is refused"
-        );
     }
 
     #[test]

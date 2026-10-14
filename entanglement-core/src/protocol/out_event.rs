@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(doc)]
 use super::InMsg;
 use super::{
-    AgentState, FileChangeKind, McpAction, McpAuthStatus, McpServerStatus, OperationInfo,
-    PendingApproval, PendingQuestion, Questions, RevertSkip, SessionId, SessionInfo,
-    ToolOverlayEntry,
+    AgentState, ApprovalScope, CardReason, FileChangeKind, McpAction, McpAuthStatus,
+    McpServerStatus, OperationInfo, PendingApproval, PendingQuestion, Questions, RevertSkip,
+    SessionId, SessionInfo, ToolOverlayEntry,
 };
 
 mod accessors;
@@ -345,6 +345,17 @@ pub enum OutEvent {
         request_id: String,
         tool: String,
         input: String,
+        /// Why this card is not an ordinary `Ask` (ADR-0230) — what a head
+        /// decides on instead of the card text. Absent on an ordinary card
+        /// and in a pre-ADR-0230 log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<CardReason>,
+        /// The [`ApprovalScope`]s an `Approve` on this card actually honors,
+        /// starting with `Once` — what a head offers (ADR-0230, the same
+        /// list [`PendingApproval::scopes`] reports). Empty only from a
+        /// pre-ADR-0230 producer: offer `Once` alone.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scopes: Vec<ApprovalScope>,
     },
     /// Core asks the runtime to execute a host tool that is cleared to run
     /// (permission `Allow`, or `Ask` after approval). The runtime executes it

@@ -1,7 +1,7 @@
 use super::*;
 use crate::tui::app::App;
 use crate::tui::theme::hash_profile_color;
-use entanglement_core::{OutEvent, SessionId};
+use entanglement_core::{ApprovalKind, CardReason, OutEvent, SessionId};
 
 fn line_text(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
@@ -334,13 +334,96 @@ fn feed_tool_request(
     tool: &str,
     input: &str,
 ) {
+    feed_card(app, sid, (seq, request_id), tool, input, None);
+}
+
+/// A card carrying `reason`, its scopes the runtime's own
+/// (`pending::scopes_for`) — what a real park emits.
+fn feed_card(
+    app: &mut App,
+    sid: &SessionId,
+    (seq, request_id): (u64, &str),
+    tool: &str,
+    input: &str,
+    reason: Option<CardReason>,
+) {
+    let kind = match tool {
+        crate::tool_names::PROPOSE_PLAN_TOOL => ApprovalKind::Plan,
+        crate::tool_names::RHAI_TOOL => ApprovalKind::Rhai,
+        _ => ApprovalKind::Tool,
+    };
     app.handle_out_event(OutEvent::ToolRequest {
         session: sid.clone(),
         seq,
         request_id: request_id.to_string(),
         tool: tool.to_string(),
         input: input.to_string(),
+        reason,
+        scopes: entanglement_runtime::pending::scopes_for(kind, tool, reason),
     });
+}
+
+/// The footer's concatenated text.
+fn footer_text(app: &mut App) -> String {
+    render_body_lines(app, 100)
+        .lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.to_string())
+        .collect()
+}
+
+/// #846, ADR-0230: the footer reads the card's `scopes` — a floored write
+/// and an inline launch offer no `[s]`/`[a]`, which they would not honor.
+#[test]
+fn approval_tail_footer_offers_only_the_scopes_the_card_honors() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    let floored = Some(CardReason::FlooredWrite);
+    feed_card(&mut app, &sid, (1, "t1"), "write", "{}", floored);
+    let text = footer_text(&mut app);
+    assert!(text.contains("[y]") && text.contains("[n]"), "{text:?}");
+    assert!(!text.contains("[s]") && !text.contains("[a]"), "{text:?}");
+
+    let mut app = App::new_for_test(sid.clone());
+    let inline = Some(CardReason::InlineLaunch);
+    feed_card(
+        &mut app,
+        &sid,
+        (1, "t1"),
+        crate::tool_names::RHAI_TOOL,
+        "1",
+        inline,
+    );
+    let text = footer_text(&mut app);
+    assert!(
+        text.contains("[r]") && text.contains("ask per command"),
+        "{text:?}"
+    );
+    assert!(!text.contains("[s]") && !text.contains("[a]"), "{text:?}");
+
+    // An older producer's card (no scopes) offers `Once` alone.
+    let mut app = App::new_for_test(sid.clone());
+    app.handle_out_event(OutEvent::ToolRequest {
+        session: sid.clone(),
+        seq: 1,
+        request_id: "t1".into(),
+        tool: "bash".into(),
+        input: "{}".into(),
+        reason: None,
+        scopes: Vec::new(),
+    });
+    let text = footer_text(&mut app);
+    assert!(text.contains("[y]") && !text.contains("[s]"), "{text:?}");
+}
+
+/// The read-only triad's `[d]` rides its `SessionDir` scope.
+#[test]
+fn approval_tail_footer_shows_dir_for_the_read_triad() {
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_request(&mut app, &sid, 1, "t1", "read", r#"{"path":"a"}"#);
+    assert!(footer_text(&mut app).contains("[d]"));
 }
 
 #[test]

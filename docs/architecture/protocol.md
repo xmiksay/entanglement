@@ -53,7 +53,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | SessionList{correlation_id,sessions:[SessionInfo]}   // reply to ListSessions, no seq/session (#160, ADR-0072); SessionInfo = {session,parent?,predecessor?,agent,root,user?} — no profile_detail (deleted, ADR-0207: no more permission posture to resolve into it)
          | QuestionList{correlation_id,questions:[PendingQuestion]}   // reply to InMsg::ListQuestions, no seq/session (#515, ADR-0146); PendingQuestion = {session,request_id,questions:[Question]}
          | OperationList{correlation_id,operations:[OperationInfo]}   // reply to InMsg::ListOperations, no seq/session (#607, ADR-0161 §6); OperationInfo = {session,kind:"job"|"agent"|"script",handle,launched_by,elapsed_secs,status:"running"|"complete"}
-         | PendingList{correlation_id,approvals:[PendingApproval]}   // reply to InMsg::ListPending, no seq/session (#726, ADR-0217); PendingApproval = {session,request_id,kind:"tool"|"plan"|"mode"|"rhai",tool,input,reason,scopes:[ApprovalScope],since_ms} — tool/input byte-identical to the ToolRequest that prompted; ask_user parks excluded (ListQuestions lists those)
+         | PendingList{correlation_id,approvals:[PendingApproval]}   // reply to InMsg::ListPending, no seq/session (#726, ADR-0217); PendingApproval = {session,request_id,kind:"tool"|"plan"|"mode"|"rhai",tool,input,reason,scopes:[ApprovalScope],since_ms,card_reason?} — tool/input/scopes/card_reason identical to the ToolRequest that prompted (its reason/scopes); ask_user parks excluded (ListQuestions lists those)
          | McpList{correlation_id,servers:[McpServerStatus]}   // reply to InMsg::McpList, no seq/session (#375); every registered server, connected or not (ADR-0226: registered = available); McpServerStatus.state? retired — serde-defaulted for old logs, always None; McpServerStatus.auth? = OAuth posture (ADR-0153)
          | McpChanged{name,action,error?}   // MCP server hot-added/removed, no seq; reply to McpAdd/McpRemove (#375); `error` set = refused/failed, nothing changed (ADR-0226)
          | McpAuthChanged{status}   // MCP OAuth state change, no seq/session; reply to McpAuth — a Connect emits twice, interim authorize_url then outcome (ADR-0153)
@@ -74,7 +74,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | ReasoningDelta{session,seq,text}   // reasoning/thinking stream (#54)
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
          | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted mcp call when core unwrapped one (ADR-0226; old logs may carry invoke, ADR-0204)
-         | ToolRequest{session,seq,request_id,tool,input}   // Ask prompt, from runtime (#59)
+         | ToolRequest{session,seq,request_id,tool,input,reason?,scopes?}   // Ask prompt, from runtime (#59); reason = CardReason "root_escape"|"floored_write"|"script_launch"|"inline_launch"|"launch_escape", absent on an ordinary card; scopes = the ApprovalScopes an Approve honors (starts with once), omitted only by a pre-ADR-0230 producer (offer once alone) — heads decide on these, never on input text (ADR-0230)
          | ToolExec{session,seq,request_id,tool,input,agent,envelope?,workdir?}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156); envelope as on ToolCall (ADR-0204); workdir = the session's absolute workdir, absent at the root (#764, ADR-0224)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
          | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?,exit_code?,envelope?}   // output = display text; content carries any result output can't rebuild exactly — an image (#221), a tool reference, several parts — for byte-identical replay (ADR-0202); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text; exit_code (#681, ADR-0186) mirrors the same field — a wire consumer can branch on a bash/call/polled-job exit status without parsing [exit N]
@@ -177,6 +177,29 @@ exactly; only the launch card is answered with `Approve.run_all`
 `ListSessions` (a multi-tenant head must scope `root` and route the reply to
 its requesting connection only, [embedding](../embedding.md) §1); the reply
 names no session, so it is never persisted.
+
+**Card reason and scopes** ([ADR-0230](../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
+`scopes` lists exactly what an `Approve` on the card honors, so a head offers
+those and nothing else. It is computed by `pending::scopes_for(kind, tool, card)`
+and is `[once]` for `propose_plan`/`request_mode` (the approver picks a mode),
+a **floored write** (it always asks, so no grant is recorded) and an **inline**
+rhai launch (no path to key a grant on, likewise a `path` launch whose
+script could not be read). Every other card gets once/session/always, plus
+`session_dir` for the read triad — but not on a `root_escape` card, whose
+grant is keyed on the exact path. The runtime **enforces** the list:
+`PendingDecisions::resolve` clamps an `Approve` whose scope the card did not
+offer to `once` and logs a warning, so a wire client cannot earn a wider
+grant (for example a durable escape-root grant) than the card advertised.
+`reason` (`CardReason`) says why a card is not an ordinary graded `Ask`:
+
+- `root_escape`: an out-of-root host/MCP call (ADR-0109);
+- `floored_write`: the write floor carded it. This outranks `root_escape`, and
+  the card text keeps the escape warning;
+- `script_launch` / `inline_launch` / `launch_escape`: a rhai launch card for
+  a `path` inside the root, an inline script, or a `path` outside the root.
+
+A head with nobody to ask starts only `script_launch`/`inline_launch`
+(`pending::headless_starts`) and refuses every other card.
 
 **Trusted/untrusted frame split** (#155, [ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an

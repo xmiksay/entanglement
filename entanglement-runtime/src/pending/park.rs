@@ -9,7 +9,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use entanglement_core::{ApprovalKind, ApprovalScope, Holly, OutEvent, PendingApproval, SessionId};
+use entanglement_core::{
+    ApprovalKind, ApprovalScope, CardReason, Holly, OutEvent, PendingApproval, SessionId,
+};
 use tokio::sync::oneshot;
 
 use super::PendingDecisions;
@@ -18,19 +20,31 @@ use crate::seam::Decision;
 
 /// The scopes an `Approve` on a `kind`/`tool` park actually honors — what a
 /// head should offer. `propose_plan`/`request_mode` ignore the scope (their
-/// approver picks a *mode*, not a grant lifetime), so only `Once`;
-/// `SessionDir` widens only the read-only triad (ADR-0126) — on any other
-/// tool it would silently degrade to `Session`, so it isn't offered.
-pub fn scopes_for(kind: ApprovalKind, tool: &str) -> Vec<ApprovalScope> {
+/// approver picks a *mode*, not a grant lifetime), so only `Once`; so is a
+/// floored write (it always asks, so no grant is recorded) and an inline
+/// `rhai` launch (no path to key a grant on). `SessionDir` widens only the
+/// read-only triad (ADR-0126), and not on an escape card — elsewhere it
+/// would silently degrade to `Session`, so it isn't offered.
+pub fn scopes_for(kind: ApprovalKind, tool: &str, card: Option<CardReason>) -> Vec<ApprovalScope> {
+    let once_only = matches!(
+        card,
+        Some(CardReason::FlooredWrite | CardReason::InlineLaunch)
+    );
     match kind {
         ApprovalKind::Plan | ApprovalKind::Mode => vec![ApprovalScope::Once],
+        ApprovalKind::Tool | ApprovalKind::Rhai if once_only => vec![ApprovalScope::Once],
         ApprovalKind::Tool | ApprovalKind::Rhai => {
             let mut scopes = vec![
                 ApprovalScope::Once,
                 ApprovalScope::Session,
                 ApprovalScope::Always,
             ];
-            if crate::tool_names::is_read_capability_member(tool) {
+            // An escape grant is keyed on the exact path (`ExtraRootStore`
+            // folds `SessionDir` into `Session`), so a directory grant would
+            // over-promise there.
+            if crate::tool_names::is_read_capability_member(tool)
+                && card != Some(CardReason::RootEscape)
+            {
                 scopes.push(ApprovalScope::SessionDir);
             }
             scopes
@@ -38,8 +52,21 @@ pub fn scopes_for(kind: ApprovalKind, tool: &str) -> Vec<ApprovalScope> {
     }
 }
 
+/// Whether a head with nobody to ask (`skutter run`) may start this card:
+/// only a `rhai` launch inside the root, which then runs Ask per command —
+/// every nested call is still graded. Decided on the structured reason, so
+/// an out-of-root launch ([`CardReason::LaunchEscape`]) — or any card
+/// without a launch reason — is refused (ADR-0230).
+pub fn headless_starts(card: Option<CardReason>) -> bool {
+    matches!(
+        card,
+        Some(CardReason::ScriptLaunch | CardReason::InlineLaunch)
+    )
+}
+
 /// Build the [`PendingApproval`] for a call about to park, stamping its
-/// scope options and park time.
+/// scope options and park time. `card` is the structured reason a head
+/// decides on (ADR-0230); it also narrows the scopes.
 pub fn approval(
     session: &SessionId,
     request_id: &str,
@@ -47,13 +74,15 @@ pub fn approval(
     tool: impl Into<String>,
     input: impl Into<String>,
     reason: impl Into<String>,
+    card: Option<CardReason>,
 ) -> PendingApproval {
     let tool = tool.into();
     PendingApproval {
         session: session.clone(),
         request_id: request_id.to_string(),
         kind,
-        scopes: scopes_for(kind, &tool),
+        scopes: scopes_for(kind, &tool, card),
+        card_reason: card,
         tool,
         input: input.into(),
         reason: reason.into(),
@@ -83,6 +112,8 @@ pub fn park_approval(
         request_id: approval.request_id.clone(),
         tool: approval.tool.clone(),
         input: approval.input.clone(),
+        reason: approval.card_reason,
+        scopes: approval.scopes.clone(),
     };
     let rx = pending.register_approval(approval.clone(), detail);
     holly.emit_for_session(&session, event);
@@ -112,9 +143,9 @@ mod tests {
 
     #[test]
     fn scopes_offer_session_dir_only_for_the_read_triad() {
-        let read = scopes_for(ApprovalKind::Tool, "read");
+        let read = scopes_for(ApprovalKind::Tool, "read", None);
         assert_eq!(read.last(), Some(&ApprovalScope::SessionDir));
-        let bash = scopes_for(ApprovalKind::Tool, "bash");
+        let bash = scopes_for(ApprovalKind::Tool, "bash", None);
         assert_eq!(
             bash,
             vec![
@@ -128,15 +159,57 @@ mod tests {
     #[test]
     fn plan_and_mode_offer_only_once() {
         for kind in [ApprovalKind::Plan, ApprovalKind::Mode] {
-            assert_eq!(scopes_for(kind, "read"), vec![ApprovalScope::Once]);
+            assert_eq!(scopes_for(kind, "read", None), vec![ApprovalScope::Once]);
+        }
+    }
+
+    #[test]
+    fn floored_writes_and_inline_launches_offer_only_once() {
+        let once = vec![ApprovalScope::Once];
+        let floored = Some(CardReason::FlooredWrite);
+        assert_eq!(scopes_for(ApprovalKind::Tool, "write", floored), once);
+        assert_eq!(
+            scopes_for(ApprovalKind::Rhai, "write (rhai)", floored),
+            once
+        );
+        let inline = Some(CardReason::InlineLaunch);
+        assert_eq!(scopes_for(ApprovalKind::Rhai, "rhai", inline), once);
+    }
+
+    #[test]
+    fn grant_earning_reasons_keep_every_scope() {
+        let full = scopes_for(ApprovalKind::Tool, "bash", None);
+        for (kind, tool, card) in [
+            (ApprovalKind::Tool, "bash", CardReason::RootEscape),
+            (ApprovalKind::Rhai, "rhai", CardReason::ScriptLaunch),
+            (ApprovalKind::Rhai, "rhai", CardReason::LaunchEscape),
+        ] {
+            assert_eq!(scopes_for(kind, tool, Some(card)), full, "{card:?}");
+        }
+        // An escape grant is exact-path: no directory scope on the triad.
+        let read = scopes_for(ApprovalKind::Tool, "read", Some(CardReason::RootEscape));
+        assert_eq!(read, full);
+    }
+
+    #[test]
+    fn headless_starts_only_an_in_root_launch() {
+        assert!(headless_starts(Some(CardReason::ScriptLaunch)));
+        assert!(headless_starts(Some(CardReason::InlineLaunch)));
+        for card in [
+            None,
+            Some(CardReason::LaunchEscape),
+            Some(CardReason::RootEscape),
+            Some(CardReason::FlooredWrite),
+        ] {
+            assert!(!headless_starts(card), "{card:?}");
         }
     }
 
     #[test]
     fn approval_stamps_scopes_and_time() {
         let s = SessionId::new("s");
-        let a = approval(&s, "r1", ApprovalKind::Tool, "grep", "{}", "why");
-        assert_eq!(a.scopes, scopes_for(ApprovalKind::Tool, "grep"));
+        let a = approval(&s, "r1", ApprovalKind::Tool, "grep", "{}", "why", None);
+        assert_eq!(a.scopes, scopes_for(ApprovalKind::Tool, "grep", None));
         assert!(a.since_ms > 0);
         assert_eq!((a.tool.as_str(), a.input.as_str()), ("grep", "{}"));
     }
@@ -147,7 +220,7 @@ mod tests {
         let s = SessionId::new("s");
         // A timed-out park drops its receiver but never removes its entry.
         drop(pending.register_approval(
-            approval(&s, "r", ApprovalKind::Tool, "bash", "ls", "why"),
+            approval(&s, "r", ApprovalKind::Tool, "bash", "ls", "why", None),
             "bash",
         ));
         assert!(pending.approvals(|_| true).is_empty());
@@ -161,11 +234,19 @@ mod tests {
         let (a, b) = (SessionId::new("a"), SessionId::new("b"));
         let _q = pending.register(&a, "q", "ask_user", "q");
         let _ra = pending.register_approval(
-            approval(&a, "ra", ApprovalKind::Tool, "bash", "ls", "r"),
+            approval(&a, "ra", ApprovalKind::Tool, "bash", "ls", "r", None),
             "bash",
         );
         let _rb = pending.register_approval(
-            approval(&b, "rb", ApprovalKind::Mode, "request_mode", "{}", "r"),
+            approval(
+                &b,
+                "rb",
+                ApprovalKind::Mode,
+                "request_mode",
+                "{}",
+                "r",
+                None,
+            ),
             "build",
         );
         let all = list_pending(&pending, &agents, None);
