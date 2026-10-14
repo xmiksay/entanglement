@@ -55,6 +55,7 @@ impl SessionView {
             input: command,
             output: Some(output),
             is_error: false,
+            nested: Vec::new(),
         });
     }
 
@@ -371,6 +372,9 @@ impl SessionView {
             // Same shape for the captured extended-thinking block: the live
             // `ReasoningDelta` lines already rendered this reasoning, so advance
             // the dedupe guard without adding a duplicate transcript entry.
+            ev @ (OutEvent::NestedCall { .. } | OutEvent::NestedCallSummary { .. }) => {
+                self.fold_nested_call(&ev)
+            }
             OutEvent::SearchResult { seq, .. } | OutEvent::ReasoningBlock { seq, .. } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;

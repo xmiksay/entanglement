@@ -239,6 +239,27 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Captured extended-thinking block: the persistence rail for reasoning
         // already rendered live via `ReasoningDelta` — nothing new to show.
         OutEvent::ReasoningBlock { .. } => {}
+        // A `rhai` script's nested calls (ADR-0233): live-only compact lines
+        // indented under the script's own `→ rhai` call.
+        OutEvent::NestedCall {
+            index,
+            tool,
+            args,
+            duration_ms,
+            is_error,
+            ..
+        } => {
+            let sigil = if *is_error { '✗' } else { '↳' };
+            let line = summary::nested_call_line(*index, tool, args, *duration_ms);
+            writeln!(out, "  {sigil} {line}")?
+        }
+        OutEvent::NestedCallSummary {
+            suppressed, errors, ..
+        } => writeln!(
+            out,
+            "  ↳ {}",
+            summary::nested_summary_line(*suppressed, *errors)
+        )?,
         // Session-log outage (#767): engine-global, so `run_one` prints it to
         // stderr via `persistence_notice` before its session filter.
         OutEvent::PersistenceDegraded { .. } | OutEvent::PersistenceRecovered { .. } => {}
@@ -286,81 +307,4 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use entanglement_core::SessionId;
-
-    fn render(ev: &OutEvent) -> String {
-        let mut buf = Vec::new();
-        render_text(&mut buf, ev).expect("render into a Vec never fails");
-        String::from_utf8(buf).expect("rendered text is UTF-8")
-    }
-
-    #[test]
-    fn tool_call_prints_the_real_name_and_a_readable_summary() {
-        let text = render(&OutEvent::ToolCall {
-            session: SessionId::new("s"),
-            seq: 1,
-            request_id: "c1".to_string(),
-            tool: "mcp__chess__move".to_string(),
-            input: r#"{"move":"e2e4"}"#.to_string(),
-            envelope: None,
-            provider_meta: None,
-        });
-        assert_eq!(text, "→ chess › move  e2e4\n");
-    }
-
-    #[test]
-    fn json_tool_output_prints_key_value_lines() {
-        let text = render(&OutEvent::ToolOutput {
-            session: SessionId::new("s"),
-            seq: 2,
-            request_id: "c1".to_string(),
-            tool: "mcp__chess__move".to_string(),
-            output: r#"{"moves":["e4"],"ok":true}"#.to_string(),
-            content: vec![],
-            is_error: false,
-            duration_ms: None,
-            exit_code: None,
-            envelope: None,
-        });
-        assert_eq!(text, "= moves:\n    - e4\n  ok: true\n");
-    }
-
-    #[test]
-    fn persistence_transitions_get_one_stderr_line_each() {
-        let degraded = persistence_notice(&OutEvent::PersistenceDegraded {
-            root: SessionId::new("r1"),
-            error: "disk full".into(),
-        })
-        .expect("degraded notice");
-        assert!(degraded.starts_with("⚠ session log r1"), "{degraded}");
-        assert!(degraded.contains("disk full"), "{degraded}");
-        assert!(!degraded.contains('\n'), "one line: {degraded}");
-        let recovered = persistence_notice(&OutEvent::PersistenceRecovered {
-            root: SessionId::new("r1"),
-            lost: 3,
-        })
-        .expect("recovered notice");
-        assert!(
-            recovered.starts_with("✓ session log r1 recovered"),
-            "{recovered}"
-        );
-        assert!(recovered.contains("3 record(s) lost"), "{recovered}");
-        // The stdout renderer leaves them to the stderr line.
-        let ev = OutEvent::PersistenceRecovered {
-            root: SessionId::new("r1"),
-            lost: 3,
-        };
-        assert_eq!(render(&ev), "");
-    }
-
-    #[test]
-    fn other_events_get_no_persistence_notice() {
-        let ev = OutEvent::Status {
-            session: SessionId::new("s"),
-            state: AgentState::Idle,
-        };
-        assert_eq!(persistence_notice(&ev), None);
-    }
-}
+mod tests;

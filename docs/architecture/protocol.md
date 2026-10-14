@@ -91,7 +91,22 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | AmbiguousRetry{session,seq,nudge}   // ambiguous LLM stop → bounded in-place retry: persisted boundary so replay reconstructs the partial round + nudge, not one merged assistant message (ADR-0118)
          | SearchResult{session,seq,part}   // persisted provider-side web-search block (ContentPart::ProviderSearch); replay folds it into the assistant Message's content like TextDelta (#481, ADR-0131)
          | ReasoningBlock{session,seq,part}   // persisted extended-thinking block (ContentPart::Reasoning); same replay fold as SearchResult. The *persistence* rail for reasoning — ReasoningDelta above is the *display* rail and is never folded into Context; both fire for the same thinking. Capture is unconditional; whether the block is sent back is ModelEntry::replay_thinking (ADR-0160)
+         | NestedCall{session,parent_request_id,index,tool,args?,duration_ms,is_error?}   // LIVE ONLY, no seq: one binding call of a running rhai script, emitted by the runtime's binding bridge (index 1-based per run; args a bounded, credential-free summary). First 50 calls of a run only; never persisted (OutEvent::is_live_only, the persistence tap skips it), replayed or folded into Context (#821, ADR-0233)
+         | NestedCallSummary{session,parent_request_id,suppressed,errors}   // LIVE ONLY, no seq: once at a script's end, only when calls past the 50-call cap were held back — `suppressed` of them, `errors` failed (#821, ADR-0233)
 ```
+
+**Live-only events — a script's nested calls** ([ADR-0233](../adr/0233-live-only-nested-call-events-for-rhai-scripts.md), #821).
+`NestedCall`/`NestedCallSummary` carry `session` (so every head routes them
+like any session event) but no `seq`, and `OutEvent::is_live_only()` is true
+for exactly these two: the persistence tap skips them, so they never reach a
+session log, `ReplayFrom`'s `History` or `Context`. They are derived display
+data — the outer `rhai` `ToolExec`/`ToolOutput` stays the content record — and
+the runtime emits them through `Holly::emit_live`, which refuses any other
+variant. `parent_request_id` (not `request_id`) names the `rhai` call, so no
+head pairs a nested report with an output of its own. A script's first 50
+binding calls are each reported; the rest are only counted, into one
+`NestedCallSummary` when the script ends — blocking and `background: true`
+runs alike.
 
 **`envelope` — an unwrapped `mcp` call** ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 `ToolEnvelope{tool,input}` is the call exactly as the model emitted it: the

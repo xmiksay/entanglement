@@ -229,6 +229,16 @@ mod mcp_namespace {
         assert_eq!(reqs.len(), 1, "{reqs:?}");
         assert_eq!(reqs[0].0, "mcp__stub-srv__call (rhai)");
         assert!(rhai_result(&events).contains("echo:hi"), "{events:?}");
+        // ADR-0233: the namespace call is a nested call like any binding —
+        // reported under its real name, its args as key names only.
+        let nested: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                OutEvent::NestedCall { tool, args, .. } => Some((tool.as_str(), args.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nested, [("mcp__stub-srv__call", "msg")]);
     }
 }
 

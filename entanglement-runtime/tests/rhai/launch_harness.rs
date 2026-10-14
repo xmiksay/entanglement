@@ -62,6 +62,8 @@ pub struct Seen {
     pub outputs: Vec<String>,
     /// Every card's structured fields, in order.
     pub cards: Vec<Card>,
+    /// The tool of every live `NestedCall` report (ADR-0233), in order.
+    pub nested_calls: Vec<String>,
     /// The escape-root grant store the run recorded into.
     pub store: Arc<ExtraRootStore>,
 }
@@ -282,6 +284,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         nested_cards: Vec::new(),
         outputs: Vec::new(),
         cards: Vec::new(),
+        nested_calls: Vec::new(),
         store,
     };
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(10), sub.recv()).await {
@@ -341,6 +344,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
             OutEvent::ToolOutput { tool, output, .. } if called.contains(&tool) => {
                 seen.outputs.push(output)
             }
+            OutEvent::NestedCall { tool, .. } => seen.nested_calls.push(tool),
             OutEvent::Done { .. } => break,
             _ => {}
         }

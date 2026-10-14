@@ -604,3 +604,75 @@ fn workdir_events_roundtrip_and_stay_additive() {
         exec(Some("/p/sub"))
     );
 }
+
+#[test]
+fn nested_call_events_are_live_only_session_routed_and_wire_stable() {
+    let call = OutEvent::NestedCall {
+        session: SessionId::new("s1"),
+        parent_request_id: "t1".into(),
+        index: 3,
+        tool: "read".into(),
+        args: "src/main.rs".into(),
+        duration_ms: 12,
+        is_error: true,
+    };
+    let summary = OutEvent::NestedCallSummary {
+        session: SessionId::new("s1"),
+        parent_request_id: "t1".into(),
+        suppressed: 10,
+        errors: 2,
+    };
+    for ev in [&call, &summary] {
+        // Routed to its session's heads, but no seq and never persisted.
+        assert_eq!(ev.session(), Some(&SessionId::new("s1")));
+        assert_eq!(ev.seq(), None);
+        assert!(ev.is_live_only());
+        let json = serde_json::to_string(ev).unwrap();
+        assert_eq!(&serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    }
+    assert_eq!(
+        serde_json::to_value(&call).unwrap(),
+        serde_json::json!({
+            "kind": "nested_call", "session": "s1", "parent_request_id": "t1",
+            "index": 3, "tool": "read", "args": "src/main.rs",
+            "duration_ms": 12, "is_error": true
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap(),
+        serde_json::json!({
+            "kind": "nested_call_summary", "session": "s1",
+            "parent_request_id": "t1", "suppressed": 10, "errors": 2
+        })
+    );
+}
+
+#[test]
+fn a_successful_nested_call_with_no_args_serializes_compactly() {
+    let ev = OutEvent::NestedCall {
+        session: SessionId::new("s1"),
+        parent_request_id: "t1".into(),
+        index: 1,
+        tool: "glob".into(),
+        args: String::new(),
+        duration_ms: 0,
+        is_error: false,
+    };
+    let value = serde_json::to_value(&ev).unwrap();
+    assert!(value.get("args").is_none() && value.get("is_error").is_none());
+    assert_eq!(serde_json::from_value::<OutEvent>(value).unwrap(), ev);
+}
+
+#[test]
+fn only_nested_call_events_are_live_only() {
+    let content = OutEvent::Done {
+        session: SessionId::new("s1"),
+        seq: 1,
+    };
+    let lifecycle = OutEvent::Status {
+        session: SessionId::new("s1"),
+        state: AgentState::Idle,
+    };
+    assert!(!content.is_live_only());
+    assert!(!lifecycle.is_live_only());
+}

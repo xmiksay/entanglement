@@ -46,6 +46,10 @@ pub enum TranscriptEntry {
         /// the paired output arrives; stays `false` while running and for a
         /// head-side passthrough, which never carries the field.
         is_error: bool,
+        /// A `rhai` op's live nested-call lines (ADR-0233), folded in by
+        /// `parent_request_id` so they stay under their own script — and
+        /// collapse with it. Empty for every other op, and after a resume.
+        nested: Vec<NestedLine>,
     },
     /// Standalone out-of-band notices only (`record_status`, or a `ToolOutput`
     /// with no matching call); a tool op's real output folds into its
@@ -57,7 +61,22 @@ pub enum TranscriptEntry {
     Error {
         message: String,
     },
+    /// A nested-call line whose `rhai` op is not in the transcript (ADR-0233)
+    /// — kept standalone rather than dropped, like an unmatched `ToolOutput`.
+    NestedCall(NestedLine),
     Done,
+}
+
+/// One compact line of a `rhai` script's nested-call activity (ADR-0233): a
+/// call, or the closing "+K more" summary. Live only — never in a resumed
+/// transcript or an export.
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct NestedLine {
+    pub line: String,
+    pub is_error: bool,
+    /// How many calls the line stands for: 1 for a call, `suppressed` for a
+    /// summary — so an op's header counts calls, not lines.
+    pub calls: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

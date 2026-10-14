@@ -44,7 +44,9 @@ impl OutEvent {
             | OutEvent::SkillActive { session, .. }
             | OutEvent::AmbiguousRetry { session, .. }
             | OutEvent::SearchResult { session, .. }
-            | OutEvent::ReasoningBlock { session, .. } => Some(session),
+            | OutEvent::ReasoningBlock { session, .. }
+            | OutEvent::NestedCall { session, .. }
+            | OutEvent::NestedCallSummary { session, .. } => Some(session),
             OutEvent::SessionList { .. }
             | OutEvent::QuestionList { .. }
             | OutEvent::OperationList { .. }
@@ -91,7 +93,10 @@ impl OutEvent {
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
             | OutEvent::SessionMetaChanged { .. }
-            | OutEvent::ToolOverlayChanged { .. } => None,
+            | OutEvent::ToolOverlayChanged { .. }
+            // Live-only script activity (#821): display data, not content.
+            | OutEvent::NestedCall { .. }
+            | OutEvent::NestedCallSummary { .. } => None,
             OutEvent::Plan { seq, .. }
             | OutEvent::TextDelta { seq, .. }
             | OutEvent::ReasoningDelta { seq, .. }
@@ -115,5 +120,15 @@ impl OutEvent {
             | OutEvent::SearchResult { seq, .. }
             | OutEvent::ReasoningBlock { seq, .. } => Some(*seq),
         }
+    }
+
+    /// Whether this event is live-only display data (#821, ADR-0233): routed
+    /// to its session's heads like any other, but never persisted, replayed
+    /// or folded into `Context`. The persistence tap skips these.
+    pub fn is_live_only(&self) -> bool {
+        matches!(
+            self,
+            OutEvent::NestedCall { .. } | OutEvent::NestedCallSummary { .. }
+        )
     }
 }

@@ -72,6 +72,20 @@ impl Holly {
         self.outlets.emit(make(seq));
     }
 
+    /// Broadcast a runtime-authored live-only event — a `rhai` script's
+    /// [`OutEvent::NestedCall`]/[`OutEvent::NestedCallSummary`] (#821,
+    /// ADR-0233). No `seq` and no counter touched: it is display data, never
+    /// persisted or replayed, so it must not consume the content sequence.
+    /// Any other event is refused (logged and dropped) — a content event
+    /// sent through here would silently skip the log.
+    pub fn emit_live(&self, ev: OutEvent) {
+        if ev.is_live_only() {
+            self.outlets.emit(ev);
+        } else {
+            tracing::warn!(?ev, "emit_live refused a persisted event");
+        }
+    }
+
     /// Broadcast a point-in-time lifecycle [`OutEvent::Status`] for `session`.
     /// Status carries no `seq` (it's not content, so it's exempt from the seq
     /// contract), so no counter is touched — this is the seq-less sibling of
@@ -246,5 +260,27 @@ mod tests {
         assert!(matches!(closed, Ok(Err(RecvError::Closed))), "{closed:?}");
         signal.recovered(&SessionId::new("r"), 1); // a no-op, not a panic
         PersistenceSignal::detached().recovered(&SessionId::new("r"), 1);
+    }
+
+    #[tokio::test]
+    async fn emit_live_broadcasts_live_only_events_and_refuses_content() {
+        let holly = Holly::spawn(EngineConfig::default());
+        let mut sub = holly.subscribe();
+        let sid = SessionId::new("s");
+        // A content event through the live-only door would skip the log, so
+        // it is dropped; the live event behind it is what arrives.
+        holly.emit_live(OutEvent::Done {
+            session: sid.clone(),
+            seq: 1,
+        });
+        let summary = OutEvent::NestedCallSummary {
+            session: sid,
+            parent_request_id: "t1".into(),
+            suppressed: 1,
+            errors: 0,
+        };
+        holly.emit_live(summary.clone());
+        let got = tokio::time::timeout(Duration::from_secs(5), sub.recv()).await;
+        assert!(matches!(got, Ok(Ok(ref ev)) if *ev == summary), "{got:?}");
     }
 }

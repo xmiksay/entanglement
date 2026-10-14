@@ -23,7 +23,9 @@
 //! the blocking thread sends a [`BindingCall`] over an `mpsc` and blocks on a
 //! `oneshot` reply that [`service`] fills from the seam's outcome — a refusal
 //! is a catchable exception, a result a value. Core never sees a nested
-//! call: only the outer `rhai` call is parked on a `ToolExec`.
+//! call: only the outer `rhai` call is parked on a `ToolExec`. Heads see
+//! each nested call through a live-only `NestedCall` event instead
+//! ([`activity`], ADR-0233).
 //!
 //! Resource bounds are by construction: `max_operations`, a wall-clock
 //! timeout enforced by the progress callback (and clamped onto each nested
@@ -41,6 +43,8 @@ use crate::seam;
 use crate::skills::SkillRegistry;
 use crate::tool_runner::Dispatcher;
 
+// Live per-call reports of a run's nested calls (#821, ADR-0233).
+mod activity;
 // The detached `background: true` path (#637, ADR-0185).
 mod background;
 // Pure JSON/YAML (de)serialization script functions — no IO, no permission

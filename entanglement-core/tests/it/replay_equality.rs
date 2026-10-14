@@ -49,6 +49,49 @@ async fn tool_round_then_text_round() {
     );
 }
 
+/// ADR-0233: a script's live-only nested-call reports never reach a log the
+/// runtime writes — and even a sink that kept them (this harness records
+/// every session event) replays the same history: replay ignores them.
+#[tokio::test]
+async fn live_only_nested_call_events_do_not_change_replay() {
+    let script = tool_round(vec![call("c1", "rhai", r#"{"script":"read(\"a\")"}"#)]);
+    let mut live = Run::start(vec![script, text_round("done")], no_specs());
+    live.prompt("run it").await;
+    live.until_exec("c1").await;
+    live.emit_live(entanglement_core::OutEvent::NestedCall {
+        session: live.sid.clone(),
+        parent_request_id: "c1".into(),
+        index: 1,
+        tool: "read".into(),
+        args: "a".into(),
+        duration_ms: 1,
+        is_error: false,
+    });
+    live.emit_live(entanglement_core::OutEvent::NestedCallSummary {
+        session: live.sid.clone(),
+        parent_request_id: "c1".into(),
+        suppressed: 3,
+        errors: 1,
+    });
+    live.result("c1", "a's text").await;
+    live.until_done().await;
+    assert!(
+        live.log.iter().any(|(_, ev)| ev.is_live_only()),
+        "the harness log holds the live events, so replay must skip them"
+    );
+    let history = assert_resume_is_byte_identical(live).await;
+    assert_eq!(
+        shape(&history),
+        [
+            "user:run it",
+            "assistant:[\"c1\"]",
+            "tool:c1",
+            "assistant:done[]",
+            "user:probe"
+        ]
+    );
+}
+
 #[tokio::test]
 async fn parallel_calls_resolved_in_reverse_order() {
     let batch = tool_round(vec![call("c1", "read", "{}"), call("c2", "grep", "{}")]);

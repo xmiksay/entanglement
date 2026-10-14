@@ -948,6 +948,35 @@ credentialed-`http` gate → run / unattended collapse / park
 arg validation, in-call grader, `FileChange` capture, script budget, loop
 breaker, `post_tool_use`).
 
+**Live nested-call reports** ([ADR-0233](../adr/0233-live-only-nested-call-events-for-rhai-scripts.md), #821,
+`script::activity`). The bridge's service loop is the one place every binding
+of every run passes, skill-library and `mcp::` calls included. It times each
+`Dispatcher::run` and reports it as a live-only `OutEvent::NestedCall`:
+`parent_request_id` (the `rhai` call's id), a 1-based `index`, the tool, an
+args summary, wall-clock `duration_ms` including any approval wait, and
+`is_error` for a refusal, timeout or failed run. The first
+`NESTED_CALL_EVENT_CAP` (50) calls of a run are reported one by one; later
+ones are only counted. When the run ends, one
+`NestedCallSummary{suppressed, errors}` follows if any were held back. The
+reporter emits it on drop, so a `Stop` that aborts the bridge task mid-call
+still sends it, with the cut-off call counted as failed. `narrate` narrates
+only a run's first report (`index == 1`).
+
+The args summary never carries a secret:
+- for `bash`/`call`, only the program's basename plus ` …`;
+- for any other tool, its permission argument (a path, `{METHOD} {url}`), with
+  every URL's userinfo, query and fragment cut;
+- for a tool with no permission argument, the input's key names only.
+
+It is one line of at most 80 characters, computed only for a reported call.
+`http_auth` credentials never appear in a script's input, because the `http`
+tool adds them at send time. The reports are never persisted or replayed (see
+[protocol §live-only events](protocol.md)). The TUI folds them into their
+`rhai` op, which shows every line while expanded and only the latest line
+while collapsed, with a `· N calls` count in its header. An export leaves them
+out. A
+resumed transcript shows the script's call and result without them.
+
 **Namespaces** (`script::namespaces`), generated per run:
 `mcp::<server>::<tool>(#{…})` for every tool of a connected server — and, for
 an unscoped session, the last-seen tools of an unconnected one, which the

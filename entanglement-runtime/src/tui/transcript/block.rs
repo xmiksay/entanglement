@@ -5,6 +5,7 @@ use ratatui::{
 };
 
 use crate::tui::markdown::MarkdownRenderer;
+use crate::tui::session_view::NestedLine;
 use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
 
@@ -41,19 +42,38 @@ pub(super) fn render_block(
             input,
             output,
             is_error,
+            nested,
             expanded,
             ..
-        } => flush_tool_call(
-            md,
-            tool,
-            input,
-            output.as_deref(),
-            *is_error,
-            theme,
-            tool_req,
-            available_width,
-            *expanded,
-        ),
+        } => {
+            let mut lines = flush_tool_call(
+                md,
+                tool,
+                input,
+                output.as_deref(),
+                *is_error,
+                theme,
+                tool_req,
+                available_width,
+                *expanded,
+                nested.iter().map(|n| n.calls).sum(),
+            );
+            // A `rhai` op's nested calls sit right under its header
+            // (ADR-0233): all of them while expanded, only the latest while
+            // collapsed — the header counts them. Lines 0/1 are padding +
+            // header.
+            let shown = if *expanded {
+                &nested[..]
+            } else {
+                &nested[nested.len().saturating_sub(1)..]
+            };
+            let at = lines.len().min(2);
+            let steps = shown
+                .iter()
+                .flat_map(|n| render_nested_call(n, theme, tool_req, available_width));
+            lines.splice(at..at, steps);
+            lines
+        }
         Block::User { text, pending } => render_user(text, *pending, theme, user, available_width),
         Block::ToolOutput { tool, output } => render_tool_output(
             tool.as_deref(),
@@ -64,8 +84,32 @@ pub(super) fn render_block(
             md,
         ),
         Block::Error { message } => render_error(message, theme, error, available_width),
+        Block::NestedCall(line) => render_nested_call(line, theme, tool_req, available_width),
         Block::Done => vec![Line::from("")],
     }
+}
+
+/// A script's nested call (ADR-0233): one dim `↳` line indented under the
+/// `rhai` call's header, in the tool-call colors so it reads as part of it.
+fn render_nested_call(
+    nested: &NestedLine,
+    theme: Theme,
+    colors: RoleColors,
+    available_width: u16,
+) -> Vec<Line<'static>> {
+    let (sigil, style) = if nested.is_error {
+        ("  ✗ ", theme.fg(Slot::Error))
+    } else {
+        ("  ↳ ", Style::default().fg(colors.fg).dim())
+    };
+    let nested = Line::from(vec![
+        Span::styled(sigil, style),
+        Span::styled(nested.line.clone(), style),
+    ]);
+    wrap::wrap_line(nested, available_width.saturating_sub(4))
+        .into_iter()
+        .map(|wline| theme.decorate(wline, colors, available_width))
+        .collect()
 }
 
 fn render_user(

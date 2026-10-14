@@ -61,6 +61,7 @@ impl SessionView {
                         input: call.input.clone(),
                         output: None,
                         is_error: false,
+                        nested: Vec::new(),
                     });
                 }
                 self.transcript.push(TranscriptEntry::Done);

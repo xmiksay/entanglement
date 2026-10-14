@@ -670,6 +670,46 @@ pub enum OutEvent {
         seq: u64,
         part: ContentPart,
     },
+    /// One binding call a running `rhai` script made (#821, ADR-0233):
+    /// every binding — host tools, `exec`/`bash`, `http()`, `mcp::` and the
+    /// bindings a skill's `lib.rhai` function makes — climbs the dispatch
+    /// seam, and this is the runtime's report of one such climb. Core never
+    /// sees a nested call (it parks only on ids it minted), so the outer
+    /// `rhai` `ToolExec`/`ToolOutput` stays the only content record.
+    ///
+    /// **Live only**: no `seq`, never persisted, never replayed, never in
+    /// `Context` — derived display data
+    /// ([`is_live_only`][OutEvent::is_live_only]). `parent_request_id` is the
+    /// `rhai` call's id (deliberately not `request_id`, so no head mistakes
+    /// it for a call of its own to pair an output with); `index` is the
+    /// call's 1-based position in that script run. `args` is a bounded,
+    /// credential-free one-line summary, never the call's input.
+    /// `duration_ms` is the wall-clock time the script was blocked on the
+    /// call, an approval wait included. Only a run's first 50 calls are
+    /// reported one by one; the rest are counted into one
+    /// [`NestedCallSummary`][OutEvent::NestedCallSummary].
+    NestedCall {
+        session: SessionId,
+        parent_request_id: String,
+        index: u64,
+        tool: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        args: String,
+        duration_ms: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
+    /// The calls of a `rhai` script run past the cap on individual
+    /// [`NestedCall`][OutEvent::NestedCall] reports (#821, ADR-0233): emitted
+    /// once, when the script ends, and only if any call was held back —
+    /// `suppressed` of them, `errors` of which failed. Live only, like
+    /// `NestedCall`.
+    NestedCallSummary {
+        session: SessionId,
+        parent_request_id: String,
+        suppressed: u64,
+        errors: u64,
+    },
 }
 
 #[cfg(test)]

@@ -33,6 +33,7 @@ impl SessionView {
                         input: delta,
                         output: None,
                         is_error: false,
+                        nested: Vec::new(),
                     });
                     self.streaming_tool_calls.insert(request_id, idx);
                 }
@@ -76,6 +77,7 @@ impl SessionView {
                         input: input.clone(),
                         output: None,
                         is_error: false,
+                        nested: Vec::new(),
                     });
                 }
             }
@@ -127,6 +129,61 @@ impl SessionView {
         } else {
             false
         }
+    }
+
+    /// `OutEvent::NestedCall`/`NestedCallSummary` (ADR-0233): live-only, no
+    /// `seq` to dedupe on. Folded into its `rhai` op like `fold_tool_output`
+    /// folds an output — by a reverse scan on `parent_request_id`, since two
+    /// scripts can run at once and a background one reports after later
+    /// turns — or kept standalone when that op is not in the transcript.
+    pub(super) fn fold_nested_call(&mut self, ev: &OutEvent) -> bool {
+        use crate::run::summary::{nested_call_line, nested_summary_line};
+        let (parent, line, is_error, calls) = match ev {
+            OutEvent::NestedCall {
+                index,
+                tool,
+                args,
+                duration_ms,
+                is_error,
+                parent_request_id,
+                ..
+            } => (
+                parent_request_id,
+                nested_call_line(*index, tool, args, *duration_ms),
+                *is_error,
+                1,
+            ),
+            OutEvent::NestedCallSummary {
+                suppressed,
+                errors,
+                parent_request_id,
+                ..
+            } => (
+                parent_request_id,
+                nested_summary_line(*suppressed, *errors),
+                *errors > 0,
+                *suppressed,
+            ),
+            _ => return false,
+        };
+        let entry = NestedLine {
+            line,
+            is_error,
+            calls,
+        };
+        let op = self.transcript.iter_mut().rev().find_map(|e| match e {
+            TranscriptEntry::ToolCall {
+                request_id: Some(id),
+                nested,
+                ..
+            } if id == parent => Some(nested),
+            _ => None,
+        });
+        match op {
+            Some(nested) => nested.push(entry),
+            None => self.transcript.push(TranscriptEntry::NestedCall(entry)),
+        }
+        true
     }
 
     /// `OutEvent::ToolOutput`.
