@@ -958,7 +958,13 @@ below realize one model:
   (`entanglement-runtime/src/subagent/spawn_guard.rs`). A child counts from
   its spawn until its answer arrives (a `SpawnSlot` held by its launch task),
   so a session delegating one task at a time never runs out; an idle child
-  re-woken by `agent_send` is not counted again. `runtime::permission::spawn_refusal(target,
+  re-woken by `agent_send` is not counted again. **The spawn tree survives
+  compaction** ([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)):
+  a compacting session's live children move under its successor
+  (`OutEvent::ParentChanged`) instead of dying in its close cascade, and a
+  compacting sub-agent's successor starts under the same parent; the parent's
+  handle keeps resolving, `agent_send` reaches the live session, and a root
+  successor shares its predecessor's `max_agents` count. `runtime::permission::spawn_refusal(target,
   registry)` checks only whether `target` is a known agent name — the old
   `spawner`-side `may_spawn`/allowlist checks are gone with the fields they
   read. The `agent` tool also gains a `model` parameter, validated against

@@ -258,6 +258,8 @@ impl SessionRegistry {
                 LogPayload::Gap { .. } => {}
                 // A retired frame (#720) predates anything the transcript renders.
                 LogPayload::Retired { .. } => {}
+                // An adoption pointer (ADR-0234) carries no transcript content.
+                LogPayload::Adopted { .. } => {}
             }
         }
 

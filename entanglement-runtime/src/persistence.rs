@@ -50,6 +50,14 @@ pub trait RecordSink: Send + Sync {
     fn public_error(&self, error: &anyhow::Error) -> String {
         public_error_summary(error)
     }
+
+    /// Restart `root`'s retention clock: the tap calls it on the root a moved
+    /// sub-agent's history lives in when it points the adopting root at it
+    /// (ADR-0234), so a stat-only retention keeps it. Best-effort; the
+    /// default does nothing.
+    fn touch(&self, root: &SessionId) {
+        let _ = root;
+    }
 }
 
 /// The longest [`RecordSink::public_error`] default, in chars.
@@ -84,6 +92,12 @@ impl FileSink {
 impl RecordSink for FileSink {
     fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()> {
         self.store.append(root, record)
+    }
+
+    fn touch(&self, root: &SessionId) {
+        if let Err(e) = self.store.touch(root) {
+            tracing::warn!(%root, "could not refresh the session log's retention clock: {e:#}");
+        }
     }
 }
 
@@ -149,6 +163,12 @@ fn record_gap(
 /// `SessionStarted` is seen the message's own session id is used as a fallback —
 /// the first prompt arrives before its `SessionStarted`, but for a root session
 /// the id is identical so the record lands in the same file either way.
+///
+/// A session keeps logging to the root it started under even after core
+/// re-links it under a compaction successor (`OutEvent::ParentChanged`,
+/// ADR-0234): moving its history would mean re-reading the sink. Instead the
+/// adopting root gets a [`LogPayload::Adopted`] pointer, which
+/// [`SessionStore::read_tree`] follows on resume.
 pub fn spawn_persistence_subscriber(
     holly: &Holly,
     store: SessionStore,
@@ -180,6 +200,10 @@ pub fn spawn_persistence_subscriber_with_sink(
         // `InMsg::Spawn` until the child's `SessionStarted` resolves its root
         // (#421); consumed (removed) the moment it's synthesized into a record.
         let mut pending_spawn_prompts: HashMap<SessionId, String> = HashMap::new();
+        // new parent → (moved session, its history's root) adoption pointers
+        // waiting for that parent's `SessionStarted` to resolve the root they
+        // go into: core announces the move before the successor's own start.
+        let mut pending_adoptions: HashMap<SessionId, Vec<(SessionId, SessionId)>> = HashMap::new();
         // Each side closes independently on shutdown (the supervisor drops the
         // inbound sender when it exits, then sessions drop the outbound senders).
         // Keep draining the still-open side so buffered events aren't lost — a
@@ -254,7 +278,11 @@ pub fn spawn_persistence_subscriber_with_sink(
                         if ev.is_live_only() {
                             continue;
                         }
+                        // Pointers that waited for this session's root
+                        // (below), written once its own start is logged.
+                        let mut adopted_here = Vec::new();
                         if let OutEvent::SessionStarted { session, parent, root, .. } = &ev {
+                            adopted_here = pending_adoptions.remove(session).unwrap_or_default();
                             let root_id = if *root {
                                 session.clone()
                             } else {
@@ -269,8 +297,23 @@ pub fn spawn_persistence_subscriber_with_sink(
                             .get(&session_id)
                             .cloned()
                             .unwrap_or_else(|| session_id.clone());
+                        let moved_to = match &ev {
+                            OutEvent::ParentChanged { parent, .. } => Some(parent.clone()),
+                            _ => None,
+                        };
                         let record = LogRecord::new(session_id.clone(), LogPayload::Out(ev));
                         writer.append(&root, &record, "outbound event");
+                        // The move stays logged with the session's history
+                        // (above); the adopting root gets a pointer to it.
+                        if let Some(parent) = moved_to {
+                            match roots.get(&parent).cloned() {
+                                Some(dst) => adopt(&mut writer, &dst, session_id.clone(), root.clone()),
+                                None => pending_adoptions
+                                    .entry(parent)
+                                    .or_default()
+                                    .push((session_id.clone(), root.clone())),
+                            }
+                        }
                         // The child's root is now resolvable — synthesize its
                         // spawn-initiating prompt right after `SessionStarted` so
                         // it pairs (via `pair_records`) with the child's own next
@@ -279,6 +322,9 @@ pub fn spawn_persistence_subscriber_with_sink(
                             let synthesized = InMsg::prompt(session_id.clone(), prompt);
                             let record = LogRecord::new(session_id, LogPayload::In(synthesized));
                             writer.append(&root, &record, "synthesized spawn prompt");
+                        }
+                        for (moved, from) in adopted_here {
+                            adopt(&mut writer, &root, moved, from);
                         }
                     }
                     Err(RecvError::Lagged(n)) => {
@@ -291,6 +337,17 @@ pub fn spawn_persistence_subscriber_with_sink(
         }
         writer.flush_all();
     })
+}
+
+/// Write an adoption pointer for `moved` (whose history is in root `from`)
+/// into root `dst` (ADR-0234) — nothing when both are the same file, where the
+/// move is already beside the history.
+fn adopt(writer: &mut GapWriter, dst: &SessionId, moved: SessionId, from: SessionId) {
+    if dst != &from {
+        writer.touch(&from);
+        let record = LogRecord::new(moved, LogPayload::Adopted { from });
+        writer.append(dst, &record, "adoption pointer");
+    }
 }
 
 #[cfg(test)]

@@ -38,6 +38,11 @@ impl GapWriter {
         }
     }
 
+    /// Restart `root`'s retention clock ([`RecordSink::touch`]).
+    pub(super) fn touch(&self, root: &SessionId) {
+        self.sink.touch(root);
+    }
+
     /// Appends `record` to `root`, first landing any pending gap there.
     /// `what` names the record for the error log.
     pub(super) fn append(&mut self, root: &SessionId, record: &LogRecord, what: &str) {

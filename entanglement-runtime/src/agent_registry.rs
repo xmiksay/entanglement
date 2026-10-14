@@ -2,12 +2,19 @@
 //! handle (a child `SessionId`, minted by `agent`). Records each
 //! child's completion so a later `poll` (#605, formerly `agent_poll`, ADR-0026/
 //! ADR-0161) can collect the answer.
+//!
+//! An entry follows its child across compactions (ADR-0234): the handle stays
+//! the key the parent was given, while `session` tracks the live session that
+//! now answers for it, and `parent` follows the spawning session to its own
+//! compaction successor. Both are folded eagerly from lifecycle events and
+//! re-derived from the engine's lossless directory ([`AgentRegistry::heal`])
+//! before any read that hands out ownership.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use entanglement_core::SessionId;
+use entanglement_core::{Holly, SessionId};
 use tokio::sync::watch;
 
 /// Live status of a launched sub-agent, surfaced through [`AgentRegistry`].
@@ -49,6 +56,9 @@ pub enum ChildLifecycle {
 struct Entry {
     started: Instant,
     parent: SessionId,
+    /// The live session answering for this handle: the handle itself until
+    /// the child compacts, then its newest successor (ADR-0234).
+    session: SessionId,
     /// The profile the child was launched under — "what launched it" in a
     /// #607 pending-operations listing.
     agent: String,
@@ -60,9 +70,11 @@ struct Entry {
 /// or proceeds on (#609, ADR-0162 §4).
 pub enum SendOutcome {
     /// Accepted: the child is `poller`'s own and live. Carries the fresh
-    /// watch sender to flip once the follow-up turn completes, plus the
-    /// instant it started (mirrors [`AgentRegistry::register`]'s return).
-    Ok(watch::Sender<AgentStatus>, Instant),
+    /// watch sender to flip once the follow-up turn completes, the instant
+    /// it started (mirrors [`AgentRegistry::register`]'s return), and the
+    /// live session to prompt — the handle's newest compaction successor,
+    /// or the handle itself (ADR-0234).
+    Ok(watch::Sender<AgentStatus>, Instant, SessionId),
     /// No such handle was ever launched by `poller` — either it doesn't
     /// exist at all, or it belongs to a different session (#618's ownership
     /// scoping, generalized: the same message either way, so a stranger's
@@ -82,9 +94,20 @@ pub enum SendOutcome {
 pub struct AgentOpInfo {
     pub session: SessionId,
     pub handle: String,
+    /// The live session behind `handle` — differs from it once the child
+    /// compacted (ADR-0234), and is what owns the child's own sub-agents.
+    pub child_session: SessionId,
     pub agent: String,
     pub elapsed: Duration,
     pub status: AgentStatus,
+}
+
+/// Where the engine says a tracked child is now (ADR-0234): the live session
+/// behind it and that session's spawn parent. Produced by the lookup
+/// [`AgentRegistry::heal`] takes.
+pub struct Placement {
+    pub session: SessionId,
+    pub parent: Option<SessionId>,
 }
 
 /// Shared table of launched sub-agents keyed by child `SessionId` (the handle
@@ -116,16 +139,50 @@ impl AgentRegistry {
         let (tx, rx) = watch::channel(AgentStatus::Running);
         let started = Instant::now();
         self.lock().insert(
-            child,
+            child.clone(),
             Entry {
                 started,
                 parent,
+                session: child,
                 agent,
                 status: rx,
                 lifecycle: ChildLifecycle::Live,
             },
         );
         (tx, started)
+    }
+
+    /// Track a sub-agent this registry never launched — one a resume rebuilt
+    /// in a fresh process, announced by its `SessionStarted { parent }`
+    /// (ADR-0234). `handle` is the id the parent knew it by: the head of the
+    /// session's compaction lineage.
+    /// Returns the sender a watcher flips on the child's next answer, or
+    /// `None` when the session or handle is already tracked (a live launch,
+    /// or a same-process hibernate/resume).
+    pub fn track_resumed(
+        &self,
+        handle: SessionId,
+        session: SessionId,
+        parent: SessionId,
+        agent: String,
+    ) -> Option<watch::Sender<AgentStatus>> {
+        let mut map = self.lock();
+        if map.contains_key(&handle) || map.values().any(|e| e.session == session) {
+            return None;
+        }
+        let (tx, rx) = watch::channel(AgentStatus::Running);
+        map.insert(
+            handle,
+            Entry {
+                started: Instant::now(),
+                parent,
+                session,
+                agent,
+                status: rx,
+                lifecycle: ChildLifecycle::Live,
+            },
+        );
+        Some(tx)
     }
 
     /// Drop a child that never actually launched (the `Spawn` send failed), so a
@@ -140,19 +197,16 @@ impl AgentRegistry {
     /// registry never tracked (not every hibernating session is a launched
     /// sub-agent).
     pub fn mark_hibernated(&self, child: &SessionId) {
-        if let Some(e) = self.lock().get_mut(child) {
-            e.lifecycle = ChildLifecycle::Hibernated;
-        }
+        self.set_lifecycle(child, ChildLifecycle::Hibernated);
     }
 
     /// Record `child`'s session as closed/tombstoned (#609, ADR-0162 §4) —
     /// folded from an engine-wide `OutEvent::SessionEnded`, which only ever
-    /// fires on a `CloseSession` cascade (ADR-0028). Terminal: nothing marks
-    /// a closed entry live again.
+    /// fires on a `CloseSession` cascade (ADR-0028). Terminal for that
+    /// session: only a compaction successor taking over the handle
+    /// ([`Self::follow_successor`], [`Self::heal`]) makes the entry live again.
     pub fn mark_closed(&self, child: &SessionId) {
-        if let Some(e) = self.lock().get_mut(child) {
-            e.lifecycle = ChildLifecycle::Closed;
-        }
+        self.set_lifecycle(child, ChildLifecycle::Closed);
     }
 
     /// Record `child`'s session as live again (#609, ADR-0162 §4) — folded
@@ -160,9 +214,66 @@ impl AgentRegistry {
     /// resume (ADR-0112) re-emits for a previously-hibernated id. A no-op for
     /// a fresh registration (already `Live`) or an untracked id.
     pub fn mark_live(&self, child: &SessionId) {
-        if let Some(e) = self.lock().get_mut(child) {
+        self.set_lifecycle(child, ChildLifecycle::Live);
+    }
+
+    /// Lifecycle events name the live session, not the handle, so they match
+    /// on `session`: once a child compacted, its retired id's `SessionEnded`
+    /// no longer touches the entry (ADR-0234).
+    fn set_lifecycle(&self, session: &SessionId, lifecycle: ChildLifecycle) {
+        for e in self.lock().values_mut().filter(|e| &e.session == session) {
+            e.lifecycle = lifecycle;
+        }
+    }
+
+    /// Eager fold of a compaction successor's `SessionStarted` (ADR-0234):
+    /// every handle answered by `source` is now answered by `successor`,
+    /// live again even if `source`'s `SessionEnded` was folded first (the two
+    /// come from different tasks, so their broadcast order is not fixed).
+    pub fn follow_successor(&self, source: &SessionId, successor: &SessionId) {
+        for e in self.lock().values_mut().filter(|e| &e.session == source) {
+            e.session = successor.clone();
             e.lifecycle = ChildLifecycle::Live;
         }
+    }
+
+    /// Eager fold of an `OutEvent::ParentChanged` (ADR-0234): the child
+    /// whose live session is `session` now belongs to `parent`.
+    pub fn reparent(&self, session: &SessionId, parent: &SessionId) {
+        for e in self.lock().values_mut().filter(|e| &e.session == session) {
+            e.parent = parent.clone();
+        }
+    }
+
+    /// Re-derive every entry's live session, parent and liveness from
+    /// `locate` — the lossless counterpart to the eager folds above, which
+    /// read a lossy broadcast (the ADR-0231 pattern, extended by ADR-0234).
+    /// An entry `locate` cannot place (closed, hibernated) is left as is,
+    /// so an already-closed child stays closed and keeps its owner.
+    pub fn heal(&self, locate: impl Fn(&SessionId) -> Option<Placement>) {
+        for e in self.lock().values_mut() {
+            let Some(place) = locate(&e.session) else {
+                continue;
+            };
+            e.session = place.session;
+            if let Some(parent) = place.parent {
+                e.parent = parent;
+            }
+            e.lifecycle = ChildLifecycle::Live;
+        }
+    }
+
+    /// [`Self::heal`] from the engine's own directory: follow the successor
+    /// chain, then read the live session's parent.
+    pub fn heal_from(&self, holly: &Holly) {
+        self.heal(|s| {
+            let current = holly.successor_of(s).unwrap_or_else(|| s.clone());
+            let info = holly.session_info(&current)?;
+            Some(Placement {
+                session: current,
+                parent: info.parent,
+            })
+        });
     }
 
     /// Begin an `agent_send` call against `child`, as seen by `poller`
@@ -191,7 +302,7 @@ impl AgentRegistry {
                 let started = Instant::now();
                 entry.started = started;
                 entry.status = rx;
-                SendOutcome::Ok(tx, started)
+                SendOutcome::Ok(tx, started, entry.session.clone())
             }
         }
     }
@@ -228,6 +339,7 @@ impl AgentRegistry {
             .map(|(child, e)| AgentOpInfo {
                 session: e.parent.clone(),
                 handle: child.to_string(),
+                child_session: e.session.clone(),
                 agent: e.agent.clone(),
                 elapsed: e.started.elapsed(),
                 status: e.status.borrow().clone(),
@@ -435,7 +547,7 @@ mod tests {
         })
         .unwrap();
 
-        let SendOutcome::Ok(new_tx, _started) = reg.begin_send(&parent, &child) else {
+        let SendOutcome::Ok(new_tx, _started, _) = reg.begin_send(&parent, &child) else {
             panic!("expected Ok");
         };
         let (_started, rx) = reg.view(&parent, &child).expect("entry present");
@@ -455,5 +567,133 @@ mod tests {
                 elapsed: Duration::from_millis(2),
             }
         );
+    }
+
+    /// ADR-0234: once a child compacted, its handle answers from the
+    /// successor — the retired id's `SessionEnded` no longer closes it, the
+    /// parent still owns it, and a send targets the successor.
+    #[tokio::test]
+    async fn a_compacted_child_keeps_its_handle_and_answers_from_its_successor() {
+        let reg = AgentRegistry::default();
+        let (parent, child, succ) = (
+            SessionId::new("p20"),
+            SessionId::new("c20"),
+            SessionId::new("c20-succ"),
+        );
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+        reg.follow_successor(&child, &succ);
+        reg.mark_closed(&child);
+
+        assert!(reg.view(&parent, &child).is_some());
+        let SendOutcome::Ok(_, _, target) = reg.begin_send(&parent, &child) else {
+            panic!("expected Ok");
+        };
+        assert_eq!(target, succ);
+        assert_eq!(reg.snapshot(Some(&parent))[0].child_session, succ);
+    }
+
+    /// The two lifecycle events come from different tasks: an end folded
+    /// before the successor's start is undone by the start.
+    #[tokio::test]
+    async fn a_successor_start_folded_after_the_end_revives_the_handle() {
+        let reg = AgentRegistry::default();
+        let (parent, child, succ) = (
+            SessionId::new("p21"),
+            SessionId::new("c21"),
+            SessionId::new("c21-succ"),
+        );
+        reg.register(child.clone(), parent.clone(), "build".to_string());
+        reg.mark_closed(&child);
+        reg.follow_successor(&child, &succ);
+        assert!(matches!(
+            reg.begin_send(&parent, &child),
+            SendOutcome::Ok(..)
+        ));
+    }
+
+    /// ADR-0234: a re-parented child belongs to the new parent only.
+    #[tokio::test]
+    async fn reparent_moves_ownership_to_the_new_parent() {
+        let reg = AgentRegistry::default();
+        let (old, new, child) = (
+            SessionId::new("old22"),
+            SessionId::new("new22"),
+            SessionId::new("c22"),
+        );
+        reg.register(child.clone(), old.clone(), "build".to_string());
+        reg.reparent(&child, &new);
+        assert!(reg.view(&old, &child).is_none());
+        assert!(reg.view(&new, &child).is_some());
+        assert_eq!(reg.snapshot(Some(&new)).len(), 1);
+    }
+
+    /// The lossless heal places every entry the engine can place, and leaves
+    /// a closed one (which it cannot) closed and with its owner.
+    #[tokio::test]
+    async fn heal_follows_the_directory_and_leaves_a_closed_child_alone() {
+        let reg = AgentRegistry::default();
+        let (pred, succ) = (SessionId::new("pred23"), SessionId::new("succ23"));
+        let (live, closed, compacted, compacted_succ) = (
+            SessionId::new("live23"),
+            SessionId::new("closed23"),
+            SessionId::new("cmp23"),
+            SessionId::new("cmp23-succ"),
+        );
+        for child in [&live, &closed, &compacted] {
+            reg.register(child.clone(), pred.clone(), "build".to_string());
+        }
+        reg.mark_closed(&closed);
+        reg.mark_closed(&compacted);
+
+        reg.heal(|s| {
+            let place = |session: &SessionId, parent: &SessionId| Placement {
+                session: session.clone(),
+                parent: Some(parent.clone()),
+            };
+            match s.0.as_str() {
+                "live23" => Some(place(&live, &succ)),
+                "cmp23" => Some(place(&compacted_succ, &succ)),
+                _ => None,
+            }
+        });
+
+        assert!(reg.view(&succ, &live).is_some());
+        assert!(matches!(
+            reg.begin_send(&succ, &compacted),
+            SendOutcome::Ok(_, _, ref t) if t == &compacted_succ
+        ));
+        assert!(reg.view(&succ, &closed).is_none());
+        assert!(matches!(
+            reg.begin_send(&pred, &closed),
+            SendOutcome::Closed
+        ));
+    }
+
+    /// ADR-0234: a sub-agent rebuilt by a cold resume becomes pollable by its
+    /// parent, under the handle the parent knew; an already-tracked one is
+    /// left alone.
+    #[tokio::test]
+    async fn a_resumed_sub_agent_is_tracked_once() {
+        let reg = AgentRegistry::default();
+        let (parent, handle, succ) = (
+            SessionId::new("p24"),
+            SessionId::new("c24"),
+            SessionId::new("c24-succ"),
+        );
+        assert!(reg
+            .track_resumed(
+                handle.clone(),
+                succ.clone(),
+                parent.clone(),
+                "general".into()
+            )
+            .is_some());
+        assert!(matches!(
+            reg.begin_send(&parent, &handle),
+            SendOutcome::Ok(_, _, ref t) if t == &succ
+        ));
+        assert!(reg
+            .track_resumed(succ.clone(), succ, parent, "general".into())
+            .is_none());
     }
 }

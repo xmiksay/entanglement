@@ -150,6 +150,12 @@ impl SessionView {
                 self.workdir = Some(dir);
                 true
             }
+            // Re-nested under the compaction successor of its old parent
+            // (ADR-0234): the sidebar tree reads `parent()`.
+            OutEvent::ParentChanged { parent, .. } => {
+                self.parent = Some(parent);
+                true
+            }
             // The model switch (#218) shows in the app-global context bar, not the
             // per-session transcript; the ledger only notes which model the
             // next `Usage` rounds bill to (#560 `/cost` by-model split).

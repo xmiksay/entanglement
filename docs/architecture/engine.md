@@ -532,9 +532,28 @@ frames go out only after the source has finished writing its own log tail.
 
 **The successor inherits background work** ([ADR-0231](../adr/0231-compaction-successor-inherits-background-work.md)).
 The runtime moves the predecessor's background jobs, scripts and retained
-outputs to the successor when it sees `SessionStarted { predecessor }`. The
-close cascade still ends the predecessor's sub-agents (#862). See
+outputs to the successor when it sees `SessionStarted { predecessor }`. See
 [gates & host tools](gates-and-host-tools.md) §poll.
+
+**The successor keeps the spawn tree** ([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)).
+The supervisor places the successor where its source was: `Spawn.parent` is
+`None` on the fork, and a successor whose source had a parent inherits it, so
+a sub-agent that compacts stays under its parent (its mode is still the
+source's). While handling that `Spawn` it also moves the source's live direct
+children under the successor (`holly/supervisor/relink.rs`: `parent_links`,
+the directory's `SessionInfo.parent`, `ChildSpawned`, `OutEvent::ParentChanged`).
+The fork sends `CloseSession` after the `Spawn` on the same channel and the
+supervisor handles one frame at a time, so the cascade that follows finds only
+the source; no child can be caught between the two. Closed children already
+left `parent_links`; hibernated ones have no task and are retired as before.
+A `Spawn` naming a parent with a live successor joins the successor, even
+while the source is still registered between the fork's two frames, so a
+sub-agent launched in that window is not caught by the cascade.
+The source → successor chain lives in the shared `SessionDirectory`
+(`Holly::successor_of`). A moved child keeps logging to the predecessor's
+root file; the successor's file gets an adoption pointer that resume follows,
+so a cold resume of the successor restores it (see
+[heads & persistence](heads-and-persistence.md)).
 
 **The successor keeps the live binding** (#768/#776). The successor is the
 same session continuing, so a live `SetModel`/`SetGeneration`/`SetMode`/

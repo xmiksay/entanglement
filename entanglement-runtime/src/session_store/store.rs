@@ -108,6 +108,23 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Restart root `id`'s retention clock without writing a record: the tap
+    /// calls it on the file a moved sub-agent's history lives in when it
+    /// points the adopting root at it (ADR-0234). A missing file is left
+    /// missing.
+    pub fn touch(&self, id: &SessionId) -> Result<()> {
+        let path = self.session_path(id)?;
+        match OpenOptions::new().append(true).open(&path) {
+            Ok(file) => file
+                .set_modified(SystemTime::now())
+                .with_context(|| format!("Failed to touch session file: {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => {
+                Err(e).with_context(|| format!("Failed to open session file: {}", path.display()))
+            }
+        }
+    }
+
     /// Reads every record of root session `id` — see [`read_path`] for the
     /// truncated-tail vs interior-corruption contract.
     pub fn read(&self, id: &SessionId) -> Result<Vec<LogRecord>> {
@@ -141,6 +158,12 @@ impl SessionStore {
     /// mtime (`list_sessions` derives `last_active` the same way). An
     /// unreadable dir or entry is logged and skipped, not fatal — startup must
     /// not fail because pruning couldn't happen. Returns the count removed.
+    ///
+    /// Stat-only: no file is read. A file moved sub-agents were adopted from
+    /// stays fresh on its own — the tap [`touch`](Self::touch)es it when it
+    /// writes the pointer, and a live moved sub-agent keeps appending to it
+    /// (ADR-0234). Once it does age out, resuming the adopter drops that
+    /// sub-tree (`read_tree`).
     pub fn prune(&self, retention_days: u64) -> Result<usize> {
         let dir = self.dir()?;
         let entries = match std::fs::read_dir(&dir) {

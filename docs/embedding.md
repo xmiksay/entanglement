@@ -53,8 +53,10 @@ fn tenant_of(session: &SessionId) -> &str {
 
 Two kinds of session are minted by the engine, not by your head: a sub-agent
 child (the runtime's `agent` tool) and a **compaction successor** — every
-compaction forks one, a fresh *root* (`parent: None`, `predecessor: Some(source)`,
-[ADR-0205](adr/0205-every-compaction-forks-a-successor-session.md)). Both go
+compaction forks one (`predecessor: Some(source)`,
+[ADR-0205](adr/0205-every-compaction-forks-a-successor-session.md)), a root
+when its source was one and a child of the source's parent when the source was
+a sub-agent ([ADR-0234](adr/0234-live-sub-agents-survive-compaction.md)). Both go
 through `EngineConfig::id_gen` with an `IdContext` naming their lineage, and
 the default `DefaultIdGen` copies the parent's — else the predecessor's —
 prefix up to and including the first `:` ([ADR-0211](adr/0211-idgen-context-and-tenant-prefix-inheritance.md)):
@@ -182,7 +184,14 @@ biasing inbound `In` records ahead of their causally-later `Out` records so
 replay pairs them correctly (`pair_records`), and writing a `LogPayload::Gap`
 tombstone into every known root when the tap's broadcast receiver lags —
 `RecvError::Lagged` — so a resume can never silently fold an incomplete
-history.
+history. A session keeps the root it started under for life; when a parent's
+compaction moves a live sub-agent under the successor, your sink also gets a
+`LogPayload::Adopted { from }` row for the successor's root, naming the root
+whose stream holds the sub-agent's history. To resume that root with its
+moved sub-agents, prepend the named root's records for that sub-tree, as
+`SessionStore::read_tree` does for files. `RecordSink::touch(from)` is called
+alongside, so a sink with time-based retention can keep the named root
+([ADR-0234](adr/0234-live-sub-agents-survive-compaction.md)).
 
 **Gap ownership (#723): return `Err` for every record you lose.** An `Err`
 from `append` means "this record is gone", and the tap marks it for you: it
@@ -322,11 +331,19 @@ until the engine processes its `CloseSession` or hibernation, `None` for an
 unknown, closed or hibernated id, and a resume (explicit or through the
 loader above) re-registers the same lineage and `user` from the log. A
 compaction successor reports its `predecessor` and the `user` it inherited
-from it, and is persisted under its **own** root id (it is a root), so your
+from it. A root's successor is persisted under its **own** root id, so your
 sink receives its records keyed by the successor id — tenant-prefixed by the
 default generator (§1), which is what lets your loader find it again. For
 routing *events*, key on the prefix rather than `session_info`: a session's
-trailing `SessionEnded` arrives after its directory entry is gone.
+trailing `SessionEnded` arrives after its directory entry is gone. `parent`
+is the one field that can change: when a session compacts, its live sub-agents
+move under the successor (`OutEvent::ParentChanged`, ADR-0234), and
+`Holly::successor_of(id)` names the session a compacted id became
+(`Holly::lineage_head(id)` the id it started as). The runtime's executor
+treats every session that starts with a `parent` as that parent's sub-agent:
+when it has not launched it itself (a resumed sub-agent, or a child your head
+spawned directly with `InMsg::Spawn { parent }`), it registers it so the
+parent's `poll`, `agent_send` and `ListOperations` reach it.
 
 **The loader is reachable from the wire.** `Prompt`, `SetModel` and the other
 covered frames are wire-allowed, so a client relayed via `send_from_wire`

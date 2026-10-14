@@ -38,6 +38,19 @@ impl Supervisor {
             );
             return;
         }
+        // Re-learn the compaction lineages the log records, so a fresh
+        // process can still resolve a retired id to its successor and a
+        // successor back to the handle its parent knew (ADR-0234).
+        for (_, ev) in records {
+            if let OutEvent::SessionStarted {
+                session,
+                predecessor: Some(source),
+                ..
+            } = ev
+            {
+                self.session_meta.record_successor(source, session);
+            }
+        }
         let Some(children) = self.spawn_resumed(session_id, records) else {
             // A failure already emitted an `Error`; leave the id unclaimed
             // rather than half-registering it (issue #105).
@@ -101,8 +114,12 @@ impl Supervisor {
                 return None;
             }
         };
-        self.session_meta.insert(resume_meta(target, records));
         let parent = initial_session.parent.clone();
+        let mut meta = resume_meta(target, records);
+        // The replayed parent folds `ParentChanged` (ADR-0234); the
+        // `SessionStarted` `resume_meta` reads names the spawn-time one.
+        meta.parent = parent.clone();
+        self.session_meta.insert(meta);
         if let Some(p) = parent.as_ref() {
             self.parent_links.insert(target.clone(), Some(p.clone()));
         }

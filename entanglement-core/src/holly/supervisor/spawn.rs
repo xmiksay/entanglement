@@ -60,15 +60,17 @@ impl Supervisor {
                 return;
             }
         };
-        // `parent = None` is a root spawn (the `/compact` successor fork,
-        // ADR-0110): it records `predecessor` for lineage but joins no spawn
-        // sub-tree, so a `CloseSession` on the source never cascades onto it.
-        let parent = parent.clone();
+        // Where the new session sits in the spawn tree (ADR-0234): a
+        // compaction successor takes its predecessor's place — a root stays a
+        // root, a sub-agent stays under its parent — and a child naming a
+        // parent that compacted away joins that parent's successor.
+        let parent = self.placed_parent(parent.as_ref(), predecessor.as_ref());
         let is_root = parent.is_none();
         // A user is a spawn-time fact inherited from the lineage, never
         // re-specified by the spawning caller (#522): a child inherits its
-        // live parent's user, a fresh root successor (predecessor set, no
-        // parent — the `/compact` fork, ADR-0110) inherits the source's, and
+        // live parent's user (a sub-agent's compaction successor included,
+        // ADR-0234), a root successor (predecessor set, no parent — the
+        // `/compact` fork, ADR-0110) inherits the source's, and
         // only a genuine fresh root (neither set) takes the message's own
         // `user` field — the multi-user embedder's session-creation entry
         // point.
@@ -138,9 +140,12 @@ impl Supervisor {
             parent.as_ref().map(mode_of),
             predecessor.as_ref().map(mode_of),
         );
-        let lineage = match (&parent_mode, &source_mode) {
-            (Some(p), _) => Lineage::Child(p),
-            (None, Some(s)) => Lineage::Successor(s),
+        // A successor is checked first: since ADR-0234 a sub-agent's
+        // successor has a parent too, but it is still the same session going
+        // on, so it keeps the source's mode rather than re-deriving a child's.
+        let lineage = match (&source_mode, &parent_mode) {
+            (Some(s), _) => Lineage::Successor(s),
+            (None, Some(p)) => Lineage::Child(p),
             (None, None) => Lineage::Root,
         };
         let requested = Requested {
@@ -156,7 +161,7 @@ impl Supervisor {
         // over from, so a late tool result addressed to that now-retired
         // source is redirected here rather than refused.
         if let Some(source) = predecessor.as_ref() {
-            self.successors.insert(source.clone(), child.clone());
+            self.session_meta.record_successor(source, child);
         }
         self.session_meta.insert(SessionInfo {
             session: child.clone(),
@@ -170,7 +175,7 @@ impl Supervisor {
         let ev = self.events.clone();
         let cfg2 = self.cfg.clone();
         let sid = child.clone();
-        let predecessor = predecessor.clone();
+        let predecessor_for_loop = predecessor.clone();
         let parent_for_loop = parent.clone();
         let seqs2 = self.seqs.clone();
         let activity2 = self.activity.clone();
@@ -185,7 +190,7 @@ impl Supervisor {
                     agent: resolved_agent,
                     initial_session: None,
                     parent: parent_for_loop,
-                    predecessor,
+                    predecessor: predecessor_for_loop,
                     user: effective_user,
                     initial_mode,
                     spawn_model,
@@ -216,6 +221,11 @@ impl Supervisor {
             if let Some(ptx) = self.sessions.get(parent_id) {
                 let _ = ptx.send(SessionCmd::ChildSpawned(child.clone())).await;
             }
+        }
+        // Before the fork's `CloseSession` for the source is even dequeued,
+        // so its cascade finds nothing left to kill (ADR-0234).
+        if let Some(source) = predecessor.as_ref() {
+            self.adopt_children(source, child).await;
         }
     }
 

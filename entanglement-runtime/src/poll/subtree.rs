@@ -12,8 +12,9 @@
 //! reply byte-identical to the plain listing. Across a compaction, the
 //! predecessor's jobs, scripts and retained outputs follow the successor
 //! (ADR-0231), so they show up here and in the own listing as the
-//! successor's. Its sub-agents are still closed by the compaction's close
-//! cascade (#862).
+//! successor's. Its live sub-agents move under the successor too
+//! (ADR-0234), and a sub-agent that compacts stays in its parent's sub-tree,
+//! so both appear in the walk below.
 //!
 //! Visibility is the downward spawn walk ([`crate::discover::subtree_sessions`]):
 //! only sessions in the caller's own spawn sub-tree, never a sibling or an

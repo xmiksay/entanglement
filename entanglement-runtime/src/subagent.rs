@@ -243,6 +243,46 @@ async fn launch(
     }
 }
 
+/// Track a sub-agent a cold resume rebuilt, new to this process's registry,
+/// so its parent's `poll`/`agent_send`/`ListOperations` reach it again
+/// (ADR-0234). The handle is what the parent knew it by: the head of its
+/// compaction lineage, which the resume re-taught the engine's directory.
+pub(crate) fn track_resumed(
+    holly: &Holly,
+    registry: &AgentRegistry,
+    session: &SessionId,
+    parent: &SessionId,
+    agent: &str,
+) {
+    let handle = holly.lineage_head(session);
+    if let Some(tx) =
+        registry.track_resumed(handle, session.clone(), parent.clone(), agent.to_string())
+    {
+        watch_resumed(holly, parent.clone(), session.clone(), tx);
+    }
+}
+
+/// Record a resumed sub-agent's next answer for its parent's `poll`, as the
+/// launch watcher does for a fresh one. Subscribed here, synchronously, so
+/// nothing the child emits after its `SessionStarted` is missed.
+fn watch_resumed(
+    holly: &Holly,
+    parent: SessionId,
+    child: SessionId,
+    tx: tokio::sync::watch::Sender<crate::agent_registry::AgentStatus>,
+) {
+    let mut events = holly.subscribe();
+    let holly = holly.clone();
+    let started = std::time::Instant::now();
+    tokio::spawn(async move {
+        let answer = collect_child_answer(&holly, &parent, &mut events, &child).await;
+        let _ = tx.send(crate::agent_registry::AgentStatus::Complete {
+            answer,
+            elapsed: started.elapsed(),
+        });
+    });
+}
+
 /// The spawn *target* named in an `agent_spawn`/`agent` tool input — the runtime
 /// executor reads it to apply the per-profile allowlist + target-mode gate before
 /// a child is minted (#119). Mirrors [`parse_input`]'s agent resolution (a bare

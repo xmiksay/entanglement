@@ -21,6 +21,7 @@ mod agent_catalog;
 mod config;
 mod directory;
 mod emit;
+mod lineage;
 mod outlets;
 mod routing;
 mod supervisor;

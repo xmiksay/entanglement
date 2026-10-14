@@ -828,7 +828,17 @@ assistant/tool messages and the model appears to forget the conversation.
   never re-synthesizes or duplicates the record.
 - **Spawned children fold into the root file** via a `roots` map built from
   `SessionStarted { root, parent }`, so each root file is a self-contained,
-  replayable record of the whole session tree.
+  replayable record of the whole session tree. A sub-agent's compaction
+  successor starts under that sub-agent's parent, so it folds into the same
+  root file like any sub-agent. **A session logs to the root it started under
+  for life** ([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)):
+  when a parent's compaction moves a live child under the successor
+  (`OutEvent::ParentChanged`), the child's records, the move included, keep
+  going to the predecessor's file, and the tap appends a
+  `LogPayload::Adopted { from }` pointer (record session = the child) to the
+  successor's root file, deferred until that root resolves and skipped when
+  both are the same file. Moving the history instead would need the tap to
+  re-read its sink, which `RecordSink` (append-only) cannot.
 - **The `<env>` date is pinned per session** ([ADR-0202](../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §5,
   `env_date::EnvDatePins` on the shared `AdvertisingState`): the system-prompt
   resolver stamps the date a session first resolves and patches every later
@@ -836,7 +846,20 @@ assistant/tool messages and the model appears to forget the conversation.
   re-bakes a newer one — so the cached system block stays byte-identical. The
   executor forgets the pin on `SessionEnded`/`SessionHibernated`; a resumed
   session re-pins to its resume day.
-- **Resume** reads the file, `pair_records` builds the `(Option<InMsg>, OutEvent)`
+- **Resume** reads the root's tree (`SessionStore::read_tree`: the file, with
+  each `Adopted` pointer resolved to the adopted sub-tree's records from the
+  file it names, recursively, those records first — a session's records come
+  from one file in order and a pointer always names an older file, so every
+  session's history stays chronological; a pointer to a deleted or pruned file
+  drops that sub-tree, including any post-resume records it wrote into this
+  file, rather than resuming it from a partial history; a pointer the tap
+  never wrote — it is held in memory until the successor's root resolves —
+  is covered by also reading the resumed root's immediate predecessor's tree
+  (with its pointers resolved) for sessions whose last `ParentChanged` names
+  this tree — one hop, since
+  only the newest compaction can lack its pointer; each file is read once
+  per call; ADR-0234),
+  `pair_records` builds the `(Option<InMsg>, OutEvent)`
   stream, and `Holly::resume` seeds a session from `Session::replay`. The CLI
   exposes `skutter run --resume <id>` and `skutter sessions` (lists past root
   sessions for the cwd); the TUI `/resume` modal restores the full visible
@@ -853,7 +876,14 @@ assistant/tool messages and the model appears to forget the conversation.
   sub-agents instead of them silently vanishing (touching an untouched child
   id would otherwise hit the lazy-`Prompt` path's known-child refusal,
   [ADR-0168](../adr/0168-lazy-prompt-refuses-a-known-hibernated-child.md)/#639,
-  rather than actually resuming it).
+  rather than actually resuming it). Replay folds `ParentChanged`, so a moved
+  child resumes under its successor parent, and the runtime's lifecycle loop
+  registers each resumed sub-agent new to this process with the parent's
+  `AgentRegistry` (under the handle the parent knew, `Holly::lineage_head`:
+  the resume re-records every compaction lineage its log names) with a
+  watcher for its next answer, so `poll`,
+  `agent_send` and `ListOperations` reach it again. Only resume follows
+  pointers: `skutter sessions`, `ReplayFrom` and file backups stay per file.
   Both listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
   I/O), truncates it to ~60 chars on a word boundary with `…`
@@ -1071,4 +1101,8 @@ assistant/tool messages and the model appears to forget the conversation.
   unreadable dir/entry is a warn-and-skip, never fatal. A root's per-write
   file backups (`backups/<root_id>/`, [ADR-0212](../adr/0212-undo-rewind-via-per-write-file-backups.md))
   share its fate: `delete` removes them with the `.jsonl`, and `prune`
-  removes every backup directory whose `.jsonl` is gone.
+  removes every backup directory whose `.jsonl` is gone. `prune` is
+  stat-only; a file moved sub-agents were adopted from stays fresh because
+  the tap touches it when it writes the pointer and a live moved child keeps
+  appending to it (ADR-0234). Once it does age out, resuming the adopter
+  omits that sub-tree.

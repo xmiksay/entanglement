@@ -55,6 +55,19 @@ impl SpawnGuard {
         self.parents.insert(session, parent);
     }
 
+    /// A compaction successor continues its predecessor's tree (ADR-0234):
+    /// when it is a root, it shares the predecessor's running count, which
+    /// the moved sub-agents' held slots still decrement. A sub-agent
+    /// successor needs nothing — its root is unchanged.
+    pub fn inherit_budget(&mut self, predecessor: &SessionId, successor: &SessionId) {
+        if self.parent_of(successor).is_some() {
+            return;
+        }
+        if let Some(running) = self.running_per_root.get(predecessor).cloned() {
+            self.running_per_root.insert(successor.clone(), running);
+        }
+    }
+
     /// The recorded parent of `session`, if any. Lets the tool executor walk a
     /// child's ancestry to clamp its permissions to the parent chain (#77).
     pub fn parent_of(&self, session: &SessionId) -> Option<SessionId> {
@@ -176,6 +189,24 @@ mod tests {
             sandbox: None,
             sandbox_network: false,
         }
+    }
+
+    /// ADR-0234: a root successor counts the sub-agents its predecessor still
+    /// runs, and they still give their slots back.
+    #[test]
+    fn a_root_successor_shares_its_predecessors_budget() {
+        let (mut guard, ids) = guard_with_chain(&["pred"]);
+        let mode = mode_with_limits(None, Some(1));
+        let slot = guard.try_spawn(&ids[0], &mode).unwrap();
+        let succ = SessionId::new("succ");
+        guard.record_start(succ.clone(), None);
+        guard.inherit_budget(&ids[0], &succ);
+        assert!(
+            guard.try_spawn(&succ, &mode).is_err(),
+            "the cap still holds"
+        );
+        drop(slot);
+        assert!(guard.try_spawn(&succ, &mode).is_ok());
     }
 
     #[test]

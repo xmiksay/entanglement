@@ -239,12 +239,13 @@ pub async fn run_poll(
     request_id: String,
     input: String,
 ) {
-    // Self-heal the ADR-0231 move: the lifecycle fold reads a lossy
+    // Self-heal the ADR-0231/0234 moves: the lifecycle fold reads a lossy
     // broadcast, the supervisor's directory does not.
     regs.adopt_predecessor_work(
         holly.session_info(&session).and_then(|i| i.predecessor),
         &session,
     );
+    regs.agents.heal_from(&holly);
     let outcome = subtree::resolve_with_subtree(&regs, &session, &input).await;
     // The structured side channel (#636/ADR-0176, #681/ADR-0186, #695):
     // `is_error` marks the branches where the requested call never ran — an

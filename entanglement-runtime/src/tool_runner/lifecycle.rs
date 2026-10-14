@@ -77,6 +77,21 @@ pub(super) async fn run(
                     ctx.jobs.reassign_owner(p, &session);
                     ctx.scripts.reassign_owner(p, &session);
                     ctx.retained.reassign_owner(p, &session);
+                    // A compacted sub-agent's handle now answers from its
+                    // successor, and a compacted root's running sub-agents
+                    // keep counting against the same tree budget (ADR-0234).
+                    ctx.registry.follow_successor(p, &session);
+                    spawn_guard.inherit_budget(p, &session);
+                }
+                // A sub-agent a cold resume rebuilt (ADR-0234).
+                if let Some(parent) = &parent {
+                    crate::subagent::track_resumed(
+                        &ctx.holly,
+                        &ctx.registry,
+                        &session,
+                        parent,
+                        &agent,
+                    );
                 }
                 // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                 // for a previously-hibernated child (#609, ADR-0162 §4) — a
@@ -95,6 +110,12 @@ pub(super) async fn run(
                         .expect("active-agent mutex poisoned")
                         .insert(session.clone(), p);
                 }
+            }
+            // A sub-agent moved under a compaction successor (ADR-0234);
+            // `poll`/`agent_send` re-derive it if this is dropped.
+            Ok(OutEvent::ParentChanged { session, parent }) => {
+                ctx.registry.reparent(&session, &parent);
+                spawn_guard.record_start(session, Some(parent));
             }
             Ok(OutEvent::AgentChanged { session, agent }) => {
                 if let Some(p) = ctx

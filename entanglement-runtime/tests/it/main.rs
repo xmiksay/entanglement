@@ -100,6 +100,8 @@ mod propose_plan;
 mod provider_selection;
 mod record_sink;
 mod reoffer_dedupe;
+mod reparent_persistence;
+mod reparent_subagents;
 mod replay_from;
 mod request_mode;
 mod resumable_prefix;

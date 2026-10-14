@@ -113,6 +113,14 @@ impl Tracker {
                 });
                 Some(fire(HookEvent::SessionStart, session, None, extra))
             }
+            // A sub-agent moved under its parent's compaction successor
+            // (ADR-0234): its later hook payloads name the new parent.
+            OutEvent::ParentChanged { session, parent } => {
+                if let Some(meta) = self.sessions.get_mut(session) {
+                    meta.parent = Some(parent.clone());
+                }
+                None
+            }
             OutEvent::SessionEnded { session, .. } => {
                 let reason = match self.compacted.contains(session) {
                     true => "compacted",

@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 #[derive(Default)]
 struct RecordingSink {
     records: Mutex<Vec<(SessionId, LogRecord)>>,
+    touched: Mutex<Vec<SessionId>>,
 }
 
 impl RecordSink for RecordingSink {
@@ -20,6 +21,10 @@ impl RecordSink for RecordingSink {
             .unwrap()
             .push((root.clone(), record.clone()));
         Ok(())
+    }
+
+    fn touch(&self, root: &SessionId) {
+        self.touched.lock().unwrap().push(root.clone());
     }
 }
 
@@ -412,4 +417,66 @@ async fn the_tap_never_logs_live_only_nested_call_events() {
         &records[0].1.payload,
         LogPayload::Out(OutEvent::TaskList { .. })
     ));
+}
+
+/// ADR-0234: core announces the move before the successor's own start, so the
+/// adoption pointer waits for that start to resolve the successor's root; the
+/// move itself stays with the child's history.
+#[tokio::test]
+async fn a_move_announced_before_the_successor_starts_is_pointed_at_once_it_does() {
+    let holly = Holly::spawn(entanglement_core::EngineConfig::default());
+    let sink = Arc::new(RecordingSink::default());
+    let _tap = spawn_persistence_subscriber_with_sink(&holly, sink.clone());
+    let started = |s: &str, parent: Option<&str>| OutEvent::SessionStarted {
+        session: SessionId::new(s),
+        parent: parent.map(SessionId::new),
+        predecessor: None,
+        agent: "general".into(),
+        model: None,
+        root: parent.is_none(),
+        ts: 0,
+        user: None,
+    };
+    let emit = |ev: OutEvent| {
+        let session = ev.session().cloned().expect("session event");
+        holly.emit_for_session(&session, |_| ev);
+    };
+    emit(started("pred", None));
+    emit(started("kid", Some("pred")));
+    emit(OutEvent::ParentChanged {
+        session: SessionId::new("kid"),
+        parent: SessionId::new("succ"),
+    });
+    emit(started("succ", None));
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let records = loop {
+        let records = sink.records.lock().unwrap().clone();
+        if records
+            .iter()
+            .any(|(_, r)| matches!(r.payload, LogPayload::Adopted { .. }))
+        {
+            break records;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no pointer written");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    let pos = |pred: &dyn Fn(&(SessionId, LogRecord)) -> bool| {
+        records.iter().position(pred).expect("record present")
+    };
+    let moved = pos(&|(root, r)| {
+        root.0 == "pred" && matches!(r.payload, LogPayload::Out(OutEvent::ParentChanged { .. }))
+    });
+    let succ_start = pos(&|(root, r)| {
+        root.0 == "succ"
+            && matches!(&r.payload, LogPayload::Out(OutEvent::SessionStarted { session, .. }) if session.0 == "succ")
+    });
+    let pointer = pos(&|(root, r)| {
+        root.0 == "succ"
+            && r.session.0 == "kid"
+            && matches!(&r.payload, LogPayload::Adopted { from } if from.0 == "pred")
+    });
+    assert!(moved < succ_start && succ_start < pointer, "{records:?}");
+    // The history's file gets a fresh retention clock with the pointer.
+    assert_eq!(*sink.touched.lock().unwrap(), [SessionId::new("pred")]);
 }

@@ -236,14 +236,16 @@ pub fn check_for_resume(
 }
 
 impl SessionStore {
-    /// [`read`](Self::read) + [`check_for_resume`] for root session `id`.
+    /// [`read_tree`](Self::read_tree) + [`check_for_resume`] for root
+    /// session `id`: the tree includes sub-agents adopted from another root's
+    /// file (ADR-0234).
     pub fn load_for_resume(
         &self,
         id: &SessionId,
         known: impl Fn(&str) -> bool,
     ) -> Result<(Vec<LogRecord>, ResumeCheck)> {
         let records = self
-            .read(id)
+            .read_tree(id)
             .with_context(|| format!("Failed to read session records for {id}"))?;
         let check = check_for_resume(&records, known)
             .with_context(|| format!("Refusing to resume {id}"))?;

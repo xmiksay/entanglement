@@ -95,6 +95,7 @@ pub(super) fn spawn_decision_router(
                     correlation_id,
                     session,
                 }) => {
+                    op_agents.heal_from(&emitter);
                     let operations = crate::operations::list_operations(
                         &op_jobs,
                         &op_agents,
@@ -109,6 +110,9 @@ pub(super) fn spawn_decision_router(
                     correlation_id,
                     root,
                 }) => {
+                    // The `root` walk follows re-parented and compacted
+                    // sub-agents only once the registry is healed (ADR-0234).
+                    op_agents.heal_from(&emitter);
                     let approvals =
                         crate::pending::list_pending(&pending, &op_agents, root.as_ref());
                     emitter.emit_pending_list(correlation_id, approvals);
