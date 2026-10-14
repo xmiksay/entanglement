@@ -228,25 +228,19 @@ pub(crate) async fn build_config(
     );
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
     let tools = tools.shared();
-    let registered_specs = tools.read().unwrap().specs();
+    let registered_specs = tools.read().expect("tool registry lock poisoned").specs();
     // `read_raw` and the script-facing search variants (rhai-only — see
     // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
     // bindings, ADR-0206) register *after* the specs snapshot above: present
     // in `tools` for execution (the rhai bridge routes through the same
     // `ToolRegistry`), but never advertised as standalone model-callable
     // tools.
-    tools
-        .write()
-        .unwrap()
-        .register(ReadRawTool::new(root.clone()));
-    tools
-        .write()
-        .unwrap()
-        .register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
-    tools
-        .write()
-        .unwrap()
-        .register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+    {
+        let mut registry = tools.write().expect("tool registry lock poisoned");
+        registry.register(ReadRawTool::new(root.clone()));
+        registry.register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+        registry.register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+    }
     // The one advertised surface (ADR-0226): the kernel picked out of the
     // registered specs plus the runtime-owned pseudo-tools (`agent`/
     // `agent_send`, `update_tasks`, `ask_user`, `propose_plan`,
