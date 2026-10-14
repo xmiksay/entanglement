@@ -1,5 +1,6 @@
 //! The spawn sub-tree walk shared by the pending-decision machinery
-//! (`crate::pending::park`): which sessions descend from a root.
+//! (`crate::pending::park`) and a handle-less `poll`'s subtree section
+//! (`crate::poll`, #829): which sessions descend from a root.
 
 use std::collections::HashSet;
 

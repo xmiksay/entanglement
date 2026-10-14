@@ -530,6 +530,12 @@ live with. Delivery runs on a detached task, so a session task never blocks
 while the supervisor may be waiting to route into that very session, and the
 frames go out only after the source has finished writing its own log tail.
 
+**The successor inherits background work** ([ADR-0231](../adr/0231-compaction-successor-inherits-background-work.md)).
+The runtime moves the predecessor's background jobs, scripts and retained
+outputs to the successor when it sees `SessionStarted { predecessor }`. The
+close cascade still ends the predecessor's sub-agents (#862). See
+[gates & host tools](gates-and-host-tools.md) §poll.
+
 **The successor keeps the live binding** (#768/#776). The successor is the
 same session continuing, so a live `SetModel`/`SetGeneration`/`SetMode`/
 `SetToolOverlay` on the source survives the fork rather than the successor restarting on its agent's

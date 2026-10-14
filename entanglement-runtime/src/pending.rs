@@ -39,8 +39,8 @@ pub use park::{approval, headless_starts, list_pending, park_approval, scopes_fo
 /// `"tool"` (a permission `Ask`), `"plan"` (`propose_plan`), `"mode"`
 /// (`request_mode`), `"rhai"` (a script binding's own `Ask`), or `"ask_user"`
 /// (an `ask_user` call — carried here too for completeness, though a
-/// `pending` listing folds those into its own open-questions section instead
-/// of double-reporting them as approvals). `detail` is a short, already
+/// handle-less `poll`'s subtree section folds those into its open-questions
+/// rows instead of double-reporting them as approvals). `detail` is a short, already
 /// human-readable label — the tool name for `"tool"`/`"rhai"`, the requested
 /// mode for `"mode"` — never the full call input. `approval` is the full
 /// `InMsg::ListPending` payload (#726) for every kind but `"ask_user"`.

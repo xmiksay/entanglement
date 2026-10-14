@@ -161,16 +161,17 @@ pub(super) async fn agent_send(
 }
 
 pub(super) async fn poll(ctx: &LadderCtx, session: SessionId, request_id: String, input: String) {
-    let registry = ctx.registry.clone();
-    let jobs = ctx.jobs.clone();
-    let retained = ctx.retained.clone();
-    let scripts = ctx.scripts.clone();
+    let regs = crate::poll::PollRegistries {
+        jobs: ctx.jobs.clone(),
+        agents: ctx.registry.clone(),
+        retained: ctx.retained.clone(),
+        scripts: ctx.scripts.clone(),
+        pending: ctx.pending.clone(),
+        questions: ctx.open_questions.clone(),
+    };
     let holly = ctx.holly.clone();
     tokio::spawn(async move {
-        crate::poll::run_poll(
-            holly, jobs, registry, retained, scripts, session, request_id, input,
-        )
-        .await;
+        crate::poll::run_poll(holly, regs, session, request_id, input).await;
     });
 }
 

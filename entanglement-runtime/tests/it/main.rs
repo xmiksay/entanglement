@@ -95,6 +95,7 @@ mod persistence_signal;
 mod plan_tasks;
 mod plan_watch;
 mod policy_seam;
+mod poll_subtree;
 mod propose_plan;
 mod provider_selection;
 mod record_sink;

@@ -96,9 +96,9 @@ pub fn approval(
 
 /// Register `approval`'s waiter, then emit its `ToolRequest` (register-then-
 /// emit, #156, so the router can never see the decision before the waiter).
-/// `detail` is the short label a pending listing (`InMsg::ListPending`) shows; a
-/// subtree-wide listing in a handle-less `poll` is #829. The prompt
-/// mints a fresh per-session seq (#157).
+/// `detail` is the short label both pending listings show — a head's
+/// `InMsg::ListPending` and the subtree section of a handle-less `poll`
+/// (#829). The prompt mints a fresh per-session seq (#157).
 pub fn park_approval(
     holly: &Holly,
     pending: &PendingDecisions,

@@ -79,8 +79,9 @@ struct JobState {
 struct Job {
     command: String,
     /// The session that spawned this job (#605) — `None` (session-less
-    /// `Tool::run`) leaves the job visible to any poller.
-    owner: Option<SessionId>,
+    /// `Tool::run`) leaves the job visible to any poller. Behind a lock only
+    /// because a compaction successor takes it over (ADR-0231).
+    owner: Mutex<Option<SessionId>>,
     /// Group leader pid (== pgid). `None` if the child had no pid.
     pgid: Option<u32>,
     /// Wall-clock bound after which a still-running job is killed (#617) — the
@@ -166,7 +167,7 @@ impl JobRegistry {
         let pgid = child.id();
         let job = Arc::new(Job {
             command,
-            owner,
+            owner: Mutex::new(owner),
             pgid,
             timeout,
             started: Instant::now(),
@@ -251,7 +252,7 @@ impl JobRegistry {
             .expect("job registry poisoned")
             .get(id)
             .cloned()?;
-        if !owner_allows(&job.owner, caller) {
+        if !owner_allows(&job.owner(), caller) {
             return None;
         }
         if kill {
@@ -291,6 +292,12 @@ impl JobRegistry {
 /// its owner (#605).
 fn owner_allows(owner: &Option<SessionId>, caller: &SessionId) -> bool {
     owner.as_ref().is_none_or(|o| o == caller)
+}
+
+impl Job {
+    fn owner(&self) -> Option<SessionId> {
+        self.owner.lock().expect("job owner poisoned").clone()
+    }
 }
 
 /// Whether `job` has something a poll hasn't seen yet: unconsumed output or a
