@@ -152,3 +152,24 @@ async fn snapshot_ops_scopes_to_the_session() {
 
     assert_eq!(reg.snapshot_ops(None).len(), 2);
 }
+
+/// ADR-0231: only the predecessor's scripts follow the successor; a
+/// stranger's stay put, and the old id loses access.
+#[tokio::test]
+async fn reassign_owner_moves_only_the_predecessors_scripts() {
+    let reg = ScriptRegistry::new();
+    let (old, new, other) = (
+        SessionId::new("old"),
+        SessionId::new("new"),
+        SessionId::new("other"),
+    );
+    let (mine, _a) = register(&reg, &old, stop_flag());
+    let (theirs, _b) = register(&reg, &other, stop_flag());
+
+    assert_eq!(reg.reassign_owner(&old, &new), 1);
+    assert!(reg.snapshot_ops(Some(&old)).is_empty());
+    assert_eq!(reg.snapshot_ops(Some(&new))[0].handle, mine);
+    assert!(reg.poll(&mine, &old, false, 1).await.is_none());
+    assert!(reg.poll(&mine, &new, false, 1).await.is_some());
+    assert_eq!(reg.snapshot_ops(Some(&other))[0].handle, theirs);
+}

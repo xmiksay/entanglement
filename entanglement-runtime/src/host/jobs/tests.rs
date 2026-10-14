@@ -194,7 +194,7 @@ fn push_capped_drops_oldest_over_cap() {
 fn finished_job(finished_at: Instant) -> Arc<Job> {
     Arc::new(Job {
         command: "true".into(),
-        owner: None,
+        owner: Mutex::new(None),
         pgid: None,
         timeout: Duration::from_secs(60),
         started: Instant::now(),
@@ -210,7 +210,7 @@ fn finished_job(finished_at: Instant) -> Arc<Job> {
 fn running_job() -> Arc<Job> {
     Arc::new(Job {
         command: "sleep 30".into(),
-        owner: None,
+        owner: Mutex::new(None),
         pgid: None,
         timeout: Duration::from_secs(60),
         started: Instant::now(),

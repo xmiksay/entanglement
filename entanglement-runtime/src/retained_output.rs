@@ -183,6 +183,21 @@ impl RetainedOutputRegistry {
         list
     }
 
+    /// Move every entry `from` owns to `to` (ADR-0231): a compaction successor
+    /// inherits its retired predecessor's retained outputs. Returns how many
+    /// moved.
+    pub fn reassign_owner(&self, from: &SessionId, to: &SessionId) -> usize {
+        let mut inner = self.lock();
+        let mut moved = 0;
+        for e in inner.entries.values_mut() {
+            if e.owner.as_ref() == Some(from) {
+                e.owner = Some(to.clone());
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner
             .lock()
@@ -331,6 +346,25 @@ mod tests {
         let page = reg.page(&id, &owner, 0, 30).unwrap();
         assert_eq!(page.output_file.as_deref(), Some("out/result.txt"));
         assert_eq!(page.total_lines, 0);
+    }
+
+    #[test]
+    fn reassign_owner_moves_only_the_predecessors_entries() {
+        let reg = RetainedOutputRegistry::new();
+        let (old, new, other) = (
+            SessionId::new("old"),
+            SessionId::new("new"),
+            SessionId::new("other"),
+        );
+        let mine = reg.register_text(Some(old.clone()), "a".into());
+        let theirs = reg.register_text(Some(other.clone()), "b".into());
+        let ownerless = reg.register_text(None, "c".into());
+
+        assert_eq!(reg.reassign_owner(&old, &new), 1);
+        assert!(reg.page(&mine, &old, 0, 30).is_none());
+        assert!(reg.page(&mine, &new, 0, 30).is_some());
+        assert!(reg.page(&theirs, &other, 0, 30).is_some());
+        assert!(reg.page(&ownerless, &old, 0, 30).is_some());
     }
 
     #[test]

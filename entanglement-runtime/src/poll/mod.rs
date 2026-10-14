@@ -56,7 +56,9 @@
 //! session's own pending operations — every outstanding job/sub-agent it
 //! launched, with kind, handle, launcher, elapsed time, and status — via
 //! [`crate::operations::list_operations`], the same listing
-//! `InMsg::ListOperations`/`OutEvent::OperationList` expose to a head.
+//! `InMsg::ListOperations`/`OutEvent::OperationList` expose to a head — then,
+//! only when non-empty, a subtree section of retained outputs, open questions
+//! and parked approvals across its spawn sub-tree (#829, [`subtree`]).
 //!
 //! Like `agent_poll` before it, `poll` is runtime-owned and intercepted
 //! *before* permission resolution (ADR-0161 §3): it starts nothing and touches
@@ -67,6 +69,7 @@
 
 mod format;
 mod retained;
+mod subtree;
 
 use std::time::Duration;
 
@@ -84,6 +87,7 @@ use format::{
     format_job_poll, kill_refused_message, script_poll_outcome, unknown_handle, PollOutcome,
 };
 use retained::{is_retained_handle, resolve_retained};
+pub use subtree::PollRegistries;
 
 /// Default poll timeout when the model omits `timeout_secs`.
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -126,7 +130,9 @@ pub fn poll_spec() -> ToolSpec {
          reaches a terminal state. Call with no handle at all to instead list \
          this session's own pending operations — every background \
          job/script/sub-agent still outstanding, with kind, handle, launcher, \
-         elapsed time, and status.",
+         elapsed time, and status — followed, when any exist, by retained \
+         outputs, open ask_user questions and parked approvals across this \
+         session and its sub-agents.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -226,18 +232,20 @@ fn is_script_handle(handle: &str) -> bool {
 /// Orchestrate one `poll` call: dispatch on the handle's kind prefix and reply
 /// with the joined status + text. Thin wrapper over [`resolve`] so the actual
 /// join logic is testable without a live `Holly`.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_poll(
     holly: Holly,
-    jobs: JobRegistry,
-    agents: AgentRegistry,
-    retained: RetainedOutputRegistry,
-    scripts: ScriptRegistry,
+    regs: PollRegistries,
     session: SessionId,
     request_id: String,
     input: String,
 ) {
-    let outcome = resolve(&jobs, &agents, &retained, &scripts, &session, &input).await;
+    // Self-heal the ADR-0231 move: the lifecycle fold reads a lossy
+    // broadcast, the supervisor's directory does not.
+    regs.adopt_predecessor_work(
+        holly.session_info(&session).and_then(|i| i.predecessor),
+        &session,
+    );
+    let outcome = subtree::resolve_with_subtree(&regs, &session, &input).await;
     // The structured side channel (#636/ADR-0176, #681/ADR-0186, #695):
     // `is_error` marks the branches where the requested call never ran — an
     // unknown handle, a refused `kill`, a script's own terminal error —

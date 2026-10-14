@@ -61,10 +61,23 @@ pub(super) async fn run(
             Ok(OutEvent::SessionStarted {
                 session,
                 parent,
+                predecessor,
                 agent,
                 ..
             }) => {
                 spawn_guard.record_start(session.clone(), parent.clone());
+                // A compaction successor takes over its retired
+                // predecessor's background work (ADR-0231). Only a
+                // compaction sets `predecessor` — a `/fork` copy leaves its
+                // source alive and owning. This eager fold keeps a head's
+                // `ListOperations` right; a lagged drop of this event is
+                // healed by `poll`, which re-runs the move from the
+                // supervisor's directory before it reads anything.
+                if let Some(p) = &predecessor {
+                    ctx.jobs.reassign_owner(p, &session);
+                    ctx.scripts.reassign_owner(p, &session);
+                    ctx.retained.reassign_owner(p, &session);
+                }
                 // A head-driven resume (ADR-0112) re-emits `SessionStarted`
                 // for a previously-hibernated child (#609, ADR-0162 §4) — a
                 // no-op for any other session, since a fresh registration is

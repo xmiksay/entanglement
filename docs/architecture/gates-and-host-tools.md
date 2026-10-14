@@ -549,7 +549,40 @@ so a completed entry stays listed until polled by handle (never evicted,
 unlike a finished job's TTL-bounded entry); a background job is an OS process
 owned by this engine process — and a background script an in-process task with
 the same engine-bound lifetime — so neither can outlive it; a resumed session
-can therefore legitimately show agents and no jobs/scripts. `poll` is
+can therefore legitimately show agents and no jobs/scripts. When anything
+is pending in the caller's spawn sub-tree (#829 — the half of the retired
+`explore(kind: "pending")` recovery report that
+[ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+deferred), the listing is followed by a `subtree (this session and its
+sub-agents):` section (`poll/subtree.rs`) with up to three groups: retained
+outputs (owned by the caller, so pollable, or by a descendant, named for
+awareness only since the registry pages an entry to its owner alone), open
+`ask_user` questions (`OpenQuestions`), and parked approvals
+(`PendingDecisions`, `ask_user` parks excluded because the question row
+already reports them). No argument turns it on and the input schema is
+unchanged; an idle sub-tree adds nothing, so the reply is then byte-identical
+to the plain listing. Scope is the downward spawn walk
+(`discover::subtree_sessions`, the one `InMsg::ListPending`'s `root` filter
+uses), so the non-maskable, ungraded `poll` (ADR-0190) covers only sessions
+in the caller's own spawn sub-tree, never a sibling or an ancestor. Ownerless
+retained entries (the session-less `Tool::run` path) are pollable by anyone
+holding the handle, so they belong to no sub-tree and are never listed.
+**A compaction successor owns its predecessor's work**
+([ADR-0231](../adr/0231-compaction-successor-inherits-background-work.md)):
+on `SessionStarted { predecessor: Some(p) }` the executor's lifecycle loop
+calls `reassign_owner(p, successor)` on `JobRegistry`, `ScriptRegistry` and
+`RetainedOutputRegistry`, so the successor's handle-less `poll` lists the
+still-running jobs and scripts, shows the retained outputs as "yours", and
+`poll { handle }` resolves them. That fold reads the lossy shared outbox, so
+every successor `poll`, with or without a handle, first re-runs the
+idempotent move from the supervisor's directory (`Holly::session_info`'s
+`predecessor`). A lagged-away `SessionStarted`, or work the predecessor
+registered after the fold, is adopted before the poll reads anything. The
+heal is one hop: it reaches the immediate predecessor only. Closing the predecessor never
+killed these entries, so ordering against its `SessionEnded` does not
+matter. A `/fork` copy carries no `predecessor` and leaves its live source
+owning everything. The predecessor's sub-agents are still closed by the
+close cascade (#862). `poll` is
 intercepted before permission resolution exactly like `agent`
 — it starts nothing and touches no host resource, only reading state a
 previously-graded launch produced —

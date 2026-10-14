@@ -1,6 +1,7 @@
 //! Pending-operations listing for background jobs (#607, ADR-0161 §6) — the
-//! no-handle `poll`/`InMsg::ListOperations` answer with. A descendant module
-//! of `jobs`, so it reads `Job`'s private fields directly.
+//! no-handle `poll`/`InMsg::ListOperations` answer with — and the compaction
+//! ownership hand-over (ADR-0231). A descendant module of `jobs`, so it reads
+//! `Job`'s private fields directly.
 
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ impl JobRegistry {
         let mut list: Vec<JobOpInfo> = jobs
             .iter()
             .filter_map(|(id, job)| {
-                let owner = job.owner.clone()?;
+                let owner = job.owner()?;
                 if session.is_some_and(|s| s != &owner) {
                     return None;
                 }
@@ -56,6 +57,22 @@ impl JobRegistry {
             .collect();
         list.sort_by(|a, b| a.handle.cmp(&b.handle));
         list
+    }
+
+    /// Move every job `from` owns to `to` (ADR-0231): a compaction successor
+    /// inherits its retired predecessor's background work. Returns how many
+    /// moved.
+    pub fn reassign_owner(&self, from: &SessionId, to: &SessionId) -> usize {
+        let jobs = self.inner.jobs.lock().expect("job registry poisoned");
+        let mut moved = 0;
+        for job in jobs.values() {
+            let mut owner = job.owner.lock().expect("job owner poisoned");
+            if owner.as_ref() == Some(from) {
+                *owner = Some(to.clone());
+                moved += 1;
+            }
+        }
+        moved
     }
 }
 
@@ -136,6 +153,38 @@ mod tests {
 
         let _ = reg.poll(&ida, &a, true, 0).await;
         let _ = reg.poll(&idb, &b, true, 0).await;
+    }
+
+    #[tokio::test]
+    async fn reassign_owner_moves_only_the_predecessors_jobs() {
+        let reg = JobRegistry::new();
+        let (old, new, other) = (
+            SessionId::new("old"),
+            SessionId::new("new"),
+            SessionId::new("other"),
+        );
+        let spawn = |owner: Option<SessionId>| {
+            reg.spawn(
+                "sleep 30".into(),
+                sh("sleep 30"),
+                Duration::from_secs(60),
+                owner,
+            )
+            .unwrap()
+        };
+        let mine = spawn(Some(old.clone()));
+        let theirs = spawn(Some(other.clone()));
+        let ownerless = spawn(None);
+
+        assert_eq!(reg.reassign_owner(&old, &new), 1);
+        assert!(reg.snapshot(Some(&old)).is_empty());
+        assert_eq!(reg.snapshot(Some(&new))[0].handle, mine);
+        assert!(reg.poll(&mine, &old, false, 1).await.is_none());
+        assert_eq!(reg.snapshot(Some(&other))[0].handle, theirs);
+
+        let _ = reg.poll(&mine, &new, true, 0).await;
+        let _ = reg.poll(&theirs, &other, true, 0).await;
+        let _ = reg.poll(&ownerless, &new, true, 0).await;
     }
 
     #[tokio::test]

@@ -64,8 +64,9 @@ struct ScriptState {
 pub struct ScriptOp {
     label: String,
     /// The session that launched this script — `None` leaves it visible to any
-    /// poller (mirrors an ownerless job).
-    owner: Option<SessionId>,
+    /// poller (mirrors an ownerless job). Locked only so a compaction
+    /// successor can take it over (ADR-0231).
+    owner: Mutex<Option<SessionId>>,
     /// The same cooperative stop flag the engine's progress callback polls —
     /// tripping it is the only kill primitive an in-process task has.
     stop: Arc<AtomicBool>,
@@ -188,7 +189,7 @@ impl ScriptRegistry {
         self.evict_expired();
         let op = Arc::new(ScriptOp {
             label,
-            owner,
+            owner: Mutex::new(owner),
             stop,
             timeout,
             started: Instant::now(),
@@ -229,7 +230,7 @@ impl ScriptRegistry {
             .expect("script registry poisoned")
             .get(id)
             .cloned()?;
-        if !owner_allows(&op.owner, caller) {
+        if !owner_allows(&op.owner(), caller) {
             return None;
         }
         if kill {
@@ -268,12 +269,12 @@ impl ScriptRegistry {
         let mut list: Vec<ScriptOpInfo> = scripts
             .iter()
             .filter_map(|(handle, op)| {
-                let owner = op.owner.as_ref()?;
-                if session.is_some_and(|s| s != owner) {
+                let owner = op.owner()?;
+                if session.is_some_and(|s| s != &owner) {
                     return None;
                 }
                 Some(ScriptOpInfo {
-                    session: owner.clone(),
+                    session: owner,
                     handle: handle.clone(),
                     label: op.label.clone(),
                     running: !op.state.lock().expect("script state poisoned").finished,
@@ -283,6 +284,22 @@ impl ScriptRegistry {
             .collect();
         list.sort_by(|a, b| a.handle.cmp(&b.handle));
         list
+    }
+
+    /// Move every script `from` owns to `to` (ADR-0231): a compaction
+    /// successor inherits its retired predecessor's background work. Returns
+    /// how many moved.
+    pub fn reassign_owner(&self, from: &SessionId, to: &SessionId) -> usize {
+        let scripts = self.inner.scripts.lock().expect("script registry poisoned");
+        let mut moved = 0;
+        for op in scripts.values() {
+            let mut owner = op.owner.lock().expect("script owner poisoned");
+            if owner.as_ref() == Some(from) {
+                *owner = Some(to.clone());
+                moved += 1;
+            }
+        }
+        moved
     }
 
     /// Remove finished entries past [`SCRIPT_TTL`], then trim to
@@ -311,6 +328,12 @@ impl ScriptRegistry {
                 scripts.remove(id);
             }
         }
+    }
+}
+
+impl ScriptOp {
+    fn owner(&self) -> Option<SessionId> {
+        self.owner.lock().expect("script owner poisoned").clone()
     }
 }
 

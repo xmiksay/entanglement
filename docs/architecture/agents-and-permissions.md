@@ -855,7 +855,8 @@ below realize one model:
   pattern), available in every mode. The old `modes` kind is covered by the
   static modes preamble in the system prompt; the old `pending` kind's
   in-flight recovery is the handle-less `poll` (a session's own outstanding
-  jobs, scripts and sub-agents).
+  jobs, scripts and sub-agents, then, when non-empty, its sub-tree's retained
+  outputs, open questions and parked approvals, #829).
 - **`request_mode` — a blocked model's escape hatch**
   ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   §10): a `Capability::Control` tool advertised unconditionally, so a blocked
