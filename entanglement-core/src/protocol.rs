@@ -37,7 +37,7 @@ mod questions;
 mod retired;
 mod revert;
 
-pub use approvals::{ApprovalKind, PendingApproval};
+pub use approvals::{ApprovalKind, CardReason, PendingApproval};
 pub use in_msg::InMsg;
 pub use mcp::{McpAction, McpAuthAction, McpAuthStatus, McpServerSpec, McpServerStatus};
 pub use model_choice::ModelChoice;

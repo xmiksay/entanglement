@@ -174,10 +174,12 @@ fn tool_request_sets_waiting_then_status_clears() {
         request_id: "t1".into(),
         tool: "read".into(),
         input: "{}".into(),
+        reason: None,
+        scopes: Vec::new(),
     });
     assert!(v.is_waiting_approval());
     assert_eq!(
-        v.pending_tool_request().map(|(id, ..)| id.as_str()),
+        v.pending_tool_request().map(|r| r.request_id.as_str()),
         Some("t1")
     );
 
@@ -196,6 +198,8 @@ fn tool_request(seq: u64, request_id: &str, tool: &str) -> OutEvent {
         request_id: request_id.into(),
         tool: tool.into(),
         input: "{}".into(),
+        reason: None,
+        scopes: Vec::new(),
     }
 }
 
@@ -212,7 +216,7 @@ fn concurrent_tool_requests_queue_and_first_is_surfaced() {
         ApprovalMode::WaitingForApproval { request_id } if request_id == "t1"
     ));
     assert_eq!(
-        v.pending_tool_request().map(|(id, ..)| id.as_str()),
+        v.pending_tool_request().map(|r| r.request_id.as_str()),
         Some("t1")
     );
     assert_eq!(v.queued_approvals(), 1);
@@ -232,7 +236,7 @@ fn advancing_approval_promotes_next_queued_request() {
         ApprovalMode::WaitingForApproval { request_id } if request_id == "t2"
     ));
     assert_eq!(
-        v.pending_tool_request().map(|(_, tool, _)| tool.as_str()),
+        v.pending_tool_request().map(|r| r.tool.as_str()),
         Some("write")
     );
     assert_eq!(v.queued_approvals(), 0);

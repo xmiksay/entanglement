@@ -76,6 +76,9 @@ mod schema_dedup;
 // loaded and scriptable like any other.
 #[path = "rhai/every_skill_visible.rs"]
 mod every_skill_visible;
+// ADR-0230: the structured card reason and honest scopes (#836, #846).
+#[path = "rhai/card_reason.rs"]
+mod card_reason;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

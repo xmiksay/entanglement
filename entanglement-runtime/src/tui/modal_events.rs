@@ -525,6 +525,8 @@ mod tests {
             request_id: "r1".to_string(),
             tool: "bash".to_string(),
             input: r#"{"command":"ls"}"#.to_string(),
+            reason: None,
+            scopes: Vec::new(),
         });
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

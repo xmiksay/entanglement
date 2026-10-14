@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, Permission};
+use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, Permission};
 
 use crate::seam::Decision;
 use crate::tool_names::RHAI_TOOL;
@@ -39,6 +39,11 @@ use super::Launch;
 
 /// The first line of an inline script's launch card.
 const INLINE_CARD_HEADER: &str = "// inline script";
+
+/// The line a launch card ends with when its script lies outside the
+/// project root — for the human only: a head decides on
+/// [`CardReason::LaunchEscape`] (ADR-0230).
+const LAUNCH_ESCAPE_NOTE: &str = "⚠ runs a script OUTSIDE the project root";
 
 /// What the gate decided.
 pub(super) enum Verdict {
@@ -111,8 +116,16 @@ pub(super) async fn gate(
         (Some(_), Permission::Allow) => "runs a script outside the project root".to_string(),
         _ => format!("mode `{}` grades `{RHAI_TOOL}` Ask", d.mode),
     };
+    let card_reason = match (&parsed.source, &escape) {
+        (Source::Inline(_), _) => CardReason::InlineLaunch,
+        (Source::Path(_), Some(_)) => CardReason::LaunchEscape,
+        (Source::Path(_), None) => CardReason::ScriptLaunch,
+    };
     let card = card(parsed, &source, escape.as_deref());
-    match ask(d, request_id, &card, reason).await {
+    // A script that could not be read never runs, so no grant is recorded
+    // for it (`record` below): its card offers `Once` alone.
+    let once_only = source.is_err();
+    match ask(d, request_id, &card, reason, card_reason, once_only).await {
         // Nobody answered within the mode's `question_timeout`: silence
         // never approves the escape, and otherwise costs only the
         // force-allow — each nested call is still graded on its own.
@@ -236,17 +249,28 @@ fn resolve_path(
 /// Park the launch card and wait for the head's choice — bounded by the
 /// mode's `question_timeout` (`None`: it elapsed). Registered before
 /// emitting so a fast answer can't race it.
-async fn ask(d: &Dispatcher, request_id: &str, card: &str, reason: String) -> Option<Decision> {
+async fn ask(
+    d: &Dispatcher,
+    request_id: &str,
+    card: &str,
+    reason: String,
+    card_reason: CardReason,
+    once_only: bool,
+) -> Option<Decision> {
     let (holly, session) = (&d.holly, &d.session);
     let reason = format!("{reason} — run all, ask per command, or reject");
-    let req = crate::pending::approval(
+    let mut req = crate::pending::approval(
         session,
         request_id,
         ApprovalKind::Rhai,
         RHAI_TOOL,
         card,
         reason,
+        Some(card_reason),
     );
+    if once_only {
+        req.scopes = vec![ApprovalScope::Once];
+    }
     let rx = crate::pending::park_approval(holly, &d.pending, req, RHAI_TOOL);
     holly.emit_status(session, AgentState::WaitingApproval);
     let timeout = crate::run_limits::timeout(&d.limits);
@@ -267,7 +291,7 @@ async fn ask(d: &Dispatcher, request_id: &str, card: &str, reason: String) -> Op
 fn card(parsed: &ScriptInput, source: &Result<String, String>, escape: Option<&Path>) -> String {
     // The first line is always the runtime's own — `// path:` or the
     // inline header — so script text can never pass itself off as a path
-    // card (a head offers a path grant only on one).
+    // card to the human reading it (heads decide on the card reason).
     let mut card = match &parsed.source {
         Source::Path(path) => format!("// path: {path:?}\n"),
         Source::Inline(_) => format!("{INLINE_CARD_HEADER}\n"),
@@ -281,11 +305,7 @@ fn card(parsed: &ScriptInput, source: &Result<String, String>, escape: Option<&P
         Err(e) => card.push_str(&format!("// {}", e.replace('\n', " "))),
     }
     if let Some(abs) = escape {
-        card.push_str(&format!(
-            "\n\n{}: {}",
-            crate::rhai_trust::LAUNCH_ESCAPE_NOTE,
-            abs.display()
-        ));
+        card.push_str(&format!("\n\n{LAUNCH_ESCAPE_NOTE}: {}", abs.display()));
     }
     card
 }

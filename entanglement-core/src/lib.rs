@@ -59,7 +59,7 @@ pub use entanglement_provider::oauth::check as mcp_auth_check;
 pub use entanglement_provider::oauth::disconnect as mcp_auth_disconnect;
 pub use entanglement_provider::web_fetch;
 pub use protocol::{
-    Agent, AgentState, ApprovalKind, ApprovalScope, CompactionMode, FileChangeKind,
+    Agent, AgentState, ApprovalKind, ApprovalScope, CardReason, CompactionMode, FileChangeKind,
     FileRevertReport, InMsg, McpAction, McpAuthAction, McpAuthStatus, McpServerSpec,
     McpServerStatus, ModelChoice, OperationInfo, OperationKind, OperationStatus, OutEvent,
     PendingApproval, PendingQuestion, Permission, PermissionProfile, Question, QuestionOption,

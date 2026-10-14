@@ -218,6 +218,9 @@ doc, never here**:
 - **Plans** — `propose_plan` (only in `plan` mode) is file-backed; approval
   switches the session's mode in place, to the approver's choice
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
+- **Approval cards are data** — `ToolRequest.reason` says why a card
+  parked and `scopes` what an approval honors; heads never parse card text
+  ([protocol](../docs/architecture/protocol.md), [ADR-0230](../docs/adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
 - **`ask_user` questions are listable/retractable/replaceable**
   ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)).
 - **An ambiguous LLM stop retries in place**, bounded and persisted

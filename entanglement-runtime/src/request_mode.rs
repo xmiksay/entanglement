@@ -161,6 +161,7 @@ pub async fn run_request_mode(
         REQUEST_MODE_TOOL,
         input.clone(),
         format!("requests a mode switch `{current_mode}` -> `{requested}`"),
+        None,
     );
     let rx = pending::park_approval(holly, pending, req, requested.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);

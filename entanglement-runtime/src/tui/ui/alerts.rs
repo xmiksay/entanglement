@@ -43,8 +43,9 @@ pub(crate) fn background_attention(app: &App) -> Vec<AttentionItem> {
         .filter(|(id, _)| **id != active)
         .filter_map(|(id, view)| {
             let (word, _) = attention_word(view)?;
-            let summary = if let Some((_, tool, input)) = view.pending_tool_request() {
-                let arg = crate::tui::transcript::render_run::tool_primary_arg(tool, input)
+            let summary = if let Some(req) = view.pending_tool_request() {
+                let tool = &req.tool;
+                let arg = crate::tui::transcript::render_run::tool_primary_arg(tool, &req.input)
                     .map(|a| format!(" {a}"))
                     .unwrap_or_default();
                 format!("{word}: {tool}{arg}")
@@ -139,6 +140,8 @@ mod tests {
             request_id: format!("r-{sid}-{seq}"),
             tool: tool.to_string(),
             input: input.to_string(),
+            reason: None,
+            scopes: Vec::new(),
         });
     }
 

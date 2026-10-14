@@ -245,6 +245,7 @@ pub async fn run_propose_plan(
         PROPOSE_PLAN_TOOL,
         plan_input,
         "propose_plan always asks for approval",
+        None,
     );
     let rx = pending::park_approval(&holly, &pending, req, resolution.rel_path.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);

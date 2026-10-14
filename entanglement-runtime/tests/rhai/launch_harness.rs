@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use entanglement_core::{
-    ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission,
+    ApprovalScope, CardReason, EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission,
     PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
@@ -37,9 +37,18 @@ pub enum Launch {
     Reject,
     /// Answer no card at all, launch or nested — nobody is there.
     Silent,
-    /// `skutter run`'s answers: a launch card starts the script Ask per
-    /// command, every other card is rejected.
+    /// `skutter run`'s answers (`pending::headless_starts` on the card's
+    /// reason): an in-root launch card starts the script Ask per command,
+    /// every other card is rejected.
     Headless,
+}
+
+/// The structured part of one card, launch or nested (ADR-0230).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Card {
+    pub tool: String,
+    pub reason: Option<CardReason>,
+    pub scopes: Vec<ApprovalScope>,
 }
 
 /// What one session saw.
@@ -51,6 +60,10 @@ pub struct Seen {
     pub nested_cards: Vec<String>,
     /// Every result of a call the model made, in order.
     pub outputs: Vec<String>,
+    /// Every card's structured fields, in order.
+    pub cards: Vec<Card>,
+    /// The escape-root grant store the run recorded into.
+    pub store: Arc<ExtraRootStore>,
 }
 
 /// The executor's variable inputs.
@@ -215,7 +228,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
     if setup.escape_root {
         builder = builder.escape_root(EscapeRoot {
             root: root.to_path_buf(),
-            store,
+            store: store.clone(),
         });
     }
     let _executor = builder.spawn();
@@ -268,6 +281,8 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         launch_cards: Vec::new(),
         nested_cards: Vec::new(),
         outputs: Vec::new(),
+        cards: Vec::new(),
+        store,
     };
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(10), sub.recv()).await {
         if ev.session() != Some(&sid) {
@@ -278,9 +293,17 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
                 request_id,
                 tool,
                 input,
+                reason,
+                scopes,
                 ..
             } => {
                 let launch = tool == RHAI_TOOL;
+                let headless = entanglement_runtime::pending::headless_starts(reason);
+                seen.cards.push(Card {
+                    tool: tool.clone(),
+                    reason,
+                    scopes,
+                });
                 let approve = |run_all| InMsg::Approve {
                     session: sid.clone(),
                     request_id: request_id.clone(),
@@ -297,6 +320,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
                     seen.nested_cards.push(format!("{tool}: {input}"));
                     match setup.launch {
                         Launch::Silent => None,
+                        Launch::Headless if headless => Some(approve(false)),
                         Launch::Headless => Some(reject),
                         _ => Some(approve(false)),
                     }
@@ -304,8 +328,9 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
                     seen.launch_cards.push(input);
                     match setup.launch {
                         Launch::RunAll => Some(approve(true)),
-                        Launch::AskPerCommand | Launch::Headless => Some(approve(false)),
-                        Launch::Reject => Some(reject),
+                        Launch::Headless if headless => Some(approve(false)),
+                        Launch::AskPerCommand => Some(approve(false)),
+                        Launch::Headless | Launch::Reject => Some(reject),
                         Launch::Silent => None,
                     }
                 };

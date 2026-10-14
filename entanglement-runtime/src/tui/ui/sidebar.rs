@@ -138,7 +138,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
             .into_iter()
             .find(|(id, _)| id.0 == active_id.0)
             .and_then(|(_, view)| view.pending_tool_request())
-            .map(|(_, tool, _)| tool == crate::tool_names::PROPOSE_PLAN_TOOL)
+            .map(|req| req.tool == crate::tool_names::PROPOSE_PLAN_TOOL)
             .unwrap_or(false);
         let status = if pending { "pending" } else { "accepted" };
         let text = crate::tui::wrap::truncate(&format!("Plan: {path} ({status})"), inner_width);
@@ -314,6 +314,8 @@ mod tests {
             request_id: "r1".to_string(),
             tool: "bash".to_string(),
             input: "{}".to_string(),
+            reason: None,
+            scopes: Vec::new(),
         });
         app.handle_out_event(OutEvent::UserQuestion {
             session: asking,

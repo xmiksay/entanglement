@@ -1,10 +1,11 @@
+use entanglement_core::ApprovalScope;
 use ratatui::{
     style::Stylize,
     text::{Line, Span},
 };
 
 use crate::tui::app::App;
-use crate::tui::session_view::ApprovalMode;
+use crate::tui::session_view::{ApprovalMode, PendingRequest};
 use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
 use crate::tui::wrap;
@@ -49,60 +50,20 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     // The approval/question tail is small and changes every frame while parked,
     // so it renders fresh after the cached body rather than through the cache.
     if let ApprovalMode::WaitingForApproval { .. } = app.approval_mode() {
-        if let Some((_, tool, input)) = app.pending_tool_request() {
-            let (tool, input) = (tool.clone(), input.clone());
+        if let Some(req) = app.pending_tool_request() {
+            let req = req.clone();
+            let (tool, input) = (&req.tool, &req.input);
             let rule = "─".repeat(available_width.max(1) as usize);
             lines.push(Line::from(""));
             lines.push(Line::from(rule.clone()).fg(theme.c(Slot::Approval)));
 
-            lines.extend(render_approval_tool_body(
-                app,
-                &tool,
-                &input,
-                available_width,
-            ));
+            lines.extend(render_approval_tool_body(app, tool, input, available_width));
 
             lines.push(Line::from(""));
             let mut footer = if tool == crate::tool_names::PROPOSE_PLAN_TOOL {
-                plan_accept_footer(&input, &theme)
-            } else if tool == crate::tool_names::RHAI_TOOL {
-                // A `rhai` launch card (ADR-0228): run the whole script
-                // force-allowed (this run only), or grade each nested call
-                // as it comes — `s`/`a` also grant the script's path, so
-                // its next launch runs Ask per command without a card.
-                vec![
-                    Span::styled("[r]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" run all  "),
-                    Span::styled("[y]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" ask per command  "),
-                    Span::styled("[s]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" + session  "),
-                    Span::styled("[a]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" + always  "),
-                ]
+                plan_accept_footer(input, &theme)
             } else {
-                // The three approval scopes (#174): `y` once, `s` for the rest
-                // of the session, `a` persisted to the grants file. All three
-                // dispatch in `event_loop`; the labels must surface them or the
-                // shortcuts read as missing. The `[d]` directory variant
-                // (read-only triad) follows.
-                let mut footer = vec![
-                    Span::styled("[y]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" approve  "),
-                    Span::styled("[s]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" approve session  "),
-                    Span::styled("[a]", theme.fg(Slot::Success).bold()),
-                    Span::raw(" approve always  "),
-                ];
-                // `[d]` (#486, ADR-0126) only makes sense for the read-only
-                // triad (`read`/`grep`/`glob`) — a `SessionDir` grant on any
-                // other tool would just degrade to an exact `Session` grant, so
-                // the hint is withheld rather than shown misleadingly.
-                if crate::tool_names::is_read_capability_member(&tool) {
-                    footer.push(Span::styled("[d]", theme.fg(Slot::Success).bold()));
-                    footer.push(Span::raw(" allow dir (session)  "));
-                }
-                footer
+                scope_footer(&req, &theme)
             };
             footer.extend([
                 Span::styled("[n]", theme.fg(Slot::Error).bold()),
@@ -131,6 +92,41 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
     line_blocks.resize(lines.len(), None);
 
     RenderedBody { lines, line_blocks }
+}
+
+/// The approve keys a card offers, read off its `scopes` (ADR-0230) — never
+/// a letter whose scope the runtime would not honor. A `rhai` launch card
+/// (ADR-0228) adds `[r]` run all (this run only) and reads `[y]` as ask per
+/// command; its `s`/`a` also grant the script's path. `[d]` (#486, ADR-0126)
+/// is the read-only triad's directory grant.
+fn scope_footer(req: &PendingRequest, theme: &Theme) -> Vec<Span<'static>> {
+    let key = |k: &'static str| Span::styled(k, theme.fg(Slot::Success).bold());
+    let launch = req.tool == crate::tool_names::RHAI_TOOL;
+    let mut footer = Vec::new();
+    if launch {
+        footer.extend([key("[r]"), Span::raw(" run all  ")]);
+    }
+    let labels: [(ApprovalScope, &'static str, &'static str); 4] = if launch {
+        [
+            (ApprovalScope::Once, "[y]", " ask per command  "),
+            (ApprovalScope::Session, "[s]", " + session  "),
+            (ApprovalScope::Always, "[a]", " + always  "),
+            (ApprovalScope::SessionDir, "[d]", " allow dir (session)  "),
+        ]
+    } else {
+        [
+            (ApprovalScope::Once, "[y]", " approve  "),
+            (ApprovalScope::Session, "[s]", " approve session  "),
+            (ApprovalScope::Always, "[a]", " approve always  "),
+            (ApprovalScope::SessionDir, "[d]", " allow dir (session)  "),
+        ]
+    };
+    for (scope, k, label) in labels {
+        if req.offers(scope) {
+            footer.extend([key(k), Span::raw(label)]);
+        }
+    }
+    footer
 }
 
 /// `propose_plan`'s own two accept keys (#560, ADR-0207 §7 extension) —

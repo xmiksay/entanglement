@@ -311,19 +311,38 @@ mod tests {
     use super::approval_keys::{record_rejected, send_approval};
     use super::*;
     use crate::tui::session_view::TranscriptEntry;
-    use entanglement_core::{ApprovalScope, EngineConfig, InMsg, OutEvent, SessionId};
+    use entanglement_core::{
+        ApprovalKind, ApprovalScope, CardReason, EngineConfig, InMsg, OutEvent, SessionId,
+    };
 
     fn engine() -> Holly {
         Holly::spawn(EngineConfig::default())
     }
 
     fn park_request(app: &mut App, sid: &SessionId, request_id: &str, tool: &str, input: &str) {
+        let reason = (tool == crate::tool_names::RHAI_TOOL).then_some(CardReason::ScriptLaunch);
+        park_card(app, sid, (request_id, tool, input), reason);
+    }
+
+    /// A card carrying `reason`, its scopes the runtime's own.
+    fn park_card(
+        app: &mut App,
+        sid: &SessionId,
+        (request_id, tool, input): (&str, &str, &str),
+        reason: Option<CardReason>,
+    ) {
+        let kind = match tool {
+            crate::tool_names::RHAI_TOOL => ApprovalKind::Rhai,
+            _ => ApprovalKind::Tool,
+        };
         app.handle_out_event(OutEvent::ToolRequest {
             session: sid.clone(),
             seq: 1,
             request_id: request_id.to_string(),
             tool: tool.to_string(),
             input: input.to_string(),
+            reason,
+            scopes: entanglement_runtime::pending::scopes_for(kind, tool, reason),
         });
     }
 
@@ -577,21 +596,26 @@ mod tests {
     }
 
     /// The status line claims a path grant only for a `path` script's card:
-    /// an inline script's approval is once only.
+    /// an inline script's approval is once only, so its card carries no
+    /// `Session` scope and `s` is swallowed (ADR-0230) — decided on the
+    /// card's reason, never its text.
     #[tokio::test]
     async fn only_a_path_card_claims_a_grant() {
-        for (input, granted) in [
-            ("// path: \"s/x.rhai\"\n1", true),
-            ("// inline script\n40 + 2", false),
-            // Inline source that starts like a path card stays inline: the
-            // runtime's header is always the first line.
-            ("// inline script\n// path: \"s/x.rhai\"\n1", false),
+        for (input, reason, granted) in [
+            ("// path: \"s/x.rhai\"\n1", CardReason::ScriptLaunch, true),
+            ("// inline script\n40 + 2", CardReason::InlineLaunch, false),
+            // Inline source that starts like a path card stays inline.
+            (
+                "// inline script\n// path: \"s/x.rhai\"\n1",
+                CardReason::InlineLaunch,
+                false,
+            ),
         ] {
             let sid = SessionId::new("s1");
             let mut app = App::new_for_test(sid.clone());
             let holly = engine();
             let mut attention = Attention::new(false);
-            park_request(&mut app, &sid, "t1", "rhai", input);
+            park_card(&mut app, &sid, ("t1", "rhai", input), Some(reason));
             handle_event(
                 &mut app,
                 &holly,
@@ -605,6 +629,37 @@ mod tests {
                     if output.contains("path granted"))
             });
             assert_eq!(claimed, granted, "{input:?}");
+        }
+    }
+
+    /// #846: a floored write's card honors `Once` alone — `s`/`a` send
+    /// nothing rather than an approval that silently means less.
+    #[tokio::test]
+    async fn a_floored_write_card_swallows_the_wider_scope_keys() {
+        for (ch, want) in [('y', Some(ApprovalScope::Once)), ('s', None), ('a', None)] {
+            let sid = SessionId::new("s1");
+            let mut app = App::new_for_test(sid.clone());
+            let holly = engine();
+            let mut rx = holly.subscribe_inbound();
+            let mut attention = Attention::new(false);
+            let floored = Some(CardReason::FlooredWrite);
+            park_card(&mut app, &sid, ("t1", "write", "{}"), floored);
+            handle_event(
+                &mut app,
+                &holly,
+                &mut attention,
+                Event::Key(key(KeyCode::Char(ch))),
+            )
+            .await
+            .unwrap();
+            let got = drain_inbound(&mut rx)
+                .await
+                .into_iter()
+                .find_map(|m| match m {
+                    InMsg::Approve { scope, .. } => Some(scope),
+                    _ => None,
+                });
+            assert_eq!(got, want, "key {ch}");
         }
     }
 

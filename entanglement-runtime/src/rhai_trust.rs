@@ -13,13 +13,6 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-/// The line a `rhai` launch card ends with when its script lies outside the
-/// project root — how a head that cannot ask (`skutter run`) tells an
-/// escape-root launch, which it refuses, from a plain `Ask` one, which it
-/// starts Ask per command. Present only ever means "refuse": script text
-/// cannot remove it.
-pub const LAUNCH_ESCAPE_NOTE: &str = "⚠ runs a script OUTSIDE the project root";
-
 /// The path-taking file-mutation host tools.
 const MUTATING_TOOLS: &[&str] = &["write", "edit", "apply_patch"];
 

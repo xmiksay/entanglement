@@ -25,13 +25,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use entanglement_core::{ApprovalKind, PendingApproval as WireApproval, SessionId};
+use entanglement_core::{ApprovalKind, ApprovalScope, PendingApproval as WireApproval, SessionId};
 use tokio::sync::oneshot;
 
 use crate::seam::Decision;
 
 mod park;
-pub use park::{approval, list_pending, park_approval, scopes_for};
+pub use park::{approval, headless_starts, list_pending, park_approval, scopes_for};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
 /// alongside the waiter so a listing (`InMsg::ListPending`) can describe a
@@ -171,13 +171,14 @@ impl PendingDecisions {
     /// Deliver `decision` to the waiter for `(session, request_id)`, if one is
     /// still parked. A no-op when none is (already resolved, or a decision for an
     /// unknown/duplicate request). A dropped receiver (the waiter already unwound)
-    /// is likewise harmless.
+    /// is likewise harmless. An `Approve` scope the card did not offer is
+    /// clamped to `Once` ([`clamp_scope`]).
     pub fn resolve(&self, session: &SessionId, request_id: &str, decision: Decision) {
-        if let Some((tx, _)) = self
+        if let Some((tx, parked)) = self
             .lock()
             .remove(&(session.clone(), request_id.to_string()))
         {
-            let _ = tx.send(decision);
+            let _ = tx.send(clamp_scope(decision, &parked, request_id));
         }
     }
 
@@ -227,6 +228,40 @@ impl PendingDecisions {
     }
 }
 
+/// An `Approve` whose scope the parked card did not advertise becomes a
+/// `Once` (ADR-0230). WHY here, not in each park: `scopes` is the contract
+/// a head is shown, and a wire client can send any scope — on a floored
+/// write outside the root an unclamped `Always` would persist a durable
+/// extra-roots grant the card never offered. Parks with no wire approval
+/// (`ask_user`) pass through untouched.
+fn clamp_scope(decision: Decision, parked: &Parked, request_id: &str) -> Decision {
+    let offered = |scope| {
+        parked
+            .approval
+            .as_ref()
+            .is_none_or(|a| a.scopes.contains(&scope))
+    };
+    match decision {
+        Decision::Approve {
+            scope,
+            mode,
+            run_all,
+        } if !offered(scope) => {
+            tracing::warn!(
+                request_id,
+                ?scope,
+                "approval scope not offered by the card; clamped to once"
+            );
+            Decision::Approve {
+                scope: ApprovalScope::Once,
+                mode,
+                run_all,
+            }
+        }
+        other => other,
+    }
+}
+
 /// Await a registered waiter's decision. A dropped sender — the router resolved a
 /// `Stop`, a re-register superseded this waiter, or the whole executor stopped —
 /// resolves to [`Decision::Stop`], preserving the "inbox closed ⇒ unwind
@@ -260,7 +295,39 @@ pub async fn await_decision_timed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use entanglement_core::ApprovalScope;
+
+    /// ADR-0230: a scope the card did not offer is delivered as `Once`; an
+    /// offered one passes through.
+    #[tokio::test]
+    async fn an_unoffered_scope_is_clamped_to_once() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let mut floored = approval(&s, "r1", ApprovalKind::Tool, "write", "{}", "why", None);
+        floored.scopes = vec![ApprovalScope::Once];
+        let launch = approval(&s, "r2", ApprovalKind::Rhai, "rhai", "1", "why", None);
+        let approve = |scope| Decision::Approve {
+            scope,
+            mode: None,
+            run_all: false,
+        };
+        for (req, sent, want) in [
+            (floored, ApprovalScope::Always, ApprovalScope::Once),
+            (
+                launch.clone(),
+                ApprovalScope::SessionDir,
+                ApprovalScope::Once,
+            ),
+            (launch, ApprovalScope::Session, ApprovalScope::Session),
+        ] {
+            let rid = req.request_id.clone();
+            let rx = pending.register_approval(req, "t");
+            pending.resolve(&s, &rid, approve(sent));
+            match await_decision(rx).await {
+                Decision::Approve { scope, .. } => assert_eq!(scope, want, "{rid} {sent:?}"),
+                _ => panic!("{rid}: not an approval"),
+            }
+        }
+    }
 
     #[test]
     fn snapshot_reports_kind_and_detail_scoped_or_global() {

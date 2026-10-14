@@ -279,6 +279,7 @@ fn pending_list_event_is_session_less_and_seq_less() {
             reason: "mode `build` grades `bash` Ask".into(),
             scopes: vec![ApprovalScope::Once, ApprovalScope::Session],
             since_ms: 1,
+            card_reason: None,
         }],
     };
     assert_eq!(ev.seq(), None);

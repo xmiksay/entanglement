@@ -54,6 +54,8 @@ fn background_approval_is_isolated_and_visible_in_sessions_list() {
         request_id: "t1".to_string(),
         tool: "read".to_string(),
         input: "{}".to_string(),
+        reason: None,
+        scopes: Vec::new(),
     });
 
     assert!(matches!(
@@ -89,17 +91,19 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
             "path": ".entanglement/plans/plan-s.md",
         })
         .to_string(),
+        reason: None,
+        scopes: Vec::new(),
     });
     assert!(matches!(
         reg.active_view().approval_mode(),
         ApprovalMode::WaitingForApproval { request_id } if request_id == "pp1"
     ));
-    let (_, tool, input) = reg
+    let req = reg
         .active_view()
         .pending_tool_request()
         .expect("pending propose_plan request");
-    assert_eq!(tool, crate::tool_names::PROPOSE_PLAN_TOOL);
-    let v: serde_json::Value = serde_json::from_str(input).unwrap();
+    assert_eq!(req.tool, crate::tool_names::PROPOSE_PLAN_TOOL);
+    let v: serde_json::Value = serde_json::from_str(&req.input).unwrap();
     assert_eq!(v["content"], "# Do it");
 
     // The handoff mints a fresh root build session and switches to it.

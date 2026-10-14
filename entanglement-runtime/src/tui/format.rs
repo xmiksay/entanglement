@@ -166,6 +166,8 @@ mod tests {
             request_id: "r1".to_string(),
             tool: "bash".to_string(),
             input: "{}".to_string(),
+            reason: None,
+            scopes: Vec::new(),
         });
         assert_eq!(
             attention_word(&view),
