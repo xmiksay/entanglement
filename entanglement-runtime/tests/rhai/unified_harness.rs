@@ -19,14 +19,18 @@ use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 
 use super::{collect_auto_approving, ScriptedLlm};
 
-/// A `grep` that outlasts any script budget.
-struct SlowGrep;
+/// A `grep` that outlasts any script budget, signalling `entered` as it
+/// starts.
+struct SlowGrep {
+    entered: Arc<tokio::sync::Notify>,
+}
 #[async_trait::async_trait]
 impl entanglement_runtime::Tool for SlowGrep {
     fn name(&self) -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("grep")
     }
     async fn run(&self, _input: &str) -> anyhow::Result<String> {
+        self.entered.notify_one();
         tokio::time::sleep(Duration::from_secs(30)).await;
         Ok("too late".into())
     }
@@ -42,9 +46,15 @@ pub(super) struct Setup {
     pub(super) bash: bool,
     /// Replace `grep` with one that takes 30 s, to trip the bridge clock.
     pub(super) slow_grep: bool,
+    /// Notified as the slow `grep` starts running.
+    pub(super) slow_grep_entered: Arc<tokio::sync::Notify>,
     pub(super) timeout: u64,
     /// Model turns scripted after the `rhai` call, before the closing text.
     pub(super) follow_up: Vec<LlmResponse>,
+    /// Run the script detached (`background: true`, #637).
+    pub(super) background: bool,
+    /// A persistence tap to attach before the session starts.
+    pub(super) sink: Option<Arc<dyn entanglement_runtime::persistence::RecordSink>>,
 }
 
 impl Setup {
@@ -67,8 +77,11 @@ impl Setup {
             avail: AvailableMcp::default(),
             bash: false,
             slow_grep: false,
+            slow_grep_entered: Arc::default(),
             timeout: 20,
             follow_up: vec![],
+            background: false,
+            sink: None,
         }
     }
 }
@@ -87,7 +100,11 @@ pub(super) async fn start(
     root: &std::path::Path,
     setup: Setup,
 ) -> (Holly, tokio::sync::broadcast::Receiver<OutEvent>, SessionId) {
-    let input = serde_json::json!({ "script": script, "timeout": setup.timeout }).to_string();
+    let mut input = serde_json::json!({ "script": script, "timeout": setup.timeout });
+    if setup.background {
+        input["background"] = true.into();
+    }
+    let input = input.to_string();
     let mut scripted = vec![LlmResponse {
         tool_calls: vec![ToolCall {
             id: "t1".into(),
@@ -114,7 +131,9 @@ pub(super) async fn start(
         tools.register(BashTool::new(root.to_path_buf()));
     }
     if setup.slow_grep {
-        tools.register(SlowGrep);
+        tools.register(SlowGrep {
+            entered: setup.slow_grep_entered.clone(),
+        });
     }
     let table = Arc::new(ModeTable::new(vec![setup.mode]).unwrap());
     let _executor = ToolExecutor::builder(&holly, tools.shared())
@@ -136,6 +155,9 @@ pub(super) async fn start(
             ..Default::default()
         })
         .spawn();
+    if let Some(sink) = setup.sink {
+        entanglement_runtime::persistence::spawn_persistence_subscriber_with_sink(&holly, sink);
+    }
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly

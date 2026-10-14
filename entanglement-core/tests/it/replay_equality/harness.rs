@@ -189,6 +189,12 @@ impl Run {
         self.send(msg).await;
     }
 
+    /// Broadcast a runtime-authored live-only event into the session's
+    /// stream, the way the runtime reports a script's nested calls.
+    pub fn emit_live(&self, ev: OutEvent) {
+        self.holly.emit_live(ev);
+    }
+
     pub async fn stop(&mut self) {
         self.send(InMsg::Stop {
             session: self.sid.clone(),

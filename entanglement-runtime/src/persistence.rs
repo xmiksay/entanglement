@@ -248,6 +248,12 @@ pub fn spawn_persistence_subscriber_with_sink(
                         let Some(session_id) = ev.session().cloned() else {
                             continue;
                         };
+                        // Live-only display data (a script's nested calls,
+                        // ADR-0233) is derived, not history: logging it would
+                        // only grow the file with records replay ignores.
+                        if ev.is_live_only() {
+                            continue;
+                        }
                         if let OutEvent::SessionStarted { session, parent, root, .. } = &ev {
                             let root_id = if *root {
                                 session.clone()

@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use crate::tui::session_view::TranscriptEntry;
+use crate::tui::session_view::{NestedLine, TranscriptEntry};
 
 /// One renderable unit of the transcript — the granularity the render cache
 /// keys on ([`super::cache`]). Consecutive `TextDelta`s coalesce into one
@@ -32,6 +32,8 @@ pub(super) enum Block {
         input: String,
         output: Option<String>,
         is_error: bool,
+        /// A `rhai` op's nested-call lines, shown only when expanded.
+        nested: Vec<NestedLine>,
         block_id: usize,
         expanded: bool,
     },
@@ -42,6 +44,8 @@ pub(super) enum Block {
     Error {
         message: String,
     },
+    /// A nested-call line with no `rhai` op to fold under (ADR-0233).
+    NestedCall(NestedLine),
     Done,
 }
 
@@ -82,6 +86,7 @@ impl Block {
                 input,
                 output,
                 is_error,
+                nested,
                 expanded,
                 ..
             } => {
@@ -90,6 +95,7 @@ impl Block {
                 input.hash(&mut h);
                 output.hash(&mut h);
                 is_error.hash(&mut h);
+                nested.hash(&mut h);
                 expanded.hash(&mut h);
             }
             Block::ToolOutput { tool, output } => {
@@ -103,6 +109,10 @@ impl Block {
             }
             Block::Done => {
                 6u8.hash(&mut h);
+            }
+            Block::NestedCall(line) => {
+                7u8.hash(&mut h);
+                line.hash(&mut h);
             }
         }
         h.finish()
@@ -179,12 +189,14 @@ pub(super) fn segment(
                 input,
                 output,
                 is_error,
+                nested,
                 ..
             } => blocks.push(Block::ToolCall {
                 tool: tool.clone(),
                 input: input.clone(),
                 output: output.clone(),
                 is_error: *is_error,
+                nested: nested.clone(),
                 block_id: idx,
                 expanded: expanded(idx),
             }),
@@ -195,6 +207,7 @@ pub(super) fn segment(
             TranscriptEntry::Error { message } => blocks.push(Block::Error {
                 message: message.clone(),
             }),
+            TranscriptEntry::NestedCall(line) => blocks.push(Block::NestedCall(line.clone())),
             TranscriptEntry::Done => blocks.push(Block::Done),
         }
     }

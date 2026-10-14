@@ -1558,3 +1558,131 @@ fn bash_output_rewraps_after_width_change() {
         wide.lines.len()
     );
 }
+
+fn nested(app: &mut App, sid: &SessionId, parent: &str, index: u64, is_error: bool) {
+    app.handle_out_event(OutEvent::NestedCall {
+        session: sid.clone(),
+        parent_request_id: parent.into(),
+        index,
+        tool: "read".into(),
+        args: format!("{parent}-{index}.txt"),
+        duration_ms: 7,
+        is_error,
+    });
+}
+
+/// Whether `needle` is on any rendered line.
+fn shows(body: &RenderedBody, needle: &str) -> bool {
+    body.lines.iter().any(|l| line_text(l).contains(needle))
+}
+
+#[test]
+fn nested_script_calls_fold_under_their_own_rhai_op_latest_line_when_collapsed() {
+    // ADR-0233: two scripts at once (`c1`, `c2`) interleave their reports;
+    // each line lands under its own op — the latest one while collapsed,
+    // every one while expanded.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "rhai", r#"{"script":"a"}"#);
+    feed_tool_call(&mut app, &sid, 2, "rhai", r#"{"script":"b"}"#);
+    nested(&mut app, &sid, "c1", 1, false);
+    nested(&mut app, &sid, "c2", 1, false);
+    nested(&mut app, &sid, "c1", 2, true);
+    app.handle_out_event(OutEvent::NestedCallSummary {
+        session: sid.clone(),
+        parent_request_id: "c1".into(),
+        suppressed: 10,
+        errors: 1,
+    });
+
+    // Collapsed (the default): each op shows only its latest line, and its
+    // header counts the lines.
+    let collapsed = render_body_lines(&mut app, 80);
+    // The count is calls, not lines: two reported plus ten held back.
+    let c1 = line_index_of(&collapsed, "· 12 calls");
+    let c2 = line_index_of(&collapsed, "· 1 call");
+    assert!(line_text(&collapsed.lines[c1]).contains("▸ rhai"));
+    let c1_latest = line_index_of(&collapsed, "+10 more calls, 1 error");
+    let c2_latest = line_index_of(&collapsed, "c2-1.txt");
+    assert!(c1 < c1_latest && c1_latest < c2 && c2 < c2_latest);
+    assert!(!shows(&collapsed, "c1-1.txt") && !shows(&collapsed, "c1-2.txt"));
+
+    // Expanded: every line, in order, under the op's header.
+    app.toggle_block(0);
+    let body = render_body_lines(&mut app, 80);
+    let header = line_index_of(&body, "▾ rhai");
+    let first = line_index_of(&body, "#1 read  c1-1.txt  7ms");
+    let second = line_index_of(&body, "#2 read  c1-2.txt  7ms");
+    let summary = line_index_of(&body, "+10 more calls, 1 error");
+    let other_op = line_index_of(&body, "▸ rhai");
+    assert!(header < first && first < second && second < summary && summary < other_op);
+    assert!(line_text(&body.lines[first]).contains('↳'));
+    assert!(
+        line_text(&body.lines[second]).contains('✗'),
+        "a failed call is marked"
+    );
+    assert!(
+        line_index_of(&body, "c2-1.txt") > other_op,
+        "c2's line stays under c2"
+    );
+    // Every nested line belongs to its op's clickable block.
+    assert_eq!(body.line_blocks[first], Some(0));
+}
+
+#[test]
+fn a_background_scripts_late_reports_still_attach_to_its_op() {
+    // A background script replies at once; its reports arrive after later
+    // turns, and must still fold under the op that launched it.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(
+        &mut app,
+        &sid,
+        1,
+        "rhai",
+        r#"{"script":"a","background":true}"#,
+    );
+    app.handle_out_event(OutEvent::ToolOutput {
+        session: sid.clone(),
+        seq: 2,
+        request_id: "c1".into(),
+        tool: "rhai".into(),
+        output: "[background script x-1 started]".into(),
+        content: vec![],
+        is_error: false,
+        duration_ms: None,
+        exit_code: None,
+        envelope: None,
+    });
+    app.handle_out_event(OutEvent::TextDelta {
+        session: sid.clone(),
+        seq: 3,
+        text: "LATER TURN\n".into(),
+    });
+    nested(&mut app, &sid, "c1", 1, false);
+    // An unknown parent is kept standalone, not dropped.
+    nested(&mut app, &sid, "gone", 1, false);
+
+    app.toggle_block(0);
+    let body = render_body_lines(&mut app, 80);
+    let late = line_index_of(&body, "c1-1.txt");
+    assert!(
+        late < line_index_of(&body, "LATER TURN"),
+        "folded under its op"
+    );
+    assert!(line_index_of(&body, "gone-1.txt") > line_index_of(&body, "LATER TURN"));
+}
+
+#[test]
+fn a_running_script_under_the_cap_counts_its_calls() {
+    // Three calls, no summary yet: the collapsed header says three.
+    let sid = SessionId::new("s1");
+    let mut app = App::new_for_test(sid.clone());
+    feed_tool_call(&mut app, &sid, 1, "rhai", r#"{"script":"a"}"#);
+    for index in 1..=3 {
+        nested(&mut app, &sid, "c1", index, false);
+    }
+    let body = render_body_lines(&mut app, 80);
+    assert!(line_text(&body.lines[line_index_of(&body, "· 3 calls")]).contains("▸ rhai"));
+    assert!(shows(&body, "c1-3.txt") && !shows(&body, "c1-2.txt"));
+}

@@ -6,7 +6,8 @@
 //! no in-tree producer to write it.
 //!
 //! On every [`OutEvent::ToolCall`] the engine broadcasts (display-only,
-//! emitted once per call before execution), asks the aux `narrate` LLM for a
+//! emitted once per call before execution) — and the first live
+//! [`OutEvent::NestedCall`] of each `rhai` script run — asks the aux `narrate` LLM for a
 //! short present-tense phrase describing what the agent is doing and sends it
 //! back via `InMsg::SetSessionMeta { action: Some(..), .. }` — the
 //! mid-turn-mutable half of session display metadata. Purely runtime-side,
@@ -89,8 +90,25 @@ pub fn spawn_action_narrator(
                     }
                 }
                 ev = outbound.recv() => {
-                    match ev {
-                        Ok(OutEvent::ToolCall { session, tool, input, .. }) => {
+                    // A script's nested call (ADR-0233) narrates like a direct
+                    // call, from its credential-free args summary — but only a
+                    // run's first one: the in-flight guard below serializes
+                    // aux calls without capping them, and a script of slow
+                    // bindings would otherwise pay for one per binding.
+                    let call = match ev {
+                        Ok(OutEvent::ToolCall { session, tool, input, .. })
+                        | Ok(OutEvent::NestedCall {
+                            session,
+                            tool,
+                            args: input,
+                            index: 1,
+                            ..
+                        }) => Ok((session, tool, input)),
+                        Ok(_) => continue,
+                        Err(e) => Err(e),
+                    };
+                    match call {
+                        Ok((session, tool, input)) => {
                             if narrating.contains(&session) {
                                 continue;
                             }
@@ -127,7 +145,6 @@ pub fn spawn_action_narrator(
                                 done_session
                             });
                         }
-                        Ok(_) => {}
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => break,
                     }

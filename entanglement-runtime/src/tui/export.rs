@@ -132,6 +132,9 @@ fn append_entry(out: &mut String, entry: &TranscriptEntry) {
         TranscriptEntry::Done => {
             out.push_str("---\n\n");
         }
+        // Live-only script activity (ADR-0233): an export mirrors the
+        // replayable transcript, and these lines are never persisted.
+        TranscriptEntry::NestedCall(_) => {}
         // Deltas are coalesced by the caller and never reach here.
         TranscriptEntry::TextDelta { .. } | TranscriptEntry::ReasoningDelta { .. } => {}
     }
@@ -231,6 +234,7 @@ mod tests {
             input: r#"{"path":"a.rs"}"#.into(),
             output: Some("fn main() {}".into()),
             is_error: false,
+            nested: Vec::new(),
         }];
         let md = transcript_to_markdown(&sid(), None, None, &transcript, 0);
         assert!(md.contains("### Tool call: `read`"));
@@ -238,6 +242,30 @@ mod tests {
         assert!(md.contains("  \"path\": \"a.rs\""));
         assert!(md.contains("**Output** (`read`):"));
         assert!(md.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn nested_call_lines_are_not_exported() {
+        // ADR-0233: live-only, never persisted — so never in an export.
+        let line = |text: &str| crate::tui::session_view::NestedLine {
+            line: text.into(),
+            is_error: false,
+            calls: 1,
+        };
+        let transcript = vec![
+            TranscriptEntry::ToolCall {
+                request_id: Some("t1".into()),
+                tool: "rhai".into(),
+                input: r#"{"script":"1"}"#.into(),
+                output: Some("=> 1".into()),
+                is_error: false,
+                nested: vec![line("#1 read  a.txt  2ms")],
+            },
+            TranscriptEntry::NestedCall(line("#2 glob  3ms")),
+        ];
+        let md = transcript_to_markdown(&sid(), None, None, &transcript, 0);
+        assert!(md.contains("### Tool call: `rhai`"));
+        assert!(!md.contains("a.txt") && !md.contains("glob"), "{md}");
     }
 
     #[test]

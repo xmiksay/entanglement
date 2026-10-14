@@ -142,6 +142,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
           | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | NestedCall | NestedCallSummary (live only, never persisted)
 ```
 
 Load-bearing invariants — one claim each; **the detail lives in the linked
@@ -231,6 +232,10 @@ doc, never here**:
   ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)).
 - **Throttle and persistence outages are wire-visible transitions**
   ([provider](../docs/architecture/provider.md), [heads §6b](../docs/architecture/heads-and-persistence.md), [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md)).
+- **A script's nested calls are live-only events** — one `NestedCall` per
+  binding call (first 50 per run, then one `NestedCallSummary`), never
+  persisted or replayed
+  ([protocol](../docs/architecture/protocol.md), [gates §script surface](../docs/architecture/gates-and-host-tools.md), [ADR-0233](../docs/adr/0233-live-only-nested-call-events-for-rhai-scripts.md)).
 - **Reasoning has two rails** — `ReasoningDelta` renders, `ReasoningBlock`
   replays ([provider §extended thinking](../docs/architecture/provider.md#extended-thinking-capture-and-replay), [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)).
 - **Multi-user is an embedder library API** — `UserId` never appears in

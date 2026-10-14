@@ -82,6 +82,10 @@ mod every_skill_visible;
 // ADR-0230: the structured card reason and honest scopes (#836, #846).
 #[path = "rhai/card_reason.rs"]
 mod card_reason;
+// ADR-0233: a live-only `NestedCall` per binding call, capped with one
+// closing summary, never persisted (#821).
+#[path = "rhai/nested_calls.rs"]
+mod nested_calls;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

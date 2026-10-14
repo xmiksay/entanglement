@@ -240,3 +240,71 @@ async fn a_second_tool_call_is_skipped_while_one_is_in_flight() {
 
     handle.abort();
 }
+
+/// ADR-0233: a `rhai` script's live `NestedCall` report narrates like a
+/// direct `ToolCall` — but only a run's first: five nested calls cost one
+/// aux call, not five.
+#[tokio::test]
+async fn only_a_scripts_first_nested_call_narrates() {
+    let entered = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory: LlmFactory = {
+        let entered = entered.clone();
+        let proceed = proceed.clone();
+        let call_count = call_count.clone();
+        Arc::new(move || {
+            call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::new(GatedLlm {
+                entered: entered.clone(),
+                proceed: proceed.clone(),
+                action: "Running cargo test".to_string(),
+            }) as Box<dyn Llm>
+        })
+    };
+    let registry = registry_with_primary("nested", factory);
+    let holly = Holly::spawn(EngineConfig::default());
+    let handle = spawn_action_narrator(&holly, registry);
+    tokio::task::yield_now().await;
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("s1");
+    // A live session for the narrated `SetSessionMeta` to land on.
+    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
+    recv_until(&mut sub, |e| matches!(e, OutEvent::Done { .. })).await;
+
+    let nested = |parent: &str, index: u64| OutEvent::NestedCall {
+        session: sid.clone(),
+        parent_request_id: parent.into(),
+        index,
+        tool: "call".into(),
+        args: "cargo …".into(),
+        duration_ms: 5,
+        is_error: false,
+    };
+    holly.emit_live(nested("t1", 1));
+    entered.notified().await;
+    proceed.notify_one();
+    let ev = recv_until(&mut sub, is_meta_changed).await;
+    assert_eq!(meta_action(&ev).as_deref(), Some("Running cargo test"));
+
+    // Calls 2..=5 of the same run narrate nothing; a second run's first call
+    // behind them is the fence — had any of them narrated, it would have
+    // reached the aux model first.
+    for index in 2..=5 {
+        holly.emit_live(nested("t1", index));
+    }
+    // The first narration's guard clears when the narrator reaps its task,
+    // which can trail its `SessionMetaChanged`: re-send the fence until one
+    // gets through (a skipped one costs no aux call).
+    loop {
+        holly.emit_live(nested("t2", 1));
+        let reached = tokio::time::timeout(Duration::from_millis(200), entered.notified());
+        if reached.await.is_ok() {
+            break;
+        }
+    }
+    proceed.notify_one();
+    recv_until(&mut sub, is_meta_changed).await;
+    assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    handle.abort();
+}

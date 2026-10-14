@@ -162,6 +162,25 @@ pub(crate) fn call_line(tool: &str, input: &str) -> String {
     format!("{name}  {first}{more}")
 }
 
+/// One compact line for a `rhai` script's nested call (ADR-0233), shared by
+/// the `run` text head and the TUI: `#3 read  src/main.rs  12ms`. `args` is
+/// already the runtime's bounded, credential-free summary.
+pub(crate) fn nested_call_line(index: u64, tool: &str, args: &str, duration_ms: u64) -> String {
+    let name = display_name(tool);
+    if args.is_empty() {
+        format!("#{index} {name}  {duration_ms}ms")
+    } else {
+        format!("#{index} {name}  {args}  {duration_ms}ms")
+    }
+}
+
+/// The closing line for a script's calls past the per-run report cap.
+pub(crate) fn nested_summary_line(suppressed: u64, errors: u64) -> String {
+    let calls = if suppressed == 1 { "call" } else { "calls" };
+    let errs = if errors == 1 { "error" } else { "errors" };
+    format!("+{suppressed} more {calls}, {errors} {errs}")
+}
+
 /// A call's arguments as `key: value` lines ([`readable_lines`]); non-JSON
 /// input (a still-streaming fragment) is kept as its raw lines.
 pub(crate) fn readable_args(input: &str) -> Vec<String> {
@@ -348,5 +367,19 @@ mod tests {
             "gh › issue  Bug"
         );
         assert_eq!(call_line("propose_plan", "not json"), "propose_plan");
+    }
+
+    #[test]
+    fn nested_call_lines_are_compact() {
+        assert_eq!(
+            nested_call_line(3, "read", "src/main.rs", 12),
+            "#3 read  src/main.rs  12ms"
+        );
+        assert_eq!(
+            nested_call_line(1, "mcp__gh__search", "", 40),
+            "#1 gh › search  40ms"
+        );
+        assert_eq!(nested_summary_line(10, 2), "+10 more calls, 2 errors");
+        assert_eq!(nested_summary_line(1, 1), "+1 more call, 1 error");
     }
 }

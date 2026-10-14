@@ -372,3 +372,44 @@ fn the_default_public_error_drops_the_chain_and_control_chars_and_is_bounded() {
     assert_eq!(cut.chars().count(), PUBLIC_ERROR_MAX);
     assert!(cut.ends_with('…'));
 }
+
+#[tokio::test]
+async fn the_tap_never_logs_live_only_nested_call_events() {
+    let holly = Holly::spawn(entanglement_core::EngineConfig::default());
+    let sink = Arc::new(RecordingSink::default());
+    let _tap = spawn_persistence_subscriber_with_sink(&holly, sink.clone());
+    let sid = SessionId::new("s");
+    holly.emit_live(OutEvent::NestedCall {
+        session: sid.clone(),
+        parent_request_id: "t1".into(),
+        index: 1,
+        tool: "read".into(),
+        args: "a.txt".into(),
+        duration_ms: 1,
+        is_error: false,
+    });
+    holly.emit_live(OutEvent::NestedCallSummary {
+        session: sid.clone(),
+        parent_request_id: "t1".into(),
+        suppressed: 1,
+        errors: 0,
+    });
+    // A content event behind them: once it is logged, the two live events
+    // ahead of it on the same channel have been seen (and skipped).
+    holly.emit_for_session(&sid, |seq| OutEvent::TaskList {
+        session: sid.clone(),
+        seq,
+        content: "fence".into(),
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while sink.records.lock().unwrap().is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "fence never logged");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = sink.records.lock().unwrap();
+    assert_eq!(records.len(), 1, "only the fence: {records:?}");
+    assert!(matches!(
+        &records[0].1.payload,
+        LogPayload::Out(OutEvent::TaskList { .. })
+    ));
+}

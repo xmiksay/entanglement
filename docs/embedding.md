@@ -899,6 +899,22 @@ removes `user_only`. What an embedder has to change:
 - **Constructing `OutEvent::ToolRequest`** (for example, in a test head)
   needs the two new fields: `reason: None, scopes: Vec::new()`.
 
+## Live-only nested-call events (ADR-0233, #821)
+
+- **Wire:** two new `OutEvent` variants, `NestedCall` (one binding call of a
+  running `rhai` script: `parent_request_id`, 1-based `index`, `tool`, a
+  bounded credential-free `args` summary, `duration_ms`, `is_error`) and
+  `NestedCallSummary` (`suppressed`/`errors`: the calls past the 50-per-run
+  cap, sent once at the script's end). Both carry `session` but no `seq`.
+- **Live only:** `OutEvent::is_live_only()` is true for exactly these two.
+  The persistence tap never hands them to a `RecordSink`, and replay ignores
+  them, so a sink of your own needs no change. If you persist events outside
+  the tap, skip `is_live_only()` events too.
+- **Exhaustive matches** over `OutEvent` need the two new arms. Pair a report
+  with its script by `parent_request_id`, never `request_id`.
+- **Added:** `Holly::emit_live(ev)` broadcasts a live-only event and refuses
+  (logs and drops) any other variant.
+
 ## TLS and the rustls crypto provider
 
 `entanglement-provider` talks TLS through rustls with the **ring** provider and

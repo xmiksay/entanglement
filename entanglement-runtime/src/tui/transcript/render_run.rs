@@ -264,6 +264,7 @@ pub(super) fn flush_tool_call(
     colors: RoleColors,
     available_width: u16,
     expanded: bool,
+    nested_calls: u64,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let padding = padding_line(colors, available_width);
@@ -275,15 +276,29 @@ pub(super) fn flush_tool_call(
     } else {
         (" ✓", theme.c(Slot::Success))
     });
-    let header = tool_header_spans(
+    // A `rhai` op's nested-call count (ADR-0233) sits before the status,
+    // its width taken off the arg budget so the header stays one line.
+    let count = (nested_calls > 0).then(|| {
+        let noun = if nested_calls == 1 { "call" } else { "calls" };
+        format!("  · {nested_calls} {noun}")
+    });
+    let count_w = count.as_deref().map_or(0, UnicodeWidthStr::width);
+    let mut header = tool_header_spans(
         &theme,
         tool,
         input,
         arrow,
         colors.fg,
-        available_width,
+        available_width.saturating_sub(count_w as u16),
         status_suffix,
     );
+    if let Some(count) = count {
+        let at = header.len() - usize::from(status_suffix.is_some());
+        header.insert(
+            at,
+            Span::styled(count, Style::default().fg(colors.fg).dim()),
+        );
+    }
     out.push(theme.decorate(Line::from(header), colors, available_width));
 
     if expanded {
