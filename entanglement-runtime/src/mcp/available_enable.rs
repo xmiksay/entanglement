@@ -33,6 +33,21 @@ pub async fn ensure_connected(
     active: &ActiveServers,
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
+    connect_guarded(avail, name, registry, active, http, false).await
+}
+
+/// [`ensure_connected`]'s guarded section. With `cooldown`, the
+/// [`FAILURE_COOLDOWN`] guard is consulted and recorded *under* the
+/// per-server guard (#831): a caller that queued behind a failing connect
+/// returns its recorded failure instead of reconnecting.
+async fn connect_guarded(
+    avail: &AvailableMcp,
+    name: &str,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    http: &entanglement_core::HttpClient,
+    cooldown: bool,
+) -> Result<Vec<String>> {
     if let Some(tools) = connected_tools(active, name) {
         return Ok(tools);
     }
@@ -44,6 +59,27 @@ pub async fn ensure_connected(
     if let Some(tools) = connected_tools(active, name) {
         return Ok(tools);
     }
+    if cooldown && avail.recently_failed_connect(name, FAILURE_COOLDOWN) {
+        bail!(COOLDOWN_CAUSE);
+    }
+    let connected = connect_locked(avail, name, registry, active, http).await;
+    if cooldown {
+        match &connected {
+            Ok(_) => avail.clear_connect_failure(name),
+            Err(_) => avail.record_connect_failure(name),
+        }
+    }
+    connected
+}
+
+/// The connect itself; the caller holds `name`'s connect guard.
+async fn connect_locked(
+    avail: &AvailableMcp,
+    name: &str,
+    registry: &SharedRegistry,
+    active: &ActiveServers,
+    http: &entanglement_core::HttpClient,
+) -> Result<Vec<String>> {
     let Some(server) = avail.get(name) else {
         bail!(
             "no available MCP server named `{name}` (available: {})",
@@ -92,6 +128,9 @@ fn connected_tools(active: &ActiveServers, name: &str) -> Option<Vec<String>> {
 /// unknown `mcp__<server>__*` call against the same server to the same error
 /// instead of each retrying the full [`CONNECT_TIMEOUT`] connect.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Why a connect inside the [`FAILURE_COOLDOWN`] window was not attempted.
+const COOLDOWN_CAUSE: &str = "recent connect failure, retry shortly";
 
 /// How a dispatch-time "unknown tool" resolution for an `mcp__<server>__*`
 /// name settled (ADR-0201) — see [`try_lazy_connect`].
@@ -143,7 +182,7 @@ pub async fn try_lazy_connect(
     }
     if avail.recently_failed_connect(server, FAILURE_COOLDOWN) {
         return LazyConnectOutcome::Failed(format!(
-            "mcp server `{server}` could not be connected: recent connect failure, retry shortly"
+            "mcp server `{server}` could not be connected: {COOLDOWN_CAUSE}"
         ));
     }
     let Some(http) = http else {
@@ -152,17 +191,11 @@ pub async fn try_lazy_connect(
              MCP connects"
         ));
     };
-    match ensure_connected(avail, server, registry, active, http).await {
-        Ok(_tools) => {
-            avail.clear_connect_failure(server);
-            LazyConnectOutcome::Connected
-        }
-        Err(e) => {
-            avail.record_connect_failure(server);
-            LazyConnectOutcome::Failed(format!(
-                "mcp server `{server}` could not be connected: {e:#}"
-            ))
-        }
+    match connect_guarded(avail, server, registry, active, http, true).await {
+        Ok(_tools) => LazyConnectOutcome::Connected,
+        Err(e) => LazyConnectOutcome::Failed(format!(
+            "mcp server `{server}` could not be connected: {e:#}"
+        )),
     }
 }
 
@@ -289,5 +322,35 @@ mod tests {
             .is_err());
         assert!(reg.read().unwrap().is_empty());
         assert!(act.lock().unwrap().is_empty());
+    }
+
+    /// #831: callers queued behind a failing connect return its recorded
+    /// failure instead of each reconnecting in turn.
+    #[tokio::test]
+    async fn waiters_queued_behind_a_failing_connect_do_not_reconnect() {
+        let dir = std::env::temp_dir().join(format!("mcp-queued-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spawns = dir.join("spawns");
+        let mut cfg = crate::mcp::available::tests::stdio("sh");
+        cfg.args = vec![
+            "-c".into(),
+            format!("echo x >> '{}'; sleep 0.3", spawns.display()),
+        ];
+        let avail = Arc::new(AvailableMcp::default());
+        avail.insert_user("flaky", cfg);
+        let (reg, act) = (registry(), active());
+        let http = crate::test_http_client();
+        let calls = (0..3).map(|_| {
+            let (avail, reg, act, http) = (avail.clone(), reg.clone(), act.clone(), http.clone());
+            tokio::spawn(
+                async move { try_lazy_connect(&avail, "flaky", &reg, &act, Some(&http)).await },
+            )
+        });
+        for call in calls.collect::<Vec<_>>() {
+            assert!(matches!(call.await.unwrap(), LazyConnectOutcome::Failed(_)));
+        }
+        let count = std::fs::read_to_string(&spawns).unwrap().lines().count();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(count, 1, "one connect attempt");
     }
 }

@@ -96,14 +96,17 @@ fn seed(scopes: &McpScopes, key: &str, tool: &'static str) {
         .insert((key.to_string(), "kb".to_string()), seeded);
 }
 
-#[test]
-fn an_unscoped_session_passes_through_untouched() {
+#[tokio::test]
+async fn an_unscoped_session_passes_through_untouched() {
     let scopes = McpScopes::new(Arc::new(|_| None), http(), Vec::new());
     let session = SessionId::new("s");
 
     assert!(scopes.rows(&session).is_none(), "unscoped lists globally");
 
-    let reg = scopes.overlay_registry_cached(&session, base_registry());
+    let reg = scopes
+        .overlay_registry_for_call(&session, base_registry(), "read")
+        .await
+        .expect("a non-MCP call never connects");
     assert!(reg.contains("read"));
     assert!(reg.contains("mcp__kb__search"));
 }
@@ -119,8 +122,8 @@ async fn an_unscoped_session_dispatch_overlay_is_identity() {
     assert!(reg.contains("mcp__kb__search"));
 }
 
-#[test]
-fn a_scoped_session_owns_its_whole_mcp_namespace() {
+#[tokio::test]
+async fn a_scoped_session_owns_its_whole_mcp_namespace() {
     // The scope declares a `kb` of its own (not connected yet) — the *global*
     // `mcp__kb__search` must vanish from the registry, `list_mcp` shows the
     // scope's server only, and non-MCP tools survive.
@@ -133,7 +136,10 @@ fn a_scoped_session_owns_its_whole_mcp_namespace() {
     assert!(!rows[0].connected && rows[0].tools.is_empty());
     assert!(rows[0].auth_required, "OAuth with no stored credential");
 
-    let reg = scopes.overlay_registry_cached(&session, base_registry());
+    let reg = scopes
+        .overlay_registry_for_call(&session, base_registry(), "read")
+        .await
+        .expect("a non-MCP call never connects");
     assert!(reg.contains("read"));
     assert!(!reg.contains("mcp__kb__search"));
 }
@@ -207,7 +213,10 @@ async fn cached_scope_tools_are_listed_and_dispatched_and_evicted() {
     assert!(rows[0].connected && !rows[0].auth_required);
     assert_eq!(rows[0].tools, vec!["mcp__kb__lookup".to_string()]);
 
-    let reg = scopes.overlay_registry_cached(&session, base_registry());
+    let reg = scopes
+        .overlay_registry_for_call(&session, base_registry(), "read")
+        .await
+        .expect("a non-MCP call never connects");
     assert!(reg.contains("mcp__kb__lookup"));
     assert!(!reg.contains("mcp__kb__search"));
 
@@ -230,7 +239,10 @@ async fn scopes_with_different_keys_do_not_see_each_others_cache() {
     seed(&scopes, "user-a", "mcp__kb__lookup");
     let rows = scopes.rows(&session).expect("scoped");
     assert!(!rows[0].connected && rows[0].tools.is_empty());
-    let reg = scopes.overlay_registry_cached(&session, base_registry());
+    let reg = scopes
+        .overlay_registry_for_call(&session, base_registry(), "read")
+        .await
+        .expect("a non-MCP call never connects");
     assert!(!reg.contains("mcp__kb__lookup"));
 }
 

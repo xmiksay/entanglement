@@ -89,6 +89,8 @@ pub struct AvailableMcp {
     disabled_names: HashSet<String>,
     /// Last failed dispatch-time lazy connect per server (ADR-0201, `tier.rs`).
     recent_connect_failures: Mutex<HashMap<String, Instant>>,
+    /// The detached script-triggered connect per server (#831).
+    script_connects: super::InFlight,
     /// Where connects record their tool names for `list_mcp`'s "last seen".
     /// Inert by default so a test never writes the managed file; the binary
     /// installs [`McpToolCache::managed`].
@@ -286,6 +288,10 @@ impl AvailableMcp {
             .entry(server.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
+    }
+
+    pub(crate) fn script_connects(&self) -> &super::InFlight {
+        &self.script_connects
     }
 }
 

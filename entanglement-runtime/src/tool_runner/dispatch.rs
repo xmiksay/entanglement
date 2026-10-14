@@ -6,15 +6,16 @@
 //! script over the bridge (`crate::script`), so core never sees a result for
 //! an id it never parked on.
 //!
-//! The ladder itself lives in [`gates`] (unknown/lazy-MCP resolution, the
-//! `Control` bypass, overlay deny, mode grade + grants, hooks,
-//! escape-root, the credentialed-`http` gate), the approval park in
+//! The ladder itself lives in [`gates`] (the `Control` bypass, overlay
+//! deny, mode grade + grants, hooks, escape-root, the credentialed-`http`
+//! gate), unknown/lazy-MCP resolution in [`resolve`], the approval park in
 //! [`decision`], the run-against-the-registry step in [`execute`].
 
 mod decision;
 mod execute;
 mod gates;
 pub(crate) mod grade;
+mod resolve;
 mod script;
 
 use std::collections::{HashMap, HashSet};

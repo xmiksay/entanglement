@@ -31,18 +31,12 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
 use entanglement_core::SessionId;
 
 use crate::tools::{Tool, ToolRegistry};
 
-use super::{McpClient, McpServerConfig, McpTool};
-
-/// Ceiling on a lazy per-scope connect, mirroring `available_enable.rs` (#556):
-/// a hung server must not park the calling turn forever.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+use super::{McpClient, McpServerConfig};
 
 /// One session's MCP scope, resolved by the embedder.
 pub struct McpScope {
@@ -90,6 +84,11 @@ pub struct McpScopes {
     /// Per-`(scope key, server)` connect guard — the #556 double-checked
     /// pattern, so two concurrent first calls connect once.
     connecting: Mutex<ConnectGuards>,
+    /// Scope key → eviction count; a connect caches its entry only if the
+    /// count is unchanged since it started.
+    generations: Mutex<HashMap<String, u64>>,
+    /// The detached script-triggered connect per `(scope key, server)`.
+    script_connects: super::InFlight,
 }
 
 /// `(scope key, server)` → connected entry.
@@ -109,6 +108,8 @@ impl McpScopes {
             secret_env: Arc::from(secret_env),
             cache: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashMap::new()),
+            generations: Mutex::new(HashMap::new()),
+            script_connects: super::InFlight::default(),
         })
     }
 
@@ -179,26 +180,22 @@ impl McpScopes {
         Ok(self.replace_mcp_tools(&scope, base))
     }
 
-    /// The cached-only dispatch overlay (the `rhai` arm): scope tools already
-    /// connected are visible to a script's bindings, but a script call never
-    /// triggers a lazy connect — scripts run against a pre-spawn snapshot, and
-    /// blocking the executor loop on a connect is not acceptable there.
-    pub fn overlay_registry_cached(&self, session: &SessionId, base: ToolRegistry) -> ToolRegistry {
-        match self.scope_of(session) {
-            Some(scope) => self.replace_mcp_tools(&scope, base),
-            None => base,
-        }
-    }
-
     /// Drop a scope's cached connections (logout, a changed server set —
     /// config drift under an unchanged key is invisible to the cache, so a
     /// changed URL or store *requires* this). The next call reconnects fresh;
     /// dropping the last `Arc<McpClient>` reaps a stdio server's child.
     pub fn evict_scope(&self, key: &str) {
-        self.cache
+        let mut cache = self.cache.lock().expect("scope cache lock poisoned");
+        // Bumped under the cache lock: a connect that started before this
+        // eviction (a detached script connect, #831) cannot land after it.
+        *self
+            .generations
             .lock()
-            .expect("scope cache lock poisoned")
-            .retain(|(k, _), _| k != key);
+            .expect("scope generation lock poisoned")
+            .entry(key.to_string())
+            .or_default() += 1;
+        cache.retain(|(k, _), _| k != key);
+        drop(cache);
         self.connecting
             .lock()
             .expect("scope connect-guard lock poisoned")
@@ -218,97 +215,10 @@ impl McpScopes {
         }
         base
     }
-
-    /// Connect `name` for `scope` if it isn't cached yet — the
-    /// `available_enable.rs` double-checked critical section, keyed by
-    /// `(scope key, server)` instead of server alone.
-    async fn ensure_server(&self, scope: &McpScope, name: &str) -> Result<Arc<ScopeServer>> {
-        let cache_key = (scope.key.clone(), name.to_string());
-        if let Some(server) = self
-            .cache
-            .lock()
-            .expect("scope cache lock poisoned")
-            .get(&cache_key)
-        {
-            return Ok(server.clone());
-        }
-        let guard = {
-            let mut connecting = self
-                .connecting
-                .lock()
-                .expect("scope connect-guard lock poisoned");
-            connecting.entry(cache_key.clone()).or_default().clone()
-        };
-        let _permit = guard.lock().await;
-        // Re-check under the guard — a concurrent first call may have won.
-        let already = self
-            .cache
-            .lock()
-            .expect("scope cache lock poisoned")
-            .get(&cache_key)
-            .cloned();
-        if let Some(server) = already {
-            return Ok(server);
-        }
-        let usable = usable_servers(scope).0.contains(&name);
-        let Some(cfg) = scope.servers.get(name).filter(|_| usable) else {
-            bail!("scope has no MCP server named `{name}`");
-        };
-        // An OAuth server with no stored credential for this scope fails
-        // *before* the connect — attempting it would only produce a 401
-        // (mirroring the global startup skip), and the clean auth-required
-        // error is what the embedder keys its authorization flow off.
-        if cfg.oauth.is_some() {
-            let stored = match &scope.token_store {
-                None => None,
-                Some(store) => store
-                    .load(name)
-                    .with_context(|| format!("loading the stored credential for `{name}`"))?,
-            };
-            if stored.is_none() {
-                bail!(auth_required_message(name));
-            }
-        }
-        let (client, defs) = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            super::connect_impl::connect_client_with_store(
-                name,
-                cfg,
-                &self.secret_env,
-                &self.http,
-                None,
-                None,
-                scope.token_store.clone(),
-            ),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("connecting MCP server `{name}` timed out"))??;
-        let tools: Vec<Arc<dyn Tool>> = defs
-            .into_iter()
-            .map(|def| {
-                Arc::new(McpTool::new(client.clone(), name, def, &cfg.capabilities))
-                    as Arc<dyn Tool>
-            })
-            .collect();
-        let server = Arc::new(ScopeServer {
-            tools,
-            _client: client,
-        });
-        self.cache
-            .lock()
-            .expect("scope cache lock poisoned")
-            .insert(cache_key, server.clone());
-        tracing::info!(
-            "MCP server `{name}`: connected for scope `{}`, {} tool(s)",
-            scope.key,
-            server.tools.len()
-        );
-        Ok(server)
-    }
 }
 
 /// Which of the scope's servers a namespaced tool name belongs to, matching by
-/// the same sanitized prefix [`McpTool::new`] advertises under — so a server
+/// the same sanitized prefix [`McpTool::new`](super::McpTool::new) advertises under — so a server
 /// name that was sanitized (`my server` → `my_server`) still matches its own
 /// tools.
 /// A disabled or clashed-out scoped server owns nothing: unreachable, like
@@ -360,6 +270,12 @@ fn render_scope_error(name: &str, e: &anyhow::Error) -> String {
         format!("MCP server `{name}` connect failed: {msg}")
     }
 }
+
+// The connect side — the guarded lazy connect, eviction generations, the
+// script path's connect target — split out along the 400-line file cap.
+#[path = "scoped_connect.rs"]
+mod connect;
+pub(crate) use connect::ScopedConnect;
 
 // `list_mcp`'s scoped rows and the scoped dispatch decline, split out along
 // the 400-line file cap (a `#[path]` child, so private fields stay reachable).

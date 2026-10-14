@@ -46,6 +46,7 @@ pub mod browser;
 pub mod client;
 #[path = "connect.rs"]
 mod connect_impl;
+mod in_flight;
 mod last_seen;
 pub mod live;
 pub mod oauth_ops;
@@ -63,6 +64,7 @@ pub use last_seen::McpToolCache;
 // helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
 // shares.
 pub(crate) use connect_impl::{connect_client, record_last_seen, register_tools, transport_label};
+pub(crate) use in_flight::InFlight;
 pub use scoped::{McpScope, McpScopeResolver, McpScopes};
 
 /// The handles a head reads MCP state through — the TUI `/tools` view lists
