@@ -39,7 +39,15 @@ struct Stub {
     inits: AtomicUsize,
     delay: Duration,
     fail: bool,
+    /// `tools/call`s answered so far; every call after the first sleeps
+    /// [`LATER_CALL_DELAY`] when `slow_later_calls` is set.
+    calls: AtomicUsize,
+    slow_later_calls: bool,
 }
+
+/// Far past any budget a test leaves for a second call, so the bridge
+/// clock — not the endpoint pacer's timing — is what cuts it.
+const LATER_CALL_DELAY: Duration = Duration::from_secs(3);
 
 async fn slow_stub(State(stub): State<Arc<Stub>>, Json(req): Json<Value>) -> Response {
     let id = req.get("id").cloned();
@@ -60,9 +68,14 @@ async fn slow_stub(State(stub): State<Arc<Stub>>, Json(req): Json<Value>) -> Res
         "tools/list" => Json(json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [
             {"name": "ping", "description": "pong", "inputSchema": {"type": "object"}}]}}))
         .into_response(),
-        "tools/call" => Json(json!({"jsonrpc": "2.0", "id": id, "result": {
-            "content": [{"type": "text", "text": "pong"}]}}))
-        .into_response(),
+        "tools/call" => {
+            if stub.calls.fetch_add(1, Ordering::SeqCst) > 0 && stub.slow_later_calls {
+                tokio::time::sleep(LATER_CALL_DELAY).await;
+            }
+            Json(json!({"jsonrpc": "2.0", "id": id, "result": {
+                "content": [{"type": "text", "text": "pong"}]}}))
+            .into_response()
+        }
         _ => (StatusCode::BAD_REQUEST, "unknown").into_response(),
     }
 }
@@ -188,6 +201,8 @@ async fn a_slow_connect_is_cut_at_the_script_budget_and_the_model_reuses_it() {
         inits: AtomicUsize::new(0),
         delay: INIT_DELAY,
         fail: false,
+        calls: AtomicUsize::new(0),
+        slow_later_calls: false,
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-slow");
@@ -255,6 +270,8 @@ async fn catch_loops_against_a_failing_server_connect_once() {
         inits: AtomicUsize::new(0),
         delay: Duration::from_secs(3),
         fail: true,
+        calls: AtomicUsize::new(0),
+        slow_later_calls: false,
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-loop");
@@ -312,6 +329,8 @@ async fn a_spent_budget_starts_no_connect() {
         inits: AtomicUsize::new(0),
         delay: Duration::from_secs(3),
         fail: true,
+        calls: AtomicUsize::new(0),
+        slow_later_calls: false,
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-floor");
@@ -334,6 +353,8 @@ async fn a_connected_server_skips_the_floor() {
         inits: AtomicUsize::new(0),
         delay: Duration::from_millis(50),
         fail: false,
+        calls: AtomicUsize::new(0),
+        slow_later_calls: true,
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-fast");
