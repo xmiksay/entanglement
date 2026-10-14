@@ -196,9 +196,10 @@ for anything that fits the 30s cap — it returns the result in one round-trip.
 ## Worked example
 
 ```rhai
-let cfg = read_raw("config.json").parse_json();
+// `glob` returns newline-joined text (looping over it walks characters);
+// `glob_json(...).files` is an array of path strings.
 let out = "";
-for f in glob("*.rs") {
+for f in glob_json("*.rs").files {
     if f.contains("test") {
         out += f + "\n";
     }

@@ -34,8 +34,8 @@ Every binding call passes the same checks as the equivalent direct tool call (pe
 Host bindings:
   read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML
   read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`)
-  glob(pattern) -> matching paths
-  grep(pattern) / grep(pattern, path) -> matching lines
+  glob(pattern) -> newline-joined text of matching paths
+  grep(pattern) / grep(pattern, path) -> newline-joined text of matching lines
   glob_json(pattern) / glob_json(pattern, exclude) -> #{files: path-string array, notices: string array}; same walk as glob, structured (empty files + a notice is the zero-match shape)
   grep_json(pattern) / grep_json(pattern, path) -> #{matches: {path, lineno, line} record array, notices: string array}; same scan as grep, structured
   edit(path, old, new) / edit(path, old, new, replace_all)

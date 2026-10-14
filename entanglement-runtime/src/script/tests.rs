@@ -442,3 +442,65 @@ fn http_binding_keeps_a_script_content_type() {
     let second: serde_json::Value = serde_json::from_str(&seen[1]).unwrap();
     assert!(second.get("headers").is_none(), "{second}");
 }
+
+/// #838: the shipped `rhai` skill's worked example is evaluated verbatim
+/// against a stubbed `glob_json`, so a doc edit that reintroduces the
+/// `for f in glob(...)` character-iteration bug (or any other non-running
+/// snippet) fails here instead of silently misleading the model.
+#[test]
+fn skill_worked_example_runs() {
+    let doc = include_str!("../skills/rhai.md");
+    let (_, section) = doc.split_once("## Worked example").expect(
+        "rhai.md lost its `## Worked example` heading — update the marker in \
+         skill_worked_example_runs",
+    );
+    // Stop at the next heading so a later section's rhai block is never the
+    // one silently run in place of the worked example.
+    let section = section.split_once("\n## ").map_or(section, |(s, _)| s);
+    let script = section
+        .split_once("```rhai\n")
+        .and_then(|(_, rest)| rest.split_once("```"))
+        .map(|(body, _)| body)
+        .expect(
+            "`## Worked example` has no ```rhai fenced block — the `rhai` tag \
+             is required for this test to find it",
+        );
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
+    // `new_raw` + `configure_engine` + the data functions, as in production:
+    // a bare raw engine can't iterate arrays, and an example using
+    // `parse_json` should fail for its real reason, not a missing function.
+    let mut engine = data_engine(Duration::from_secs(5));
+    register_bindings(
+        &mut engine,
+        tx,
+        false,
+        false,
+        Instant::now(),
+        Duration::from_secs(5),
+    );
+    let responder = std::thread::spawn(move || {
+        while let Some(call) = rx.blocking_recv() {
+            // Reply with an error rather than panic here: a panicking
+            // responder drops the reply and the eval only sees an opaque
+            // "rhai host bridge dropped".
+            let reply = if call.tool == "glob_json" {
+                Ok(r#"{"files":["src/lib.rs","src/tests.rs"],"notices":[]}"#.to_string())
+            } else {
+                Err(format!(
+                    "rhai.md worked example called `{}` — it must iterate \
+                     glob_json(...).files (#838)",
+                    call.tool
+                ))
+            };
+            let _ = call.reply.send(reply);
+        }
+    });
+
+    let out = engine
+        .eval::<String>(script)
+        .unwrap_or_else(|e| panic!("rhai.md `## Worked example` no longer runs: {e}"));
+    drop(engine);
+    responder.join().unwrap();
+    assert_eq!(out, "src/tests.rs\n");
+}
