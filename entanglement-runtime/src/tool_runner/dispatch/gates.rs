@@ -10,7 +10,6 @@ use entanglement_core::{Permission, ToolOverlayEntry};
 
 use crate::capability::{self, Capability};
 use crate::permission::{overlay_denies, overlay_grade_entry};
-use crate::tool_advertising;
 use crate::tools::ToolRegistry;
 use crate::{mode, run_limits};
 
@@ -39,7 +38,7 @@ impl Dispatcher {
         // ladder (#437) — after a lazy MCP connect had its chance (ADR-0201):
         // nothing connects at startup, so an unregistered `mcp__*` name
         // usually just means "not connected yet".
-        let tools = match self.resolve_tools(&call.tool).await {
+        let tools = match self.resolve_tools(&call.tool, via).await {
             Ok(tools) => tools,
             Err(msg) => return Some(Outcome::Refused(msg)),
         };
@@ -203,41 +202,6 @@ impl Dispatcher {
     /// in every mode, `auto` included.
     pub(super) fn floored(&self, tool: &str, input: &str) -> bool {
         crate::rhai_trust::floored_write(tool, input, &self.files_root, &self.trust)
-    }
-
-    /// The registry this call runs against: the scoped session's own MCP
-    /// tools when scoped (#684), then a lazy connect for an unregistered
-    /// `mcp__*` name (ADR-0201/0226), else the snapshot.
-    async fn resolve_tools(&self, tool: &str) -> Result<ToolRegistry, String> {
-        let tools = match &self.mcp_scopes {
-            Some(scopes) => {
-                let tools = scopes
-                    .overlay_registry_for_call(&self.session, self.tools.clone(), tool)
-                    .await?;
-                if let Some(decline) = scopes.scope_decline(&self.session, &tools, tool) {
-                    return Err(decline);
-                }
-                tools
-            }
-            None => self.tools.clone(),
-        };
-        if tools.contains(tool)
-            || crate::plan_tasks::is_state_tool(tool)
-            || tool == crate::tool_names::REQUEST_MODE_TOOL
-        {
-            return Ok(tools);
-        }
-        if tool.starts_with("mcp__") {
-            return crate::mcp::available::resolve_unregistered(
-                &self.mcp_avail,
-                tool,
-                &self.registry,
-                &self.mcp_active,
-                self.mcp_http.as_ref(),
-            )
-            .await;
-        }
-        Err(tool_advertising::unknown_tool_reply(&tools, tool))
     }
 
     /// Whether the mode carries an explicit, argument-scoped `http(...)`

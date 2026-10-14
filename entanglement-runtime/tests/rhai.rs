@@ -38,6 +38,12 @@ mod unified;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 #[path = "rhai/mcp_parity.rs"]
 mod mcp_parity;
+#[path = "rhai/unified_harness.rs"]
+mod unified_harness;
+// #831: a script-triggered lazy MCP connect is bounded by the script budget.
+#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[path = "rhai/connect_budget.rs"]
+mod connect_budget;
 
 // ADR-0228: `path` runs, the constant `args` map, the XOR decline, and the
 // skill side (`tools:` refused, `load_skill` doc-commented signatures).
