@@ -44,7 +44,8 @@
 //!   rule — here or in `permissions:` — naming a tool outside the
 //!   compile-time vocabulary (a typo, or a name retired by a rename), one
 //!   dispatch never grades by name (`mcp`, the discovery tools, the
-//!   script-only read variants `read_raw`/`*_json`; #843), or a tool-name
+//!   script-only read variants `read_raw`/`*_json`, the bookkeeping Control
+//!   tools; #843/#849), or a tool-name
 //!   glob (`mcp__gh__*`, `list_?` — rule keys match the tool part exactly,
 //!   only a bare `*` is a wildcard), logs a non-fatal startup warning naming the file, the mode (or
 //!   `permissions`) and the entry ([`mode_warn`], reviving ADR-0166's

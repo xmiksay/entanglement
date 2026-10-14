@@ -480,7 +480,12 @@ pub trait GrantStore: Send + Sync {
 takes the least-privileged grade across that chain itself, so your resolver
 only ever decides a *single* session's own grade — the sub-agent privilege
 ceiling ([ADR-0024](adr/0024-subagent-permission-gating.md)) stays in the
-ladder on top of whatever you return. A tenant-keyed resolver is a couple of
+ladder on top of whatever you return. Spawning is asked about too: `agent`/
+`agent_send` are graded like any tool, so a resolver that denies names it
+doesn't know also refuses every spawn
+([ADR-0232](adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
+`poll`/`ask_user`/`update_tasks`/`request_mode` and the discovery tools are
+never asked about; `propose_plan` is (by its `plan` class). A tenant-keyed resolver is a couple of
 lines:
 
 ```rust

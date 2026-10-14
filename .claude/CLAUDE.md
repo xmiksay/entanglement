@@ -159,8 +159,9 @@ doc, never here**:
   `research`/`plan`/`build`/`auto` (`auto` = allow all but its deny/prompt lists),
   graded at the runtime's dispatch gate (a rule naming the tool outranks a
   class rule; a `*` rule meets a named one by length, a class one by
-  strictness; longest within a kind); there is no agent tool mask
-  ([agents & permissions §3](../docs/architecture/agents-and-permissions.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+  strictness; longest within a kind; a rule naming a non-maskable tool never
+  matches); there is no agent tool mask
+  ([agents & permissions §3](../docs/architecture/agents-and-permissions.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
 - **The tool overlay is the user's own trusted voice** — per-session,
   mode-scoped enable/deny entries over the mode's grade
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).
@@ -203,10 +204,13 @@ doc, never here**:
   ([gates §10](../docs/architecture/gates-and-host-tools.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
-  `mcp_tools` reads (and lazily connects) one server's catalog; they, `mcp`
-  and the script-only read variants (`read_raw`/`*_json`) are non-maskable — an overlay entry or rule
-  naming one is refused/warned, never a silent no-op (#843)
-  ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
+  `mcp_tools` reads (and lazily connects) one server's catalog; they, `mcp`,
+  the script-only read variants (`read_raw`/`*_json`) and the bookkeeping
+  Control tools (`poll`/`ask_user`/`update_tasks`/`request_mode`/
+  `propose_plan`) are non-maskable — an overlay entry or rule naming one is
+  refused/warned, never a silent no-op (#843); `agent`/`agent_send` are
+  graded like any tool
+  ([gates §one surface](../docs/architecture/gates-and-host-tools.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
 - **Skills are additive-only and all model-visible; slash commands are
   head-side templates** — a skill ships `lib.rhai` functions and script
   files; `tools:`/`user_only` frontmatter removed (`tools:` skips the skill,

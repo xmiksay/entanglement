@@ -6,8 +6,8 @@ use entanglement_core::ToolSpec;
 use crate::tool_names::AGENT_TOOL;
 
 /// The `agent`/`agent_send` tool specs, advertised unconditionally to every
-/// session. Spawning is never *graded* (`Capability::Control`) and any
-/// registered agent may be a target, bounded by the session's mode
+/// session. A spawn is graded like any tool (ADR-0232) and any registered
+/// agent may be a target, bounded by the session's mode
 /// `max_depth`/`max_agents`. The spec names no agent at all: a roster here
 /// would change the cached `tools` array whenever an agent definition is
 /// added or edited, so `list_agents` answers "who can I start" instead and an

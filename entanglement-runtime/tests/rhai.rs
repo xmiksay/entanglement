@@ -59,6 +59,9 @@ mod launch_harness;
 // never-hang read of a script `path`.
 #[path = "rhai/launch_denies.rs"]
 mod launch_denies;
+// #849: a background script's nested card outlives a compaction/hibernate.
+#[path = "rhai/background_park.rs"]
+mod background_park;
 // ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]

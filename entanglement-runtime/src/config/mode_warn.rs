@@ -10,9 +10,11 @@
 //! language that replaced the mask, reusing `is_recognized_mask_entry`
 //! unchanged rather than inventing a second vocabulary check. A *known* name
 //! dispatch never grades under its own name (`mcp`, the discovery tools, the
-//! script-only read variants `read_raw`/`*_json` —
-//! `tool_names::NON_MASKABLE_TOOLS`, #843) is the same
-//! invisible no-op and warns with the reason instead.
+//! script-only read variants `read_raw`/`*_json`, the bookkeeping Control
+//! tools — `tool_names::NON_MASKABLE_TOOLS`, #843/#849) is the same
+//! invisible no-op and warns with the reason instead. For `propose_plan`
+//! the no-op is enforced, not incidental: the matcher skips a rule naming a
+//! non-maskable tool (`mode::rules`), so only its `plan` class grades it.
 
 use serde_yaml::{Mapping, Value};
 
@@ -281,6 +283,40 @@ mod tests {
                 want(CEILING_SCOPE, "mcp(*)"),
             ]
         );
+    }
+
+    /// #849: a rule naming a bookkeeping Control tool warns, in a mode rule
+    /// and in the ceiling; the builtin-style `plan` class rule that actually
+    /// gates `propose_plan` does not, nor does a rule naming `agent` (graded).
+    #[test]
+    fn bookkeeping_control_tool_rules_warn_but_their_class_and_agent_do_not() {
+        let tools = [
+            "poll",
+            "ask_user",
+            "update_tasks",
+            "request_mode",
+            "propose_plan",
+        ];
+        let list = tools.map(|t| format!("\"{t}\"")).join(", ");
+        let layers = vec![layer(
+            ConfigLayer::User,
+            &format!(
+                "modes:\n  plan:\n    deny: [{list}, \"plan\", \"agent\", \"agent_send\"]\n\
+                 permissions:\n  prompt: [\"propose_plan(*)\", \"control\"]\n"
+            ),
+        )];
+        let stale: Vec<(String, String)> = stale_rule_names(&layers)
+            .into_iter()
+            .map(|(_, scope, entry)| (scope, entry))
+            .collect();
+        let mut want: Vec<(String, String)> = tools
+            .iter()
+            .map(|t| ("plan".to_string(), t.to_string()))
+            .collect();
+        want.push((CEILING_SCOPE.to_string(), "propose_plan(*)".to_string()));
+        assert_eq!(stale, want);
+        let why = no_match_reason("propose_plan").unwrap();
+        assert!(why.contains("name `plan` instead"), "{why}");
     }
 
     #[test]

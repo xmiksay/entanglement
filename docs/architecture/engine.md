@@ -948,9 +948,11 @@ now, not the agent
 §6, superseding [ADR-0023](../adr/0023-subagent-spawn-limits.md)/[ADR-0040](../adr/0040-per-profile-spawn-control.md)):
 the old per-profile `can_spawn`/`spawnable_agents` gates and the
 process-global `MAX_SPAWN_DEPTH`/`MAX_SPAWNS_PER_ROOT` constants are gone —
-`agent`/`agent_send` are `Capability::Control`, so spawning is never
-permission-graded at all, and **any agent may spawn any registered agent**.
-What bounds it instead is two mode facts applying to the session's whole
+**any agent may spawn any registered agent**. `agent`/`agent_send` are
+`Capability::Control` but graded like any tool before they launch
+([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): an overlay deny or a mode `Deny` refuses with an
+error result and starts no child, and the built-in modes class-allow
+`control`. Past that grade, two mode facts bound the session's whole
 spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents` (concurrent
 children per root — held from spawn until the child's answer arrives, never
 a cumulative budget), both `Option<u32>` on the mode's `Limits` — undefined

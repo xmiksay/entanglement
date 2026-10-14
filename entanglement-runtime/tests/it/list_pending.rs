@@ -106,7 +106,9 @@ fn ask_mode(name: &str, question_timeout: u64) -> Mode {
     Mode {
         name: name.to_string(),
         default: Permission::Ask,
-        rules: Rules::default(),
+        // Spawning is graded (ADR-0232); allow it like the built-ins do, so
+        // the child's `bash` is the one parked call.
+        rules: Rules::from_lists(&[], &["control".to_string()], &[]),
         limits: Limits {
             question_timeout,
             ..Limits::default()
@@ -116,7 +118,7 @@ fn ask_mode(name: &str, question_timeout: u64) -> Mode {
     }
 }
 
-/// An engine whose modes all grade every graded tool `Ask`: `build` (the
+/// An engine whose modes grade every graded tool but spawning `Ask`: `build` (the
 /// default), `research` (so `request_mode` has something to widen from) and
 /// `timed` (unattended, 1s `question_timeout`).
 fn spawn_engine() -> Holly {

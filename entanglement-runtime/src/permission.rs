@@ -1,13 +1,13 @@
 //! Sub-agent permission gating (#77, ADR-0024; #119, ADR-0040). Runtime-only
 //! policies layered on top of the per-tool `Allow | Ask | Deny` dispatch (#59):
 //!
-//! - **Spawn control** — [`spawn_refusal`]: per ADR-0207 §6, spawning is never
-//!   *graded* (`agent`/`agent_send` are `Capability::Control`) and any agent
-//!   may be a session root or a spawn target, so the old per-profile
+//! - **Spawn control** — [`spawn_refusal`]: any agent may be a session root
+//!   or a spawn target (ADR-0207 §6), so the old per-profile
 //!   `can_spawn`/`spawnable_agents`/target-mode gates (ADR-0040) are gone —
-//!   the only check left is that the named target resolves to a real,
-//!   registered profile. Spawning is bounded instead by the session's mode
-//!   `max_depth`/`max_agents` ([`SpawnGuard::try_spawn`][crate::subagent::SpawnGuard::try_spawn]).
+//!   the only target check left is that the name resolves to a real,
+//!   registered profile. The call itself is graded like any tool (ADR-0232)
+//!   and bounded by the session's mode `max_depth`/`max_agents`
+//!   ([`SpawnGuard::try_spawn`][crate::subagent::SpawnGuard::try_spawn]).
 //! - **Privilege ceiling** — [`ancestor_chain`]: a child sub-agent is never
 //!   more privileged than its ancestors. The main dispatch ladder
 //!   (`tool_runner::resolve_effective`) takes the least-privileged

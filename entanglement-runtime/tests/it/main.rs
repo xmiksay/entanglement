@@ -115,6 +115,8 @@ mod session_title;
 mod session_workdir;
 mod skill_posture;
 mod slash_commands;
+mod spawn_grading;
+mod spawn_grading_park;
 mod spawn_prompt_persistence;
 mod state_dir;
 mod stop_abort;

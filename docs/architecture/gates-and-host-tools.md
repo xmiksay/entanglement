@@ -787,17 +787,55 @@ the surface is exactly `KERNEL`.
 
 **The six discovery tools** — each with no argument or one `name`, all
 `Capability::Control` and non-maskable — the `poll` pattern: a Control
-tool is never graded ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §3;
+tool other than `agent`/`agent_send` is never graded ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §3;
 `tool_names::DISCOVERY_TOOLS`, [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
 returns before the mode, overlay or ceiling are consulted, so nothing can
 withdraw or decline them.
 
+**Which Control tools are graded** ([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), #849). The ungraded
+ones are the bookkeeping tools — `poll`, `ask_user`, `update_tasks`,
+`request_mode` (plus the discovery tools above): each only collects or
+reports work the mode already authorized, or asks the user, so the dispatch
+`Control` path (`capability::bypasses_grading`) or the runtime-owned
+`Intercept` route skips the overlay, the mode and the ceiling. `agent`/
+`agent_send` are the exception: still `Capability::Control`, but a spawn
+starts a session that runs tools, so `orchestration::spawn`/`agent_send`
+climb the same ladder as a host tool (`Dispatcher::gate` — overlay deny,
+grade + grants, `pre_tool_use`, mode deny, the unattended collapse, the
+approval park) before launching. A refusal is an ordinary `is_error`
+result, and no child starts. The spawn slot is reserved first (the guard is
+loop state; the ladder may park in the detached task) and released on a
+refusal. The child's event receiver is taken only once the gate clears, so a
+long approval park can't lag it past the outbox capacity. A session that
+ends or hibernates unwinds the cards of its turn
+(`PendingDecisions::stop_attached` in the executor's lifecycle fold): tool
+and spawn cards, `ask_user` questions, plan/mode cards, a blocking script's
+nested cards. A resume re-offers a parked `ToolExec`. A background
+(`detached`) script's nested card is exempt there. It is no `ToolExec`, so
+nothing would re-offer it, and the script outlives the session (a compaction
+successor inherits it,
+[ADR-0231](../adr/0231-compaction-successor-inherits-background-work.md)).
+A session `Stop` is different: it unwinds every card of the session,
+background ones included (`stop_session`). `Stop` is the user's explicit
+escape hatch and the TUI clears its card view on it, while an attended park
+never times out. The script itself is not aborted
+([ADR-0185](../adr/0185-rhai-joins-background-and-poll.md)): its nested call
+fails with "rhai run stopped" and the run ends. The built-in modes class-allow `control`, so a spawn runs
+unprompted by default and a rule naming `agent` outranks that.
+`propose_plan` grades only its own `plan` class (`resolve_effective`, before
+any file is touched): that, not the Control path, keeps it in `plan` mode.
+
 **Non-maskable names** (#843, `tool_names::NON_MASKABLE_TOOLS`) — the six
 discovery tools, the `mcp` envelope (core unwraps it to
-`mcp__<server>__<tool>` before dispatch, so the gates never see `mcp`) and
+`mcp__<server>__<tool>` before dispatch, so the gates never see `mcp`),
 the script-only `read_raw`/`glob_json`/`grep_json` (graded as
-`read`/`glob`/`grep`, `grade::graded_name`): an overlay entry or a
-mode/ceiling rule may spell one but can never match it. The runtime says so
+`read`/`glob`/`grep`, `grade::graded_name`) and the bookkeeping Control
+tools `poll`/`ask_user`/`update_tasks`/`request_mode`/`propose_plan`
+(#849): an overlay entry or a mode/ceiling rule may spell one but can
+never match it. For `propose_plan`, the one member that is graded at all,
+this is enforced by the matcher: `mode::rules::best_match` skips a rule
+naming a non-maskable tool, so only its class or a `*` rule decides, and the
+built-in `deny: [plan]` class rule never warns. The runtime says so
 instead of accepting a silent no-op: the TUI's toggle roster
 (`engine_setup::toggle_roster` — `/tools`, the bare-`/enable` checklist, the
 `/set` Tools tab) leaves them out, `/enable`/`/disable` refuses one with
@@ -902,7 +940,8 @@ core). A model call takes both; a script binding takes only `run` and gets
 its outcome over the bridge (`script::service`), so core never sees a nested
 call. The ladder (`dispatch/gates.rs`): script reachability → resolve the
 tool (`dispatch/resolve.rs`: scoped MCP overlay, lazy connect — a script waits
-on it no longer than its budget, §Dispatch-time lazy connect) → `Control` bypass →
+on it no longer than its budget, §Dispatch-time lazy connect) → `Control` bypass
+(every Control-only tool but `agent`/`agent_send`, ADR-0232) →
 overlay deny → grade + grants → `pre_tool_use` → mode deny → escape-root →
 credentialed-`http` gate → run / unattended collapse / park
 (`dispatch/decision.rs`) → execute (`dispatch/execute.rs`: state tools,

@@ -161,14 +161,20 @@ below realize one model:
   `list_skills`/`list_mcp`/`mcp_tools`/`update_tasks`/`request_mode` ⇒
   `Control`; the registry tool `load_skill` is `Control` too, `propose_plan` ⇒ `Plan`) resolve
   through a small hardcoded table (`capability::runtime_owned`) instead. A
-  **`Capability::Control`-only tool is never graded** — checked by capability,
-  not a second interception table, so it automatically covers every current
-  and future orchestration tool with nothing to update at grading time; it
-  reads/writes/executes nothing on the host itself (enabling an MCP server
-  only makes its own tools *dispatchable*, and each of those is still graded
-  on its own merits). `request_mode` is the one Control tool whose semantics
-  still force-park an approval (§permission-widening below), mirroring
-  `propose_plan`.
+  **`Capability::Control`-only tool is never graded** — checked by capability
+  (`capability::bypasses_grading`), not a second interception table, so it
+  automatically covers every current and future bookkeeping tool with
+  nothing to update at grading time; it reads/writes/executes nothing on the
+  host itself. The exception is **spawning**: `agent`/`agent_send` stay
+  `Control` (so a `control` class rule reaches them) but are graded like any
+  tool, since a spawn starts a session that runs tools
+  ([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)) — the built-in modes class-allow `control`, so spawning
+  runs unprompted unless a rule says otherwise. The `control` class key
+  matches only a tool whose capabilities are exactly `[Control]`: as the
+  longest class name it would otherwise out-rank `write`/`exec` and widen a
+  mixed tool past the mode's class deny. `request_mode` is the one
+  ungraded Control tool whose semantics still force-park an approval
+  (§permission-widening below), mirroring `propose_plan`.
   **Grading**: a mode's `rules` is one flat list of `deny`/`allow`/`prompt`
   entries (`prompt` is the YAML spelling of `Permission::Ask` — the config
   surface uses the word a user thinks in, the enum keeps core's name), each
@@ -726,10 +732,13 @@ below realize one model:
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
   `list_agents`/`list_models`/`list_skills`/`load_skill`/`list_mcp`/
-  `mcp_tools` — which are **fully non-maskable**: no mode rule, ceiling
-  rule or session overlay deny can withdraw them even at dispatch (the
-  ADR-0190 `poll` pattern; the TUI refuses such an entry and a config rule
-  naming one warns, #843). `glob`/`grep`/`call` stay registered as
+  `mcp_tools`. The discovery tools are **non-maskable**: no mode rule,
+  ceiling rule or session overlay deny can withdraw them even at dispatch
+  (the ADR-0190 `poll` pattern; the TUI refuses such an entry and a config
+  rule naming one warns, #843). They are not the only ones — the full
+  non-maskable set (`tool_names::NON_MASKABLE_TOOLS`, §session tool overlay
+  below) also holds the bookkeeping Control tools, and `agent`/`agent_send`
+  are deliberately outside it ([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep`/`call` stay registered as
   script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
@@ -769,10 +778,14 @@ below realize one model:
   (below) withdraws a tool outright with its own distinct message
   (`` tool \`T\` withdrawn for this session by /disable — /enable to restore
   ``) — the one other source of an unprompted refusal, and, unlike a mode
-  `Deny`, reversible by the same human voice that set it. `Capability::Control`
-  tools bypass this whole ladder (§permission modes above) — never graded,
-  never declined for authority reasons, only for the mode's `max_depth`/
-  `max_agents` spawn bounds (an `is_error`) or an unknown target/tool name.
+  `Deny`, reversible by the same human voice that set it. The bookkeeping
+  `Capability::Control` tools bypass this whole ladder (§permission modes
+  above) — never graded, never declined for authority reasons. `agent`/
+  `agent_send` climb it before launching like any tool ([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)):
+  an overlay deny or a mode `Deny` refuses with an error result and starts
+  no child, a `prompt` rule parks an approval card; past the ladder they are
+  bounded by the mode's `max_depth`/`max_agents` (an `is_error`) and refused
+  for an unknown target or model.
 - **The session tool overlay survives as the user's own direct voice**
   (✅ #539, [ADR-0149](../adr/0149-per-session-tool-overlay.md); live bash
   enablement folded in, #611,
@@ -817,8 +830,18 @@ below realize one model:
   `mcp__<server>__<tool>` entry or rule, a server-wide `mcp__<server>__*`
   glob an overlay entry only, and a server the user never wants is removed
   from config), the six discovery tools (always
-  available, not maskable — below) and the script-only read variants
-  `read_raw`/`glob_json`/`grep_json` (graded as `read`/`glob`/`grep`). A
+  available, not maskable — below), the script-only read variants
+  `read_raw`/`glob_json`/`grep_json` (graded as `read`/`glob`/`grep`) and
+  the **bookkeeping Control tools** (#849, [ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): `poll`,
+  `ask_user` and `update_tasks` only collect or report work the mode
+  already authorized ([ADR-0190](../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)'s
+  argument — withdrawing one strands work, it never reduces capability);
+  `request_mode` only asks the user for more authority (always an approval
+  card, refused in `auto`); `propose_plan` is gated by its `plan` class
+  alone — the rule matcher skips a rule *naming* any non-maskable tool, so
+  `deny: [plan]` (the built-in `research`/`build`/`auto` rule) is what keeps
+  plan authorship in `plan` mode, and that class rule never warns. `agent`/
+  `agent_send` are ordinary entries: `/disable agent` stops spawning. A
   wire `SetToolOverlay` entry naming one is still applied (core holds no tool
   policy) but the runtime logs that it has no effect when it folds the
   `ToolOverlayChanged`; a `modes:` or `permissions:` rule naming one warns
@@ -924,9 +947,11 @@ below realize one model:
   [ADR-0040](../adr/0040-per-profile-spawn-control.md), superseded by
   [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
   §6): the old per-profile `can_spawn`/`spawnable_agents` quartet is gone —
-  **any agent may spawn any registered agent now**, and `agent`/`agent_send`
-  are `Capability::Control`, so spawning is never permission-graded at all.
-  What bounds it instead are two mode facts, applying to the session's whole
+  **any agent may spawn any registered agent now**. `agent`/`agent_send` are
+  `Capability::Control` but graded like any tool ([ADR-0232](../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), amending
+  ADR-0207 §6): the overlay and the mode's rules reach them, and the
+  built-ins class-allow `control`. Past that grade, spawning is bounded by
+  two mode facts, applying to the session's whole
   spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents`
   (concurrent children per root) — undefined means unlimited, exceeding
   either returns an `is_error` naming the limit
@@ -1148,17 +1173,17 @@ below realize one model:
   loaded on demand (`load_skill`, ✅ #115, below).
 - **Tier-2 skill loading (✅ #115, [ADR-0037](../adr/0037-load-skill-tool-deterministic-resolution.md)):**
   one generic `load_skill { skill_name }` tool (not one-per-skill) resolves a
-  skill's body on demand. Unlike the orchestration-only runtime tools
-  (`agent`/`agent_send`/`ask_user`/`poll` — `Capability::Control`), it
-  **reads the filesystem**, so it is a *real host tool* in the `ToolRegistry`
+  skill's body on demand. It is a *real host tool* in the `ToolRegistry`
   (`entanglement_runtime::skills::load_skill::LoadSkillTool`, holding a
-  shared `Arc<SkillRegistry>`), declares `Capability::Read`, and grades
-  through the session's permission mode exactly like `read` — with no
-  orchestration-tool exemption. It is therefore **allowed** in every one of
-  the four built-in modes (each class-allows `read`, and `load_skill` shares
-  that class): unlike the old read-only `explore` agent, which masked
-  `load_skill` out entirely, a read-only *mode* today still lets a model
-  load a skill's body — reading a skill is not writing. The handler resolves **deterministically** (never model reasoning):
+  shared `Arc<SkillRegistry>`), but since
+  [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+  it is one of the six discovery tools: `Capability::Control`, ungraded, and
+  non-maskable — it only reads the skill catalog the runtime already
+  discovered, so it runs in every mode and an overlay entry or mode rule
+  naming it is refused or warned about (see the non-maskable set above).
+  Unlike the old read-only `explore` agent, which masked `load_skill` out
+  entirely, a read-only *mode* still lets a model load a skill's body —
+  reading a skill is not writing. The handler resolves **deterministically** (never model reasoning):
   look the `SkillMeta` up by name (an unknown name is a tool error); then **substitute
   every relative payload path to an absolute one** before the text reaches the
   model — closing Claude Code's bug class where the *model* resolves
@@ -1233,19 +1258,15 @@ below realize one model:
   *only*, never an allowlist, and is mode-independent (a spawned subagent gets the
   body even though its tier-1 index is withheld). Unlike the model-facing
   `load_skill`, an unknown name is a loud load-time error.
-  **Access** is now the session's permission mode, not an agent field: since
-  `load_skill` carries `Capability::Read`
-  ([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §3), it grades exactly like `read` — a mode that denies the `read` class,
-  or a session tool overlay `/disable load_skill`, blocks it at dispatch; the
-  schema stays advertised either way, so the refusal is always visible, never
-  a silent absence. The two axes still compose to preserve both corners:
-  "preload X but block everything else" (`skills: [x]` in the agent
-  definition + a mode/overlay denying `load_skill`) and "preload nothing,
-  request on demand" (no `skills:`, `load_skill` reachable). Every built-in
-  mode class-allows `read`, so the default is permissive — a subagent may
-  discover and load any skill exactly like its parent, unless the mode or an
-  overlay says otherwise.
+  **Access** is not an agent field: `load_skill` is a non-maskable discovery
+  tool (`Capability::Control`, ungraded since
+  [ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
+  so no mode or overlay withdraws it; what a loaded skill's scripts and
+  commands may *do* is graded call by call like any other tool.
+  `skills: [x]` therefore only preloads — a subagent may still discover and
+  load any other skill exactly like its parent; to keep a skill from running,
+  grade its effects in the mode (a `prompt:`/`deny:` rule on what it does) or
+  remove it from the discovered skill dirs.
 - **User slash commands — prompt templates (✅ #733, [ADR-0221](../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)):**
   `entanglement_runtime::slash_commands` discovers every `*.md` under the
   layered `commands` dirs through the same `layers::candidate_dirs` as skills —

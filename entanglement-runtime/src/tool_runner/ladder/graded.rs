@@ -1,9 +1,10 @@
 //! The permission-graded handlers of the interception ladder (issue #451):
-//! `rhai` (behind the `rhai` feature) and the generic `Permission` route —
-//! the two handlers [`Intercept::bypasses_permission`][super::Intercept::bypasses_permission]
-//! is `false` for. Both build one [`Dispatcher`] from the executor's shared
-//! state: the generic route dispatches its call through it, and `rhai` hands
-//! it to the script so every binding climbs the same ladder (ADR-0227).
+//! `rhai` (behind the `rhai` feature) and the generic `Permission` route.
+//! Both build one [`Dispatcher`] from the executor's shared state: the
+//! generic route dispatches its call through it, and `rhai` hands it to the
+//! script so every binding climbs the same ladder (ADR-0227). The spawning
+//! routes (`orchestration::spawn`/`agent_send`) borrow [`dispatcher`] for
+//! the same ladder before they launch (ADR-0232).
 
 use std::collections::HashMap;
 #[cfg(feature = "rhai")]
@@ -25,8 +26,10 @@ use super::LadderCtx;
 /// (ADR-0024), the chain's overlays (#539/#628/#634), the session's mode and
 /// its limits (ADR-0207 §8/§11), and the registry (#372 — a brief read lock,
 /// never held across an `.await`). An unseen session's empty mode name never
-/// matches a grant, and its resolver grade fails closed (#156).
-fn dispatcher(
+/// matches a grant, and its resolver grade fails closed (#156). Shared with
+/// the spawning routes, which climb the same ladder before launching
+/// (ADR-0232).
+pub(super) fn dispatcher(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
     overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,

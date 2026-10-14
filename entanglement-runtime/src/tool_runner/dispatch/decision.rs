@@ -108,7 +108,8 @@ impl Dispatcher {
             reason,
             card_reason(&prompt, floored),
         );
-        let rx = crate::pending::park_approval(&self.holly, &self.pending, req, card_tool);
+        let rx =
+            crate::pending::park_approval_as(&self.holly, &self.pending, req, card_tool, detached);
         // A background script's Ask arrives outside any live turn (#637):
         // flipping the session's state would strand a stale status.
         let set_state = |state| {

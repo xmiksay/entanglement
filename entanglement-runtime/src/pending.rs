@@ -19,7 +19,8 @@
 //! far faster than a park loop that also competes with tool execution — so the
 //! realistic lag window that dropped decisions is closed. A `Stop` for the
 //! session unwinds every one of its waiters
-//! ([`stop_session`](PendingDecisions::stop_session)).
+//! ([`stop_session`](PendingDecisions::stop_session)); its end or hibernate
+//! spares a background script's ([`stop_attached`](PendingDecisions::stop_attached)).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -31,7 +32,9 @@ use tokio::sync::oneshot;
 use crate::seam::Decision;
 
 mod park;
-pub use park::{approval, headless_starts, list_pending, park_approval, scopes_for};
+pub use park::{
+    approval, headless_starts, list_pending, park_approval, park_approval_as, scopes_for,
+};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
 /// alongside the waiter so a listing (`InMsg::ListPending`) can describe a
@@ -49,6 +52,10 @@ pub struct Parked {
     pub kind: &'static str,
     pub detail: String,
     pub approval: Option<WireApproval>,
+    /// A background (`detached`) script's nested call (ADR-0185): not a
+    /// `ToolExec`, so nothing re-offers it — it outlives its session's end
+    /// or hibernate ([`PendingDecisions::stop_attached`]).
+    pub detached: bool,
 }
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
@@ -86,7 +93,7 @@ impl PendingDecisions {
         kind: &'static str,
         detail: impl Into<String>,
     ) -> oneshot::Receiver<Decision> {
-        self.insert(session, request_id, kind, detail.into(), None)
+        self.insert(session, request_id, kind, detail.into(), None, false)
     }
 
     /// [`register`](Self::register) for an approval park, keeping its full
@@ -96,6 +103,7 @@ impl PendingDecisions {
         &self,
         approval: WireApproval,
         detail: impl Into<String>,
+        detached: bool,
     ) -> oneshot::Receiver<Decision> {
         let kind = match approval.kind {
             ApprovalKind::Tool => "tool",
@@ -104,7 +112,14 @@ impl PendingDecisions {
             ApprovalKind::Rhai => "rhai",
         };
         let (session, request_id) = (approval.session.clone(), approval.request_id.clone());
-        self.insert(&session, &request_id, kind, detail.into(), Some(approval))
+        self.insert(
+            &session,
+            &request_id,
+            kind,
+            detail.into(),
+            Some(approval),
+            detached,
+        )
     }
 
     fn insert(
@@ -114,12 +129,14 @@ impl PendingDecisions {
         kind: &'static str,
         detail: String,
         approval: Option<WireApproval>,
+        detached: bool,
     ) -> oneshot::Receiver<Decision> {
         let (tx, rx) = oneshot::channel();
         let parked = Parked {
             kind,
             detail,
             approval,
+            detached,
         };
         self.lock()
             .insert((session.clone(), request_id.to_string()), (tx, parked));
@@ -182,15 +199,30 @@ impl PendingDecisions {
         }
     }
 
-    /// Unwind every waiter for `session` with [`Decision::Stop`] (#167): a `Stop`
-    /// is session-scoped, so it cancels all of the session's parked approvals at
-    /// once. Core cancels the turn on the same `Stop`, so no `ToolResult` is owed.
+    /// Unwind every waiter for `session` with [`Decision::Stop`] (#167) — a
+    /// background script's included: a `Stop` is the user's explicit escape
+    /// hatch, the TUI clears its card view on it, and an attended park has
+    /// no timeout, so a card left parked would hang the script for good.
+    /// Core cancels the turn on the same `Stop`, so no `ToolResult` is owed.
     pub fn stop_session(&self, session: &SessionId) {
+        self.unwind(session, true);
+    }
+
+    /// [`stop_session`](Self::stop_session) for a session that ended or
+    /// hibernated (ADR-0232): the cards of its turn go (a resume re-offers a
+    /// parked `ToolExec`), but a background (`detached`) script's card stays
+    /// — the script outlives the session (ADR-0185/0231) and nothing would
+    /// ever ask again.
+    pub fn stop_attached(&self, session: &SessionId) {
+        self.unwind(session, false);
+    }
+
+    fn unwind(&self, session: &SessionId, include_detached: bool) {
         let mut guard = self.lock();
         let keys: Vec<_> = guard
-            .keys()
-            .filter(|(s, _)| s == session)
-            .cloned()
+            .iter()
+            .filter(|((s, _), (_, parked))| s == session && (include_detached || !parked.detached))
+            .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
             if let Some((tx, _)) = guard.remove(&key) {
@@ -320,7 +352,7 @@ mod tests {
             (launch, ApprovalScope::Session, ApprovalScope::Session),
         ] {
             let rid = req.request_id.clone();
-            let rx = pending.register_approval(req, "t");
+            let rx = pending.register_approval(req, "t", false);
             pending.resolve(&s, &rid, approve(sent));
             match await_decision(rx).await {
                 Decision::Approve { scope, .. } => assert_eq!(scope, want, "{rid} {sent:?}"),
@@ -384,6 +416,27 @@ mod tests {
             // `pending` (holding the sender) drops here.
         };
         assert!(matches!(await_decision(rx).await, Decision::Stop));
+    }
+
+    /// ADR-0232: a session end unwinds its `ToolExec` cards but leaves a
+    /// background script's card answerable.
+    #[tokio::test]
+    async fn stop_attached_keeps_a_detached_scripts_card() {
+        let pending = PendingDecisions::default();
+        let s = SessionId::new("s");
+        let attached = pending.insert(&s, "a", "tool", "bash".into(), None, false);
+        let detached = pending.insert(&s, "d", "rhai", "bash".into(), None, true);
+        pending.stop_attached(&s);
+        assert!(matches!(await_decision(attached).await, Decision::Stop));
+        pending.resolve(&s, "d", Decision::Reject { reason: None });
+        assert!(matches!(
+            await_decision(detached).await,
+            Decision::Reject { .. }
+        ));
+        // A `Stop` takes the detached card too.
+        let detached = pending.insert(&s, "d2", "rhai", "bash".into(), None, true);
+        pending.stop_session(&s);
+        assert!(matches!(await_decision(detached).await, Decision::Stop));
     }
 
     #[tokio::test]
