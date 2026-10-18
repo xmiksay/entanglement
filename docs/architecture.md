@@ -12,9 +12,11 @@ Decided-but-pending work lives in GitHub issues, not inline here.
 
 ## Modules
 
-The architecture is split by module — each file stays under the 400-line cap
-(same convention as source, issue #109). The section numbers (§0–§8) referenced
-throughout the docs and ADRs map as follows:
+The architecture is split by module, and each module file is an index over the
+sub-pages in its own directory (`architecture/<module>/`); every page stays
+under the 400-line cap (same convention as source, issue #109), enforced for
+all of `docs/` outside the ADR log by `make doc-cap` (#848). The section
+numbers (§0–§10) referenced throughout the docs and ADRs map as follows:
 
 | Module | §§ | Topic |
 | --- | --- | --- |
@@ -23,8 +25,8 @@ throughout the docs and ADRs map as follows:
 | [Agents, permissions, skills & prompt](architecture/agents-and-permissions.md) | §3 | agent profiles (identity), permission modes (authority), spawn limits, skills, prompt assembly |
 | [Per-session engine](architecture/engine.md) | §5 | turn loop, tool round-trip, steering, cancellation |
 | [LLM I/O (provider)](architecture/provider.md) | §5b | streaming client, catalog, pool/retry/rate-limit |
-| [Heads & persistence](architecture/heads-and-persistence.md) | §6, §6b | stdio/TUI/serve heads, event-sourced sessions |
-| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–8 | dependency gates, host tools (model-facing `read`/`write`/`edit`/`apply_patch` + `bash` + `web_fetch`; script-only `glob`/`grep`/`call`), the one advertised surface |
+| [Heads & persistence](architecture/heads-and-persistence.md) | §6, §6b–§6d | stdio/TUI/serve heads, event-sourced sessions, managed key file, aux models |
+| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–10 | dependency gates, host tools (model-facing `read`/`write`/`edit`/`apply_patch` + `bash` + `web_fetch`; script-only `glob`/`grep`/`call`), the one advertised surface |
 
 Trust & scope decisions cut across modules: the local trust boundary
 ([ADR-0047](adr/0047-local-trust-boundary.md)) and the local-only `serve` head

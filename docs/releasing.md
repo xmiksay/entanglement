@@ -17,7 +17,7 @@ pass, not that docs/ADRs/open issues reflect what actually shipped. Concretely, 
 
 1. Diff the wire contract (`InMsg`/`OutEvent` variants in `protocol/in_msg.rs`
    and `protocol/out_event.rs`)
-   against the contract blocks in `README.md` and `docs/architecture/protocol.md`.
+   against the contract blocks in `README.md` and `docs/architecture/protocol/messages.md`.
 2. Skim `git log <last-tag>..HEAD` for any ADR that superseded/amended another
    and confirm the back-link landed on both sides.
 3. Review open issues for stale blockers or entries that shipped since they
@@ -63,7 +63,7 @@ The pushed tag triggers `.github/workflows/release.yml`: `verify` (the full
 `publish` (crates.io, see below) — each gated on the previous job.
 
 Convention: tag a `v0.1.x` on any merge an embedder needs, or on a lightweight
-cadence — see [`embedding.md`](embedding.md)'s "Pinning a dependency" section
+cadence — see [`embedding/tls-and-pinning.md`](embedding/tls-and-pinning.md#pinning-a-dependency)'s "Pinning a dependency" section
 for why embedders want a tag over a raw `rev`.
 
 ## Publishing to crates.io (Trusted Publishing)

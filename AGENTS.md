@@ -5,7 +5,7 @@ something you'd plausibly get wrong without being told. For the *why* and depth,
 read the authoritative sources it defers to:
 
 - **`.claude/CLAUDE.md`** — the full project brief (stack, crates, contract, conventions, open work). Read this first.
-- **`docs/architecture.md`** — architecture reference, now a per-module index under `docs/architecture/` (actor model, wire protocol, heads, host tools), each module under the 400-line cap.
+- **`docs/architecture.md`** — architecture reference, now a per-module index under `docs/architecture/` (actor model, wire protocol, heads, host tools); each module file is an index over the sub-pages in its own directory (e.g. `docs/architecture/gates/`), and every doc page stays under the 400-line cap (`make doc-cap`).
 - **`docs/adr/`** — immutable decision log; the *why* behind every hard-to-reverse choice. Supersede, never edit in place.
 
 ## Commands — drive through `make`, NOT raw `cargo`
@@ -13,9 +13,10 @@ read the authoritative sources it defers to:
 This is a hard project rule, not a style preference. The Makefile wraps every
 command and `make help` lists them. Key targets:
 
-- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + userid + lint + test`. Run it before declaring a task complete or pushing.
+- **`make verify`** — the pre-"done" gate. Equals `check-fmt + tree + check-lean + file-cap + doc-cap + userid + lint + test`. Run it before declaring a task complete or pushing.
 - **`make tree`** — the **non-obvious** one. It's the dependency-hygiene gate (ADR-0006, amended by ADR-0053): `entanglement-core` must pull in **zero** UI/web-server crates. Adding `clap`/`axum`/`warp`/`actix-web`/`actix`/`rocket`/`tonic`/`tungstenite`/`crossterm`/`ratatui`/`ureq` to `entanglement-core` will make `make verify` fail here even though `cargo build` is green. `reqwest`/`hyper`/`tower` are **not** forbidden — they ride in legitimately via provider (ADR-0053).
 - **`make file-cap`** — enforces the 400-line file cap below (issue #451). A currently-over-cap file must be listed in `scripts/file-cap-allowlist.txt` (grandfathered debt) or the gate fails; splitting a file below the cap requires deleting its row in the same change, or the gate fails the other way (a stale allowlist entry).
+- **`make doc-cap`** — the same 400-line cap for prose (#848): every `docs/**/*.md` outside the immutable `docs/adr/` log, plain `wc -l`, no allowlist. Split an over-cap doc along a section seam into a sub-page directory named after it and keep the original file as the index, preserving its section headings (anchors) as pointer stubs.
 - `make test-unit` / `make test-integration` — split suites (`--lib --bins` vs `--test '*'`). Every test-running target (incl. `make coverage`) runs with `HOME`/`XDG_*` pointed at an empty sandbox and **fails if any test writes there** (`scripts/test-isolated.sh`, #747): a test injects its paths (`SessionStore::at`, `DefaultGrantStore::load_from`, `Config::load_with`, `skills::load_registry_in`, …) and never touches the developer's real data/config dirs — nor mutates process env another test reads (an env read is a pure function over an injected lookup, tested as such; #773). Plain `cargo test` holds too: in `entanglement-runtime` every home/config/data-dir read goes through `user_dirs`, which **panics under `cfg(test)`** (as does the provider catalog's `providers.yml` fallback), so a unit test reaching a real user dir fails loudly. A test spawning `skutter` uses `isolated_skutter()` (`tests/it/skutter_cmd.rs`), which sets the sandbox dirs on the child only.
 - `make run` / `make run-json` / `make run-tui` — build + run the `skutter` binary one turn (text / NDJSON / TUI); `make pipe` / `make serve` start the stdio pipe / local WebSocket heads. `make inspect ARGS=…` prints the resolved prompt/agents/skills with no engine; `make sessions` lists past sessions.
 
