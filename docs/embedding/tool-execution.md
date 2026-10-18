@@ -61,9 +61,15 @@ let tools = host_tools_with(root, HostToolOptions {
     ..HostToolOptions::default()
 });
 let holly = Holly::spawn(cfg);
-backups.track_roots(&holly);                          // lineage + busy sessions
+backups.track_roots(&holly);                          // lineage, write ancestry + busy sessions
 backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
 ```
+
+`track_roots` also installs the probe that stamps each backed-up write
+with the live tree it was made in, so a compaction successor's `/rewind`
+reaches its moved sub-agents' writes
+([ADR-0236](../adr/0236-rewind-follows-adopted-sub-agents.md)); without it,
+changes fall back to the logs' latest parent edges.
 
 `FileBackups::new` uses the default caps (8 MiB per file, 256 MiB per root
 session). For your own, build it with

@@ -107,14 +107,43 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   an append-only `manifest.jsonl`: one `change` line per mutation
   `{id, ts, session, request_id, exec_seq?, path (absolute, resolved),
   display, before: absent | stored{hash,size} | skipped{reason}, after:
-  sha256 | null, mode?}` plus `reverted{ids, attempted}` markers; the id
+  sha256 | null, mode?, ancestry?}` plus `reverted{ids, attempted}` markers; the id
   counter and blob set are cached per root, so a write never re-reads the
   manifest. A spawned child's changes land in its root's directory
   (`FileBackups::track_roots` folds `SessionStarted` lineage, and `Status`
-  for the busy check below).
+  for the busy check below). A child a compaction moved under the successor
+  ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)) keeps
+  writing to its spawn-time root's directory until a cold resume
+  re-announces it under the successor's root.
   Backups ride the log's lifecycle: `SessionStore::delete` removes them with
   the `.jsonl`, and `prune` removes any backup directory whose log is gone —
   session retention is the only retention.
+- **Reading across the tree** (`file_backup/load.rs`,
+  [ADR-0236](../../adr/0236-rewind-follows-adopted-sub-agents.md), #870): a
+  revert, an undo and the `/rewind` picker read the log and manifest of
+  every file `SessionStore::tree_files` reaches from the target's root (the
+  `Adopted` pointers plus the one-hop predecessor fallback, as
+  `read_tree`), so a successor's rewind covers its moved sub-agents. The
+  logs are parsed before the manifest lock and the manifests read under
+  it. An unreadable adopted manifest is warned about and skipped.
+- **Which changes are the target's**: each change records `ancestry`, the
+  writing session and its live ancestors. The host tools take it with the
+  change's `ts` through `FileBackups::stamp` *before* they write, and
+  `record_stamped` stores both. It is read from Holly's session directory
+  through `file_backup::holly_ancestry`, which `track_roots` installs. The
+  supervisor re-parents a moved sub-agent there before it broadcasts
+  `ParentChanged`, so a race can only make a post-move write look pre-move
+  (a missed change, never a foreign one). A revert of session `T` takes the
+  changes whose `ancestry` names `T`; a sub-agent target takes its own
+  sub-tree's. A change with no `ancestry` (an older manifest, no engine
+  wired, or a session already gone from the directory, such as a closed
+  child's background script) uses the pre-#870 rule: its session is in
+  `T`'s tree now, by each session's latest parent edge in the logs
+  (`file_backup/lineage.rs`). The busy check uses that same set and also
+  every selected change's writer. Manifests are merged by `ts` without
+  re-sorting any one of them. Each restore uses the blob beside its first
+  change, and each `reverted` marker goes back to the manifest holding its
+  ids.
 - **Caps**: a prior version over `max_file_bytes` (default 8 MiB), or past a
   root's `max_root_bytes` stored budget (default 256 MiB), is recorded as
   `skipped` (the change is still listed, so a revert names it as "can't
@@ -138,15 +167,21 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   `file_backup::with_exec_seq(ToolExec.seq)`, so a change records the exact
   `(session, seq)` of its call and belongs to the turn of the session's last
   user `Prompt` logged before that record. Request ids are never the key
-  (Gemini's `name#ordinal` repeats every turn). Without a seq (a detached
-  `rhai` script): the latest `(session, request_id)` call logged no later
-  than the change (`<id>:rhai:<tool>` → outer call), then timestamps.
+  (Gemini's `name#ordinal` repeats every turn). Without a seq (a tool run
+  outside the executor's call task): the latest `(session, request_id)`
+  call logged no later than the change (`<id>:rhai:<tool>` → outer call),
+  then timestamps. A prompt in another file than the change (a moved
+  sub-agent's write against the successor's prompts) is compared by the
+  change's wall-clock `ts`, since two files share no positions. A change
+  made inside the target's tree is in turn 1 at least: a successor's seed
+  prompt is logged only once its own start arrives, after the move.
 - **Revert** (`FileBackups::revert`, behind core's `EngineConfig::file_reverter`
   seam — see [protocol](../protocol.md) `RevertFiles`/`FilesReverted`): refused
   with an `Error` while any session of the sub-tree is mid-turn or running
   detached work (`file_backup::detached_work_probe` over the job and script
-  registries, wired in `boot.rs`). Otherwise every unreverted change of the
-  session and its spawn sub-tree after the target turn is grouped per file;
+  registries, wired in `boot.rs`) — moved sub-agents included. Otherwise
+  every unreverted change of the session and its sub-tree after the target
+  turn is grouped per file;
   the file goes back to the *first* change's `before` (rewritten through a
   synced, randomly named temp file created `create_new` + `O_NOFOLLOW` — no
   planted symlink is ever written through — then rename + directory fsync,

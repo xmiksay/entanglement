@@ -190,8 +190,9 @@ doc, never here**:
   escape hatch, optional bubblewrap sandbox as a mode fact
   ([gates §8](../docs/architecture/gates/host-tools.md), [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)).
 - **Undo/rewind is per-write backups, not git** — exec changes are never
-  tracked; replay never touches the disk
-  ([gates §undo](../docs/architecture/gates/web-fetch-and-undo.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)).
+  tracked; replay never touches the disk; each change records the live tree
+  it was made in, so a successor's rewind reaches its moved sub-agents' writes
+  ([gates §undo](../docs/architecture/gates/web-fetch-and-undo.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)/[ADR-0236](../docs/adr/0236-rewind-follows-adopted-sub-agents.md)).
 - **`rhai` is a sandboxed script tool whose every binding runs the executor's
   dispatch seam** — `mcp::<server>::<tool>`/`skill::<skill>::<fn>`
   namespaces, `http()` with user-layer-only `http_auth` credentials; inline

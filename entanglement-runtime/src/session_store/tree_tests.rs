@@ -315,3 +315,24 @@ fn the_fallback_finds_a_twice_moved_child_through_the_predecessors_pointer() {
     let tree = store.read_tree(&sid("c")).expect("read");
     assert_eq!(sessions(&tree), ["kid", "kid", "kid", "kid", "c"]);
 }
+
+/// File backups read each file of the tree, the root's own first (#870).
+#[test]
+fn tree_files_lists_every_file_read_own_first() {
+    let (_tmp, store) = store_with(&[
+        (
+            "pred",
+            vec![started("pred", None), started("kid", Some("pred"))],
+        ),
+        (
+            "succ",
+            vec![successor_started("succ", "pred"), pointer("kid", "pred")],
+        ),
+        ("other", vec![started("other", None)]),
+    ]);
+    let files = store.tree_files(&sid("succ")).unwrap();
+    let names: Vec<&str> = files.iter().map(|(f, _)| f.0.as_str()).collect();
+    assert_eq!(names, vec!["succ", "pred"]);
+    assert_eq!(files[0].1.len(), 2, "raw records, pointer row included");
+    assert_eq!(store.tree_files(&sid("other")).unwrap().len(), 1);
+}

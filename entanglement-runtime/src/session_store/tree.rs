@@ -29,13 +29,28 @@ impl SessionStore {
     /// own file after a resume: resuming a session from a partial history
     /// would be worse than not resuming it.
     pub fn read_tree(&self, id: &SessionId) -> Result<Vec<LogRecord>> {
-        let own = self.read(id)?;
-        let mut reader = TreeReader {
-            store: self,
-            files: HashMap::from([(id.clone(), Some(own))]),
-            visiting: HashSet::new(),
-        };
+        let mut reader = TreeReader::new(self, id, "not resuming them")?;
         Ok(reader.tree(id, true).unwrap_or_default())
+    }
+
+    /// Every file [`read_tree`](Self::read_tree) reads for root `id`, each
+    /// with its raw records (pointer rows included), `id`'s own first, the
+    /// rest by name. File backups need the files, not the merged tree: a
+    /// moved sub-agent's backups stay beside the root file it logs to, and a
+    /// change is placed by its position in that file (ADR-0212, #870). An
+    /// unreadable file is left out.
+    pub fn tree_files(&self, id: &SessionId) -> Result<Vec<(SessionId, Vec<LogRecord>)>> {
+        let mut reader = TreeReader::new(self, id, "their file edits can't be reverted")?;
+        // Run only for its side effect: the walk caches every file it reads,
+        // and those files, not the merged tree, are the answer.
+        let _ = reader.tree(id, true);
+        let mut files: Vec<(SessionId, Vec<LogRecord>)> = reader
+            .files
+            .into_iter()
+            .filter_map(|(file, records)| Some((file, records?)))
+            .collect();
+        files.sort_by(|(a, _), (b, _)| (a != id).cmp(&(b != id)).then_with(|| a.0.cmp(&b.0)));
+        Ok(files)
     }
 }
 
@@ -43,11 +58,23 @@ impl SessionStore {
 /// breaks a pointer cycle a corrupted or hand-edited store could hold.
 struct TreeReader<'a> {
     store: &'a SessionStore,
+    /// What a lost adopted sub-tree costs the caller, for the warning.
+    lost: &'static str,
     files: HashMap<SessionId, Option<Vec<LogRecord>>>,
     visiting: HashSet<SessionId>,
 }
 
-impl TreeReader<'_> {
+impl<'a> TreeReader<'a> {
+    fn new(store: &'a SessionStore, id: &SessionId, lost: &'static str) -> Result<Self> {
+        let own = store.read(id)?;
+        Ok(Self {
+            store,
+            lost,
+            files: HashMap::from([(id.clone(), Some(own))]),
+            visiting: HashSet::new(),
+        })
+    }
+
     fn file(&mut self, id: &SessionId) -> Option<Vec<LogRecord>> {
         if let Some(cached) = self.files.get(id) {
             return cached.clone();
@@ -77,7 +104,7 @@ impl TreeReader<'_> {
                 None if source.pointed => {
                     tracing::warn!(
                         root = %id, from = %source.from,
-                        "adopted sub-agents' log is unreadable; not resuming them"
+                        "adopted sub-agents' log is unreadable; {}", self.lost
                     );
                     let gone = closure(&own, source.wanted);
                     own.retain(|r| !gone.contains(&r.session));

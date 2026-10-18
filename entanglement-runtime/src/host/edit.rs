@@ -147,10 +147,13 @@ impl EditTool {
         if let Some(ref can_edit) = self.can_edit {
             can_edit(&parsed.path)?;
         }
+        // Before the write: a compaction moving the session meanwhile must
+        // not claim the write for its new tree (ADR-0236 §2).
+        let stamp = self.backups.as_ref().zip(session).map(|(b, s)| b.stamp(s));
         let backup = |before: Option<&[u8]>, after: &[u8]| {
-            if let (Some(backups), Some(session)) = (&self.backups, session) {
+            if let (Some(backups), Some(stamp)) = (&self.backups, &stamp) {
                 let path = &parsed.path;
-                backups.record(session, request_id, &target_abs, path, before, Some(after));
+                backups.record_stamped(stamp, request_id, &target_abs, path, before, Some(after));
             }
         };
 

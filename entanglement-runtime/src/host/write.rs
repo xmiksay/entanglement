@@ -155,6 +155,9 @@ impl WriteTool {
             !matches!(&read_before, Err(e) if e.kind() != std::io::ErrorKind::NotFound);
         let before = read_before.ok();
 
+        // Before the write: a compaction moving the session meanwhile must
+        // not claim the write for its new tree (ADR-0236 §2).
+        let stamp = self.backups.as_ref().zip(session).map(|(b, s)| b.stamp(s));
         if let Some(parent) = target_abs.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -183,9 +186,9 @@ impl WriteTool {
         };
 
         crate::file_change::record(parsed.path.clone(), change_kind, parsed.content.as_bytes());
-        if let (Some(backups), Some(session), true) = (&self.backups, session, prior_known) {
-            backups.record(
-                session,
+        if let (Some(backups), Some(stamp), true) = (&self.backups, &stamp, prior_known) {
+            backups.record_stamped(
+                stamp,
                 request_id,
                 &target_abs,
                 &parsed.path,
