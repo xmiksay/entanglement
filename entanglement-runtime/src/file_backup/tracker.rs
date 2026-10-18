@@ -15,6 +15,49 @@ use crate::script_ops::ScriptRegistry;
 /// session of a revert's sub-tree.
 pub type BusyProbe = Arc<dyn Fn(&SessionId) -> bool + Send + Sync>;
 
+/// "Which sessions is this one under, right now?" — `session` and its live
+/// ancestors, nearest first, or empty when the session is unknown (a session
+/// already closed or hibernated, whose change then goes by the logs, ADR-0236
+/// §8). Asked before every recorded write, so the change carries the tree it
+/// was made in. A chain cut short by an ancestor that is not (or no longer)
+/// in the directory ends at that ancestor: still a true prefix of the path,
+/// so every session it names did hold the change.
+pub type AncestryProbe = Arc<dyn Fn(&SessionId) -> Vec<SessionId> + Send + Sync>;
+
+/// The [`AncestryProbe`] over `holly`'s session directory. The supervisor
+/// re-parents a moved sub-agent there (ADR-0234) *before* it broadcasts
+/// `ParentChanged`, under the directory's lock, so a write stamped after the
+/// move reads the new parent with no broadcast consumer in between.
+pub fn holly_ancestry(holly: Holly) -> AncestryProbe {
+    Arc::new(move |session| {
+        ancestry_walk(session, |s| holly.session_info(s).map(|info| info.parent))
+    })
+}
+
+/// Walk `session`'s parents through `parent_of` (`None` = unknown session,
+/// `Some(None)` = a root): see [`AncestryProbe`].
+pub(super) fn ancestry_walk(
+    session: &SessionId,
+    parent_of: impl Fn(&SessionId) -> Option<Option<SessionId>>,
+) -> Vec<SessionId> {
+    let Some(mut parent) = parent_of(session) else {
+        return Vec::new();
+    };
+    let mut out = vec![session.clone()];
+    // Bounded, so a corrupted (cyclic) directory can't spin forever.
+    for _ in 0..64 {
+        let Some(p) = parent else {
+            break;
+        };
+        out.push(p.clone());
+        match parent_of(&p) {
+            Some(next) => parent = next,
+            None => break,
+        }
+    }
+    out
+}
+
 /// The [`BusyProbe`] over the process's background-job and detached-script
 /// registries: a session with a running job or script may still write.
 pub fn detached_work_probe(jobs: JobRegistry, scripts: ScriptRegistry) -> BusyProbe {
@@ -35,6 +78,7 @@ impl FileBackups {
     /// resolve to its root, and `Status` so a revert can refuse while any
     /// session of its sub-tree is mid-turn.
     pub fn track_roots(&self, holly: &Holly) -> tokio::task::JoinHandle<()> {
+        self.set_ancestry_probe(holly_ancestry(holly.clone()));
         let mut events = holly.subscribe();
         let this = self.clone();
         tokio::spawn(async move {
@@ -92,6 +136,21 @@ impl FileBackups {
     /// Record that `session` belongs to root `root`.
     pub fn note_root(&self, session: SessionId, root: SessionId) {
         lock(&self.inner.roots).insert(session, root);
+    }
+
+    /// Install the ancestry lookup each recorded change carries (once; later
+    /// calls are ignored). [`track_roots`](Self::track_roots) installs
+    /// Holly's; without one, changes are recorded without it (legacy).
+    pub fn set_ancestry_probe(&self, probe: AncestryProbe) {
+        let _ = self.inner.ancestry.set(probe);
+    }
+
+    pub(super) fn ancestry_of(&self, session: &SessionId) -> Vec<SessionId> {
+        self.inner
+            .ancestry
+            .get()
+            .map(|probe| probe(session))
+            .unwrap_or_default()
     }
 
     /// Install the detached-work check (once; later calls are ignored).

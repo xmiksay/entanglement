@@ -43,7 +43,7 @@ pub(super) struct Change {
     /// The `seq` of the `ToolExec` being executed when the change was
     /// recorded — `(session, exec_seq)` names exactly one log record, which
     /// places the change in its turn. `None` off the executor's call task (a
-    /// detached `rhai` script, a direct tool run): placed by `request_id`.
+    /// direct tool run): placed by `request_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_seq: Option<u64>,
     /// Absolute, resolved target — what a revert writes back to.
@@ -57,6 +57,14 @@ pub(super) struct Change {
     /// Unix permission bits the file had, so a recreated file gets them back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+    /// `session` and its ancestors in the live tree just before the write,
+    /// nearest first (ADR-0236). A revert of session `T` takes the change iff
+    /// `T` is in here. Empty in a manifest written before #870, with no
+    /// engine to ask, or for a session the directory no longer knew (closed
+    /// or hibernated, e.g. its background script writing on): then the
+    /// session's latest parent edge in the logs decides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestry: Vec<SessionId>,
 }
 
 /// The file's state before the change.

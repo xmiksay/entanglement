@@ -29,14 +29,17 @@ use sha2::{Digest, Sha256};
 
 use crate::session_store::SessionStore;
 
+mod lineage;
+mod load;
 mod manifest;
 mod record;
 mod restore;
 mod revert;
 mod tracker;
 
+pub use record::WriteStamp;
 pub use revert::TurnEdits;
-pub use tracker::{detached_work_probe, BusyProbe};
+pub use tracker::{detached_work_probe, holly_ancestry, AncestryProbe, BusyProbe};
 
 /// Default per-file cap: a prior version larger than this is not backed up
 /// (its change is recorded as skipped, and a revert reports it).
@@ -108,6 +111,8 @@ struct Inner {
     /// Extra "still working" check for detached work no `Status` reflects
     /// (background jobs, detached `rhai` scripts).
     probe: OnceLock<BusyProbe>,
+    /// The live tree a change is recorded in (ADR-0236).
+    ancestry: OnceLock<AncestryProbe>,
     /// Per-root manifest stats, and the lock that serializes every manifest
     /// read-modify-append: a parallel tool batch records from several tasks.
     manifests: Mutex<HashMap<SessionId, manifest::Stats>>,
@@ -141,6 +146,7 @@ impl FileBackups {
                 roots: Mutex::new(HashMap::new()),
                 busy: Mutex::new(HashSet::new()),
                 probe: OnceLock::new(),
+                ancestry: OnceLock::new(),
                 manifests: Mutex::new(HashMap::new()),
                 limits: Mutex::new(limits),
             }),
@@ -213,6 +219,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_adopted;
+#[cfg(test)]
+mod tests_host;
+#[cfg(test)]
 mod tests_limits;
+#[cfg(test)]
+mod tests_lineage;
+#[cfg(test)]
+mod tests_recorded;
 #[cfg(test)]
 mod tests_safety;

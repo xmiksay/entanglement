@@ -2,16 +2,17 @@
 //! select those after the target turn, and restore each touched file to its
 //! state before the first selected change — unless it moved on since.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
-use anyhow::{Context, Result};
-use entanglement_core::{content_text, FileRevertReport, InMsg, OutEvent, RevertSkip, SessionId};
+use anyhow::Result;
+use entanglement_core::{FileRevertReport, RevertSkip, SessionId};
 
-use super::manifest::{self, Change, Line, MANIFEST};
+use super::load::{Live, Loaded};
+use super::manifest::{self, Line, MANIFEST};
 use super::restore::restore;
 use super::{lock, FileBackups};
-use crate::session_store::{first_prompt_snippet, LogPayload, LogRecord};
+use crate::session_store::first_prompt_snippet;
 
 /// One user turn that still has unreverted tracked edits — a `/rewind`
 /// picker row.
@@ -25,128 +26,14 @@ pub struct TurnEdits {
     pub prompt: String,
 }
 
-/// What a revert works from: the backup dir, the session's sub-tree and
-/// prompt texts, and the sub-tree's unreverted changes, each with its turn.
-struct Loaded {
-    dir: PathBuf,
-    subtree: HashSet<SessionId>,
-    prompts: Vec<String>,
-    live: Vec<(Change, u32)>,
-    attempted: HashSet<u64>,
-}
-
-/// One of the target session's prompts in the log: record index, timestamp.
-struct Prompt {
-    pos: usize,
-    ts: u64,
-}
-
-/// Where each `ToolExec` sits in the log, by the two keys a change can carry.
-#[derive(Default)]
-struct ExecIndex<'a> {
-    by_seq: HashMap<(&'a SessionId, u64), usize>,
-    /// Every `(session, request_id)` occurrence as `(pos, ts)`, in log order —
-    /// ids repeat across turns (Gemini's `name#ordinal`), so a lookup takes
-    /// the latest one logged no later than the change.
-    by_call: HashMap<(&'a SessionId, &'a str), Vec<(usize, u64)>>,
-}
-
-impl ExecIndex<'_> {
-    /// The log position of the call that made `change`, if found.
-    fn position(&self, change: &Change) -> Option<usize> {
-        if let Some(&pos) = change
-            .exec_seq
-            .and_then(|seq| self.by_seq.get(&(&change.session, seq)))
-        {
-            return Some(pos);
-        }
-        // A `rhai` binding runs under `<outer request id>:rhai:<tool>`; the
-        // outer `rhai` call is the one in the log.
-        let call = change.request_id.split(":rhai:").next().unwrap_or_default();
-        self.by_call
-            .get(&(&change.session, call))?
-            .iter()
-            .rev()
-            .find(|(_, ts)| *ts <= change.ts)
-            .map(|(pos, _)| *pos)
-    }
-}
-
-/// The 1-based turn a change belongs to: how many of the session's prompts
-/// precede the call that made it (0 = before the first prompt). With no call
-/// found in the log (a lagging or gapped tap), record timestamps decide.
-fn turn_of(change: &Change, prompts: &[Prompt], index: &ExecIndex<'_>) -> u32 {
-    let count = match index.position(change) {
-        Some(pos) => prompts.iter().filter(|p| p.pos < pos).count(),
-        None => prompts.iter().filter(|p| p.ts <= change.ts).count(),
-    };
-    count as u32
-}
-
 impl FileBackups {
-    fn load(&self, session: &SessionId) -> Result<Loaded> {
-        let root = self.root_of(session);
-        let records = self
-            .inner
-            .store
-            .read(&root)
-            .with_context(|| format!("reading the session log of `{}`", root.0))?;
-        let subtree = subtree(&records, session);
-        let mut prompts = Vec::new();
-        let mut texts = Vec::new();
-        let mut index = ExecIndex::default();
-        for (pos, r) in records.iter().enumerate() {
-            match &r.payload {
-                LogPayload::In(InMsg::Prompt {
-                    session: s,
-                    content,
-                }) if s == session => {
-                    prompts.push(Prompt { pos, ts: r.ts });
-                    texts.push(content_text(content));
-                }
-                LogPayload::Out(OutEvent::ToolExec {
-                    session: s,
-                    seq,
-                    request_id,
-                    ..
-                }) => {
-                    index.by_seq.entry((s, *seq)).or_insert(pos);
-                    index
-                        .by_call
-                        .entry((s, request_id.as_str()))
-                        .or_default()
-                        .push((pos, r.ts));
-                }
-                _ => {}
-            }
-        }
-        let dir = self.inner.store.backups_dir(&root)?;
-        let manifest = manifest::read(&dir.join(MANIFEST))?;
-        let live = manifest
-            .changes
-            .into_iter()
-            .filter(|c| !manifest.reverted.contains(&c.id) && subtree.contains(&c.session))
-            .map(|c| {
-                let turn = turn_of(&c, &prompts, &index);
-                (c, turn)
-            })
-            .collect();
-        Ok(Loaded {
-            dir,
-            subtree,
-            prompts: texts,
-            live,
-            attempted: manifest.attempted,
-        })
-    }
-
     /// The session's turns that still have unreverted tracked edits, oldest
     /// first.
     pub fn turns(&self, session: &SessionId) -> Result<Vec<TurnEdits>> {
-        let loaded = self.load(session)?;
+        let loaded = self.load(&self.read_logs(session)?)?;
         let mut files: HashMap<u32, HashSet<&Path>> = HashMap::new();
-        for (c, turn) in &loaded.live {
-            files.entry(*turn).or_default().insert(&c.path);
+        for l in &loaded.live {
+            files.entry(l.turn).or_default().insert(&l.change.path);
         }
         let mut turns: Vec<TurnEdits> = files
             .into_iter()
@@ -169,15 +56,23 @@ impl FileBackups {
     /// Refused (an `Err`) while any session of the sub-tree is still working,
     /// since its writes would race the restore.
     pub fn revert(&self, session: &SessionId, to_turn: Option<u32>) -> Result<FileRevertReport> {
+        // The logs are parsed before the lock every tracked write takes, so a
+        // large tree's revert never stalls them. A change recorded after this
+        // read is still read under the lock, and the session making it is
+        // busy, which refuses the revert anyway.
+        let logs = self.read_logs(session)?;
         let _guard = lock(&self.inner.manifests);
-        let loaded = self.load(session)?;
-        if let Some(busy) = loaded.subtree.iter().find(|s| self.is_busy(s, session)) {
-            anyhow::bail!(
+        let loaded = self.load(&logs)?;
+        let refuse = |busy: &SessionId| {
+            anyhow::anyhow!(
                 "refused: session `{}` in this session's tree is still working (a turn or \
                  background job), or its state was missed — revert once it is idle and has \
                  reported its status",
                 busy.0
-            );
+            )
+        };
+        if let Some(busy) = loaded.subtree.iter().find(|s| self.is_busy(s, session)) {
+            return Err(refuse(busy));
         }
         // Backups recorded before `undo.enabled: false` still revert; only an
         // empty revert says why, so "nothing to undo" isn't mistaken for
@@ -198,63 +93,73 @@ impl FileBackups {
             });
         };
 
-        // Group the selected changes per file, in record order.
+        // Group the selected changes per file, oldest first.
         let mut order: Vec<&Path> = Vec::new();
-        let mut groups: HashMap<&Path, Vec<&Change>> = HashMap::new();
-        for (c, _) in loaded.live.iter().filter(|(_, turn)| *turn > target) {
-            let group = groups.entry(&c.path).or_default();
+        let mut groups: HashMap<&Path, Vec<&Live>> = HashMap::new();
+        for l in loaded.live.iter().filter(|l| l.turn > target) {
+            let group = groups.entry(&l.change.path).or_default();
             if group.is_empty() {
-                order.push(&c.path);
+                order.push(&l.change.path);
             }
-            group.push(c);
+            group.push(l);
         }
         if order.is_empty() && !self.limits().enabled {
             return Err(disabled());
+        }
+        // The busy set comes from the logs, which can lag a move: a moved
+        // child whose `ParentChanged` is not logged yet is missing from it,
+        // though its recorded changes are selected. Their writers must be
+        // idle too.
+        let writers: HashSet<&SessionId> = groups
+            .values()
+            .flatten()
+            .map(|l| &l.change.session)
+            .collect();
+        if let Some(busy) = writers.into_iter().find(|s| self.is_busy(s, session)) {
+            return Err(refuse(busy));
         }
 
         let mut report = FileRevertReport {
             to_turn: target,
             ..Default::default()
         };
-        let (mut done, mut attempted) = (Vec::new(), Vec::new());
+        // Per backup dir: a change's id is only unique within its manifest.
+        let mut marks: HashMap<usize, (Vec<u64>, Vec<u64>)> = HashMap::new();
         for path in order {
             let group = &groups[path];
             let (first, last) = (group[0], group[group.len() - 1]);
-            let ids = group.iter().map(|c| c.id);
+            // The prior bytes are a blob beside the first change's manifest.
             let outcome = restore(
-                &loaded.dir,
+                &loaded.dirs[first.dir],
                 path,
-                &first.before,
-                last.after.as_deref(),
-                first.mode,
+                &first.change.before,
+                last.change.after.as_deref(),
+                first.change.mode,
             );
-            match outcome {
+            let consumed = match outcome {
                 Ok(()) => {
-                    report.restored.push(last.display.clone());
-                    done.extend(ids);
+                    report.restored.push(last.change.display.clone());
+                    true
                 }
                 Err(skip) => {
                     report.skipped.push(RevertSkip {
-                        path: last.display.clone(),
+                        path: last.change.display.clone(),
                         reason: skip.reason,
                     });
-                    if skip.consumed {
-                        done.extend(ids);
-                    } else {
-                        attempted.extend(ids);
-                    }
+                    skip.consumed
                 }
+            };
+            for l in group {
+                let (done, attempted) = marks.entry(l.dir).or_default();
+                if consumed { done } else { attempted }.push(l.change.id);
             }
         }
-        if !done.is_empty() || !attempted.is_empty() {
-            let line = Line::Reverted {
-                ids: done,
-                attempted,
-            };
+        for (dir, (ids, attempted)) in marks {
             // The files are already restored: a lost marker must not turn
             // that into a failure. The next revert finds them back at
             // `before` and counts them restored again.
-            if let Err(e) = manifest::append(&loaded.dir.join(MANIFEST), &line) {
+            let line = Line::Reverted { ids, attempted };
+            if let Err(e) = manifest::append(&loaded.dirs[dir].join(MANIFEST), &line) {
                 tracing::warn!("revert succeeded but its marker was not recorded: {e:#}");
             }
         }
@@ -270,37 +175,11 @@ fn undo_target(loaded: &Loaded) -> Option<u32> {
         loaded
             .live
             .iter()
-            .filter(|(c, _)| !fresh || !loaded.attempted.contains(&c.id))
-            .map(|(_, turn)| *turn)
+            .filter(|l| !fresh || !l.attempted)
+            .map(|l| l.turn)
             .max()
     };
     latest(true)
         .or_else(|| latest(false))
         .map(|t| t.saturating_sub(1))
-}
-
-/// `session` plus every session spawned beneath it, from the log's
-/// `SessionStarted` lineage.
-fn subtree(records: &[LogRecord], session: &SessionId) -> HashSet<SessionId> {
-    let mut children: HashMap<&SessionId, Vec<&SessionId>> = HashMap::new();
-    for r in records {
-        if let LogPayload::Out(OutEvent::SessionStarted {
-            session: child,
-            parent: Some(parent),
-            ..
-        }) = &r.payload
-        {
-            children.entry(parent).or_default().push(child);
-        }
-    }
-    let mut out = HashSet::from([session.clone()]);
-    let mut queue = VecDeque::from([session]);
-    while let Some(s) = queue.pop_front() {
-        for child in children.get(s).into_iter().flatten() {
-            if out.insert((*child).clone()) {
-                queue.push_back(child);
-            }
-        }
-    }
-    out
 }

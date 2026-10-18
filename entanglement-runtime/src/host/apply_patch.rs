@@ -132,6 +132,9 @@ impl ApplyPatchTool {
         let hunks = parse_hunks(&parsed.patch)?;
         let patched = apply_hunks(&content, &hunks)?;
 
+        // Before the write: a compaction moving the session meanwhile must
+        // not claim the write for its new tree (ADR-0236 §2).
+        let stamp = self.backups.as_ref().zip(session).map(|(b, s)| b.stamp(s));
         tokio::fs::write(&target_abs, &patched)
             .await
             .with_context(|| "writing patched file".to_string())?;
@@ -141,9 +144,9 @@ impl ApplyPatchTool {
             FileChangeKind::ApplyDiff,
             patched.as_bytes(),
         );
-        if let (Some(backups), Some(session)) = (&self.backups, session) {
-            backups.record(
-                session,
+        if let (Some(backups), Some(stamp)) = (&self.backups, &stamp) {
+            backups.record_stamped(
+                stamp,
                 request_id,
                 &target_abs,
                 &parsed.path,

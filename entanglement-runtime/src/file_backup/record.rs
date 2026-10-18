@@ -10,13 +10,32 @@ use super::manifest::{self, Change, Line, Prior, Stats, BLOBS, MANIFEST};
 use super::{current_exec_seq, lock, now_ms, sha256_hex, BackupLimits, FileBackups};
 use crate::config::undo::format_size;
 
+/// What a change must know from *before* its write lands (ADR-0236 §2):
+/// the moment, and the live tree its session is in. Taken first, a move that
+/// races the write can only make the change look pre-move — at worst a
+/// revert misses it, never undoes another tree's write.
+#[derive(Debug, Clone)]
+pub struct WriteStamp {
+    session: SessionId,
+    ts: u64,
+    ancestry: Vec<SessionId>,
+}
+
 impl FileBackups {
-    /// Record one file change by `session`'s tool call `request_id`: the
-    /// resolved target `abs`, the path as the call named it, the content
-    /// before (`None` = no file) and after (`None` = no file). Best-effort —
-    /// the edit already happened, so a backup failure is logged, never
-    /// surfaced as a tool error; over-cap or failed blob writes are recorded
-    /// as skipped, so a revert can say why it cannot restore them.
+    /// Stamp a write `session` is about to make. Always asks the directory,
+    /// even with undo disabled: a config reload can enable it before the
+    /// record, which must not then go without its tree.
+    pub fn stamp(&self, session: &SessionId) -> WriteStamp {
+        let ts = now_ms();
+        WriteStamp {
+            session: session.clone(),
+            ts,
+            ancestry: self.ancestry_of(session),
+        }
+    }
+
+    /// [`record_stamped`](Self::record_stamped) with a stamp taken now, after
+    /// the write — for callers that cannot stamp first.
     pub fn record(
         &self,
         session: &SessionId,
@@ -26,14 +45,33 @@ impl FileBackups {
         before: Option<&[u8]>,
         after: Option<&[u8]>,
     ) {
-        if let Err(e) = self.try_record(session, request_id, abs, shown, before, after) {
+        self.record_stamped(&self.stamp(session), request_id, abs, shown, before, after);
+    }
+
+    /// Record one file change by the stamped session's tool call
+    /// `request_id`: the resolved target `abs`, the path as the call named
+    /// it, the content before (`None` = no file) and after (`None` = no
+    /// file). Best-effort — the edit already happened, so a backup failure is
+    /// logged, never surfaced as a tool error; over-cap or failed blob writes
+    /// are recorded as skipped, so a revert can say why it cannot restore
+    /// them.
+    pub fn record_stamped(
+        &self,
+        stamp: &WriteStamp,
+        request_id: &str,
+        abs: &Path,
+        shown: &str,
+        before: Option<&[u8]>,
+        after: Option<&[u8]>,
+    ) {
+        if let Err(e) = self.try_record(stamp, request_id, abs, shown, before, after) {
             tracing::warn!("file backup of `{shown}` failed: {e:#}");
         }
     }
 
     fn try_record(
         &self,
-        session: &SessionId,
+        stamp: &WriteStamp,
         request_id: &str,
         abs: &Path,
         shown: &str,
@@ -44,6 +82,7 @@ impl FileBackups {
         if !limits.enabled {
             return Ok(());
         }
+        let session = &stamp.session;
         let root = self.root_of(session);
         let dir = self.inner.store.backups_dir(&root)?;
         let blobs = dir.join(BLOBS);
@@ -64,7 +103,7 @@ impl FileBackups {
         };
         let change = Change {
             id: stats.next_id,
-            ts: now_ms(),
+            ts: stamp.ts,
             session: session.clone(),
             request_id: request_id.to_string(),
             exec_seq: current_exec_seq(),
@@ -73,6 +112,7 @@ impl FileBackups {
             before,
             after: after.map(sha256_hex),
             mode: file_mode(abs),
+            ancestry: stamp.ancestry.clone(),
         };
         manifest::append(&manifest_path, &Line::Change(change.clone()))?;
         stats.note(&change);

@@ -94,8 +94,12 @@ assistant/tool messages and the model appears to forget the conversation.
   `AgentRegistry` (under the handle the parent knew, `Holly::lineage_head`:
   the resume re-records every compaction lineage its log names) with a
   watcher for its next answer, so `poll`,
-  `agent_send` and `ListOperations` reach it again. Only resume follows
-  pointers: `skutter sessions`, `ReplayFrom` and file backups stay per file.
+  `agent_send` and `ListOperations` reach it again. Resume and
+  file-backup reads follow pointers (backups are still *written* per file;
+  a revert reads them across the tree through `SessionStore::tree_files`
+  and takes the changes whose recorded `ancestry` names its target,
+  [ADR-0236](../../adr/0236-rewind-follows-adopted-sub-agents.md));
+  `skutter sessions` and `ReplayFrom` stay per file.
   Both listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
   I/O), truncates it to ~60 chars on a word boundary with `…`
