@@ -125,7 +125,7 @@ async fn set_overlay(holly: &Holly, sid: &SessionId, entries: Vec<ToolOverlayEnt
 
 /// Every event until `sid`'s turn ends (the bounded per-event timeout also
 /// ends it), from every session — a child start must be visible.
-async fn run_turn(holly: &Holly, sid: &SessionId) -> Vec<OutEvent> {
+pub(crate) async fn run_turn(holly: &Holly, sid: &SessionId) -> Vec<OutEvent> {
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let mut events = Vec::new();
@@ -140,7 +140,7 @@ async fn run_turn(holly: &Holly, sid: &SessionId) -> Vec<OutEvent> {
 }
 
 /// The call came back an error result containing `needle`, and nothing ran.
-fn assert_refused(events: &[OutEvent], tool: &str, needle: &str) {
+pub(crate) fn assert_refused(events: &[OutEvent], tool: &str, needle: &str) {
     assert!(
         events.iter().any(|e| matches!(
             e,

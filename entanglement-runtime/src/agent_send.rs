@@ -86,9 +86,12 @@ struct SendInput {
 /// there is no sane default target here).
 fn parse_input(input: &str) -> Option<SendInput> {
     let v: serde_json::Value = serde_json::from_str(input).ok()?;
+    // Trimmed exactly as `permission_arg` grades it (ADR-0235), so the
+    // handle resolved is the handle graded.
     let agent_id = v
         .get("agent_id")
         .and_then(|a| a.as_str())
+        .map(str::trim)
         .filter(|s| !s.is_empty())?
         .to_string();
     let prompt = v
@@ -279,6 +282,19 @@ mod tests {
         assert_eq!(p.agent_id, "s-abc");
         assert_eq!(p.prompt, "keep going");
         assert!(p.background);
+    }
+
+    /// ADR-0235: the id resolved is the id graded — both trimmed.
+    #[test]
+    fn parse_input_resolves_the_same_trimmed_id_permission_grades() {
+        let input = r#"{"agent_id":"  s-abc ","prompt":"hi"}"#;
+        let p = parse_input(input).unwrap();
+        assert_eq!(p.agent_id, "s-abc");
+        assert_eq!(
+            crate::permission::permission_arg(AGENT_SEND_TOOL, input).as_deref(),
+            Some(p.agent_id.as_str())
+        );
+        assert!(parse_input(r#"{"agent_id":"   ","prompt":"hi"}"#).is_none());
     }
 
     #[test]

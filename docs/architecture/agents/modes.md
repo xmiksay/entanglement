@@ -181,10 +181,16 @@ below realize one model:
   keyed by a bare tool name, `*`, an **argument-scoped** `tool(pattern)`
   (unchanged ADR-0051/#173 grammar — the `*`/`?` glob matches the command for
   `bash`/`call`, the target path for `edit`/`write`/`read`/`apply_patch`,
-  the `pattern` for `glob`, the file filter for `grep`, and the script
+  the `pattern` for `glob`, the file filter for `grep`, the script
   `path` for `rhai` — canonicalized, so a link grades as where it points
-  ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md));
-  path args grade **root-relative**, ADR-0125), a workdir-scoped `tool{pattern}` (unchanged
+  ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
+  the normalized URL for `web_fetch`, `{METHOD} {url}` for `http`, the
+  profile a spawn runs for `agent` (an omitted `agent` is the default
+  `general`, so `agent(general)` covers it) and the trimmed `agent_id`
+  handle for `agent_send`
+  ([ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md));
+  path args grade **root-relative**, ADR-0125; any other tool has no
+  argument, so only its bare rule matches), a workdir-scoped `tool{pattern}` (unchanged
   ADR-0116/#425 grammar), or a bare capability-class name
   (`read`/`write`/`exec`/`plan`/`control` — a scoped key always names the
   literal tool instead, since scoping has no class grammar; this is how

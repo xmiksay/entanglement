@@ -200,7 +200,8 @@ those and nothing else. It is computed by `pending::scopes_for(kind, tool, card)
 and is `[once]` for `propose_plan`/`request_mode` (the approver picks a mode),
 a **floored write** (it always asks, so no grant is recorded) and an **inline**
 rhai launch (no path to key a grant on, likewise a `path` launch whose
-script could not be read). Every other card gets once/session/always, plus
+script could not be read). An `agent_send` card gets once/session only (its
+grant is keyed on a handle minted for this run, [ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md)). Every other card gets once/session/always, plus
 `session_dir` for the read triad — but not on a `root_escape` card, whose
 grant is keyed on the exact path. The runtime **enforces** the list:
 `PendingDecisions::resolve` clamps an `Approve` whose scope the card did not

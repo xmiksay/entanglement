@@ -72,6 +72,18 @@ pub(crate) fn display_name(tool: &str) -> Cow<'_, str> {
 /// readable hint for the orchestration/discovery tools, else a `pattern` or
 /// the first scalar argument. `None` when nothing informative exists.
 pub(crate) fn primary_arg(tool: &str, input: &str) -> Option<String> {
+    // The spawning pair has a permission argument too (ADR-0235), but its
+    // header reads better as the target plus a prompt hint. It heads with
+    // the graded target (`agent`'s default profile when the input names
+    // none, `agent_send`'s trimmed handle) so a card always names what a
+    // grant would record.
+    if tool == "agent" || tool == "agent_send" {
+        let head = permission::permission_arg(tool, input)?;
+        return match serde_json::from_str::<Value>(input) {
+            Ok(value) => with_prompt_hint(&head, &value),
+            Err(_) => Some(head),
+        };
+    }
     if let Some(arg) = permission::permission_arg(tool, input) {
         return Some(arg);
     }
@@ -83,8 +95,6 @@ pub(crate) fn primary_arg(tool: &str, input: &str) -> Option<String> {
 
 fn orchestration_arg(tool: &str, value: &Value) -> Option<String> {
     match tool {
-        "agent" => with_prompt_hint(text(value, "agent")?, value),
-        "agent_send" => with_prompt_hint(text(value, "agent_id")?, value),
         "poll" => text(value, "handle").map(String::from),
         "ask_user" => ask_user_arg(value),
         "propose_plan" => Some("plan".to_string()),
@@ -251,6 +261,35 @@ fn dash_item(value: &Value) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// ADR-0235: an `agent` header names the profile it grades on, so a
+    /// card for a spawn that names none reads `general`, not the prompt.
+    #[test]
+    fn an_agent_header_names_the_graded_profile() {
+        let arg = |input| primary_arg("agent", input);
+        assert_eq!(
+            arg(r#"{"agent":"plan","prompt":"do it"}"#).as_deref(),
+            Some("plan  do it")
+        );
+        for defaulted in [r#"{"prompt":"do it"}"#, r#"{"agent":"","prompt":"do it"}"#] {
+            assert_eq!(
+                arg(defaulted).as_deref(),
+                Some("general  do it"),
+                "{defaulted}"
+            );
+        }
+        assert_eq!(arg("raw prompt").as_deref(), Some("general"));
+    }
+
+    #[test]
+    fn an_agent_send_header_names_the_graded_handle() {
+        let arg = |input| primary_arg("agent_send", input);
+        assert_eq!(
+            arg(r#"{"agent_id":" s-1 ","prompt":"go on"}"#).as_deref(),
+            Some("s-1  go on")
+        );
+        assert_eq!(arg(r#"{"agent_id":"","prompt":"go on"}"#), None);
+    }
 
     #[test]
     fn an_mcp_envelope_renders_as_its_inner_call() {

@@ -9,7 +9,16 @@
   **any agent may spawn any registered agent now**. `agent`/`agent_send` are
   `Capability::Control` but graded like any tool ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), amending
   ADR-0207 §6): the overlay and the mode's rules reach them, and the
-  built-ins class-allow `control`. Past that grade, spawning is bounded by
+  built-ins class-allow `control`. Their permission argument is the target
+  ([ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md)) —
+  the profile a spawn runs (`deny: ["agent(debug)"]`; an omitted `agent`
+  grades as `general`) and `agent_send`'s trimmed `agent_id` handle (a
+  minted id, so in practice `agent_send(<tenant>:*)` or a bare rule) — so a
+  scoped rule grades only its target, a grant is earned per target (an
+  `agent_send` card offers only `Once`/`Session` — a minted handle can't
+  carry a persisted grant), the `agent` card heads with the graded profile,
+  and an unattended repeat (ADR-0207 §11) means the same target
+  again, not any second spawn. Past that grade, spawning is bounded by
   two mode facts, applying to the session's whole
   spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents`
   (concurrent children per root) — undefined means unlimited, exceeding

@@ -274,9 +274,21 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
 /// not a path). `None` for any other tool, a `grep` call with no `path`
 /// filter, or on malformed input — an argument-scoped rule then never
 /// matches, so resolution falls through to the tool's name-only rules.
+///
+/// `agent` takes the profile the spawn will actually run (ADR-0235): an
+/// omitted, empty or non-JSON input resolves to the default profile exactly
+/// as the spawn does, so `agent(general)` also covers a call that names no
+/// agent. `agent_send` takes its `agent_id` handle, trimmed — the id the
+/// model addresses, which survives the child's compactions (ADR-0234).
 pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
+    if tool == crate::tool_names::AGENT_TOOL {
+        return Some(crate::subagent::target_agent(input));
+    }
     let value: serde_json::Value = serde_json::from_str(input).ok()?;
     match tool {
+        crate::tool_names::AGENT_SEND_TOOL => Some(value.get("agent_id")?.as_str()?.trim())
+            .filter(|id| !id.is_empty())
+            .map(String::from),
         "bash" => value.get("command")?.as_str().map(String::from),
         "call" => {
             let command = value.get("command")?.as_str()?;
@@ -881,6 +893,67 @@ mod tests {
         assert_eq!(permission_arg("grep", r#"{"pattern":"foo"}"#), None);
         // Tools without a meaningful argument, and malformed input, yield None.
         assert_eq!(permission_arg("bash", "not json"), None);
+    }
+
+    /// ADR-0235: `agent` grades on the profile the spawn runs — the default
+    /// when the input names none or isn't JSON — and `agent_send` on its
+    /// trimmed handle.
+    #[test]
+    fn spawning_pair_permission_args_are_their_targets() {
+        let agent = |input| permission_arg(crate::tool_names::AGENT_TOOL, input);
+        assert_eq!(
+            agent(r#"{"agent":"plan","prompt":"x"}"#).as_deref(),
+            Some("plan")
+        );
+        for defaulted in [
+            r#"{"prompt":"x"}"#,
+            r#"{"agent":"","prompt":"x"}"#,
+            "raw prompt",
+        ] {
+            assert_eq!(agent(defaulted).as_deref(), Some("general"), "{defaulted}");
+        }
+        let send = |input| permission_arg(crate::tool_names::AGENT_SEND_TOOL, input);
+        assert_eq!(
+            send(r#"{"agent_id":" s-1 ","prompt":"x"}"#).as_deref(),
+            Some("s-1")
+        );
+        assert_eq!(send(r#"{"agent_id":"  ","prompt":"x"}"#), None);
+        assert_eq!(send(r#"{"prompt":"x"}"#), None);
+        assert_eq!(send("not json"), None);
+    }
+
+    /// The scoped rule reaches the mode matcher: `agent(plan)` grades a
+    /// `plan` spawn and leaves every other target to the rest of the table.
+    #[test]
+    fn a_scoped_agent_rule_grades_only_its_target() {
+        use crate::mode::Rules;
+        let rules = Rules::from_lists(
+            &["agent(plan)".to_string()],
+            &[],
+            &["agent_send(acme:*)".to_string()],
+        );
+        let control = [crate::capability::Capability::Control];
+        let grade = |tool: &str, input: &str| {
+            let arg = permission_arg(tool, input);
+            crate::mode::rules::resolve(
+                &rules,
+                Permission::Allow,
+                tool,
+                &control,
+                arg.as_deref(),
+                None,
+            )
+        };
+        assert_eq!(grade("agent", r#"{"agent":"plan"}"#), Permission::Deny);
+        assert_eq!(grade("agent", r#"{"agent":"general"}"#), Permission::Allow);
+        assert_eq!(
+            grade("agent_send", r#"{"agent_id":"acme:s-1"}"#),
+            Permission::Ask
+        );
+        assert_eq!(
+            grade("agent_send", r#"{"agent_id":"s-1"}"#),
+            Permission::Allow
+        );
     }
 
     /// ADR-0150: glob's optional `path` base dir joins onto the pattern for
