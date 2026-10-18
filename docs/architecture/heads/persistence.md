@@ -132,7 +132,8 @@ assistant/tool messages and the model appears to forget the conversation.
   prune-only fallback — emit `OutEvent::Compacted{summary,kept,auto,mode}`, an
   ordinary seq-bearing content event, so they needed **zero** persistence-tap
   code: the tap already appends every `OutEvent` with `session().is_some()`
-  regardless of variant, and the `ReplayFrom` history responder (§6, below)
+  regardless of variant, and the `ReplayFrom` history responder
+  ("Late-subscriber history fetch" in [protocol §2](../protocol/sessions.md))
   already includes every event with `seq().is_some()`. The source session is
   never mutated: the summary rides in the event, the engine forks it into a
   **successor** session and retires the source, and `Session::replay`'s

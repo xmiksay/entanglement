@@ -136,7 +136,8 @@ persisted/replayed (like `Stop`'s cancel — a hibernate/resume cycle always
 comes back unpaused). Two holds depending on what the session was doing when
 paused: an **idle** session defers its next `Prompt`/`SetModel`/
 `SetGeneration`/`Oneshot` onto the existing turn-stash queue (`SetMode` is
-the one exception, applied immediately even while paused — see below); a **parked**
+the one exception, applied immediately even while paused — see
+[engine §5 stop & pause](../engine/session-ops.md)); a **parked**
 batch keeps folding arriving `ToolResult`s into `Context` as normal (stashing
 them would deadlock — the stash only drains once the turn goes idle, which
 needs every pending result resolved first) but does not re-enter `drive_turn`
