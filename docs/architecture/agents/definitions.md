@@ -255,8 +255,9 @@
   the watched trees here — a plan-file edit is a different reload action
   entirely (nothing to reload, just a live notice), covered by its own
   dedicated watch (`plan_watch.rs`, #627) that reuses only the
-  `spawn_debounced_watcher` primitive below, not `LiveDefinitions`; see
-  [engine](../engine.md) for that watcher's own detail.
+  `spawn_debounced_watcher` primitive (`entanglement-runtime/src/watch.rs`),
+  not `LiveDefinitions`; see [engine §5 sub-agents &
+  plans](../engine/subagents-and-plans.md) for that watcher's own detail.
 
 ---
 

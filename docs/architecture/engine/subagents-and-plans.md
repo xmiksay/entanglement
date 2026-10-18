@@ -62,8 +62,8 @@ outstanding — completed entries included, since nothing here evicts them (the
 model sees an unclaimed answer sitting there rather than losing track of it).
 This backs the no-`handle` form of `poll` and the head-facing
 `InMsg::ListOperations` (ADR-0161 §6): "what do I still have running," the
-same ownership bookkeeping serving both the descendant check above and the
-listing, merged with an equivalent job-registry snapshot by
+same ownership bookkeeping serving both the parent-scoped (#618) descendant
+check above and the listing, merged with an equivalent job-registry snapshot by
 `entanglement_runtime::operations::list_operations` — see
 [protocol](../protocol.md) and [gates & host tools](../gates-and-host-tools.md).
 Refusals (depth, budget, capability) are identical regardless of `background`

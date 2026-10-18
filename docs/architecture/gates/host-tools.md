@@ -238,8 +238,9 @@ guessing again:
   — env may only *tighten* what the mode declares, never loosen it, since
   `most_confined` always picks the more-confined of the two. The existing
   process-group timeout/cancel kill
-  (#167/#168/#169, below) needs no change — killing the outer `bwrap` process
-  cascades through its PID-namespace death to the whole sandboxed tree.
+  (#167/#168/#169, above in the `bash`/`call` rows) needs no change — killing
+  the outer `bwrap` process cascades through its PID-namespace death to the
+  whole sandboxed tree.
 - **Secret scrubbing (#164):** both exec tools `env_remove` the catalog's
   provider API-key env vars (`Catalog::key_envs()` — `ZAI_API_KEY`,
   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) from the child before spawn, so a

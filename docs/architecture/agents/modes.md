@@ -112,9 +112,9 @@ below realize one model:
   spoofed `user` message.
 - **Physical over prompted** — a call a mode denies is *refused by code* at
   dispatch, not a persona told not to make it. The tool's schema is still
-  advertised (§permission modes below covers why advertisement and
-  enforcement are separate) — the guarantee is "the call cannot succeed", not
-  "the model cannot see the tool".
+  advertised ([advertisement & enforcement](advertisement-and-enforcement.md)
+  covers why advertisement and enforcement are separate) — the guarantee is
+  "the call cannot succeed", not "the model cannot see the tool".
 - **Enforcement-locus split** — a gate lives where it can see the call: the
   session's permission mode, spawn bounds, the config ceiling, and plan
   authorship are all **runtime** — every tool, including
