@@ -24,7 +24,9 @@ use crate::seam::Decision;
 /// floored write (it always asks, so no grant is recorded) and an inline
 /// `rhai` launch (no path to key a grant on). `SessionDir` widens only the
 /// read-only triad (ADR-0126), and not on an escape card — elsewhere it
-/// would silently degrade to `Session`, so it isn't offered.
+/// would silently degrade to `Session`, so it isn't offered. `agent_send`
+/// grades on a handle minted for this run (ADR-0235), so a persisted
+/// `Always` grant could never match again — not offered either.
 pub fn scopes_for(kind: ApprovalKind, tool: &str, card: Option<CardReason>) -> Vec<ApprovalScope> {
     let once_only = matches!(
         card,
@@ -33,6 +35,9 @@ pub fn scopes_for(kind: ApprovalKind, tool: &str, card: Option<CardReason>) -> V
     match kind {
         ApprovalKind::Plan | ApprovalKind::Mode => vec![ApprovalScope::Once],
         ApprovalKind::Tool | ApprovalKind::Rhai if once_only => vec![ApprovalScope::Once],
+        ApprovalKind::Tool if tool == crate::tool_names::AGENT_SEND_TOOL => {
+            vec![ApprovalScope::Once, ApprovalScope::Session]
+        }
         ApprovalKind::Tool | ApprovalKind::Rhai => {
             let mut scopes = vec![
                 ApprovalScope::Once,
@@ -153,6 +158,17 @@ pub fn list_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0235: an `agent_send` grant is keyed on a minted handle, so it
+    /// is never offered as a persisted `Always`.
+    #[test]
+    fn agent_send_offers_no_always_scope() {
+        assert_eq!(
+            scopes_for(ApprovalKind::Tool, "agent_send", None),
+            vec![ApprovalScope::Once, ApprovalScope::Session]
+        );
+        assert!(scopes_for(ApprovalKind::Tool, "agent", None).contains(&ApprovalScope::Always));
+    }
 
     #[test]
     fn scopes_offer_session_dir_only_for_the_read_triad() {

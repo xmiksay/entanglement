@@ -59,10 +59,12 @@
 # scripts or skill files still ask. `build` asks before a rhai script
 # starts. A `rhai` rule grades a script launch on its path, e.g.
 # `allow: ["rhai(scripts/deploy/*)"]`; an inline script matches only a bare
-# `rhai` rule. Cleanup allowances are yours to add: in `auto` below, the
-# exact, longer keys out-rank the shipped `bash(rm -r*)` prompt. Prefer exact
-# keys here — `*` matches spaces too, so `bash(rm -rf target*)` would also
-# match `rm -rf target /`.
+# `rhai` rule. An `agent` rule grades a spawn on the profile it runs, e.g.
+# `deny: ["agent(debug)"]` (a spawn naming no agent runs `general`), and an
+# `agent_send` rule on its `agent_id` handle. Cleanup allowances are yours
+# to add: in `auto` below, the exact, longer keys out-rank the shipped
+# `bash(rm -r*)` prompt. Prefer exact keys here — `*` matches spaces too, so
+# `bash(rm -rf target*)` would also match `rm -rf target /`.
 #modes:
 #  research:
 #    allow: ["bash(cargo check)"]

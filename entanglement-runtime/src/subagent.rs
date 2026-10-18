@@ -283,10 +283,11 @@ fn watch_resumed(
     });
 }
 
-/// The spawn *target* named in an `agent_spawn`/`agent` tool input — the runtime
-/// executor reads it to apply the per-profile allowlist + target-mode gate before
-/// a child is minted (#119). Mirrors [`parse_input`]'s agent resolution (a bare
-/// string / omitted `agent` ⇒ the read-only default).
+/// The spawn *target* named in an `agent` tool input — the runtime executor
+/// reads it for the target-existence gate before a child is minted (#119), and
+/// it is the call's permission argument (ADR-0235), so a scoped rule grades
+/// the profile that actually runs. Mirrors [`parse_input`]'s agent resolution
+/// (a bare string / omitted or empty `agent` ⇒ [`DEFAULT_SUBAGENT`]).
 pub fn target_agent(input: &str) -> String {
     parse_input(input).0
 }

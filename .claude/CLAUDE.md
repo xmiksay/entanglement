@@ -162,8 +162,8 @@ doc, never here**:
   graded at the runtime's dispatch gate (a rule naming the tool outranks a
   class rule; a `*` rule meets a named one by length, a class one by
   strictness; longest within a kind; a rule naming a non-maskable tool never
-  matches); there is no agent tool mask
-  ([agents & permissions §3](../docs/architecture/agents/modes.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
+  matches; `agent`/`agent_send` scope on their target); there is no agent tool mask
+  ([agents & permissions §3](../docs/architecture/agents/modes.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)/[ADR-0235](../docs/adr/0235-scoped-spawn-rules-grade-the-target.md)).
 - **The tool overlay is the user's own trusted voice** — per-session,
   mode-scoped enable/deny entries over the mode's grade
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).

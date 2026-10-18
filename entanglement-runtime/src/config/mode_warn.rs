@@ -319,6 +319,22 @@ mod tests {
         assert!(why.contains("name `plan` instead"), "{why}");
     }
 
+    /// ADR-0235: the spawning pair grades on its target, so a scoped rule
+    /// on either is live; a scoped rule on a tool dispatch never grades
+    /// still warns.
+    #[test]
+    fn scoped_spawning_rules_do_not_warn_but_a_scoped_non_maskable_one_does() {
+        let layers = vec![layer(
+            ConfigLayer::User,
+            "modes:\n  build:\n    deny: [\"agent(plan)\", \"agent_send(acme:*)\", \"poll(x)\"]\n",
+        )];
+        let stale: Vec<String> = stale_rule_names(&layers)
+            .into_iter()
+            .map(|(_, _, entry)| entry)
+            .collect();
+        assert_eq!(stale, vec!["poll(x)".to_string()]);
+    }
+
     #[test]
     fn a_per_tool_mcp_rule_and_class_keys_do_not_warn() {
         let layers = vec![layer(
