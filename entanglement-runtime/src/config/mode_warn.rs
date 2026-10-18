@@ -1,5 +1,6 @@
 //! Startup warning for a `config.yml` rule — a `modes:` tuning rule or a
-//! `permissions:` ceiling rule — whose tool name can never match a call.
+//! `permissions:` ceiling rule — whose tool name or scope can never match a
+//! call.
 //!
 //! ADR-0166 shipped this exact posture for the old agent-borne `tools:`
 //! mask and `permission:` rule keys; ADR-0207 stage 4c deleted the mask
@@ -15,11 +16,14 @@
 //! invisible no-op and warns with the reason instead. For `propose_plan`
 //! the no-op is enforced, not incidental: the matcher skips a rule naming a
 //! non-maskable tool (`mode::rules`), so only its `plan` class grades it.
+//! So is an argument scope on a tool that never has an argument (#878) —
+//! `mcp__gh__x(foo)` — since the matcher sees no argument to test.
 
 use serde_yaml::{Mapping, Value};
 
 use super::RawLayer;
 use crate::mode::{capability_class, rule_tool_name};
+use crate::permission::takes_permission_arg;
 use crate::tool_names::{is_recognized_mask_entry, non_maskable_reason};
 
 /// The three rule-list keys a `modes:` mode entry (`mode::ModeTuning`) and
@@ -39,12 +43,14 @@ pub(super) const CEILING_SCOPE: &str = "permissions";
 /// vocabulary can't vouch for, or a non-maskable one. Checked against each
 /// layer's *own* YAML — not the final merged config — so the warning names
 /// the file that actually wrote the offending line, mirroring
-/// `ceiling_warn`'s per-layer approach. Only the rule's tool part
-/// (everything before an argument/workdir scope, [`rule_tool_name`]) is
-/// checked: an exact-argument scoped rule like `bash(cargo check)` carries
-/// no wildcard of its own and must not false-positive just because the
-/// whole entry isn't a known literal. A `mcp__<server>__<tool>` name, a
-/// bare capability class key, or a bare `*` is never flagged (MCP tools
+/// `ceiling_warn`'s per-layer approach. The rule's tool part (everything
+/// before an argument/workdir scope, [`rule_tool_name`]) is what's checked
+/// against the vocabulary: an exact-argument scoped rule like
+/// `bash(cargo check)` carries no wildcard of its own and must not
+/// false-positive just because the whole entry isn't a known literal. The
+/// scope itself only matters for a tool with no argument to scope
+/// (`takes_permission_arg`, #878). An unscoped `mcp__<server>__<tool>`
+/// name, a bare capability class key, or a bare `*` is never flagged (MCP tools
 /// register after config load); a tool-name glob like `mcp__gh__*` is,
 /// since rule keys never glob the tool part ([`no_match_reason`]).
 pub(super) fn stale_rule_names(layers: &[RawLayer]) -> Vec<(String, String, String)> {
@@ -86,9 +92,11 @@ fn is_stale(entry: &str) -> bool {
 }
 
 /// Why a rule whose tool part is a *known* spelling still never matches: a
-/// non-maskable name, or a tool-name glob — rule keys match the tool part
+/// non-maskable name, a tool-name glob — rule keys match the tool part
 /// exactly, only a bare `*` is a wildcard (the core matcher's
-/// `rule_matches`; name globs are the session overlay's alone).
+/// `rule_matches`; name globs are the session overlay's alone) — or an
+/// argument scope on a tool that never has an argument (#878: the matcher
+/// sees `None`, so `mcp__gh__x(foo)` is as inert as a typo).
 fn no_match_reason(entry: &str) -> Option<String> {
     let tool = rule_tool_name(entry);
     if tool != "*" && tool.contains(['*', '?']) {
@@ -97,7 +105,20 @@ fn no_match_reason(entry: &str) -> Option<String> {
              name each tool, e.g. `mcp__<server>__<tool>`"
         ));
     }
-    non_maskable_reason(tool)
+    if let Some(reason) = non_maskable_reason(tool) {
+        return Some(reason);
+    }
+    // An unrecognized tool part keeps the stale-name warning, which is the
+    // likelier mistake (`bassh(x)` is a typo, not a misplaced scope).
+    let scoped = entry[tool.len()..].starts_with('(');
+    (scoped && tool != "*" && is_recognized_mask_entry(tool) && !takes_permission_arg(tool)).then(
+        || {
+            format!(
+                "`{tool}` has no argument to scope — `{entry}` never matches a call; \
+                 write bare `{tool}` instead"
+            )
+        },
+    )
 }
 
 /// Log one warning per stale rule. Called once per config load. Non-fatal,
@@ -123,7 +144,7 @@ pub(super) fn warn_stale_rule_names(layers: &[RawLayer], root: Option<&std::path
                 %source,
                 %scope,
                 %entry,
-                "config.yml rule names a tool no rule can match — it has no effect: {reason}"
+                "config.yml rule can never match a call — it has no effect: {reason}"
             ),
             None => tracing::warn!(
                 %source,
@@ -343,6 +364,88 @@ mod tests {
              permissions:\n  default: allow\n  prompt: [\"plan\", \"mcp__gh__create\"]\n",
         )];
         assert!(stale_rule_names(&layers).is_empty());
+    }
+
+    /// #878: a scoped key on a tool that never has an argument warns — an
+    /// MCP tool (connected or not), and in the ceiling too — naming the fix.
+    #[test]
+    fn a_scoped_rule_on_an_argument_less_tool_warns() {
+        let layers = vec![layer(
+            ConfigLayer::User,
+            "modes:\n  build:\n    deny: [\"mcp__gh__create(foo)\"]\n\
+             permissions:\n  prompt: [\"mcp__docs__search(*)\"]\n",
+        )];
+        let stale: Vec<(String, String)> = stale_rule_names(&layers)
+            .into_iter()
+            .map(|(_, scope, entry)| (scope, entry))
+            .collect();
+        assert_eq!(
+            stale,
+            vec![
+                ("build".to_string(), "mcp__gh__create(foo)".to_string()),
+                (
+                    CEILING_SCOPE.to_string(),
+                    "mcp__docs__search(*)".to_string()
+                ),
+            ]
+        );
+        let why = no_match_reason("mcp__gh__create(foo)").unwrap();
+        assert!(why.contains("no argument to scope"), "{why}");
+        assert!(why.contains("write bare `mcp__gh__create`"), "{why}");
+        // A non-maskable tool keeps its own, more specific reason.
+        let why = no_match_reason("load_skill(x)").unwrap();
+        assert!(why.contains("discovery tool"), "{why}");
+        let discovery = layer(
+            ConfigLayer::User,
+            "modes:\n  build:\n    deny: [\"load_skill(x)\", \"mcp_tools(gh)\"]\n",
+        );
+        assert_eq!(stale_rule_names(&[discovery]).len(), 2);
+    }
+
+    /// #878: every tool that does take an argument keeps its scoped rules
+    /// silent — the wildcard tool and a workdir scope too.
+    #[test]
+    fn scoped_rules_on_argument_taking_tools_do_not_warn() {
+        let keys = [
+            "bash(cargo *)",
+            "call(git *)",
+            "agent(plan)",
+            "agent_send(acme:*)",
+            "read(src/*)",
+            "write(docs/*)",
+            "edit(src/*)",
+            "apply_patch(src/*)",
+            "glob(src/**)",
+            "grep(src/*)",
+            "rhai(scripts/*)",
+            "web_fetch(https://docs.rs/*)",
+            "http(GET https://api.github.com/*)",
+            "*(*.pem)",
+            "bash{/tmp/*}",
+            "mcp__gh__create",
+        ];
+        let list = keys.map(|k| format!("\"{k}\"")).join(", ");
+        let layers = vec![layer(
+            ConfigLayer::User,
+            &format!("modes:\n  build:\n    allow: [{list}]\n"),
+        )];
+        assert!(
+            stale_rule_names(&layers).is_empty(),
+            "{:?}",
+            stale_rule_names(&layers)
+        );
+    }
+
+    /// An unrecognized tool part keeps the stale-name warning rather than
+    /// blaming the scope.
+    #[test]
+    fn a_scoped_typo_warns_as_unrecognized() {
+        assert_eq!(no_match_reason("bassh(cargo *)"), None);
+        let layers = vec![layer(
+            ConfigLayer::User,
+            "modes:\n  build:\n    deny: [\"bassh(cargo *)\"]\n",
+        )];
+        assert_eq!(stale_rule_names(&layers).len(), 1);
     }
 
     #[test]
