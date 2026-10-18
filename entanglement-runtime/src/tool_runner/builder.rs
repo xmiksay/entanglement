@@ -7,7 +7,7 @@
 //! Required inputs (the engine handle and the tool registry) go into
 //! [`ToolExecutor::builder`] itself, so a half-configured executor can't be
 //! spawned. Every other seam is optional; its default is documented on its
-//! setter and summarized in `docs/embedding.md`.
+//! setter and summarized in `docs/embedding/tool-execution.md`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -291,7 +291,7 @@ mod tests {
         ToolExecutor::builder(holly, crate::tools::ToolRegistry::new().shared())
     }
 
-    /// The defaults embedders rely on (and `docs/embedding.md` documents):
+    /// The defaults embedders rely on (and `docs/embedding/tool-execution.md` documents):
     /// no clamp, no persisted grants, no custom policy, strict containment,
     /// single-user.
     #[tokio::test]

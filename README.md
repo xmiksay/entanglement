@@ -355,7 +355,7 @@ make test         # unit + integration (HOME/XDG sandboxed — fails if a test w
 make test-live    # opt-in live z.ai probes (needs ZAI_API_KEY)
 make test-live-matrix # opt-in live z.ai tool-use matrix across GLM models (needs ZAI_API_KEY)
 make lint         # clippy --all-targets -D warnings
-make verify       # check-fmt + tree + check-lean + file-cap + userid + lint + test (CI-equivalent)
+make verify       # check-fmt + tree + check-lean + file-cap + doc-cap + userid + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
 make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
 make msrv         # cargo check (full + lean runtime) on the declared MSRV (rust-version)

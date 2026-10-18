@@ -77,7 +77,7 @@ html5ever = "0.38"
 # bundled webpki roots instead (no OS trust-store reliance, no aws-lc C build in
 # ARM/musl cross-builds) via `rustls-no-provider` + an explicit client config
 # (entanglement-provider `client::tls`). An embedder on stock 0.13 therefore
-# compiles a second TLS provider — expected; see docs/embedding.md "TLS" for
+# compiles a second TLS provider — expected; see docs/embedding/tls-and-pinning.md "TLS" for
 # the feature-unification hazards. `form` backs the OAuth
 # token/device/revocation POSTs (opt-in since 0.13). No `charset`: every
 # endpoint we read is UTF-8 JSON/SSE, and without the feature `.text()` falls

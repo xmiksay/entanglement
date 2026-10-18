@@ -3,7 +3,7 @@ CARGO ?= cargo
 PKG ?= 
 
 ## ---------- targets ----------
-.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-live-matrix test-gates lint fmt check-fmt verify clean check tree check-lean file-cap userid msrv msrv-version coverage tag
+.PHONY: help build install run run-json run-tui pipe serve sessions inspect test test-unit test-integration test-live test-live-matrix test-gates lint fmt check-fmt verify clean check tree check-lean file-cap doc-cap userid msrv msrv-version coverage tag
 
 # Forbidden-crate sets for the dependency-hygiene gates (issue #207; ADR-0006,
 # amended by ADR-0053; ADR-0025). These are the *policy*; scripts/dep-gate.sh is
@@ -120,7 +120,7 @@ check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
 # when that awk isn't installed — unless REQUIRE_AWKS=1 (set by CI, which
 # installs both), where a missing awk fails instead of silently dropping the
 # coverage after a runner-image change.
-test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test-isolated self-tests), default + strict POSIX (REQUIRE_AWKS=1: missing gawk/mawk fails)
+test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + doc-cap + test-isolated self-tests), default + strict POSIX (REQUIRE_AWKS=1: missing gawk/mawk fails)
 	@sh scripts/dep-gate.test.sh
 	@echo '--- strict POSIX (POSIXLY_CORRECT=1) ---'
 	@POSIXLY_CORRECT=1 sh scripts/dep-gate.test.sh
@@ -140,6 +140,12 @@ test-gates: ## run scripts/dep-gate.test.sh (dep-gate + userid + file-cap + test
 file-cap: ## fail if a src file exceeds 400 code lines and isn't grandfathered
 	@sh scripts/file-cap-gate.sh
 
+# 400-line doc cap (#848): every docs/**/*.md outside the immutable docs/adr/
+# log, plain `wc -l`, no allowlist — an over-cap module splits into a sub-page
+# directory and keeps its file as the index.
+doc-cap: ## fail if a docs/**/*.md (outside docs/adr/) exceeds 400 lines
+	@sh scripts/doc-cap-gate.sh
+
 # UserId hygiene gate (ADR-0181/ADR-0184, #687): the runtime crate must never
 # name `UserId` — per-user seams live in the provider crate and the embedder.
 userid: ## fail if UserId appears anywhere in entanglement-runtime/src
@@ -157,7 +163,7 @@ msrv: ## cargo check (full + lean runtime) on the declared MSRV toolchain
 	CARGO_TARGET_DIR=target/msrv $(CARGO) +$(MSRV) check --locked --workspace --all-targets
 	CARGO_TARGET_DIR=target/msrv $(CARGO) +$(MSRV) check --locked -p entanglement-runtime --no-default-features --all-targets
 
-verify: check-fmt tree check-lean file-cap userid lint test ## full CI-equivalent gate locally
+verify: check-fmt tree check-lean file-cap doc-cap userid lint test ## full CI-equivalent gate locally
 
 # Release gate (issue #107): workspace line coverage via cargo-llvm-cov. Fails
 # below COV_MIN, writes lcov.info + a Cobertura XML for artifact upload / badges.

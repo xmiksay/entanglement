@@ -6,8 +6,8 @@
 #   - a forbidden crate in the tree must FAIL
 #   - a clean tree must PASS
 # Also self-tests userid-gate.sh and file-cap-gate.sh (#745: what the
-# `#[cfg(test)]` module exclusion does and does not hide), and test-isolated.sh
-# (#747).
+# `#[cfg(test)]` module exclusion does and does not hide), doc-cap-gate.sh
+# (#848), and test-isolated.sh (#747).
 # Run via `make test-gates`.
 set -eu
 
@@ -196,6 +196,79 @@ fcheck "file-cap: '\\'' then '{' does not swallow the rest" 1
 fn a() { let v = ['\'','"']; }
 RS
 fcheck "file-cap: '\\'' then '\"' before a test mod does not over-count" 0
+
+# --- doc-cap-gate.sh self-tests (#848) ----------------------------------------
+# Each case rebuilds a fresh docs tree; the gate is pointed at it.
+dgate="$here/doc-cap-gate.sh"
+ddir="$tmp/dcap"
+
+lines() { # lines <n> — n lines of prose
+	i=0
+	while [ "$i" -lt "$1" ]; do echo "line $i"; i=$((i + 1)); done
+}
+
+dcheck() {
+	name=$1
+	want=$2
+	set +e
+	shift 2
+	[ "$#" -gt 0 ] || set -- "$ddir"
+	sh "$dgate" "$@" >/dev/null 2>&1
+	got=$?
+	set -e
+	if [ "$got" -eq "$want" ]; then
+		echo "ok   - $name (rc=$got)"
+	else
+		echo "FAIL - $name (want rc=$want, got rc=$got)"
+		fails=$((fails + 1))
+	fi
+}
+
+dreset() { rm -rf "$ddir" && mkdir -p "$ddir/sub dir" "$ddir/adr"; }
+
+dreset; lines 400 >"$ddir/a.md"
+dcheck "doc-cap: 400 lines passes" 0
+dreset; lines 401 >"$ddir/a.md"
+dcheck "doc-cap: 401 lines fails" 1
+dreset; lines 10 >"$ddir/a.md"; lines 401 >"$ddir/sub dir/b.md"
+dcheck "doc-cap: nested (spaced path) over-cap doc fails" 1
+dreset; lines 10 >"$ddir/a.md"; lines 900 >"$ddir/adr/0001-x.md"
+dcheck "doc-cap: adr/ is exempt" 0
+dreset; lines 10 >"$ddir/a.md"; lines 900 >"$ddir/notes.txt"
+dcheck "doc-cap: non-Markdown files are ignored" 0
+dreset; lines 900 >"$ddir/adr/0001-x.md"
+dcheck "doc-cap: no docs outside adr/ fails (not vacuous)" 1
+dcheck "doc-cap: missing dir fails (not vacuous)" 1 "$tmp/no-such-docs"
+dreset; lines 10 >"$ddir/a.md"; mkdir -p "$ddir/x/adr"; lines 401 >"$ddir/x/adr/b.md"
+dcheck "doc-cap: nested x/adr/ is NOT exempt" 1
+dreset; lines 10 >"$ddir/a.md"; lines 900 >"$ddir/adr/0001-x.md"
+dcheck "doc-cap: trailing-slash dir keeps adr/ exempt" 0 "$ddir/"
+dreset; lines 401 >"$ddir/a.md"
+dcheck "doc-cap: trailing-slash dir still catches over-cap" 1 "$ddir//"
+dreset; lines 10 >"$ddir/a.md"; lines 401 >"$ddir/[ab].md"; : >"$ddir/a"
+dcheck "doc-cap: glob characters in a name stay inert" 1
+dreset; lines 10 >"$ddir/a.md"; lines 401 >"$tmp/outside.md"; ln -s "$tmp/outside.md" "$ddir/link.md"
+dcheck "doc-cap: symlinked over-cap doc fails" 1
+dreset; lines 10 >"$ddir/a.md"; ln -s "$tmp/no-such-target.md" "$ddir/dangling.md"
+dcheck "doc-cap: dangling .md symlink fails (fail-closed)" 1
+dreset; lines 10 >"$ddir/a.md"; rm -rf "$tmp/outdir"; mkdir -p "$tmp/outdir"; lines 401 >"$tmp/outdir/b.md"; ln -s "$tmp/outdir" "$ddir/linked"
+dcheck "doc-cap: over-cap doc inside a symlinked dir fails" 1
+dreset; lines 10 >"$ddir/a.md"; ln -s .. "$ddir/sub dir/loop"
+dcheck "doc-cap: symlink loop fails (fail-closed)" 1
+dreset; lines 10 >"$ddir/a.md"
+dcheck "doc-cap: two arguments is a usage error" 2 "$ddir" "$ddir"
+dcheck "doc-cap: a dir starting with - is a usage error" 2 "-name"
+dcheck "doc-cap: a glob character in the dir is a usage error" 2 "d*"
+nl='
+'
+dreset; lines 10 >"$ddir/a.md"
+if lines 401 2>/dev/null >"$ddir/new${nl}line.md"; then
+	dcheck "doc-cap: newline-in-name over-cap doc fails" 1
+	rm -f "$ddir/new${nl}line.md"; lines 10 >"$ddir/new${nl}line.md"
+	dcheck "doc-cap: newline-in-name under-cap doc passes" 0
+else
+	echo "skip - doc-cap: filesystem refuses newline in a file name"
+fi
 
 # --- test-isolated.sh self-tests (#747) ---------------------------------------
 # A stubbed `cargo test` that writes `$FAKE_WRITE` (relative to the sandboxed

@@ -91,7 +91,7 @@ impl<'a> IdContext<'a> {
 
     /// The tenant prefix a new id inherits: everything up to and including
     /// the first `:` of the parent's id, else the predecessor's (the
-    /// `{tenant}:{id}` convention, docs/embedding.md §1). `None` when there is
+    /// `{tenant}:{id}` convention, docs/embedding/tenants-and-heads.md §1). `None` when there is
     /// no lineage or its id carries no `:`. An empty tenant still counts: a
     /// parent `:abc` yields the prefix `:`.
     pub fn inherited_prefix(&self) -> Option<&'a str> {
