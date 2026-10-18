@@ -189,8 +189,10 @@ below realize one model:
   `general`, so `agent(general)` covers it) and the trimmed `agent_id`
   handle for `agent_send`
   ([ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md));
-  path args grade **root-relative**, ADR-0125; any other tool has no
-  argument, so only its bare rule matches), a workdir-scoped `tool{pattern}` (unchanged
+  path args grade **root-relative**, ADR-0125; any other tool — every
+  `mcp__<server>__<tool>` among them — has no argument, so only its bare
+  rule matches, and a scoped key on one warns at config load
+  (`config::mode_warn`, #878)), a workdir-scoped `tool{pattern}` (unchanged
   ADR-0116/#425 grammar), or a bare capability-class name
   (`read`/`write`/`exec`/`plan`/`control` — a scoped key always names the
   literal tool instead, since scoping has no class grammar; this is how

@@ -98,6 +98,7 @@ pub mod narrate;
 pub mod operations;
 pub mod pending;
 pub mod permission;
+mod permission_arg;
 // Per-segment `bash` command grading (ADR-0197): the runtime-only wrapper
 // every `resolve_scoped` call site for a `bash` argument routes through, so
 // a compound command (`&&`/`|`/`;`/...) is graded segment-by-segment instead
