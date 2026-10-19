@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
+    MessageRole, OutEvent, PendingApproval, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
@@ -69,7 +69,7 @@ impl Llm for LaunchOnGo {
 }
 
 /// `edit` asks; everything else (the launch included) is allowed.
-fn engine(root: &std::path::Path, scripts: ScriptRegistry) -> Holly {
+pub(super) fn engine(root: &std::path::Path, scripts: ScriptRegistry) -> Holly {
     let agents =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
@@ -134,7 +134,7 @@ async fn await_gone(sub: &mut tokio::sync::broadcast::Receiver<OutEvent>, sid: &
 
 /// Approve the card (keyed on the predecessor, which parked it) and wait
 /// for the script, polled as `owner`, to finish.
-async fn approve_and_finish(
+pub(super) async fn approve_and_finish(
     holly: &Holly,
     scripts: &ScriptRegistry,
     pred: &SessionId,
@@ -238,6 +238,19 @@ async fn a_background_scripts_card_survives_a_hibernate() {
 
 /// The pending listing's request ids for `sid` (`ListPending`, #726).
 async fn pending_ids(holly: &Holly, sid: &SessionId, correlation: &str) -> Vec<String> {
+    pending_list(holly, sid, correlation)
+        .await
+        .into_iter()
+        .map(|a| a.request_id)
+        .collect()
+}
+
+/// The pending listing's entries for `sid` (`ListPending`, #726).
+pub(super) async fn pending_list(
+    holly: &Holly,
+    sid: &SessionId,
+    correlation: &str,
+) -> Vec<PendingApproval> {
     let mut sub = holly.subscribe();
     holly
         .send_from_wire(InMsg::ListPending {
@@ -255,7 +268,6 @@ async fn pending_ids(holly: &Holly, sid: &SessionId, correlation: &str) -> Vec<S
                 return approvals
                     .into_iter()
                     .filter(|a| &a.session == sid)
-                    .map(|a| a.request_id)
                     .collect()
             }
             Ok(Ok(_)) => {}

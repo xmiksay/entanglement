@@ -165,7 +165,7 @@ pub(in crate::tui) async fn handle_question_event(
             }
         }
         KeyCode::Esc => {
-            let _ = holly.send(InMsg::Stop { session }).await;
+            crate::tui::stop_command::request_stop(app, holly, session).await;
             app.clear_question();
         }
         _ => {}

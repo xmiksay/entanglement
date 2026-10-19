@@ -206,6 +206,20 @@ removes `user_only`. What an embedder has to change:
 - **Added:** `Holly::emit_live(ev)` broadcasts a live-only event and refuses
   (logs and drops) any other variant.
 
+## Detached cards (ADR-0237, #872)
+
+- **Wire:** `OutEvent::ToolRequest` and `PendingApproval` gain `detached:
+  bool`, `true` on a background `rhai` script's nested card. It is
+  serde-defaulted and omitted when `false`, so ordinary cards and old logs
+  are unchanged. A head that drops its cards on a terminal `Status` should
+  keep the detached ones: the script still waits on them, with no timeout
+  in an attended mode.
+  `Stop` unwinds them too.
+- **API:** `PendingDecisions::register_approval(approval, detail)` takes the
+  detached flag from `approval.detached`.
+- **Constructing `OutEvent::ToolRequest` or `PendingApproval`** needs
+  `detached: false`.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

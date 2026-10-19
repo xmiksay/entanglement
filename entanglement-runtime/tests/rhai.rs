@@ -62,6 +62,9 @@ mod launch_denies;
 // #849: a background script's nested card outlives a compaction/hibernate.
 #[path = "rhai/background_park.rs"]
 mod background_park;
+// #872: that card is `detached` on the wire and outlives its turn's Idle.
+#[path = "rhai/background_card.rs"]
+mod background_card;
 // ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]

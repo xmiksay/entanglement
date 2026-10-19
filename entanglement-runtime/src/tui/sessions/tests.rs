@@ -56,6 +56,7 @@ fn background_approval_is_isolated_and_visible_in_sessions_list() {
         input: "{}".to_string(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     });
 
     assert!(matches!(
@@ -93,6 +94,7 @@ fn propose_plan_request_renders_accept_prompt_and_handoff_switches_session() {
         .to_string(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     });
     assert!(matches!(
         reg.active_view().approval_mode(),

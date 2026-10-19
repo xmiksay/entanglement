@@ -233,11 +233,8 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
         } else if cmd == crate::tui::commands::Command::Disable {
             app.set_input_text("/disable ".to_string());
         } else if cmd == crate::tui::commands::Command::Stop {
-            let _ = holly
-                .send(InMsg::Stop {
-                    session: app.active_session_id().clone(),
-                })
-                .await;
+            let target = app.active_session_id().clone();
+            crate::tui::stop_command::request_stop(app, holly, target).await;
         } else if cmd == crate::tui::commands::Command::Pause {
             let _ = holly
                 .send(InMsg::PauseSession {

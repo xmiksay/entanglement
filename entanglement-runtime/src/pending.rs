@@ -103,8 +103,8 @@ impl PendingDecisions {
         &self,
         approval: WireApproval,
         detail: impl Into<String>,
-        detached: bool,
     ) -> oneshot::Receiver<Decision> {
+        let detached = approval.detached;
         let kind = match approval.kind {
             ApprovalKind::Tool => "tool",
             ApprovalKind::Plan => "plan",
@@ -352,7 +352,7 @@ mod tests {
             (launch, ApprovalScope::Session, ApprovalScope::Session),
         ] {
             let rid = req.request_id.clone();
-            let rx = pending.register_approval(req, "t", false);
+            let rx = pending.register_approval(req, "t");
             pending.resolve(&s, &rid, approve(sent));
             match await_decision(rx).await {
                 Decision::Approve { scope, .. } => assert_eq!(scope, want, "{rid} {sent:?}"),

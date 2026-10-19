@@ -142,6 +142,7 @@ mod tests {
             input: input.to_string(),
             reason: None,
             scopes: Vec::new(),
+            detached: false,
         });
     }
 

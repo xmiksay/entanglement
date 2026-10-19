@@ -116,13 +116,14 @@ impl SessionView {
                 // Known cosmetic flap (#273): with two parked Asks, resolving
                 // the first flips Status WaitingApproval→Thinking while the
                 // second still waits. Deliberately not special-cased — only
-                // terminal states drop the queues.
+                // terminal states drop the queues (a background script's
+                // cards excepted, #872).
                 self.state = state;
                 if state == AgentState::Idle
                     || state == AgentState::Done
                     || state == AgentState::Error
                 {
-                    self.clear_approval();
+                    self.drop_turn_approvals();
                     self.clear_question();
                     // A finished/interrupted turn leaves no call still streaming;
                     // drop trackers for any that never got their assembled call.
@@ -238,6 +239,7 @@ impl SessionView {
                 tool,
                 input,
                 scopes,
+                detached,
                 ..
             } => self.fold_tool_request(
                 seq,
@@ -246,6 +248,7 @@ impl SessionView {
                     tool,
                     input,
                     scopes,
+                    detached,
                 },
             ),
             OutEvent::UserQuestion {

@@ -360,6 +360,7 @@ fn feed_card(
         input: input.to_string(),
         reason,
         scopes: entanglement_runtime::pending::scopes_for(kind, tool, reason),
+        detached: false,
     });
 }
 
@@ -412,6 +413,7 @@ fn approval_tail_footer_offers_only_the_scopes_the_card_honors() {
         input: "{}".into(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     });
     let text = footer_text(&mut app);
     assert!(text.contains("[y]") && !text.contains("[s]"), "{text:?}");

@@ -4,12 +4,24 @@
 
 - **TUI** (`skutter tui`): opencode-style terminal UI over `subscribe()`. Uses
   ratatui + crossterm (ADR-0011), leader-key bindings with which-key popup
-  (ADR-0013), inline tool approval cards (ADR-0014) — with a full-body pager
+  (ADR-0013), rich markdown rendering with pulldown-cmark + syntect
+  (ADR-0015), and inline tool approval cards (ADR-0014) with a full-body pager
   (`v` while parked on one, `j`/`k`/`PgUp`/`PgDn` scroll, `Esc` closes back to
   the prompt; the decision keys `y`/`s`/`a`/`d`/`n`/`e` still resolve the
   approval while it's open) reusing the tail's own rendering for a diff/plan
-  body too long for the parked tail — and rich markdown rendering with
-  pulldown-cmark + syntect (ADR-0015). The input box enables crossterm's
+  body too long for the parked tail. Cards queue per session (#273); a
+  terminal `Status` (`Idle`/`Done`/`Error`) drops the finished turn's cards
+  but keeps a background script's (`ToolRequest.detached`, #872,
+  [ADR-0237](../../adr/0237-detached-flag-on-tool-request.md)), still parked
+  in the runtime. Every `Stop` (`Esc`, `/stop [--all]`, sessions-modal `s`,
+  palette) goes through `stop_command::request_stop`, which clears the
+  target's whole queue, since `stop_session` unwinds those cards too. A
+  resumed view carries its detached cards over from the view this process
+  already had (a hibernated session's are still parked) and drops them for a
+  session it never saw. When a terminal `Status` moves the prompt to another
+  card, the pager closes and a half-typed reject reason is cleared, so no key
+  answers the wrong card (ADR-0237 §6).
+  The input box enables crossterm's
   bracketed paste so a multi-line paste lands as one buffer edit (each
   embedded newline starts a new `SimpleInput` row) instead of a flood of key
   events whose embedded newlines each fire the Enter-to-send binding.

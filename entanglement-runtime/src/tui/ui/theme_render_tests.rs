@@ -33,6 +33,7 @@ fn parked_edit(theme_yaml: &str, no_color: bool) -> Buffer {
         input: r#"{"path":"a.txt","oldString":"old line","newString":"new line"}"#.to_string(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     });
     let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
     terminal.draw(|f| draw_body(f, f.area(), &mut app)).unwrap();

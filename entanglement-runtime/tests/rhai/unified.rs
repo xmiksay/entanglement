@@ -32,7 +32,18 @@ fn requests(events: &[OutEvent]) -> Vec<(String, String)> {
     events
         .iter()
         .filter_map(|e| match e {
-            OutEvent::ToolRequest { tool, input, .. } if tool != RHAI_TOOL => {
+            OutEvent::ToolRequest {
+                tool,
+                input,
+                detached,
+                ..
+            } if tool != RHAI_TOOL => {
+                // A blocking script's nested card belongs to its turn
+                // (ADR-0237): only a background script's is detached.
+                assert!(
+                    !detached,
+                    "a blocking script's card is not detached: {tool}"
+                );
                 Some((tool.clone(), input.clone()))
             }
             _ => None,

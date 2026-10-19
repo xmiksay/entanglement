@@ -263,7 +263,8 @@ impl SessionRegistry {
             }
         }
 
-        for (session, view) in views {
+        for (session, mut view) in views {
+            view.adopt_detached_approvals(self.views.get(&session));
             if !self.order.contains(&session) {
                 self.order.push(session.clone());
             }
@@ -352,5 +353,7 @@ impl UsageRollup {
     }
 }
 
+#[cfg(test)]
+mod restore_tests;
 #[cfg(test)]
 mod tests;

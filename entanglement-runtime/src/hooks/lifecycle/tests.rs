@@ -187,6 +187,7 @@ fn approval_and_question_park_fire_notification() {
             input: r#"{"command":"ls"}"#.into(),
             reason: None,
             scopes: Vec::new(),
+            detached: false,
         })
         .unwrap();
     assert_eq!(f.event, HookEvent::Notification);
