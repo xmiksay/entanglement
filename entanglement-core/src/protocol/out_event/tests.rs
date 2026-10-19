@@ -280,6 +280,7 @@ fn pending_list_event_is_session_less_and_seq_less() {
             scopes: vec![ApprovalScope::Once, ApprovalScope::Session],
             since_ms: 1,
             card_reason: None,
+            detached: false,
         }],
     };
     assert_eq!(ev.seq(), None);

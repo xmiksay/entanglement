@@ -168,6 +168,7 @@ mod tests {
             input: "{}".to_string(),
             reason: None,
             scopes: Vec::new(),
+            detached: false,
         });
         assert_eq!(
             attention_word(&view),

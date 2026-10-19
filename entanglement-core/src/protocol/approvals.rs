@@ -76,6 +76,10 @@ pub struct PendingApproval {
     /// The structured card reason the `ToolRequest` carried (ADR-0230).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_reason: Option<CardReason>,
+    /// The `detached` flag the `ToolRequest` carried (ADR-0237): a
+    /// background script's card, which survives its turn's end.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
 }
 
 #[cfg(test)]
@@ -92,6 +96,7 @@ mod tests {
             input: "1".into(),
             reason,
             scopes,
+            detached: false,
         }
     }
 
@@ -115,6 +120,19 @@ mod tests {
         assert_eq!(serde_json::from_str::<OutEvent>(old).unwrap(), ev);
     }
 
+    /// ADR-0237: `detached` is omitted when false (every turn-owned card
+    /// keeps its old shape, covered above) and round-trips when set.
+    #[test]
+    fn a_detached_tool_request_round_trips() {
+        let mut ev = request(None, vec![ApprovalScope::Once]);
+        if let OutEvent::ToolRequest { detached, .. } = &mut ev {
+            *detached = true;
+        }
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""detached":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+    }
+
     #[test]
     fn every_card_reason_has_a_snake_case_wire_name() {
         for (reason, wire) in [
@@ -135,6 +153,17 @@ mod tests {
         let json = r#"{"session":"s","request_id":"r","kind":"tool","tool":"bash","input":"ls","reason":"why","scopes":["once"],"since_ms":1}"#;
         let a: PendingApproval = serde_json::from_str(json).unwrap();
         assert_eq!(a.card_reason, None);
+        assert!(!a.detached);
         assert_eq!(serde_json::to_string(&a).unwrap(), json);
+        let detached = PendingApproval {
+            detached: true,
+            ..a
+        };
+        let json = serde_json::to_string(&detached).unwrap();
+        assert!(json.ends_with(r#""detached":true}"#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<PendingApproval>(&json).unwrap(),
+            detached
+        );
     }
 }

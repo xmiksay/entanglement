@@ -88,6 +88,7 @@ pub fn approval(
         kind,
         scopes: scopes_for(kind, &tool, card),
         card_reason: card,
+        detached: false,
         tool,
         input: input.into(),
         reason: reason.into(),
@@ -115,14 +116,16 @@ pub fn park_approval(
 
 /// [`park_approval`], marking the park `detached` for a background script's
 /// nested call — it survives its session's end or hibernate
-/// ([`PendingDecisions::stop_attached`]).
+/// ([`PendingDecisions::stop_attached`]), and the card says so on the wire
+/// (ADR-0237) so a head keeps it past the turn's terminal `Status`.
 pub fn park_approval_as(
     holly: &Holly,
     pending: &PendingDecisions,
-    approval: PendingApproval,
+    mut approval: PendingApproval,
     detail: impl Into<String>,
     detached: bool,
 ) -> oneshot::Receiver<Decision> {
+    approval.detached = detached;
     let session = approval.session.clone();
     let event = |seq| OutEvent::ToolRequest {
         session: approval.session.clone(),
@@ -132,8 +135,9 @@ pub fn park_approval_as(
         input: approval.input.clone(),
         reason: approval.card_reason,
         scopes: approval.scopes.clone(),
+        detached,
     };
-    let rx = pending.register_approval(approval.clone(), detail, detached);
+    let rx = pending.register_approval(approval.clone(), detail);
     holly.emit_for_session(&session, event);
     rx
 }
@@ -251,7 +255,6 @@ mod tests {
         drop(pending.register_approval(
             approval(&s, "r", ApprovalKind::Tool, "bash", "ls", "why", None),
             "bash",
-            false,
         ));
         assert!(pending.approvals(|_| true).is_empty());
         assert!(pending.snapshot(None).is_empty());
@@ -266,7 +269,6 @@ mod tests {
         let _ra = pending.register_approval(
             approval(&a, "ra", ApprovalKind::Tool, "bash", "ls", "r", None),
             "bash",
-            false,
         );
         let _rb = pending.register_approval(
             approval(
@@ -279,7 +281,6 @@ mod tests {
                 None,
             ),
             "build",
-            false,
         );
         let all = list_pending(&pending, &agents, None);
         assert_eq!(

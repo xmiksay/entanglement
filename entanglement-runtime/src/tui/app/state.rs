@@ -1,4 +1,4 @@
-use entanglement_core::AgentState;
+use entanglement_core::{AgentState, SessionId};
 use std::time::Instant;
 
 use crate::tui::commands::CommandPalette;
@@ -40,6 +40,16 @@ impl App {
         self.sessions.active_view_mut().clear_approval();
         self.close_approval_pager();
         self.mark_dirty();
+    }
+
+    /// [`clear_approval`](Self::clear_approval) for any session's view.
+    pub fn clear_approvals_of(&mut self, session: &SessionId) {
+        if self.sessions.active_id() == session {
+            self.clear_approval();
+        } else if let Some(view) = self.sessions.view_for_mut(session) {
+            view.clear_approval();
+            self.mark_dirty();
+        }
     }
 
     pub fn pending_question(&self) -> Option<&PendingQuestion> {

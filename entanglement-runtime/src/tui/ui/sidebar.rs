@@ -316,6 +316,7 @@ mod tests {
             input: "{}".to_string(),
             reason: None,
             scopes: Vec::new(),
+            detached: false,
         });
         app.handle_out_event(OutEvent::UserQuestion {
             session: asking,

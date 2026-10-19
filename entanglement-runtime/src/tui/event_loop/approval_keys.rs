@@ -123,12 +123,8 @@ pub(super) async fn handle_waiting_for_approval(
             app.close_approval_pager();
         }
         KeyCode::Esc => {
-            let _ = holly
-                .send(InMsg::Stop {
-                    session: app.active_session_id().clone(),
-                })
-                .await;
-            app.clear_approval();
+            let target = app.active_session_id().clone();
+            crate::tui::stop_command::request_stop(app, holly, target).await;
         }
         _ => {}
     }

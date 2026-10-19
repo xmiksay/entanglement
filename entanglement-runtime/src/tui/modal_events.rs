@@ -527,6 +527,7 @@ mod tests {
             input: r#"{"command":"ls"}"#.to_string(),
             reason: None,
             scopes: Vec::new(),
+            detached: false,
         });
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

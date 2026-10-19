@@ -176,6 +176,7 @@ fn tool_request_sets_waiting_then_status_clears() {
         input: "{}".into(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     });
     assert!(v.is_waiting_approval());
     assert_eq!(
@@ -200,6 +201,7 @@ fn tool_request(seq: u64, request_id: &str, tool: &str) -> OutEvent {
         input: "{}".into(),
         reason: None,
         scopes: Vec::new(),
+        detached: false,
     }
 }
 

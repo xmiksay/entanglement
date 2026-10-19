@@ -307,6 +307,9 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
 }
 
 #[cfg(test)]
+mod stop_tests;
+
+#[cfg(test)]
 mod tests {
     use super::approval_keys::{record_rejected, send_approval};
     use super::*;
@@ -343,6 +346,7 @@ mod tests {
             input: input.to_string(),
             reason,
             scopes: entanglement_runtime::pending::scopes_for(kind, tool, reason),
+            detached: false,
         });
     }
 

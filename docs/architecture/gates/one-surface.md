@@ -57,7 +57,9 @@ successor inherits it,
 A session `Stop` is different: it unwinds every card of the session,
 background ones included (`stop_session`). `Stop` is the user's explicit
 escape hatch and the TUI clears its card view on it, while an attended park
-never times out. The script itself is not aborted
+never times out. The card itself says it is detached (`ToolRequest.detached`,
+[ADR-0237](../../adr/0237-detached-flag-on-tool-request.md)), so the TUI keeps
+it past the turn's terminal `Status`. The script itself is not aborted
 ([ADR-0185](../../adr/0185-rhai-joins-background-and-poll.md)): its nested call
 fails with "rhai run stopped" and the run ends. The built-in modes class-allow `control`, so a spawn runs
 unprompted by default and a rule naming `agent` outranks that.

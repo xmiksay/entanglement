@@ -368,6 +368,13 @@ pub enum OutEvent {
         /// pre-ADR-0230 producer: offer `Once` alone.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         scopes: Vec<ApprovalScope>,
+        /// The card was parked by detached work — a `background: true`
+        /// `rhai` script's nested call (ADR-0237) — not by the turn: it
+        /// outlives the turn's terminal `Status`, so a head keeps showing it
+        /// until it is answered, or a `Stop` unwinds it. Absent (`false`) on
+        /// every turn-owned card.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        detached: bool,
     },
     /// Core asks the runtime to execute a host tool that is cleared to run
     /// (permission `Allow`, or `Ask` after approval). The runtime executes it

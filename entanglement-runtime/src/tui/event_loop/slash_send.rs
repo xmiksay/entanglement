@@ -118,8 +118,8 @@ pub(super) async fn send_name(app: &mut App, holly: &Holly, text: &str) {
 }
 
 /// Send `/stop [--all]` (#6): the bare form routes through
-/// `stop_command::request_stop`; `--all` fans out a raw `InMsg::Stop` to
-/// every live session directly. A parse error (unknown argument) is rendered
+/// `stop_command::request_stop`; `--all` fans the same call out to every
+/// live session. A parse error (unknown argument) is rendered
 /// as a status line instead.
 pub(super) async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
     let all = match crate::tui::commands::parse_all_flag(text, crate::tui::commands::Command::Stop)
@@ -137,7 +137,7 @@ pub(super) async fn send_stop(app: &mut App, holly: &Holly, text: &str) {
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {
-            let _ = holly.send(InMsg::Stop { session: id }).await;
+            crate::tui::stop_command::request_stop(app, holly, id).await;
         }
     } else {
         let target = app.active_session_id().clone();
