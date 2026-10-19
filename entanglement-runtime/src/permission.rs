@@ -274,13 +274,19 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
 /// root), or on malformed input — a workdir-scoped rule then never matches,
 /// falling through to the tool's other rules.
 pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
-    match tool {
-        "bash" | "call" => {
-            let value: serde_json::Value = serde_json::from_str(input).ok()?;
-            value.get("workdir")?.as_str().map(String::from)
-        }
-        _ => None,
+    if !takes_workdir_scope(tool) {
+        return None;
     }
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    value.get("workdir")?.as_str().map(String::from)
+}
+
+/// Whether `tool` ever has a [`permission_workdir`] — when not, a
+/// workdir-scoped `tool{pattern}` rule can never match a call
+/// (`config::mode_warn` warns on one, #881). The gate `permission_workdir`
+/// itself checks, so the warning can't drift from what grading sees.
+pub(crate) fn takes_workdir_scope(tool: &str) -> bool {
+    matches!(tool, "bash" | "call")
 }
 
 /// The **filesystem path** a call would touch, for the escape-root gate
@@ -926,6 +932,25 @@ mod tests {
             None
         );
         assert_eq!(permission_workdir("bash", "not json"), None);
+    }
+
+    /// #881: `takes_workdir_scope` agrees with what `permission_workdir`
+    /// actually extracts, for every known tool and for an MCP tool.
+    #[test]
+    fn takes_workdir_scope_matches_what_permission_workdir_extracts() {
+        let input = r#"{"command":"x","path":"a","workdir":"/tmp"}"#;
+        for tool in crate::tool_names::known_tool_names()
+            .iter()
+            .copied()
+            .chain(["mcp__gh__create"])
+        {
+            assert_eq!(
+                takes_workdir_scope(tool),
+                permission_workdir(tool, input).is_some(),
+                "{tool}"
+            );
+        }
+        assert!(takes_workdir_scope("bash") && takes_workdir_scope("call"));
     }
 
     /// The config ceiling's own workdir-scoped rule (#425) — the one

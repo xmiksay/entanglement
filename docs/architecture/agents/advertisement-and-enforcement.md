@@ -134,8 +134,10 @@
   `ToolOverlayChanged`; a `modes:` or `permissions:` rule naming one warns
   at config load like a stale name (`config::mode_warn`), as does a rule
   whose tool part is a name glob (rule keys never glob the tool part; only
-  a bare `*` is a wildcard) or that scopes a tool with no argument
-  (`mcp__gh__x(foo)`, #878). A per-tool rule or overlay entry
+  a bare `*` is a wildcard), that scopes a tool with no argument
+  (`mcp__gh__x(foo)`, #878) or with no workdir (`read{/tmp/*}` — only
+  `bash`/`call` have one, #881), or whose scope the matcher can't read
+  (`bash(git *){/x}` — one scope per key, #881). A per-tool rule or overlay entry
   (`mcp__<server>__<tool>`) or a server-wide overlay glob
   (`mcp__<server>__*`, overlay only — rules never glob) grades an envelope
   call and a script's `mcp::<server>::<tool>()` binding identically — both reach the same dispatch seam under
