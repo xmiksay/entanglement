@@ -61,67 +61,20 @@ pub(super) fn spawn_decision_router(
     mut inbound: broadcast::Receiver<InMsg>,
     ctx: &LadderCtx,
 ) {
-    let cancels = ctx.cancels.clone();
-    let hooks = ctx.hooks.clone();
-    let pending = ctx.pending.clone();
-    let open_questions = ctx.open_questions.clone();
-    let op_jobs = ctx.jobs.clone();
-    let op_agents = ctx.registry.clone();
-    let op_scripts = ctx.scripts.clone();
-    let emitter = ctx.holly.clone();
+    let router = Router {
+        cancels: ctx.cancels.clone(),
+        hooks: ctx.hooks.clone(),
+        pending: ctx.pending.clone(),
+        open_questions: ctx.open_questions.clone(),
+        jobs: ctx.jobs.clone(),
+        agents: ctx.registry.clone(),
+        scripts: ctx.scripts.clone(),
+        holly: ctx.holly.clone(),
+    };
     background.spawn(async move {
         loop {
             match inbound.recv().await {
-                Ok(InMsg::Stop { session }) => {
-                    cancels.cancel_session(&session);
-                    pending.stop_session(&session);
-                }
-                Ok(InMsg::Prompt { session, content }) if !hooks.user_prompt_submit.is_empty() => {
-                    // Detach so a slow hook can't stall the router.
-                    let hooks = hooks.clone();
-                    tokio::spawn(async move {
-                        let text = entanglement_core::content_text(&content);
-                        hooks.run_user_prompt_submit(&session, &text).await;
-                    });
-                }
-                Ok(InMsg::ListQuestions {
-                    correlation_id,
-                    session,
-                }) => {
-                    let questions = open_questions.snapshot(session.as_ref());
-                    emitter.emit_question_list(correlation_id, questions);
-                }
-                Ok(InMsg::ListOperations {
-                    correlation_id,
-                    session,
-                }) => {
-                    op_agents.heal_from(&emitter);
-                    let operations = crate::operations::list_operations(
-                        &op_jobs,
-                        &op_agents,
-                        &op_scripts,
-                        session.as_ref(),
-                    );
-                    emitter.emit_operation_list(correlation_id, operations);
-                }
-                // In order with `Approve`/`Reject` on this same loop, so a
-                // list after an answer never still shows the answered call.
-                Ok(InMsg::ListPending {
-                    correlation_id,
-                    root,
-                }) => {
-                    // The `root` walk follows re-parented and compacted
-                    // sub-agents only once the registry is healed (ADR-0234).
-                    op_agents.heal_from(&emitter);
-                    let approvals =
-                        crate::pending::list_pending(&pending, &op_agents, root.as_ref());
-                    emitter.emit_pending_list(correlation_id, approvals);
-                }
-                Ok(other) => {
-                    if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
-                        pending.resolve(&s, &rid, decision);
-                    }
-                }
+                Ok(msg) => router.route(msg),
                 // A lagging router would strand a decision; warn loudly.
                 // In practice this loop can't fall behind the inbound fill
                 // rate — this is not the #156 failure mode it fixes.
@@ -136,3 +89,85 @@ pub(super) fn spawn_decision_router(
         }
     });
 }
+
+/// What the router reads and writes: every registry a frame it handles
+/// touches.
+pub(super) struct Router {
+    pub(super) cancels: crate::cancel::CancelRegistry,
+    pub(super) hooks: std::sync::Arc<crate::hooks::Hooks>,
+    pub(super) pending: crate::pending::PendingDecisions,
+    pub(super) open_questions: crate::questions::OpenQuestions,
+    pub(super) jobs: crate::host::jobs::JobRegistry,
+    pub(super) agents: crate::agent_registry::AgentRegistry,
+    pub(super) scripts: crate::script_ops::ScriptRegistry,
+    pub(super) holly: entanglement_core::Holly,
+}
+
+impl Router {
+    /// Handle one inbound frame. Synchronous: a slow hook is detached.
+    pub(super) fn route(&self, msg: InMsg) {
+        // A compaction successor's cards a lagged fold never re-homed
+        // (ADR-0238), before anything reads, answers or stops them.
+        crate::pending::heal_before(&self.holly, &self.pending, &msg);
+        match msg {
+            InMsg::Stop { session } => {
+                self.cancels.cancel_session(&session);
+                self.pending.stop_session(&session);
+            }
+            InMsg::Prompt { session, content } if !self.hooks.user_prompt_submit.is_empty() => {
+                // Detach so a slow hook can't stall the router.
+                let hooks = self.hooks.clone();
+                tokio::spawn(async move {
+                    let text = entanglement_core::content_text(&content);
+                    hooks.run_user_prompt_submit(&session, &text).await;
+                });
+            }
+            InMsg::ListQuestions {
+                correlation_id,
+                session,
+            } => {
+                let questions = self.open_questions.snapshot(session.as_ref());
+                self.holly.emit_question_list(correlation_id, questions);
+            }
+            InMsg::ListOperations {
+                correlation_id,
+                session,
+            } => {
+                self.agents.heal_from(&self.holly);
+                let operations = crate::operations::list_operations(
+                    &self.jobs,
+                    &self.agents,
+                    &self.scripts,
+                    session.as_ref(),
+                );
+                self.holly.emit_operation_list(correlation_id, operations);
+            }
+            // In order with `Approve`/`Reject` on this same loop, so a list
+            // after an answer never still shows the answered call.
+            InMsg::ListPending {
+                correlation_id,
+                root,
+            } => {
+                // The `root` walk follows re-parented and compacted
+                // sub-agents only once the registry is healed (ADR-0234),
+                // and lists their scripts' cards once moved (ADR-0238).
+                self.agents.heal_from(&self.holly);
+                if let Some(root) = &root {
+                    crate::pending::heal_subtree(&self.holly, &self.pending, &self.agents, root);
+                }
+                let approvals =
+                    crate::pending::list_pending(&self.pending, &self.agents, root.as_ref());
+                self.holly.emit_pending_list(correlation_id, approvals);
+            }
+            other => {
+                if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
+                    self.pending.resolve(&s, &rid, decision);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "router_tests.rs"]
+mod tests;

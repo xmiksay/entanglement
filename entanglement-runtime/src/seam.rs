@@ -111,6 +111,38 @@ pub enum Decision {
 }
 
 impl Decision {
+    /// The `(session, request_id)` a decision frame answers — the key
+    /// [`from_inmsg`](Self::from_inmsg) would resolve, without consuming it.
+    pub fn target(msg: &InMsg) -> Option<(&SessionId, &str)> {
+        match msg {
+            InMsg::Approve {
+                session,
+                request_id,
+                ..
+            }
+            | InMsg::Reject {
+                session,
+                request_id,
+                ..
+            }
+            | InMsg::AnswerQuestion {
+                session,
+                request_id,
+                ..
+            }
+            | InMsg::RetractQuestion {
+                session,
+                request_id,
+            }
+            | InMsg::ReplaceQuestion {
+                session,
+                request_id,
+                ..
+            } => Some((session, request_id)),
+            _ => None,
+        }
+    }
+
     /// Map an inbound frame to its routing tuple `(session, request_id,
     /// Decision)`, or `None` for a frame that is not a head decision (#156). The
     /// executor's single inbound router uses this to fan each `Approve`/`Reject`/

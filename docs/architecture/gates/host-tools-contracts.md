@@ -248,7 +248,21 @@ every successor `poll`, with or without a handle, first re-runs the
 idempotent move from the supervisor's directory (`Holly::session_info`'s
 `predecessor`). A lagged-away `SessionStarted`, or work the predecessor
 registered after the fold, is adopted before the poll reads anything. The
-heal is one hop: it reaches the immediate predecessor only. Closing the predecessor never
+heal is one hop: it reaches the immediate predecessor only. **A script's
+parked card moves with it** ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)):
+a parked card keeps its key and gains a `home`, and
+`PendingDecisions::reassign_detached` re-homes every detached card from the
+predecessor onto the successor and records the lineage. That runs in the
+lifecycle fold, before `poll`, before every approval park, and before the
+decision router handles a `Stop` or a decision (`pending::heal_before`); `poll` and a rooted `ListPending` heal every session
+of the walked sub-tree. Each moved card is re-announced as a fresh
+`ToolRequest` on the successor. A decision takes the live card among the exact
+key and the card moved onto that session, so the predecessor's id still
+answers it and never reaches the successor's own card; a timeout's `forget`
+removes only its own closed entry. Every approval park heals first, and a
+home never holds two live cards with one id: only a turn card supersedes a
+live turn card, any other park sharing a live card's key or id is refused with
+a reason. Closing the predecessor never
 killed these entries, so ordering against its `SessionEnded` does not
 matter. A `/fork` copy carries no `predecessor` and leaves its live source
 owning everything. **Sub-agents follow too**

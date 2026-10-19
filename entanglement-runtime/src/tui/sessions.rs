@@ -150,7 +150,38 @@ impl SessionRegistry {
         let Some(id) = event.session().cloned() else {
             return false;
         };
-        self.view_or_insert(&id).apply_event(event)
+        let moved = match &event {
+            OutEvent::ToolRequest {
+                request_id,
+                detached: true,
+                ..
+            } => Some(request_id.clone()),
+            _ => None,
+        };
+        let changed = self.view_or_insert(&id).apply_event(event);
+        if let Some(request_id) = moved.filter(|_| changed) {
+            self.drop_from_predecessors(&id, &request_id);
+        }
+        changed
+    }
+
+    /// A detached card announced on a compaction successor is the runtime
+    /// moving it (ADR-0238): drop the copy each predecessor's view still
+    /// holds, so the card is answerable in one place. A card a script parks
+    /// fresh on the successor matches nothing upstream.
+    fn drop_from_predecessors(&mut self, successor: &SessionId, request_id: &str) {
+        let mut seen = vec![successor.clone()];
+        let mut at = self
+            .views
+            .get(successor)
+            .and_then(|v| v.predecessor().cloned());
+        while let Some(p) = at.filter(|p| !seen.contains(p)) {
+            at = self.views.get_mut(&p).and_then(|view| {
+                view.drop_approval(request_id);
+                view.predecessor().cloned()
+            });
+            seen.push(p);
+        }
     }
 
     pub fn showing_modal(&self) -> bool {

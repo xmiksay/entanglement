@@ -231,7 +231,8 @@ frames go out only after the source has finished writing its own log tail.
 
 **The successor inherits background work** ([ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md)).
 The runtime moves the predecessor's background jobs, scripts and retained
-outputs to the successor when it sees `SessionStarted { predecessor }`. See
+outputs to the successor when it sees `SessionStarted { predecessor }`, and
+moves a background script's parked approval cards to it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)). See
 [gates & host tools](../gates/host-tools-contracts.md) §poll.
 
 **The successor keeps the spawn tree** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)).

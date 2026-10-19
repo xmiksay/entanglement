@@ -126,8 +126,14 @@ pub fn park_approval_as(
     detached: bool,
 ) -> oneshot::Receiver<Decision> {
     approval.detached = detached;
-    let session = approval.session.clone();
-    let event = |seq| OutEvent::ToolRequest {
+    super::successor::heal_for_park(holly, pending, &approval.session, detached);
+    pending.register_parked(approval, detail, |a| emit_request(holly, a))
+}
+
+/// Emit `approval`'s `ToolRequest` on its session with a fresh seq — the
+/// park's card, or a moved card re-announced on its successor (ADR-0238).
+pub(super) fn emit_request(holly: &Holly, approval: &PendingApproval) {
+    holly.emit_for_session(&approval.session, |seq| OutEvent::ToolRequest {
         session: approval.session.clone(),
         seq,
         request_id: approval.request_id.clone(),
@@ -135,11 +141,8 @@ pub fn park_approval_as(
         input: approval.input.clone(),
         reason: approval.card_reason,
         scopes: approval.scopes.clone(),
-        detached,
-    };
-    let rx = pending.register_approval(approval.clone(), detail);
-    holly.emit_for_session(&session, event);
-    rx
+        detached: approval.detached,
+    });
 }
 
 /// The `InMsg::ListPending` answer (#726): every live parked approval, or —

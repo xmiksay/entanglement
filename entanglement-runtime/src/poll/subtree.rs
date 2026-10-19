@@ -11,10 +11,10 @@
 //! only appears when something is pending, so an idle sub-tree leaves the
 //! reply byte-identical to the plain listing. Across a compaction, the
 //! predecessor's jobs, scripts and retained outputs follow the successor
-//! (ADR-0231), so they show up here and in the own listing as the
-//! successor's. Its live sub-agents move under the successor too
-//! (ADR-0234), and a sub-agent that compacts stays in its parent's sub-tree,
-//! so both appear in the walk below.
+//! (ADR-0231), and so do the scripts' parked cards (ADR-0238), so they show
+//! up here and in the own listing as the successor's. Its live sub-agents
+//! move under the successor too (ADR-0234), and a sub-agent that compacts
+//! stays in its parent's sub-tree, so both appear in the walk below.
 //!
 //! Visibility is the downward spawn walk ([`crate::discover::subtree_sessions`]):
 //! only sessions in the caller's own spawn sub-tree, never a sibling or an
@@ -47,7 +47,8 @@ pub struct PollRegistries {
 
 impl PollRegistries {
     /// Re-run the ADR-0231 successor hand-over from `predecessor` to
-    /// `session`. Idempotent, so it is safe on every poll.
+    /// `session`. Idempotent, so it is safe on every poll. The scripts'
+    /// parked cards move in [`crate::pending::heal_subtree`] (ADR-0238).
     pub(super) fn adopt_predecessor_work(
         &self,
         predecessor: Option<SessionId>,
@@ -182,6 +183,35 @@ mod tests {
             options: Vec::new(),
             multi_select: false,
         }]
+    }
+
+    /// ADR-0238: a root's `poll` heals its whole sub-tree, so a compacted
+    /// sub-agent's script card is listed under the sub-agent's successor
+    /// even when no lifecycle fold moved it.
+    #[tokio::test]
+    async fn a_poll_moves_a_compacted_sub_agents_card_to_its_successor() {
+        use crate::pending::test_support::{detached_card, spawn_session};
+        let holly = entanglement_core::Holly::spawn(entanglement_core::EngineConfig::default());
+        let (root, child, child2) = (
+            SessionId::new("root"),
+            SessionId::new("child"),
+            SessionId::new("child2"),
+        );
+        spawn_session(&holly, &root, None, None).await;
+        spawn_session(&holly, &child, Some(&root), None).await;
+        let r = regs();
+        let _status = r
+            .agents
+            .register(child.clone(), root.clone(), "general".into());
+        spawn_session(&holly, &child2, None, Some(&child)).await;
+        let _rx = r
+            .pending
+            .register_approval(detached_card(&child, "x-1:rhai:edit"), "edit");
+
+        super::super::run_poll(holly, r.clone(), root, "p1".into(), "{}".into()).await;
+        let listed = r.pending.snapshot(None);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session, child2);
     }
 
     /// The self-heal for a missed lifecycle fold: an entry still owned by the

@@ -23,8 +23,9 @@ use super::{answer_launch_cards, is_launch_card, mode_table_for, perm_modes, Tem
 const WAIT: Duration = Duration::from_secs(5);
 
 /// A turn prompted `go` launches the background script; one prompted `edit`
-/// makes a direct (attached) `edit` call; every other turn, or a later round
-/// of either, just answers.
+/// makes a direct (attached) `edit` call; one prompted `poll` makes a
+/// handle-less `poll`; every other turn, or a later round of any, just
+/// answers.
 struct LaunchOnGo;
 
 #[async_trait]
@@ -58,6 +59,7 @@ impl Llm for LaunchOnGo {
                 "edit",
                 serde_json::json!({"path": "g.txt", "oldString": "", "newString": "x"}),
             )),
+            Some("poll") if fresh_turn => Some(call("poll", serde_json::json!({}))),
             _ => None,
         };
         Ok(stream_from_response(LlmResponse {
@@ -102,7 +104,7 @@ pub(super) fn engine(root: &std::path::Path, scripts: ScriptRegistry) -> Holly {
 }
 
 /// Launch the script on `pred` and return the nested `edit` card's id.
-async fn park_nested_edit(holly: &Holly, pred: &SessionId) -> String {
+pub(super) async fn park_nested_edit(holly: &Holly, pred: &SessionId) -> String {
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(pred.clone(), "go")).await.unwrap();
     loop {

@@ -220,6 +220,29 @@ removes `user_only`. What an embedder has to change:
 - **Constructing `OutEvent::ToolRequest` or `PendingApproval`** needs
   `detached: false`.
 
+## Cards moved after a compaction (ADR-0238, #871)
+
+- **Wire:** after a compaction, a background script's card is announced a
+  second time: a fresh `ToolRequest` on the successor, with the same
+  `request_id`, content and `detached: true`. `ListPending` then reports it
+  under the successor, so a `root`-filtered listing of the successor finds
+  it. A head that keeps cards per session should drop the predecessor's
+  copy when the successor announces the same `request_id`
+  (`SessionStarted.predecessor` names the pair).
+- **Answering:** `Approve`/`Reject` reaches the moved card under the
+  predecessor's id or the successor's; a cached predecessor id is never a
+  dead card, and it never reaches a card the successor parked itself.
+  `PendingDecisions::forget(session, id)` now removes only that exact key,
+  and only once its waiter is gone.
+  `Stop` on the successor unwinds the moved card. A session never shows
+  two live cards with one id, so a `ToolRequest` whose id a head already
+  queues for that session is the same card: replace it in place.
+- **Duplicate parks:** `PendingDecisions::register`/`register_approval`
+  let only a turn card supersede a live turn card under the same key (the
+  earlier waiter resolves to `Decision::Stop`). Any other park sharing a
+  live card's key, or its id on its session, gets an immediate
+  `Decision::Reject` with a reason and emits no card.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

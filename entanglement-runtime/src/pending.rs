@@ -32,9 +32,13 @@ use tokio::sync::oneshot;
 use crate::seam::Decision;
 
 mod park;
+mod successor;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub use park::{
     approval, headless_starts, list_pending, park_approval, park_approval_as, scopes_for,
 };
+pub(crate) use successor::{announce, heal_before, heal_subtree};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
 /// alongside the waiter so a listing (`InMsg::ListPending`) can describe a
@@ -56,9 +60,25 @@ pub struct Parked {
     /// `ToolExec`, so nothing re-offers it — it outlives its session's end
     /// or hibernate ([`PendingDecisions::stop_attached`]).
     pub detached: bool,
+    /// The session the card is shown on and stopped with: the map key's own
+    /// session, until a compaction moves a detached card to the
+    /// successor (ADR-0238). The key never changes, so the predecessor's id
+    /// keeps answering it.
+    pub home: SessionId,
 }
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
+
+/// The waiters plus the compaction lineage a detached card's `home`
+/// follows (ADR-0238), under one lock so a park and a move can't
+/// interleave.
+#[derive(Default)]
+struct Inner {
+    waiters: Waiters,
+    /// Predecessor → compaction successor, recorded by
+    /// [`PendingDecisions::reassign_detached`].
+    successors: HashMap<SessionId, SessionId>,
+}
 
 /// One parked decision, as a pending listing reports it. Sorted by `(session, request_id)` for a deterministic reply,
 /// mirroring [`crate::questions::OpenQuestions::snapshot`].
@@ -74,7 +94,7 @@ pub struct PendingApproval {
 /// dispatch task. The `Mutex` is never held across an `.await`.
 #[derive(Clone, Default)]
 pub struct PendingDecisions {
-    inner: Arc<Mutex<Waiters>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl PendingDecisions {
@@ -82,9 +102,13 @@ impl PendingDecisions {
     /// awaits. Call this **before** emitting the request event so the router can
     /// never process the decision before the waiter exists (register-then-emit
     /// closes the race the pre-#156 "subscribe before handing off" discipline
-    /// guarded). A second register for the same key drops the earlier waiter's
-    /// sender, so that stale park resolves to [`Decision::Stop`] via
-    /// [`await_decision`] — the desired outcome for a re-offered request.
+    /// guarded). Only a turn card supersedes a live turn card under the same
+    /// key — the earlier waiter resolves to [`Decision::Stop`], the desired
+    /// outcome for a re-offered request. Any other park sharing a live
+    /// card's key, or its id on its session (Gemini's `name#ordinal` call
+    /// ids repeat every round), is refused with a [`Decision::Reject`]
+    /// naming why, so a background script's card is never displaced
+    /// (ADR-0238).
     /// `kind`/`detail` describe what this park is waiting on (see [`Parked`]).
     pub fn register(
         &self,
@@ -104,6 +128,20 @@ impl PendingDecisions {
         approval: WireApproval,
         detail: impl Into<String>,
     ) -> oneshot::Receiver<Decision> {
+        self.register_parked(approval, detail, |_| {})
+    }
+
+    /// [`register_approval`](Self::register_approval), calling `emit` with
+    /// the approval as registered while still holding the lock, so a
+    /// move can't run between the park and its event (ADR-0238 §6). A
+    /// detached card of a compacted session is shown on its successor, so
+    /// `emit` sees that session. A refused park emits nothing.
+    pub(crate) fn register_parked(
+        &self,
+        mut approval: WireApproval,
+        detail: impl Into<String>,
+        emit: impl FnOnce(&WireApproval),
+    ) -> oneshot::Receiver<Decision> {
         let detached = approval.detached;
         let kind = match approval.kind {
             ApprovalKind::Tool => "tool",
@@ -111,15 +149,28 @@ impl PendingDecisions {
             ApprovalKind::Mode => "mode",
             ApprovalKind::Rhai => "rhai",
         };
-        let (session, request_id) = (approval.session.clone(), approval.request_id.clone());
-        self.insert(
-            &session,
-            &request_id,
+        let key = approval.session.clone();
+        let mut guard = self.lock();
+        let home = if detached {
+            guard.current(&key)
+        } else {
+            key.clone()
+        };
+        approval.session = home.clone();
+        let parked = Parked {
             kind,
-            detail.into(),
-            Some(approval),
+            detail: detail.into(),
+            approval: Some(approval.clone()),
             detached,
-        )
+            home,
+        };
+        match guard.insert(&key, &approval.request_id, parked) {
+            Ok(rx) => {
+                emit(&approval);
+                rx
+            }
+            Err(refused) => refused,
+        }
     }
 
     fn insert(
@@ -131,16 +182,16 @@ impl PendingDecisions {
         approval: Option<WireApproval>,
         detached: bool,
     ) -> oneshot::Receiver<Decision> {
-        let (tx, rx) = oneshot::channel();
         let parked = Parked {
             kind,
             detail,
             approval,
             detached,
+            home: session.clone(),
         };
         self.lock()
-            .insert((session.clone(), request_id.to_string()), (tx, parked));
-        rx
+            .insert(session, request_id, parked)
+            .unwrap_or_else(|refused| refused)
     }
 
     /// Every live parked approval whose session `in_scope` accepts, sorted by
@@ -149,9 +200,11 @@ impl PendingDecisions {
     pub fn approvals(&self, in_scope: impl Fn(&SessionId) -> bool) -> Vec<WireApproval> {
         let guard = self.lock();
         let mut list: Vec<WireApproval> = guard
-            .iter()
-            .filter(|((s, _), (tx, _))| !tx.is_closed() && in_scope(s))
-            .filter_map(|(_, (_, parked))| parked.approval.clone())
+            .listed()
+            .into_iter()
+            .filter(|(s, _, _)| in_scope(s))
+            // A move keeps `approval.session` equal to the home.
+            .filter_map(|(_, _, parked)| parked.approval.clone())
             .collect();
         list.sort_by(|a, b| {
             (a.session.0.as_str(), a.request_id.as_str())
@@ -166,14 +219,12 @@ impl PendingDecisions {
     pub fn snapshot(&self, session: Option<&SessionId>) -> Vec<PendingApproval> {
         let guard = self.lock();
         let mut list: Vec<PendingApproval> = guard
-            .iter()
-            // A closed sender means the waiter is gone. A timeout removes its
-            // own entry (`await_timed`); this filter remains for an aborted
-            // task, whose entry nothing removes until `Stop`.
-            .filter(|((s, _), (tx, _))| !tx.is_closed() && session.is_none_or(|f| f == s))
-            .map(|((s, rid), (_, parked))| PendingApproval {
-                session: s.clone(),
-                request_id: rid.clone(),
+            .listed()
+            .into_iter()
+            .filter(|(s, _, _)| session.is_none_or(|f| f == s))
+            .map(|(s, rid, parked)| PendingApproval {
+                session: s,
+                request_id: rid.to_string(),
                 kind: parked.kind,
                 detail: parked.detail.clone(),
             })
@@ -189,12 +240,11 @@ impl PendingDecisions {
     /// still parked. A no-op when none is (already resolved, or a decision for an
     /// unknown/duplicate request). A dropped receiver (the waiter already unwound)
     /// is likewise harmless. An `Approve` scope the card did not offer is
-    /// clamped to `Once` ([`clamp_scope`]).
+    /// clamped to `Once` ([`clamp_scope`]). A card moved to a compaction
+    /// successor answers under its predecessor's id and its new home's
+    /// (ADR-0238).
     pub fn resolve(&self, session: &SessionId, request_id: &str, decision: Decision) {
-        if let Some((tx, parked)) = self
-            .lock()
-            .remove(&(session.clone(), request_id.to_string()))
-        {
+        if let Some((tx, parked)) = self.lock().remove(session, request_id) {
             let _ = tx.send(clamp_scope(decision, &parked, request_id));
         }
     }
@@ -220,21 +270,25 @@ impl PendingDecisions {
     fn unwind(&self, session: &SessionId, include_detached: bool) {
         let mut guard = self.lock();
         let keys: Vec<_> = guard
+            .waiters
             .iter()
-            .filter(|((s, _), (_, parked))| s == session && (include_detached || !parked.detached))
+            .filter(|(_, (_, parked))| {
+                &parked.home == session && (include_detached || !parked.detached)
+            })
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
-            if let Some((tx, _)) = guard.remove(&key) {
+            if let Some((tx, _)) = guard.waiters.remove(&key) {
                 let _ = tx.send(Decision::Stop);
             }
         }
     }
 
-    /// Drop the entry for `(session, request_id)` without delivering anything.
+    /// Drop a park's own entry, `(session, request_id)` exactly, once its
+    /// waiter is gone (`await_timed` after a timeout). A live waiter is left
+    /// alone, and so is a card moved onto that id (ADR-0238).
     pub fn forget(&self, session: &SessionId, request_id: &str) {
-        self.lock()
-            .remove(&(session.clone(), request_id.to_string()));
+        self.lock().forget(session, request_id);
     }
 
     /// [`await_decision_timed`], removing the entry when the deadline elapses
@@ -255,7 +309,7 @@ impl PendingDecisions {
         decision
     }
 
-    fn lock(&self) -> MutexGuard<'_, Waiters> {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("pending decisions mutex poisoned")
     }
 }
@@ -502,7 +556,7 @@ mod tests {
             .await;
         assert!(d.is_none());
         assert!(
-            pending.lock().is_empty(),
+            pending.lock().waiters.is_empty(),
             "a timed-out entry must be removed"
         );
     }

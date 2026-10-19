@@ -53,7 +53,8 @@ nested cards. A resume re-offers a parked `ToolExec`. A background
 (`detached`) script's nested card is exempt there. It is no `ToolExec`, so
 nothing would re-offer it, and the script outlives the session (a compaction
 successor inherits it,
-[ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md)).
+[ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md),
+and its card moves to the successor, [ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
 A session `Stop` is different: it unwinds every card of the session,
 background ones included (`stop_session`). `Stop` is the user's explicit
 escape hatch and the TUI clears its card view on it, while an attended park

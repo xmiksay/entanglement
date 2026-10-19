@@ -18,7 +18,12 @@
   target's whole queue, since `stop_session` unwinds those cards too. A
   resumed view carries its detached cards over from the view this process
   already had (a hibernated session's are still parked) and drops them for a
-  session it never saw. When a terminal `Status` moves the prompt to another
+  session it never saw. After a compaction the runtime re-announces a
+  background script's card on the successor ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)); the
+  `SessionRegistry` then drops that request id from the successor's
+  predecessor views (`SessionView::predecessor`, from `SessionStarted`), so
+  the card lives on the view a `Stop` clears; a newer card with an id the
+  view already queues replaces that entry in place. When a terminal `Status` moves the prompt to another
   card, the pager closes and a half-typed reject reason is cleared, so no key
   answers the wrong card (ADR-0237 §6).
   The input box enables crossterm's

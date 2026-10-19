@@ -246,6 +246,7 @@ pub async fn run_poll(
         &session,
     );
     regs.agents.heal_from(&holly);
+    crate::pending::heal_subtree(&holly, &regs.pending, &regs.agents, &session);
     let outcome = subtree::resolve_with_subtree(&regs, &session, &input).await;
     // The structured side channel (#636/ADR-0176, #681/ADR-0186, #695):
     // `is_error` marks the branches where the requested call never ran — an

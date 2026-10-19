@@ -186,7 +186,9 @@ card) parks through `pending::park_approval`, which registers the entry and emit
 the exact prompt it missed. The decision router handles `ListPending` in
 order with `Approve`/`Reject`, so a listing after a decision never shows the
 decided call; a timed-out park removes its entry, and one whose task was
-aborted is skipped. `kind: "rhai"` marks both a rhai binding's card (tool
+aborted is skipped. After a compaction a background script's card moves
+to the successor and is listed under it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
+`kind: "rhai"` marks both a rhai binding's card (tool
 `<name> (rhai)`) and the rhai **launch card** — told apart by `tool == "rhai"`
 exactly; only the launch card is answered with `Approve.run_all`
 ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)). Ownership filtering is the head's job, as with

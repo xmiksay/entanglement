@@ -134,9 +134,15 @@ impl App {
         };
         let active = self.sessions.active_id().clone();
         let before = self.approval_mode().clone();
+        let front = self.sessions.active_view().pending_tool_request().cloned();
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
         }
+        // A newer card replaced the prompted one in place (ADR-0238): same
+        // id, different content, so it is a new prompt too.
+        let replaced = self.sessions.active_id() == &active
+            && front.is_some()
+            && front.as_ref() != self.sessions.active_view().pending_tool_request();
         // The reducer moved the prompt off the card the user was on — a
         // terminal `Status` dropped it and promoted a kept background card
         // (ADR-0237). The pager showed the old card, so its decision keys
@@ -144,8 +150,9 @@ impl App {
         // (in the shared input) must not pre-fill the new card's reject;
         // it stays in input history. Back at no card it is an ordinary
         // draft, as before.
-        if self.sessions.active_id() == &active
-            && prompted(&before) != prompted(self.approval_mode())
+        if replaced
+            || (self.sessions.active_id() == &active
+                && prompted(&before) != prompted(self.approval_mode()))
         {
             self.close_approval_pager();
             let rejecting = matches!(before, ApprovalMode::EnteringRejectReason { .. });
@@ -232,6 +239,34 @@ mod tests {
             app.approval_mode(),
             ApprovalMode::WaitingForApproval { request_id } if request_id == "bg"
         ));
+    }
+
+    /// ADR-0238: a newer card replacing the prompted one in place is a new
+    /// prompt — the pager and a half-typed reason were for the old content.
+    #[test]
+    fn a_card_replaced_in_place_closes_the_pager_and_takes_the_reason() {
+        let mut app = App::new_for_test(SessionId::new("s"));
+        app.handle_out_event(card(1, "bg", true));
+        app.open_approval_pager();
+        rejecting(&mut app, "bg");
+        let changed = |seq| {
+            let mut ev = card(seq, "bg", true);
+            if let OutEvent::ToolRequest { input, .. } = &mut ev {
+                *input = "{\"changed\":true}".into();
+            }
+            ev
+        };
+        app.handle_out_event(changed(2));
+        assert!(!app.showing_approval_pager());
+        assert_eq!(app.input_text(), "");
+        assert!(matches!(
+            app.approval_mode(),
+            ApprovalMode::WaitingForApproval { request_id } if request_id == "bg"
+        ));
+        // The same content again is no new prompt.
+        app.open_approval_pager();
+        app.handle_out_event(changed(3));
+        assert!(app.showing_approval_pager());
     }
 
     /// A card queued behind the prompted one moves nothing: the pager stays.
