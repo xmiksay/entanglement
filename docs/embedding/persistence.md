@@ -154,9 +154,10 @@ let cfg = EngineConfig {
 ```
 
 `Some(records)` resumes the session (its spawn sub-tree too, ADR-0112, with
-its `user` intact) and then delivers the message; `None` refuses with a
-seq-`0` `Error` naming the session, as does `UnknownSession::Refuse` without
-asking a loader; `Err` surfaces as an `Error` and spawns nothing. Messages
+its `user` intact) and then delivers the message; `None` refuses with an
+`Error` naming the session, as does `UnknownSession::Refuse` without asking a
+loader (seq `0` for an id this engine never ran; a retired id's error
+continues its seq, ADR-0239); `Err` surfaces as an `Error` and spawns nothing. Messages
 that arrive while a load is in flight queue behind that one load and deliver
 in order. `Holly::is_live(&id)` answers "is it running right now" cheaply,
 for display — not for check-then-send.

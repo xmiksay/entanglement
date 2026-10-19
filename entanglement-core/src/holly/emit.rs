@@ -64,9 +64,12 @@ impl Holly {
     /// `FileChange`): the seq is drawn from the session's shared counter — the
     /// *same* sequence the session task uses — so `(session, seq)` stays unique
     /// instead of reusing the parked `ToolExec` seq. `make` receives the minted
-    /// seq and builds the event. A session with no live counter (already ended,
-    /// or never started) mints seq `0` — harmless, as there is no live content
-    /// stream to collide with.
+    /// seq and builds the event. A retired session (hibernated, ended or
+    /// closed) keeps minting above its last seq from the registry's retired
+    /// high-water (#884, ADR-0239) — a background script's card parked after
+    /// the session went away still gets a real, unique seq. Only an id that
+    /// never started (or whose high-water was evicted past the retired cap, #891)
+    /// mints the seq-`0` sentinel, which no counter ever produces.
     pub fn emit_for_session(&self, session: &SessionId, make: impl FnOnce(u64) -> OutEvent) {
         let seq = self.next_seq(session);
         self.outlets.emit(make(seq));

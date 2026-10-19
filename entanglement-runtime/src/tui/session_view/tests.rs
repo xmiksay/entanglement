@@ -691,8 +691,8 @@ fn tool_call_first_clears_pending_prompt() {
 
 #[test]
 fn supervisor_error_with_seq_zero_renders_even_after_seq_advances() {
-    // ex-#159 / #157: a supervisor lifecycle error for an id with no live session
-    // carries seq 0 (no counter to mint from). Once prior content has advanced
+    // ex-#159 / #157: a supervisor lifecycle error for an id with no sequence
+    // (never started, or its retired entry evicted, #891) carries seq 0. Once prior content has advanced
     // `last_seen_seq` past 0, a plain `seq > last_seen_seq` guard would drop it,
     // leaving the refusal structurally invisible. The seq-0 bypass renders it.
     let mut v = SessionView::new();

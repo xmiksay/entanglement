@@ -32,5 +32,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+# `rt-multi-thread`: the seq race test (#884) needs a resume and the old
+# task's teardown to run in parallel.
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tempfile = "3"

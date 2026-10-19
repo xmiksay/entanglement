@@ -4,7 +4,8 @@
 //! from the session's shared counter via [`Holly::emit_for_session`] instead of
 //! reusing the parked `ToolExec` seq — so the minted seq strictly exceeds the
 //! `ToolExec` seq and the resumed session continues *past* it (no collision).
-//! Supervisor lifecycle errors for an id with no live session carry seq `0`.
+//! A retired session (hibernated, ended or closed) keeps minting above its last
+//! seq (#884, ADR-0239); only an id that never started carries seq `0`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -120,45 +121,139 @@ async fn emit_for_session_mints_unique_seq_above_parked_toolexec() {
     );
 }
 
-/// A supervisor error for an id with no live session (a `Prompt` racing behind
-/// its `CloseSession`) has no counter to draw from, so it carries seq `0` — a
-/// value core never mints, so heads render it via the seq-0 bypass.
+/// A supervisor error for a closed id (a `Prompt` racing behind its
+/// `CloseSession`) draws from the id's retired high-water (ADR-0239), so it
+/// takes a real seq above the session's last; an id that never started has
+/// no sequence at all and carries the seq-`0` sentinel.
 #[tokio::test]
-async fn supervisor_error_for_closed_id_carries_seq_zero() {
-    let holly = engine(vec![LlmResponse {
-        text: "ok".into(),
-        tool_calls: vec![],
-        ..Default::default()
-    }]);
+async fn supervisor_error_for_closed_id_continues_the_sequence() {
+    let holly = engine(vec![]);
     let mut sub = holly.subscribe();
     let sid = SessionId::new("s1");
 
-    // Create + run the session so the id is live and registered.
     holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
-    seq_of(&mut sub, &sid, |e| matches!(e, OutEvent::Done { .. })).await;
+    let done_seq = seq_of(&mut sub, &sid, |e| matches!(e, OutEvent::Done { .. })).await;
 
-    // Close it; wait until `SessionEnded` so the counter is deregistered.
     holly
         .send(InMsg::CloseSession {
             session: sid.clone(),
         })
         .await
         .unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
-        if ev.session() == Some(&sid) && matches!(ev, OutEvent::SessionEnded { .. }) {
-            break;
-        }
-    }
+    await_retired(&mut sub, &sid).await;
 
-    // A `Prompt` to the retired id is refused by the supervisor with seq 0.
     holly
         .send(InMsg::prompt(sid.clone(), "again"))
         .await
         .unwrap();
     let err_seq = seq_of(&mut sub, &sid, |e| matches!(e, OutEvent::Error { .. })).await;
-    assert_eq!(
-        err_seq, 0,
-        "a supervisor error for a closed id has no live counter, so seq is 0"
+    assert!(
+        err_seq > done_seq,
+        "a closed id's error seq {err_seq} continues past its last seq {done_seq}"
+    );
+
+    let ghost = SessionId::new("never-started");
+    holly.emit_for_session(&ghost, |seq| OutEvent::Error {
+        session: ghost.clone(),
+        seq,
+        message: "ghost".into(),
+    });
+    let ghost_seq = seq_of(&mut sub, &ghost, |e| matches!(e, OutEvent::Error { .. })).await;
+    assert_eq!(ghost_seq, 0, "an id that never started has no sequence");
+    assert!(!holly.is_live(&ghost));
+}
+
+/// Wait for `sid`'s `SessionEnded`/`SessionHibernated`: its counter is retired.
+async fn await_retired(sub: &mut tokio::sync::broadcast::Receiver<OutEvent>, sid: &SessionId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if ev.session() == Some(sid)
+            && matches!(
+                ev,
+                OutEvent::SessionEnded { .. } | OutEvent::SessionHibernated { .. }
+            )
+        {
+            return;
+        }
+    }
+    panic!("timed out waiting for {sid} to retire");
+}
+
+/// Mint one runtime-authored event for `sid` and return its seq.
+async fn emit_one(
+    holly: &Holly,
+    sub: &mut tokio::sync::broadcast::Receiver<OutEvent>,
+    sid: &SessionId,
+    tag: &str,
+) -> u64 {
+    holly.emit_for_session(sid, |seq| OutEvent::Error {
+        session: sid.clone(),
+        seq,
+        message: tag.into(),
+    });
+    seq_of(
+        sub,
+        sid,
+        |e| matches!(e, OutEvent::Error { message, .. } if message == tag),
+    )
+    .await
+}
+
+/// A detached emit for a hibernated session (a background script's card
+/// parked after the idle sweep, #884) gets a real seq above every one the
+/// session used, the session stays non-live, and a resume — even from a log
+/// that never recorded those emits — continues above them: no seq is reused.
+#[tokio::test]
+async fn a_hibernated_session_keeps_a_real_seq_and_resume_never_reuses_one() {
+    let holly = engine(vec![]);
+    let mut sub = holly.subscribe();
+    let sid = SessionId::new("hib");
+    let prompt = InMsg::prompt(sid.clone(), "one");
+    holly.send(prompt.clone()).await.unwrap();
+
+    // The turn's own log, as an embedder would persist it.
+    let (mut log, mut last) = (Vec::new(), 0);
+    let mut paired = Some(prompt);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if ev.session() != Some(&sid) {
+            continue;
+        }
+        last = last.max(ev.seq().unwrap_or(0));
+        let done = matches!(ev, OutEvent::Done { .. });
+        log.push((paired.take(), ev));
+        if done {
+            break;
+        }
+    }
+    assert!(last > 0, "the turn authored seq-bearing events");
+
+    holly.hibernate(sid.clone()).await.unwrap();
+    await_retired(&mut sub, &sid).await;
+    assert!(!holly.is_live(&sid), "a retired high-water is not liveness");
+
+    let first = emit_one(&holly, &mut sub, &sid, "while-hibernated-1").await;
+    let second = emit_one(&holly, &mut sub, &sid, "while-hibernated-2").await;
+    assert!(first > last, "hibernated emit {first} must exceed {last}");
+    assert_eq!(second, first + 1, "the retired sequence stays monotonic");
+
+    // Resume from a log that misses both emits (the worst case: they were
+    // never persisted). The counter still continues above them.
+    holly.resume(sid.clone(), log).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Ok(ev)) = tokio::time::timeout_at(deadline, sub.recv()).await {
+        if matches!(&ev, OutEvent::SessionStarted { session, .. } if *session == sid) {
+            break;
+        }
+    }
+    assert!(holly.is_live(&sid));
+    let after = emit_one(&holly, &mut sub, &sid, "after-resume").await;
+    assert!(after > second, "resume's seq {after} must exceed {second}");
+
+    holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
+    let turn = seq_of(&mut sub, &sid, |e| matches!(e, OutEvent::Done { .. })).await;
+    assert!(
+        turn > after,
+        "the resumed turn continues the sequence: {turn}"
     );
 }

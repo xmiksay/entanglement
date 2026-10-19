@@ -17,11 +17,13 @@
 //! [`ToolRequest`][OutEvent::ToolRequest]/[`UserQuestion`][OutEvent::UserQuestion],
 //! a [`Plan`][OutEvent::Plan]/[`TaskList`][OutEvent::TaskList] snapshot, a
 //! [`FileChange`][OutEvent::FileChange] — gets a fresh seq rather than reusing
-//! the parked [`ToolExec`][OutEvent::ToolExec] seq. The one exemption is a
-//! supervisor lifecycle [`Error`][OutEvent::Error] for an id with no live session
-//! (a refused resume/spawn of a closed/unknown id): it has no counter to draw
-//! from and carries `seq == 0` — a value core never mints — which a head renders
-//! unconditionally instead of dropping under a `seq > last` dedupe.
+//! the parked [`ToolExec`][OutEvent::ToolExec] seq. A retired (hibernated, ended
+//! or closed) session keeps minting above its last seq (ADR-0239). The one
+//! exemption is an event for an id with no sequence — one that never started,
+//! or whose retired entry was evicted past the cap (#891), e.g. a supervisor
+//! lifecycle [`Error`][OutEvent::Error] refusing a spawn: it carries
+//! `seq == 0` — a value core never mints — which a head renders unconditionally
+//! instead of dropping under a `seq > last` dedupe.
 
 use entanglement_provider::UserId;
 use serde::{Deserialize, Serialize};

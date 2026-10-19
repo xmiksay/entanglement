@@ -288,9 +288,9 @@ impl SessionView {
                 true
             }
             OutEvent::Error { seq, message, .. } => {
-                // A supervisor lifecycle error for an id with no live session
-                // (refused resume/spawn of a closed/unknown id) carries seq `0` —
-                // a value core never mints (#157) — so it can't satisfy
+                // A supervisor lifecycle error for an id with no sequence (one
+                // that never started, or whose retired entry was evicted, #891;
+                // ADR-0239) carries seq `0` — a value core never mints — so it can't satisfy
                 // `seq > last_seen_seq` and would otherwise be dropped, leaving the
                 // refusal structurally invisible (ex-#159). Render it
                 // unconditionally; it doesn't advance the dedupe watermark.

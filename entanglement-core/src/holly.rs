@@ -8,7 +8,6 @@
 //! (stdio, WS, TUI) is a thin adapter over these two methods.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, mpsc};
@@ -24,6 +23,7 @@ mod emit;
 mod lineage;
 mod outlets;
 mod routing;
+mod seqs;
 mod supervisor;
 mod unknown_session;
 
@@ -35,31 +35,9 @@ pub use config::{
 pub(crate) use directory::SessionDirectory;
 pub use emit::PersistenceSignal;
 use outlets::Outlets;
+pub(crate) use seqs::SeqRegistry;
 use supervisor::supervisor;
 pub use unknown_session::{SessionLoader, UnknownSession};
-
-/// Per-session monotonic seq counters, shared between each session task (which
-/// owns the same `Arc<AtomicU64>` as its `Session::seq`) and the supervisor +
-/// runtime (#157). A runtime service authoring an event for a *parked* session —
-/// an approval `ToolRequest`, a `Plan`/`TaskList` snapshot, a `FileChange` —
-/// mints a fresh seq from this shared counter via [`Holly::emit_for_session`]
-/// instead of reusing the parked `ToolExec` seq, so `(session, seq)` stays unique
-/// across every authored event. The session task registers its counter on start
-/// and removes it on exit; a `Mutex` (never held across an `.await`) orders the
-/// map reads/writes.
-pub(crate) type SeqRegistry = Arc<Mutex<HashMap<SessionId, Arc<AtomicU64>>>>;
-
-/// Mint the next monotonic seq for `session` from `seqs`, or `0` when the session
-/// has no live counter (already ended, never started, or a supervisor error for
-/// an id that never spawned a session). Shared by [`Holly::emit_for_session`] and
-/// the supervisor's [`routing::emit_supervisor_error`].
-pub(crate) fn next_seq_for(seqs: &SeqRegistry, session: &SessionId) -> u64 {
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .get(session)
-        .map(|c| c.fetch_add(1, Ordering::Relaxed) + 1)
-        .unwrap_or(0)
-}
 
 /// Per-session settledness, shared between each session task (which owns the
 /// writes, mirroring [`SeqRegistry`]) and the supervisor's idle-TTL sweep
@@ -151,7 +129,7 @@ impl Holly {
         let (inbox, rx) = mpsc::channel::<InMsg>(INBOX_CAPACITY);
         let (events, _) = broadcast::channel::<OutEvent>(OUTBOX_CAPACITY);
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
-        let seqs: SeqRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let seqs = SeqRegistry::default();
         let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
         let id_gen = cfg.id_gen.clone();
         let directory = SessionDirectory::default();
@@ -329,12 +307,9 @@ impl Holly {
     /// use [`EngineConfig::unknown_session`] to decide what a message to a
     /// non-live id does, rather than check-then-send (ADR-0210).
     pub fn is_live(&self, session: &SessionId) -> bool {
-        // Recover a poisoned lock like the session directory does: a
-        // read-only membership check can't be misled by a half-done insert.
-        self.seqs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(session)
+        // Only a running task counts: a retired session's seq high-water
+        // (ADR-0239) never makes it live.
+        self.seqs.is_live(session)
     }
 
     /// Subscribe to the outbound event stream (every session, fan-out).
@@ -342,12 +317,13 @@ impl Holly {
         self.outlets.subscribe()
     }
 
-    /// Mint the next seq for `session` from the shared registry, or `0` when the
-    /// session has no live counter (ended / never started). Shared by
+    /// Mint the next seq for `session` from the shared registry — its live
+    /// counter, else its retired high-water (ADR-0239), else `0` for an id that
+    /// never started. Shared by
     /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
     /// error-emission path.
     pub(crate) fn next_seq(&self, session: &SessionId) -> u64 {
-        next_seq_for(&self.seqs, session)
+        self.seqs.next(session)
     }
 
     /// Subscribe to the inbound [`InMsg`] fan-out. Every message sent through

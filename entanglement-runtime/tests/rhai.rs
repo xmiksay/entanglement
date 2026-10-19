@@ -68,6 +68,9 @@ mod background_card;
 // #871: a compaction moves that card to the successor.
 #[path = "rhai/background_move.rs"]
 mod background_move;
+// #884: a card parked after its session retired still gets a real seq.
+#[path = "rhai/background_retired.rs"]
+mod background_retired;
 // ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]

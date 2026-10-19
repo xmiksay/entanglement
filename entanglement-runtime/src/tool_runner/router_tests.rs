@@ -244,9 +244,9 @@ async fn a_late_predecessor_park_lands_on_the_successor() {
     assert!(matches!(decided(late).await, Decision::Stop));
 }
 
-/// A successor that is not live has no seq counter (before its start, or
-/// after it ended): the park's forward walk stops short of it, so the card
-/// is announced with a real seq where it is, never lost at seq 0.
+/// The park's forward walk stops at a successor that is not live (not yet
+/// started, or already ended), so the card is announced with a real seq on
+/// the session where it is, never on one that can't show it.
 #[tokio::test]
 async fn a_park_never_moves_onto_a_successor_that_is_not_live() {
     let holly = Holly::spawn(EngineConfig::default());

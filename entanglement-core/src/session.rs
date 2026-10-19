@@ -358,7 +358,8 @@ pub(crate) async fn session_loop(
                 }
             }
             // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`
-            // (Context/history) and the shared seq counter, then emit the distinct
+            // (Context/history) and retire the shared seq counter to its
+            // high-water (ADR-0239), then emit the distinct
             // `SessionHibernated` and exit. A parked-on-approval turn is safe: its
             // pending `ToolExec`s live in the embedder's log and resume re-offers
             // them (ADR-0061/0071). A mid-stream turn reaches here via the
@@ -366,7 +367,7 @@ pub(crate) async fn session_loop(
             // pops when idle) — stop-then-hibernate, discarding the uncommitted
             // round exactly as replay drops a text-only tail.
             Some(SessionCmd::Hibernate) => {
-                let ts = commands::retire(&session, &seqs, &activity);
+                let ts = commands::retire(&session, &s.seq, &seqs, &activity);
                 let _ = events.send(OutEvent::SessionHibernated {
                     session: session.clone(),
                     ts,
@@ -381,7 +382,7 @@ pub(crate) async fn session_loop(
     // compaction forked this session away and it is now retired (ADR-0205 —
     // the supervisor's `CloseSession` tombstones the id right behind us). Both
     // end the session identically, so the teardown lives here once.
-    let ts = commands::retire(&session, &seqs, &activity);
+    let ts = commands::retire(&session, &s.seq, &seqs, &activity);
     let _ = events.send(OutEvent::SessionEnded {
         session: session.clone(),
         ts,

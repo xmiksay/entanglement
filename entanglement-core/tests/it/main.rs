@@ -38,6 +38,7 @@ mod resume_predecessor;
 mod resume_reoffer;
 mod revert_files;
 mod search_result_persistence;
+mod seq_resume_race;
 mod seq_uniqueness;
 mod session_lifecycle;
 mod set_generation;
