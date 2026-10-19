@@ -65,6 +65,9 @@ mod background_park;
 // #872: that card is `detached` on the wire and outlives its turn's Idle.
 #[path = "rhai/background_card.rs"]
 mod background_card;
+// #871: a compaction moves that card to the successor.
+#[path = "rhai/background_move.rs"]
+mod background_move;
 // ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]

@@ -151,6 +151,9 @@ pub struct SessionView {
     parent: Option<SessionId>,
     /// The session this one is a `/fork` of (#786), for the lineage label.
     forked_from: Option<SessionId>,
+    /// The session this one is the compaction successor of (ADR-0205): a
+    /// moved card leaves its view (ADR-0238).
+    predecessor: Option<SessionId>,
     /// Wall-clock (ms since epoch) the session started / ended, from
     /// `SessionStarted` / `SessionEnded`. Drives the live spawn-duration shown
     /// for sub-agent (child) sessions in the sessions list (#89, ADR-0026).
@@ -204,6 +207,7 @@ impl SessionView {
             action: None,
             parent: None,
             forked_from: None,
+            predecessor: None,
             started_ms: None,
             ended_ms: None,
             expanded_blocks: HashSet::new(),
@@ -357,6 +361,10 @@ impl SessionView {
 
     pub fn forked_from(&self) -> Option<&SessionId> {
         self.forked_from.as_ref()
+    }
+
+    pub fn predecessor(&self) -> Option<&SessionId> {
+        self.predecessor.as_ref()
     }
 
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,

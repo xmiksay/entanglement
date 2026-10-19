@@ -70,7 +70,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::tui::app::App;
-    use crate::tui::session_view::TranscriptEntry;
+    use crate::tui::session_view::{ApprovalMode, TranscriptEntry};
     use entanglement_core::{AgentState, CompactionMode, OutEvent, SessionId};
 
     fn compacted(session: &str, seq: u64, summary: &str, auto: bool) -> OutEvent {
@@ -187,6 +187,70 @@ mod tests {
 
         let seeded = first_user_text(&app, "s2").expect("the successor is seeded");
         assert!(seeded.contains("the real summary"), "{seeded}");
+    }
+
+    fn detached_card(session: &str, seq: u64) -> OutEvent {
+        OutEvent::ToolRequest {
+            session: SessionId::new(session),
+            seq,
+            request_id: "x-1:rhai:edit".into(),
+            tool: "edit (rhai)".into(),
+            input: "{}".into(),
+            reason: None,
+            scopes: Vec::new(),
+            detached: true,
+        }
+    }
+
+    fn card_on(app: &App, session: &str) -> Option<String> {
+        let view = app.sessions.view_for(&SessionId::new(session))?;
+        view.pending_tool_request().map(|r| r.request_id.clone())
+    }
+
+    /// ADR-0238: the runtime moves a background script's card to the
+    /// successor and re-announces it there; the predecessor's copy goes, so
+    /// exactly one answerable card is left — on the view a `Stop` clears.
+    #[tokio::test]
+    async fn a_moved_card_moves_from_the_predecessors_view_to_the_successors() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_out_event(detached_card("s1", 1));
+        app.handle_out_event(compacted("s1", 2, "summary", true));
+        app.handle_out_event(started("s2", Some("s1")));
+        assert_eq!(card_on(&app, "s1").as_deref(), Some("x-1:rhai:edit"));
+
+        app.handle_out_event(detached_card("s2", 1));
+        assert_eq!(
+            card_on(&app, "s1"),
+            None,
+            "the predecessor's copy is dropped"
+        );
+        assert_eq!(card_on(&app, "s2").as_deref(), Some("x-1:rhai:edit"));
+        assert!(matches!(
+            app.approval_mode(),
+            ApprovalMode::WaitingForApproval { request_id } if request_id == "x-1:rhai:edit"
+        ));
+
+        let holly = entanglement_core::Holly::spawn(entanglement_core::EngineConfig::default());
+        crate::tui::stop_command::request_stop(&mut app, &holly, SessionId::new("s2")).await;
+        assert_eq!(
+            card_on(&app, "s2"),
+            None,
+            "a Stop on the successor clears it"
+        );
+        assert_eq!(app.approval_mode(), &ApprovalMode::Normal);
+    }
+
+    /// A card a script parks fresh on the successor touches no other view,
+    /// and an unrelated session's same-id card is never dropped.
+    #[test]
+    fn only_the_successors_lineage_loses_the_card() {
+        let mut app = App::new_for_test(SessionId::new("s1"));
+        app.handle_out_event(started("other", None));
+        app.handle_out_event(detached_card("other", 1));
+        app.handle_out_event(started("s2", Some("s1")));
+        app.handle_out_event(detached_card("s2", 1));
+        assert_eq!(card_on(&app, "other").as_deref(), Some("x-1:rhai:edit"));
+        assert_eq!(card_on(&app, "s2").as_deref(), Some("x-1:rhai:edit"));
     }
 
     /// An ordinary session start (no lineage) is not a compaction hand-off.

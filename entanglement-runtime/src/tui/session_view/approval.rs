@@ -68,6 +68,13 @@ impl SessionView {
         self.retain_approvals(|req| req.detached);
     }
 
+    /// The runtime moved `request_id` to this session's compaction
+    /// successor and re-announced it there (ADR-0238): this view's copy
+    /// would be a second answerable card for the same park.
+    pub fn drop_approval(&mut self, request_id: &str) {
+        self.retain_approvals(|req| req.request_id != request_id);
+    }
+
     /// A view rebuilt from a session's log (resume). The log's detached
     /// cards are no evidence a script still waits: one this process never
     /// saw died with the process that ran it. `live` — this process's own
@@ -200,6 +207,33 @@ mod tests {
         assert_eq!(front.request_id, "bg-live");
         assert_eq!(v.queued_approvals(), 0, "only the live detached card");
         assert_eq!(prompted(&v), Some("bg-live"));
+    }
+
+    /// ADR-0238: the moved card leaves this view; the next one is prompted.
+    #[test]
+    fn dropping_a_moved_card_promotes_the_next() {
+        let mut v = SessionView::new();
+        v.apply_event(card(1, "moved", true));
+        v.apply_event(card(2, "kept", true));
+        v.drop_approval("moved");
+        assert_eq!(prompted(&v), Some("kept"));
+        assert_eq!(v.queued_approvals(), 0);
+        v.drop_approval("absent");
+        assert_eq!(prompted(&v), Some("kept"));
+    }
+
+    /// ADR-0238: a session's live ids are unique, so a newer card with a
+    /// queued id is the same card, replaced in place, not a second prompt.
+    #[test]
+    fn a_card_with_a_queued_id_replaces_it_in_place() {
+        let mut v = SessionView::new();
+        v.apply_event(card(1, "a", true));
+        v.apply_event(card(2, "b", false));
+        v.apply_event(card(3, "a", false));
+        assert_eq!(prompted(&v), Some("a"));
+        assert_eq!(v.queued_approvals(), 1);
+        let front = v.pending_tool_request().expect("front kept");
+        assert!(!front.detached, "the newer card replaced the old");
     }
 
     #[test]

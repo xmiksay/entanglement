@@ -67,19 +67,19 @@ pub(super) async fn run(
             }) => {
                 spawn_guard.record_start(session.clone(), parent.clone());
                 // A compaction successor takes over its retired
-                // predecessor's background work (ADR-0231). Only a
-                // compaction sets `predecessor` — a `/fork` copy leaves its
-                // source alive and owning. This eager fold keeps a head's
-                // `ListOperations` right; a lagged drop of this event is
-                // healed by `poll`, which re-runs the move from the
-                // supervisor's directory before it reads anything.
+                // predecessor's background work (ADR-0231) and its scripts'
+                // cards (ADR-0238); a `/fork` copy sets no `predecessor`.
+                // This eager fold keeps a head's listings right; a lagged
+                // drop is healed from the supervisor's directory.
                 if let Some(p) = &predecessor {
                     ctx.jobs.reassign_owner(p, &session);
                     ctx.scripts.reassign_owner(p, &session);
                     ctx.retained.reassign_owner(p, &session);
-                    // A compacted sub-agent's handle now answers from its
-                    // successor, and a compacted root's running sub-agents
-                    // keep counting against the same tree budget (ADR-0234).
+                    let holly = &ctx.holly;
+                    ctx.pending
+                        .reassign_detached(p, &session, |a| crate::pending::announce(holly, a));
+                    // A compacted sub-agent answers from its successor; a
+                    // root's sub-agents keep its tree budget (ADR-0234).
                     ctx.registry.follow_successor(p, &session);
                     spawn_guard.inherit_budget(p, &session);
                 }

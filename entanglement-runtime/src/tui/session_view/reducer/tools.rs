@@ -98,6 +98,23 @@ impl SessionView {
                 req.scopes.push(ApprovalScope::Once);
             }
             let request_id = req.request_id.clone();
+            // One id is one answerable card: the runtime keeps a session's
+            // live ids unique (ADR-0238), so a newer card with a queued id
+            // replaces that entry in place and the prompt stays on it.
+            if let Some(queued) = self
+                .pending_tool_requests
+                .iter_mut()
+                .find(|r| r.request_id == request_id)
+            {
+                let changed = *queued != req;
+                *queued = req;
+                // A half-typed reject reason was for the old content.
+                let front = self.pending_tool_requests.front();
+                if changed && front.is_some_and(|r| r.request_id == request_id) {
+                    self.approval_mode = ApprovalMode::WaitingForApproval { request_id };
+                }
+                return true;
+            }
             // Core batch-emits a turn's tool calls (#270, ADR-0061), so
             // more requests can land while one is already prompted —
             // queue them; only the front drives `approval_mode` (#273).

@@ -74,8 +74,14 @@ impl SessionView {
     /// if it changed anything the UI needs to redraw for.
     pub fn apply_event(&mut self, event: OutEvent) -> bool {
         match event {
-            OutEvent::SessionStarted { parent, ts, .. } => {
+            OutEvent::SessionStarted {
+                parent,
+                predecessor,
+                ts,
+                ..
+            } => {
                 self.parent = parent;
+                self.predecessor = predecessor;
                 self.started_ms = Some(ts);
                 true
             }
@@ -86,16 +92,13 @@ impl SessionView {
                 self.ended_ms = Some(ts);
                 true
             }
-            // Supervisor-global query replies (ADR-0028, #160): not per-session
-            // view updates — `handle_out_event` filters them out before they
-            // reach a view, so these arms only keep the match exhaustive.
-            OutEvent::SessionList { .. } => false,
-            // `ListQuestions` reply (#515) — session-less like `SessionList`.
-            OutEvent::QuestionList { .. } => false,
-            // `ListOperations` reply (#607, ADR-0161 §6) — session-less too.
-            OutEvent::OperationList { .. } => false,
-            // `ListPending` reply (#726) — session-less too.
-            OutEvent::PendingList { .. } => false,
+            // Supervisor-global query replies (ADR-0028 #160, #515, #607,
+            // #726): `handle_out_event` filters them out before they reach a
+            // view, so this arm only keeps the match exhaustive.
+            OutEvent::SessionList { .. }
+            | OutEvent::QuestionList { .. }
+            | OutEvent::OperationList { .. }
+            | OutEvent::PendingList { .. } => false,
             // MCP ops (#375) are engine-global — never routed to a per-session
             // view (`handle_out_event` filters them out, same as SessionList).
             OutEvent::McpList { .. } => false,
