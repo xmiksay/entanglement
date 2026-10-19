@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(doc)]
 use super::InMsg;
 use super::{
-    AgentState, ApprovalScope, CardReason, FileChangeKind, McpAction, McpAuthStatus,
-    McpServerStatus, OperationInfo, PendingApproval, PendingQuestion, Questions, RevertSkip,
-    SessionId, SessionInfo, ToolOverlayEntry,
+    AgentState, ApprovalOutcome, ApprovalScope, CardReason, FileChangeKind, McpAction,
+    McpAuthStatus, McpServerStatus, OperationInfo, PendingApproval, PendingQuestion, Questions,
+    RevertSkip, SessionId, SessionInfo, ToolOverlayEntry,
 };
 
 mod accessors;
@@ -375,6 +375,18 @@ pub enum OutEvent {
         /// every turn-owned card.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         detached: bool,
+    },
+    /// A [`ToolRequest`][OutEvent::ToolRequest] card left the runtime's
+    /// pending registry (ADR-0240): answered by any head, expired, or
+    /// unwound. Emitted on the card's home session (where its latest
+    /// `ToolRequest` showed it), always after that `ToolRequest`; a head
+    /// drops the card by `request_id`. Persisted, so a resumed view does not
+    /// show a card already resolved. `ask_user` questions never get one.
+    ApprovalResolved {
+        session: SessionId,
+        seq: u64,
+        request_id: String,
+        outcome: ApprovalOutcome,
     },
     /// Core asks the runtime to execute a host tool that is cleared to run
     /// (permission `Allow`, or `Ask` after approval). The runtime executes it

@@ -177,6 +177,10 @@ fn prompted(mode: &ApprovalMode) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[path = "approval_resolved_tests.rs"]
+mod approval_resolved_tests;
+
+#[cfg(test)]
 mod tests {
     use entanglement_core::{AgentState, SessionId};
 

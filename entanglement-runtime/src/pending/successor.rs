@@ -40,13 +40,14 @@ impl Inner {
     /// after a lagged-away `SessionHibernated`), as before ADR-0238. Any other
     /// park sharing a live card's key, or its id on its home, is refused:
     /// `Err` carries an already-rejected receiver, so the call fails with
-    /// the reason, and a live detached card is never displaced.
+    /// the reason, and a live detached card is never displaced. `Ok` also
+    /// returns the superseded card, which the caller reports resolved.
     pub(super) fn insert(
         &mut self,
         session: &SessionId,
         request_id: &str,
         parked: Parked,
-    ) -> Result<oneshot::Receiver<Decision>, oneshot::Receiver<Decision>> {
+    ) -> Result<(oneshot::Receiver<Decision>, Option<Parked>), oneshot::Receiver<Decision>> {
         let key = (session.clone(), request_id.to_string());
         let (tx, rx) = oneshot::channel();
         let blocked = self.waiters.iter().any(|(k, (t, p))| {
@@ -61,10 +62,11 @@ impl Inner {
             });
             return Err(rx);
         }
-        if let Some((superseded, _)) = self.waiters.insert(key, (tx, parked)) {
-            let _ = superseded.send(Decision::Stop);
-        }
-        Ok(rx)
+        let superseded = self.waiters.insert(key, (tx, parked)).map(|(old, card)| {
+            let _ = old.send(Decision::Stop);
+            card
+        });
+        Ok((rx, superseded))
     }
 
     /// The key a decision for `(session, request_id)` answers: its exact key
@@ -88,11 +90,12 @@ impl Inner {
 
     /// A timed-out park's own entry, by its exact key and only once its
     /// waiter is gone: a live card moved onto that id is someone else's.
-    pub(super) fn forget(&mut self, session: &SessionId, request_id: &str) {
+    pub(super) fn forget(&mut self, session: &SessionId, request_id: &str) -> Option<Parked> {
         let key = (session.clone(), request_id.to_string());
         if self.waiters.get(&key).is_some_and(|(tx, _)| tx.is_closed()) {
-            self.waiters.remove(&key);
+            return self.waiters.remove(&key).map(|(_, parked)| parked);
         }
+        None
     }
 
     pub(super) fn remove(

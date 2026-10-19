@@ -232,7 +232,8 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // registered here, and the single inbound router below fans each head
         // decision to its waiter — closing the window where a per-task broadcast
         // park lagged and silently dropped an `Approve`/`Reject`/`Answer`.
-        let pending = crate::pending::PendingDecisions::default();
+        // Every card leaving it is announced to the heads (ADR-0240).
+        let pending = crate::pending::PendingDecisions::announcing(holly.clone());
         // Open `ask_user` question content, keyed the same way as `pending`
         // (#515): `pending` alone can't answer `InMsg::ListQuestions`, since a
         // bare `oneshot::Sender` carries no question text. Shared with

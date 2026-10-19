@@ -30,6 +30,7 @@ impl OutEvent {
             | OutEvent::ToolCallDelta { session, .. }
             | OutEvent::ToolCall { session, .. }
             | OutEvent::ToolRequest { session, .. }
+            | OutEvent::ApprovalResolved { session, .. }
             | OutEvent::ToolExec { session, .. }
             | OutEvent::UserQuestion { session, .. }
             | OutEvent::ToolOutput { session, .. }
@@ -106,6 +107,7 @@ impl OutEvent {
             | OutEvent::ToolCallDelta { seq, .. }
             | OutEvent::ToolCall { seq, .. }
             | OutEvent::ToolRequest { seq, .. }
+            | OutEvent::ApprovalResolved { seq, .. }
             | OutEvent::ToolExec { seq, .. }
             | OutEvent::UserQuestion { seq, .. }
             | OutEvent::ToolOutput { seq, .. }

@@ -31,7 +31,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | ParentChanged
           | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta
-          | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
+          | ToolCallDelta | ToolCall | ToolRequest | ApprovalResolved | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
           | NestedCall | NestedCallSummary (live only, never persisted) (engine → harness)

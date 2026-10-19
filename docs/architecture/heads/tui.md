@@ -26,6 +26,15 @@
   view already queues replaces that entry in place. When a terminal `Status` moves the prompt to another
   card, the pager closes and a half-typed reject reason is cleared, so no key
   answers the wrong card (ADR-0237 §6).
+  `OutEvent::ApprovalResolved` ([ADR-0240](../../adr/0240-approval-resolved-event.md),
+  #883) drops the card by id whatever ended it — another head's decision, a
+  `question_timeout` expiry, a `Stop` — from the view and along its
+  predecessor chain. The fold is seq-gated like the card (a seq-0 end, from a
+  session with no sequence, drops by id without moving the watermark), it re-derives the
+  prompt and attention, and the pager / reject-reason reset above applies
+  when the dropped card was prompted. A resumed view folds the logged end
+  too. The local clears (`request_stop`, the terminal `Status`, the
+  predecessor drop on a moved card) stay as belt and braces.
   The input box enables crossterm's
   bracketed paste so a multi-line paste lands as one buffer edit (each
   embedded newline starts a new `SimpleInput` row) instead of a flood of key
