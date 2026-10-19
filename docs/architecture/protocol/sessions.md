@@ -175,7 +175,7 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
 - **`(session, seq)` is unique across every authored content event** (#157). The
   seq comes from **one per-session counter** (`Arc<AtomicU64>`), shared by the
   core session task and the runtime through a supervisor-held registry: a session
-  task registers its counter on start / removes it on exit, and a runtime service
+  task registers its counter on start / retires it on exit, and a runtime service
   authoring an event for a *parked* session — an approval `ToolRequest`/
   `UserQuestion`, a `Plan`/`TaskList` snapshot, a `FileChange` — mints a **fresh**
   seq from that same counter via `Holly::emit_for_session` instead of reusing the
@@ -183,15 +183,30 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
   and made a strict `seq > last` dedupe drop every approval prompt). The seq-less
   `Status` transitions the runtime emits around a parked call go through
   `Holly::emit_status`; the raw outbound sender is no longer exposed.
-  - **Supervisor lifecycle errors are the one exemption**: an `Error` the
-    supervisor emits for an id with **no live session** (a refused resume/spawn of
-    a closed/unknown id, a saturated *dead* channel) has no counter to draw from,
-    so it carries `seq == 0` — a value core never mints, so it can't collide with
-    content — and a head renders it **unconditionally** (the seq-`0` bypass)
-    rather than dropping it under a `seq > last` dedupe (ex-#159, the reason
-    supervisor-shed errors were invisible in the TUI). A supervisor error for a
-    session that *is* still live (e.g. its channel saturated) mints a real seq
-    from the live counter and takes its ordered place in that stream.
+  - **A retired session keeps a seq high-water** (#884,
+    [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)).
+    Retiring a session (hibernate, end or close) keeps its counter's last value
+    in the registry's bounded `retired` map. Detached work still running for the
+    id (a background script's card, ADR-0237) mints above every seq already
+    used, and a resume (or re-spawn) seeds its replay-seeded counter above the
+    high-water with `fetch_max`, so no seq is reused even when the log missed
+    those events. `Holly::is_live` reads only the live counters, so a
+    high-water never makes a retired id live. The map holds 4096 ids and
+    evicts the one touched longest ago (exact reclamation is #891). A task
+    retires its *own* counter (`Arc::ptr_eq`), so a resume that registers
+    before the old task's teardown finishes stays live and continues above it
+    (ADR-0239 §7; the old task's own late mints are #892).
+  - **Seq `0` is the sentinel for an id with no sequence**: an `Error` the
+    supervisor emits for an id that **never started** (a refused spawn, an
+    `UnknownSession::Refuse` of an unknown id), or one whose high-water was
+    evicted (#891), has no counter or high-water to draw from, so it carries
+    `seq == 0` — a value no counter mints, so it can't collide with content —
+    and a head renders it **unconditionally** (the seq-`0` bypass) rather than
+    dropping it under a `seq > last` dedupe (ex-#159, the reason
+    supervisor-shed errors were invisible in the TUI). No entry is created for
+    such an id. A supervisor error for a live or retired session (a saturated
+    channel, a `Prompt` racing behind a close) mints a real seq and takes its
+    ordered place in that stream.
 
 **Single-shot session ops — `InMsg::Oneshot`** (#324, [ADR-0082](../../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).
 A generic **wire envelope** — `{session, op: String, args: Value}` — for a single

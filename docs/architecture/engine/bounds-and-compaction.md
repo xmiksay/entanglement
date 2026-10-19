@@ -57,8 +57,9 @@ addressed to an id with no live task goes through
 `EngineConfig.unknown_session` (`holly/supervisor/unknown.rs`):
 `SpawnBlank` (default) lazily creates a blank root under the default agent —
 the single-user convenience, still refusing a closed id and a known
-hibernated sub-agent child (#639); `Refuse` emits a seq-`0` `Error` naming the
-session and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
+hibernated sub-agent child (#639); `Refuse` emits an `Error` naming the
+session (seq `0` for an id that never started; a retired id's continues its
+seq high-water, ADR-0239) and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
 embedder's async loader for the records `Holly::resume` consumes and runs the
 ordinary resume path (sub-tree cascade included) before delivering, `None`
 refusing and `Err` erroring. The load runs on its own task and reports back
@@ -66,8 +67,9 @@ over a supervisor-owned channel, so a slow store never stalls routing;
 `pending_loads[id]` queues every further message for that id behind the one
 in-flight load and replays them through the normal handler in arrival order;
 `CloseSession` abandons it. `Holly::is_live` reads the per-session seq
-registry (registered before `SessionStarted`, retired before
-`SessionEnded`/`SessionHibernated`) — advisory; the policy is the race-free
+registry's live counters (registered before `SessionStarted`, retired before
+`SessionEnded`/`SessionHibernated`; a retired id's seq high-water does not
+count, [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)) — advisory; the policy is the race-free
 way to address a possibly-evicted id.
 
 **Loop bounds — `max_turns` and context-over-limit** (`session/round.rs` for

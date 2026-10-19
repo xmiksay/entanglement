@@ -47,8 +47,8 @@ running. The fork has no children (it is a root), and its undo history is empty
 supervisor validates a `SetWorkdir` the moment it arrives through
 `EngineConfig::workdir_resolver(current, dir, approve)` — `current` is its own
 per-session cache of the latest validated workdir, so a relative `dir`
-resolves against what the user last saw — and refuses a bad one with a seq-0
-`Error`; `None` (no resolver) refuses every change. The session applies it
+resolves against what the user last saw — and refuses a bad one with a
+supervisor `Error` (a real seq from the session's counter); `None` (no resolver) refuses every change. The session applies it
 deferred like `SetModel` (so one turn's calls share one workdir) and acks with
 `WorkdirChanged`, which replay folds by overwrite. A spawn's workdir is its own
 `Spawn.workdir` (validated against the parent's, no approval; a bad one refuses

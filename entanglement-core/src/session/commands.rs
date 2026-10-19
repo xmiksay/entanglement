@@ -1,6 +1,8 @@
 //! Handlers for the session loop's state-changing commands once they are
 //! cleared to apply (deferral is the loop's call), plus the shared teardown.
 
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use entanglement_provider::GenerationParams;
@@ -150,15 +152,21 @@ pub(super) fn unpause(
     false
 }
 
-/// Drop `session`'s shared seq counter and settledness entry and return the
-/// teardown timestamp. No more content will be minted for this id: a late
-/// runtime emit for a gone session falls back to seq 0, harmless — there is no
-/// live content stream to collide with.
-pub(super) fn retire(session: &SessionId, seqs: &SeqRegistry, activity: &ActivityRegistry) -> u64 {
+/// Retire `session`'s shared seq counter and drop its settledness entry,
+/// returning the teardown timestamp. The counter's last value stays behind as
+/// the registry's retired high-water (#884, ADR-0239): detached work still
+/// running for this id (a background script's card, ADR-0237) keeps minting
+/// seqs above every one already used, and a resume continues above them.
+pub(super) fn retire(
+    session: &SessionId,
+    seq: &Arc<AtomicU64>,
+    seqs: &SeqRegistry,
+    activity: &ActivityRegistry,
+) -> u64 {
     let ts = now_ms();
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .remove(session);
+    // By this task's own counter: a resume may already have registered a new
+    // task under the same id, which must stay live (ADR-0239 §7).
+    seqs.retire(session, seq);
     activity
         .lock()
         .expect("activity registry mutex poisoned")

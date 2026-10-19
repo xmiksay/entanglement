@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    MessageRole, OutEvent, PendingApproval, Permission, PermissionProfile, SessionId, ToolCall,
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmFactory, LlmRequest, LlmResponse,
+    LlmStream, MessageRole, OutEvent, PendingApproval, Permission, PermissionProfile, SessionId,
+    ToolCall,
 };
-use entanglement_runtime::host::host_tools;
+use entanglement_runtime::host::{host_tools, BashTool};
 use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
 use entanglement_runtime::script_ops::ScriptRegistry;
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -72,17 +73,33 @@ impl Llm for LaunchOnGo {
 
 /// `edit` asks; everything else (the launch included) is allowed.
 pub(super) fn engine(root: &std::path::Path, scripts: ScriptRegistry) -> Holly {
+    engine_with(
+        root,
+        scripts,
+        Arc::new(|| Box::new(LaunchOnGo) as Box<dyn Llm>),
+    )
+}
+
+/// [`engine`] over another scripted model. The host set carries `bash` too.
+pub(super) fn engine_with(
+    root: &std::path::Path,
+    scripts: ScriptRegistry,
+    llm_factory: LlmFactory,
+) -> Holly {
     let agents =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
-        llm_factory: Arc::new(|| Box::new(LaunchOnGo) as Box<dyn Llm>),
+        llm_factory,
         agents: agents.clone(),
         ..EngineConfig::default()
     });
     answer_launch_cards(&holly);
     let base = PermissionProfile::new(Permission::Allow);
     let table = mode_table_for(&base.clone().with("edit", Permission::Ask));
-    let tools = host_tools(root.to_path_buf()).shared();
+    let mut tools = host_tools(root.to_path_buf());
+    // Lets a script wait on the filesystem without a busy spin (#884).
+    tools.register(BashTool::new(root.to_path_buf()));
+    let tools = tools.shared();
     let modes = perm_modes();
     let resolver = Arc::new(ModeResolver::new(
         modes.clone(),

@@ -42,8 +42,10 @@ pub enum UnknownSession {
     /// single-user convenience every in-tree head relies on.
     #[default]
     SpawnBlank,
-    /// Spawn nothing; answer with a seq-`0` [`OutEvent::Error`] naming the
-    /// session (ADR-0072's lifecycle bypass) and drop the message.
+    /// Spawn nothing; answer with an [`OutEvent::Error`] naming the session
+    /// and drop the message. Its seq is `0` (ADR-0072's lifecycle bypass) only
+    /// for an id that never started or whose retired entry was evicted
+    /// (#891); a retired id's error continues its sequence (ADR-0239).
     Refuse,
     /// Rebuild the session (and its still-live spawn sub-tree, ADR-0112) from
     /// the embedder's log, then deliver the message. Concurrent messages for

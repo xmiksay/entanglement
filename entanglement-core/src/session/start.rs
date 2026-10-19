@@ -1,8 +1,6 @@
 //! Session start: build or adopt the [`Session`], announce it, and apply the
 //! session-start model pin and persisted generation overlay.
 
-use std::sync::Arc;
-
 use entanglement_provider::{ResolvedModel, UserId};
 use tokio::sync::{broadcast, mpsc};
 
@@ -124,9 +122,9 @@ pub(super) fn start_session(
     // counter, so runtime seqs continue past the reconstructed tail. Also
     // registered before `SessionStarted` is announced: this registry backs
     // `Holly::is_live`, which must already read `true` once a head sees it.
-    seqs.lock()
-        .expect("seq registry mutex poisoned")
-        .insert(session.clone(), Arc::clone(&s.seq));
+    // `register` also lifts the counter above any seq minted for this id
+    // while it was retired (ADR-0239), so a resume never reuses one.
+    seqs.register(session, &s.seq);
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),

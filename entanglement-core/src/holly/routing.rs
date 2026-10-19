@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
 use crate::session::SessionCmd;
 
-use super::{next_seq_for, SeqRegistry, DEFAULT_AGENT, ROUTE_ATTEMPTS};
+use super::{SeqRegistry, DEFAULT_AGENT, ROUTE_ATTEMPTS};
 
 /// Route a command to a session without letting one saturated session block the
 /// supervisor's single loop — and thereby delay routing to *every* other
@@ -50,10 +50,12 @@ pub(super) async fn route_to_session(
 /// channel). When the target session is *live* (e.g. a saturated channel) it has
 /// a registered seq counter, so the error mints a real monotonic seq from the
 /// shared registry (#157) and takes its ordered place in that session's content
-/// stream. For an id with no live session (a refused resume/spawn of a
-/// closed/unknown id) there is no counter, so the seq is `0` — a value core never
-/// mints, so it can't collide with content, and heads render it unconditionally
-/// (the seq-`0` bypass) instead of dropping it under a `seq > last` dedupe. On
+/// stream. A retired id (a `Prompt` racing behind its close or hibernate) keeps
+/// drawing from its retired high-water (ADR-0239), so its error still takes a
+/// real seq. Only an id that never started has no sequence: the seq is `0` — a
+/// value core never mints, so it can't collide with content, and heads render
+/// it unconditionally (the seq-`0` bypass) instead of dropping it under a
+/// `seq > last` dedupe. On
 /// these exceptional paths the tracing log is the primary signal; the
 /// event tells any listening head the message did not land.
 pub(super) fn emit_supervisor_error(
@@ -64,7 +66,7 @@ pub(super) fn emit_supervisor_error(
 ) {
     let _ = events.send(OutEvent::Error {
         session: session.clone(),
-        seq: next_seq_for(seqs, session),
+        seq: seqs.next(session),
         message: message.to_string(),
     });
 }

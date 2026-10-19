@@ -111,8 +111,9 @@ impl Supervisor {
         self.refuse_queued(session_id, count, &reason);
     }
 
-    /// One seq-`0` `Error` per dropped message, so a head counting its sends
-    /// sees every one accounted for.
+    /// One `Error` per dropped message (seq `0` unless the id has a retired
+    /// high-water, ADR-0239), so a head counting its sends sees every one
+    /// accounted for.
     pub(super) fn refuse_queued(&self, session_id: &SessionId, count: usize, reason: &str) {
         for _ in 0..count {
             emit_supervisor_error(&self.events, &self.seqs, session_id, reason);

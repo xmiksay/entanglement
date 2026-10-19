@@ -171,6 +171,25 @@ mod tests {
         assert_eq!(prompted(&v), Some("bg"));
     }
 
+    /// #884: a background script's card parked after its session hibernated
+    /// carries a seq above the session's last (ADR-0239), so the retired
+    /// view still folds and prompts it. Core used to mint seq 0 here, which
+    /// the `seq > last_seen` dedupe dropped.
+    #[test]
+    fn a_retired_view_folds_a_detached_card_parked_after_the_retire() {
+        let mut v = SessionView::new();
+        v.apply_event(card(4, "turn", false));
+        v.apply_event(idle());
+        v.apply_event(OutEvent::SessionHibernated {
+            session: SessionId::new("s"),
+            ts: 1,
+        });
+        assert!(!v.apply_event(card(0, "stale", true)), "seq 0 is deduped");
+
+        assert!(v.apply_event(card(5, "bg", true)));
+        assert_eq!(prompted(&v), Some("bg"));
+    }
+
     #[test]
     fn terminal_status_leaves_a_reject_reason_on_a_kept_card() {
         let mut v = SessionView::new();
