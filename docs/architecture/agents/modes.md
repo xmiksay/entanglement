@@ -193,7 +193,10 @@ below realize one model:
   `mcp__<server>__<tool>` among them — has no argument, so only its bare
   rule matches, and a scoped key on one warns at config load
   (`config::mode_warn`, #878)), a workdir-scoped `tool{pattern}` (unchanged
-  ADR-0116/#425 grammar), or a bare capability-class name
+  ADR-0116/#425 grammar — only `bash`/`call` carry a workdir, so a `{…}`
+  scope on any other tool never matches and warns at config load, #881; a
+  key carries one scope, so a combined `bash(git *){/x}` matches nothing and
+  warns too), or a bare capability-class name
   (`read`/`write`/`exec`/`plan`/`control` — a scoped key always names the
   literal tool instead, since scoping has no class grammar; this is how
   `plan` mode's plans-folder carve-out is written: `write(.entanglement/plans/*.md):
