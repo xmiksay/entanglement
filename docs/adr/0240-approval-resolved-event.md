@@ -101,14 +101,16 @@ The guesses miss three cases:
    TUI's `restore_from_records`, `ReplayFrom`'s `History`) folds it and
    drops the card, so a resumed head does not show a card already resolved.
    `History` only returns records past `after_seq`, so it never returns a
-   seq-0 end; a `ReplayFrom` rebuild keeps such a card until ADR-0239 gives
-   a retired session real seqs (and again under #891's eviction).
+   seq-0 end; a `ReplayFrom` rebuild keeps such a card. ADR-0239 gives a
+   retired session real seqs, so that is left to #891's eviction and to logs
+   written before it.
    `ListPending` already omits removed cards. A head folds it only past its
    seq watermark, like the card itself, so a stale end cannot drop a newer
    card that reuses the id (Gemini's `name#ordinal` ids repeat every round).
-   The exception is seq 0, minted for a session with no sequence (a retired
-   one before ADR-0239; a never-started or evicted one, #891, after). A seq-0 end is folded by id without moving the watermark,
-   like the reducer's seq-0 `Error`. That is safe: a seq-0 card is dropped on
+   The exception is seq 0, minted for a session with no sequence: one that
+   never started, one whose high-water was evicted (#891), or, in a log
+   written before ADR-0239, a retired one. A seq-0 end is folded by id
+   without moving the watermark, like the reducer's seq-0 `Error`. That is safe: a seq-0 card is dropped on
    arrival, so no newer card can hold the id.
 7. **Wire and hooks.** It is an `OutEvent`, so heads only receive it.
    `serve` and `pipe` relay it verbatim, `skutter run` prints nothing for
@@ -136,21 +138,21 @@ The guesses miss three cases:
   expired and elsewhere-answered detached cards and its `Stop` race are
   closed, and so is the copy a silent `Stop` heal left on a predecessor's view.
 - Each resolved card consumes one seq.
-- `commands::retire` removes a session's seq counter before its
-  `SessionEnded`/`SessionHibernated`, and no terminal `Status` comes first.
-  So an end emitted after that carries seq 0. Two cases hit it:
+- An end can come after its session's counter is retired: no terminal
+  `Status` precedes `SessionEnded`/`SessionHibernated`. Two cases hit it:
   - (a) A session closed (`CloseSession`, wire-allowed) or hibernated while
-    parked on a turn card. `stop_attached`'s `stopped` goes out at seq 0,
-    and nothing else clears that card.
+    parked on a turn card. `stop_attached`'s `stopped` goes out after the
+    retire, and nothing else clears that card.
   - (b) The #883 case itself: a detached card that an idle-TTL hibernate
     spared, which later expires or is answered by another head.
 
-  A head that drops seq-0 ends keeps both cards forever. So a seq-0 end is
-  folded by id, without moving the watermark (§6). ADR-0239 (#884) mints
-  real seqs for a retired session, which closes both cases at the source.
-  #891 (an evicted high-water entry falls back to seq 0) can reopen them.
-  The seq-0 fold still covers a live head and the TUI restore, but not a
-  `ReplayFrom` rebuild, whose `History` filters seq-0 records (§6).
+  ADR-0239 (#884) mints real seqs for a retired session, so both fold past
+  the watermark. #891 (an evicted high-water entry falls back to seq 0) and
+  logs written before ADR-0239 can still produce a seq-0 end; a head that
+  dropped it would keep the card forever, so a seq-0 end is folded by id
+  without moving the watermark (§6). That covers a live head and the TUI
+  restore, but not a `ReplayFrom` rebuild, whose `History` filters seq-0
+  records (§6).
 - An embedder that parks through `register_approval` and emits its own
   `ToolRequest` must do so straight after registering (register-then-emit,
   #156). Otherwise a `Stop` or timeout in between reports an end before the card.

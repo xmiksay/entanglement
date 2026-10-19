@@ -200,8 +200,8 @@ fn a_stale_end_keeps_a_newer_card_with_the_same_id() {
     assert!(has_card(&app, &s));
 }
 
-/// An end minted after the session's counter retired (a close or
-/// hibernate while parked) carries seq 0: it still drops the card by id,
+/// An end for a session with no sequence (evicted, #891, or retired in a
+/// log from before #884) carries seq 0: it still drops the card by id,
 /// and leaves the watermark where it was.
 #[test]
 fn a_seq_zero_end_drops_the_card_and_keeps_the_watermark() {
