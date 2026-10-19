@@ -150,12 +150,15 @@ impl SessionRegistry {
         let Some(id) = event.session().cloned() else {
             return false;
         };
+        // A card's end (ADR-0240) is reported on its home only, so a copy a
+        // predecessor still shows (a silent `Stop` heal moved it) goes too.
         let moved = match &event {
             OutEvent::ToolRequest {
                 request_id,
                 detached: true,
                 ..
-            } => Some(request_id.clone()),
+            }
+            | OutEvent::ApprovalResolved { request_id, .. } => Some(request_id.clone()),
             _ => None,
         };
         let changed = self.view_or_insert(&id).apply_event(event);
@@ -168,7 +171,8 @@ impl SessionRegistry {
     /// A detached card announced on a compaction successor is the runtime
     /// moving it (ADR-0238): drop the copy each predecessor's view still
     /// holds, so the card is answerable in one place. A card a script parks
-    /// fresh on the successor matches nothing upstream.
+    /// fresh on the successor matches nothing upstream. A card's end drops
+    /// every copy along the same chain (ADR-0240).
     fn drop_from_predecessors(&mut self, successor: &SessionId, request_id: &str) {
         let mut seen = vec![successor.clone()];
         let mut at = self

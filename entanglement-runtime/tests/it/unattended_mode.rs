@@ -59,7 +59,7 @@ impl Llm for ScriptedLlm {
 /// A trivial `bash` tool. Declares `Capability::Exec` explicitly, mirroring
 /// `permission_dispatch.rs`'s own `EchoBash` (the `Tool::capabilities`
 /// default is `Write`, which would mis-grade an `exec`-class mode rule).
-struct EchoBash;
+pub(crate) struct EchoBash;
 #[async_trait]
 impl Tool for EchoBash {
     fn name(&self) -> Cow<'static, str> {
@@ -76,7 +76,7 @@ impl Tool for EchoBash {
 /// A single-mode table named `"build"` (matches `DEFAULT_MODE`, so a fresh
 /// session resolves against it without `SetMode`) carrying the `Limits`
 /// under test.
-fn one_mode_table(default: Permission, limits: Limits) -> Arc<ModeTable> {
+pub(crate) fn one_mode_table(default: Permission, limits: Limits) -> Arc<ModeTable> {
     let mode = Mode {
         name: "build".to_string(),
         default,
@@ -88,7 +88,7 @@ fn one_mode_table(default: Permission, limits: Limits) -> Arc<ModeTable> {
     Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"))
 }
 
-fn bash_call(id: &str, input: &str) -> LlmResponse {
+pub(crate) fn bash_call(id: &str, input: &str) -> LlmResponse {
     LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {
@@ -114,7 +114,7 @@ fn ask_user_call(id: &str, input: &str) -> LlmResponse {
     }
 }
 
-fn done_text() -> LlmResponse {
+pub(crate) fn done_text() -> LlmResponse {
     LlmResponse {
         text: "done".into(),
         tool_calls: vec![],
@@ -168,7 +168,7 @@ async fn collect_for(
 
 /// Wire the real executor (`ToolExecutor::builder`) against
 /// `mode_table`, replaying `scripted` as the model's responses.
-fn spawn_with_policy(
+pub(crate) fn spawn_with_policy(
     reg: ToolRegistry,
     mode_table: Arc<ModeTable>,
     scripted: Vec<LlmResponse>,

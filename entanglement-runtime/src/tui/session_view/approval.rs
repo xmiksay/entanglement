@@ -70,7 +70,8 @@ impl SessionView {
 
     /// The runtime moved `request_id` to this session's compaction
     /// successor and re-announced it there (ADR-0238): this view's copy
-    /// would be a second answerable card for the same park.
+    /// would be a second answerable card for the same park. Or the card
+    /// ended (`ApprovalResolved`, ADR-0240) and answers nothing.
     pub fn drop_approval(&mut self, request_id: &str) {
         self.retain_approvals(|req| req.request_id != request_id);
     }

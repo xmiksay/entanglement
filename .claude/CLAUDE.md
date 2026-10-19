@@ -140,8 +140,8 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged
           | ToolOverlayChanged | WorkdirChanged | ParentChanged | McpList | McpChanged | McpAuthChanged | Throttle
           | PersistenceDegraded | PersistenceRecovered
-          | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ToolExec
-          | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
+          | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ApprovalResolved
+          | ToolExec | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
           | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
           | NestedCall | NestedCallSummary (live only, never persisted)
 ```
@@ -232,6 +232,9 @@ doc, never here**:
   ([protocol](../docs/architecture/protocol.md), [ADR-0230](../docs/adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
 - **`ask_user` questions are listable/retractable/replaceable**
   ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)).
+- **A parked approval card's end is wire-visible** — `ApprovalResolved` on its
+  home whenever it leaves `PendingDecisions`, after its `ToolRequest`
+  ([protocol](../docs/architecture/protocol.md), [ADR-0240](../docs/adr/0240-approval-resolved-event.md)).
 - **An ambiguous LLM stop retries in place**, bounded and persisted
   ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)).
 - **Throttle and persistence outages are wire-visible transitions**

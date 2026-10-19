@@ -128,6 +128,22 @@ impl SessionView {
         }
     }
 
+    /// `OutEvent::ApprovalResolved` (ADR-0240): the card left the runtime —
+    /// answered by any head, expired or unwound — so drop it here. Seq-gated
+    /// like the card itself: a stale end must not drop a newer card that
+    /// reuses the id. Seq 0 is an end for a session with no sequence
+    /// (retired before #884, evicted under #891): dropped by id without
+    /// moving the watermark, like a seq-0 `Error` — a seq-0 card never
+    /// folds, so no newer card can carry the id.
+    pub(super) fn fold_approval_resolved(&mut self, seq: u64, request_id: &str) -> bool {
+        if seq != 0 && seq <= self.last_seen_seq {
+            return false;
+        }
+        self.last_seen_seq = self.last_seen_seq.max(seq);
+        self.drop_approval(request_id);
+        true
+    }
+
     /// `OutEvent::UserQuestion`.
     pub(super) fn fold_user_question(
         &mut self,

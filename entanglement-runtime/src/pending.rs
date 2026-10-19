@@ -21,24 +21,31 @@
 //! session unwinds every one of its waiters
 //! ([`stop_session`](PendingDecisions::stop_session)); its end or hibernate
 //! spares a background script's ([`stop_attached`](PendingDecisions::stop_attached)).
+//! Whatever removes a card tells every head (`OutEvent::ApprovalResolved`,
+//! ADR-0240, `resolved`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use entanglement_core::{ApprovalKind, ApprovalScope, PendingApproval as WireApproval, SessionId};
+use entanglement_core::{
+    ApprovalKind, ApprovalOutcome, ApprovalScope, Holly, PendingApproval as WireApproval, SessionId,
+};
 use tokio::sync::oneshot;
 
 use crate::seam::Decision;
 
 mod park;
+mod resolved;
 mod successor;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod wait;
 pub use park::{
     approval, headless_starts, list_pending, park_approval, park_approval_as, scopes_for,
 };
 pub(crate) use successor::{announce, heal_before, heal_subtree};
+pub use wait::{await_decision, await_decision_timed};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
 /// alongside the waiter so a listing (`InMsg::ListPending`) can describe a
@@ -92,12 +99,23 @@ pub struct PendingApproval {
 /// Shared map of parked tool round-trips awaiting a head decision. Cheap to
 /// clone (an `Arc`); the executor hands a clone to its inbound router and to each
 /// dispatch task. The `Mutex` is never held across an `.await`.
+/// `Default` reports nothing; [`announcing`](Self::announcing) emits
+/// `OutEvent::ApprovalResolved` when a card leaves (ADR-0240).
 #[derive(Clone, Default)]
 pub struct PendingDecisions {
     inner: Arc<Mutex<Inner>>,
+    holly: Option<Holly>,
 }
 
 impl PendingDecisions {
+    /// A registry that tells every head when a card leaves it, on `holly`.
+    pub fn announcing(holly: Holly) -> Self {
+        Self {
+            inner: Arc::default(),
+            holly: Some(holly),
+        }
+    }
+
     /// Register a waiter for `(session, request_id)` and return the receiver it
     /// awaits. Call this **before** emitting the request event so the router can
     /// never process the decision before the waiter exists (register-then-emit
@@ -165,7 +183,9 @@ impl PendingDecisions {
             home,
         };
         match guard.insert(&key, &approval.request_id, parked) {
-            Ok(rx) => {
+            Ok((rx, superseded)) => {
+                // The old card's end before the new card's announce.
+                self.superseded(superseded, &approval.request_id);
                 emit(&approval);
                 rx
             }
@@ -189,9 +209,14 @@ impl PendingDecisions {
             detached,
             home: session.clone(),
         };
-        self.lock()
-            .insert(session, request_id, parked)
-            .unwrap_or_else(|refused| refused)
+        let mut guard = self.lock();
+        match guard.insert(session, request_id, parked) {
+            Ok((rx, superseded)) => {
+                self.superseded(superseded, request_id);
+                rx
+            }
+            Err(refused) => refused,
+        }
     }
 
     /// Every live parked approval whose session `in_scope` accepts, sorted by
@@ -244,7 +269,15 @@ impl PendingDecisions {
     /// successor answers under its predecessor's id and its new home's
     /// (ADR-0238).
     pub fn resolve(&self, session: &SessionId, request_id: &str, decision: Decision) {
-        if let Some((tx, parked)) = self.lock().remove(session, request_id) {
+        let mut guard = self.lock();
+        if let Some((tx, parked)) = guard.remove(session, request_id) {
+            // A waiter that gave up got its timeout, not this decision.
+            let outcome = if tx.is_closed() {
+                ApprovalOutcome::Expired
+            } else {
+                resolved::outcome_of(&decision)
+            };
+            self.resolved(&parked, request_id, outcome);
             let _ = tx.send(clamp_scope(decision, &parked, request_id));
         }
     }
@@ -278,7 +311,8 @@ impl PendingDecisions {
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
-            if let Some((tx, _)) = guard.waiters.remove(&key) {
+            if let Some((tx, parked)) = guard.waiters.remove(&key) {
+                self.resolved(&parked, &key.1, ApprovalOutcome::Stopped);
                 let _ = tx.send(Decision::Stop);
             }
         }
@@ -288,7 +322,10 @@ impl PendingDecisions {
     /// waiter is gone (`await_timed` after a timeout). A live waiter is left
     /// alone, and so is a card moved onto that id (ADR-0238).
     pub fn forget(&self, session: &SessionId, request_id: &str) {
-        self.lock().forget(session, request_id);
+        let mut guard = self.lock();
+        if let Some(parked) = guard.forget(session, request_id) {
+            self.resolved(&parked, request_id, ApprovalOutcome::Expired);
+        }
     }
 
     /// [`await_decision_timed`], removing the entry when the deadline elapses
@@ -345,36 +382,6 @@ fn clamp_scope(decision: Decision, parked: &Parked, request_id: &str) -> Decisio
             }
         }
         other => other,
-    }
-}
-
-/// Await a registered waiter's decision. A dropped sender — the router resolved a
-/// `Stop`, a re-register superseded this waiter, or the whole executor stopped —
-/// resolves to [`Decision::Stop`], preserving the "inbox closed ⇒ unwind
-/// silently" semantics the broadcast park had (ADR-0017).
-pub async fn await_decision(rx: oneshot::Receiver<Decision>) -> Decision {
-    rx.await.unwrap_or(Decision::Stop)
-}
-
-/// Like [`await_decision`], bounded by an optional `timeout` (ADR-0207 §11,
-/// stage 5c: a mode's `question_timeout` governs both `ask_user` questions
-/// and parked tool approvals). `None` waits forever, identical to
-/// [`await_decision`] — this module knows nothing about modes, only
-/// durations, so the `0` = infinite translation happens in the caller
-/// (`crate::run_limits::timeout`). `None` in the *return* means the timeout
-/// elapsed with no decision delivered; the receiver is then dropped, so a
-/// decision landing after the deadline (a slow head, a stale approval)
-/// resolves to nothing rather than being silently applied late.
-pub async fn await_decision_timed(
-    rx: oneshot::Receiver<Decision>,
-    timeout: Option<Duration>,
-) -> Option<Decision> {
-    match timeout {
-        None => Some(await_decision(rx).await),
-        Some(d) => tokio::time::timeout(d, rx)
-            .await
-            .ok()
-            .map(|res| res.unwrap_or(Decision::Stop)),
     }
 }
 

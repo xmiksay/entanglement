@@ -136,7 +136,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
 - **WebSocket** (`skutter serve`, ✅ #153, `runtime::serve` behind the `serve`
   cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
   liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text
-  frames, each inbound text frame parsed into an `InMsg` and routed through the
+  frames (every event, so a client sees `ApprovalResolved` for a card another
+  socket or the TUI answered, [ADR-0240](../../adr/0240-approval-resolved-event.md)), each inbound text frame parsed into an `InMsg` and routed through the
   **untrusted** `send_from_wire` (#155) so a forged `ToolResult`/`Spawn`/`Resume`
   is refused per-frame (a non-JSON line falls back to a `Prompt` on the socket's
   own default session, `pipe` parity); a 30s ping keeps an idle socket alive and

@@ -17,7 +17,8 @@ use super::app::App;
 /// approval cards. The turn's own cards would go with its terminal
 /// `Status`, but a background script's survive that (ADR-0237) — and the
 /// runtime's `stop_session` unwinds them too, so a card left shown would
-/// answer nothing.
+/// answer nothing. The runtime's `ApprovalResolved` (ADR-0240) drops them as
+/// well; clearing here keeps the screen from waiting on that round trip.
 pub(super) async fn request_stop(app: &mut App, holly: &Holly, target: SessionId) {
     let _ = holly
         .send(InMsg::Stop {

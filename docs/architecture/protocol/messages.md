@@ -76,6 +76,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
          | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted mcp call when core unwrapped one (ADR-0226; old logs may carry invoke, ADR-0204)
          | ToolRequest{session,seq,request_id,tool,input,reason?,scopes?,detached?}   // Ask prompt, from runtime (#59); reason = CardReason "root_escape"|"floored_write"|"script_launch"|"inline_launch"|"launch_escape", absent on an ordinary card; scopes = the ApprovalScopes an Approve honors (starts with once), omitted only by a pre-ADR-0230 producer (offer once alone) — heads decide on these, never on input text (ADR-0230); detached = true on a background rhai script's nested card, omitted when false: it outlives the turn's terminal Status, so keep showing it until answered or a Stop unwinds it (ADR-0237)
+         | ApprovalResolved{session,seq,request_id,outcome}   // a ToolRequest card left the runtime's PendingDecisions: outcome = approved | rejected (from any head) | expired (question_timeout) | stopped (Stop, its session's end/hibernate for a turn card, a superseding re-offer, any other frame aimed at its id). Emitted on the card's home under the registry lock, always after its ToolRequest; persisted, so a rebuilt view drops it too; ask_user questions never get one (ADR-0240)
          | ToolExec{session,seq,request_id,tool,input,agent,envelope?,workdir?}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156); envelope as on ToolCall (ADR-0204); workdir = the session's absolute workdir, absent at the root (#764, ADR-0224)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
          | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?,exit_code?,envelope?}   // output = display text; content carries any result output can't rebuild exactly — an image (#221), a tool reference, several parts — for byte-identical replay (ADR-0202); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text; exit_code (#681, ADR-0186) mirrors the same field — a wire consumer can branch on a bash/call/polled-job exit status without parsing [exit N]
@@ -188,6 +189,18 @@ order with `Approve`/`Reject`, so a listing after a decision never shows the
 decided call; a timed-out park removes its entry, and one whose task was
 aborted is skipped. After a compaction a background script's card moves
 to the successor and is listed under it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
+Whatever removes a parked card — a decision from any head, a timeout, an
+unwind, a superseding re-offer — emits `ApprovalResolved` on the card's home
+([ADR-0240](../../adr/0240-approval-resolved-event.md)), so a head drops it by
+`request_id` instead of guessing from `Status` or polling `ListPending`. It is
+emitted under the registry lock the card's `ToolRequest` was, so it never
+precedes the card, and exactly once per removal. A head folds it past its seq
+watermark only (a stale end must not drop a newer card reusing the id;
+a seq-0 end, from a session with no sequence, is dropped by id
+without moving the watermark) and
+drops the id along the home's compaction predecessors too, the scope a moved
+card uses. A consumer built against an older `OutEvent` cannot parse the new
+`kind`: decode the tag first and skip unknown kinds.
 `kind: "rhai"` marks both a rhai binding's card (tool
 `<name> (rhai)`) and the rhai **launch card** — told apart by `tool == "rhai"`
 exactly; only the launch card is answered with `Approve.run_all`

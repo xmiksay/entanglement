@@ -57,6 +57,7 @@ mod agent_model;
 mod agent_models;
 mod agent_send;
 mod apply_patch;
+mod approval_resolved;
 mod arg_validate;
 mod ask_user;
 mod aux_models;

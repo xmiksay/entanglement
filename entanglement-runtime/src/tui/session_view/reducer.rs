@@ -254,6 +254,9 @@ impl SessionView {
                     detached,
                 },
             ),
+            OutEvent::ApprovalResolved {
+                seq, request_id, ..
+            } => self.fold_approval_resolved(seq, &request_id),
             OutEvent::UserQuestion {
                 seq,
                 request_id,
@@ -315,15 +318,6 @@ impl SessionView {
                 }
             }
             OutEvent::FileChange { .. } => true,
-            // Session compaction (#324, ADR-0082 → ADR-0101/0103): two
-            // notices share this arm, told apart by `auto`. `auto: false` —
-            // copy-on-write — the source `Context` is untouched; the summary
-            // was forked into a new session by `App::handle_compacted`, so the
-            // notice here just points at that fork. `auto: true` (#398) — the
-            // live engine already mutated this session's context in place
-            // before continuing the turn; there is no fork, so the notice
-            // reports the in-place summary instead. Reuses the tool-output
-            // entry, like `record_status`'s out-of-band notices.
             // Every compaction forks a successor and retires this session
             // (ADR-0205); `auto`/`mode` only say which path got here. The view
             // switch is `App`'s job (it needs the successor's id, which

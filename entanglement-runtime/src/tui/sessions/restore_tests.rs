@@ -57,3 +57,29 @@ fn live_card(s: &SessionId) -> OutEvent {
         _ => unreachable!("card() builds an Out record"),
     }
 }
+
+/// ADR-0240: the log records a card's end, so a resumed view does not
+/// show a card already resolved — a turn card included, which a restore
+/// otherwise keeps.
+#[test]
+fn a_restore_drops_a_card_the_log_resolved() {
+    let s = SessionId::new("past");
+    let mut reg = SessionRegistry::new(SessionId::new("other"));
+    let resolved = LogRecord::new(
+        s.clone(),
+        LogPayload::Out(OutEvent::ApprovalResolved {
+            session: s.clone(),
+            seq: 3,
+            request_id: "turn".into(),
+            outcome: entanglement_core::ApprovalOutcome::Approved,
+        }),
+    );
+    let records = [
+        card(&s, 1, "turn", false),
+        card(&s, 2, "open", false),
+        resolved,
+    ];
+    reg.restore_from_records(s.clone(), &records);
+    assert_eq!(front(&reg), Some(("open".into(), false)));
+    assert_eq!(reg.active_view().queued_approvals(), 0);
+}

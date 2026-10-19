@@ -60,7 +60,11 @@ background ones included (`stop_session`). `Stop` is the user's explicit
 escape hatch and the TUI clears its card view on it, while an attended park
 never times out. The card itself says it is detached (`ToolRequest.detached`,
 [ADR-0237](../../adr/0237-detached-flag-on-tool-request.md)), so the TUI keeps
-it past the turn's terminal `Status`. The script itself is not aborted
+it past the turn's terminal `Status`. Whatever removes a card from
+`PendingDecisions` (a decision from any head, a timeout, an unwind, a
+superseding re-offer) emits `OutEvent::ApprovalResolved` on its home under
+the registry lock, so every head drops it
+([ADR-0240](../../adr/0240-approval-resolved-event.md)). The script itself is not aborted
 ([ADR-0185](../../adr/0185-rhai-joins-background-and-poll.md)): its nested call
 fails with "rhai run stopped" and the run ends. The built-in modes class-allow `control`, so a spawn runs
 unprompted by default and a rule naming `agent` outranks that.

@@ -243,6 +243,31 @@ removes `user_only`. What an embedder has to change:
   live card's key, or its id on its session, gets an immediate
   `Decision::Reject` with a reason and emits no card.
 
+## A card's end on the wire (ADR-0240, #883)
+
+- **Wire:** a new `OutEvent` variant, `ApprovalResolved { session, seq,
+  request_id, outcome }`, with `outcome` one of `approved` / `rejected` /
+  `expired` / `stopped` (`ApprovalOutcome`). The runtime emits it whenever a
+  `ToolRequest` card leaves `PendingDecisions` — a decision from any head, a
+  `question_timeout` expiry, a `Stop`, a session end/hibernate (its turn's
+  cards), a superseding re-offer — on the card's home session, always after
+  the card. Drop the card by `request_id`, only past your seq watermark for
+  that session, and along the session's compaction predecessors if you keep
+  per-session copies. An end at seq 0 (its session has no sequence) is folded by id without moving the watermark. `ask_user`
+  questions never get one.
+- **Persisted:** it is a content event with a seq, so the persistence tap
+  logs it and `ReplayFrom` returns it (a seq-0 end excepted: `History` keeps
+  only records past `after_seq`); core replay ignores it. A sink of your
+  own needs no change.
+- **Exhaustive matches** over `OutEvent` need the new arm. A wire consumer
+  built against an older `OutEvent` fails to parse the new `kind`: decode the
+  `kind` tag first and skip kinds you do not know.
+- **API:** `PendingDecisions::announcing(holly)` builds a registry that emits
+  it (the executor's own); `PendingDecisions::default()` stays silent. If you
+  park through `register_approval` and emit the `ToolRequest` yourself, emit
+  it straight after registering, or a `Stop`/timeout in between reports the
+  end before the card.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

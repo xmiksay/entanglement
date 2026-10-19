@@ -130,6 +130,8 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         OutEvent::ToolRequest { tool, input, .. } => {
             writeln!(out, "? {}", summary::call_line(tool, input))?
         }
+        // A card's end (ADR-0240): the call's `ToolOutput` tells the story.
+        OutEvent::ApprovalResolved { .. } => {}
         OutEvent::UserQuestion { questions, .. } => {
             for q in &questions.0 {
                 writeln!(out, "? {}", q.question)?;

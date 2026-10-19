@@ -1,6 +1,7 @@
 //! Parked-approval shapes: the payload of an [`OutEvent::PendingList`] reply
 //! to [`InMsg::ListPending`] (#726), and the structured [`CardReason`] an
-//! [`OutEvent::ToolRequest`] carries (ADR-0230).
+//! [`OutEvent::ToolRequest`] carries (ADR-0230), and the [`ApprovalOutcome`]
+//! an [`OutEvent::ApprovalResolved`] reports (ADR-0240).
 
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,24 @@ pub enum CardReason {
     /// A `rhai` launch card for a `path` script outside the project root —
     /// a head with nobody to ask must refuse it.
     LaunchEscape,
+}
+
+/// Why a parked approval card left the runtime's registry — the payload of
+/// [`OutEvent::ApprovalResolved`] (ADR-0240). Every exit maps to one value, so
+/// a head drops the card by id whatever ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalOutcome {
+    /// An [`InMsg::Approve`], from any head.
+    Approved,
+    /// An [`InMsg::Reject`], from any head.
+    Rejected,
+    /// The mode's `question_timeout` elapsed with no decision.
+    Expired,
+    /// Unwound without a decision: a `Stop`, the session's end or hibernate
+    /// (its turn's cards), a re-offer superseding a turn card, or any other
+    /// inbound frame aimed at the card's id.
+    Stopped,
 }
 
 /// One tool call parked awaiting [`InMsg::Approve`]/[`InMsg::Reject`], as
@@ -165,5 +184,48 @@ mod tests {
             serde_json::from_str::<PendingApproval>(&json).unwrap(),
             detached
         );
+    }
+
+    /// ADR-0240: a stable snake_case wire shape for every outcome, routed
+    /// and sequenced like any content event, and persisted (not live-only).
+    #[test]
+    fn approval_resolved_has_a_stable_wire_shape() {
+        for (outcome, wire) in [
+            (ApprovalOutcome::Approved, "approved"),
+            (ApprovalOutcome::Rejected, "rejected"),
+            (ApprovalOutcome::Expired, "expired"),
+            (ApprovalOutcome::Stopped, "stopped"),
+        ] {
+            let ev = OutEvent::ApprovalResolved {
+                session: SessionId::new("s1"),
+                seq: 7,
+                request_id: "r1".into(),
+                outcome,
+            };
+            let json = serde_json::to_string(&ev).unwrap();
+            let want = format!(
+                r#"{{"kind":"approval_resolved","session":"s1","seq":7,"request_id":"r1","outcome":"{wire}"}}"#
+            );
+            assert_eq!(json, want);
+            assert_eq!(serde_json::from_str::<OutEvent>(&json).unwrap(), ev);
+            assert_eq!(ev.session(), Some(&SessionId::new("s1")));
+            assert_eq!(ev.seq(), Some(7));
+            assert!(!ev.is_live_only());
+        }
+    }
+
+    /// Old-wire compatibility: a consumer built against an `OutEvent` that
+    /// predates the variant rejects the frame outright (serde's internally
+    /// tagged enums have no catch-all), so a wire consumer must decode the
+    /// `kind` tag before the payload and skip kinds it does not know — and
+    /// an unknown outcome is an error too, never a silent default.
+    #[test]
+    fn approval_resolved_is_skippable_by_kind_and_strict_on_outcome() {
+        let frame = r#"{"kind":"approval_resolved","session":"s","seq":1,"request_id":"r","outcome":"approved"}"#;
+        let value: serde_json::Value = serde_json::from_str(frame).unwrap();
+        assert_eq!(value["kind"], "approval_resolved");
+        assert_eq!(value["request_id"], "r");
+        let future = frame.replace(r#""approved""#, r#""vanished""#);
+        assert!(serde_json::from_str::<OutEvent>(&future).is_err());
     }
 }
