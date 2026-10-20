@@ -82,8 +82,8 @@ async fn a_detached_card_moves_and_answers_under_either_key() {
         .filter(|a| a.detached)
         .all(|a| a.session == s));
 
-    pending.resolve(&s, "d1", reject());
-    pending.resolve(&p, "d2", reject());
+    let _ = pending.resolve(&s, "d1", reject());
+    let _ = pending.resolve(&p, "d2", reject());
     assert!(rejected(via_s).await);
     assert!(rejected(via_p).await);
     pending.stop_attached(&p);
@@ -113,7 +113,7 @@ async fn the_successors_own_park_of_a_moved_cards_id_is_refused() {
     assert!(refused(turn).await);
 
     assert_eq!(listed(&pending), [("s".into(), rid.into())]);
-    pending.resolve(&s, rid, reject());
+    let _ = pending.resolve(&s, rid, reject());
     assert!(rejected(moved).await);
 }
 
@@ -126,17 +126,17 @@ async fn a_stale_predecessor_id_never_reaches_the_successors_own_card() {
     let (p, s) = (SessionId::new("p"), SessionId::new("s"));
     let moved = pending.register_approval(detached_card(&p, "r"), "edit");
     move_cards(&pending, &p, &s);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(
         rejected(moved).await,
         "the successor's id answers the moved card"
     );
 
     let own = pending.register_approval(detached_card(&s, "r"), "edit");
-    pending.resolve(&p, "r", Decision::Stop);
+    let _ = pending.resolve(&p, "r", Decision::Stop);
     pending.forget(&p, "r");
     assert_eq!(listed(&pending), [("s".into(), "r".into())]);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(own).await);
 }
 
@@ -155,13 +155,13 @@ async fn a_move_that_would_collide_stays_put_and_is_not_announced() {
         listed(&pending),
         [("p".into(), "r".into()), ("s".into(), "r".into())]
     );
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(
         rejected(own).await,
         "the successor's id answers its own card"
     );
     assert_eq!(move_cards(&pending, &p, &s), ["r"], "the id is free now");
-    pending.resolve(&p, "r", reject());
+    let _ = pending.resolve(&p, "r", reject());
     assert!(rejected(stayed).await);
 }
 
@@ -187,9 +187,9 @@ async fn of_two_ancestors_cards_with_one_id_only_the_nearest_moves() {
         listed(&pending),
         [("p0".into(), "r".into()), ("s".into(), "r".into())]
     );
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(near).await);
-    pending.resolve(&p0, "r", reject());
+    let _ = pending.resolve(&p0, "r", reject());
     assert!(rejected(far).await);
 }
 
@@ -203,7 +203,7 @@ async fn a_detached_park_never_supersedes_a_live_turn_card() {
     let (script, emitted) = park(&pending, detached_card(&s, "t"));
     assert!(emitted.is_empty());
     assert!(refused(script).await);
-    pending.resolve(&s, "t", reject());
+    let _ = pending.resolve(&s, "t", reject());
     assert!(rejected(turn).await, "the turn card was not displaced");
 }
 
@@ -221,7 +221,7 @@ async fn forget_removes_only_its_own_closed_entry() {
     assert_eq!(listed(&pending), [("s".into(), "a".into())], "live: kept");
     drop(pending.register(&s, "gone", "tool", "bash"));
     pending.forget(&s, "gone");
-    pending.resolve(&s, "a", reject());
+    let _ = pending.resolve(&s, "a", reject());
     assert!(rejected(live).await);
     assert!(pending.lock().waiters.is_empty());
 }
@@ -239,7 +239,7 @@ async fn a_late_timeout_forget_never_takes_a_card_moved_onto_its_id() {
     assert_eq!(move_cards(&pending, &p, &s), ["r"], "announced");
     pending.forget(&s, "r");
     assert_eq!(listed(&pending), [("s".into(), "r".into())]);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(moved).await);
     assert!(pending.lock().waiters.is_empty(), "no leaked entry");
 }
@@ -254,7 +254,7 @@ async fn a_live_turn_card_is_superseded_but_a_detached_one_is_not() {
     let first = pending.register(&s, "t", "tool", "bash");
     let second = pending.register(&s, "t", "tool", "bash");
     assert!(matches!(decided(first).await, Decision::Stop));
-    pending.resolve(&s, "t", reject());
+    let _ = pending.resolve(&s, "t", reject());
     assert!(rejected(second).await);
 
     let card = pending.register_approval(detached_card(&s, "d"), "edit");
@@ -262,7 +262,7 @@ async fn a_live_turn_card_is_superseded_but_a_detached_one_is_not() {
     assert!(emitted.is_empty());
     assert!(refused(again).await);
     assert!(refused(pending.register(&s, "d", "tool", "bash")).await);
-    pending.resolve(&s, "d", reject());
+    let _ = pending.resolve(&s, "d", reject());
     assert!(rejected(card).await);
 }
 
@@ -279,7 +279,7 @@ async fn a_decision_prefers_a_live_moved_card_over_one_that_gave_up() {
     let live = pending.register_approval(detached_card(&q, "r"), "edit");
     move_cards(&pending, &p, &s);
     move_cards(&pending, &q, &s);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(live).await);
 }
 
@@ -311,7 +311,7 @@ async fn the_exact_key_wins_over_a_card_that_moved_through() {
     move_cards(&pending, &p, &s);
     move_cards(&pending, &s, &t);
     let own = pending.register_approval(detached_card(&s, "r"), "edit");
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(own).await);
     assert_eq!(
         listed(&pending),
@@ -336,7 +336,7 @@ async fn a_skipped_card_records_no_earlier_home() {
     let far_rx = pending.register_approval(detached_card(&far, "r"), "edit");
     let near_rx = pending.register_approval(detached_card(&near, "r"), "edit");
     pending.reassign_detached(&[near.clone(), far.clone()], &s, |_, _| {});
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(near_rx).await);
     assert_eq!(listed(&pending), [("a0".into(), "r".into())]);
     drop(far_rx);

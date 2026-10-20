@@ -3,10 +3,11 @@
 //! single inbound decision router. Both are parked in the executor's own
 //! `JoinSet` so they're aborted when the executor task drops (#545).
 
-use entanglement_core::{InMsg, OutEvent};
+use entanglement_core::{InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::task::JoinSet;
 
+use crate::pending::Resolution;
 use crate::seam;
 
 use super::ladder::LadderCtx;
@@ -161,13 +162,52 @@ impl Router {
             }
             other => {
                 if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
-                    self.pending.resolve(&s, &rid, decision);
+                    let (frame, question) = (decision.frame(), decision.is_question());
+                    if let Resolution::Misaimed { kind } = self.pending.resolve(&s, &rid, decision)
+                    {
+                        // Misaimed: the card is the kind the frame is not.
+                        self.refuse_misaimed(&s, &rid, frame, kind, !question);
+                    }
                 }
             }
         }
+    }
+
+    /// A decision of the wrong kind for its card (ADR-0245): the card stays
+    /// parked, and the sender learns why on the session it addressed.
+    /// Unwinding it instead would owe the model a `ToolResult` nobody sends.
+    fn refuse_misaimed(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        frame: &str,
+        kind: &str,
+        card_is_question: bool,
+    ) {
+        let message = if card_is_question {
+            format!(
+                "`{frame}` refused: `{request_id}` is an `{kind}` question; answer it with \
+                 `AnswerQuestion`, `RetractQuestion` or `ReplaceQuestion`"
+            )
+        } else {
+            format!(
+                "`{frame}` refused: `{request_id}` is an approval card ({kind}), not an \
+                 `ask_user` question; answer it with `Approve` or `Reject`"
+            )
+        };
+        tracing::warn!(%session, request_id, frame, kind, "misaimed decision refused");
+        self.holly.emit_for_session(session, |seq| OutEvent::Error {
+            session: session.clone(),
+            seq,
+            message,
+        });
     }
 }
 
 #[cfg(test)]
 #[path = "router_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "router_misaimed_tests.rs"]
+mod misaimed_tests;

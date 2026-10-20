@@ -271,4 +271,32 @@ impl SessionView {
     pub fn clear_question(&mut self) {
         self.pending_questions.clear();
     }
+
+    /// Queue an `OutEvent::UserQuestion` (#273): the front is the one
+    /// rendered. One id is one parked call, so a `UserQuestion` for a
+    /// queued id — a `ReplaceQuestion`, or a resume's re-offer — replaces
+    /// that entry in place. New content starts fresh drafts; the same
+    /// content keeps the user's progress.
+    pub(super) fn queue_question(&mut self, question: PendingQuestion) {
+        match self
+            .pending_questions
+            .iter_mut()
+            .find(|q| q.request_id == question.request_id)
+        {
+            Some(queued) if queued.questions != question.questions => *queued = question,
+            Some(_) => {}
+            None => self.pending_questions.push_back(question),
+        }
+    }
+
+    /// The call `request_id` was resolved (its `ask_user` `ToolOutput`,
+    /// #894): drop it, so the next queued call, if any, takes the prompt.
+    pub fn drop_question(&mut self, request_id: &str) {
+        self.pending_questions
+            .retain(|q| q.request_id != request_id);
+    }
 }
+
+#[cfg(test)]
+#[path = "question_end_tests.rs"]
+mod end_tests;

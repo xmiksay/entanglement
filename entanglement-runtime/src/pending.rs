@@ -1,10 +1,10 @@
 //! Lag-proof pending-decision registry (#156).
 //!
 //! A parked tool round-trip — a permission `Ask`, `ask_user`, `propose_plan`, or
-//! a `rhai` binding approval — awaits the head's `Approve`/`Reject`/
-//! `AnswerQuestion`. Each orchestrator used to hold its *own* `broadcast`
-//! subscription of the engine's inbound fan-out and filter it to its
-//! `(session, request_id)`. Under burst load (many sessions, > the inbound
+//! a `rhai` binding approval — awaits the head's `Approve`/`Reject` or, for a
+//! question, `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion`. Each
+//! orchestrator used to hold its *own* `broadcast` subscription of the engine's
+//! inbound fan-out and filter it to its `(session, request_id)`. Under burst load (many sessions, > the inbound
 //! channel capacity of frames between subscribe and answer) that per-task
 //! subscriber could **lag** and silently drop the very decision it waited for —
 //! the request then parked forever while the user believed they had answered.
@@ -15,7 +15,8 @@
 //! returned receiver; one dedicated router task (the executor's inbound watcher
 //! in [`crate::tool_runner`]) is the sole inbound consumer and
 //! [`resolve`s](PendingDecisions::resolve) each decision to its waiter. Because
-//! the router does nothing per frame but a map lookup + `oneshot` send, it drains
+//! the router does nothing per frame but a map lookup, a kind check (a decision
+//! only answers its own kind of card, ADR-0245) and a `oneshot` send, it drains
 //! far faster than a park loop that also competes with tool execution — so the
 //! realistic lag window that dropped decisions is closed. A `Stop` for the
 //! session unwinds every one of its waiters
@@ -29,13 +30,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use entanglement_core::{
-    ApprovalKind, ApprovalOutcome, ApprovalScope, Holly, PendingApproval as WireApproval, SessionId,
+    ApprovalKind, ApprovalOutcome, Holly, PendingApproval as WireApproval, SessionId,
 };
 use tokio::sync::oneshot;
 
 use crate::seam::Decision;
 
 mod park;
+mod resolve;
 mod resolved;
 mod successor;
 #[cfg(test)]
@@ -44,6 +46,7 @@ mod wait;
 pub use park::{
     approval, headless_starts, list_pending, park_approval, park_approval_as, scopes_for,
 };
+pub use resolve::Resolution;
 pub(crate) use successor::{announce, heal_before, heal_subtree, live_end};
 pub use wait::{await_decision, await_decision_timed};
 
@@ -76,6 +79,14 @@ pub struct Parked {
     /// sessions a head may still show a stale copy on, which keep
     /// answering it (ADR-0242).
     pub(crate) via: Vec<SessionId>,
+}
+
+impl Parked {
+    /// An `ask_user` park, answered only by `Answer`/`Retract`/`Replace`;
+    /// every other park only by `Approve`/`Reject` (ADR-0245).
+    pub fn is_question(&self) -> bool {
+        self.kind == crate::tool_names::ASK_USER_TOOL
+    }
 }
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
@@ -265,27 +276,6 @@ impl PendingDecisions {
         list
     }
 
-    /// Deliver `decision` to the waiter for `(session, request_id)`, if one is
-    /// still parked. A no-op when none is (already resolved, or a decision for an
-    /// unknown/duplicate request). A dropped receiver (the waiter already unwound)
-    /// is likewise harmless. An `Approve` scope the card did not offer is
-    /// clamped to `Once` ([`clamp_scope`]). A card moved to a compaction
-    /// successor answers under its predecessor's id and its new home's
-    /// (ADR-0238), and under the id of any home it was moved off (ADR-0242).
-    pub fn resolve(&self, session: &SessionId, request_id: &str, decision: Decision) {
-        let mut guard = self.lock();
-        if let Some((tx, parked)) = guard.remove(session, request_id) {
-            // A waiter that gave up got its timeout, not this decision.
-            let outcome = if tx.is_closed() {
-                ApprovalOutcome::Expired
-            } else {
-                resolved::outcome_of(&decision)
-            };
-            self.resolved(&parked, request_id, outcome);
-            let _ = tx.send(clamp_scope(decision, &parked, request_id));
-        }
-    }
-
     /// Unwind every waiter for `session` with [`Decision::Stop`] (#167) — a
     /// background script's included: a `Stop` is the user's explicit escape
     /// hatch, the TUI clears its card view on it, and an attended park has
@@ -355,43 +345,10 @@ impl PendingDecisions {
     }
 }
 
-/// An `Approve` whose scope the parked card did not advertise becomes a
-/// `Once` (ADR-0230). WHY here, not in each park: `scopes` is the contract
-/// a head is shown, and a wire client can send any scope — on a floored
-/// write outside the root an unclamped `Always` would persist a durable
-/// extra-roots grant the card never offered. Parks with no wire approval
-/// (`ask_user`) pass through untouched.
-fn clamp_scope(decision: Decision, parked: &Parked, request_id: &str) -> Decision {
-    let offered = |scope| {
-        parked
-            .approval
-            .as_ref()
-            .is_none_or(|a| a.scopes.contains(&scope))
-    };
-    match decision {
-        Decision::Approve {
-            scope,
-            mode,
-            run_all,
-        } if !offered(scope) => {
-            tracing::warn!(
-                request_id,
-                ?scope,
-                "approval scope not offered by the card; clamped to once"
-            );
-            Decision::Approve {
-                scope: ApprovalScope::Once,
-                mode,
-                run_all,
-            }
-        }
-        other => other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use entanglement_core::ApprovalScope;
 
     /// ADR-0230: a scope the card did not offer is delivered as `Once`; an
     /// offered one passes through.
@@ -418,7 +375,7 @@ mod tests {
         ] {
             let rid = req.request_id.clone();
             let rx = pending.register_approval(req, "t");
-            pending.resolve(&s, &rid, approve(sent));
+            let _ = pending.resolve(&s, &rid, approve(sent));
             match await_decision(rx).await {
                 Decision::Approve { scope, .. } => assert_eq!(scope, want, "{rid} {sent:?}"),
                 _ => panic!("{rid}: not an approval"),
@@ -448,7 +405,7 @@ mod tests {
         let pending = PendingDecisions::default();
         let s = SessionId::new("s");
         let rx = pending.register(&s, "req-1", "tool", "t");
-        pending.resolve(
+        let _ = pending.resolve(
             &s,
             "req-1",
             Decision::Approve {
@@ -466,7 +423,7 @@ mod tests {
         let s = SessionId::new("s");
         // No waiter registered for req-x: resolving must not panic and must not
         // leak into a later same-key waiter.
-        pending.resolve(&s, "req-x", Decision::Reject { reason: None });
+        let _ = pending.resolve(&s, "req-x", Decision::Reject { reason: None });
         let rx = pending.register(&s, "req-x", "tool", "t");
         pending.stop_session(&s);
         assert!(matches!(await_decision(rx).await, Decision::Stop));
@@ -493,7 +450,7 @@ mod tests {
         let detached = pending.insert(&s, "d", "rhai", "bash".into(), None, true);
         pending.stop_attached(&s);
         assert!(matches!(await_decision(attached).await, Decision::Stop));
-        pending.resolve(&s, "d", Decision::Reject { reason: None });
+        let _ = pending.resolve(&s, "d", Decision::Reject { reason: None });
         assert!(matches!(
             await_decision(detached).await,
             Decision::Reject { .. }
@@ -510,11 +467,11 @@ mod tests {
         let a = SessionId::new("a");
         let b = SessionId::new("b");
         let rx_a = pending.register(&a, "req", "tool", "t");
-        let rx_b = pending.register(&b, "req", "tool", "t");
+        let rx_b = pending.register(&b, "req", "ask_user", "t");
         pending.stop_session(&a);
         assert!(matches!(await_decision(rx_a).await, Decision::Stop));
         // b's waiter is untouched; resolving it still works.
-        pending.resolve(
+        let _ = pending.resolve(
             &b,
             "req",
             Decision::Answer {
@@ -532,7 +489,7 @@ mod tests {
         let pending = PendingDecisions::default();
         let s = SessionId::new("s");
         let rx = pending.register(&s, "req-1", "tool", "t");
-        pending.resolve(
+        let _ = pending.resolve(
             &s,
             "req-1",
             Decision::Approve {
@@ -552,7 +509,7 @@ mod tests {
         let pending = PendingDecisions::default();
         let s = SessionId::new("s");
         let rx = pending.register(&s, "req-1", "tool", "t");
-        pending.resolve(&s, "req-1", Decision::Reject { reason: None });
+        let _ = pending.resolve(&s, "req-1", Decision::Reject { reason: None });
         let decision = await_decision_timed(rx, Some(std::time::Duration::from_secs(5))).await;
         assert!(matches!(decision, Some(Decision::Reject { .. })));
     }

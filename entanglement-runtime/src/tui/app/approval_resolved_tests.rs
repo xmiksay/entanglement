@@ -117,7 +117,7 @@ async fn a_card_another_head_answered_leaves_the_view() {
         mode: None,
         run_all: false,
     };
-    pending.resolve(&s, "x:rhai:edit", approve);
+    let _ = pending.resolve(&s, "x:rhai:edit", approve);
     fold_until(&mut app, &mut sub, is_resolved).await;
     assert!(!has_card(&app, &s));
     assert!(!app.showing_approval_pager());

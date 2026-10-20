@@ -4,7 +4,7 @@ use entanglement_core::{ApprovalKind, EngineConfig, Holly, SessionId};
 use tokio::sync::broadcast;
 
 use super::super::test_support::detached_card;
-use super::super::{approval, park};
+use super::super::{approval, park, Resolution};
 use super::*;
 
 /// A registry that announces, and a subscriber that sees what it emits.
@@ -81,14 +81,14 @@ async fn a_decision_reports_its_outcome_after_the_card() {
         ("r", Decision::Reject { reason: None }, "Rejected"),
     ] {
         let _rx = park::park_approval(&holly, &pending, card(&s, rid), "bash");
-        pending.resolve(&s, rid, decision);
+        let _ = pending.resolve(&s, rid, decision);
         assert_eq!(
             drained(&mut sub),
             [request("s", rid), resolved("s", rid, outcome)]
         );
     }
     // A decision for nothing parked reports nothing.
-    pending.resolve(&s, "a", approve());
+    let _ = pending.resolve(&s, "a", approve());
     assert!(drained(&mut sub).is_empty());
 }
 
@@ -102,7 +102,7 @@ async fn a_timeout_reports_expired_once() {
         .await;
     assert!(d.is_none());
     // A late decision finds no card, so nothing more is reported.
-    pending.resolve(&s, "t", approve());
+    let _ = pending.resolve(&s, "t", approve());
     assert_eq!(
         drained(&mut sub),
         [request("s", "t"), resolved("s", "t", "Expired")]
@@ -148,7 +148,7 @@ async fn a_moved_card_is_reported_on_its_home() {
     let (p, s) = (SessionId::new("p"), SessionId::new("s"));
     let _rx = pending.register_approval(detached_card(&p, "d"), "edit");
     pending.reassign_detached(std::slice::from_ref(&p), &s, |_, _| {});
-    pending.resolve(&p, "d", approve());
+    let _ = pending.resolve(&p, "d", approve());
     assert_eq!(drained(&mut sub), [resolved("s", "d", "Approved")]);
 }
 
@@ -159,7 +159,7 @@ async fn a_decision_for_a_gone_waiter_reports_expired() {
     let (pending, _holly, mut sub) = announcing();
     let s = SessionId::new("s");
     drop(pending.register_approval(card(&s, "g"), "bash"));
-    pending.resolve(&s, "g", approve());
+    let _ = pending.resolve(&s, "g", approve());
     assert_eq!(drained(&mut sub), [resolved("s", "g", "Expired")]);
 }
 
@@ -182,20 +182,80 @@ async fn a_question_is_never_reported() {
     let (pending, _holly, mut sub) = announcing();
     let s = SessionId::new("s");
     let _q = pending.register(&s, "q", "ask_user", "q");
-    pending.resolve(&s, "q", Decision::Retract);
+    let _ = pending.resolve(&s, "q", Decision::Retract);
     let _q = pending.register(&s, "q2", "ask_user", "q2");
     pending.stop_session(&s);
     assert!(drained(&mut sub).is_empty());
 }
 
 #[test]
-fn non_approval_decisions_unwind_as_stopped() {
+fn the_outcome_names_the_decision() {
     assert_eq!(outcome_of(&approve()), ApprovalOutcome::Approved);
     assert_eq!(
         outcome_of(&Decision::Reject { reason: None }),
         ApprovalOutcome::Rejected
     );
-    for d in [Decision::Stop, Decision::Retract] {
-        assert_eq!(outcome_of(&d), ApprovalOutcome::Stopped);
+    assert_eq!(outcome_of(&Decision::Stop), ApprovalOutcome::Stopped);
+}
+
+/// #895, ADR-0245: a question decision aimed at an approval card is
+/// refused, not an unwind. The card stays parked and listed, reports no
+/// end, and its own decision still reaches it.
+#[tokio::test]
+async fn a_question_decision_for_an_approval_card_is_refused() {
+    let (pending, _holly, mut sub) = announcing();
+    let s = SessionId::new("s");
+    let mut rx = pending.register_approval(card(&s, "r"), "bash");
+    for d in [
+        Decision::Retract,
+        Decision::Answer { answers: vec![] },
+        Decision::Replace { questions: vec![] },
+    ] {
+        assert_eq!(
+            pending.resolve(&s, "r", d),
+            Resolution::Misaimed { kind: "tool" }
+        );
     }
+    assert!(rx.try_recv().is_err(), "still waiting");
+    assert_eq!(pending.approvals(|_| true).len(), 1, "still listed");
+    assert!(drained(&mut sub).is_empty(), "no end reported");
+    assert_eq!(pending.resolve(&s, "r", approve()), Resolution::Delivered);
+    assert!(matches!(rx.await, Ok(Decision::Approve { .. })));
+    assert_eq!(drained(&mut sub), [resolved("s", "r", "Approved")]);
+}
+
+/// The reverse: an `Approve`/`Reject` aimed at an `ask_user` question is
+/// refused, and the question still takes its answer.
+#[tokio::test]
+async fn an_approval_decision_for_a_question_is_refused() {
+    let pending = PendingDecisions::default();
+    let s = SessionId::new("s");
+    let mut rx = pending.register(&s, "q", "ask_user", "q");
+    for d in [approve(), Decision::Reject { reason: None }] {
+        assert_eq!(
+            pending.resolve(&s, "q", d),
+            Resolution::Misaimed { kind: "ask_user" }
+        );
+    }
+    assert!(rx.try_recv().is_err(), "still waiting");
+    assert_eq!(pending.resolve(&s, "absent", approve()), Resolution::Absent);
+    assert_eq!(
+        pending.resolve(&s, "q", Decision::Retract),
+        Resolution::Delivered
+    );
+    assert!(matches!(rx.await, Ok(Decision::Retract)));
+}
+
+/// A misaimed decision for a card whose waiter already gave up takes the
+/// dead entry like any late decision, reporting `Expired`, not a refusal.
+#[tokio::test]
+async fn a_misaimed_decision_for_a_gone_waiter_is_no_refusal() {
+    let (pending, _holly, mut sub) = announcing();
+    let s = SessionId::new("s");
+    drop(pending.register_approval(card(&s, "g"), "bash"));
+    assert_eq!(
+        pending.resolve(&s, "g", Decision::Retract),
+        Resolution::Delivered
+    );
+    assert_eq!(drained(&mut sub), [resolved("s", "g", "Expired")]);
 }

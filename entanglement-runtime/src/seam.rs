@@ -77,6 +77,7 @@ pub async fn reply_content(
 
 /// The head's answer to a parked tool round-trip, already filtered to the
 /// waiting `(session, request_id)`.
+#[derive(Debug)]
 pub enum Decision {
     /// `Approve` — carries the approval scope (#174) and, for a `propose_plan`
     /// approval only (#560, ADR-0207 §7 extension), the mode the approver chose
@@ -110,7 +111,104 @@ pub enum Decision {
     Stop,
 }
 
+/// What an approval park (a permission `Ask`, `propose_plan`,
+/// `request_mode`, a `rhai` card) receives: [`Decision`] narrowed by the
+/// registry, which delivers it an `Approve`/`Reject` or a `Stop` and
+/// refuses a question decision aimed at its id (ADR-0245).
+#[derive(Debug)]
+pub enum ApprovalDecision {
+    Approve {
+        scope: ApprovalScope,
+        mode: Option<String>,
+        run_all: bool,
+    },
+    Reject {
+        reason: Option<String>,
+    },
+    Stop,
+}
+
+/// What an `ask_user` park receives: [`Decision`] narrowed by the registry,
+/// which refuses an `Approve`/`Reject` aimed at its id (ADR-0245).
+#[derive(Debug)]
+pub enum QuestionDecision {
+    Answer {
+        answers: Vec<Vec<String>>,
+    },
+    Retract,
+    Replace {
+        questions: Vec<Question>,
+    },
+    /// The park itself was refused: a live card already holds the id on
+    /// this session (`PendingDecisions::register`). The call still owes the
+    /// model a `ToolResult`, so it replies with `reason` as an error.
+    Refused {
+        reason: String,
+    },
+    Stop,
+}
+
 impl Decision {
+    /// `Answer`/`Retract`/`Replace`: only an `ask_user` park takes it.
+    pub fn is_question(&self) -> bool {
+        matches!(
+            self,
+            Decision::Answer { .. } | Decision::Retract | Decision::Replace { .. }
+        )
+    }
+
+    /// The `InMsg` variant a decision came from, for a refusal's message.
+    pub fn frame(&self) -> &'static str {
+        match self {
+            Decision::Approve { .. } => "Approve",
+            Decision::Reject { .. } => "Reject",
+            Decision::Answer { .. } => "AnswerQuestion",
+            Decision::Retract => "RetractQuestion",
+            Decision::Replace { .. } => "ReplaceQuestion",
+            Decision::Stop => "Stop",
+        }
+    }
+
+    /// The approval park's view. Nothing sends an approval waiter a
+    /// question decision: `PendingDecisions::resolve` refuses one
+    /// (ADR-0245), and the registry's own sends are `Stop` (unwind,
+    /// supersede) or `Reject` (a refused park). Only a hand-fed channel could
+    /// carry one; it unwinds like `Stop` rather than panicking.
+    pub fn into_approval(self) -> ApprovalDecision {
+        match self {
+            Decision::Approve {
+                scope,
+                mode,
+                run_all,
+            } => ApprovalDecision::Approve {
+                scope,
+                mode,
+                run_all,
+            },
+            Decision::Reject { reason } => ApprovalDecision::Reject { reason },
+            Decision::Answer { .. }
+            | Decision::Retract
+            | Decision::Replace { .. }
+            | Decision::Stop => ApprovalDecision::Stop,
+        }
+    }
+
+    /// The `ask_user` park's view. A `Reject` reaching a question waiter is
+    /// the registry refusing the park itself (a live card holds the id), so
+    /// it is [`QuestionDecision::Refused`]. An `Approve` never reaches one
+    /// (`resolve` refuses it, ADR-0245); a hand-fed one unwinds like `Stop`.
+    pub fn into_question(self) -> QuestionDecision {
+        match self {
+            Decision::Answer { answers } => QuestionDecision::Answer { answers },
+            Decision::Retract => QuestionDecision::Retract,
+            Decision::Replace { questions } => QuestionDecision::Replace { questions },
+            Decision::Reject { reason } => QuestionDecision::Refused {
+                reason: reason.unwrap_or_else(|| "the question could not be parked".into()),
+            },
+            Decision::Approve { .. } | Decision::Stop => QuestionDecision::Stop,
+        }
+    }
+
     /// The `(session, request_id)` a decision frame answers — the key
     /// [`from_inmsg`](Self::from_inmsg) would resolve, without consuming it.
     pub fn target(msg: &InMsg) -> Option<(&SessionId, &str)> {

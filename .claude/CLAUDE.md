@@ -233,8 +233,9 @@ doc, never here**:
 - **Approval cards are data** — `ToolRequest.reason` says why a card
   parked and `scopes` what an approval honors; heads never parse card text
   ([protocol](../docs/architecture/protocol.md), [ADR-0230](../docs/adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
-- **`ask_user` questions are listable/retractable/replaceable**
-  ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)).
+- **`ask_user` questions are listable/retractable/replaceable**; a decision
+  only answers its own kind of park, and a question ends on its `ToolOutput`
+  ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)/[ADR-0245](../docs/adr/0245-a-decision-only-answers-its-own-kind-of-card.md)).
 - **A parked approval card's end is wire-visible** — `ApprovalResolved` on its
   home whenever it leaves `PendingDecisions`, after its `ToolRequest`
   ([protocol](../docs/architecture/protocol.md), [ADR-0240](../docs/adr/0240-approval-resolved-event.md)).

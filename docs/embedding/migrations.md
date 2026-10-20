@@ -309,6 +309,25 @@ removes `user_only`. What an embedder has to change:
   script records is marked `adopted` on the manifest `Change`
   (serde-defaulted; older manifests read unchanged).
 
+## A decision only answers its own kind of card (ADR-0245, #895/#894)
+
+- **Wire:** an `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` aimed
+  at an approval card's `request_id`, or an `Approve`/`Reject` aimed at an
+  `ask_user` question's, is refused with an `OutEvent::Error` on the session
+  it named. The card stays parked and listed, and no `ApprovalResolved`
+  follows; before, the park unwound silently and the turn hung.
+- **Questions:** drop an `ask_user` question when the `ToolOutput` with its
+  `request_id` arrives (an answer from any head, a retract, a
+  `question_timeout`). A `UserQuestion` for an id you already queue is a
+  `ReplaceQuestion`: replace the entry, do not queue a second one.
+- **API:** `PendingDecisions::resolve` returns `Resolution`
+  (`Delivered`/`Absent`/`Misaimed { kind }`); a router of your own should
+  report `Misaimed`. Parks receive `seam::ApprovalDecision` or
+  `seam::QuestionDecision` via `Decision::into_approval`/`into_question`;
+  `QuestionDecision::Refused { reason }` is a refused question park, which
+  must still reply. An `Error` watcher of your own sees the
+  refusal like any session error.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

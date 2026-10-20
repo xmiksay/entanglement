@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, Permission};
 
-use crate::seam::Decision;
+use crate::seam::ApprovalDecision;
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_runner::{Dispatcher, Posture};
 
@@ -135,7 +135,7 @@ pub(super) async fn gate(
             d.limits.question_timeout, d.mode
         )),
         None => run(Posture::AskPerCommand),
-        Some(Decision::Approve { scope, run_all, .. }) => {
+        Some(ApprovalDecision::Approve { scope, run_all, .. }) => {
             // A script that could not be read never ran: nothing to grant.
             if source.is_ok() {
                 record(d, request_id, perm, arg.as_deref(), escape.as_ref(), scope).await;
@@ -146,13 +146,11 @@ pub(super) async fn gate(
                 Posture::AskPerCommand
             })
         }
-        Some(Decision::Reject { reason }) => Verdict::Refuse(format!(
+        Some(ApprovalDecision::Reject { reason }) => Verdict::Refuse(format!(
             "tool `{RHAI_TOOL}` rejected: {}",
             reason.as_deref().unwrap_or("user")
         )),
-        Some(
-            Decision::Stop | Decision::Answer { .. } | Decision::Retract | Decision::Replace { .. },
-        ) => Verdict::Stopped,
+        Some(ApprovalDecision::Stop) => Verdict::Stopped,
     }
 }
 
@@ -256,7 +254,7 @@ async fn ask(
     reason: String,
     card_reason: CardReason,
     once_only: bool,
-) -> Option<Decision> {
+) -> Option<ApprovalDecision> {
     let (holly, session) = (&d.holly, &d.session);
     let reason = format!("{reason} — run all, ask per command, or reject");
     let mut req = crate::pending::approval(
@@ -277,8 +275,9 @@ async fn ask(
     let decision = d
         .pending
         .await_timed(session, request_id, rx, timeout)
-        .await;
-    if !matches!(decision, Some(Decision::Stop)) {
+        .await
+        .map(|d| d.into_approval());
+    if !matches!(decision, Some(ApprovalDecision::Stop)) {
         holly.emit_status(session, AgentState::Thinking);
     }
     decision
