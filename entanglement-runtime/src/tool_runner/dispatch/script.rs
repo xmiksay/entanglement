@@ -1,7 +1,8 @@
 //! What the dispatch seam knows about a script-issued call (ADR-0227): the
 //! per-run approval cache, the detached flag, the run's deadline, which
-//! tools a script may never reach, and how a background script follows its
-//! session's compaction (ADR-0241).
+//! tools a script may never reach, how a background script follows its
+//! session's compaction (ADR-0241), and how every script run re-reads its
+//! session's mode and drops stale overlay entries per call (ADR-0243).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ use entanglement_core::{SessionId, ToolOverlayEntry};
 
 use crate::capability::{self, Capability};
 use crate::tool_names::{MCP_TOOL, RHAI_TOOL};
+use crate::tool_runner::mode_epochs::{lock_modes, Snapshot};
 use crate::tools::ToolRegistry;
 
 use super::{Dispatcher, Via};
@@ -67,6 +69,15 @@ impl ScriptCall {
             .is_ok_and(|set| set.contains(&cache_key(tool, input)))
     }
 
+    /// Forget this run's approvals: the session's mode changed, and an
+    /// approval answered a card of the old mode (ADR-0243).
+    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+    pub(crate) fn forget_approvals(&self) {
+        if let Ok(mut set) = self.approved.lock() {
+            set.clear();
+        }
+    }
+
     pub(super) fn approve(&self, tool: &str, input: &str) {
         if let Ok(mut set) = self.approved.lock() {
             set.insert(cache_key(tool, input));
@@ -75,25 +86,60 @@ impl ScriptCall {
 }
 
 impl Dispatcher {
-    /// Before each nested call of a background run (ADR-0241): switch to the
-    /// live successor of the run's session once the executor has folded its
-    /// mode, then re-read the session's current mode, returning the new
-    /// session on a switch. Between calls, never mid-call, so a call already
-    /// graded or parked as the predecessor finishes as it began (ADR-0238
-    /// moves its card). A blocking script's turn is parked on its own
-    /// session, which can't compact under it, so only a detached run follows.
+    /// Before each nested call of a script run. A background run switches
+    /// to the live successor of its session once the executor has folded
+    /// its mode (ADR-0241), returning the new session on a switch. A blocking
+    /// script's turn is parked on its own session, which can't compact under
+    /// it, so only a detached run switches. Every run then follows its
+    /// ancestors' compactions as the executor's chain does, re-reads its
+    /// session's mode and limits, drops the overlay entries whose lineage
+    /// epoch moved since the snapshot, and forgets the run's approvals on a
+    /// mode change (ADR-0243). Between calls, never mid-call, so a call
+    /// already graded or parked as the predecessor finishes as it began
+    /// (ADR-0238 moves its card).
     #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     pub(crate) fn follow_session(&mut self, script: &ScriptCall) -> Option<SessionId> {
-        if !script.detached {
-            return None;
+        let switched = if script.detached {
+            self.followable()
+        } else {
+            None
+        };
+        let moves: Vec<_> = self
+            .chain
+            .iter()
+            .enumerate()
+            .filter_map(|(i, link)| {
+                let to = if i == 0 {
+                    switched.clone()
+                } else {
+                    self.live_successor(link)
+                };
+                to.map(|to| (link.clone(), to))
+            })
+            .collect();
+        let mode = self.mode_epochs.read(
+            &self.perm_modes,
+            switched.as_ref().unwrap_or(&self.session),
+            &mut self.overlay_epochs,
+        );
+        for (from, to) in &moves {
+            rekey(
+                &mut self.chain,
+                &mut self.overlays,
+                &mut self.overlay_epochs,
+                from,
+                to,
+            );
         }
-        let switched = self.followable();
         if let Some(to) = &switched {
-            rekey(&mut self.session, &mut self.chain, &mut self.overlays, to);
+            self.session = to.clone();
         }
-        if let Some(mode) = self.mode_of(&self.session) {
-            drop_stale_overlay(&mut self.overlays, &self.session, &self.overlay_mode, &mode);
+        let kept = &self.overlay_epochs;
+        self.overlays.retain(|s, _| kept.contains_key(s));
+        if let Some(mode) = mode {
             if mode != self.mode {
+                // Approved under the old mode; the new one grades afresh.
+                script.forget_approvals();
                 self.limits = self
                     .mode_table
                     .get(&mode)
@@ -130,47 +176,42 @@ impl Dispatcher {
     /// and for where a grant is recorded, so a grant always lands where the
     /// next call looks it up.
     fn followable(&self) -> Option<SessionId> {
-        // The live end a detached card is homed on too (ADR-0242).
-        Some(crate::pending::live_end(&self.holly, &self.session))
-            .filter(|s| s != &self.session && self.mode_of(s).is_some())
+        self.live_successor(&self.session)
+    }
+
+    /// [`followable`](Self::followable)'s condition for any `session`: the
+    /// live end a detached card is homed on too (ADR-0242).
+    fn live_successor(&self, session: &SessionId) -> Option<SessionId> {
+        Some(crate::pending::live_end(&self.holly, session))
+            .filter(|s| s != session && self.mode_of(s).is_some())
     }
 
     /// `session`'s mode as the executor last folded it.
     fn mode_of(&self, session: &SessionId) -> Option<String> {
-        self.perm_modes.lock().ok()?.get(session).cloned()
+        lock_modes(&self.perm_modes).get(session).cloned()
     }
 }
 
-/// Re-key a snapshot from `session` to `to`: the session itself, its slot in
-/// the ancestor chain, and its own overlay entry.
+/// Re-key `from` to its compaction successor `to`: its slot in the
+/// ancestor chain, its overlay entry and that entry's snapshot. The
+/// snapshot names the lineage, so whether the entry survives does not
+/// depend on the move (ADR-0243).
 #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 fn rekey(
-    session: &mut SessionId,
     chain: &mut [SessionId],
     overlays: &mut HashMap<SessionId, Vec<ToolOverlayEntry>>,
+    snapshot: &mut Snapshot,
+    from: &SessionId,
     to: &SessionId,
 ) {
-    let from = std::mem::replace(session, to.clone());
-    for link in chain.iter_mut().filter(|s| **s == from) {
+    for link in chain.iter_mut().filter(|s| *s == from) {
         *link = to.clone();
     }
-    if let Some(own) = overlays.remove(&from) {
+    if let Some(own) = overlays.remove(from) {
         overlays.insert(to.clone(), own);
     }
-}
-
-/// The overlay is mode-scoped (ADR-0207 §8): the executor drops a session's
-/// entry on a mode change, so the snapshot's own entry, taken under
-/// `snapshot_mode`, goes once the session's mode is another.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-fn drop_stale_overlay(
-    overlays: &mut HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    session: &SessionId,
-    snapshot_mode: &str,
-    mode: &str,
-) {
-    if mode != snapshot_mode {
-        overlays.remove(session);
+    if let Some(at) = snapshot.remove(from) {
+        snapshot.insert(to.clone(), at);
     }
 }
 
@@ -231,39 +272,29 @@ mod tests {
     }
 
     #[test]
-    fn rekey_moves_the_session_its_chain_slot_and_its_overlay() {
-        let (p, s, parent) = (
+    fn rekey_moves_the_chain_slot_and_the_overlay() {
+        let (p, s, child) = (
             SessionId::new("p"),
             SessionId::new("s"),
-            SessionId::new("parent"),
+            SessionId::new("child"),
         );
         let entry = ToolOverlayEntry::ask;
-        let mut session = p.clone();
-        let mut chain = vec![p.clone(), parent.clone()];
+        let mut chain = vec![child.clone(), p.clone()];
         let mut overlays = HashMap::from([
             (p.clone(), vec![entry("bash")]),
-            (parent.clone(), vec![entry("read")]),
+            (child.clone(), vec![entry("read")]),
         ]);
-        rekey(&mut session, &mut chain, &mut overlays, &s);
-        assert_eq!(session, s);
-        assert_eq!(chain, vec![s.clone(), parent.clone()]);
+        let mut snapshot = Snapshot::from([(p.clone(), (p.clone(), 2))]);
+        rekey(&mut chain, &mut overlays, &mut snapshot, &p, &s);
+        assert_eq!(chain, vec![child.clone(), s.clone()]);
+        assert_eq!(
+            snapshot,
+            Snapshot::from([(s.clone(), (p.clone(), 2))]),
+            "same lineage"
+        );
         assert!(!overlays.contains_key(&p));
         assert_eq!(overlays[&s][0].pattern, "bash");
-        assert_eq!(overlays[&parent][0].pattern, "read", "an ancestor's stays");
-    }
-
-    #[test]
-    fn a_mode_change_drops_only_the_sessions_own_snapshot_overlay() {
-        let (s, parent) = (SessionId::new("s"), SessionId::new("parent"));
-        let mut overlays = HashMap::from([
-            (s.clone(), vec![ToolOverlayEntry::ask("write")]),
-            (parent.clone(), vec![ToolOverlayEntry::ask("read")]),
-        ]);
-        drop_stale_overlay(&mut overlays, &s, "build", "build");
-        assert!(overlays.contains_key(&s), "same mode keeps it");
-        drop_stale_overlay(&mut overlays, &s, "build", "plan");
-        assert!(!overlays.contains_key(&s));
-        assert!(overlays.contains_key(&parent), "an ancestor's stays");
+        assert_eq!(overlays[&child][0].pattern, "read", "another link's stays");
     }
 
     #[test]

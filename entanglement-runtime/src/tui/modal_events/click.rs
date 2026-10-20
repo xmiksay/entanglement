@@ -194,6 +194,9 @@ pub(super) async fn resume_selected(app: &mut App, holly: &Holly) {
             }
             Err(e) => {
                 tracing::error!("Cannot resume session {}: {:#}", id, e);
+                // Shown, not only logged: e.g. a compacted-away session
+                // names the successor to resume instead (ADR-0243).
+                app.record_status("resume", format!("cannot resume: {e:#}"));
             }
         }
     }

@@ -137,13 +137,10 @@ pub(super) async fn run(
             // enabled under one mode carries no meaning in another; a
             // duplicate `ModeChanged` for the same value (replay, a
             // no-op `SetMode`) leaves it untouched.
+            // A switch also moves the session's mode epoch, which a running
+            // script's overlay snapshot is checked against (ADR-0243).
             Ok(OutEvent::ModeChanged { session, mode }) => {
-                let previous = ctx
-                    .perm_modes
-                    .lock()
-                    .expect("permission-mode mutex poisoned")
-                    .insert(session.clone(), mode.clone());
-                if previous.as_deref() != Some(mode.as_str()) {
+                if ctx.mode_epochs.fold(&ctx.perm_modes, &session, mode) {
                     overlays.remove(&session);
                 }
             }

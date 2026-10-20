@@ -26,10 +26,9 @@ impl App {
         if self.showing_resume_modal {
             // The same store `d` deletes from (and the startup prune sweeps),
             // so the modal lists exactly the logs a `d` press can reach.
-            if let Ok(mut sessions) = self.session_store.list_sessions() {
-                // Only root sessions are independently resumable; spawned
-                // children live inside their root's file. Most-recent first.
-                sessions.retain(|s| s.root);
+            if let Ok(sessions) = self.session_store.list_sessions() {
+                // Only resumable roots, most-recent first.
+                let mut sessions = crate::session_store::resumable_roots(sessions);
                 sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
                 self.available_sessions = sessions;
             }

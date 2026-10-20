@@ -107,7 +107,7 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   an append-only `manifest.jsonl`: one `change` line per mutation
   `{id, ts, session, request_id, exec_seq?, path (absolute, resolved),
   display, before: absent | stored{hash,size} | skipped{reason}, after:
-  sha256 | null, mode?, ancestry?}` plus `reverted{ids, attempted}` markers; the id
+  sha256 | null, mode?, ancestry?, adopted?}` plus `reverted{ids, attempted}` markers; the id
   counter and blob set are cached per root, so a write never re-reads the
   manifest. A spawned child's changes land in its root's directory
   (`FileBackups::track_roots` folds `SessionStarted` lineage, and `Status`
@@ -170,7 +170,13 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   (Gemini's `name#ordinal` repeats every turn). Without a seq (a tool run
   outside the executor's call task): the latest `(session, request_id)`
   call logged no later than the change (`<id>:rhai:<tool>` → outer call),
-  then timestamps. A prompt in another file than the change (a moved
+  then timestamps. A background script's call after it switched to its
+  session's compaction successor runs with the launch seq masked and its
+  change marked `adopted` (`file_backup::without_exec_seq`): the launch's
+  seq and request id belong to the predecessor's log, so it is placed by
+  timestamp alone
+  ([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)).
+  A prompt in another file than the change (a moved
   sub-agent's write against the successor's prompts) is compared by the
   change's wall-clock `ts`, since two files share no positions. A change
   made inside the target's tree is in turn 1 at least: a successor's seed

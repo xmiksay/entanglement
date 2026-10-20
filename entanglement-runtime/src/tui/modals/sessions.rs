@@ -299,6 +299,7 @@ mod tests {
             created: 0,
             last_active: 0,
             parent: None,
+            predecessor: None,
             root: true,
             first_prompt: Some("fix the login bug".to_string()),
             name: None,

@@ -362,16 +362,17 @@ async fn run(tool: &dyn Tool, session: &SessionId, input: &str) {
 }
 
 /// A background script's call after its session compacted (ADR-0241) runs
-/// with the launch's `ToolExec` seq masked: it would name an unrelated
-/// record in the successor's log.
+/// with the launch's `ToolExec` seq masked and marked adopted: the seq would
+/// name an unrelated record in the successor's log (ADR-0243).
 #[tokio::test]
 async fn without_exec_seq_masks_the_enclosing_seq() {
     let seen = with_exec_seq(7, async {
-        let outer = current_exec_seq();
-        let inner = without_exec_seq(async { current_exec_seq() }).await;
-        (outer, inner, current_exec_seq())
+        let outer = current_exec_scope();
+        let inner = without_exec_seq(async { current_exec_scope() }).await;
+        (outer, inner, current_exec_scope())
     })
     .await;
-    assert_eq!(seen, (Some(7), None, Some(7)));
-    assert_eq!(current_exec_seq(), None, "no scope at all");
+    let seq = Some(ExecScope::Seq(7));
+    assert_eq!(seen, (seq, Some(ExecScope::Adopted), seq));
+    assert_eq!(current_exec_scope(), None, "no scope at all");
 }

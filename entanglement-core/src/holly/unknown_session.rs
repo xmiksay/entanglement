@@ -24,6 +24,10 @@ pub trait SessionLoader: Send + Sync {
     /// under [`UnknownSession::Refuse`]. `Err` surfaces as an
     /// [`OutEvent::Error`] and spawns nothing.
     ///
+    /// Return `Err` for a compacted-away session, one a later root's
+    /// `SessionStarted.predecessor` names (ADR-0243): core refuses it only
+    /// when this process has seen that successor.
+    ///
     /// WHY bound your own I/O: every message for `session` queues behind this
     /// call until it returns, so a load that never completes strands them.
     async fn load(

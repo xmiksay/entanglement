@@ -8,7 +8,7 @@ use entanglement_core::{AgentState, InMsg, OutEvent, SessionId};
 
 use super::tests::{tick, Fixture};
 use super::tracker::ancestry_walk;
-use super::FileBackups;
+use super::{with_exec_seq, without_exec_seq, FileBackups};
 use crate::session_store::{LogPayload, LogRecord};
 
 /// A stand-in for Holly's session directory: who is under whom right now.
@@ -293,4 +293,22 @@ fn a_lost_pointer_still_reaches_the_moved_child() {
     let report = f.backups.revert(&m.succ, Some(0)).unwrap();
     assert_eq!(report.restored, vec!["a.txt"]);
     assert_eq!(f.read("a.txt"), None);
+}
+
+/// A switched background script's change (ADR-0241) keeps the launch's
+/// request id, which a provider that repeats ids (Gemini's `name#ordinal`)
+/// can put on an unrelated call in the successor's log: the change is placed
+/// by its wall clock, never into that call's turn (ADR-0243).
+#[tokio::test]
+async fn an_adopted_change_is_placed_by_its_clock_not_a_reused_request_id() {
+    let f = Fixture::new();
+    let s = f.sid.clone();
+    f.prompt(&s, "one");
+    // The same request id `req` the change below is recorded with.
+    log(&f, &s, &s, exec(&s, 1));
+    f.prompt(&s, "two");
+    let adopted = without_exec_seq(async { f.change(&s, "f.txt", Some(b"x")) });
+    with_exec_seq(9, adopted).await;
+    let turns = f.backups.turns(&s).unwrap();
+    assert_eq!(turns.iter().map(|t| t.turn).collect::<Vec<_>>(), vec![2]);
 }

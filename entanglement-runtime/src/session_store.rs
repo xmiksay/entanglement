@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::SystemTime;
 
+mod compacted;
 mod listing;
 mod pairing;
 mod payload;
@@ -13,7 +14,7 @@ mod prefix;
 mod resume_check;
 mod store;
 mod tree;
-pub use listing::{children_of, first_prompt_snippet, root_of, SessionMeta};
+pub use listing::{children_of, first_prompt_snippet, resumable_roots, root_of, SessionMeta};
 pub use pairing::pair_records;
 pub use payload::LogPayload;
 pub use prefix::{resumable_prefix, ResumablePrefix, Truncation};

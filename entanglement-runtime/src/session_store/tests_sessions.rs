@@ -98,6 +98,22 @@ fn multi_session_interleaving() {
     assert_eq!(sub_records.len(), 1);
 }
 
+/// A listed session with no log details: a root unless it has a parent.
+fn meta(id: &SessionId, parent: Option<&SessionId>) -> SessionMeta {
+    SessionMeta {
+        id: id.clone(),
+        agent: "build".to_string(),
+        model: None,
+        created: 0,
+        last_active: 0,
+        parent: parent.cloned(),
+        predecessor: None,
+        root: parent.is_none(),
+        first_prompt: None,
+        name: None,
+    }
+}
+
 #[test]
 fn children_of_finds_direct_children() {
     let root_id = SessionId::new("root");
@@ -106,50 +122,10 @@ fn children_of_finds_direct_children() {
     let grandchild_id = SessionId::new("grandchild");
 
     let sessions = vec![
-        SessionMeta {
-            id: root_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: None,
-            root: true,
-            first_prompt: None,
-            name: None,
-        },
-        SessionMeta {
-            id: child1_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: Some(root_id.clone()),
-            root: false,
-            first_prompt: None,
-            name: None,
-        },
-        SessionMeta {
-            id: child2_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: Some(root_id.clone()),
-            root: false,
-            first_prompt: None,
-            name: None,
-        },
-        SessionMeta {
-            id: grandchild_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: Some(child1_id.clone()),
-            root: false,
-            first_prompt: None,
-            name: None,
-        },
+        meta(&root_id, None),
+        meta(&child1_id, Some(&root_id)),
+        meta(&child2_id, Some(&root_id)),
+        meta(&grandchild_id, Some(&child1_id)),
     ];
 
     let children = children_of(&sessions, &root_id);
@@ -169,39 +145,9 @@ fn root_of_walks_up_parent_chain() {
     let child2_id = SessionId::new("child2");
 
     let sessions = vec![
-        SessionMeta {
-            id: root_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: None,
-            root: true,
-            first_prompt: None,
-            name: None,
-        },
-        SessionMeta {
-            id: child1_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: Some(root_id.clone()),
-            root: false,
-            first_prompt: None,
-            name: None,
-        },
-        SessionMeta {
-            id: child2_id.clone(),
-            agent: "build".to_string(),
-            model: None,
-            created: 0,
-            last_active: 0,
-            parent: Some(child1_id.clone()),
-            root: false,
-            first_prompt: None,
-            name: None,
-        },
+        meta(&root_id, None),
+        meta(&child1_id, Some(&root_id)),
+        meta(&child2_id, Some(&child1_id)),
     ];
 
     assert_eq!(root_of(&sessions, &root_id), root_id);
@@ -213,17 +159,7 @@ fn root_of_walks_up_parent_chain() {
 fn root_of_returns_self_for_orphan_session() {
     let orphan_id = SessionId::new("orphan");
 
-    let sessions = vec![SessionMeta {
-        id: orphan_id.clone(),
-        agent: "build".to_string(),
-        model: None,
-        created: 0,
-        last_active: 0,
-        parent: None,
-        root: true,
-        first_prompt: None,
-        name: None,
-    }];
+    let sessions = vec![meta(&orphan_id, None)];
 
     assert_eq!(root_of(&sessions, &orphan_id), orphan_id);
 }
@@ -397,4 +333,23 @@ fn forward_compatible_multi_session_log_rebuilds_tree() {
         .expect("root should exist");
     assert_eq!(root_meta.parent, None);
     assert!(root_meta.root);
+}
+
+/// The resume picker lists roots only, and none a listed successor names as
+/// its predecessor: that one was compacted away (ADR-0243).
+#[test]
+fn resumable_roots_hide_children_and_compacted_away_roots() {
+    let [p, s, child, other] = ["p", "s", "child", "other"].map(SessionId::new);
+    let successor = SessionMeta {
+        predecessor: Some(p.clone()),
+        ..meta(&s, None)
+    };
+    let listed = vec![
+        meta(&p, None),
+        successor,
+        meta(&child, Some(&s)),
+        meta(&other, None),
+    ];
+    let ids: Vec<_> = resumable_roots(listed).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, vec![s, other]);
 }

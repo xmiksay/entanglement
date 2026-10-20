@@ -151,6 +151,9 @@ pub(super) struct LadderCtx {
     pub resolver: Arc<dyn PermissionResolver>,
     pub agents: Arc<RwLock<AgentCatalog>>,
     pub perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
+    /// Each compaction lineage's overlay epoch, moved by the `perm_modes`
+    /// fold (ADR-0243).
+    pub mode_epochs: super::mode_epochs::ModeEpochs,
     pub mode_table: Arc<ModeTable>,
     pub plan_files: Arc<PlanFileRegistry>,
     pub plan_root: std::path::PathBuf,

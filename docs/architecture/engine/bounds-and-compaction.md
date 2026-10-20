@@ -256,7 +256,12 @@ A `Spawn` naming a parent with a live successor joins the successor, even
 while the source is still registered between the fork's two frames, so a
 sub-agent launched in that window is not caught by the cascade.
 The source → successor chain lives in the shared `SessionDirectory`
-(`Holly::successor_of`). A moved child keeps logging to the predecessor's
+(`Holly::successor_of`, `Holly::lineage_head`). It is linear and only
+grows at its end: `Spawn` refuses a second successor of one source, a
+resume re-learning an older log's lineage never branches or prepends a
+known chain, and a compacted-away session is not resumable (resume its
+successor; fork the successor to branch)
+([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)). A moved child keeps logging to the predecessor's
 root file; the successor's file gets an adoption pointer that resume follows,
 so a cold resume of the successor restores it (see
 [heads & persistence](../heads-and-persistence.md)).

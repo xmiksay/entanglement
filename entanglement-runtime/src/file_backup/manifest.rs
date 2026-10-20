@@ -46,6 +46,13 @@ pub(super) struct Change {
     /// direct tool run): placed by `request_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_seq: Option<u64>,
+    /// Made by a background script after it switched to its session's
+    /// compaction successor (ADR-0241): `request_id` is the launch's, a call
+    /// of the predecessor's log, so it is never looked up in this session's
+    /// log — a provider that repeats ids could match an unrelated call there.
+    /// Placed by `ts` (ADR-0243).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopted: bool,
     /// Absolute, resolved target — what a revert writes back to.
     pub path: PathBuf,
     /// The path as the tool call named it — what a report shows.
@@ -153,4 +160,29 @@ pub(super) fn append(path: &Path, line: &Line) -> Result<()> {
         .with_context(|| format!("opening backup manifest {}", path.display()))?;
     let text = serde_json::to_string(line).context("serializing backup manifest line")?;
     writeln!(file, "{text}").with_context(|| format!("appending to {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `adopted` (ADR-0243) is back-compatible both ways: a line written
+    /// before it reads as not adopted, and a non-adopted change writes the
+    /// line it always did.
+    #[test]
+    fn adopted_defaults_to_false_and_is_omitted_when_false() {
+        let old = r#"{"kind":"change","id":0,"ts":1,"session":"s","request_id":"r","path":"/f","display":"f","before":{"state":"absent"},"after":null}"#;
+        let Line::Change(change) = serde_json::from_str::<Line>(old).unwrap() else {
+            panic!("a change line")
+        };
+        assert!(!change.adopted);
+        let written = serde_json::to_string(&Line::Change(change.clone())).unwrap();
+        assert!(!written.contains("adopted"), "{written}");
+        let adopted = Change {
+            adopted: true,
+            ..change
+        };
+        let written = serde_json::to_string(&Line::Change(adopted)).unwrap();
+        assert!(written.contains(r#""adopted":true"#), "{written}");
+    }
 }

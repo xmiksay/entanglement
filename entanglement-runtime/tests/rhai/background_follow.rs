@@ -24,7 +24,8 @@ use super::{is_launch_card, TempDir};
 
 const WAIT: Duration = Duration::from_secs(5);
 
-/// A fresh `go` turn launches `script` in the background; a fresh `edit`
+/// A fresh `go` turn launches `script` in the background, a fresh `run`
+/// turn launches it blocking; a fresh `edit`
 /// turn makes the direct `edit` call `direct`, a fresh `poll` turn a
 /// handle-less `poll`; every other round answers.
 pub(super) struct Follow {
@@ -56,6 +57,7 @@ impl Llm for Follow {
                 RHAI_TOOL,
                 json!({"script": self.script, "background": true}).to_string(),
             )),
+            Some("run") => Some(call(RHAI_TOOL, json!({"script": self.script}).to_string())),
             Some("edit") => Some(call("edit", self.direct.to_string())),
             Some("poll") => Some(call("poll", "{}".into())),
             _ => None,

@@ -108,6 +108,9 @@ impl<'a> ExecIndex<'a> {
         {
             return Some(pos);
         }
+        if change.adopted {
+            return None;
+        }
         // A `rhai` binding runs under `<outer request id>:rhai:<tool>`; the
         // outer `rhai` call is the one in the log.
         let call = change.request_id.split(":rhai:").next().unwrap_or_default();

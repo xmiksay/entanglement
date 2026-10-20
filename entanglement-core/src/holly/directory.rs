@@ -53,11 +53,27 @@ impl SessionDirectory {
         }
     }
 
-    /// Record that `successor` took over from `source` (ADR-0205).
+    /// Record that `successor` took over from `source` (ADR-0205). Lineages
+    /// are linear and a known lineage only ever grows at its end, so no
+    /// session's lineage head moves once this process knows it (ADR-0243).
+    /// The edge is skipped when `source` already has a successor (a branch),
+    /// or when `successor` already has one or is live (the edge would prepend
+    /// to a chain whose head is already known). `Spawn` refuses a second
+    /// successor outright, and a resume refuses a compacted-away session, so
+    /// a skip is only ever a resume re-learning an older log's lineage.
     pub(crate) fn record_successor(&self, source: &SessionId, successor: &SessionId) {
-        self.inner()
-            .successors
-            .insert(source.clone(), successor.clone());
+        let mut inner = self.inner();
+        let known = inner.successors.contains_key(source)
+            || inner.successors.contains_key(successor)
+            || inner.live.contains_key(successor);
+        if !known {
+            inner.successors.insert(source.clone(), successor.clone());
+        }
+    }
+
+    /// Whether `source` already has a compaction successor.
+    pub(crate) fn has_successor(&self, source: &SessionId) -> bool {
+        self.inner().successors.contains_key(source)
     }
 
     /// Follow the compaction-successor chain from `session` to its last link.
@@ -164,6 +180,8 @@ mod tests {
         dir.record_successor(&a, &b);
         dir.record_successor(&b, &c);
         dir.record_successor(&c, &a);
+        assert_eq!(dir.successor_of(&c), None, "recording never closes a cycle");
+        dir.inner().successors.insert(c.clone(), a.clone());
         assert_eq!(dir.predecessors_of(&c), [b.clone(), a.clone()]);
         assert_eq!(dir.predecessors_of(&a), [c, b.clone()]);
         assert_eq!(dir.lineage_head(&a), b);
@@ -204,5 +222,38 @@ mod tests {
         assert_eq!(dir.get(&child).and_then(|i| i.parent), Some(new.clone()));
         dir.set_parent(&SessionId::new("ghost"), &new);
         assert!(dir.get(&SessionId::new("ghost")).is_none());
+    }
+
+    /// A known lineage only grows at its end (ADR-0243): no branch, and no
+    /// edge prepended to a chain or a live session whose head is known.
+    #[test]
+    fn a_known_lineages_head_never_moves() {
+        let dir = SessionDirectory::default();
+        let [p, s1, s2, x, live] = ["p", "s1", "s2", "x", "live"].map(SessionId::new);
+        dir.record_successor(&s1, &s2);
+        dir.record_successor(&p, &s1);
+        assert_eq!(
+            dir.lineage_head(&s2),
+            s1,
+            "no edge prepended to a known chain"
+        );
+        dir.record_successor(&s1, &x);
+        assert_eq!(dir.successor_of(&s1), Some(s2.clone()), "no branch");
+        dir.insert(SessionInfo {
+            session: live.clone(),
+            parent: None,
+            predecessor: None,
+            agent: "general".into(),
+            root: true,
+            user: None,
+        });
+        dir.record_successor(&p, &live);
+        assert_eq!(
+            dir.lineage_head(&live),
+            live,
+            "no edge prepended to a live session"
+        );
+        dir.record_successor(&s2, &x);
+        assert_eq!(dir.successor_of(&s1), Some(x), "the end still grows");
     }
 }

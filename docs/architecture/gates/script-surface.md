@@ -229,7 +229,12 @@ assignment). `script` XOR `path`, the field types and unknown keys are
 validated before the launch. A background run detaches after the launch and
 the read; its listing label is `rhai: <path>`. After its session compacts,
 a background run's nested calls grade, grant and park as the successor
-([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). Separately, for every tool, an
+([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). Every
+run, blocking or background, re-reads its session's mode before each nested
+call, so a `SetMode` mid-run changes its grant scope, and a session's overlay
+entry (an ancestor's too, across its compaction) stops applying to it
+once that session switched mode, and the run's earlier approvals lapse
+([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)). Separately, for every tool, an
 escape card that also cleared a graded `Ask` records both grants on a
 `Session`/`Always` approval.
 

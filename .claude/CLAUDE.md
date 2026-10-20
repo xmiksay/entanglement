@@ -179,7 +179,9 @@ doc, never here**:
   context, so every log replays exactly; the successor keeps the source's
   place in the spawn tree, its live sub-agents and its background work (a
   background script then grades and grants as the successor); `/fork` is
-  the non-compacting copy
+  the non-compacting copy; a lineage is linear — a compacted-away session is
+  not resumable
+  ([ADR-0243](../docs/adr/0243-running-script-reads-mode-and-overlay-epochs.md))
   ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/0234-live-sub-agents-survive-compaction.md)/[ADR-0241](../docs/adr/0241-background-script-follows-compaction.md)).
 - **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
   idle TTL, unknown-session policy, tenant-prefixed ids
