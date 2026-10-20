@@ -2,48 +2,59 @@ use super::super::test_support::detached_card;
 use super::super::{approval, await_decision};
 
 /// `await_decision`, bounded: a waiter a mutant strands fails, not hangs.
-async fn decided(rx: oneshot::Receiver<Decision>) -> Decision {
+pub(super) async fn decided(rx: oneshot::Receiver<Decision>) -> Decision {
     tokio::time::timeout(std::time::Duration::from_secs(5), await_decision(rx))
         .await
         .expect("the waiter was decided")
 }
 use super::*;
-use entanglement_core::ApprovalKind;
+use entanglement_core::{ApprovalKind, PendingApproval as WireApproval};
 
 /// Park `card` and return its receiver plus the sessions its event named.
 fn park(
     pending: &PendingDecisions,
     card: WireApproval,
 ) -> (oneshot::Receiver<Decision>, Vec<String>) {
+    park_on(pending, card, None)
+}
+
+/// [`park`], homing a detached card along `lineage`'s compaction chain.
+pub(super) fn park_on(
+    pending: &PendingDecisions,
+    card: WireApproval,
+    lineage: Option<&Holly>,
+) -> (oneshot::Receiver<Decision>, Vec<String>) {
     let mut emitted = Vec::new();
-    let rx = pending.register_parked(card, "edit", |a| emitted.push(a.session.0.clone()));
+    let rx = pending.register_parked(card, "edit", lineage, |a| emitted.push(a.session.0.clone()));
     (rx, emitted)
 }
 
 /// Move `p`'s cards to `s`, returning the request ids announced.
 fn move_cards(pending: &PendingDecisions, p: &SessionId, s: &SessionId) -> Vec<String> {
     let mut announced = Vec::new();
-    pending.reassign_detached(p, s, |a| announced.push(a.request_id.clone()));
+    pending.reassign_detached(std::slice::from_ref(p), s, |k, _| {
+        announced.push(k.1.clone())
+    });
     announced
 }
 
-fn reject() -> Decision {
+pub(super) fn reject() -> Decision {
     Decision::Reject { reason: None }
 }
 
-async fn rejected(rx: oneshot::Receiver<Decision>) -> bool {
+pub(super) async fn rejected(rx: oneshot::Receiver<Decision>) -> bool {
     matches!(decided(rx).await, Decision::Reject { .. })
 }
 
 /// The refusal a park sharing a live detached card's id gets.
-async fn refused(rx: oneshot::Receiver<Decision>) -> bool {
+pub(super) async fn refused(rx: oneshot::Receiver<Decision>) -> bool {
     matches!(
         decided(rx).await,
         Decision::Reject { reason: Some(r) } if r.contains("already parked")
     )
 }
 
-fn listed(pending: &PendingDecisions) -> Vec<(String, String)> {
+pub(super) fn listed(pending: &PendingDecisions) -> Vec<(String, String)> {
     pending
         .snapshot(None)
         .into_iter()
@@ -79,31 +90,6 @@ async fn a_detached_card_moves_and_answers_under_either_key() {
     assert!(matches!(decided(turn).await, Decision::Stop));
 }
 
-#[tokio::test]
-async fn a_later_detached_park_is_shown_on_the_successor_and_stop_unwinds_it() {
-    let pending = PendingDecisions::default();
-    let (p, s, t) = (
-        SessionId::new("p"),
-        SessionId::new("s"),
-        SessionId::new("t"),
-    );
-    move_cards(&pending, &p, &s);
-    move_cards(&pending, &s, &t);
-    let (rx, emitted) = park(&pending, detached_card(&p, "d"));
-    assert_eq!(emitted, ["t"], "emitted on the end of the chain");
-    // An attended card of the same session is never redirected.
-    let (_turn, emitted) = park(
-        &pending,
-        approval(&p, "a", ApprovalKind::Tool, "bash", "ls", "why", None),
-    );
-    assert_eq!(emitted, ["p"]);
-    pending.stop_session(&p);
-    pending.stop_session(&s);
-    assert!(listed(&pending).contains(&("t".into(), "d".into())));
-    pending.stop_session(&t);
-    assert!(matches!(decided(rx).await, Decision::Stop));
-}
-
 /// Gemini's `name#ordinal` ids repeat, so the successor can park its own
 /// card with a moved card's id. The moved card is never displaced (it would
 /// be stranded on an ended session): the successor's park is refused with
@@ -129,22 +115,6 @@ async fn the_successors_own_park_of_a_moved_cards_id_is_refused() {
     assert_eq!(listed(&pending), [("s".into(), rid.into())]);
     pending.resolve(&s, rid, reject());
     assert!(rejected(moved).await);
-}
-
-/// A fresh detached park whose lineage ends at a session already showing
-/// its id is refused too, rather than kept on the ended predecessor.
-#[tokio::test]
-async fn a_fresh_detached_park_into_an_id_the_successor_shows_is_refused() {
-    let pending = PendingDecisions::default();
-    let (p, s) = (SessionId::new("p"), SessionId::new("s"));
-    let shown = pending.register(&s, "r", "tool", "bash");
-    move_cards(&pending, &p, &s);
-    let (fresh, emitted) = park(&pending, detached_card(&p, "r"));
-    assert!(emitted.is_empty());
-    assert!(refused(fresh).await);
-    assert_eq!(listed(&pending), [("s".into(), "r".into())]);
-    pending.resolve(&s, "r", reject());
-    assert!(rejected(shown).await);
 }
 
 /// Once the moved card is answered on the successor, a stale decision or
@@ -195,19 +165,32 @@ async fn a_move_that_would_collide_stays_put_and_is_not_announced() {
     assert!(rejected(stayed).await);
 }
 
-/// A move from a session that compacted twice lands on the live end.
-#[test]
-fn a_move_lands_on_the_end_of_the_lineage() {
+/// Two ancestors' live cards with one id: only the nearest moves, so the
+/// target never holds two live cards with one id; the other stays put,
+/// still answerable under its own key.
+#[tokio::test]
+async fn of_two_ancestors_cards_with_one_id_only_the_nearest_moves() {
     let pending = PendingDecisions::default();
-    let (p, s, t) = (
+    let (p0, p, s) = (
+        SessionId::new("p0"),
         SessionId::new("p"),
         SessionId::new("s"),
-        SessionId::new("t"),
     );
-    let _card = pending.register_approval(detached_card(&p, "r"), "edit");
-    move_cards(&pending, &s, &t);
-    move_cards(&pending, &p, &s);
-    assert_eq!(listed(&pending), [("t".into(), "r".into())]);
+    let far = pending.register_approval(detached_card(&p0, "r"), "edit");
+    let near = pending.register_approval(detached_card(&p, "r"), "edit");
+    let mut announced = Vec::new();
+    pending.reassign_detached(&[p.clone(), p0.clone()], &s, |k, _| {
+        announced.push(k.1.clone())
+    });
+    assert_eq!(announced, ["r"]);
+    assert_eq!(
+        listed(&pending),
+        [("p0".into(), "r".into()), ("s".into(), "r".into())]
+    );
+    pending.resolve(&s, "r", reject());
+    assert!(rejected(near).await);
+    pending.resolve(&p0, "r", reject());
+    assert!(rejected(far).await);
 }
 
 /// Only a turn card supersedes a live turn card: a detached park under a
@@ -300,13 +283,61 @@ async fn a_decision_prefers_a_live_moved_card_over_one_that_gave_up() {
     assert!(rejected(live).await);
 }
 
+/// A target among its own ancestors (a corrupt chain) moves nothing onto
+/// itself and announces nothing.
 #[test]
-fn a_lineage_cycle_does_not_spin() {
+fn a_target_listed_among_its_ancestors_is_skipped() {
     let pending = PendingDecisions::default();
-    let (p, s) = (SessionId::new("p"), SessionId::new("s"));
+    let p = SessionId::new("p");
+    let _card = pending.register_approval(detached_card(&p, "r"), "edit");
+    let mut announced = 0;
+    pending.reassign_detached(&[p.clone(), p.clone()], &p, |_, _| announced += 1);
+    assert_eq!(announced, 0);
+    assert_eq!(listed(&pending), [("p".into(), "r".into())]);
+}
+
+/// Review round 2: of two live candidates, the exact key wins. The moved
+/// card (key `p`, shown on `s` before moving on to `t`) sorts first by key,
+/// so only the exact-key preference makes `s`'s decision answer `s`'s own.
+#[tokio::test]
+async fn the_exact_key_wins_over_a_card_that_moved_through() {
+    let pending = PendingDecisions::default();
+    let (p, s, t) = (
+        SessionId::new("p"),
+        SessionId::new("s"),
+        SessionId::new("t"),
+    );
+    let moved = pending.register_approval(detached_card(&p, "r"), "edit");
     move_cards(&pending, &p, &s);
-    move_cards(&pending, &s, &p);
-    assert!(move_cards(&pending, &p, &p).is_empty());
-    let (_rx, emitted) = park(&pending, detached_card(&p, "r"));
-    assert_eq!(emitted, ["s"]);
+    move_cards(&pending, &s, &t);
+    let own = pending.register_approval(detached_card(&s, "r"), "edit");
+    pending.resolve(&s, "r", reject());
+    assert!(rejected(own).await);
+    assert_eq!(
+        listed(&pending),
+        [("t".into(), "r".into())],
+        "the moved card waits"
+    );
+    drop(moved);
+}
+
+/// Review round 2: a card a move skips (its id already moved from a nearer
+/// ancestor) records no earlier home, so a decision on the target answers
+/// the near card only. Moving the skipped card onto `s` would make it win
+/// (`a0` sorts before `b`).
+#[tokio::test]
+async fn a_skipped_card_records_no_earlier_home() {
+    let pending = PendingDecisions::default();
+    let (far, near, s) = (
+        SessionId::new("a0"),
+        SessionId::new("b"),
+        SessionId::new("s"),
+    );
+    let far_rx = pending.register_approval(detached_card(&far, "r"), "edit");
+    let near_rx = pending.register_approval(detached_card(&near, "r"), "edit");
+    pending.reassign_detached(&[near.clone(), far.clone()], &s, |_, _| {});
+    pending.resolve(&s, "r", reject());
+    assert!(rejected(near_rx).await);
+    assert_eq!(listed(&pending), [("a0".into(), "r".into())]);
+    drop(far_rx);
 }

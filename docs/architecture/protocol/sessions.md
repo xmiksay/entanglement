@@ -242,7 +242,8 @@ successor on that event, since the turn and its `Done` land there; a head that
 just relays (`pipe`, `serve`) needs no change at all. A `ToolResult` still
 addressed to the retired source is redirected to its successor by the
 supervisor rather than refused as a closed id; `Holly::successor_of` reads the
-same source → successor chain synchronously.
+same source → successor chain synchronously, and `Holly::predecessors_of`
+walks it backwards, nearest first ([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
 
 **Sub-agents survive the fork** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)).
 While handling the successor's `Spawn`, before the source's `CloseSession` is

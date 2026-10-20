@@ -81,6 +81,9 @@ mod background_follow_live;
 // #884: a card parked after its session retired still gets a real seq.
 #[path = "rhai/background_retired.rs"]
 mod background_retired;
+// #888: a card across a chain of compactions, not one hop.
+#[path = "rhai/background_chain.rs"]
+mod background_chain;
 // ADR-0228's write floor: mutating a trusted `*.rhai` file or a skill's
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]

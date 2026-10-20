@@ -70,14 +70,10 @@ pub(super) async fn run(
                 // predecessor's background work (ADR-0231) and its scripts'
                 // cards (ADR-0238); a `/fork` copy sets no `predecessor`.
                 // This eager fold keeps a head's listings right; a lagged
-                // drop is healed from the supervisor's directory.
+                // drop is healed from the supervisor's directory. Both walk
+                // the whole chain back (ADR-0242).
                 if let Some(p) = &predecessor {
-                    ctx.jobs.reassign_owner(p, &session);
-                    ctx.scripts.reassign_owner(p, &session);
-                    ctx.retained.reassign_owner(p, &session);
-                    let holly = &ctx.holly;
-                    ctx.pending
-                        .reassign_detached(p, &session, |a| crate::pending::announce(holly, a));
+                    ctx.adopt_lineage(&session);
                     // A compacted sub-agent answers from its successor; a
                     // root's sub-agents keep its tree budget (ADR-0234).
                     ctx.registry.follow_successor(p, &session);

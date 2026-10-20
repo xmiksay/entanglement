@@ -245,24 +245,30 @@ calls `reassign_owner(p, successor)` on `JobRegistry`, `ScriptRegistry` and
 still-running jobs and scripts, shows the retained outputs as "yours", and
 `poll { handle }` resolves them. That fold reads the lossy shared outbox, so
 every successor `poll`, with or without a handle, first re-runs the
-idempotent move from the supervisor's directory (`Holly::session_info`'s
-`predecessor`). A lagged-away `SessionStarted`, or work the predecessor
-registered after the fold, is adopted before the poll reads anything. The
-heal is one hop: it reaches the immediate predecessor only. **A script's
-parked card moves with it** ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)):
+idempotent move from the supervisor's directory. A lagged-away
+`SessionStarted`, or work the predecessor registered after the fold, is
+adopted before the poll reads anything. The fold and every heal take the
+whole chain back (`Holly::predecessors_of`), not one hop, so two compactions
+before either runs still reach the oldest ancestor
+([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
+**A script's parked card moves with it**
+([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)):
 a parked card keeps its key and gains a `home`, and
 `PendingDecisions::reassign_detached` re-homes every detached card from the
-predecessor onto the successor and records the lineage. That runs in the
-lifecycle fold, before `poll`, before every approval park, and before the
-decision router handles a `Stop` or a decision (`pending::heal_before`); `poll` and a rooted `ListPending` heal every session
-of the walked sub-tree. Each moved card is re-announced as a fresh
-`ToolRequest` on the successor. A decision takes the live card among the exact
-key and the card moved onto that session, so the predecessor's id still
-answers it and never reaches the successor's own card; a timeout's `forget`
-removes only its own closed entry. Every approval park heals first, and a
-home never holds two live cards with one id: only a turn card supersedes a
-live turn card, any other park sharing a live card's key or id is refused with
-a reason. **The script follows too**
+ancestors onto the live end of the chain (`pending::live_end`, which also
+homes a fresh detached park); the registry keeps no lineage of its own. That
+runs in the lifecycle fold, before `poll`, before every approval park, and
+before the decision router handles a `Stop` or a decision
+(`pending::heal_before`); `poll` and a rooted `ListPending` heal every
+session of the walked sub-tree. Each moved card is re-announced as a fresh
+`ToolRequest` on the successor. A decision takes the live card among the
+exact key, the card moved onto that session, and a card whose earlier homes
+(`Parked.via`, the homes a move took it off) include it (ADR-0242), so the
+predecessor's id still answers it and never reaches the successor's own
+card; a timeout's `forget` removes only its own closed entry. Every
+approval park heals first, and a home never holds two live cards with one
+id: only a turn card supersedes a live turn card, any other park sharing a
+live card's key or id is refused with a reason. **The script follows too**
 ([ADR-0241](../../adr/0241-background-script-follows-compaction.md)): before
 each nested call a background run's dispatcher switches to the live end of
 its session's lineage (`Holly::successor_of`, once the executor folded that

@@ -235,6 +235,8 @@ frames go out only after the source has finished writing its own log tail.
 The runtime moves the predecessor's background jobs, scripts and retained
 outputs to the successor when it sees `SessionStarted { predecessor }`, and
 moves a background script's parked approval cards to it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
+Both moves walk the whole compaction chain back, so work two compactions
+behind still arrives ([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
 The script then grades, grants and parks its nested calls as the successor
 ([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). See
 [gates & host tools](../gates/host-tools-contracts.md) §poll.

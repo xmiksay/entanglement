@@ -126,8 +126,8 @@ pub fn park_approval_as(
     detached: bool,
 ) -> oneshot::Receiver<Decision> {
     approval.detached = detached;
-    super::successor::heal_for_park(holly, pending, &approval.session, detached);
-    pending.register_parked(approval, detail, |a| emit_request(holly, a))
+    super::successor::heal_for_park(holly, pending, &approval.session);
+    pending.register_parked(approval, detail, Some(holly), |a| emit_request(holly, a))
 }
 
 /// Emit `approval`'s `ToolRequest` on its session with a fresh seq — the

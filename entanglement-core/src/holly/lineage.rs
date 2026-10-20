@@ -20,4 +20,12 @@ impl Holly {
     pub fn lineage_head(&self, session: &SessionId) -> SessionId {
         self.directory.lineage_head(session)
     }
+
+    /// Every session `session` succeeded, nearest first — its compaction
+    /// chain walked backwards through retired ancestors (ADR-0242). Like
+    /// [`successor_of`][Self::successor_of], it survives lost lifecycle
+    /// events. Empty when `session` never succeeded one.
+    pub fn predecessors_of(&self, session: &SessionId) -> Vec<SessionId> {
+        self.directory.predecessors_of(session)
+    }
 }

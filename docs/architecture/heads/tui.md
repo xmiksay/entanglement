@@ -21,7 +21,10 @@
   session it never saw. After a compaction the runtime re-announces a
   background script's card on the successor ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)); the
   `SessionRegistry` then drops that request id from the successor's
-  predecessor views (`SessionView::predecessor`, from `SessionStarted`), so
+  predecessor views (`SessionView::predecessor`, from `SessionStarted`, or
+  completed from `Holly::predecessors_of` where a link was lost, which also
+  moves a user watching the ancestor a learned link names to the successor,
+  [ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)), so
   the card lives on the view a `Stop` clears; a newer card with an id the
   view already queues replaces that entry in place. When a terminal `Status` moves the prompt to another
   card, the pager closes and a half-typed reject reason is cleared, so no key
