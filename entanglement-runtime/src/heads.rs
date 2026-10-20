@@ -299,10 +299,11 @@ async fn launch_tui(
     .await
 }
 
-/// Prints past root sessions for `cwd`, most-recently-active first.
+/// Prints the resumable past root sessions for `cwd` (no compacted-away
+/// ones, ADR-0243), most-recently-active first.
 pub(crate) fn print_sessions(cwd: &Path) -> Result<()> {
-    let mut sessions = session_store::SessionStore::for_cwd(cwd).list_sessions()?;
-    sessions.retain(|s| s.root);
+    let sessions = session_store::SessionStore::for_cwd(cwd).list_sessions()?;
+    let mut sessions = session_store::resumable_roots(sessions);
     sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
 
     if sessions.is_empty() {

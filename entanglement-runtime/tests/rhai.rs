@@ -78,6 +78,10 @@ mod background_follow_mode;
 // ...its limits, and never a successor that is not live.
 #[path = "rhai/background_follow_live.rs"]
 mod background_follow_live;
+// ADR-0243: every script run re-reads its session's mode per call, and drops
+// an overlay entry once that session switched mode, ancestors included.
+#[path = "rhai/script_live_authority.rs"]
+mod script_live_authority;
 // #884: a card parked after its session retired still gets a real seq.
 #[path = "rhai/background_retired.rs"]
 mod background_retired;

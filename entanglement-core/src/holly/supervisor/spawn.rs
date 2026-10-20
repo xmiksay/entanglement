@@ -42,6 +42,20 @@ impl Supervisor {
             );
             return;
         }
+        // A lineage is linear (ADR-0243): a second successor of one session
+        // would move the first successor's lineage head, which the runtime
+        // keys a running script's overlay epochs by.
+        if let Some(source) = predecessor
+            .as_ref()
+            .filter(|p| self.session_meta.has_successor(p))
+        {
+            let why = format!("cannot spawn a second successor of `{}`", source.0);
+            // On both ids: a head watching the predecessor sees why too.
+            for id in [child, source] {
+                emit_supervisor_error(&self.events, &self.seqs, id, &why);
+            }
+            return;
+        }
         // An unknown spawn target must not silently escalate to `build` (the
         // most-privileged default): `resolve` would fall back there, so a
         // typo'd `Spawn` would launch a full coding agent. `get` + a

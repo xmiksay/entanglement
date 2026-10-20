@@ -10,8 +10,8 @@ use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::session::{session_loop, Session, SessionCmd, SessionStart};
 
 impl Supervisor {
-    /// `Resume`: refuse a closed or live id, else replay `session_id` and
-    /// cascade over its sub-tree.
+    /// `Resume`: refuse a closed, live or compacted-away id, else replay
+    /// `session_id` and cascade over its sub-tree.
     pub(super) async fn resume(
         &mut self,
         session_id: &SessionId,
@@ -35,6 +35,23 @@ impl Supervisor {
                 &self.seqs,
                 session_id,
                 "cannot resume an already-live session id",
+            );
+            return;
+        }
+        // A compacted-away session is not resumable (ADR-0243): its lineage
+        // goes on in its successor, and a second line would branch it.
+        // `ForkSession` is the way to branch.
+        if let Some(end) = self.session_meta.successor_of(session_id) {
+            emit_supervisor_error(
+                &self.events,
+                &self.seqs,
+                session_id,
+                &format!(
+                    "session `{}` compacted into `{end}`; resume `{end}` (fork `{end}` to \
+                     branch)",
+                    session_id.0,
+                    end = end.0
+                ),
             );
             return;
         }

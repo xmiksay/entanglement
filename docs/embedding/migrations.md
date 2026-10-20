@@ -283,6 +283,32 @@ removes `user_only`. What an embedder has to change:
   key; only `park_approval_as` homes a detached card on the live end of
   core's chain.
 
+## Linear lineages and live script authority (ADR-0243, #898/#899/#900)
+
+- **Spawn:** `Spawn { predecessor: Some(p) }` is refused with a supervisor
+  `Error` (on the new id and on `p`) when `p` already has a compaction
+  successor. A lineage is linear; `ForkSession` is the way to branch.
+- **Resume:** re-learning a log's `SessionStarted { predecessor }` edges no
+  longer overwrites a recorded successor, nor prepends to a chain or a live
+  session this process already knows. `successor_of` keeps the first link,
+  and no known session's `lineage_head` moves.
+- **Compacted-away sessions:** `Holly::resume` of a session this process
+  knows was compacted away is refused with an `Error` naming the end of its
+  chain ("session `p` compacted into `s`; resume `s`"). The runtime's
+  `SessionStore::load_for_resume` refuses the same from the logs
+  (`SessionStore::compacted_into`), so a fresh process refuses it too.
+- **Your own store:** in a fresh process core refuses only edges it has
+  seen. An embedder that resumes from its own store, or answers
+  `UnknownSession::Resume` through a `SessionLoader`, must refuse an id that
+  a later root's `SessionStarted.predecessor` names (return an error from
+  `load`, or don't call `Holly::resume`), and point at the successor.
+- **Runtime:** a running `rhai` script re-reads its session's mode before
+  every nested call (blocking runs too) and drops a snapshot overlay entry
+  once its compaction lineage's epoch moved (`ModeEpochs`). Its per-run
+  approvals lapse on a mode change. A file backup a switched background
+  script records is marked `adopted` on the manifest `Change`
+  (serde-defaulted; older manifests read unchanged).
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

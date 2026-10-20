@@ -303,7 +303,15 @@ assistant/tool messages and the model appears to forget the conversation.
   "changed from" transition, an accepted trade-off.
   The logic is the pure `session_store::check_for_resume`, which also
   refuses a gap; `SessionStore::load_for_resume` and `resume_with_mode` wrap it for the
-  heads.
+  heads. `load_for_resume` also refuses a compacted-away root, one a later
+  root log's own `SessionStarted` names as its predecessor
+  (`SessionStore::compacted_into`), naming the end of its chain to resume
+  instead. The TUI resume modal and `skutter sessions` list only resumable
+  roots (`session_store::resumable_roots`, from `SessionMeta::predecessor`),
+  which also keeps `d` off a predecessor file the successor's resume still
+  reads for moved sub-agents (ADR-0234); a refusal that still happens is a
+  TUI status line
+  ([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)).
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status

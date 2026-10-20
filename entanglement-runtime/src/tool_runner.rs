@@ -58,6 +58,7 @@ pub use call_grader::grade_in_scope;
 mod builder;
 mod inputs;
 mod lifecycle;
+mod mode_epochs;
 mod overlay_warn;
 mod wrappers;
 pub use builder::{ToolExecutor, ToolExecutorBuilder};
@@ -243,6 +244,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // The ladder's long-lived shared state (issue #451), built once here
         // by moving the locals above: the lifecycle loop, the background
         // listeners and every ladder handler read them off this one struct.
+        let mode_epochs = mode_epochs::ModeEpochs::of(holly.clone());
         let ctx = LadderCtx {
             holly,
             registry,
@@ -254,6 +256,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             resolver,
             agents,
             perm_modes,
+            mode_epochs,
             mode_table,
             plan_files,
             plan_root,

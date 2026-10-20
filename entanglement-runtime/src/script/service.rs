@@ -18,8 +18,10 @@ use super::BindingCall;
 /// nested call (`Via::budget`), not here. Every call is reported live as a
 /// `NestedCall` (capped, with one closing summary — ADR-0233) — here, since
 /// this loop is the one place every binding of every run passes through.
-/// A background run follows its session's compaction and current mode
-/// before each call (ADR-0241). Returns whether a `Stop` unwound a nested approval.
+/// Before each call a background run follows its session's compaction
+/// (ADR-0241), and every run re-reads its session's mode and drops stale
+/// overlay entries (ADR-0243). Returns whether a `Stop` unwound a nested
+/// approval.
 pub(super) async fn service_bindings(
     mut rx: mpsc::UnboundedReceiver<BindingCall>,
     dispatcher: &mut Dispatcher,

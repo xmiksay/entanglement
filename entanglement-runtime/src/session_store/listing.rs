@@ -25,6 +25,10 @@ pub struct SessionMeta {
     pub last_active: u64,
     /// Parent session ID (None for root sessions).
     pub parent: Option<SessionId>,
+    /// The session this one succeeds as a compaction successor (ADR-0205).
+    /// A session some listed one names here was compacted away, and is not
+    /// resumable (ADR-0243).
+    pub predecessor: Option<SessionId>,
     /// Whether this is a root session.
     pub root: bool,
     /// Truncated snippet of the first user prompt, for human-readable listings
@@ -138,6 +142,7 @@ fn list_dir(dir: &Path) -> Result<Vec<SessionMeta>> {
                     root,
                     ts,
                     parent,
+                    predecessor,
                     ..
                 }) if started.is_none() => {
                     started = Some(SessionMeta {
@@ -147,6 +152,7 @@ fn list_dir(dir: &Path) -> Result<Vec<SessionMeta>> {
                         created: *ts,
                         last_active,
                         parent: parent.clone(),
+                        predecessor: predecessor.clone(),
                         root: *root,
                         first_prompt: None,
                         name: None,
@@ -180,6 +186,7 @@ fn list_dir(dir: &Path) -> Result<Vec<SessionMeta>> {
             created: last_active,
             last_active,
             parent: None,
+            predecessor: None,
             root: true,
             first_prompt: None,
             name: None,
@@ -191,6 +198,19 @@ fn list_dir(dir: &Path) -> Result<Vec<SessionMeta>> {
     }
 
     Ok(sessions)
+}
+
+/// The resumable roots of a listing: not spawned children (they live in
+/// their root's file) and not compacted away (a listed successor names them,
+/// ADR-0243). Hiding a compacted-away root also keeps a delete off the file
+/// its successor's resume reads for moved sub-agents (ADR-0234).
+pub fn resumable_roots(mut sessions: Vec<SessionMeta>) -> Vec<SessionMeta> {
+    let succeeded: std::collections::HashSet<SessionId> = sessions
+        .iter()
+        .filter_map(|s| s.predecessor.clone())
+        .collect();
+    sessions.retain(|s| s.root && !succeeded.contains(&s.id));
+    sessions
 }
 
 /// Returns all child sessions of the given parent session ID.

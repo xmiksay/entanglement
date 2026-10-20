@@ -23,12 +23,12 @@ use super::LadderCtx;
 
 /// Snapshot everything a call needs before spawning, so it stays ordered
 /// with the lifecycle events the loop already folded: the ancestor chain
-/// (ADR-0024), the chain's overlays (#539/#628/#634), the session's mode and
-/// its limits (ADR-0207 §8/§11), and the registry (#372 — a brief read lock,
-/// never held across an `.await`). An unseen session's empty mode name never
-/// matches a grant, and its resolver grade fails closed (#156). Shared with
-/// the spawning routes, which climb the same ladder before launching
-/// (ADR-0232).
+/// (ADR-0024), the chain's overlays (#539/#628/#634) with each entry's
+/// lineage epoch (ADR-0243), the session's mode and its limits (ADR-0207
+/// §8/§11), and the registry (#372 — a brief read lock, never held across an
+/// `.await`). An unseen session's empty mode name never matches a grant, and
+/// its resolver grade fails closed (#156). Shared with the spawning routes,
+/// which climb the same ladder before launching (ADR-0232).
 pub(super) fn dispatcher(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
@@ -36,14 +36,12 @@ pub(super) fn dispatcher(
     session: &SessionId,
 ) -> Dispatcher {
     let chain = ancestor_chain(spawn_guard, session);
-    let overlays = chain
+    let overlays: HashMap<_, _> = chain
         .iter()
         .filter_map(|s| overlays.get(s).map(|o| (s.clone(), o.clone())))
         .collect();
-    let mode = ctx
-        .perm_modes
-        .lock()
-        .expect("permission-mode mutex poisoned")
+    let overlay_epochs = ctx.mode_epochs.snapshot(&ctx.perm_modes, overlays.keys());
+    let mode = crate::tool_runner::mode_epochs::lock_modes(&ctx.perm_modes)
         .get(session)
         .cloned()
         .unwrap_or_default();
@@ -79,9 +77,10 @@ pub(super) fn dispatcher(
         mcp_http: ctx.mcp_http.clone(),
         mcp_scopes: ctx.mcp_scopes.clone(),
         session: session.clone(),
-        overlay_mode: mode.clone(),
         mode,
         perm_modes: ctx.perm_modes.clone(),
+        mode_epochs: ctx.mode_epochs.clone(),
+        overlay_epochs,
         mode_table: ctx.mode_table.clone(),
         limits,
         denials: ctx.denials.clone(),

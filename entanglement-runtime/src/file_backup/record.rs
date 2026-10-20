@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use entanglement_core::SessionId;
 
 use super::manifest::{self, Change, Line, Prior, Stats, BLOBS, MANIFEST};
-use super::{current_exec_seq, lock, now_ms, sha256_hex, BackupLimits, FileBackups};
+use super::{current_exec_scope, lock, now_ms, sha256_hex, BackupLimits, ExecScope, FileBackups};
 use crate::config::undo::format_size;
 
 /// What a change must know from *before* its write lands (ADR-0236 §2):
@@ -101,12 +101,17 @@ impl FileBackups {
             None => Prior::Absent,
             Some(bytes) => store_prior(&limits, &blobs, stats, bytes),
         };
+        let scope = current_exec_scope();
         let change = Change {
             id: stats.next_id,
             ts: stamp.ts,
             session: session.clone(),
             request_id: request_id.to_string(),
-            exec_seq: current_exec_seq(),
+            exec_seq: match scope {
+                Some(ExecScope::Seq(seq)) => Some(seq),
+                _ => None,
+            },
+            adopted: scope == Some(ExecScope::Adopted),
             path: real_path(abs),
             display: shown.to_string(),
             before,

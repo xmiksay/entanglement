@@ -75,32 +75,43 @@ impl Default for BackupLimits {
     }
 }
 
+/// What the running call task tells a change about the `ToolExec` it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecScope {
+    /// The `ToolExec`'s seq: the change names its exact log record.
+    Seq(u64),
+    /// A switched background script's call (ADR-0241): the launch's
+    /// `ToolExec` is a record of the predecessor's log, not the successor's
+    /// the change is recorded under.
+    Adopted,
+}
+
 tokio::task_local! {
-    /// The `seq` of the `ToolExec` whose call task is running — set by the
-    /// executor around each dispatched call ([`with_exec_seq`]), read when a
-    /// file tool records a change so the change names its exact log record.
-    static EXEC_SEQ: Option<u64>;
+    /// Set by the executor around each dispatched call ([`with_exec_seq`]),
+    /// read when a file tool records a change.
+    static EXEC_SCOPE: ExecScope;
 }
 
 /// Run `fut` (one dispatched tool call) with its `ToolExec` seq in scope, so
 /// any change it records is placed in the right turn even when request ids
 /// repeat across turns (Gemini's `name#ordinal`).
 pub fn with_exec_seq<F: Future>(seq: u64, fut: F) -> impl Future<Output = F::Output> {
-    EXEC_SEQ.scope(Some(seq), fut)
+    EXEC_SCOPE.scope(ExecScope::Seq(seq), fut)
 }
 
 /// Run `fut` with no `ToolExec` seq in scope, inside a call task that has
 /// one: a background script's nested call after its session compacted
 /// (ADR-0241) records under the successor, whose log never had the launch's
-/// `ToolExec` — that seq would name an unrelated record there, so the
-/// change is placed by its wall clock instead.
+/// `ToolExec`. Its seq, or its request id (repeating ids, ADR-0243), could
+/// name an unrelated record there, so the change is marked adopted and
+/// placed by its wall clock.
 #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 pub(crate) fn without_exec_seq<F: Future>(fut: F) -> impl Future<Output = F::Output> {
-    EXEC_SEQ.scope(None, fut)
+    EXEC_SCOPE.scope(ExecScope::Adopted, fut)
 }
 
-fn current_exec_seq() -> Option<u64> {
-    EXEC_SEQ.try_with(|s| *s).ok().flatten()
+fn current_exec_scope() -> Option<ExecScope> {
+    EXEC_SCOPE.try_with(|s| *s).ok()
 }
 
 /// Handle to one project's file backups. Cheap to clone; every clone shares

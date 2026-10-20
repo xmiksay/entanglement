@@ -273,8 +273,10 @@ live card's key or id is refused with a reason. **The script follows too**
 each nested call a background run's dispatcher switches to the live end of
 its session's lineage (`Holly::successor_of`, once the executor folded that
 session's mode), so later calls grade, grant and park as the successor, and
-re-reads the session's mode (and drops a stale mode-scoped overlay entry)
-before every call; a
+re-reads the session's mode before every call (every script run does,
+blocking ones too, and drops each overlay entry whose session switched
+mode since the snapshot, by its compaction lineage's epoch,
+[ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)); a
 call in flight finishes as the predecessor, but its `Session` grant or `http`
 unlock is recorded where the next call will be graded (the same switch
 condition). Closing the predecessor never

@@ -21,6 +21,7 @@ mod hibernate;
 mod history_propagation;
 mod idle_ttl;
 mod lazy_prompt_known_child;
+mod linear_lineage;
 mod mcp_envelope;
 mod mid_stream_error;
 mod model_switch;

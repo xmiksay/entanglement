@@ -337,6 +337,12 @@ impl Holly {
     /// Resume `root_id` from its replayed `(Option<InMsg>, OutEvent)` log
     /// records: the supervisor rebuilds the session state and spawns a task
     /// seeded from it. Returns `root_id`.
+    ///
+    /// A compacted-away session is not resumable (ADR-0243). The supervisor
+    /// refuses one only when this process has seen its successor, so an
+    /// embedder resuming from its own store must refuse an id that a later
+    /// root's `SessionStarted.predecessor` names, and resume that successor
+    /// instead.
     #[allow(clippy::result_large_err)] // see `send` — the raw SendError is deliberate
     pub async fn resume(
         &self,

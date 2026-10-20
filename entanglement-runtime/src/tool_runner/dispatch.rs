@@ -77,13 +77,16 @@ pub(crate) struct Dispatcher {
     pub session: SessionId,
     /// The session's permission mode — grants are scoped to it (ADR-0207 §8).
     pub mode: String,
-    /// Every session's mode as the executor folded it — read when a
-    /// background script follows its session's compaction (ADR-0241).
+    /// Every session's mode as the executor folded it — a script re-reads
+    /// its session's before each nested call (ADR-0241, ADR-0243).
     pub perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
-    /// The mode `overlays` was snapshotted under: the overlay is
-    /// mode-scoped, so a script drops its session's entry once the mode
-    /// moves on (ADR-0241).
-    pub overlay_mode: String,
+    /// Every compaction lineage's overlay epoch, as the executor folded its
+    /// modes (ADR-0243).
+    pub mode_epochs: super::mode_epochs::ModeEpochs,
+    /// Each `overlays` entry's lineage head and that lineage's epoch when the
+    /// entry was taken: the overlay is mode-scoped, so a script drops an
+    /// entry once its lineage epoch moved (ADR-0243).
+    pub overlay_epochs: super::mode_epochs::Snapshot,
     /// Read only for an explicit `http(...)` rule (ADR-0227).
     pub mode_table: Arc<ModeTable>,
     pub limits: Limits,
