@@ -244,9 +244,10 @@ async fn a_late_predecessor_park_lands_on_the_successor() {
     assert!(matches!(decided(late).await, Decision::Stop));
 }
 
-/// The park's forward walk stops at a successor that is not live (not yet
-/// started, or already ended), so the card is announced with a real seq on
-/// the session where it is, never on one that can't show it.
+/// A park never homes on, or moves to, a successor that is not live
+/// (`live_end`; not yet started, or already ended), so the card is announced
+/// with a real seq on the session where it is, never on one that can't show
+/// it.
 #[tokio::test]
 async fn a_park_never_moves_onto_a_successor_that_is_not_live() {
     let holly = Holly::spawn(EngineConfig::default());
@@ -314,8 +315,9 @@ async fn a_decision_on_an_ended_session_finds_nothing_to_move() {
 }
 
 /// A decision on an intermediate successor whose card moves on past it
-/// (its lineage already continues) still announces the card there: only
-/// the card answered on its own session goes unannounced.
+/// (its lineage already continues) still announces the card there: the
+/// card was never shown on that session, so the decision does not answer
+/// it (ADR-0242).
 #[tokio::test]
 async fn a_decision_heal_announces_a_card_moved_past_its_session() {
     let holly = Holly::spawn(EngineConfig::default());
@@ -329,7 +331,6 @@ async fn a_decision_heal_announces_a_card_moved_past_its_session() {
     spawn_session(&holly, &succ2, None, Some(&succ)).await;
     let r = router(&holly);
     let _rx = park_detached(&r, &pred);
-    r.pending.reassign_detached(&succ, &succ2, |_| {});
     let mut sub = holly.subscribe();
     r.route(InMsg::Approve {
         session: succ,
@@ -339,4 +340,5 @@ async fn a_decision_heal_announces_a_card_moved_past_its_session() {
         run_all: false,
     });
     assert_eq!(drain(&mut sub).0, std::slice::from_ref(&succ2));
+    assert_eq!(r.pending.snapshot(None)[0].session, succ2, "still waiting");
 }

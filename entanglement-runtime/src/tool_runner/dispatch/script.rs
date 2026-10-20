@@ -130,9 +130,9 @@ impl Dispatcher {
     /// and for where a grant is recorded, so a grant always lands where the
     /// next call looks it up.
     fn followable(&self) -> Option<SessionId> {
-        self.holly
-            .successor_of(&self.session)
-            .filter(|s| self.holly.is_live(s) && self.mode_of(s).is_some())
+        // The live end a detached card is homed on too (ADR-0242).
+        Some(crate::pending::live_end(&self.holly, &self.session))
+            .filter(|s| s != &self.session && self.mode_of(s).is_some())
     }
 
     /// `session`'s mode as the executor last folded it.

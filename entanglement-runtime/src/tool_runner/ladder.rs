@@ -182,6 +182,26 @@ pub(super) struct LadderCtx {
     pub trust: Arc<crate::rhai_trust::Trust>,
 }
 
+impl LadderCtx {
+    /// The eager hand-over on a successor's `SessionStarted` (ADR-0231,
+    /// ADR-0238): every retired ancestor's jobs, scripts, retained outputs
+    /// and detached cards move to `session` — the whole chain back, not one
+    /// hop, so a fold that missed a middle link still reaches the oldest
+    /// (ADR-0242).
+    pub(super) fn adopt_lineage(&self, session: &SessionId) {
+        let holly = &self.holly;
+        let ancestors = holly.predecessors_of(session);
+        for p in &ancestors {
+            self.jobs.reassign_owner(p, session);
+            self.scripts.reassign_owner(p, session);
+            self.retained.reassign_owner(p, session);
+        }
+        self.pending.reassign_detached(&ancestors, session, |_, p| {
+            crate::pending::announce(holly, p)
+        });
+    }
+}
+
 /// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and
 /// `overlays` are the executor loop's own mutable state — see the module doc
 /// for why they stay outside [`LadderCtx`].

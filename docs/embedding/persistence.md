@@ -181,7 +181,8 @@ trailing `SessionEnded` arrives after its directory entry is gone. `parent`
 is the one field that can change: when a session compacts, its live sub-agents
 move under the successor (`OutEvent::ParentChanged`, ADR-0234), and
 `Holly::successor_of(id)` names the session a compacted id became
-(`Holly::lineage_head(id)` the id it started as). The runtime's executor
+(`Holly::lineage_head(id)` the id it started as, `Holly::predecessors_of(id)`
+every id it succeeded, nearest first, ADR-0242). The runtime's executor
 treats every session that starts with a `parent` as that parent's sub-agent:
 when it has not launched it itself (a resumed sub-agent, or a child your head
 spawned directly with `InMsg::Spawn { parent }`), it registers it so the

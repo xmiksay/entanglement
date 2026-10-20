@@ -367,6 +367,13 @@ impl SessionView {
         self.predecessor.as_ref()
     }
 
+    /// Link this view to a compaction predecessor learned out of band, from
+    /// the engine's own directory, when its `SessionStarted` was lost
+    /// (ADR-0242). The caller only relinks a missing or dangling link.
+    pub fn relink_predecessor(&mut self, predecessor: SessionId) {
+        self.predecessor = Some(predecessor);
+    }
+
     /// Elapsed run time in whole seconds given the current wall clock (`now_ms`,
     /// ms since epoch): the span from `SessionStarted` to `SessionEnded`, or to
     /// `now_ms` while still running. `None` until the session's start is known.

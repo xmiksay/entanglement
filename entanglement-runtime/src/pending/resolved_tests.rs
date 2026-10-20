@@ -147,7 +147,7 @@ async fn a_moved_card_is_reported_on_its_home() {
     let (pending, _holly, mut sub) = announcing();
     let (p, s) = (SessionId::new("p"), SessionId::new("s"));
     let _rx = pending.register_approval(detached_card(&p, "d"), "edit");
-    pending.reassign_detached(&p, &s, |_| {});
+    pending.reassign_detached(std::slice::from_ref(&p), &s, |_, _| {});
     pending.resolve(&p, "d", approve());
     assert_eq!(drained(&mut sub), [resolved("s", "d", "Approved")]);
 }
@@ -170,7 +170,7 @@ async fn a_moved_cards_expiry_is_reported_on_its_home() {
     let (pending, _holly, mut sub) = announcing();
     let (p, s) = (SessionId::new("p"), SessionId::new("s"));
     let rx = pending.register_approval(detached_card(&p, "d"), "edit");
-    pending.reassign_detached(&p, &s, |_| {});
+    pending.reassign_detached(std::slice::from_ref(&p), &s, |_, _| {});
     drop(rx);
     pending.forget(&p, "d");
     assert_eq!(drained(&mut sub), [resolved("s", "d", "Expired")]);

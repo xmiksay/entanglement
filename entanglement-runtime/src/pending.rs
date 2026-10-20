@@ -44,7 +44,7 @@ mod wait;
 pub use park::{
     approval, headless_starts, list_pending, park_approval, park_approval_as, scopes_for,
 };
-pub(crate) use successor::{announce, heal_before, heal_subtree};
+pub(crate) use successor::{announce, heal_before, heal_subtree, live_end};
 pub use wait::{await_decision, await_decision_timed};
 
 /// What a parked decision is waiting on (#560 P12, ADR-0207 §12): carried
@@ -72,19 +72,20 @@ pub struct Parked {
     /// successor (ADR-0238). The key never changes, so the predecessor's id
     /// keeps answering it.
     pub home: SessionId,
+    /// Every earlier home a move took the card off, oldest first: the
+    /// sessions a head may still show a stale copy on, which keep
+    /// answering it (ADR-0242).
+    pub(crate) via: Vec<SessionId>,
 }
 
 type Waiters = HashMap<(SessionId, String), (oneshot::Sender<Decision>, Parked)>;
 
-/// The waiters plus the compaction lineage a detached card's `home`
-/// follows (ADR-0238), under one lock so a park and a move can't
-/// interleave.
+/// The waiters. A detached card's `home` follows the supervisor's own
+/// compaction lineage (`Holly::successor_of`/`predecessors_of`, ADR-0242),
+/// so the registry keeps no lineage of its own.
 #[derive(Default)]
 struct Inner {
     waiters: Waiters,
-    /// Predecessor → compaction successor, recorded by
-    /// [`PendingDecisions::reassign_detached`].
-    successors: HashMap<SessionId, SessionId>,
 }
 
 /// One parked decision, as a pending listing reports it. Sorted by `(session, request_id)` for a deterministic reply,
@@ -146,18 +147,20 @@ impl PendingDecisions {
         approval: WireApproval,
         detail: impl Into<String>,
     ) -> oneshot::Receiver<Decision> {
-        self.register_parked(approval, detail, |_| {})
+        self.register_parked(approval, detail, None, |_| {})
     }
 
     /// [`register_approval`](Self::register_approval), calling `emit` with
     /// the approval as registered while still holding the lock, so a
     /// move can't run between the park and its event (ADR-0238 §6). A
-    /// detached card of a compacted session is shown on its successor, so
-    /// `emit` sees that session. A refused park emits nothing.
+    /// detached card of a compacted session is shown on the live end of the
+    /// `lineage` engine's chain ([`successor::live_end`]), so `emit` sees
+    /// that session. A refused park emits nothing.
     pub(crate) fn register_parked(
         &self,
         mut approval: WireApproval,
         detail: impl Into<String>,
+        lineage: Option<&Holly>,
         emit: impl FnOnce(&WireApproval),
     ) -> oneshot::Receiver<Decision> {
         let detached = approval.detached;
@@ -169,10 +172,9 @@ impl PendingDecisions {
         };
         let key = approval.session.clone();
         let mut guard = self.lock();
-        let home = if detached {
-            guard.current(&key)
-        } else {
-            key.clone()
+        let home = match lineage {
+            Some(holly) if detached => successor::live_end(holly, &key),
+            _ => key.clone(),
         };
         approval.session = home.clone();
         let parked = Parked {
@@ -181,6 +183,7 @@ impl PendingDecisions {
             approval: Some(approval.clone()),
             detached,
             home,
+            via: Vec::new(),
         };
         match guard.insert(&key, &approval.request_id, parked) {
             Ok((rx, superseded)) => {
@@ -208,6 +211,7 @@ impl PendingDecisions {
             approval,
             detached,
             home: session.clone(),
+            via: Vec::new(),
         };
         let mut guard = self.lock();
         match guard.insert(session, request_id, parked) {
@@ -267,7 +271,7 @@ impl PendingDecisions {
     /// is likewise harmless. An `Approve` scope the card did not offer is
     /// clamped to `Once` ([`clamp_scope`]). A card moved to a compaction
     /// successor answers under its predecessor's id and its new home's
-    /// (ADR-0238).
+    /// (ADR-0238), and under the id of any home it was moved off (ADR-0242).
     pub fn resolve(&self, session: &SessionId, request_id: &str, decision: Decision) {
         let mut guard = self.lock();
         if let Some((tx, parked)) = guard.remove(session, request_id) {

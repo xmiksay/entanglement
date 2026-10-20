@@ -3,7 +3,7 @@
 //! and read synchronously through [`Holly::session_info`][super::Holly::session_info]
 //! and [`Holly::successor_of`][super::Holly::successor_of] (ADR-0211, ADR-0234).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::protocol::{SessionId, SessionInfo};
@@ -77,18 +77,34 @@ impl SessionDirectory {
         Some(current)
     }
 
-    /// Walk the successor chain backwards from `session` to its first link.
-    /// Bounded by the map size, like [`Self::successor_of`].
-    pub(crate) fn lineage_head(&self, session: &SessionId) -> SessionId {
+    /// Every session `session` succeeded, nearest first: the compaction
+    /// chain walked backwards. Each link has one source (an id is
+    /// single-use), so the walk is a list. Bounded by the map size and
+    /// cycle-safe (a visited set), so a corrupt map can't spin it. Empty
+    /// when `session` never succeeded one.
+    pub(crate) fn predecessors_of(&self, session: &SessionId) -> Vec<SessionId> {
         let inner = self.inner();
-        let mut current = session.clone();
+        let mut chain = Vec::new();
+        let mut seen = HashSet::from([session.clone()]);
+        let mut current = session;
         for _ in 0..inner.successors.len() {
-            match inner.successors.iter().find(|(_, s)| *s == &current) {
-                Some((source, _)) => current = source.clone(),
-                None => break,
+            match inner.successors.iter().find(|(_, s)| *s == current) {
+                Some((source, _)) if seen.insert(source.clone()) => {
+                    chain.push(source.clone());
+                    current = source;
+                }
+                _ => break,
             }
         }
-        current
+        chain
+    }
+
+    /// The first link of `session`'s compaction chain, `session` itself
+    /// when it never succeeded one.
+    pub(crate) fn lineage_head(&self, session: &SessionId) -> SessionId {
+        self.predecessors_of(session)
+            .pop()
+            .unwrap_or_else(|| session.clone())
     }
 
     /// Every entry, sorted by id — the `ListSessions` reply order.
@@ -130,6 +146,42 @@ mod tests {
         assert_eq!(dir.lineage_head(&c), a);
         assert_eq!(dir.lineage_head(&b), a);
         assert_eq!(dir.lineage_head(&a), a);
+        assert_eq!(dir.predecessors_of(&c), [b.clone(), a.clone()]);
+        assert_eq!(dir.predecessors_of(&b), std::slice::from_ref(&a));
+        assert!(dir.predecessors_of(&a).is_empty());
+    }
+
+    /// A cycle (which the single-use id rule prevents) ends the backward
+    /// walk instead of spinning it, and never names the start.
+    #[test]
+    fn the_backward_walk_survives_a_cycle() {
+        let dir = SessionDirectory::default();
+        let (a, b, c) = (
+            SessionId::new("a"),
+            SessionId::new("b"),
+            SessionId::new("c"),
+        );
+        dir.record_successor(&a, &b);
+        dir.record_successor(&b, &c);
+        dir.record_successor(&c, &a);
+        assert_eq!(dir.predecessors_of(&c), [b.clone(), a.clone()]);
+        assert_eq!(dir.predecessors_of(&a), [c, b.clone()]);
+        assert_eq!(dir.lineage_head(&a), b);
+    }
+
+    /// The walk is bounded by the map: a long chain is walked to its head,
+    /// one step per recorded compaction.
+    #[test]
+    fn the_backward_walk_reaches_the_head_of_a_long_chain() {
+        let dir = SessionDirectory::default();
+        let ids: Vec<SessionId> = (0..50).map(|i| SessionId::new(format!("s{i}"))).collect();
+        for pair in ids.windows(2) {
+            dir.record_successor(&pair[0], &pair[1]);
+        }
+        let back = dir.predecessors_of(&ids[49]);
+        assert_eq!(back.len(), 49);
+        assert_eq!(back.first(), Some(&ids[48]));
+        assert_eq!(back.last(), Some(&ids[0]));
     }
 
     #[test]

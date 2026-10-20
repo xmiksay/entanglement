@@ -240,11 +240,9 @@ pub async fn run_poll(
     input: String,
 ) {
     // Self-heal the ADR-0231/0234 moves: the lifecycle fold reads a lossy
-    // broadcast, the supervisor's directory does not.
-    regs.adopt_predecessor_work(
-        holly.session_info(&session).and_then(|i| i.predecessor),
-        &session,
-    );
+    // broadcast, the supervisor's directory does not. The whole chain back,
+    // so two compactions the fold missed still hand work over (ADR-0242).
+    regs.adopt_predecessor_work(&holly.predecessors_of(&session), &session);
     regs.agents.heal_from(&holly);
     crate::pending::heal_subtree(&holly, &regs.pending, &regs.agents, &session);
     let outcome = subtree::resolve_with_subtree(&regs, &session, &input).await;

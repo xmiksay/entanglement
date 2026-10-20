@@ -46,18 +46,15 @@ pub struct PollRegistries {
 }
 
 impl PollRegistries {
-    /// Re-run the ADR-0231 successor hand-over from `predecessor` to
+    /// Re-run the ADR-0231 successor hand-over from every one of
+    /// `ancestors` (the compaction chain back from `session`, ADR-0242) to
     /// `session`. Idempotent, so it is safe on every poll. The scripts'
     /// parked cards move in [`crate::pending::heal_subtree`] (ADR-0238).
-    pub(super) fn adopt_predecessor_work(
-        &self,
-        predecessor: Option<SessionId>,
-        session: &SessionId,
-    ) {
-        if let Some(p) = predecessor {
-            self.jobs.reassign_owner(&p, session);
-            self.scripts.reassign_owner(&p, session);
-            self.retained.reassign_owner(&p, session);
+    pub(super) fn adopt_predecessor_work(&self, ancestors: &[SessionId], session: &SessionId) {
+        for p in ancestors {
+            self.jobs.reassign_owner(p, session);
+            self.scripts.reassign_owner(p, session);
+            self.retained.reassign_owner(p, session);
         }
     }
 }
@@ -223,10 +220,10 @@ mod tests {
         let (pred, succ) = (SessionId::new("pred"), SessionId::new("succ"));
         let out = r.retained.register_text(Some(pred.clone()), "late".into());
 
-        r.adopt_predecessor_work(None, &succ);
+        r.adopt_predecessor_work(&[], &succ);
         assert!(r.retained.page(&out, &succ, 0, 30).is_none());
 
-        r.adopt_predecessor_work(Some(pred.clone()), &succ);
+        r.adopt_predecessor_work(std::slice::from_ref(&pred), &succ);
         let listed = resolve_with_subtree(&r, &succ, "{}").await;
         assert!(listed
             .text

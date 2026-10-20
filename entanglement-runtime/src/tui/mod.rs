@@ -221,7 +221,7 @@ pub async fn tui(
                 }
             }
             recv = tokio::time::timeout(Duration::from_millis(50), holly_sub.recv()) => match recv {
-                Ok(Ok(event)) => dispatch_engine_event(&mut app, &mut attention, event),
+                Ok(Ok(event)) => dispatch_engine_event(&mut app, &mut attention, holly, event),
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
                     tracing::warn!("TUI lagged, skipped {n} engine events");
                     app.engine_events_lagged();
@@ -248,7 +248,7 @@ pub async fn tui(
         if drain_terminal_events(&mut event_rx, &mut app, holly, &mut attention).await? {
             break;
         }
-        drain_engine_events(&mut holly_sub, &mut app, &mut attention);
+        drain_engine_events(&mut holly_sub, &mut app, &mut attention, holly);
 
         // A command/action may have requested a terminal-owning effect (open
         // `$EDITOR`, export). Run it here — the loop owns the `Terminal` — and
@@ -368,11 +368,12 @@ fn drain_engine_events(
     holly_sub: &mut tokio::sync::broadcast::Receiver<entanglement_core::OutEvent>,
     app: &mut App,
     attention: &mut Attention,
+    holly: &Holly,
 ) {
     use tokio::sync::broadcast::error::TryRecvError;
     loop {
         match holly_sub.try_recv() {
-            Ok(event) => dispatch_engine_event(app, attention, event),
+            Ok(event) => dispatch_engine_event(app, attention, holly, event),
             Err(TryRecvError::Lagged(_)) => app.engine_events_lagged(),
             Err(_) => break,
         }
@@ -381,13 +382,15 @@ fn drain_engine_events(
 
 /// Routes one engine event to the UI, first letting the attention layer ring the
 /// bell / raise a desktop notification on a signal-worthy `Status` transition
-/// (issue #14).
+/// (issue #14). A card event first learns lineage its view missed (ADR-0242).
 fn dispatch_engine_event(
     app: &mut App,
     attention: &mut Attention,
+    holly: &Holly,
     event: entanglement_core::OutEvent,
 ) {
     attention.observe(&event, &mut std::io::stdout());
+    app.learn_lineage(&event, |s| holly.predecessors_of(s));
     app.handle_out_event(event);
 }
 

@@ -268,6 +268,21 @@ removes `user_only`. What an embedder has to change:
   it straight after registering, or a `Stop`/timeout in between reports the
   end before the card.
 
+## Heals walk the whole compaction chain (ADR-0242, #888/#887)
+
+- **API:** new `Holly::predecessors_of(id)` returns every session `id`
+  succeeded, nearest first, read from the supervisor's directory (so it
+  survives lost lifecycle events). It is the backwards counterpart of
+  `successor_of`; `lineage_head` is its last element.
+- **Answering:** `Approve`/`Reject` now reach a moved card under any session
+  it was shown on: the key it was parked under, its current home, or any
+  home a move took it off. A head holding a stale copy on a middle link of a
+  chain of compactions is never left with a dead card.
+- **Registry:** `PendingDecisions` keeps no lineage of its own any more. A
+  detached card registered through `register_approval` is homed on its own
+  key; only `park_approval_as` homes a detached card on the live end of
+  core's chain.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

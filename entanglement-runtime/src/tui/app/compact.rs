@@ -12,7 +12,7 @@
 //! background session that overflowed mid-turn gets its view either way, and
 //! only a compaction of the *active* session moves the user.
 
-use entanglement_core::SessionId;
+use entanglement_core::{OutEvent, SessionId};
 
 use super::App;
 
@@ -57,6 +57,56 @@ impl App {
             self.sessions.switch_to(successor);
         }
         self.mark_dirty();
+    }
+
+    /// Learn a session's compaction lineage before a card event folds, where
+    /// the views' chain lost a `SessionStarted` (broadcast lag). Without it a
+    /// moved card's copy, or an ended card's, would stay on a predecessor's
+    /// view for good (ADR-0238 §7, ADR-0240 §8): the views' walk stops at
+    /// the first missing link or missing view. `predecessors_of` is the
+    /// engine's own directory read (`Holly::predecessors_of`, ADR-0242), so
+    /// no wire event is needed; it is read on every such event, since only
+    /// the engine can tell a lost link from a chain's true head. Each view
+    /// in the engine's chain is linked to its nearest ancestor that has a
+    /// view, but only where its own link is missing or names a session with
+    /// no view: a link to an existing view is kept. A user watching the
+    /// ancestor a learned link names follows to the successor, as the lost
+    /// event would have moved them (`follow_successor`); one who went back
+    /// to an older ancestor on purpose stays.
+    pub(crate) fn learn_lineage(
+        &mut self,
+        event: &OutEvent,
+        predecessors_of: impl FnOnce(&SessionId) -> Vec<SessionId>,
+    ) {
+        let moves = matches!(
+            event,
+            OutEvent::ToolRequest { detached: true, .. } | OutEvent::ApprovalResolved { .. }
+        );
+        let Some(session) = event.session().filter(|_| moves).cloned() else {
+            return;
+        };
+        let chain = predecessors_of(&session);
+        let mut learned = Vec::new();
+        let mut at = session.clone();
+        for p in &chain {
+            if self.sessions.view_for(p).is_none() {
+                continue;
+            }
+            self.sessions.ensure(&at);
+            let link = self.sessions.view_for(&at).and_then(|v| v.predecessor());
+            let dangling = link.is_none_or(|q| self.sessions.view_for(q).is_none());
+            if dangling {
+                if let Some(view) = self.sessions.view_for_mut(&at) {
+                    view.relink_predecessor(p.clone());
+                    learned.push(p.clone());
+                }
+            }
+            at = p.clone();
+        }
+        let focused = self.sessions.active_id().clone();
+        if learned.contains(&focused) {
+            self.follow_successor(focused, session);
+        }
     }
 
     /// Seeds recorded but not yet claimed by a successor. Test-only window
@@ -259,5 +309,175 @@ mod tests {
         let mut app = App::new_for_test(SessionId::new("s1"));
         app.handle_out_event(started("other", None));
         assert_eq!(app.active_session_id(), &SessionId::new("s1"));
+    }
+
+    /// #888: the TUI missed both successors' `SessionStarted` (p0 → p → s),
+    /// so no view knows its lineage. Without the directory read the copy
+    /// on `p0` stays when the card is re-announced on `s`; with it the copy
+    /// drops, and an end on `s` drops it from every view of the chain.
+    #[tokio::test]
+    async fn a_card_moved_while_the_lineage_events_were_lost_still_moves() {
+        let holly = entanglement_core::Holly::spawn(entanglement_core::EngineConfig::default());
+        let (p0, p, s) = (
+            SessionId::new("p0"),
+            SessionId::new("p"),
+            SessionId::new("s"),
+        );
+        let mut sub = holly.subscribe();
+        for (id, predecessor) in [(&p0, None), (&p, Some(&p0)), (&s, Some(&p))] {
+            let spawn = entanglement_core::InMsg::Spawn {
+                session: id.clone(),
+                parent: None,
+                predecessor: predecessor.cloned(),
+                agent: "general".into(),
+                prompt: "hi".into(),
+                user: None,
+                model: None,
+                mode: None,
+                workdir: None,
+            };
+            holly.send(spawn).await.expect("engine accepts Spawn");
+        }
+        // The directory records the chain before `s` starts (ADR-0234).
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), sub.recv()).await {
+                Ok(Ok(OutEvent::SessionStarted { session, .. })) if session == s => break,
+                Ok(Ok(_)) => {}
+                other => panic!("expected {s} to start: {other:?}"),
+            }
+        }
+
+        let mut blind = App::new_for_test(p0.clone());
+        blind.handle_out_event(detached_card("p0", 1));
+        blind.handle_out_event(detached_card("s", 1));
+        assert!(
+            card_on(&blind, "p0").is_some(),
+            "the gap: no lineage, no drop"
+        );
+
+        let mut app = App::new_for_test(p0.clone());
+        app.handle_out_event(detached_card("p0", 1));
+        let moved = detached_card("s", 1);
+        app.learn_lineage(&moved, |s| holly.predecessors_of(s));
+        app.handle_out_event(moved);
+        assert_eq!(
+            card_on(&app, "p0"),
+            None,
+            "the predecessor's copy is dropped"
+        );
+        assert_eq!(card_on(&app, "s").as_deref(), Some("x-1:rhai:edit"));
+        assert_eq!(
+            app.sessions
+                .view_for(&s)
+                .and_then(|v| v.predecessor().cloned()),
+            Some(p0.clone()),
+            "linked to the nearest ancestor with a view"
+        );
+
+        // An end on `s` drops a copy `p0` re-acquired (a lagged replay).
+        app.handle_out_event(detached_card("p0", 2));
+        let end = OutEvent::ApprovalResolved {
+            session: s.clone(),
+            seq: 2,
+            request_id: "x-1:rhai:edit".into(),
+            outcome: entanglement_core::ApprovalOutcome::Approved,
+        };
+        app.learn_lineage(&end, |s| holly.predecessors_of(s));
+        app.handle_out_event(end);
+        assert_eq!(card_on(&app, "p0"), None);
+        assert_eq!(card_on(&app, "s"), None);
+    }
+
+    /// #888: a user watching `p0` whose TUI lost the successors'
+    /// `SessionStarted` follows to `s` once a card event teaches the lineage,
+    /// as the lost events would have moved them; a background view does not
+    /// yank the user.
+    #[test]
+    fn a_learned_lineage_moves_the_user_watching_an_ancestor() {
+        let (p0, p, s) = (
+            SessionId::new("p0"),
+            SessionId::new("p"),
+            SessionId::new("s"),
+        );
+        let chain = |_: &SessionId| vec![p.clone(), p0.clone()];
+        let mut app = App::new_for_test(p0.clone());
+        app.handle_out_event(compacted("p0", 1, "the summary", true));
+        app.learn_lineage(&detached_card("s", 1), chain);
+        assert_eq!(app.sessions.active_id(), &s, "followed to the live end");
+        assert_eq!(first_user_text(&app, "s").as_deref(), Some("the summary"));
+
+        let mut watching_other = App::new_for_test(SessionId::new("other"));
+        watching_other.sessions.ensure(&p0);
+        watching_other.learn_lineage(&detached_card("s", 1), chain);
+        assert_eq!(
+            watching_other.sessions.active_id(),
+            &SessionId::new("other")
+        );
+    }
+
+    /// Review round 1: the TUI saw `s`'s `SessionStarted{p}` but lost
+    /// `p`'s, so the views' walk stops at `p`; or it never had a `p` view,
+    /// so `s`'s link dangles. Either way the copy on `p0` must still drop.
+    #[test]
+    fn a_partly_lost_chain_is_completed() {
+        let chain = |_: &SessionId| vec![SessionId::new("p"), SessionId::new("p0")];
+        for with_p_view in [true, false] {
+            let mut app = App::new_for_test(SessionId::new("other"));
+            app.handle_out_event(detached_card("p0", 1));
+            if with_p_view {
+                app.sessions.ensure(&SessionId::new("p"));
+            }
+            app.handle_out_event(started("s", Some("p")));
+            let moved = detached_card("s", 1);
+            app.learn_lineage(&moved, chain);
+            app.handle_out_event(moved);
+            assert_eq!(card_on(&app, "p0"), None, "p view: {with_p_view}");
+            assert_eq!(card_on(&app, "s").as_deref(), Some("x-1:rhai:edit"));
+        }
+    }
+
+    /// A link to an existing view is never overwritten, and nothing learned
+    /// means nobody is moved: a user who went back to `p0` after following
+    /// stays there.
+    #[test]
+    fn a_link_to_an_existing_view_is_kept() {
+        let (p0, s) = (SessionId::new("p0"), SessionId::new("s"));
+        let mut app = App::new_for_test(p0.clone());
+        app.sessions.ensure(&SessionId::new("bogus"));
+        app.handle_out_event(started("s", Some("p0")));
+        app.sessions.switch_to(p0.clone());
+        let card = detached_card("s", 1);
+        app.learn_lineage(&card, |_| vec![SessionId::new("bogus")]);
+        let link = app
+            .sessions
+            .view_for(&s)
+            .and_then(|v| v.predecessor().cloned());
+        assert_eq!(link, Some(p0.clone()), "kept");
+        app.learn_lineage(&card, |_| vec![p0.clone()]);
+        assert_eq!(
+            app.sessions.active_id(),
+            &p0,
+            "nothing learned, nobody moved"
+        );
+    }
+
+    /// Review round 2: `SessionStarted{p, p0}` moved the user to `p`, they
+    /// went back to `p0` on purpose, then `SessionStarted{s, p}` was lost.
+    /// Learning `s → p` must not pull them off `p0`: the lost event would
+    /// only have moved a user watching `p`.
+    #[test]
+    fn a_deliberate_ancestor_view_is_not_pulled_away() {
+        let (p0, p) = (SessionId::new("p0"), SessionId::new("p"));
+        let mut app = App::new_for_test(p0.clone());
+        app.handle_out_event(started("p", Some("p0")));
+        assert_eq!(app.sessions.active_id(), &p);
+        app.sessions.switch_to(p0.clone());
+        app.learn_lineage(&detached_card("s", 1), |_| vec![p.clone(), p0.clone()]);
+        let link = app
+            .sessions
+            .view_for(&SessionId::new("s"))
+            .and_then(|v| v.predecessor().cloned());
+        assert_eq!(link, Some(p.clone()), "the lost link is learned");
+        assert_eq!(app.sessions.active_id(), &p0, "the user stays put");
     }
 }

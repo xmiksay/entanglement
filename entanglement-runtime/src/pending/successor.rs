@@ -9,9 +9,12 @@
 //! (where it is shown, listed and stopped) moves. The move runs at the
 //! ADR-0231 points: the lifecycle fold on the successor's `SessionStarted`,
 //! and a self-heal from the supervisor's directory before anything reads,
-//! answers or stops the successor's cards.
+//! answers or stops the successor's cards. Every move walks the whole
+//! compaction chain back from its target (`Holly::predecessors_of`,
+//! ADR-0242), so two compactions before a fold or heal still reach the
+//! oldest ancestor's cards.
 
-use entanglement_core::{Holly, InMsg, PendingApproval as WireApproval, SessionId};
+use entanglement_core::{Holly, InMsg, SessionId};
 use tokio::sync::oneshot;
 
 use super::{Inner, Parked, PendingDecisions};
@@ -21,20 +24,6 @@ use crate::seam::Decision;
 type Key = (SessionId, String);
 
 impl Inner {
-    /// Where a card parked by `session`'s detached work is shown now: the
-    /// end of its recorded compaction lineage. Bounded by the map's size, so
-    /// a cycle can't spin the walk.
-    pub(super) fn current(&self, session: &SessionId) -> SessionId {
-        let mut at = session.clone();
-        for _ in 0..self.successors.len() {
-            match self.successors.get(&at) {
-                Some(next) if next != session => at = next.clone(),
-                _ => break,
-            }
-        }
-        at
-    }
-
     /// Insert under `key`, home `parked.home`. Only a turn card supersedes a
     /// live turn card under the same key, stopping it (a resume's re-offer
     /// after a lagged-away `SessionHibernated`), as before ADR-0238. Any other
@@ -69,23 +58,21 @@ impl Inner {
         Ok((rx, superseded))
     }
 
-    /// The key a decision for `(session, request_id)` answers: its exact key
-    /// or a card moved onto `session` with that id. A home never holds two
-    /// live cards with one id (the park guard and the move's skip), so at
-    /// most one candidate is live; it wins over any that gave up. Only a
-    /// card that moved there matches, so a predecessor's id never reaches
-    /// the successor's own card.
+    /// The key a decision for `(session, request_id)` answers, among the
+    /// cards [`answers`] matches: a live one over any that gave up, then the
+    /// exact key, then the key string as a deterministic last tie-break.
+    /// At most one live foreign candidate exists: a card leaves a home only
+    /// when that session retires, and a park or a move onto a live card's id
+    /// is refused or skipped.
     fn find(&self, session: &SessionId, request_id: &str) -> Option<Key> {
-        let mut candidates: Vec<(&Key, bool)> = self
+        let mut candidates: Vec<(&Key, bool, bool)> = self
             .waiters
             .iter()
-            .filter(|(k, (_, p))| {
-                k.1 == request_id && (&k.0 == session || (&p.home == session && &k.0 != session))
-            })
-            .map(|(k, (tx, _))| (k, tx.is_closed()))
+            .filter(|(k, (_, p))| answers(k, p, session, request_id))
+            .map(|(k, (tx, _))| (k, tx.is_closed(), &k.0 != session))
             .collect();
-        candidates.sort_by_key(|(k, closed)| (*closed, k.0 .0.clone()));
-        candidates.first().map(|(k, _)| (*k).clone())
+        candidates.sort_by_key(|(k, closed, foreign)| (*closed, *foreign, k.0 .0.clone()));
+        candidates.first().map(|(k, _, _)| (*k).clone())
     }
 
     /// A timed-out park's own entry, by its exact key and only once its
@@ -120,53 +107,78 @@ impl Inner {
     }
 }
 
+/// Whether a decision for `(session, request_id)` reaches the card under
+/// `key`: its exact key, or a card shown on `session` now (its home) or
+/// before a move took it on (`via`) — a stale copy a head may still answer
+/// (ADR-0242). A card is never shown upstream of where it was parked, so a
+/// predecessor's id never reaches a card the successor parked itself.
+fn answers(key: &Key, parked: &Parked, session: &SessionId, request_id: &str) -> bool {
+    key.1 == request_id
+        && (&key.0 == session || &parked.home == session || parked.via.contains(session))
+}
+
 impl PendingDecisions {
-    /// Move every detached card shown on `predecessor` to the live end of
-    /// its lineage (`successor`, or past it if that compacted too), record
-    /// the lineage, and call `emit` with each still-waiting moved approval —
+    /// Move every detached card shown on one of `ancestors` (nearest first)
+    /// to `target`, and call `emit` with each still-waiting moved approval —
     /// under the lock, so no decision can resolve a card between its move
-    /// and its announcement. Idempotent. Turn cards stay: their turn ends
-    /// with the predecessor (`stop_attached`). A card whose id the target
-    /// already shows stays where it is, unannounced: a home never holds two
-    /// live cards with one id. Parks heal first, so that is a narrow race.
+    /// and its announcement (`emit` sees every live moved card).
+    /// Each card remembers the home it left (`via`). Idempotent. Turn cards
+    /// stay: their turn ends with their session (`stop_attached`). A card
+    /// whose id the target already shows stays where it is, unannounced: a
+    /// home never holds two live cards with one id, so of two ancestors'
+    /// cards with one id only the nearest moves. Parks heal first, so that is a narrow race.
     pub(crate) fn reassign_detached(
         &self,
-        predecessor: &SessionId,
-        successor: &SessionId,
-        mut emit: impl FnMut(&WireApproval),
+        ancestors: &[SessionId],
+        target: &SessionId,
+        mut emit: impl FnMut(&Key, &Parked),
     ) {
-        if predecessor == successor {
-            return;
-        }
         let mut guard = self.lock();
-        guard
-            .successors
-            .insert(predecessor.clone(), successor.clone());
-        let target = guard.current(predecessor);
-        let shown: std::collections::HashSet<String> = guard
+        let mut shown: std::collections::HashSet<String> = guard
             .waiters
             .iter()
-            .filter(|(_, (tx, p))| p.home == target && !tx.is_closed())
+            .filter(|(_, (tx, p))| &p.home == target && !tx.is_closed())
             .map(|((_, rid), _)| rid.clone())
             .collect();
-        for ((_, rid), (tx, parked)) in guard.waiters.iter_mut() {
-            if &parked.home != predecessor || !parked.detached || shown.contains(rid) {
-                continue;
-            }
-            parked.home = target.clone();
-            if let Some(approval) = parked.approval.as_mut() {
-                approval.session = target.clone();
+        for from in ancestors.iter().filter(|a| *a != target) {
+            for (key, (tx, parked)) in guard.waiters.iter_mut() {
+                if &parked.home != from || !parked.detached || shown.contains(&key.1) {
+                    continue;
+                }
+                parked
+                    .via
+                    .push(std::mem::replace(&mut parked.home, target.clone()));
+                if let Some(approval) = parked.approval.as_mut() {
+                    approval.session = target.clone();
+                }
                 if !tx.is_closed() {
-                    emit(approval);
+                    shown.insert(key.1.clone());
+                    emit(key, parked);
                 }
             }
         }
     }
 }
 
+/// Where `session`'s detached work belongs now: the last link of its
+/// compaction chain (`Holly::successor_of` already walks past retired middle
+/// links) when that is live, else `session` itself. A successor that is not
+/// live yet has no seq counter, so an announce there would carry seq 0; its
+/// `SessionStarted` fold moves the work with a real seq. The same notion a
+/// background script follows (`Dispatcher::followable`, ADR-0241).
+pub(crate) fn live_end(holly: &Holly, session: &SessionId) -> SessionId {
+    holly
+        .successor_of(session)
+        .filter(|s| holly.is_live(s))
+        .unwrap_or_else(|| session.clone())
+}
+
 /// Announce a moved card on its new home: a fresh `ToolRequest`, same
 /// request id and content, `detached: true`, so a head moves it there.
-pub(crate) fn announce(holly: &Holly, approval: &WireApproval) {
+pub(crate) fn announce(holly: &Holly, parked: &Parked) {
+    let Some(approval) = &parked.approval else {
+        return;
+    };
     tracing::debug!(
         session = %approval.session,
         request_id = %approval.request_id,
@@ -175,61 +187,52 @@ pub(crate) fn announce(holly: &Holly, approval: &WireApproval) {
     super::park::emit_request(holly, approval);
 }
 
-/// The lossless self-heal: re-run the move from `session`'s predecessor as
-/// the supervisor's directory records it, announcing the moved cards
-/// `announce_if` accepts. A no-op for a session that is not a compaction
-/// successor, or whose move already ran.
-pub(crate) fn heal_from_predecessor(
+/// The lossless self-heal for a live `session`: pull every detached card of
+/// its lineage — the whole chain as the supervisor's directory records it,
+/// not one hop (ADR-0242) — onto its live end ([`live_end`]), announcing the
+/// moved cards `announce_if` accepts. A no-op for a session that is not live
+/// (an ended one is no target, and a starting one is the fold's), that is
+/// no compaction successor, or whose move already ran.
+pub(crate) fn heal_lineage(
     holly: &Holly,
     pending: &PendingDecisions,
     session: &SessionId,
-    announce_if: impl Fn(&WireApproval) -> bool,
+    announce_if: impl Fn(&Key, &Parked) -> bool,
 ) {
-    // The start-up window: the directory already names the predecessor, but
-    // the seq counter does not exist yet. A move now would announce with
-    // seq 0 (dropped by heads) and leave the `SessionStarted` fold nothing
-    // to announce, losing the card; the fold moves it once the session is
-    // live. (An ended session is already gone from the directory.)
-    if !holly.is_live(session) {
-        return;
-    }
-    if let Some(predecessor) = holly.session_info(session).and_then(|i| i.predecessor) {
-        pending.reassign_detached(&predecessor, session, |a| {
-            if announce_if(a) {
-                announce(holly, a);
-            }
-        });
+    if holly.is_live(session) {
+        move_to_live_end(holly, pending, session, announce_if);
     }
 }
 
-/// The heal a park runs before registering (ADR-0238 §2): first the cards
-/// `session`'s predecessor left (so the successor's own park meets a moved
-/// card already on it and is refused, never the reverse), then — for a
-/// detached park — `session`'s own cards forward along the supervisor's
-/// successor chain, which is written before the successor's
-/// `SessionStarted`, so the park lands on the live end.
-pub(super) fn heal_for_park(
+/// The heal a park runs before registering (ADR-0238 §2): `session`'s whole
+/// lineage onto its live end, even from a retired `session`, so the
+/// successor's own park meets a moved card already on it (and is refused,
+/// never the reverse), and a late predecessor park lands beside its moved
+/// siblings.
+pub(super) fn heal_for_park(holly: &Holly, pending: &PendingDecisions, session: &SessionId) {
+    move_to_live_end(holly, pending, session, |_, _| true);
+}
+
+fn move_to_live_end(
     holly: &Holly,
     pending: &PendingDecisions,
     session: &SessionId,
-    detached: bool,
+    announce_if: impl Fn(&Key, &Parked) -> bool,
 ) {
-    heal_from_predecessor(holly, pending, session, |_| true);
-    if !detached {
+    let target = live_end(holly, session);
+    // The start-up window: the directory already names the predecessor, but
+    // the seq counter does not exist yet. A move now would announce with
+    // seq 0 (dropped by heads) and leave the `SessionStarted` fold nothing
+    // to announce, losing the card; the fold moves it once it is live.
+    if !holly.is_live(&target) {
         return;
     }
-    let mut at = session.clone();
-    let mut seen = vec![at.clone()];
-    // Stop at a successor that is not live yet: its seq counter is missing,
-    // and its `SessionStarted` fold carries the card over with a real seq.
-    while let Some(next) = holly
-        .successor_of(&at)
-        .filter(|n| !seen.contains(n) && holly.is_live(n))
-    {
-        pending.reassign_detached(&at, &next, |a| announce(holly, a));
-        seen.push(next.clone());
-        at = next;
-    }
+    let ancestors = holly.predecessors_of(&target);
+    pending.reassign_detached(&ancestors, &target, |k, p| {
+        if announce_if(k, p) {
+            announce(holly, p);
+        }
+    });
 }
 
 /// Heal every session of `root`'s spawn sub-tree — `root` included — so a
@@ -242,22 +245,20 @@ pub(crate) fn heal_subtree(
     root: &SessionId,
 ) {
     for session in crate::discover::subtree_sessions(agents, root) {
-        heal_from_predecessor(holly, pending, &session, |_| true);
+        heal_lineage(holly, pending, &session, |_, _| true);
     }
 }
 
 /// The heal the decision router runs before a `Stop` or a decision: a
-/// `Stop` moves silently, and a decision announces everything but the card
-/// it answers — announcing a card about to be unwound or answered would
-/// show a dead one.
+/// `Stop` moves silently, and a decision announces every moved card but the
+/// ones it answers ([`answers`]) — announcing a card about to be unwound or
+/// answered would show a dead one.
 pub(crate) fn heal_before(holly: &Holly, pending: &PendingDecisions, msg: &InMsg) {
     if let InMsg::Stop { session } = msg {
-        heal_from_predecessor(holly, pending, session, |_| false);
+        heal_lineage(holly, pending, session, |_, _| false);
     } else if let Some((session, request_id)) = Decision::target(msg) {
-        // Only the card this decision answers on its own session goes
-        // unannounced; one moved elsewhere still needs its announce.
-        heal_from_predecessor(holly, pending, session, |a| {
-            a.request_id != request_id || &a.session != session
+        heal_lineage(holly, pending, session, |k, p| {
+            !answers(k, p, session, request_id)
         });
     }
 }
@@ -265,3 +266,7 @@ pub(crate) fn heal_before(holly: &Holly, pending: &PendingDecisions, msg: &InMsg
 #[cfg(test)]
 #[path = "successor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "successor_chain_tests.rs"]
+mod chain_tests;
