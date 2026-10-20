@@ -18,15 +18,17 @@ use super::BindingCall;
 /// nested call (`Via::budget`), not here. Every call is reported live as a
 /// `NestedCall` (capped, with one closing summary — ADR-0233) — here, since
 /// this loop is the one place every binding of every run passes through.
-/// Returns whether a `Stop` unwound a nested approval.
+/// A background run follows its session's compaction and current mode
+/// before each call (ADR-0241). Returns whether a `Stop` unwound a nested approval.
 pub(super) async fn service_bindings(
     mut rx: mpsc::UnboundedReceiver<BindingCall>,
-    dispatcher: &Dispatcher,
+    dispatcher: &mut Dispatcher,
     workdir: Option<&(PathBuf, PathBuf)>,
     script: &ScriptCall,
     request_id: &str,
 ) -> bool {
     let mut stopped = false;
+    let mut adopted = false;
     let mut report = NestedCalls::new(
         dispatcher.holly.clone(),
         dispatcher.session.clone(),
@@ -36,6 +38,12 @@ pub(super) async fn service_bindings(
         let input = workdir
             .and_then(|(root, wd)| crate::workdir::rewrite(root, Some(wd), &call.tool, &call.input))
             .unwrap_or(call.input);
+        // Between calls, never mid-call: one already graded as the
+        // predecessor finishes as it began (ADR-0238 moves its card).
+        if let Some(successor) = dispatcher.follow_session(script) {
+            report.rehome(successor);
+            adopted = true;
+        }
         // The nested call's own id: the head's Approve/Reject matches it, and
         // a `Once` escape-root grant is bound to it (#449).
         report.begin(&call.tool, &input);
@@ -46,7 +54,13 @@ pub(super) async fn service_bindings(
             envelope: None,
             rhai_path: call.rhai_path,
         };
-        let (result, failed) = match dispatcher.run(nested, Via::Script(script)).await {
+        let run = dispatcher.run(nested, Via::Script(script));
+        let outcome = if adopted {
+            crate::file_backup::without_exec_seq(run).await
+        } else {
+            run.await
+        };
+        let (result, failed) = match outcome {
             None => {
                 stopped = true;
                 (Err("rhai run stopped".to_string()), true)

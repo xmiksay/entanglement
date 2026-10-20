@@ -153,8 +153,9 @@ impl Dispatcher {
                     _ => true,
                 };
                 if graded_ask {
+                    let earner = self.earner(via);
                     if let Prompt::Host(host) = &prompt {
-                        self.http_gate.approve(&self.session, host);
+                        self.http_gate.approve(&earner, host);
                     }
                     if let Via::Script(sc) = via {
                         sc.approve(&call.tool, &call.input);
@@ -162,7 +163,7 @@ impl Dispatcher {
                     if scope != ApprovalScope::Once && !floored {
                         self.grants
                             .record(
-                                &self.session,
+                                &earner,
                                 graded_name(&call.tool),
                                 arg.as_deref(),
                                 scope,

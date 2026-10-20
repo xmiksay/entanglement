@@ -177,9 +177,10 @@ doc, never here**:
   ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)).
 - **Compaction always forks a successor session** — no path rewrites a live
   context, so every log replays exactly; the successor keeps the source's
-  place in the spawn tree and its live sub-agents; `/fork` is the
-  non-compacting copy
-  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/0234-live-sub-agents-survive-compaction.md)).
+  place in the spawn tree, its live sub-agents and its background work (a
+  background script then grades and grants as the successor); `/fork` is
+  the non-compacting copy
+  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/0234-live-sub-agents-survive-compaction.md)/[ADR-0241](../docs/adr/0241-background-script-follows-compaction.md)).
 - **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
   idle TTL, unknown-session policy, tenant-prefixed ids
   ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)).

@@ -227,7 +227,9 @@ is the repository owner's call. `args` is pushed into the scope as a constant (t
 compiled without the scope, so Rhai cannot constant-fold it into a panic on
 assignment). `script` XOR `path`, the field types and unknown keys are
 validated before the launch. A background run detaches after the launch and
-the read; its listing label is `rhai: <path>`. Separately, for every tool, an
+the read; its listing label is `rhai: <path>`. After its session compacts,
+a background run's nested calls grade, grant and park as the successor
+([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). Separately, for every tool, an
 escape card that also cleared a graded `Ask` records both grants on a
 `Session`/`Always` approval.
 

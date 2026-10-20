@@ -153,7 +153,7 @@ pub(crate) struct Launch {
 /// the same gates as a direct call, then run the source with every binding
 /// going through `dispatcher`.
 pub(crate) async fn run_rhai(
-    dispatcher: Dispatcher,
+    mut dispatcher: Dispatcher,
     launch: Launch,
     request_id: String,
     input: String,
@@ -212,7 +212,7 @@ pub(crate) async fn run_rhai(
     let prints = Arc::new(Mutex::new(String::new()));
     let sink = prints.clone();
     let (eval_result, stopped) =
-        engine::run_engine(&dispatcher, &launch, &request_id, run, move |text| {
+        engine::run_engine(&mut dispatcher, &launch, &request_id, run, move |text| {
             if let Ok(mut buf) = sink.lock() {
                 buf.push_str(text);
                 buf.push('\n');
