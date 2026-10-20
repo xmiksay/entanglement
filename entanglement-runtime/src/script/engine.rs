@@ -35,7 +35,7 @@ pub(super) type EvalResult = Result<Result<Dynamic, Box<EvalAltResult>>, tokio::
 /// Run `spec.script` to completion. Returns the engine's result and whether a
 /// `Stop` unwound a nested approval.
 pub(super) async fn run_engine(
-    dispatcher: &Dispatcher,
+    dispatcher: &mut Dispatcher,
     launch: &Launch,
     request_id: &str,
     spec: RunSpec,
@@ -55,7 +55,7 @@ pub(super) async fn run_engine(
     // Plain values for the blocking closure: the registry stays here.
     let bash_enabled = dispatcher.tools.contains("bash");
     let http_enabled = dispatcher.tools.contains(HTTP_TOOL);
-    let mcp = namespaces::mcp_entries(dispatcher);
+    let mcp = namespaces::mcp_entries(&*dispatcher);
     let skills = launch.skills.clone();
     let handle = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new_raw();

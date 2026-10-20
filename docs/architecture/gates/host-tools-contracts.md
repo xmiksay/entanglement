@@ -262,7 +262,16 @@ answers it and never reaches the successor's own card; a timeout's `forget`
 removes only its own closed entry. Every approval park heals first, and a
 home never holds two live cards with one id: only a turn card supersedes a
 live turn card, any other park sharing a live card's key or id is refused with
-a reason. Closing the predecessor never
+a reason. **The script follows too**
+([ADR-0241](../../adr/0241-background-script-follows-compaction.md)): before
+each nested call a background run's dispatcher switches to the live end of
+its session's lineage (`Holly::successor_of`, once the executor folded that
+session's mode), so later calls grade, grant and park as the successor, and
+re-reads the session's mode (and drops a stale mode-scoped overlay entry)
+before every call; a
+call in flight finishes as the predecessor, but its `Session` grant or `http`
+unlock is recorded where the next call will be graded (the same switch
+condition). Closing the predecessor never
 killed these entries, so ordering against its `SessionEnded` does not
 matter. A `/fork` copy carries no `predecessor` and leaves its live source
 owning everything. **Sub-agents follow too**

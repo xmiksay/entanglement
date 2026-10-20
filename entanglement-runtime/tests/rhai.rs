@@ -68,6 +68,16 @@ mod background_card;
 // #871: a compaction moves that card to the successor.
 #[path = "rhai/background_move.rs"]
 mod background_move;
+// #886: the script follows the compaction — grades, grants, parks as the
+// successor.
+#[path = "rhai/background_follow.rs"]
+mod background_follow;
+// ...and per call reads the session's current mode and mode-scoped overlay.
+#[path = "rhai/background_follow_mode.rs"]
+mod background_follow_mode;
+// ...its limits, and never a successor that is not live.
+#[path = "rhai/background_follow_live.rs"]
+mod background_follow_live;
 // #884: a card parked after its session retired still gets a real seq.
 #[path = "rhai/background_retired.rs"]
 mod background_retired;

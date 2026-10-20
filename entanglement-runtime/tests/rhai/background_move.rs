@@ -71,7 +71,7 @@ async fn compact(holly: &Holly, pred: &SessionId, succ: &SessionId) -> Moved {
 }
 
 /// `ListPending` filtered to `root`'s spawn sub-tree.
-async fn pending_under(holly: &Holly, root: &SessionId) -> Vec<PendingApproval> {
+pub(super) async fn pending_under(holly: &Holly, root: &SessionId) -> Vec<PendingApproval> {
     let mut sub = holly.subscribe();
     let correlation = format!("root-{root}");
     holly

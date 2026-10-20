@@ -78,6 +78,13 @@ impl NestedCalls {
         }
     }
 
+    /// Report on `session` from now on: the run's background script
+    /// followed its session's compaction (ADR-0241), so its live activity
+    /// shows on the view that continues the work.
+    pub(super) fn rehome(&mut self, session: SessionId) {
+        self.session = session;
+    }
+
     /// A binding call is about to run. The args summary is computed here,
     /// before the input moves into the dispatcher, and only for a call that
     /// will be reported — a large `write` past the cap is never copied.

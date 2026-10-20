@@ -28,7 +28,7 @@ use super::{result_line, Launch};
 /// `label` names the run in the pending-operations listing; `run` is
 /// already `detached`.
 pub(super) async fn run_background(
-    dispatcher: Dispatcher,
+    mut dispatcher: Dispatcher,
     launch: Launch,
     request_id: String,
     label: String,
@@ -63,11 +63,12 @@ pub(super) async fn run_background(
     // Unlike the blocking path, a `Stop`-unwound run still records a terminal
     // state: nothing else ever resolves this handle, so a poll of a killed
     // script must see *something* final rather than `running` forever.
-    let (eval_result, _stopped) = run_engine(&dispatcher, &launch, &request_id, run, move |text| {
-        print_op.append_output(text);
-        print_op.append_output("\n");
-    })
-    .await;
+    let (eval_result, _stopped) =
+        run_engine(&mut dispatcher, &launch, &request_id, run, move |text| {
+            print_op.append_output(text);
+            print_op.append_output("\n");
+        })
+        .await;
     if timed_out.load(Ordering::Relaxed) {
         op.mark_timed_out();
     }
