@@ -73,7 +73,7 @@ async fn a_fresh_detached_park_into_an_id_the_successor_shows_is_refused() {
     assert!(emitted.is_empty());
     assert!(refused(fresh).await);
     assert_eq!(listed(&pending), [("s".into(), "r".into())]);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(shown).await);
 }
 
@@ -101,7 +101,7 @@ async fn a_heal_moves_a_card_two_compactions_back() {
         }) => assert!(session == s && detached, "announced on {session}"),
         other => panic!("expected the moved card announced: {other:?}"),
     }
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(card).await);
 }
 
@@ -124,8 +124,8 @@ async fn a_park_past_an_ended_middle_link_lands_on_the_live_end() {
     let mut sessions: Vec<_> = listed(&pending).into_iter().map(|(s, _)| s).collect();
     sessions.dedup();
     assert_eq!(sessions, ["s2"]);
-    pending.resolve(&p, "early", reject());
-    pending.resolve(&s2, "late", reject());
+    let _ = pending.resolve(&p, "early", reject());
+    let _ = pending.resolve(&s2, "late", reject());
     assert!(rejected(early).await);
     assert!(rejected(late).await);
 }
@@ -144,7 +144,7 @@ async fn a_middle_links_id_answers_a_card_moved_through_it() {
     let holly = chain(&[&p0, &p, &s]).await;
     let pending = PendingDecisions::default();
     let card = pending.register_approval(detached_card(&p0, "r"), "edit");
-    pending.resolve(&p, "r", reject());
+    let _ = pending.resolve(&p, "r", reject());
     assert_eq!(
         listed(&pending),
         [("p0".into(), "r".into())],
@@ -153,11 +153,11 @@ async fn a_middle_links_id_answers_a_card_moved_through_it() {
     pending.reassign_detached(std::slice::from_ref(&p0), &p, |_, _| {});
     heal_lineage(&holly, &pending, &s, |_, _| true);
     assert_eq!(listed(&pending), [("s".into(), "r".into())]);
-    pending.resolve(&p, "r", reject());
+    let _ = pending.resolve(&p, "r", reject());
     assert!(rejected(card).await);
     // A card the successor parked itself is never reached from upstream.
     let own = pending.register_approval(detached_card(&s, "o"), "edit");
-    pending.resolve(&p, "o", reject());
+    let _ = pending.resolve(&p, "o", reject());
     assert_eq!(listed(&pending), [("s".into(), "o".into())]);
     drop(own);
 }
@@ -176,11 +176,11 @@ async fn a_stale_middle_decision_never_reaches_a_card_parked_past_it() {
     let holly = chain(&[&p, &s, &s2]).await;
     let pending = PendingDecisions::default();
     let own = pending.register_approval(detached_card(&s, "r"), "edit");
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert!(rejected(own).await);
     let _card = park_approval_as(&holly, &pending, detached_card(&p, "r"), "edit", true);
     assert_eq!(listed(&pending), [("s2".into(), "r".into())]);
-    pending.resolve(&s, "r", reject());
+    let _ = pending.resolve(&s, "r", reject());
     assert_eq!(
         listed(&pending),
         [("s2".into(), "r".into())],

@@ -101,7 +101,7 @@ pub(crate) fn bash_call(id: &str, input: &str) -> LlmResponse {
     }
 }
 
-fn ask_user_call(id: &str, input: &str) -> LlmResponse {
+pub(crate) fn ask_user_call(id: &str, input: &str) -> LlmResponse {
     LlmResponse {
         text: "".into(),
         tool_calls: vec![ToolCall {

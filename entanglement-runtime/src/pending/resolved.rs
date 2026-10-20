@@ -38,9 +38,10 @@ impl PendingDecisions {
     }
 }
 
-/// The outcome a decision delivered to a card reports. A frame aimed at an
-/// approval's id that is no approval decision (`AnswerQuestion`,
-/// `RetractQuestion`, `ReplaceQuestion`) unwinds the park like a `Stop`.
+/// The outcome a decision delivered to a card reports. Only an approval
+/// card reports one, and `resolve` delivers it only `Approve`/`Reject`
+/// (ADR-0245); a question decision reaches only an `ask_user` park, which
+/// reports nothing.
 pub(super) fn outcome_of(decision: &Decision) -> ApprovalOutcome {
     match decision {
         Decision::Approve { .. } => ApprovalOutcome::Approved,

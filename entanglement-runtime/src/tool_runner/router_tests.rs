@@ -14,7 +14,7 @@ use super::Router;
 use crate::pending::test_support::{detached_card, spawn_session};
 use crate::seam::Decision;
 
-fn router(holly: &Holly) -> Router {
+pub(super) fn router(holly: &Holly) -> Router {
     Router {
         cancels: Default::default(),
         hooks: Default::default(),
@@ -29,7 +29,7 @@ fn router(holly: &Holly) -> Router {
 
 /// Engine + router with `succ` registered as `pred`'s compaction successor
 /// and a background script's card parked on `pred`.
-async fn setup() -> (Holly, Router, SessionId, oneshot::Receiver<Decision>) {
+pub(super) async fn setup() -> (Holly, Router, SessionId, oneshot::Receiver<Decision>) {
     let holly = Holly::spawn(EngineConfig::default());
     let (pred, succ) = (SessionId::new("pred"), SessionId::new("succ"));
     spawn_session(&holly, &pred, None, None).await;

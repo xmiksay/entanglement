@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, ToolOverlayEntry};
 
 use crate::run_limits;
-use crate::seam::Decision;
+use crate::seam::ApprovalDecision;
 
 use super::gates::Cleared;
 use super::grade::graded_name;
@@ -133,8 +133,8 @@ impl Dispatcher {
                 self.mode
             )));
         };
-        match decision {
-            Decision::Approve { scope, .. } => {
+        match decision.into_approval() {
+            ApprovalDecision::Approve { scope, .. } => {
                 set_state(AgentState::Thinking);
                 // Every escape scope is recorded: a `Once` is the single-use
                 // token bound to this exact request id (#449). A host
@@ -174,7 +174,7 @@ impl Dispatcher {
                 }
                 Some(Cleared::Run(overlay_entry, None))
             }
-            Decision::Reject { reason } => {
+            ApprovalDecision::Reject { reason } => {
                 set_state(AgentState::Thinking);
                 Some(Cleared::Refused(format!(
                     "tool `{}` rejected: {}",
@@ -182,12 +182,8 @@ impl Dispatcher {
                     reason.as_deref().unwrap_or("user")
                 )))
             }
-            // `Stop` (and a closed inbox) unwind; `Answer`/`Retract`/
-            // `Replace` never target an approval id (`ask_user`-only, #515).
-            Decision::Stop
-            | Decision::Answer { .. }
-            | Decision::Retract
-            | Decision::Replace { .. } => None,
+            // `Stop` (and a closed inbox) unwind.
+            ApprovalDecision::Stop => None,
         }
     }
 }

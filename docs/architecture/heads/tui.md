@@ -38,6 +38,16 @@
   when the dropped card was prompted. A resumed view folds the logged end
   too. The local clears (`request_stop`, the terminal `Status`, the
   predecessor drop on a moved card) stay as belt and braces.
+  An `ask_user` question leaves the view on its call's `ToolOutput` (same
+  `request_id`, seq-gated), so one answered by another head, retracted or
+  timed out clears mid-turn ([ADR-0245](../../adr/0245-a-decision-only-answers-its-own-kind-of-card.md),
+  #894); the next queued call takes the prompt and attention follows the
+  queue. A question never moves to a successor, so no predecessor walk is
+  needed. A `UserQuestion` for a queued id (a `ReplaceQuestion`) replaces
+  that entry in place, with fresh drafts when its content changed. When the
+  prompt moves off a question whose free-text answer was half typed, the
+  text is taken, unless no question is left. A misaimed decision frame is
+  refused with an `Error` the transcript shows; the card stays.
   The input box enables crossterm's
   bracketed paste so a multi-line paste lands as one buffer edit (each
   embedded newline starts a new `SimpleInput` row) instead of a flood of key

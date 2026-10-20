@@ -87,6 +87,7 @@ mod mcp_oauth_refresh;
 mod mcp_schema_violation;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 mod mcp_scoped;
+mod misaimed_decisions;
 #[cfg(feature = "provider")]
 mod narrate;
 mod overlay_resume;

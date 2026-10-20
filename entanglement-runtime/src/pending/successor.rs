@@ -85,13 +85,26 @@ impl Inner {
         None
     }
 
+    /// Take the card a decision answers. `Err` carries the kind of a live
+    /// card the decision cannot answer (a `question` decision for an
+    /// approval card, or the reverse), which stays parked (ADR-0245).
     pub(super) fn remove(
         &mut self,
         session: &SessionId,
         request_id: &str,
-    ) -> Option<(oneshot::Sender<Decision>, Parked)> {
-        let key = self.find(session, request_id)?;
-        self.waiters.remove(&key)
+        question: bool,
+    ) -> Result<Option<(oneshot::Sender<Decision>, Parked)>, &'static str> {
+        let Some(key) = self.find(session, request_id) else {
+            return Ok(None);
+        };
+        match self.waiters.get(&key) {
+            // A waiter that gave up is no card to keep: take it, so the
+            // decision reports it `Expired` like any late one.
+            Some((tx, parked)) if parked.is_question() != question && !tx.is_closed() => {
+                Err(parked.kind)
+            }
+            _ => Ok(self.waiters.remove(&key)),
+        }
     }
 
     /// Every live waiter with its home, the session a listing reports it
@@ -252,13 +265,18 @@ pub(crate) fn heal_subtree(
 /// The heal the decision router runs before a `Stop` or a decision: a
 /// `Stop` moves silently, and a decision announces every moved card but the
 /// ones it answers ([`answers`]) — announcing a card about to be unwound or
-/// answered would show a dead one.
+/// answered would show a dead one. A question decision answers no moved
+/// card: only approval cards move, and the registry refuses it on one
+/// (ADR-0245), so that card stays parked and is announced.
 pub(crate) fn heal_before(holly: &Holly, pending: &PendingDecisions, msg: &InMsg) {
     if let InMsg::Stop { session } = msg {
         heal_lineage(holly, pending, session, |_, _| false);
     } else if let Some((session, request_id)) = Decision::target(msg) {
+        // A decision frame is small and rare; the clone keeps one
+        // definition of a question decision (`Decision::is_question`).
+        let question = Decision::from_inmsg(msg.clone()).is_some_and(|(_, _, d)| d.is_question());
         heal_lineage(holly, pending, session, |k, p| {
-            !answers(k, p, session, request_id)
+            question || !answers(k, p, session, request_id)
         });
     }
 }

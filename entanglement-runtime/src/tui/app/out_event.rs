@@ -135,8 +135,22 @@ impl App {
         let active = self.sessions.active_id().clone();
         let before = self.approval_mode().clone();
         let front = self.sessions.active_view().pending_tool_request().cloned();
+        let asked = self.sessions.active_view().pending_question().cloned();
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
+        }
+        // The prompted question ended or was replaced (#894) while its
+        // free-text answer was half typed in the shared input: that text
+        // must not pre-fill the question that takes the prompt. With no
+        // question left it stays as an ordinary draft, like a reject reason.
+        if self.sessions.active_id() == &active {
+            let now = self.sessions.active_view().pending_question();
+            if asked.as_ref().is_some_and(|q| q.entering_free_form)
+                && now.is_some()
+                && asked.as_ref() != now
+            {
+                self.take_input_text();
+            }
         }
         // A newer card replaced the prompted one in place (ADR-0238): same
         // id, different content, so it is a new prompt too.
@@ -179,6 +193,10 @@ fn prompted(mode: &ApprovalMode) -> Option<&str> {
 #[cfg(test)]
 #[path = "approval_resolved_tests.rs"]
 mod approval_resolved_tests;
+
+#[cfg(test)]
+#[path = "question_end_tests.rs"]
+mod question_end_tests;
 
 #[cfg(test)]
 mod tests {

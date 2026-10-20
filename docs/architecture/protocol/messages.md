@@ -76,7 +76,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | ToolCallDelta{session,seq,request_id,tool,delta}   // streamed tool-arg fragment; display-only, before the assembled ToolCall (#194)
          | ToolCall{session,seq,request_id,tool,input,provider_meta?,envelope?}      // display-only, every call (before exec); provider_meta = the call's opaque provider metadata (e.g. a Gemini thought signature) so replay rebuilds the signed call; envelope = the emitted mcp call when core unwrapped one (ADR-0226; old logs may carry invoke, ADR-0204)
          | ToolRequest{session,seq,request_id,tool,input,reason?,scopes?,detached?}   // Ask prompt, from runtime (#59); reason = CardReason "root_escape"|"floored_write"|"script_launch"|"inline_launch"|"launch_escape", absent on an ordinary card; scopes = the ApprovalScopes an Approve honors (starts with once), omitted only by a pre-ADR-0230 producer (offer once alone) — heads decide on these, never on input text (ADR-0230); detached = true on a background rhai script's nested card, omitted when false: it outlives the turn's terminal Status, so keep showing it until answered or a Stop unwinds it (ADR-0237)
-         | ApprovalResolved{session,seq,request_id,outcome}   // a ToolRequest card left the runtime's PendingDecisions: outcome = approved | rejected (from any head) | expired (question_timeout) | stopped (Stop, its session's end/hibernate for a turn card, a superseding re-offer, any other frame aimed at its id). Emitted on the card's home under the registry lock, always after its ToolRequest; persisted, so a rebuilt view drops it too; ask_user questions never get one (ADR-0240)
+         | ApprovalResolved{session,seq,request_id,outcome}   // a ToolRequest card left the runtime's PendingDecisions: outcome = approved | rejected (from any head) | expired (question_timeout) | stopped (Stop, its session's end/hibernate for a turn card, a superseding re-offer). A question frame aimed at its id is refused with an Error and the card stays parked (ADR-0245). Emitted on the card's home under the registry lock, always after its ToolRequest; persisted, so a rebuilt view drops it too; ask_user questions never get one (ADR-0240)
          | ToolExec{session,seq,request_id,tool,input,agent,envelope?,workdir?}   // core → runtime: dispatch it (#58/#59); agent = active profile name for authoritative gating (#156); envelope as on ToolCall (ADR-0204); workdir = the session's absolute workdir, absent at the root (#764, ADR-0224)
          | UserQuestion{session,seq,request_id,questions:[Question]}  // ask_user prompt(s), one call → one event (#90, #488); questions flattens onto the wire (Questions newtype); legacy question/options/allow_free_form still deserializes into a one-element vec
          | ToolOutput{session,seq,request_id,tool,output,content?:[ContentPart],is_error=false,duration_ms?,exit_code?,envelope?}   // output = display text; content carries any result output can't rebuild exactly — an image (#221), a tool reference, several parts — for byte-identical replay (ADR-0202); is_error/duration_ms mirror InMsg::ToolResult's structured side channel (#636, ADR-0176) — a head can style a failed call without parsing output's text; exit_code (#681, ADR-0186) mirrors the same field — a wire consumer can branch on a bash/call/polled-job exit status without parsing [exit N]
@@ -161,6 +161,16 @@ All four variants are wire-allowed: list is read-only, and retract/replace are
 no more privileged than answering, which is already wire-allowed — the `serve`
 head's per-connection approval-ownership gate (#402, ADR-0107) covers all
 three decision variants alike.
+
+A decision only answers its own kind of park
+([ADR-0245](../../adr/0245-a-decision-only-answers-its-own-kind-of-card.md),
+#895): the three question frames reach only an `ask_user` park, and
+`Approve`/`Reject` only an approval card. A frame aimed at the other kind is
+refused with an `Error` on the session it addressed, and the card stays
+parked, listed and answerable. A question ends on the wire with its call's
+`ToolOutput` (same `request_id`), which every head sees as soon as any head
+answers it, it is retracted, or the mode's `question_timeout` elapses (#894);
+a replace sends no result, so a head replaces the queued entry in place.
 
 `ListOperations{correlation_id,session?}` (#607, ADR-0161 §6) mirrors
 `ListQuestions` exactly — same session-less-query shape, same optional-filter

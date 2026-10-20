@@ -40,7 +40,7 @@ use entanglement_core::{AgentState, ApprovalKind, Holly, InMsg, SessionId};
 
 use crate::mode::ladder_rank;
 use crate::pending::{self, PendingDecisions};
-use crate::seam;
+use crate::seam::{self, ApprovalDecision};
 use crate::tool_names::REQUEST_MODE_TOOL;
 
 /// The one mode `request_mode` may never target, from any current mode
@@ -166,8 +166,8 @@ pub async fn run_request_mode(
     let rx = pending::park_approval(holly, pending, req, requested.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);
 
-    match pending::await_decision(rx).await {
-        seam::Decision::Approve { .. } => {
+    match pending::await_decision(rx).await.into_approval() {
+        ApprovalDecision::Approve { .. } => {
             // Applies the switch exactly like `InMsg::SetMode` always has —
             // core cascades it over the session's live spawn sub-tree
             // (ADR-0207 §6).
@@ -187,7 +187,7 @@ pub async fn run_request_mode(
                 format!("mode request approved — this session's mode switched to `{requested}`.");
             seam::reply(holly, session, request_id, output, false).await;
         }
-        seam::Decision::Reject { reason } => {
+        ApprovalDecision::Reject { reason } => {
             holly.emit_status(&session, AgentState::Thinking);
             let output = format!(
                 "tool `{REQUEST_MODE_TOOL}` rejected: {}",
@@ -195,13 +195,8 @@ pub async fn run_request_mode(
             );
             seam::reply(holly, session, request_id, output, true).await;
         }
-        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
-        // `Replace` never target a `request_mode` request id (they are
-        // `ask_user`-only, #515).
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => {}
+        // `Stop` (and a closed inbox) unwind silently.
+        ApprovalDecision::Stop => {}
     }
 }
 

@@ -68,8 +68,8 @@ pub enum ApprovalOutcome {
     /// The mode's `question_timeout` elapsed with no decision.
     Expired,
     /// Unwound without a decision: a `Stop`, the session's end or hibernate
-    /// (its turn's cards), a re-offer superseding a turn card, or any other
-    /// inbound frame aimed at the card's id.
+    /// (its turn's cards), or a re-offer superseding a turn card. A question
+    /// frame aimed at the card's id is refused and ends nothing (ADR-0245).
     Stopped,
 }
 

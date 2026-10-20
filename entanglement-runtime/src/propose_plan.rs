@@ -92,7 +92,7 @@ use entanglement_core::{
 use crate::pending::{self, PendingDecisions};
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::PermissionResolver;
-use crate::seam;
+use crate::seam::{self, ApprovalDecision};
 use crate::tool_names::PROPOSE_PLAN_TOOL;
 use crate::tool_runner::resolve_effective;
 
@@ -250,8 +250,8 @@ pub async fn run_propose_plan(
     let rx = pending::park_approval(&holly, &pending, req, resolution.rel_path.clone());
     holly.emit_status(&session, AgentState::WaitingApproval);
 
-    match pending::await_decision(rx).await {
-        seam::Decision::Approve { mode: chosen, .. } => {
+    match pending::await_decision(rx).await.into_approval() {
+        ApprovalDecision::Approve { mode: chosen, .. } => {
             // #560: the *approver's* choice, never the model's suggestion —
             // `resolve_accept_mode` is the one place "no choice named"
             // becomes the `auto` default.
@@ -279,7 +279,7 @@ pub async fn run_propose_plan(
             );
             seam::reply(&holly, session, request_id, output, false).await;
         }
-        seam::Decision::Reject { reason } => {
+        ApprovalDecision::Reject { reason } => {
             set_thinking(&holly, &session);
             let output = format!(
                 "tool `{PROPOSE_PLAN_TOOL}` rejected (plan file: {}): {}",
@@ -288,13 +288,8 @@ pub async fn run_propose_plan(
             );
             seam::reply(&holly, session, request_id, output, true).await;
         }
-        // `Stop` (and a closed inbox) unwind silently; `Answer`/`Retract`/
-        // `Replace` never target a `propose_plan` request id (they are
-        // `ask_user`-only, #515).
-        seam::Decision::Stop
-        | seam::Decision::Answer { .. }
-        | seam::Decision::Retract
-        | seam::Decision::Replace { .. } => {}
+        // `Stop` (and a closed inbox) unwind silently.
+        ApprovalDecision::Stop => {}
     }
 }
 

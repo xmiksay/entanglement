@@ -153,11 +153,7 @@ impl SessionView {
     ) -> bool {
         if seq > self.last_seen_seq {
             self.last_seen_seq = seq;
-            // Queued like approvals (#273): the front is the one
-            // rendered; answering every question in it promotes the
-            // next call (#488).
-            self.pending_questions
-                .push_back(PendingQuestion::new(request_id, questions.0));
+            self.queue_question(PendingQuestion::new(request_id, questions.0));
             true
         } else {
             false
@@ -230,6 +226,13 @@ impl SessionView {
     ) -> bool {
         if seq > self.last_seen_seq {
             self.last_seen_seq = seq;
+            // An `ask_user` call's result ends its question however it was
+            // resolved — answered by any head, retracted, or a mode's
+            // `question_timeout` (#894). A question is turn-bound and never
+            // moves, so the result lands on the view that shows it.
+            if tool == entanglement_runtime::tool_names::ASK_USER_TOOL {
+                self.drop_question(&request_id);
+            }
             // Fold the output (and its is_error classification, #672,
             // ADR-0176) into its call so one op is one entry (#340).
             // Batch results resolve out of order (#270), so scan from the
