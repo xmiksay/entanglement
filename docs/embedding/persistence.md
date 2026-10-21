@@ -159,9 +159,16 @@ its `user` intact) and then delivers the message; `None` refuses with an
 loader (seq `0` for an id this engine never ran; a retired id's error
 continues its seq, ADR-0239); `Err` surfaces as an `Error` and spawns nothing. Messages
 that arrive while a load is in flight queue behind that one load and deliver
-in order. A task resumed for an id whose hibernated task is still tearing
-down waits for that task's exit before it starts, so the two never run side
-by side (ADR-0244). `Holly::is_live(&id)` answers "is it running right now" cheaply,
+in order. A load that finishes after the id itself, or one of its
+ancestors, was hibernated meanwhile (and is still down), or under a closed
+ancestor, starts nothing and refuses each queued message once with an
+`Error` saying why: "this session was hibernated while it loaded…", "an
+ancestor of this session was hibernated while it loaded…" or "an ancestor
+of this session is closed…" (ADR-0246); a load whose ancestors are merely not running (a
+fresh process) resumes normally. A task resumed for an id whose hibernated
+task is still tearing down waits for that task's exit before it starts, so
+the two never run side by side (ADR-0244), and folds what that task emitted
+during its teardown first (ADR-0246). `Holly::is_live(&id)` answers "is it running right now" cheaply,
 for display — not for check-then-send.
 
 **Ownership of a live session: `Holly::session_info(&id)`**

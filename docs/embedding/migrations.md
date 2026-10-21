@@ -355,6 +355,28 @@ removes `user_only`. What an embedder has to change:
   must still reply. An `Error` watcher of your own sees the
   refusal like any session error.
 
+## Resumed sub-agents and the teardown tail (ADR-0246, #905/#906)
+
+No API change; three behaviours an embedder can see.
+
+- **Mode:** a resumed sub-agent starts in its nearest ancestor's current
+  mode when that is stricter than the mode its log replays, on
+  `EngineConfig::mode_ladder`. Without a ladder nothing is provably
+  stricter and resumes behave as before; pass your ordering in
+  `mode_ladder` to get the clamp. The switch arrives as the start-up
+  `ModeChanged`, and a mode-scoped overlay is dropped with it.
+- **Loads:** under `UnknownSession::Resume`, a load that finishes with an
+  ancestor closed, or with the id itself or an ancestor hibernated while it
+  ran (and still down), refuses each queued message with one `Error` (seq
+  `0` unless the id has a retired counter) and starts nothing.
+- **Teardown tail:** a resume behind a slow teardown now folds what the old
+  task emitted from the moment the supervisor handed it its `Hibernate` —
+  when the supervisor handles your `HibernateSession`, which is later than
+  `holly.hibernate()` returning (that only queues the frame). Events the
+  session emitted after you read your records but before that hand-over
+  are not in the tail; read your records after the hibernate if you need
+  them.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

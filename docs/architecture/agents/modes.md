@@ -65,7 +65,13 @@ Authority lives entirely in the runtime, as the session's **permission mode**
   sub-tree.
 - **Compaction successors** keep their source's mode.
 - **Resumed sessions** keep the mode their log replays; the hint never
-  applies.
+  applies. A resumed **sub-agent** takes its nearest ancestor's current mode
+  instead whenever that is stricter on the same ladder (an off-ladder pair
+  keeps the replayed mode): the ancestor's live mode if it runs, else its
+  logged one, itself clamped by its own ancestors. This holds on every
+  resume path (explicit, cascade, ADR-0210 load, fresh process), and a
+  change is a real switch, logged by the start-up `ModeChanged`
+  ([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 
 **At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../../adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
 Agents and skills are **data, not code** — discovered from files, disclosed

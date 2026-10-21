@@ -12,8 +12,9 @@ use super::outlets;
 use super::routing::{msg_to_cmd, route_to_session};
 use super::{ActivityRegistry, EngineConfig, SeqRegistry, SessionDirectory, FORK_CAPACITY};
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::session::{ExitSignal, ForkFrame, Inherited, SessionCmd};
+use crate::session::{Ending, ExitSignal, ForkFrame, Inherited, SessionCmd};
 
+mod ancestry;
 mod relink;
 mod resume;
 mod spawn;
@@ -32,7 +33,7 @@ struct Supervisor {
     // sits in `retiring`, and a task started for the id meanwhile takes it
     // and waits on it first, so two tasks never run for one id (#892,
     // ADR-0244). The watcher reports the exit on `retired_tx`.
-    tasks: HashMap<SessionId, JoinHandle<()>>,
+    tasks: HashMap<SessionId, JoinHandle<Ending>>,
     retiring: HashMap<SessionId, ExitSignal>,
     retired_tx: mpsc::Sender<(SessionId, ExitSignal)>,
     // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
@@ -58,12 +59,14 @@ struct Supervisor {
     // session → its live mode (ADR-0207 §6), the supervisor's own cache — not
     // the wire `SessionInfo`, whose fields stay spawn-time facts (only its
     // `parent` follows a re-link, ADR-0234). Written on every `SetMode` cascade and on `Spawn`/resume, read
-    // only to seed a fresh child's `initial_mode` from its parent. Sparse: an
-    // absent entry means `DEFAULT_MODE`, so a session never explicitly set
+    // to seed a fresh child's `initial_mode` from its parent and a resumed
+    // descendant's ceiling from its nearest live ancestor (ADR-0246). Sparse:
+    // an absent entry means `DEFAULT_MODE`, so a session never explicitly set
     // never needs an entry. Cleared on `CloseSession` (the id is retired for
-    // good); left in place across a hibernate/resume cycle, since resume
-    // re-derives it from the replayed truth (`spawn_resumed`) and nothing
-    // consults it while the session is hibernated.
+    // good); left in place across a hibernate/resume cycle, holding the mode
+    // the task last ran in (a cascade only ever narrows a non-live entry), which a
+    // resume reads while that task still tears down; otherwise resume
+    // re-derives it from the replayed log and the ancestors (`spawn_resumed`).
     modes: HashMap<SessionId, String>,
     // session → its latest validated workdir (#764), the base a relative
     // `SetWorkdir` resolves against and what a new child inherits. Same
@@ -88,9 +91,10 @@ struct Supervisor {
     // the `InMsg` it rides beside is handled through the ordinary path.
     inherited: HashMap<SessionId, Inherited>,
     // Ids with a `SessionLoader` call in flight (ADR-0210) → the routable
-    // messages that arrived for them meanwhile, in arrival order. Presence is
-    // the "one load per id" guard; the entry is drained on completion.
-    pending_loads: HashMap<SessionId, Vec<InMsg>>,
+    // messages that arrived for them meanwhile, in arrival order, and the
+    // ids hibernated meanwhile (ADR-0246). Presence is the "one load per id"
+    // guard; the entry is drained on completion.
+    pending_loads: HashMap<SessionId, unknown::PendingLoad>,
     // Load completions flow back here rather than through the inbox, for the
     // same keep-the-actor-alive reason as `fork_tx`.
     load_tx: mpsc::Sender<unknown::LoadDone>,

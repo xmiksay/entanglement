@@ -124,7 +124,17 @@ An **optional idle-TTL sweep** now drives `HibernateSession` automatically
 (#363, [ADR-0090](../../adr/0090-idle-ttl-auto-hibernation.md)): `EngineConfig.idle_ttl`
 (`None` by default — eviction stays embedder-driven when unset) arms a
 supervisor-level poll that auto-hibernates a **settled** root (and its whole
-spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism.
+spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism;
+a hibernated descendant counts as settled, one still loading does not
+([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+**A resumed sub-agent answers to its ancestors**
+([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)):
+on every resume path its replayed mode is clamped to its nearest ancestor's
+current mode (live, else logged) when that is provably stricter, once (a
+later widening of the ancestor does not undo it), and an ADR-0210 load that
+finishes with an ancestor closed, or with the id itself or an ancestor
+hibernated while it ran and still down, refuses its queued sends instead of
+starting it.
 
 **Session pause** (#516, [ADR-0208](../../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md))
 is a hold `Stop` and `HibernateSession` don't cover: `Stop` destroys the
@@ -217,6 +227,16 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     cascade leaves a still-retiring child hibernated, as the complete log
     (which will hold its `SessionHibernated`, unless its task panicked)
     would.
+  - **The teardown tail** (#906,
+    [ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+    The exit signal carries every outbox event for the id except live-only
+    ones from the `Hibernate` send to the old task's exit (at most 1024;
+    none after a panic or a lagged tap), and the old task's final mode and
+    tool overlay, which the new task takes as they are. A resumed task re-folds its records plus the part of
+    that tail they don't hold through `Session::replay` before it starts, so
+    a late `FilesReverted` (or mode/workdir switch) reaches its context as a
+    later replay of the log would. Events emitted before the `Hibernate` but
+    after the head read its records are the head's concern.
   - **Seq `0` is the sentinel for an id with no sequence**: an `Error` the
     supervisor emits for an id that **never started** (a refused spawn, an
     `UnknownSession::Refuse` of an unknown id), or one whose unpinned counter

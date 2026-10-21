@@ -9,8 +9,10 @@
 //! appended there instead of starting a second load, and the completion
 //! replays the queue through [`Supervisor::handle`] in arrival order.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use super::ancestry::logged_parent;
 use super::Supervisor;
 use crate::holly::routing::emit_supervisor_error;
 use crate::holly::{SessionLoader, UnknownSession};
@@ -25,13 +27,29 @@ pub(super) type LoadDone = (
 pub(super) const CLOSED_ID: &str =
     "session id is closed (ids are single-use); mint a fresh session id";
 
+/// Refusals for a load that finished under a down ancestor (ADR-0246).
+pub(super) const PARENT_HIBERNATED: &str =
+    "an ancestor of this session was hibernated while it loaded; resume the ancestor first";
+pub(super) const HIBERNATED_WHILE_LOADING: &str =
+    "this session was hibernated while it loaded; resume it to address it again";
+pub(super) const PARENT_CLOSED: &str =
+    "an ancestor of this session is closed; its sub-tree cannot be resumed";
+
+/// One in-flight load: the messages queued behind it, and every id an
+/// ancestor hibernate evicted meanwhile.
+#[derive(Default)]
+pub(super) struct PendingLoad {
+    pub(super) queued: Vec<InMsg>,
+    pub(super) hibernated: HashSet<SessionId>,
+}
+
 impl Supervisor {
     /// Admit a routable `msg` for `session_id`, which has no live task (or
     /// still has a load draining). Returns the message when the session is
     /// live and it should route now; `None` when it was refused or queued.
     pub(super) fn admit_unknown(&mut self, session_id: &SessionId, msg: InMsg) -> Option<InMsg> {
-        if let Some(queue) = self.pending_loads.get_mut(session_id) {
-            queue.push(msg);
+        if let Some(load) = self.pending_loads.get_mut(session_id) {
+            load.queued.push(msg);
             return None;
         }
         // A closed id is spent under every policy (ADR-0028, issue #105): a
@@ -49,7 +67,11 @@ impl Supervisor {
             }
             UnknownSession::Resume(loader) => {
                 self.start_load(session_id, loader);
-                self.pending_loads.insert(session_id.clone(), vec![msg]);
+                let load = PendingLoad {
+                    queued: vec![msg],
+                    ..PendingLoad::default()
+                };
+                self.pending_loads.insert(session_id.clone(), load);
                 None
             }
         }
@@ -76,14 +98,21 @@ impl Supervisor {
     /// then deliver its queued messages in order — or refuse them all.
     pub(super) async fn finish_load(&mut self, (session_id, result): LoadDone) {
         // No queue ⇒ a `CloseSession` abandoned this load; apply nothing.
-        let Some(queued) = self.pending_loads.remove(&session_id) else {
+        let Some(PendingLoad { queued, hibernated }) = self.pending_loads.remove(&session_id)
+        else {
             return;
         };
         // An explicit `Resume`/`Spawn` may have made it live meanwhile; the
         // loaded records are then redundant and only the queue matters.
         if !self.sessions.contains_key(&session_id) {
             match result {
-                Ok(Some(records)) => self.resume(&session_id, &records).await,
+                Ok(Some(records)) => {
+                    if let Some(reason) = self.down_ancestor(&session_id, &records, &hibernated) {
+                        self.refuse_queued(&session_id, queued.len(), reason);
+                        return;
+                    }
+                    self.resume(&session_id, &records).await
+                }
                 Ok(None) => {
                     self.refuse_unknown(&session_id, queued.len());
                     return;
@@ -103,6 +132,32 @@ impl Supervisor {
         for msg in queued {
             self.handle(msg).await;
         }
+    }
+
+    /// Why a loaded session must not start: it was itself hibernated while
+    /// it loaded, an ancestor is closed, or one was hibernated while it
+    /// loaded and is still down (ADR-0246). A load
+    /// that merely finds its ancestors not live (a fresh process, a child
+    /// whose tree was hibernated before) starts as an explicit `Resume`
+    /// would.
+    fn down_ancestor(
+        &self,
+        session_id: &SessionId,
+        records: &[(Option<InMsg>, OutEvent)],
+        hibernated: &HashSet<SessionId>,
+    ) -> Option<&'static str> {
+        if hibernated.contains(session_id) {
+            return Some(HIBERNATED_WHILE_LOADING);
+        }
+        let parent = logged_parent(records, session_id);
+        let chain = self.ancestors(parent, records);
+        if chain.iter().any(|a| self.closed.contains(a)) {
+            return Some(PARENT_CLOSED);
+        }
+        chain
+            .iter()
+            .any(|a| hibernated.contains(a) && !self.sessions.contains_key(a))
+            .then_some(PARENT_HIBERNATED)
     }
 
     fn refuse_unknown(&self, session_id: &SessionId, count: usize) {
