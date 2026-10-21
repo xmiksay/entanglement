@@ -97,6 +97,12 @@ pub(crate) struct Dispatcher {
     pub trust: Arc<crate::rhai_trust::Trust>,
     /// The project root a relative file-tool `path` resolves against.
     pub files_root: std::path::PathBuf,
+    /// A background script's pins on the seq counters of every session it
+    /// has run as — its launch session, then each compaction successor it
+    /// followed (ADR-0241) — so its late cards keep real seqs however many
+    /// other sessions retire meanwhile (#891, ADR-0244). Empty for every
+    /// other run; dropped with the dispatcher when the script ends.
+    pub seq_leases: Vec<entanglement_core::SeqLease>,
 }
 
 /// One call to grade and run.

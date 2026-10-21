@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{
     emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
-    emit_turn_error, emit_usage, next_seq, Caller,
+    emit_turn_error, emit_usage, Caller,
 };
 use super::mcp_envelope::unwrap_batch;
 use super::stream::{stream_round, StreamedRound};
@@ -159,9 +159,9 @@ pub(super) async fn run_attempt(
             .map(|p| p.cost_usd(&usage));
         emit_usage(session, s, events, &usage, cost, UsagePurpose::Turn);
         if sr == Some(StopReason::MaxTokens) {
-            let _ = events.send(OutEvent::Error {
+            s.seq.emit(events, |seq| OutEvent::Error {
                 session: session.clone(),
-                seq: next_seq(&s.seq),
+                seq,
                 message: "model response truncated: hit the max output token limit \
                           (stop reason: max_tokens)"
                     .to_string(),
@@ -266,9 +266,9 @@ pub(super) async fn run_attempt(
         // for. Only emit the warning when at least one retry was budgeted
         // (and thus actually attempted).
         if cfg.max_ambiguous_stop_retries > 0 {
-            let _ = events.send(OutEvent::Error {
+            s.seq.emit(events, |seq| OutEvent::Error {
                 session: session.clone(),
-                seq: next_seq(&s.seq),
+                seq,
                 message: format!(
                     "model stop was ambiguous (stop reason: {stop_reason:?}) after \
                      {} retries - response may be incomplete",
@@ -293,9 +293,9 @@ pub(super) async fn run_attempt(
     // heads would concatenate the re-streamed partial text. `Session::replay`
     // folds this by flushing the partial assistant round then pushing
     // `nudge`, reconstructing the exact live boundary.
-    let _ = events.send(OutEvent::AmbiguousRetry {
+    s.seq.emit(events, |seq| OutEvent::AmbiguousRetry {
         session: session.clone(),
-        seq: next_seq(&s.seq),
+        seq,
         nudge: AMBIGUOUS_STOP_NUDGE.to_string(),
     });
     s.ctx.push_user(AMBIGUOUS_STOP_NUDGE);

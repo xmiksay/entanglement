@@ -1,14 +1,11 @@
 //! Handlers for the session loop's state-changing commands once they are
 //! cleared to apply (deferral is the loop's call), plus the shared teardown.
 
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use entanglement_provider::GenerationParams;
 use tokio::sync::broadcast;
 
-use super::emit::next_seq;
 use super::{Session, TurnState};
 use crate::holly::{ActivityRegistry, SeqRegistry};
 use crate::protocol::{AgentState, OutEvent, SessionId, ToolOverlayEntry};
@@ -33,9 +30,9 @@ pub(super) fn set_model(
     model: String,
 ) {
     let Some(resolver) = cfg.model_resolver.as_ref() else {
-        let _ = events.send(OutEvent::Error {
+        s.seq.emit(events, |seq| OutEvent::Error {
             session: session.clone(),
-            seq: next_seq(&s.seq),
+            seq,
             message: "model switching is not supported by this engine".to_string(),
         });
         return;
@@ -45,9 +42,9 @@ pub(super) fn set_model(
             s.rebind(session, resolved, events);
         }
         Err(e) => {
-            let _ = events.send(OutEvent::Error {
+            s.seq.emit(events, |seq| OutEvent::Error {
                 session: session.clone(),
-                seq: next_seq(&s.seq),
+                seq,
                 message: format!("cannot switch model: {e}"),
             });
         }
@@ -153,20 +150,15 @@ pub(super) fn unpause(
 }
 
 /// Retire `session`'s shared seq counter and drop its settledness entry,
-/// returning the teardown timestamp. The counter's last value stays behind as
-/// the registry's retired high-water (#884, ADR-0239): detached work still
-/// running for this id (a background script's card, ADR-0237) keeps minting
-/// seqs above every one already used, and a resume continues above them.
-pub(super) fn retire(
-    session: &SessionId,
-    seq: &Arc<AtomicU64>,
-    seqs: &SeqRegistry,
-    activity: &ActivityRegistry,
-) -> u64 {
+/// returning the teardown timestamp. The counter stays behind in the registry
+/// (#884, ADR-0239): detached work still running for this id (a background
+/// script's card, ADR-0237) keeps minting seqs above every one already used,
+/// and a resume continues above them. A new task for this id waits for this
+/// one's exit before it registers (ADR-0244), so both removals are this
+/// task's own entries.
+pub(super) fn retire(session: &SessionId, seqs: &SeqRegistry, activity: &ActivityRegistry) -> u64 {
     let ts = now_ms();
-    // By this task's own counter: a resume may already have registered a new
-    // task under the same id, which must stay live (ADR-0239 §7).
-    seqs.retire(session, seq);
+    seqs.retire(session);
     activity
         .lock()
         .expect("activity registry mutex poisoned")

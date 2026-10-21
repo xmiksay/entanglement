@@ -1,7 +1,8 @@
-//! A resume racing the old task's teardown (#884 review, ADR-0239 §7). The
-//! supervisor sends `Hibernate` without waiting, so the resumed task B can
-//! register its seq counter before the hibernating task A retires. A's
-//! retire must leave B live and its sequence above everything already used.
+//! A resume right behind a hibernate (#884 review, ADR-0239). Since
+//! ADR-0244 the resumed task B is started at once and waits for the
+//! hibernating task A's exit before it registers or emits; this keeps
+//! covering the outcome: B is live and its sequence continues above
+//! everything A and the runtime used.
 
 use std::time::Duration;
 
@@ -15,8 +16,7 @@ use tokio::sync::broadcast::Receiver;
 
 const WAIT: Duration = Duration::from_secs(5);
 
-/// Every round takes a while, so a hibernate lands mid-stream and A's
-/// teardown overlaps B's start.
+/// Every round takes a while, so a hibernate lands mid-stream.
 struct SlowLlm;
 
 #[async_trait]
@@ -44,7 +44,7 @@ async fn next_for(sub: &mut Receiver<OutEvent>, sid: &SessionId, max: &mut u64) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_resume_overtaking_the_old_tasks_retire_stays_live_and_unique() {
+async fn a_resume_right_behind_a_hibernate_stays_live_and_unique() {
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(SlowLlm) as Box<dyn Llm>),
         ..EngineConfig::default()
@@ -67,7 +67,7 @@ async fn a_resume_overtaking_the_old_tasks_retire_stays_live_and_unique() {
     }
 
     // Turn two is mid-stream when the hibernate and the resume go in back
-    // to back, so B starts while A is still unwinding.
+    // to back, while A is still unwinding.
     holly.send(InMsg::prompt(sid.clone(), "two")).await.unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
     holly.hibernate(sid.clone()).await.unwrap();
@@ -80,7 +80,7 @@ async fn a_resume_overtaking_the_old_tasks_retire_stays_live_and_unique() {
             _ => {}
         }
     }
-    // Whatever order A's retire and B's register took, B is the live task.
+    // B is the live task: A's retire never unregisters it.
     assert!(holly.is_live(&sid), "A's retire must not unregister B");
 
     // A's `SessionHibernated` is its last event and B authors nothing before a

@@ -173,7 +173,7 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
   `Option<u64>` — `None` for those — so the real seq-`0` sentinel below is a
   distinct `Some(0)`, not confused with "no seq" (#160, [ADR-0072](../../adr/0072-protocol-warts-settled-before-serve.md)).
 - **`(session, seq)` is unique across every authored content event** (#157). The
-  seq comes from **one per-session counter** (`Arc<AtomicU64>`), shared by the
+  seq comes from **one per-session counter** (`Arc<SeqCell>`), shared by the
   core session task and the runtime through a supervisor-held registry: a session
   task registers its counter on start / retires it on exit, and a runtime service
   authoring an event for a *parked* session — an approval `ToolRequest`/
@@ -183,23 +183,44 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
   and made a strict `seq > last` dedupe drop every approval prompt). The seq-less
   `Status` transitions the runtime emits around a parked call go through
   `Holly::emit_status`; the raw outbound sender is no longer exposed.
-  - **A retired session keeps a seq high-water** (#884,
+  - **Delivery order is seq order** (#893,
+    [ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). Every
+    emitter mints the seq and broadcasts the event inside the session's own
+    `SeqCell` lock (`SeqCell::emit` in the session task, `emit_for_session`
+    and supervisor errors through the registry), so two emitters for one
+    session can't deliver seq 6 before seq 5. The lock is per session and the
+    broadcast `send` never blocks.
+  - **A retired session keeps its counter** (#884,
     [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)).
-    Retiring a session (hibernate, end or close) keeps its counter's last value
-    in the registry's bounded `retired` map. Detached work still running for the
-    id (a background script's card, ADR-0237) mints above every seq already
-    used, and a resume (or re-spawn) seeds its replay-seeded counter above the
-    high-water with `fetch_max`, so no seq is reused even when the log missed
-    those events. `Holly::is_live` reads only the live counters, so a
-    high-water never makes a retired id live. The map holds 4096 ids and
-    evicts the one touched longest ago (exact reclamation is #891). A task
-    retires its *own* counter (`Arc::ptr_eq`), so a resume that registers
-    before the old task's teardown finishes stays live and continues above it
-    (ADR-0239 §7; the old task's own late mints are #892).
+    Retiring a session (hibernate, end or close) moves its cell to the
+    registry's `retired` map. Detached work still running for the id (a
+    background script's card, ADR-0237) mints above every seq already used,
+    and a resume (or re-spawn) gets the same cell back, raised to the replay's
+    highest seq, so no seq is reused even when the log missed those events.
+    `Holly::is_live` reads only the live counters, so a retired cell never
+    makes an id live. The map keeps 4096 unpinned ids and evicts the one
+    touched longest ago; a cell held outside the registry is pinned and never
+    evicted, and with every entry pinned the map grows past the cap. A
+    background `rhai` script holds a `SeqLease` (`Holly::seq_lease`) on its
+    session, and on each compaction successor it follows, until it ends
+    (#891, ADR-0244).
+  - **One task per id** (#892, ADR-0244). A hibernate leaves the old task's
+    exit signal in the supervisor's `retiring` map. A task started for the
+    id meanwhile (a `Resume`, a lazy prompt, a load, a `Spawn`) is live to
+    the supervisor at once (routing, `ListSessions`/`session_info`,
+    cascades) but waits on that signal before it registers its seq cell or
+    emits anything, so `Holly::is_live` reads `false` until it starts; what
+    it is sent buffers in its inbox in order. Closed or hibernated before it
+    ran, it ends silently: no `SessionEnded`, and its buffered frames get no
+    reply.
+    The supervisor never waits, and a close is never blocked. A resume
+    cascade leaves a still-retiring child hibernated, as the complete log
+    (which will hold its `SessionHibernated`, unless its task panicked)
+    would.
   - **Seq `0` is the sentinel for an id with no sequence**: an `Error` the
     supervisor emits for an id that **never started** (a refused spawn, an
-    `UnknownSession::Refuse` of an unknown id), or one whose high-water was
-    evicted (#891), has no counter or high-water to draw from, so it carries
+    `UnknownSession::Refuse` of an unknown id), or one whose unpinned counter
+    was evicted (ADR-0244), has no counter to draw from, so it carries
     `seq == 0` — a value no counter mints, so it can't collide with content —
     and a head renders it **unconditionally** (the seq-`0` bypass) rather than
     dropping it under a `seq > last` dedupe (ex-#159, the reason

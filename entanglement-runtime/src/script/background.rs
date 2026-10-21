@@ -34,6 +34,15 @@ pub(super) async fn run_background(
     label: String,
     run: RunSpec,
 ) {
+    // Pin the session's seq counter for the whole run (#891, ADR-0244): the
+    // script may park a card long after its session retired, and must not
+    // fall back to seq 0 when thousands of other sessions retire meanwhile.
+    // Taken while the launching turn is still parked on this call, so the
+    // session is usually live; a lease taken after it retired (a hibernate
+    // landing first) pins the retired cell just the same. Released when
+    // `dispatcher` drops at the end.
+    let lease = dispatcher.holly.seq_lease(&dispatcher.session);
+    dispatcher.seq_leases.push(lease);
     let timeout = run.timeout;
     let secs = timeout.as_secs();
     let timed_out = run.timed_out.clone();

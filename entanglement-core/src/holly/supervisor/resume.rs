@@ -90,6 +90,17 @@ impl Supervisor {
             if self.closed.contains(&child) || self.sessions.contains_key(&child) {
                 continue;
             }
+            // A child still unwinding from a hibernate stays hibernated: unless
+            // its task panicked, its `SessionHibernated` is still to come, so
+            // these records only lack it, and the complete log (or a fresh
+            // process) would not revive it either. A panicked task writes no
+            // `SessionHibernated`, so its complete log would revive it; that
+            // edge is accepted (the watcher logs the panic). An explicit
+            // `Resume` of it starts a task that waits for its old task's exit
+            // (#892, ADR-0244 §4).
+            if self.retiring.contains_key(&child) {
+                continue;
+            }
             if let Some(grandchildren) = self.spawn_resumed(&child, records) {
                 queue.extend(grandchildren);
             }
@@ -160,7 +171,9 @@ impl Supervisor {
         let seqs2 = self.seqs.clone();
         let activity2 = self.activity.clone();
         let forks = self.fork_tx.clone();
-        tokio::spawn(async move {
+        // Waits inside the task for an old task still tearing down (ADR-0244).
+        let prior = self.retiring.remove(target);
+        let task = tokio::spawn(async move {
             session_loop(
                 sid,
                 srx,
@@ -180,6 +193,7 @@ impl Supervisor {
                     spawn_model: None,
                     inherited: None,
                     initial_workdir: None,
+                    prior,
                 },
                 seqs2,
                 activity2,
@@ -188,6 +202,7 @@ impl Supervisor {
             .await;
         });
         self.sessions.insert(target.clone(), stx);
+        self.tasks.insert(target.clone(), task);
         Some(children)
     }
 }

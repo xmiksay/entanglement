@@ -15,7 +15,6 @@
 use entanglement_provider::Message;
 use tokio::sync::broadcast;
 
-use super::emit::next_seq;
 use super::fork::{ForkFrame, Inherited};
 use super::Session;
 use crate::id_gen::{IdContext, IdKind};
@@ -56,9 +55,9 @@ pub(super) fn fork_session(
     at_turn: Option<u32>,
 ) -> Option<SessionId> {
     let Some(engine) = s.engine.clone() else {
-        let _ = events.send(OutEvent::Error {
+        s.seq.emit(events, |seq| OutEvent::Error {
             session: session.clone(),
-            seq: next_seq(&s.seq),
+            seq,
             message: "fork: this session cannot fork outside a running engine".into(),
         });
         return None;
@@ -112,9 +111,9 @@ pub(super) fn seed_fork(
     seed: ForkSeed,
 ) {
     s.ctx.seed(seed.messages.clone());
-    let _ = events.send(OutEvent::SessionForked {
+    s.seq.emit(events, |seq| OutEvent::SessionForked {
         session: session.clone(),
-        seq: next_seq(&s.seq),
+        seq,
         forked_from: seed.source,
         at_turn: seed.at_turn,
         context: seed.messages,

@@ -16,9 +16,9 @@ pub mod session;
 
 pub use context::Context;
 pub use holly::{
-    AgentCatalog, ConfigError, EngineConfig, FileReverter, Holly, PersistenceSignal, SessionLoader,
-    SessionModel, SystemPromptResolver, ToolSpecResolver, UnknownSession, WireError,
-    WorkdirResolver, DEFAULT_AGENT, DEFAULT_MODE,
+    AgentCatalog, ConfigError, EngineConfig, FileReverter, Holly, PersistenceSignal, SeqCell,
+    SeqLease, SessionLoader, SessionModel, SystemPromptResolver, ToolSpecResolver, UnknownSession,
+    WireError, WorkdirResolver, DEFAULT_AGENT, DEFAULT_MODE,
 };
 pub use id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,

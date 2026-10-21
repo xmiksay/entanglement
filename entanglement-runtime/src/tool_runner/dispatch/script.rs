@@ -133,6 +133,12 @@ impl Dispatcher {
         }
         if let Some(to) = &switched {
             self.session = to.clone();
+            // Only a detached run switches. Keeping the predecessor's lease
+            // is defensive: the loop is serial and switches between calls,
+            // so nothing parked as P is outstanding and nothing emits as P
+            // afterwards today; one `Arc` keeps a future P emit safe
+            // (ADR-0244).
+            self.seq_leases.push(self.holly.seq_lease(to));
         }
         let kept = &self.overlay_epochs;
         self.overlays.retain(|s, _| kept.contains_key(s));

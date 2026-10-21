@@ -171,8 +171,9 @@ doc, never here**:
   `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`); every
   refused variant + why: [protocol §2 trusted/untrusted split](../docs/architecture/protocol/sessions.md) ([ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)).
 - **Session-multiplexed** — every frame carries `SessionId`; `(session, seq)`
-  is unique per authored event; `List*`/`McpList` are correlation-id queries
-  ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0239](../docs/adr/0239-retired-session-keeps-a-seq-high-water.md)).
+  is unique per authored event and delivered in seq order; one task per id;
+  `List*`/`McpList` are correlation-id queries
+  ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0239](../docs/adr/0239-retired-session-keeps-a-seq-high-water.md)/[ADR-0244](../docs/adr/0244-seq-order-leases-and-one-task-per-id.md)).
 - **Model/generation switching is live; aux models resolve per purpose**
   ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)).
 - **Compaction always forks a successor session** — no path rewrites a live

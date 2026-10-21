@@ -122,7 +122,7 @@ async fn emit_for_session_mints_unique_seq_above_parked_toolexec() {
 }
 
 /// A supervisor error for a closed id (a `Prompt` racing behind its
-/// `CloseSession`) draws from the id's retired high-water (ADR-0239), so it
+/// `CloseSession`) draws from the id's retired seq cell (ADR-0239), so it
 /// takes a real seq above the session's last; an id that never started has
 /// no sequence at all and carries the seq-`0` sentinel.
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn a_hibernated_session_keeps_a_real_seq_and_resume_never_reuses_one() {
 
     holly.hibernate(sid.clone()).await.unwrap();
     await_retired(&mut sub, &sid).await;
-    assert!(!holly.is_live(&sid), "a retired high-water is not liveness");
+    assert!(!holly.is_live(&sid), "a retired seq cell is not liveness");
 
     let first = emit_one(&holly, &mut sub, &sid, "while-hibernated-1").await;
     let second = emit_one(&holly, &mut sub, &sid, "while-hibernated-2").await;

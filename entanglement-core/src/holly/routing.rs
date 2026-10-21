@@ -51,7 +51,7 @@ pub(super) async fn route_to_session(
 /// a registered seq counter, so the error mints a real monotonic seq from the
 /// shared registry (#157) and takes its ordered place in that session's content
 /// stream. A retired id (a `Prompt` racing behind its close or hibernate) keeps
-/// drawing from its retired high-water (ADR-0239), so its error still takes a
+/// drawing from its retired seq cell (ADR-0239), so its error still takes a
 /// real seq. Only an id that never started has no sequence: the seq is `0` — a
 /// value core never mints, so it can't collide with content, and heads render
 /// it unconditionally (the seq-`0` bypass) instead of dropping it under a
@@ -64,10 +64,12 @@ pub(super) fn emit_supervisor_error(
     session: &SessionId,
     message: &str,
 ) {
-    let _ = events.send(OutEvent::Error {
-        session: session.clone(),
-        seq: seqs.next(session),
-        message: message.to_string(),
+    seqs.with_next(session, |seq| {
+        let _ = events.send(OutEvent::Error {
+            session: session.clone(),
+            seq,
+            message: message.to_string(),
+        });
     });
 }
 

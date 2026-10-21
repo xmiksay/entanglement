@@ -85,6 +85,9 @@ mod script_live_authority;
 // #884: a card parked after its session retired still gets a real seq.
 #[path = "rhai/background_retired.rs"]
 mod background_retired;
+// #891: the script's seq lease follows it onto a compaction successor.
+#[path = "rhai/background_lease.rs"]
+mod background_lease;
 // #888: a card across a chain of compactions, not one hop.
 #[path = "rhai/background_chain.rs"]
 mod background_chain;

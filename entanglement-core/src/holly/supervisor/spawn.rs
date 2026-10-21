@@ -194,7 +194,9 @@ impl Supervisor {
         let seqs2 = self.seqs.clone();
         let activity2 = self.activity.clone();
         let forks = self.fork_tx.clone();
-        tokio::spawn(async move {
+        // Waits inside the task for an old task still tearing down (ADR-0244).
+        let prior = self.retiring.remove(child);
+        let task = tokio::spawn(async move {
             session_loop(
                 sid,
                 srx,
@@ -210,6 +212,7 @@ impl Supervisor {
                     spawn_model,
                     inherited,
                     initial_workdir,
+                    prior,
                 },
                 seqs2,
                 activity2,
@@ -228,6 +231,7 @@ impl Supervisor {
             let _ = stx.send(SessionCmd::Prompt(content)).await;
         }
         self.sessions.insert(child.clone(), stx);
+        self.tasks.insert(child.clone(), task);
         // Mirror the child→parent edge onto the parent's live `children`
         // list. Best-effort: if the parent task already exited, the edge
         // still lives in `parent_links`; the mirror is a convenience view.
@@ -322,7 +326,8 @@ impl Supervisor {
         let seqs2 = self.seqs.clone();
         let activity2 = self.activity.clone();
         let forks = self.fork_tx.clone();
-        tokio::spawn(async move {
+        let prior = self.retiring.remove(session_id);
+        let task = tokio::spawn(async move {
             session_loop(
                 sid,
                 srx,
@@ -338,6 +343,7 @@ impl Supervisor {
                     spawn_model: None,
                     inherited: None,
                     initial_workdir: None,
+                    prior,
                 },
                 seqs2,
                 activity2,
@@ -346,6 +352,7 @@ impl Supervisor {
             .await
         });
         self.sessions.insert(session_id.clone(), stx);
+        self.tasks.insert(session_id.clone(), task);
         true
     }
 }

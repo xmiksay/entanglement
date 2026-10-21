@@ -35,6 +35,10 @@ pub(crate) struct SessionStart {
     /// The validated working directory a fresh spawn starts in (#764) — its
     /// own `Spawn.workdir`, else its source's or parent's. Ignored on resume.
     pub(crate) initial_workdir: Option<String>,
+    /// The exit signal of the task still tearing down under this id, when
+    /// there is one: the new task waits on it before anything else (#892,
+    /// ADR-0244).
+    pub(crate) prior: Option<super::ExitSignal>,
 }
 
 /// Build (or adopt the resumed) [`Session`], emit its start-up lifecycle
@@ -58,6 +62,7 @@ pub(super) fn start_session(
         spawn_model,
         inherited,
         initial_workdir,
+        prior: _,
     } = start;
     let ts = now_ms();
 
@@ -122,9 +127,11 @@ pub(super) fn start_session(
     // counter, so runtime seqs continue past the reconstructed tail. Also
     // registered before `SessionStarted` is announced: this registry backs
     // `Holly::is_live`, which must already read `true` once a head sees it.
-    // `register` also lifts the counter above any seq minted for this id
-    // while it was retired (ADR-0239), so a resume never reuses one.
-    seqs.register(session, &s.seq);
+    // `register` hands back the id's retired cell when it has one (ADR-0239,
+    // ADR-0244), raised to the replay's seq, so a resume never reuses a seq
+    // minted while it was retired, and a lease taken before still pins the
+    // counter this task emits through.
+    s.seq = seqs.register(session, s.seq.current());
 
     let _ = events.send(OutEvent::SessionStarted {
         session: session.clone(),
@@ -329,6 +336,7 @@ mod tests {
                     seed: None,
                 }),
                 initial_workdir: None,
+                prior: None,
             },
         );
         let mut out = Vec::new();
