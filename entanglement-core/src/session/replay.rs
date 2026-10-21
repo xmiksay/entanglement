@@ -327,9 +327,7 @@ impl Session {
         // Seed the shared counter past the reconstructed tail so a resumed
         // session — and any runtime event minted for it — continues the sequence
         // rather than colliding with a replayed seq (#157).
-        session
-            .seq
-            .store(max_seq, std::sync::atomic::Ordering::Relaxed);
+        session.seq.raise(max_seq);
         Ok(session)
     }
 }

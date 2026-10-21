@@ -34,6 +34,7 @@ mod immediate;
 mod mcp_envelope;
 mod mode;
 mod ops;
+mod predecessor;
 mod replay;
 mod replay_pending;
 mod revert;
@@ -57,6 +58,7 @@ pub use turn_state::TurnState;
 use cmd::{cap_meta_field, stash_or_reject};
 use fork::Forked;
 pub(crate) use fork::{ForkFrame, Inherited};
+pub(crate) use predecessor::ExitSignal;
 
 use std::collections::VecDeque;
 
@@ -83,11 +85,14 @@ pub(crate) async fn session_loop(
     mut rx: mpsc::Receiver<SessionCmd>,
     events: broadcast::Sender<OutEvent>,
     cfg: EngineConfig,
-    start: SessionStart,
+    mut start: SessionStart,
     seqs: SeqRegistry,
     activity: ActivityRegistry,
     forks: mpsc::Sender<ForkFrame>,
 ) {
+    if !predecessor::ready(start.prior.take(), &rx).await {
+        return;
+    }
     let mut s = start_session(&session, &events, &cfg, &seqs, forks, start);
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
@@ -358,8 +363,8 @@ pub(crate) async fn session_loop(
                 }
             }
             // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`
-            // (Context/history) and retire the shared seq counter to its
-            // high-water (ADR-0239), then emit the distinct
+            // (Context/history) and retire the shared seq counter, which the
+            // registry keeps (ADR-0239, ADR-0244), then emit the distinct
             // `SessionHibernated` and exit. A parked-on-approval turn is safe: its
             // pending `ToolExec`s live in the embedder's log and resume re-offers
             // them (ADR-0061/0071). A mid-stream turn reaches here via the
@@ -367,7 +372,7 @@ pub(crate) async fn session_loop(
             // pops when idle) — stop-then-hibernate, discarding the uncommitted
             // round exactly as replay drops a text-only tail.
             Some(SessionCmd::Hibernate) => {
-                let ts = commands::retire(&session, &s.seq, &seqs, &activity);
+                let ts = commands::retire(&session, &seqs, &activity);
                 let _ = events.send(OutEvent::SessionHibernated {
                     session: session.clone(),
                     ts,
@@ -382,7 +387,7 @@ pub(crate) async fn session_loop(
     // compaction forked this session away and it is now retired (ADR-0205 —
     // the supervisor's `CloseSession` tombstones the id right behind us). Both
     // end the session identically, so the teardown lives here once.
-    let ts = commands::retire(&session, &s.seq, &seqs, &activity);
+    let ts = commands::retire(&session, &seqs, &activity);
     let _ = events.send(OutEvent::SessionEnded {
         session: session.clone(),
         ts,

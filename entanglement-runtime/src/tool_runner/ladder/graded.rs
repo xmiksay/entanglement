@@ -87,6 +87,7 @@ pub(super) fn dispatcher(
         http_gate: ctx.http_gate.clone(),
         trust: ctx.trust.clone(),
         files_root: ctx.plan_root.clone(),
+        seq_leases: Vec::new(),
     }
 }
 

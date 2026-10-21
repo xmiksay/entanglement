@@ -8,12 +8,12 @@
 //! next `Prompt` was the command refused.
 
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicU64;
 
 use tokio::sync::broadcast;
 
 use super::mode::apply_set_mode;
 use super::{cap_meta_field, stash_or_reject, SessionCmd};
+use crate::holly::SeqCell;
 use crate::protocol::{OutEvent, SessionId, ToolOverlayEntry};
 
 /// Apply `cmd` now if it is an apply-immediately command; otherwise hand it
@@ -106,7 +106,7 @@ pub(super) fn apply_or_stash_mid_stream(
     stash: &mut VecDeque<SessionCmd>,
     session: &SessionId,
     events: &broadcast::Sender<OutEvent>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
     let Err(cmd) = try_apply(cmd, s, session, events) else {
         return;

@@ -309,6 +309,33 @@ removes `user_only`. What an embedder has to change:
   script records is marked `adopted` on the manifest `Change`
   (serde-defaulted; older manifests read unchanged).
 
+## Seq order, leases and one task per id (ADR-0244, #891/#892/#893)
+
+- **`Session.seq`** is now `Arc<SeqCell>` (was `Arc<AtomicU64>`). Read it with
+  `session.seq.current()` instead of `.load(Ordering::..)`. `SeqCell` is
+  re-exported at the crate root.
+- **New API:** `Holly::seq_lease(&id) -> SeqLease` pins a session's seq
+  counter while it is held (drop it to release). Take one when detached work
+  that may emit for a session after it retires starts, and drop it when the
+  work ends; `skutter`'s background `rhai` scripts do. Without it, a retired
+  session's counter is evicted once more than 4096 other sessions retire, and
+  `emit_for_session` falls back to seq `0` (ADR-0239).
+- **`emit_for_session`'s `make` closure runs under the session's emit lock**
+  (so delivery order is seq order). Build the event in it; don't block, and
+  don't call back into `Holly` from it (no `emit_for_session` for any
+  session, no `seq_lease`, no `is_live`): those take the seq registry's lock,
+  which a concurrent session start holds while it locks a cell, so the call
+  can deadlock.
+- **Behaviour:** a task started for a just-hibernated id (a `Resume`, a
+  lazy prompt, a load, a `Spawn`) is live to the supervisor at once
+  (routing, `ListSessions`, `session_info`) but waits for the old task's
+  exit before it registers or emits, so `SessionHibernated` always precedes
+  the resumed `SessionStarted`, and `Holly::is_live` reads `false` until
+  then; what is sent to it meanwhile is handled in order once it starts. A
+  close of a waiting task is a close of a hibernated id: no `SessionEnded`,
+  and its buffered frames get no reply (a hibernate likewise ends it
+  silently). A head needs no change.
+
 ## A decision only answers its own kind of card (ADR-0245, #895/#894)
 
 - **Wire:** an `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` aimed

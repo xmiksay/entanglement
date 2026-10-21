@@ -65,14 +65,23 @@ impl Holly {
     /// *same* sequence the session task uses — so `(session, seq)` stays unique
     /// instead of reusing the parked `ToolExec` seq. `make` receives the minted
     /// seq and builds the event. A retired session (hibernated, ended or
-    /// closed) keeps minting above its last seq from the registry's retired
-    /// high-water (#884, ADR-0239) — a background script's card parked after
+    /// closed) keeps minting above its last seq from the seq cell the registry
+    /// keeps for it (#884, ADR-0239) — a background script's card parked after
     /// the session went away still gets a real, unique seq. Only an id that
-    /// never started (or whose high-water was evicted past the retired cap, #891)
+    /// never started (or whose unpinned retired cell was evicted past the
+    /// retired cap; a [`seq_lease`][Self::seq_lease] prevents that, #891)
     /// mints the seq-`0` sentinel, which no counter ever produces.
+    ///
+    /// The seq is minted and the event broadcast inside the session's own
+    /// critical section, shared with the session task's emits, so delivery
+    /// order is seq order across every emitter (#893, ADR-0244). `make` runs
+    /// under that lock: build the event, don't block, and don't call back
+    /// into `Holly` from it (no `emit_for_session` for any session, no
+    /// `seq_lease`, no `is_live`) — those take the seq registry's lock, which
+    /// a concurrent session start holds while it locks this cell.
     pub fn emit_for_session(&self, session: &SessionId, make: impl FnOnce(u64) -> OutEvent) {
-        let seq = self.next_seq(session);
-        self.outlets.emit(make(seq));
+        self.seqs
+            .with_next(session, |seq| self.outlets.emit(make(seq)));
     }
 
     /// Broadcast a runtime-authored live-only event — a `rhai` script's

@@ -20,8 +20,8 @@
 //! the parked [`ToolExec`][OutEvent::ToolExec] seq. A retired (hibernated, ended
 //! or closed) session keeps minting above its last seq (ADR-0239). The one
 //! exemption is an event for an id with no sequence — one that never started,
-//! or whose retired entry was evicted past the cap (#891), e.g. a supervisor
-//! lifecycle [`Error`][OutEvent::Error] refusing a spawn: it carries
+//! or whose unpinned retired entry was evicted past the cap (ADR-0244), e.g. a
+//! supervisor lifecycle [`Error`][OutEvent::Error] refusing a spawn: it carries
 //! `seq == 0` — a value core never mints — which a head renders unconditionally
 //! instead of dropping under a `seq > last` dedupe.
 

@@ -37,7 +37,12 @@ impl ResumeMarks {
     /// replays the root's whole log) would leak them until they end.
     ///
     /// A child already `is_live` is skipped too: core's cascade skips a live
-    /// id without any event, so its mark would never clear.
+    /// id without any event, so its mark would never clear. Core also skips
+    /// a child whose hibernated task is still tearing down (ADR-0244 §4),
+    /// which this side can't see: such a child reads not-live here, gets a
+    /// mark, and the mark stays until its session ends or `MAX_PENDING`
+    /// pushes it out. Accepted: bounded, and a stale mark only labels a later
+    /// start of that id `source: resume`.
     pub(super) fn observe(&mut self, msg: &InMsg, is_live: impl Fn(&SessionId) -> bool) {
         let InMsg::Resume { session, records } = msg else {
             return;

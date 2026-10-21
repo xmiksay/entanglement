@@ -38,7 +38,11 @@ time, so one parked child pins its whole ancestry live regardless of how long
 the root itself has sat idle. A qualifying root hibernates through the same
 `hibernate_subtree` helper `InMsg::HibernateSession` uses — the identical
 teardown, `OutEvent::SessionHibernated`, and resumability (#318, ADR-0077) as a
-manual eviction. Deliberately **stricter** than manual `HibernateSession`
+manual eviction. A task started for a hibernated id before the old one
+has exited waits inside itself for the old task's exit signal before it
+registers or emits; the supervisor never waits (#892,
+[ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)).
+Deliberately **stricter** than manual `HibernateSession`
 (which is stop-then-hibernate): a timer must never cancel live work, so the
 sweep only touches a session already at rest, never one mid-stream.
 `entanglement-runtime` exposes this as the `idle_ttl_secs` `config.yml` setting
@@ -59,7 +63,7 @@ addressed to an id with no live task goes through
 the single-user convenience, still refusing a closed id and a known
 hibernated sub-agent child (#639); `Refuse` emits an `Error` naming the
 session (seq `0` for an id that never started; a retired id's continues its
-seq high-water, ADR-0239) and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
+retired counter, ADR-0239) and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
 embedder's async loader for the records `Holly::resume` consumes and runs the
 ordinary resume path (sub-tree cascade included) before delivering, `None`
 refusing and `Err` erroring. The load runs on its own task and reports back
@@ -68,7 +72,7 @@ over a supervisor-owned channel, so a slow store never stalls routing;
 in-flight load and replays them through the normal handler in arrival order;
 `CloseSession` abandons it. `Holly::is_live` reads the per-session seq
 registry's live counters (registered before `SessionStarted`, retired before
-`SessionEnded`/`SessionHibernated`; a retired id's seq high-water does not
+`SessionEnded`/`SessionHibernated`; a retired id's counter does not
 count, [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)) — advisory; the policy is the race-free
 way to address a possibly-evicted id.
 

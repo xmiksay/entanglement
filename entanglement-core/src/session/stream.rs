@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::{emit_turn_error, next_seq};
+use super::emit::emit_turn_error;
 use super::immediate::{apply_or_stash_mid_stream, fields};
 use super::mode::mode_notice_with_transition;
 use super::{Session, SessionCmd};
@@ -208,9 +208,9 @@ pub(super) async fn stream_round(
                     if !delta.is_empty() {
                         shown = true;
                         text_buf.push_str(&delta);
-                        let _ = events.send(OutEvent::TextDelta {
+                        s.seq.emit(events, |seq| OutEvent::TextDelta {
                             session: session.clone(),
-                            seq: next_seq(&s.seq),
+                            seq,
                             text: delta,
                         });
                     }
@@ -218,9 +218,9 @@ pub(super) async fn stream_round(
                 Ok(LlmEvent::Reasoning(delta)) => {
                     if !delta.is_empty() {
                         shown = true;
-                        let _ = events.send(OutEvent::ReasoningDelta {
+                        s.seq.emit(events, |seq| OutEvent::ReasoningDelta {
                             session: session.clone(),
-                            seq: next_seq(&s.seq),
+                            seq,
                             text: delta,
                         });
                     }
@@ -232,9 +232,9 @@ pub(super) async fn stream_round(
                         // longer silently re-requests over it (#181) — the
                         // assembled `ToolCall` still arrives on the same stream.
                         shown = true;
-                        let _ = events.send(OutEvent::ToolCallDelta {
+                        s.seq.emit(events, |seq| OutEvent::ToolCallDelta {
                             session: session.clone(),
-                            seq: next_seq(&s.seq),
+                            seq,
                             request_id: id,
                             tool: name,
                             delta,
@@ -287,9 +287,9 @@ pub(super) async fn stream_round(
         // `Finish` they may be incomplete and unsafe to execute.
         if !text_buf.is_empty() {
             const MARKER: &str = "\n\n[interrupted]";
-            let _ = events.send(OutEvent::TextDelta {
+            s.seq.emit(events, |seq| OutEvent::TextDelta {
                 session: session.clone(),
-                seq: next_seq(&s.seq),
+                seq,
                 text: MARKER.to_string(),
             });
             text_buf.push_str(MARKER);

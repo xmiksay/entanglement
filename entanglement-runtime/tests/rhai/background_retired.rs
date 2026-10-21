@@ -2,8 +2,11 @@
 //! retired (#884, ADR-0239) — the idle sweep hibernated it, or it was closed
 //! — still gets a real seq: above every seq the session already used, so a
 //! head's `seq > last_seen` dedupe folds the card instead of dropping a
-//! seq-`0` one and leaving the script waiting forever.
+//! seq-`0` one and leaving the script waiting forever. The script's seq lease
+//! keeps that true however many other sessions retire meanwhile (#891,
+//! ADR-0244).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,14 +68,64 @@ enum Retire {
     Close,
 }
 
-/// Launch the gated script, retire the session, open the gate, and return
-/// the engine, the (detached) card's request id and seq, and the highest seq
-/// the session authored before the card.
+/// More than the engine's retired-counter cap (4096, ADR-0239 §6): without a
+/// lease the script's session would be evicted and its card minted seq 0.
+pub(super) const STORM: usize = 4100;
+
+/// Spawn and close `n` other sessions, in batches small enough that the
+/// batch's events never lag a fresh subscriber, each batch confirmed retired.
+pub(super) async fn retire_storm(holly: &entanglement_core::Holly, n: usize) {
+    const BATCH: usize = 50;
+    for start in (0..n).step_by(BATCH) {
+        let mut sub = holly.subscribe();
+        let ids: Vec<SessionId> = (start..(start + BATCH).min(n))
+            .map(|i| SessionId::new(format!("storm-{i}")))
+            .collect();
+        for id in &ids {
+            holly
+                .send(InMsg::Spawn {
+                    session: id.clone(),
+                    parent: None,
+                    predecessor: None,
+                    agent: entanglement_core::DEFAULT_AGENT.into(),
+                    prompt: String::new(),
+                    user: None,
+                    model: None,
+                    mode: None,
+                    workdir: None,
+                })
+                .await
+                .unwrap();
+            holly
+                .send(InMsg::CloseSession {
+                    session: id.clone(),
+                })
+                .await
+                .unwrap();
+        }
+        let mut left: HashSet<SessionId> = ids.into_iter().collect();
+        while !left.is_empty() {
+            match tokio::time::timeout(WAIT, sub.recv()).await {
+                Ok(Ok(OutEvent::SessionEnded { session, .. })) => {
+                    left.remove(&session);
+                }
+                Ok(Ok(_)) => {}
+                other => panic!("storm batch at {start} did not retire: {other:?}"),
+            }
+        }
+    }
+}
+
+/// Launch the gated script, retire the session, retire `storm` other
+/// sessions, open the gate, and return the engine, the (detached) card's
+/// request id and seq, and the highest seq the session authored before the
+/// card.
 async fn card_after_retire(
     dir: &TempDir,
     scripts: &ScriptRegistry,
     sid: &SessionId,
     retire: Retire,
+    storm: usize,
 ) -> (entanglement_core::Holly, String, u64, u64) {
     let gate = dir.path.join("gate");
     let holly = engine_with(
@@ -126,6 +179,13 @@ async fn card_after_retire(
         }
     }
     assert!(!holly.is_live(sid), "the retired session is not live");
+    if storm > 0 {
+        // The storm's events would lag `sub`: resubscribe after it. The card
+        // parks only once the gate opens, below.
+        drop(sub);
+        retire_storm(&holly, storm).await;
+        sub = holly.subscribe();
+    }
 
     std::fs::write(dir.path.join("gate"), "").unwrap();
     loop {
@@ -154,7 +214,7 @@ async fn a_card_parked_after_a_hibernate_gets_a_real_seq() {
     let scripts = ScriptRegistry::new();
     let sid = SessionId::new("hib");
     let (holly, request_id, seq, last) =
-        card_after_retire(&dir, &scripts, &sid, Retire::Hibernate).await;
+        card_after_retire(&dir, &scripts, &sid, Retire::Hibernate, 0).await;
     assert!(last > 0);
     assert!(
         seq > last,
@@ -170,7 +230,26 @@ async fn a_card_parked_after_a_close_gets_a_real_seq() {
     let scripts = ScriptRegistry::new();
     let sid = SessionId::new("closed");
     let (holly, request_id, seq, last) =
-        card_after_retire(&dir, &scripts, &sid, Retire::Close).await;
+        card_after_retire(&dir, &scripts, &sid, Retire::Close, 0).await;
+    assert!(last > 0);
+    assert!(
+        seq > last,
+        "card seq {seq} must exceed the session's {last}"
+    );
+
+    approve_and_finish(&holly, &scripts, &sid, &sid, request_id, &dir.path).await;
+}
+
+/// #891: more sessions than the retired-counter cap retire while the script
+/// waits; its lease keeps the session's counter, so the card still gets a
+/// real seq.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_card_parked_after_more_retirements_than_the_cap_gets_a_real_seq() {
+    let dir = TempDir::new("bg-retired-storm");
+    let scripts = ScriptRegistry::new();
+    let sid = SessionId::new("leased");
+    let (holly, request_id, seq, last) =
+        card_after_retire(&dir, &scripts, &sid, Retire::Hibernate, STORM).await;
     assert!(last > 0);
     assert!(
         seq > last,

@@ -159,7 +159,9 @@ its `user` intact) and then delivers the message; `None` refuses with an
 loader (seq `0` for an id this engine never ran; a retired id's error
 continues its seq, ADR-0239); `Err` surfaces as an `Error` and spawns nothing. Messages
 that arrive while a load is in flight queue behind that one load and deliver
-in order. `Holly::is_live(&id)` answers "is it running right now" cheaply,
+in order. A task resumed for an id whose hibernated task is still tearing
+down waits for that task's exit before it starts, so the two never run side
+by side (ADR-0244). `Holly::is_live(&id)` answers "is it running right now" cheaply,
 for display — not for check-then-send.
 
 **Ownership of a live session: `Holly::session_info(&id)`**

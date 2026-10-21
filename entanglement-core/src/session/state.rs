@@ -3,7 +3,6 @@
 //! (#323) so the loop in [`super`] and the state definition read on their own.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
@@ -11,7 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::fork::ForkFrame;
 use super::TurnState;
 use crate::context::Context;
-use crate::holly::DEFAULT_MODE;
+use crate::holly::{SeqCell, DEFAULT_MODE};
 use crate::protocol::{Agent, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
@@ -106,13 +105,15 @@ pub struct Session {
     /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
     /// records. Empty by default (no overlay).
     pub tool_overlay: Vec<ToolOverlayEntry>,
-    /// Monotonic per-session emit counter, shared (`Arc<AtomicU64>`, #157) with
+    /// Monotonic per-session emit counter, shared (`Arc<SeqCell>`, #157) with
     /// the supervisor's seq registry so runtime-authored events minted while this
     /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
     /// a `FileChange`) draw a fresh seq from the *same* sequence via
     /// [`Holly::emit_for_session`][crate::Holly] — keeping `(session, seq)` unique
-    /// instead of reusing the parked `ToolExec` seq (the pre-#157 defect).
-    pub seq: Arc<AtomicU64>,
+    /// instead of reusing the parked `ToolExec` seq (the pre-#157 defect). Mint
+    /// and broadcast share one lock, so delivery order is seq order (#893). On
+    /// start the registry may swap in the id's retired cell (ADR-0244).
+    pub seq: Arc<SeqCell>,
     pub parent: Option<SessionId>,
     /// The sessions this one spawned as sub-agents (#child-lineage): the live
     /// children of this session, appended on
@@ -208,7 +209,7 @@ impl Session {
             generation: cfg.generation,
             generation_by_agent: HashMap::new(),
             tool_overlay: Vec::new(),
-            seq: Arc::new(AtomicU64::new(0)),
+            seq: Arc::default(),
             parent: None,
             children: Vec::new(),
             predecessor: None,

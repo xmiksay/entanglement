@@ -26,7 +26,6 @@
 use entanglement_provider::{GenerationParams, ResolvedModel};
 use tokio::sync::{broadcast, mpsc};
 
-use super::emit::next_seq;
 use super::user_fork::ForkSeed;
 use super::Session;
 use crate::id_gen::{IdContext, IdKind};
@@ -138,9 +137,9 @@ pub(crate) fn fork_successor(
     let ctx = IdContext::successor_of(session).with_user(s.user.as_ref());
     let successor = SessionId::new(cfg.id_gen.next(IdKind::Session, &ctx));
 
-    let _ = events.send(OutEvent::Compacted {
+    s.seq.emit(events, |seq| OutEvent::Compacted {
         session: session.clone(),
-        seq: next_seq(&s.seq),
+        seq,
         summary: compaction.seed.to_string(),
         kept: compaction.kept as u64,
         auto: compaction.auto,

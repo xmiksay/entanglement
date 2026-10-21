@@ -7,7 +7,6 @@
 
 use tokio::sync::broadcast;
 
-use super::emit::next_seq;
 use super::Session;
 use crate::protocol::{FileRevertReport, OutEvent, RevertSkip, SessionId};
 use crate::EngineConfig;
@@ -33,9 +32,9 @@ pub(super) async fn revert_files(
     let report = match outcome {
         Ok(report) => report,
         Err(message) => {
-            let _ = events.send(OutEvent::Error {
+            s.seq.emit(events, |seq| OutEvent::Error {
                 session: session.clone(),
-                seq: next_seq(&s.seq),
+                seq,
                 message: format!("revert files: {message}"),
             });
             return;
@@ -49,9 +48,9 @@ pub(super) async fn revert_files(
         restored,
         skipped,
     } = report;
-    let _ = events.send(OutEvent::FilesReverted {
+    s.seq.emit(events, |seq| OutEvent::FilesReverted {
         session: session.clone(),
-        seq: next_seq(&s.seq),
+        seq,
         to_turn,
         restored,
         skipped,

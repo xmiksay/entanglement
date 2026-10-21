@@ -1,23 +1,17 @@
 //! Outbound-event emit helpers shared across the session loop and turn logic.
 //! Each bumps the session's monotonic `seq` and fires an [`OutEvent`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use tokio::sync::broadcast;
 
 use super::{Session, TurnState};
+use crate::holly::SeqCell;
 use crate::protocol::{AgentState, OutEvent, SessionId, ToolEnvelope, UsagePurpose};
 use entanglement_provider::{tool_reference_fallback_text, ContentPart, ImageSource, Usage};
 
-/// Atomically bump the session's monotonic `seq` and return the new value. The
-/// counter is shared (`Arc<AtomicU64>`, #157) so a runtime-authored event minted
-/// while the session is parked — an approval `ToolRequest`, a `Plan` snapshot —
-/// draws from the *same* sequence via [`Holly::emit_for_session`][crate::Holly],
-/// keeping `(session, seq)` unique across every authored event rather than
-/// reusing the parked `ToolExec` seq.
-pub(crate) fn next_seq(s: &AtomicU64) -> u64 {
-    s.fetch_add(1, Ordering::Relaxed) + 1
-}
+// Every seq-bearing event goes out through `SeqCell::emit`, which mints the
+// seq and broadcasts under the session's own lock (#893, ADR-0244): the
+// runtime's `Holly::emit_for_session` takes the same lock, so delivery order
+// is seq order across emitters.
 
 /// Fold one round-trip's normalized [`Usage`] into the session total and emit
 /// the per-round-trip delta as [`OutEvent::Usage`] (#192). Missing dimensions
@@ -41,9 +35,9 @@ pub(crate) fn emit_usage(
     s.usage.cache_write_tokens += cache_write;
     s.usage.cost_usd += cost.unwrap_or(0.0);
 
-    let _ = events.send(OutEvent::Usage {
+    s.seq.emit(events, |seq| OutEvent::Usage {
         session: session.clone(),
-        seq: next_seq(&s.seq),
+        seq,
         input_tokens: input,
         output_tokens: output,
         cached_input_tokens: cached_input,
@@ -57,18 +51,18 @@ pub(crate) fn emit_usage(
 /// the `Error` lifecycle state. The engine stays alive for the next prompt.
 pub(crate) fn emit_turn_error(
     session: &SessionId,
-    seq: &AtomicU64,
+    seq: &SeqCell,
     events: &broadcast::Sender<OutEvent>,
     message: String,
 ) {
-    let _ = events.send(OutEvent::Error {
+    seq.emit(events, |seq| OutEvent::Error {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         message,
     });
-    let _ = events.send(OutEvent::Done {
+    seq.emit(events, |seq| OutEvent::Done {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
     });
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
@@ -83,12 +77,12 @@ pub(crate) fn emit_turn_error(
 /// signals completion can't silently diverge between them (#434).
 pub(crate) fn emit_turn_done(
     session: &SessionId,
-    seq: &AtomicU64,
+    seq: &SeqCell,
     events: &broadcast::Sender<OutEvent>,
 ) {
-    let _ = events.send(OutEvent::Done {
+    seq.emit(events, |seq| OutEvent::Done {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
     });
     let _ = events.send(OutEvent::Status {
         session: session.clone(),
@@ -103,11 +97,11 @@ pub(crate) fn emit_tool_call(
     session: &SessionId,
     call: &entanglement_provider::ToolCall,
     envelope: Option<&ToolEnvelope>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
-    let _ = events.send(OutEvent::ToolCall {
+    seq.emit(events, |seq| OutEvent::ToolCall {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         request_id: call.id.clone(),
         tool: call.name.clone(),
         input: call.input.clone(),
@@ -128,11 +122,11 @@ pub(crate) fn emit_tool_exec(
     call: &entanglement_provider::ToolCall,
     envelope: Option<&ToolEnvelope>,
     caller: Caller<'_>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
-    let _ = events.send(OutEvent::ToolExec {
+    seq.emit(events, |seq| OutEvent::ToolExec {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         request_id: call.id.clone(),
         tool: call.name.clone(),
         input: call.input.clone(),
@@ -168,7 +162,7 @@ pub(crate) fn reoffer_pending(
     session: &SessionId,
     turn: &TurnState,
     caller: Caller<'_>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
     for call in &turn.pending {
         emit_tool_exec(
@@ -193,7 +187,7 @@ pub(crate) fn emit_tool_output(
     duration_ms: Option<u64>,
     exit_code: Option<i32>,
     envelope: Option<ToolEnvelope>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
     // Heads render text; an image result shows a short placeholder. The full
     // multimodal `content` rides whenever `output` can't rebuild it exactly —
@@ -206,9 +200,9 @@ pub(crate) fn emit_tool_output(
         _ => false,
     };
     let output = tool_output_display(&content);
-    let _ = events.send(OutEvent::ToolOutput {
+    seq.emit(events, |seq| OutEvent::ToolOutput {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         request_id: request_id.to_string(),
         tool: tool.to_string(),
         output,
@@ -254,11 +248,11 @@ pub(crate) fn emit_search_result(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     part: ContentPart,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
-    let _ = events.send(OutEvent::SearchResult {
+    seq.emit(events, |seq| OutEvent::SearchResult {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         part,
     });
 }
@@ -276,11 +270,11 @@ pub(crate) fn emit_reasoning_block(
     events: &broadcast::Sender<OutEvent>,
     session: &SessionId,
     part: ContentPart,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
-    let _ = events.send(OutEvent::ReasoningBlock {
+    seq.emit(events, |seq| OutEvent::ReasoningBlock {
         session: session.clone(),
-        seq: next_seq(seq),
+        seq,
         part,
     });
 }

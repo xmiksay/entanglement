@@ -229,7 +229,11 @@ assignment). `script` XOR `path`, the field types and unknown keys are
 validated before the launch. A background run detaches after the launch and
 the read; its listing label is `rhai: <path>`. After its session compacts,
 a background run's nested calls grade, grant and park as the successor
-([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). Every
+([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). A
+background run holds a `SeqLease` on its session, and on each successor it
+follows, until it ends, so a card it parks after those sessions retired
+keeps a real seq however many other sessions retire meanwhile
+([ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). Every
 run, blocking or background, re-reads its session's mode before each nested
 call, so a `SetMode` mid-run changes its grant scope, and a session's overlay
 entry (an ancestor's too, across its compaction) stops applying to it

@@ -23,6 +23,7 @@ mod emit;
 mod lineage;
 mod outlets;
 mod routing;
+mod seq_cell;
 mod seqs;
 mod supervisor;
 mod unknown_session;
@@ -35,6 +36,8 @@ pub use config::{
 pub(crate) use directory::SessionDirectory;
 pub use emit::PersistenceSignal;
 use outlets::Outlets;
+pub use seq_cell::SeqCell;
+pub use seqs::SeqLease;
 pub(crate) use seqs::SeqRegistry;
 use supervisor::supervisor;
 pub use unknown_session::{SessionLoader, UnknownSession};
@@ -306,9 +309,16 @@ impl Holly {
     /// message already in the inbox may change the answer before it is routed —
     /// use [`EngineConfig::unknown_session`] to decide what a message to a
     /// non-live id does, rather than check-then-send (ADR-0210).
+    ///
+    /// A task started for an id whose hibernated task is still tearing down
+    /// waits before it registers (ADR-0244), so this reads `false` from the
+    /// old task's retire until the new one's `SessionStarted`, which can span
+    /// the whole teardown, although the supervisor already routes to the new
+    /// task and lists it. A task that panicked never retires, so its id reads
+    /// `true` until the next task under it starts.
     pub fn is_live(&self, session: &SessionId) -> bool {
-        // Only a running task counts: a retired session's seq high-water
-        // (ADR-0239) never makes it live.
+        // Only a running task counts: a retired session's kept seq cell
+        // (ADR-0239, ADR-0244) never makes it live.
         self.seqs.is_live(session)
     }
 
@@ -317,13 +327,16 @@ impl Holly {
         self.outlets.subscribe()
     }
 
-    /// Mint the next seq for `session` from the shared registry — its live
-    /// counter, else its retired high-water (ADR-0239), else `0` for an id that
-    /// never started. Shared by
-    /// [`emit_for_session`][Self::emit_for_session] and the supervisor's
-    /// error-emission path.
-    pub(crate) fn next_seq(&self, session: &SessionId) -> u64 {
-        self.seqs.next(session)
+    /// Pin `session`'s seq counter while detached work runs for it (#891,
+    /// ADR-0244). A retired session's counter (ADR-0239) is otherwise
+    /// evicted once enough other sessions retire, after which
+    /// [`emit_for_session`][Self::emit_for_session] mints the seq-`0`
+    /// sentinel. While the returned [`SeqLease`] lives the counter stays,
+    /// across a hibernate, a resume or an end. Take it while the session is
+    /// live and drop it when the work ends; an id that never started gets a
+    /// lease that pins nothing.
+    pub fn seq_lease(&self, session: &SessionId) -> SeqLease {
+        self.seqs.lease(session)
     }
 
     /// Subscribe to the inbound [`InMsg`] fan-out. Every message sent through

@@ -6,12 +6,13 @@
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 
 use super::outlets;
 use super::routing::{msg_to_cmd, route_to_session};
 use super::{ActivityRegistry, EngineConfig, SeqRegistry, SessionDirectory, FORK_CAPACITY};
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::session::{ForkFrame, Inherited, SessionCmd};
+use crate::session::{ExitSignal, ForkFrame, Inherited, SessionCmd};
 
 mod relink;
 mod resume;
@@ -21,15 +22,24 @@ mod subtree;
 mod unknown;
 mod workdir;
 
-use subtree::{collect_subtree, hibernate_subtree, sweep_idle_sessions, sweep_period};
+use subtree::{collect_subtree, sweep_period};
 
 /// The supervisor loop's state, threaded through the per-message handlers.
 struct Supervisor {
     sessions: HashMap<SessionId, mpsc::Sender<SessionCmd>>,
+    // Each live task's join handle, beside its `sessions` sender. A hibernate
+    // moves it to a watcher; until the task has exited the id's exit signal
+    // sits in `retiring`, and a task started for the id meanwhile takes it
+    // and waits on it first, so two tasks never run for one id (#892,
+    // ADR-0244). The watcher reports the exit on `retired_tx`.
+    tasks: HashMap<SessionId, JoinHandle<()>>,
+    retiring: HashMap<SessionId, ExitSignal>,
+    retired_tx: mpsc::Sender<(SessionId, ExitSignal)>,
     // Live-session directory, kept in lockstep with `sessions`, so `ListSessions`
     // can answer without folding the outbound broadcast (ADR-0028). A session
-    // task only exits when its channel is dropped (CloseSession / shutdown), so
-    // `sessions` is the liveness source of truth and this never drifts.
+    // task exits when its channel is dropped (CloseSession, a hibernate, or
+    // shutdown), and its `sessions` entry goes in the same step, so `sessions`
+    // is the liveness source of truth and this never drifts.
     // Shared with `Holly::session_info` for synchronous reads (ADR-0211).
     // Also holds the source → successor chain (ADR-0205), so a tool result
     // still addressed to a session that compacted away resolves against the
@@ -102,6 +112,7 @@ pub(super) async fn supervisor(
 ) {
     let (fork_tx, mut fork_rx) = mpsc::channel::<ForkFrame>(FORK_CAPACITY);
     let (load_tx, mut load_rx) = mpsc::channel::<unknown::LoadDone>(FORK_CAPACITY);
+    let (retired_tx, mut retired_rx) = mpsc::channel::<(SessionId, ExitSignal)>(FORK_CAPACITY);
     // Idle-TTL auto-hibernation sweep (#363). `None` (the default) leaves the
     // tick branch pending forever, so with no `idle_ttl` configured the loop
     // only ever wakes for messages. A coarse interval, not a per-session
@@ -111,6 +122,9 @@ pub(super) async fn supervisor(
     let mut sweep = ttl.map(|ttl| tokio::time::interval(sweep_period(ttl)));
     let mut sup = Supervisor {
         sessions: HashMap::new(),
+        tasks: HashMap::new(),
+        retiring: HashMap::new(),
+        retired_tx,
         session_meta,
         closed: HashSet::new(),
         parent_links: HashMap::new(),
@@ -145,11 +159,15 @@ pub(super) async fn supervisor(
                 sup.finish_load(done).await;
                 continue;
             }
+            Some((session, signal)) = retired_rx.recv() => {
+                subtree::release(&mut sup.retiring, session, signal);
+                continue;
+            }
             m = rx.recv() => m,
             m = fork_rx.recv() => m.map(|frame| sup.accept_fork(frame)),
             _ = tick => {
                 if let Some(ttl) = ttl {
-                    sweep_idle_sessions(ttl, &mut sup.sessions, &sup.session_meta, &mut sup.parent_links, &sup.activity).await;
+                    sup.sweep_idle_sessions(ttl).await;
                 }
                 continue;
             }
@@ -243,13 +261,7 @@ impl Supervisor {
             // the spawn sub-tree and tombstones nothing — see `hibernate_subtree`.
             // Shared with the idle-TTL sweep (#363), which reaches the same code
             // when it decides a settled root has been idle past `idle_ttl`.
-            hibernate_subtree(
-                session,
-                &mut self.sessions,
-                &self.session_meta,
-                &mut self.parent_links,
-            )
-            .await;
+            self.hibernate_subtree(session).await;
             return;
         }
 
@@ -325,46 +337,6 @@ impl Supervisor {
 
         if let Some(tx) = self.sessions.get(&session_id) {
             route_to_session(tx, cmd, &session_id, &self.events, &self.seqs).await;
-        }
-    }
-
-    /// `CloseSession`: retire `session` and its whole spawn sub-tree.
-    async fn close(&mut self, session: &SessionId) {
-        // Cascade (#180): closing a session retires its whole sub-tree, not
-        // just the target. `parent_links` is child→parent, so a spawned
-        // descendant left running has no consumer for its answers and keeps
-        // burning provider tokens. Walk the tree and close every descendant
-        // alongside the target.
-        // The closed sub-tree's root has a parent *outside* the closed set
-        // (descendants' parents are themselves closing) — capture it before
-        // the links are torn down so the still-live parent's `children`
-        // mirror can drop the retired child.
-        let root_parent = self.parent_links.get(session).cloned().flatten();
-        for victim in collect_subtree(session, &self.parent_links) {
-            // Dropping the command channel makes the task's `rx.recv()`
-            // return `None`; it emits `SessionEnded` and exits. Unknown
-            // id → no-op.
-            if self.sessions.remove(&victim).is_some() {
-                self.session_meta.remove(&victim);
-            }
-            self.parent_links.remove(&victim);
-            self.modes.remove(&victim);
-            self.workdirs.remove(&victim);
-            // A load still in flight (ADR-0210) is abandoned: its queued
-            // messages are refused like any frame racing a close, and the
-            // completion finds no queue and applies nothing.
-            if let Some(queued) = self.pending_loads.remove(&victim) {
-                self.refuse_queued(&victim, queued.len(), unknown::CLOSED_ID);
-            }
-            // Tombstone the id regardless of liveness: it is spent
-            // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
-            // can't respawn it blank.
-            self.closed.insert(victim);
-        }
-        if let Some(parent) = root_parent {
-            if let Some(ptx) = self.sessions.get(&parent) {
-                let _ = ptx.send(SessionCmd::ChildClosed(session.clone())).await;
-            }
         }
     }
 }

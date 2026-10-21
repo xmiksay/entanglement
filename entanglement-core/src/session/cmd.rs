@@ -1,14 +1,13 @@
 //! The supervisor→session command set and the capped deferred-command stash.
 
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicU64;
 
 use entanglement_provider::ContentPart;
 use tokio::sync::broadcast;
 
-use super::emit::next_seq;
 #[cfg(doc)]
 use super::Session;
+use crate::holly::SeqCell;
 #[cfg(doc)]
 use crate::protocol::InMsg;
 use crate::protocol::{OutEvent, SessionId, ToolOverlayEntry};
@@ -27,12 +26,12 @@ pub(super) fn stash_or_reject(
     cmd: SessionCmd,
     session: &SessionId,
     events: &broadcast::Sender<OutEvent>,
-    seq: &AtomicU64,
+    seq: &SeqCell,
 ) {
     if stash.len() >= MAX_STASHED_COMMANDS {
-        let _ = events.send(OutEvent::Error {
+        seq.emit(events, |seq| OutEvent::Error {
             session: session.clone(),
-            seq: next_seq(seq),
+            seq,
             message: format!(
                 "too many commands queued while this session is busy/paused \
                  (cap {MAX_STASHED_COMMANDS}) — dropped"
