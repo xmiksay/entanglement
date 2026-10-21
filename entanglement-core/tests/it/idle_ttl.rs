@@ -328,3 +328,50 @@ async fn parked_child_pins_settled_root_live() {
     })
     .await;
 }
+
+/// A hibernated child keeps its `parent_links` entry but has no task and no
+/// activity entry; it counts as settled, so its root still auto-hibernates
+/// (#905, ADR-0246).
+#[tokio::test(start_paused = true)]
+async fn a_root_with_a_hibernated_child_still_auto_hibernates() {
+    let holly = engine(vec![], Some(Duration::from_secs(120)));
+    let (root, child) = (SessionId::new("root"), SessionId::new("kid"));
+    let mut sub = holly.subscribe();
+    holly.send(InMsg::prompt(root.clone(), "hi")).await.unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == root),
+    )
+    .await;
+    holly
+        .send(InMsg::Spawn {
+            session: child.clone(),
+            parent: Some(root.clone()),
+            predecessor: None,
+            agent: "general".into(),
+            prompt: "task".into(),
+            user: None,
+            model: None,
+            mode: None,
+            workdir: None,
+        })
+        .await
+        .unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::Done { session, .. } if *session == child),
+    )
+    .await;
+    holly.hibernate(child.clone()).await.unwrap();
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionHibernated { session, .. } if *session == child),
+    )
+    .await;
+
+    recv_until(
+        &mut sub,
+        |e| matches!(e, OutEvent::SessionHibernated { session, .. } if *session == root),
+    )
+    .await;
+}

@@ -50,6 +50,36 @@ pub(crate) enum RoundOutcome {
     Forked,
 }
 
+/// A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending
+/// call — same `request_id`, fresh `seq` — so the tool executor (or an
+/// external resolver) answers it exactly like a first offer, then fall into
+/// the loop parked. At-least-once by design: a tool that ran before the
+/// crash but whose result was never logged runs again. Display `ToolCall`
+/// events are not re-emitted — heads rebuild those from the log. A drained
+/// tail (every result logged, next round never streamed) has nothing to
+/// re-offer; continue the turn directly.
+pub(super) async fn resume_parked(
+    session: &SessionId,
+    rx: &mut mpsc::Receiver<SessionCmd>,
+    s: &mut Session,
+    events: &broadcast::Sender<OutEvent>,
+    stash: &mut VecDeque<SessionCmd>,
+    cfg: &EngineConfig,
+) -> Forked {
+    let Some(turn) = s.turn.as_ref() else {
+        return Forked::No;
+    };
+    if turn.pending.is_empty() {
+        return drive_turn(session, rx, s, events, stash, cfg).await;
+    }
+    let _ = events.send(OutEvent::Status {
+        session: session.clone(),
+        state: AgentState::Thinking,
+    });
+    super::emit::reoffer_pending(events, session, turn, super::emit::Caller::of(s), &s.seq);
+    Forked::No
+}
+
 /// Advance the live turn until it parks on tool results or ends. The caller
 /// (the session loop) owns `Session::turn`: `Some` on entry; left `Some` only
 /// when parked, cleared on any other outcome. Cancel semantics (ADR-0017):

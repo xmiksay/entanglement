@@ -5,12 +5,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use super::{unknown, Supervisor};
-use crate::protocol::SessionId;
-use crate::session::{ExitSignal, SessionCmd};
+use crate::protocol::{OutEvent, SessionId};
+use crate::session::{collect_tail, Ending, ExitSignal, SessionCmd};
 
 /// Collect `root` plus every transitive descendant from the child→parent
 /// `parent_links` map (breadth-first). Backs the `CloseSession` cascade (#180):
@@ -49,7 +49,21 @@ impl Supervisor {
     /// tombstoned id doesn't linger forever.
     pub(super) async fn hibernate_subtree(&mut self, root: &SessionId) {
         for victim in collect_subtree(root, &self.parent_links) {
+            // A descendant still loading (ADR-0210) may not be in the tree
+            // yet; its load sees this when it finishes and refuses unless the
+            // ancestor is live again (ADR-0246). The loading id itself counts
+            // only as this hibernate's own target: a hibernated child kept in
+            // `parent_links` (#639) is reached by its root's hibernate too,
+            // and that must go through the "ancestor still down" check.
+            for (loading, load) in self.pending_loads.iter_mut() {
+                if loading != &victim || &victim == root {
+                    load.hibernated.insert(victim.clone());
+                }
+            }
             if let Some(tx) = self.sessions.remove(&victim) {
+                // Subscribed before the `Hibernate` goes out: everything from
+                // here to the task's exit is its teardown tail (ADR-0246).
+                let tap = self.events.subscribe();
                 // Deliver `Hibernate`, then drop the sender: a buffered command is
                 // received before the channel-closed `None`, so the task tears down
                 // via `SessionHibernated`. The drop also unblocks a turn parked
@@ -61,7 +75,7 @@ impl Supervisor {
                 // an await that doesn't watch its inbox does.
                 let _ = tx.send(SessionCmd::Hibernate).await;
                 if let Some(task) = self.tasks.remove(&victim) {
-                    self.await_retire(victim.clone(), task);
+                    self.await_retire(victim.clone(), task, tap);
                 }
             }
             self.session_meta.remove(&victim);
@@ -74,20 +88,22 @@ impl Supervisor {
     /// ADR-0244). A task started for the id meanwhile (a `Resume`, a lazy
     /// spawn, a load) takes the signal and waits on it before it does
     /// anything, so two tasks never run for one id; the supervisor itself
-    /// never waits. The watcher reports the exit back so the entry is
-    /// dropped, unless a newer task under the id took its place.
-    fn await_retire(&mut self, session: SessionId, task: JoinHandle<()>) {
-        let (exited, signal) = watch::channel(false);
+    /// never waits. The signal carries the old task's teardown tail, which
+    /// a resumed successor folds before it starts (#906, ADR-0246). The
+    /// watcher reports the exit back so the entry is dropped, unless a newer
+    /// task under the id took its place.
+    fn await_retire(
+        &mut self,
+        session: SessionId,
+        task: JoinHandle<Ending>,
+        tap: broadcast::Receiver<OutEvent>,
+    ) {
+        let (exited, signal) = watch::channel(None);
         self.retiring.insert(session.clone(), signal.clone());
         let done = self.retired_tx.clone();
         tokio::spawn(async move {
             // A panicked task has exited too: release its id either way.
-            if let Err(e) = task.await {
-                if e.is_panic() {
-                    tracing::error!(%session, "session task panicked while hibernating");
-                }
-            }
-            exited.send_replace(true);
+            exited.send_replace(Some(collect_tail(&session, task, tap).await));
             let _ = done.send((session, signal)).await;
         });
     }
@@ -121,8 +137,8 @@ impl Supervisor {
             // A load still in flight (ADR-0210) is abandoned: its queued
             // messages are refused like any frame racing a close, and the
             // completion finds no queue and applies nothing.
-            if let Some(queued) = self.pending_loads.remove(&victim) {
-                self.refuse_queued(&victim, queued.len(), unknown::CLOSED_ID);
+            if let Some(load) = self.pending_loads.remove(&victim) {
+                self.refuse_queued(&victim, load.queued.len(), unknown::CLOSED_ID);
             }
             // Tombstone the id regardless of liveness: it is spent
             // (ADR-0028), so a `Prompt` queued behind this `CloseSession`
@@ -161,6 +177,16 @@ impl Supervisor {
                 let mut latest: Option<tokio::time::Instant> = None;
                 let mut all_settled = true;
                 for member in &subtree {
+                    // A hibernated descendant has no task and no activity
+                    // entry, and is as settled as it gets; one still loading
+                    // is about to run (ADR-0246).
+                    if !self.sessions.contains_key(member) {
+                        if self.pending_loads.contains_key(member) {
+                            all_settled = false;
+                            break;
+                        }
+                        continue;
+                    }
                     match idle.get(member) {
                         Some(Some(t)) => latest = Some(latest.map_or(*t, |l| l.max(*t))),
                         _ => {
@@ -216,8 +242,8 @@ mod tests {
     #[test]
     fn a_late_report_keeps_the_newer_tasks_signal() {
         let id = SessionId::new("s");
-        let (_a, sa) = watch::channel(false);
-        let (_b, sb) = watch::channel(false);
+        let (_a, sa) = watch::channel(None);
+        let (_b, sb) = watch::channel(None);
         let mut retiring = HashMap::from([(id.clone(), sb.clone())]);
         release(&mut retiring, id.clone(), sa);
         assert!(

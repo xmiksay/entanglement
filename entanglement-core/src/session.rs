@@ -58,14 +58,15 @@ pub use turn_state::TurnState;
 use cmd::{cap_meta_field, stash_or_reject};
 use fork::Forked;
 pub(crate) use fork::{ForkFrame, Inherited};
-pub(crate) use predecessor::ExitSignal;
+use predecessor::Final;
+pub(crate) use predecessor::{collect_tail, Ending, ExitSignal, Records};
 
 use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentState, OutEvent, SessionId};
+use crate::protocol::{OutEvent, SessionId};
 use crate::EngineConfig;
 
 use emit::{emit_tool_output, reoffer_pending, Caller};
@@ -78,7 +79,7 @@ use turn::drive_turn;
 /// and `AgentChanged` so a head knows the starting agent.
 ///
 /// If `start.initial_session` is provided, it's used as the starting state (for
-/// resume); otherwise, a fresh session is created.
+/// resume); otherwise a fresh one is created. Returns how it ended ([`Ending`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn session_loop(
     session: SessionId,
@@ -89,34 +90,18 @@ pub(crate) async fn session_loop(
     seqs: SeqRegistry,
     activity: ActivityRegistry,
     forks: mpsc::Sender<ForkFrame>,
-) {
-    if !predecessor::ready(start.prior.take(), &rx).await {
-        return;
-    }
+) -> Ending {
+    let exited = match predecessor::ready(start.prior.take(), &rx).await {
+        Ok(exited) => exited,
+        Err(prior) => return Ending::NeverRan(prior),
+    };
+    predecessor::fold_tail(&session, &mut start, exited, &cfg);
     let mut s = start_session(&session, &events, &cfg, &seqs, forks, start);
     let mut stash: VecDeque<SessionCmd> = VecDeque::new();
 
-    // A session resumed mid-turn (#271/#272, ADR-0061): re-offer every pending
-    // call — same `request_id`, fresh `seq` — so the tool executor (or an
-    // external resolver) answers it exactly like a first offer, then fall into
-    // the loop parked. At-least-once by design: a tool that ran before the
-    // crash but whose result was never logged runs again. Display `ToolCall`
-    // events are not re-emitted — heads rebuild those from the log. A drained
-    // tail (every result logged, next round never streamed) has nothing to
-    // re-offer; continue the turn directly.
-    let mut forked = false;
-    if let Some(turn) = s.turn.as_ref() {
-        if turn.pending.is_empty() {
-            forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await
-                == Forked::Yes;
-        } else {
-            let _ = events.send(OutEvent::Status {
-                session: session.clone(),
-                state: AgentState::Thinking,
-            });
-            reoffer_pending(&events, &session, turn, Caller::of(&s), &s.seq);
-        }
-    }
+    let mut forked = turn::resume_parked(&session, &mut rx, &mut s, &events, &mut stash, &cfg)
+        .await
+        == Forked::Yes;
 
     while !forked {
         // Publish settledness for the idle-TTL sweep (#363): `Some(now)` the
@@ -172,6 +157,9 @@ pub(crate) async fn session_loop(
                 None => rx.recv().await,
             }
         };
+        // A `Hibernate` stashed behind a mid-stream `Pause` waits out the hold
+        // in the stash, but its inbox is closed by then: hibernate, not end.
+        let cmd = cmd.or_else(|| cmd::take_hibernate(&mut stash));
         match cmd {
             Some(SessionCmd::Prompt(content)) => {
                 if s.turn.is_some() || s.paused {
@@ -377,7 +365,7 @@ pub(crate) async fn session_loop(
                     session: session.clone(),
                     ts,
                 });
-                return;
+                return Ending::Hibernated(Final::of(&s));
             }
             None => break,
         }
@@ -392,4 +380,5 @@ pub(crate) async fn session_loop(
         session: session.clone(),
         ts,
     });
+    Ending::Ended
 }

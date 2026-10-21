@@ -107,7 +107,10 @@ switch it live with `/mode` in the TUI. With neither set, a fresh session
 starts in its agent's `default_mode` (the built-in `plan` agent starts in
 `plan`; a hint is never wider than `build`, so never `auto`), else `build`; a spawned child only ever takes a `default_mode` no
 wider than its parent's mode, and a resumed session keeps its replayed mode
-([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)); a blocked model may ask to widen via
+([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)) — except
+that a resumed sub-agent takes its nearest ancestor's current mode when that
+is stricter, even if the ancestor was narrowed while the sub-agent was
+hibernated ([ADR-0246](docs/adr/0246-resume-under-ancestors-and-the-teardown-tail.md)); a blocked model may ask to widen via
 `request_mode`. Spawning is graded like any tool (`/disable agent` or a mode
 `deny: [agent]` stops it) and bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.

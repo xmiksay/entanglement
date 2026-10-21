@@ -1,5 +1,6 @@
 //! A freshly spawned session's starting permission mode (#763, ADR-0218),
-//! and a live `SetMode`'s cascade over the spawn sub-tree (ADR-0207 §6).
+//! the narrowing a resumed one takes (ADR-0246), and a live `SetMode`'s cascade
+//! over the spawn sub-tree (ADR-0207 §6).
 
 use super::collect_subtree;
 use crate::holly::routing::route_to_session;
@@ -33,6 +34,19 @@ pub(super) struct Requested<'a> {
 fn no_wider(candidate: &str, ceiling: &str, ladder: &[String]) -> bool {
     let rank = |m: &str| ladder.iter().position(|l| l == m);
     matches!((rank(candidate), rank(ceiling)), (Some(c), Some(x)) if c <= x)
+}
+
+/// `mode`, unless `ceiling` is provably stricter on `ladder`: then
+/// `ceiling` (ADR-0246). Unlike a spawn, an incomparable pair keeps `mode`:
+/// a resumed session already holds that mode, and swapping it for one the
+/// ladder can't show narrower could widen it (a head's forced `research`
+/// under an embedder's own names, say).
+pub(super) fn narrow_to(mode: &str, ceiling: &str, ladder: &[String]) -> String {
+    if no_wider(ceiling, mode, ladder) {
+        ceiling.to_string()
+    } else {
+        mode.to_string()
+    }
 }
 
 /// The mode a fresh session starts in.
@@ -76,27 +90,35 @@ impl super::Supervisor {
         // direct switch would (immediately, turn live or not — a mode is
         // a label the runtime grades the *next* call against, never
         // deferred like `SetAgent` used to be) — no session-loop
-        // special-casing needed for the cascade to be correct. `modes` is
-        // updated for every id in the subtree, live or not, so a hibernated
-        // descendant's cache entry is fixed up defensively too (it plays no
-        // functional role until that id resumes and re-derives the truth
-        // from its own replay anyway).
+        // special-casing needed for the cascade to be correct. A non-live
+        // descendant's `modes` entry is only ever narrowed: a child spawned
+        // under it reads it, so it must not stay wider than this ancestor;
+        // and a resume reads it while its old task still tears down, so it
+        // must not be widened past the mode that task last ran in either
+        // (ADR-0246).
         self.modes.insert(session.clone(), mode.to_string());
         for descendant in collect_subtree(session, &self.parent_links) {
             if &descendant == session {
                 continue;
             }
+            let Some(tx) = self.sessions.get(&descendant).cloned() else {
+                let current = self
+                    .modes
+                    .get(&descendant)
+                    .map_or(DEFAULT_MODE, String::as_str);
+                let narrowed = narrow_to(current, mode, &self.cfg.mode_ladder);
+                self.modes.insert(descendant, narrowed);
+                continue;
+            };
             self.modes.insert(descendant.clone(), mode.to_string());
-            if let Some(tx) = self.sessions.get(&descendant) {
-                route_to_session(
-                    tx,
-                    SessionCmd::SetMode(mode.to_string()),
-                    &descendant,
-                    &self.events,
-                    &self.seqs,
-                )
-                .await;
-            }
+            route_to_session(
+                &tx,
+                SessionCmd::SetMode(mode.to_string()),
+                &descendant,
+                &self.events,
+                &self.seqs,
+            )
+            .await;
         }
     }
 }
@@ -215,6 +237,17 @@ mod tests {
             starting_mode(Lineage::Child("build"), hint("custom"), &ladder()),
             "build"
         );
+    }
+
+    #[test]
+    fn narrow_to_keeps_a_stricter_mode_and_takes_a_stricter_ceiling() {
+        let l = ladder();
+        assert_eq!(narrow_to("research", "build", &l), "research");
+        assert_eq!(narrow_to("build", "research", &l), "research");
+        assert_eq!(narrow_to("plan", "plan", &l), "plan");
+        // Incomparable: the session keeps the mode it holds.
+        assert_eq!(narrow_to("custom", "build", &l), "custom");
+        assert_eq!(narrow_to("research", "build", &[]), "research");
     }
 
     #[test]

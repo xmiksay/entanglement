@@ -101,11 +101,19 @@ async fn resume_reoffers_pending_calls_and_completes() {
     // The resumed session must re-offer call_1 as a fresh ToolExec with a seq
     // above the replayed max (2).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut thinking = false;
     let reoffer = loop {
         let ev = tokio::time::timeout_at(deadline, sub.recv())
             .await
             .expect("re-offer must arrive")
             .expect("channel open");
+        if let OutEvent::Status {
+            session,
+            state: AgentState::Thinking,
+        } = &ev
+        {
+            thinking |= session == &sid;
+        }
         if let OutEvent::ToolExec {
             session,
             seq,
@@ -118,6 +126,7 @@ async fn resume_reoffers_pending_calls_and_completes() {
             }
         }
     };
+    assert!(thinking, "the parked turn is announced as thinking again");
     assert_eq!(reoffer.1, "call_1", "same request_id as the logged offer");
     assert!(reoffer.0 > 2, "fresh seq above the replayed max");
 

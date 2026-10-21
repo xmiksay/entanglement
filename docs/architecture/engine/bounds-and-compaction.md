@@ -35,13 +35,21 @@ evicts a session it can positively prove is at rest. Each tick judges every
 **root** by its whole spawn sub-tree (`collect_subtree`): every member must be
 settled, and the sub-tree's idle clock starts at the *latest* member's settle
 time, so one parked child pins its whole ancestry live regardless of how long
-the root itself has sat idle. A qualifying root hibernates through the same
+the root itself has sat idle. A member with no task (a hibernated child
+`parent_links` still lists) counts as settled; one with a load in flight does
+not ([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)). A qualifying root hibernates through the same
 `hibernate_subtree` helper `InMsg::HibernateSession` uses — the identical
 teardown, `OutEvent::SessionHibernated`, and resumability (#318, ADR-0077) as a
 manual eviction. A task started for a hibernated id before the old one
 has exited waits inside itself for the old task's exit signal before it
 registers or emits; the supervisor never waits (#892,
-[ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)).
+[ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). The
+signal carries the old task's teardown tail (every outbox event for the id
+except live-only ones, from the `Hibernate` send to its exit,
+`session::predecessor::collect_tail`), which a resumed task re-folds with its
+records through `Session::replay` before it starts, and the task's final mode
+and tool overlay, which it takes as they are (#906,
+[ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 Deliberately **stricter** than manual `HibernateSession`
 (which is stop-then-hibernate): a timer must never cancel live work, so the
 sweep only touches a session already at rest, never one mid-stream.
@@ -70,7 +78,12 @@ refusing and `Err` erroring. The load runs on its own task and reports back
 over a supervisor-owned channel, so a slow store never stalls routing;
 `pending_loads[id]` queues every further message for that id behind the one
 in-flight load and replays them through the normal handler in arrival order;
-`CloseSession` abandons it. `Holly::is_live` reads the per-session seq
+`CloseSession` abandons it. A load that finishes with an ancestor closed, or
+with the id itself or an ancestor hibernated while it ran and still down, does not start the session: each
+queued message is refused once with an `Error` naming why
+([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md));
+a load that merely finds its ancestors not live (a fresh process) starts as an
+explicit `Resume` would. `Holly::is_live` reads the per-session seq
 registry's live counters (registered before `SessionStarted`, retired before
 `SessionEnded`/`SessionHibernated`; a retired id's counter does not
 count, [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)) — advisory; the policy is the race-free

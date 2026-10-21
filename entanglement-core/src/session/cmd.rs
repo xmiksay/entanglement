@@ -47,6 +47,15 @@ pub(super) fn stash_or_reject(
 /// and every session listing one write at a time.
 const MAX_SESSION_META_LEN: usize = 200;
 
+/// Take a stashed `Hibernate`, if any: once the inbox has closed, it is the
+/// only command left that can still end the session as asked.
+pub(super) fn take_hibernate(stash: &mut VecDeque<SessionCmd>) -> Option<SessionCmd> {
+    let at = stash
+        .iter()
+        .position(|c| matches!(c, SessionCmd::Hibernate))?;
+    stash.remove(at)
+}
+
 /// Byte-cap `s` at [`MAX_SESSION_META_LEN`], backing off to the nearest UTF-8
 /// char boundary rather than panicking mid-character.
 pub(super) fn cap_meta_field(s: String) -> String {

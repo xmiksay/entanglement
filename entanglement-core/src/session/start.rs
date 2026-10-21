@@ -19,12 +19,12 @@ pub(crate) struct SessionStart {
     pub(crate) parent: Option<SessionId>,
     pub(crate) predecessor: Option<SessionId>,
     pub(crate) user: Option<UserId>,
-    /// The mode a fresh spawn starts under — the parent's live mode at spawn
-    /// time (ADR-0207 §6: mode applies to the whole spawn sub-tree), or
-    /// `DEFAULT_MODE` for a root. Ignored on the resume path (a replayed
-    /// session already carries the correct value in `s.mode`) — the caller
-    /// passes `DEFAULT_MODE` there too, mirroring the `None` it passes for
-    /// `predecessor`/`user`.
+    /// The mode the session starts under, decided by the supervisor: for a
+    /// fresh spawn its parent's live mode or a narrower requested one
+    /// (ADR-0207 §6, ADR-0218), `DEFAULT_MODE` for a plain root; for a
+    /// resume its replayed mode clamped to its nearest ancestor's
+    /// (ADR-0246). A resume whose decided mode differs from the replayed one
+    /// switches here, and the start-up `ModeChanged` records the switch.
     pub(crate) initial_mode: String,
     /// An explicit `Spawn` model (#725), already resolved by the supervisor —
     /// or a compaction successor's inherited backend (#768).
@@ -39,6 +39,10 @@ pub(crate) struct SessionStart {
     /// there is one: the new task waits on it before anything else (#892,
     /// ADR-0244).
     pub(crate) prior: Option<super::ExitSignal>,
+    /// The records a resume replayed, kept only when `prior` is set: the new
+    /// task re-folds them with the old task's teardown tail (#906,
+    /// ADR-0246).
+    pub(crate) records: Option<super::Records>,
 }
 
 /// Build (or adopt the resumed) [`Session`], emit its start-up lifecycle
@@ -63,6 +67,7 @@ pub(super) fn start_session(
         inherited,
         initial_workdir,
         prior: _,
+        records: _,
     } = start;
     let ts = now_ms();
 
@@ -79,14 +84,18 @@ pub(super) fn start_session(
     // see `Session::engine`.
     s.engine = Some(forks);
     // ADR-0207 §6: a spawned child inherits its parent's mode. A resumed
-    // session's `s.mode` is already correct (replay's last-write-wins fold
-    // over its own `ModeChanged` log), so only a genuinely fresh spawn takes
-    // `initial_mode` — mirroring the resumed-takes-precedence rule the
-    // `Option`-shaped fields below use, spelled with the captured `bool`
-    // instead since `mode` has no "unset" value of its own to fall back on.
+    // session keeps its replayed workdir (re-validated by the supervisor),
+    // but its mode is the supervisor's decision too: the replayed one unless
+    // its nearest ancestor's is stricter (ADR-0246).
     if !is_resumed {
         s.mode = initial_mode;
         s.workdir = initial_workdir;
+    } else if s.mode != initial_mode {
+        // A resumed sub-agent clamped to its ancestor (ADR-0246) switches
+        // mode: as a live `SetMode` and replay's `ModeChanged` fold do, the
+        // mode-scoped overlay goes, and the model is told what changed.
+        s.tool_overlay.clear();
+        s.mode_transition_from = Some(std::mem::replace(&mut s.mode, initial_mode));
     }
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
     // one already reconstructed it from its `SessionStarted` log (replay) — that
@@ -337,6 +346,7 @@ mod tests {
                 }),
                 initial_workdir: None,
                 prior: None,
+                records: None,
             },
         );
         let mut out = Vec::new();

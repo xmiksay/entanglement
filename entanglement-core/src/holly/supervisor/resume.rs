@@ -5,9 +5,9 @@ use tokio::sync::mpsc;
 
 use super::Supervisor;
 use crate::holly::routing::{emit_supervisor_error, resume_meta};
-use crate::holly::{DEFAULT_MODE, SESSION_CMD_CAPACITY};
+use crate::holly::SESSION_CMD_CAPACITY;
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::session::{session_loop, Session, SessionCmd, SessionStart};
+use crate::session::{session_loop, Records, Session, SessionCmd, SessionStart};
 
 impl Supervisor {
     /// `Resume`: refuse a closed, live or compacted-away id, else replay
@@ -55,19 +55,7 @@ impl Supervisor {
             );
             return;
         }
-        // Re-learn the compaction lineages the log records, so a fresh
-        // process can still resolve a retired id to its successor and a
-        // successor back to the handle its parent knew (ADR-0234).
-        for (_, ev) in records {
-            if let OutEvent::SessionStarted {
-                session,
-                predecessor: Some(source),
-                ..
-            } = ev
-            {
-                self.session_meta.record_successor(source, session);
-            }
-        }
+        self.learn_lineages(records);
         let Some(children) = self.spawn_resumed(session_id, records) else {
             // A failure already emitted an `Error`; leave the id unclaimed
             // rather than half-registering it (issue #105).
@@ -103,6 +91,23 @@ impl Supervisor {
             }
             if let Some(grandchildren) = self.spawn_resumed(&child, records) {
                 queue.extend(grandchildren);
+            }
+        }
+    }
+
+    /// Re-learn the compaction lineages `records` hold, so a fresh process
+    /// can still resolve a retired id to its successor and a successor back
+    /// to the handle its parent knew (ADR-0234), and an ancestor walk maps a
+    /// compacted ancestor to its successor (ADR-0246).
+    pub(super) fn learn_lineages(&self, records: &[(Option<InMsg>, OutEvent)]) {
+        for (_, ev) in records {
+            if let OutEvent::SessionStarted {
+                session,
+                predecessor: Some(source),
+                ..
+            } = ev
+            {
+                self.session_meta.record_successor(source, session);
             }
         }
     }
@@ -151,14 +156,20 @@ impl Supervisor {
         if let Some(p) = parent.as_ref() {
             self.parent_links.insert(target.clone(), Some(p.clone()));
         }
-        // Re-derive the mode cache from the replayed truth rather than trusting
-        // whatever it held before this session hibernated (ADR-0207 §6): correct
-        // either way (hibernation itself never changes mode), but this is what
-        // keeps the cache right the first time a *newly* resumed id (never seen
-        // by this process before, e.g. a fresh `skutter` instance) spawns a
-        // child of its own.
-        self.modes
-            .insert(target.clone(), initial_session.mode.clone());
+        // The mode it resumes in: its replayed one, unless its nearest
+        // ancestor's current mode is stricter (ADR-0246) — an ancestor's
+        // `SetMode` while it was hibernated reaches it here. The task applies
+        // it at start, and its start-up `ModeChanged` logs the switch.
+        let mode = self.resumed_mode(target, &initial_session.mode, parent.clone(), records);
+        self.modes.insert(target.clone(), mode.clone());
+        // While its old task still tears down, the log can lag the workdir
+        // that task last ran in; the cache, written by every validated
+        // `SetWorkdir`, is the newer word (ADR-0246).
+        if self.retiring.contains_key(target) {
+            if let Some(dir) = self.workdirs.get(target) {
+                initial_session.workdir = Some(dir.clone());
+            }
+        }
         // Same for the workdir cache (#764), after re-validating the
         // replayed workdir: a resumed parent's new children inherit it.
         self.revalidate_resumed_workdir(target, &mut initial_session.workdir);
@@ -171,8 +182,11 @@ impl Supervisor {
         let seqs2 = self.seqs.clone();
         let activity2 = self.activity.clone();
         let forks = self.fork_tx.clone();
-        // Waits inside the task for an old task still tearing down (ADR-0244).
+        // Waits inside the task for an old task still tearing down (ADR-0244),
+        // then re-folds these records with that task's teardown tail
+        // (ADR-0246).
         let prior = self.retiring.remove(target);
+        let kept: Option<Records> = prior.as_ref().map(|_| records.into());
         let task = tokio::spawn(async move {
             session_loop(
                 sid,
@@ -183,23 +197,24 @@ impl Supervisor {
                     agent: profile,
                     initial_session: Some(initial_session),
                     parent,
-                    // Resume reconstructs `predecessor`/`user`/`mode`/model
-                    // from the log (replay); pass `None`/`DEFAULT_MODE` for
-                    // them so none is overwritten (session.rs's
-                    // resumed-takes-precedence rule, ADR-0207 §6 for `mode`).
+                    // Resume reconstructs `predecessor`/`user`/model from
+                    // the log (replay); pass `None` for them so none is
+                    // overwritten (session.rs's resumed-takes-precedence
+                    // rule).
                     predecessor: None,
                     user: None,
-                    initial_mode: DEFAULT_MODE.to_string(),
+                    initial_mode: mode,
                     spawn_model: None,
                     inherited: None,
                     initial_workdir: None,
                     prior,
+                    records: kept,
                 },
                 seqs2,
                 activity2,
                 forks,
             )
-            .await;
+            .await
         });
         self.sessions.insert(target.clone(), stx);
         self.tasks.insert(target.clone(), task);
