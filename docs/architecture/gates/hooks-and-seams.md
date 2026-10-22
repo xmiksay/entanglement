@@ -89,8 +89,10 @@ hooks, rhai, and plan/tasks tools.
   rule can never widen a child beyond its parent. `apply_grant` then upgrades a
   resolved `Ask` to `Allow` from a `GrantStore` grant.
 - **`GrantStore`** persists + reads "always allow" grants (§ agents-and-permissions
-  #174). `record(session, tool, arg, scope)` is async so an `ApprovalScope::Always`
-  can hit a DB; `is_granted` is a sync fast check. A multi-tenant store writes its
+  #174). `record(session, tool, arg, scope, mode)` is async so an `ApprovalScope::Always`
+  can hit a DB; `is_granted(session, tool, arg, mode)` is a sync fast check. Both
+  take the mode the grant was earned in, and a grant matches only that mode
+  (ADR-0207 §8). A multi-tenant store writes its
   "always" rule to the DB and resolves later reads through its own resolver, so its
   `is_granted` can return `false`.
 - **Defaults (byte-identical CLI):** `ModeResolver` grades from the session's

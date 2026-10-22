@@ -98,7 +98,7 @@ fn tenant_of(session: &SessionId) -> &str {
 async fn main() -> anyhow::Result<()> {
     let tools = host::host_tools(std::env::temp_dir());
     let tool_specs = tools.specs();
-    let profiles = AgentCatalog::new(); // just the built-in `build` profile
+    let profiles = AgentCatalog::new(); // just the built-in `general` agent
 
     let holly = Holly::spawn(EngineConfig {
         tool_specs,

@@ -2,10 +2,11 @@
 
 > Part of the [embedding guide](../embedding.md).
 
-Split into the pages below to stay under the 400-line doc cap (`make doc-cap`). Every section heading is kept here, pointing at where it now lives.
+Split into the pages below to stay under the 400-line doc cap (`make doc-cap`). Upgrading from 0.6.0, start with [agents, modes & permissions](migrations/agents-modes-and-permissions.md). The sections of the other two pages once lived in this file, so their headings are kept below, pointing at where each now lives.
 
 | page | covers |
 | --- | --- |
+| [agents-modes-and-permissions](migrations/agents-modes-and-permissions.md) | agents, modes, permissions & the other 0.6 → 0.7 breaks before ADR-0226 (ADR-0207 family, ADR-0213, ADR-0161, #724, ADR-0181) — **start here** |
 | [one-surface-and-rhai](migrations/one-surface-and-rhai.md) | one surface, binding path & skills (ADR-0226–0230) |
 | [cards-and-sessions](migrations/cards-and-sessions.md) | cards, lineages & sessions (ADR-0233–0248) |
 

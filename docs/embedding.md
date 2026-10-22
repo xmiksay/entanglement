@@ -34,7 +34,7 @@ This module is split into the pages below, one per seam; each stays under the 40
 | [persistence](embedding/persistence.md) | §3 — Custom persistence |
 | [tool-execution](embedding/tool-execution.md) | §4 — Custom tool execution / policy |
 | [approvals-mcp-multi-user](embedding/approvals-mcp-multi-user.md) | §5–§7 — Approvals across restart, MCP & multi-user |
-| [migrations](embedding/migrations.md) | Migration notes |
+| [migrations](embedding/migrations.md) | Migration notes (0.6 → 0.7: start with agents, modes & permissions) |
 | [tls-and-pinning](embedding/tls-and-pinning.md) | TLS & dependency pinning |
 
 ## 1. One engine, many tenants

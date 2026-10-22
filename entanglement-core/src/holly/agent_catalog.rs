@@ -8,13 +8,13 @@ use super::config::ConfigError;
 use super::DEFAULT_AGENT;
 use crate::protocol::Agent;
 
-/// Named set of [`Agent`]s. Comes with only the `build` built-in — the
-/// one agent every session starts under and [`resolve`][Self::resolve] falls
-/// back to. The full `build`/`plan`/`explore`/`debug`/`research` set is
-/// defined once, as markdown, in `entanglement-runtime`'s embedded agent
-/// registry (#201): core can't parse agent frontmatter, so it carries no
-/// `plan`/`explore`/`debug`/`research` copy to drift from that source. Add
-/// your own with [`insert`][Self::insert].
+/// Named set of [`Agent`]s. Comes with only the [`DEFAULT_AGENT`] (`general`)
+/// built-in — the one agent every session starts under and
+/// [`resolve`][Self::resolve] falls back to. The full `general`/`plan`/`debug`
+/// set is defined once, as markdown, in `entanglement-runtime`'s embedded
+/// agent registry (#201): core can't parse agent frontmatter, so it carries no
+/// `plan`/`debug` copy to drift from that source. Add your own with
+/// [`insert`][Self::insert].
 #[derive(Clone, Default)]
 pub struct AgentCatalog {
     agents: HashMap<String, Agent>,
