@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use entanglement_core::{SessionId, ToolOverlayEntry};
 
+use crate::attendance::Expiry;
 use crate::cancel::TaskCanceller;
 use crate::discover;
 use crate::permission::{ancestor_chain, spawn_refusal};
@@ -226,6 +227,7 @@ pub(super) async fn poll(ctx: &LadderCtx, session: SessionId, request_id: String
 
 pub(super) async fn ask_user(
     ctx: &LadderCtx,
+    spawn_guard: &SpawnGuard,
     session: SessionId,
     request_id: String,
     input: String,
@@ -240,8 +242,12 @@ pub(super) async fn ask_user(
     // The session's mode bounds how long a question waits
     // for an answer (ADR-0207 §11, stage 5c) — resolved the
     // same way `graded::permission` resolves `call_mode`,
-    // just for `Limits` instead of a grade.
-    let timeout = mode_limits(ctx, &session).and_then(|l| crate::run_limits::timeout(&l));
+    // just for `Limits` instead of a grade — and never for a session a
+    // head watches, or a child of one (ADR-0247).
+    let chain = ancestor_chain(spawn_guard, &session);
+    let expiry = mode_limits(ctx, &session).map_or_else(Expiry::never, |l| {
+        crate::run_limits::expiry(&l, &ctx.attendance, &chain, &request_id)
+    });
     tokio::spawn(async move {
         crate::ask_user::run_ask_user(
             holly,
@@ -250,7 +256,7 @@ pub(super) async fn ask_user(
             session,
             request_id,
             input,
-            timeout,
+            expiry,
         )
         .await;
     });

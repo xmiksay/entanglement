@@ -149,6 +149,36 @@ impl ResumeCheck {
     }
 }
 
+/// The root a resume of `records` targets: the last root no later
+/// `SessionStarted` names as its compaction predecessor — a tree read for
+/// resume may carry a predecessor root's records (ADR-0234), which is never
+/// the one resumed (ADR-0243).
+fn resumed_root(records: &[LogRecord]) -> Option<SessionId> {
+    let mut roots: Vec<&SessionId> = Vec::new();
+    let mut succeeded: HashSet<&SessionId> = HashSet::new();
+    for record in records {
+        if let LogPayload::Out(OutEvent::SessionStarted {
+            session,
+            root,
+            predecessor,
+            ..
+        }) = &record.payload
+        {
+            if *root && !roots.contains(&session) {
+                roots.push(session);
+            }
+            if let Some(p) = predecessor {
+                succeeded.insert(p);
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .rev()
+        .find(|r| !succeeded.contains(r))
+        .cloned()
+}
+
 #[derive(Default)]
 struct Seen {
     root: bool,
@@ -210,13 +240,19 @@ pub fn check_for_resume(
             s.effective = Some(name.clone());
         }
     }
+    // `resume_with_mode` also revives each child the root's hibernate put
+    // down (ADR-0247): it is rebuilt like a live one, so it gets the same
+    // fallback note and forced mode.
+    let revived = resumed_root(records)
+        .map(|root| super::revived_with(records, &root))
+        .unwrap_or_default();
     let mut check = ResumeCheck::default();
     for sid in order {
         let Some(s) = seen.remove(&sid) else {
             continue;
         };
         // Resume rebuilds the root plus every still-live child (ADR-0112).
-        if !(s.root || s.live) {
+        if !(s.root || s.live || revived.contains(&sid)) {
             continue;
         }
         check.resumed.push((sid.clone(), s.parent));
@@ -314,7 +350,10 @@ impl LaunchMode {
     }
 }
 
-/// Resumes `root` from `records` under `mode` (`--mode` > config `mode:`).
+/// Resumes `root` from `records` under `mode` (`--mode` > config `mode:`),
+/// then each descendant its own hibernate put down ([`super::revived_with`],
+/// ADR-0247), parents first, from the same records — core's cascade skips a
+/// child its log shows hibernated, so its parked card would never come back.
 ///
 /// With a forced session in the tree, every mode rides the replay
 /// ([`ResumeCheck::paired_for_resume`]) so the cascading switch never reaches
@@ -328,12 +367,12 @@ pub async fn resume_with_mode(
     explicit_mode: bool,
     mode: Option<String>,
 ) -> Result<()> {
-    holly
-        .resume(
-            root.clone(),
-            check.paired_for_resume(records, explicit_mode, mode.as_deref()),
-        )
-        .await?;
+    let replay = check.paired_for_resume(records, explicit_mode, mode.as_deref());
+    holly.resume(root.clone(), replay.clone()).await?;
+    // Before the `SetMode` below, so its cascade reaches them too.
+    for child in super::revived_with(records, root) {
+        holly.resume(child, replay.clone()).await?;
+    }
     if let Some(mode) = mode.filter(|_| check.forced(explicit_mode).is_empty()) {
         holly
             .send(InMsg::SetMode {

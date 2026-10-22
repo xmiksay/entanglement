@@ -243,6 +243,10 @@ doc, never here**:
 - **A parked approval card's end is wire-visible** — `ApprovalResolved` on its
   home whenever it leaves `PendingDecisions`, after its `ToolRequest`
   ([protocol](../docs/architecture/protocol.md), [ADR-0240](../docs/adr/0240-approval-resolved-event.md)).
+- **Unattended is a fact about the session** — a watched session (TUI, a
+  `serve` owner) or a child of one never collapses an `Ask` and its cards
+  and questions never time out; a decision for no card gets an `Error`
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0247](../docs/adr/0247-attended-sessions-wait-for-their-approver.md)).
 - **An ambiguous LLM stop retries in place**, bounded and persisted
   ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)).
 - **Throttle and persistence outages are wire-visible transitions**

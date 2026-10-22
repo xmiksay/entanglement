@@ -62,6 +62,7 @@ impl ToolExecutor {
             rhai_trusted: Default::default(),
             skill_dirs: Vec::new(),
             module_dirs: Vec::new(),
+            attendance: crate::attendance::Attendance::new(),
         }
     }
 }
@@ -95,6 +96,7 @@ pub struct ToolExecutorBuilder {
     pub(super) rhai_trusted: crate::rhai_trust::TrustedFolders,
     pub(super) skill_dirs: Vec<std::path::PathBuf>,
     pub(super) module_dirs: Vec<std::path::PathBuf>,
+    pub(super) attendance: crate::attendance::Attendance,
 }
 
 impl ToolExecutorBuilder {
@@ -282,6 +284,16 @@ impl ToolExecutorBuilder {
     /// private state and an empty MCP roster.
     pub fn discovery(mut self, discovery: DiscoverySurface) -> Self {
         self.discovery = discovery;
+        self
+    }
+
+    /// The attendance registry the heads register their watchers in
+    /// (ADR-0247): a watched session — or a child of one — parks an `Ask`
+    /// instead of collapsing it, and its cards and questions never time
+    /// out. Default: private, so nobody watches and a mode's
+    /// `question_timeout` alone decides.
+    pub fn attendance(mut self, attendance: crate::attendance::Attendance) -> Self {
+        self.attendance = attendance;
         self
     }
 

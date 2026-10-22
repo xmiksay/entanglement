@@ -24,6 +24,7 @@ pub(super) fn router(holly: &Holly) -> Router {
         agents: Default::default(),
         scripts: Default::default(),
         holly: holly.clone(),
+        attendance: Default::default(),
     }
 }
 
@@ -341,4 +342,29 @@ async fn a_decision_heal_announces_a_card_moved_past_its_session() {
     });
     assert_eq!(drain(&mut sub).0, std::slice::from_ref(&succ2));
     assert_eq!(r.pending.snapshot(None)[0].session, succ2, "still waiting");
+}
+
+/// ADR-0247: a user `Stop` drops the session's waivers — core never
+/// re-offers a stopped call, and a later card reusing its id (Gemini's
+/// `bash#0`) must not inherit one.
+#[tokio::test]
+async fn a_stop_forgets_the_sessions_waivers() {
+    use crate::attendance::Expiry;
+    let holly = Holly::spawn(entanglement_core::EngineConfig::default());
+    let r = router(&holly);
+    let s = SessionId::new("s");
+    let expiry = |id: &str| {
+        Expiry::unless_attended(
+            Some(Duration::from_secs(2)),
+            &r.attendance,
+            std::slice::from_ref(&s),
+            id,
+        )
+    };
+    let tui = r.attendance.watch_all();
+    drop(expiry("bash#0"));
+    drop(tui);
+    assert_eq!(expiry("bash#0").secs(), 0, "waived before the Stop");
+    r.route(InMsg::Stop { session: s.clone() });
+    assert_eq!(expiry("bash#0").secs(), 2, "the Stop forgot it");
 }

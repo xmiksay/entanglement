@@ -35,6 +35,9 @@ pub(crate) struct Head {
     pub(crate) grants: Arc<DefaultGrantStore>,
     pub(crate) mcp: mcp::McpHandles,
     pub(crate) advertising_state: Arc<tool_advertising::AdvertisingState>,
+    /// The registry the tool executor reads: a watching head registers here
+    /// so its sessions' cards wait for it (ADR-0247).
+    pub(crate) attendance: entanglement_runtime::attendance::Attendance,
 }
 
 /// The background tasks [`Services::shutdown`] tears down.
@@ -143,7 +146,11 @@ pub(crate) fn start(
         entanglement_runtime::http_gate::HttpGate::new(user_config.http_auth.clone())
             .with_untrusted_rules(user_config.untrusted_http_rules.clone()),
     );
+    // Who watches which session (ADR-0247): the TUI and `serve` heads
+    // register here, the executor reads it at the gate.
+    let attendance = entanglement_runtime::attendance::Attendance::new();
     let tool_executor = tool_runner::ToolExecutor::builder(&holly, tools.clone())
+        .attendance(attendance.clone())
         .http_gate(http_gate)
         .rhai_trusted(user_config.rhai_trusted.clone())
         .skill_dirs(entanglement_runtime::skills::skill_dirs(
@@ -290,6 +297,7 @@ pub(crate) fn start(
             active: mcp_active,
         },
         advertising_state: advertising_state_for_tui,
+        attendance,
     };
     let services = Services {
         tool_executor,

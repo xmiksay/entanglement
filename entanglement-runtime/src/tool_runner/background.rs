@@ -71,6 +71,7 @@ pub(super) fn spawn_decision_router(
         agents: ctx.registry.clone(),
         scripts: ctx.scripts.clone(),
         holly: ctx.holly.clone(),
+        attendance: ctx.attendance.clone(),
     };
     background.spawn(async move {
         loop {
@@ -102,6 +103,7 @@ pub(super) struct Router {
     pub(super) agents: crate::agent_registry::AgentRegistry,
     pub(super) scripts: crate::script_ops::ScriptRegistry,
     pub(super) holly: entanglement_core::Holly,
+    pub(super) attendance: crate::attendance::Attendance,
 }
 
 impl Router {
@@ -112,6 +114,10 @@ impl Router {
         crate::pending::heal_before(&self.holly, &self.pending, &msg);
         match msg {
             InMsg::Stop { session } => {
+                // Core never re-offers a stopped call, so its waiver would
+                // only leak onto a later card reusing the id (ADR-0247); a
+                // hibernate keeps them (its unwind is no `Stop`).
+                self.attendance.forget_session(&session);
                 self.cancels.cancel_session(&session);
                 self.pending.stop_session(&session);
             }
@@ -163,14 +169,37 @@ impl Router {
             other => {
                 if let Some((s, rid, decision)) = seam::Decision::from_inmsg(other) {
                     let (frame, question) = (decision.frame(), decision.is_question());
-                    if let Resolution::Misaimed { kind } = self.pending.resolve(&s, &rid, decision)
-                    {
+                    match self.pending.resolve(&s, &rid, decision) {
+                        Resolution::Delivered => {}
+                        // ADR-0247: a late or stray decision is told, not dropped.
+                        Resolution::Absent => self.refuse_absent(&s, &rid, frame, question),
                         // Misaimed: the card is the kind the frame is not.
-                        self.refuse_misaimed(&s, &rid, frame, kind, !question);
+                        Resolution::Misaimed { kind } => {
+                            self.refuse_misaimed(&s, &rid, frame, kind, !question);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// A decision no card holds the id of (ADR-0247): it expired, was
+    /// answered (by another head, say), or never existed. The sender learns
+    /// its decision had no effect instead of believing it did.
+    fn refuse_absent(&self, session: &SessionId, request_id: &str, frame: &str, question: bool) {
+        let message = if question {
+            format!(
+                "`{frame}` refused: no open question `{request_id}` (it timed out, was \
+                 answered or retracted, or never existed)"
+            )
+        } else {
+            format!(
+                "`{frame}` refused: no pending card `{request_id}` (it expired, was answered, \
+                 or never existed)"
+            )
+        };
+        tracing::warn!(%session, request_id, frame, "decision for no pending card refused");
+        self.refuse(session, message);
     }
 
     /// A decision of the wrong kind for its card (ADR-0245): the card stays
@@ -196,6 +225,11 @@ impl Router {
             )
         };
         tracing::warn!(%session, request_id, frame, kind, "misaimed decision refused");
+        self.refuse(session, message);
+    }
+
+    /// Tell the sender, on the session it addressed, why its frame did nothing.
+    fn refuse(&self, session: &SessionId, message: String) {
         self.holly.emit_for_session(session, |seq| OutEvent::Error {
             session: session.clone(),
             seq,

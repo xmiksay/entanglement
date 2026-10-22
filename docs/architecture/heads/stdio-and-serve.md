@@ -46,7 +46,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   out-of-root `launch_escape` and every nested card. The decision is read off
   the structured `reason`, never the card text (`pending::headless_starts`,
   [ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
-  `--mode auto` is the unattended posture; `--yes` is retired. `ask_user` questions keep
+  `--mode auto` is the unattended posture; `--yes` is retired. `run` and
+  `pipe` never register as watchers, so they stay unattended
+  ([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)). `ask_user` questions keep
   auto-answering their first option (ADR-0027). `skutter inspect prompt --agent <name> [--parts]` prints an
   agent's **assembled** system prompt (#184) — it re-runs the load-time discovery
   (`PromptContext::load` + skill/agent registries) with no engine, so a wrong
@@ -168,6 +170,37 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   (logged, dropped, connection unaffected) — every other `InMsg` variant is
   unaffected by ownership. Released on disconnect, so a still-parked approval
   is reclaimable rather than deadlocked behind a client that went away.
+  **A connection attends the sessions it owns**
+  ([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)):
+  owning one registers it with the runtime's `attendance::Attendance` (the
+  same registry the executor's gate reads, passed to `serve::router`), so
+  that session and every sub-agent under it park their `Ask`s instead of
+  collapsing them, with no deadline. Claiming frames: every session-bearing
+  frame, plus `ListPending{root: Some(s)}` and `ListQuestions{session:
+  Some(s)}` (they name no routing session, but they are what a
+  reconnecting client sends), and a bare-text prompt for the connection's
+  default session. The watch ends on disconnect; a card already waiting
+  keeps waiting, and a reconnecting client lists it with a filtered
+  `ListPending`/`ListQuestions` (which re-attends the session, stopping a
+  running deadline) and answers it. A filtered listing for a session this
+  process hibernated wakes it first (`serve::Rejoin`, which folds
+  `SessionHibernated` off the engine): serve resumes it from the session
+  log as the TUI does on its own task (the read loop keeps serving), plus
+  each sub-agent the root's own hibernate put down (`session_store::revived_with`,
+  as every resume path does; one
+  hibernated on its own, or closed, stays down), waits — on the re-offered
+  `ToolRequest`/`UserQuestion`/`ToolOutput` of each call core re-offers in
+  that tree (each replayed turn's unresolved batch, from `Session::replay`;
+  none after a `Stop` or a finished turn; a re-offered spawn is not
+  awaited), at most 5s — and only then forwards the listing, so the cards
+  are on that one reply. Only roots are woken (`serve::sleepers`): a
+  listing naming a sub-agent wakes its root, which brings the child back.
+  One wake per root: a later listing waits for it, and the connection's
+  frames for any session in the woken tree queue behind the listing in order, bounded
+  (`serve::rejoin::Relays`). A failed wake leaves the root asleep for the
+  next listing to retry; past 4096 tracked roots the oldest is forgotten
+  (warned once). A live, unknown or closed session, or a non-owner's
+  listing, is listed as is.
   `serve` stays exactly local/single-user/unauthenticated as scoped above —
   no in-tree head ships multi-user. The authenticated multi-user mode
   designed by [ADR-0174](../../adr/0174-authenticated-multi-user-wire-head.md)

@@ -1,4 +1,8 @@
-# auto: unattended run (ADR-0207 §11; ADR-0209, amended by ADR-0228).
+# auto: unattended run (ADR-0207 §11; ADR-0209, amended by ADR-0228 and
+# ADR-0247). "Unattended" below means: no head watches the session or any
+# of its ancestors. With the TUI up, or a `serve` client owning the root,
+# the session is attended — whatever asks parks at once, as in `build`,
+# and waits for the answer with no `question_timeout`.
 # `default: allow` — `auto` lets everything run that its `deny` list below
 # does not refuse: direct calls and a script's nested calls alike (one rule
 # set, ADR-0228), a `rhai` launch included (no card, Ask per command — and
@@ -18,7 +22,8 @@
 #   - a `write`/`edit`/`apply_patch` of a trusted script or a skill's
 #     `SKILL.md`/`lib.rhai` (ADR-0228's write floor, every mode).
 # A `prompt` rule's call follows ADR-0207 §11's ladder: unattended, the first
-# call collapses to a refusal and an identical repeat parks up to
+# call collapses to a refusal and a repeat graded by the same rule (ADR-0247:
+# `rm -r x` then `rm -r x 2>&1` both hit `bash(rm -r*)`) parks up to
 # `question_timeout`, then refuses.
 #
 # The `deny` entries are what an unattended run refuses outright with no

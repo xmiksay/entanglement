@@ -171,6 +171,12 @@ parked, listed and answerable. A question ends on the wire with its call's
 `ToolOutput` (same `request_id`), which every head sees as soon as any head
 answers it, it is retracted, or the mode's `question_timeout` elapses (#894);
 a replace sends no result, so a head replaces the queued entry in place.
+A decision whose id no park holds — the card expired, another head already
+answered it, or it never existed — is refused the same way
+([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)):
+an `Error` on the addressed session, ``"`Approve` refused: no pending card
+`<id>` (it expired, was answered, or never existed)"`` (a question frame
+says `no open question`), so a late approval is never silently lost.
 
 `ListOperations{correlation_id,session?}` (#607, ADR-0161 §6) mirrors
 `ListQuestions` exactly — same session-less-query shape, same optional-filter

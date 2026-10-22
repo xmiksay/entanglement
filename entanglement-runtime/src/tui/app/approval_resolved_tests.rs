@@ -91,7 +91,12 @@ async fn an_expired_background_card_leaves_the_view() {
     assert!(has_card(&app, &s));
 
     let d = pending
-        .await_timed(&s, "x:rhai:edit", rx, Some(Duration::from_millis(10)))
+        .await_timed(
+            &s,
+            "x:rhai:edit",
+            rx,
+            entanglement_runtime::attendance::Expiry::after(Some(Duration::from_millis(10))),
+        )
         .await;
     assert!(d.is_none(), "nobody answered");
     fold_until(&mut app, &mut sub, is_resolved).await;
@@ -235,4 +240,28 @@ fn an_end_on_the_successor_drops_the_predecessors_copy() {
     });
     app.handle_out_event(resolved(&s, 1, "a"));
     assert!(!has_card(&app, &p));
+}
+
+/// ADR-0247: a card that expired leaves a visible transcript line naming
+/// its tool, so a late approval is not mistaken for one that took effect.
+#[test]
+fn an_expired_card_leaves_a_notice() {
+    let s = SessionId::new("s");
+    let mut app = App::new_for_test(s.clone());
+    app.handle_out_event(card(&s, 1, "a"));
+    app.handle_out_event(resolved(&s, 2, "a"));
+    let (_, view) = app
+        .sessions()
+        .into_iter()
+        .find(|(id, _)| *id == &s)
+        .expect("the session's view");
+    let notice = view.transcript().iter().any(|e| {
+        matches!(
+            e,
+            crate::tui::session_view::TranscriptEntry::ToolOutput { tool: Some(t), output }
+                if t == "approval" && output.contains("approval for `edit (rhai)` expired")
+        )
+    });
+    assert!(notice, "{:?}", view.transcript());
+    assert!(!has_card(&app, &s));
 }

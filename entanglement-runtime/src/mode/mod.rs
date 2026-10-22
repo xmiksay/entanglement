@@ -167,6 +167,25 @@ impl Mode {
             workdir,
         )
     }
+
+    /// The key and grade of the rule that decided [`resolve`](Self::resolve)'s
+    /// grade for the same call; `None` when `default` did (ADR-0247).
+    pub(crate) fn deciding_rule(
+        &self,
+        tool_name: &str,
+        capabilities: &[Capability],
+        arg: Option<&str>,
+        workdir: Option<&str>,
+    ) -> Option<(String, Permission)> {
+        rules::deciding_rule(
+            &self.rules,
+            self.default,
+            tool_name,
+            capabilities,
+            arg,
+            workdir,
+        )
+    }
 }
 
 /// A named set of modes. Construction validates only that names are unique

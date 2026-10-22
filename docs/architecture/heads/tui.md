@@ -36,7 +36,15 @@
   session with no sequence, drops by id without moving the watermark), it re-derives the
   prompt and attention, and the pager / reject-reason reset above applies
   when the dropped card was prompted. A resumed view folds the logged end
-  too. The local clears (`request_stop`, the terminal `Status`, the
+  too. An `expired` end also leaves a transcript line ("approval for
+  `<tool>` expired — … approving it now has no effect",
+  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)),
+  replayed from the log like the end itself. The TUI registers one
+  `Attendance::watch_all` watcher for its whole run (`heads::launch_tui`): it
+  shows every session its engine runs, so every session — sub-agents
+  included — is attended, parks its `Ask`s and never times out a card or
+  question while the TUI is up. A resumed session's re-offered call parks
+  again under it. The local clears (`request_stop`, the terminal `Status`, the
   predecessor drop on a moved card) stay as belt and braces.
   An `ask_user` question leaves the view on its call's `ToolOutput` (same
   `request_id`, seq-gated), so one answered by another head, retracted or

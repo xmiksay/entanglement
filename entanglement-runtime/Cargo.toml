@@ -91,8 +91,8 @@ entanglement-provider = { workspace = true, optional = true }
 # (`host::edit`/`write`/`read`/`bash`/`call`/mcp stdio); `net` backs `serve` +
 # the streamable-HTTP MCP transport's tests; `io-util`/`io-std` back the exec
 # tools' piping and `pipe`'s stdin read; `signal` backs `ctrl_c()` in `serve`/
-# `tui`. No separate `tokio` dev-dependency exists, so this single list also
-# has to satisfy every `#[cfg(test)]`/`tests/*.rs` need.
+# `tui`. The `tokio` dev-dependency adds only `test-util`; this list
+# otherwise has to satisfy every `#[cfg(test)]`/`tests/*.rs` need.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std", "signal"] }
 anyhow = { workspace = true }
 clap = { workspace = true, optional = true }
@@ -152,6 +152,9 @@ notify-debouncer-mini = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Paused-clock tests (`tokio::time::pause`/`advance`) pin the attendance
+# deadline's races deterministically (ADR-0247).
+tokio = { workspace = true, features = ["test-util"] }
 async-trait = { workspace = true }
 # WS client for the `serve` head integration tests (drives a real socket).
 tokio-tungstenite = { workspace = true }

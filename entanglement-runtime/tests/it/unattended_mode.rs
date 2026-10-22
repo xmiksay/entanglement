@@ -16,6 +16,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
+use entanglement_runtime::attendance::Attendance;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
@@ -124,7 +125,7 @@ pub(crate) fn done_text() -> LlmResponse {
 
 /// Collect `sid`'s events until `Done`, bounded by an idle timeout — mirrors
 /// `permission_dispatch.rs::collect`.
-async fn collect(
+pub(crate) async fn collect(
     mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
 ) -> Vec<OutEvent> {
@@ -145,7 +146,7 @@ async fn collect(
 /// at `Done` — the budget-watcher tests need to observe what happens *after*
 /// a turn already ended (a breach detected on the periodic sweep) or need to
 /// keep listening past a `Stop` that unwinds with no `Done` of its own.
-async fn collect_for(
+pub(crate) async fn collect_for(
     mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
     sid: &SessionId,
     window: Duration,
@@ -173,6 +174,29 @@ pub(crate) fn spawn_with_policy(
     mode_table: Arc<ModeTable>,
     scripted: Vec<LlmResponse>,
 ) -> Holly {
+    spawn_attended(reg, mode_table, scripted, Attendance::new())
+}
+
+/// [`spawn_with_policy`] whose executor reads `attendance` (ADR-0247), so a
+/// test can register a watching head.
+pub(crate) fn spawn_attended(
+    reg: ToolRegistry,
+    mode_table: Arc<ModeTable>,
+    scripted: Vec<LlmResponse>,
+    attendance: Attendance,
+) -> Holly {
+    spawn_wrapped(reg, mode_table, scripted, attendance, |r| r)
+}
+
+/// [`spawn_attended`] whose mode resolver `wrap` decorates (a slow one,
+/// say).
+pub(crate) fn spawn_wrapped(
+    reg: ToolRegistry,
+    mode_table: Arc<ModeTable>,
+    scripted: Vec<LlmResponse>,
+    attendance: Attendance,
+    wrap: impl FnOnce(Arc<dyn PermissionResolver>) -> Arc<dyn PermissionResolver>,
+) -> Holly {
     let profiles =
         entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
     let scripted = Arc::new(scripted);
@@ -187,13 +211,13 @@ pub(crate) fn spawn_with_policy(
     let shared_tools = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+    let resolver: Arc<dyn PermissionResolver> = wrap(Arc::new(ModeResolver::new(
         modes.clone(),
         mode_table.clone(),
         shared_tools.clone(),
         PermissionProfile::new(Permission::Allow),
         None,
-    ));
+    )));
     let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
@@ -203,6 +227,7 @@ pub(crate) fn spawn_with_policy(
         .resolver(resolver)
         .grants(grants)
         .mode_table(mode_table)
+        .attendance(attendance)
         .spawn();
     holly
 }

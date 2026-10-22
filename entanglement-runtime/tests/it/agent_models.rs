@@ -8,8 +8,14 @@ use entanglement_runtime::config::agent_models::AgentModelStore;
 
 // Every test pins its own temp file through `load_from` — no process env.
 
-fn tmp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("entanglement-agent-models-it-{name}.yml"))
+/// A fresh directory per test, removed with the returned guard (lock file
+/// included): concurrent test processes must not share one file.
+fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join(format!("entanglement-agent-models-it-{name}.yml"));
+    (dir, path)
 }
 
 fn profile(name: &str) -> Agent {
@@ -25,7 +31,7 @@ fn profile(name: &str) -> Agent {
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let path = tmp_path("roundtrip");
+    let (_dir, path) = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AgentModelStore::load_from(Some(path.clone()));
@@ -41,7 +47,7 @@ fn set_round_trips_across_a_reload() {
 
 #[test]
 fn an_explicit_file_is_read() {
-    let path = tmp_path("env");
+    let (_dir, path) = tmp_path("env");
     std::fs::write(
         &path,
         "agents:\n  plan:\n    provider: anthropic\n    model: claude\n",
@@ -56,7 +62,7 @@ fn an_explicit_file_is_read() {
 
 #[test]
 fn malformed_file_loads_empty() {
-    let path = tmp_path("malformed");
+    let (_dir, path) = tmp_path("malformed");
     std::fs::write(&path, "agents: [not-a-map\n").unwrap();
 
     // Fail-open: a corrupt file is ignored, not fatal.
@@ -68,7 +74,7 @@ fn malformed_file_loads_empty() {
 
 #[test]
 fn apply_overlays_pins_and_wins_over_frontmatter() {
-    let path = tmp_path("apply");
+    let (_dir, path) = tmp_path("apply");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AgentModelStore::load_from(Some(path.clone()));
@@ -104,7 +110,7 @@ fn concurrent_set_from_two_stores_both_survive() {
     // race to pin *different* agents against the same on-disk file (#329).
     // Without the lock's read-current-then-merge, the second writer's stale
     // in-memory `self.agents` would clobber the first writer's pin on write.
-    let path = tmp_path("concurrent");
+    let (_dir, path) = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
 
     let a = std::thread::spawn({
@@ -141,7 +147,7 @@ fn concurrent_set_from_two_stores_both_survive() {
 
 #[test]
 fn reload_picks_up_another_process_pin() {
-    let path = tmp_path("reload");
+    let (_dir, path) = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AgentModelStore::load_from(Some(path.clone()));
@@ -160,7 +166,7 @@ fn reload_picks_up_another_process_pin() {
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let path = tmp_path("stable");
+    let (_dir, path) = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AgentModelStore::load_from(Some(path.clone()));

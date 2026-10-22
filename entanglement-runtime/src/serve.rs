@@ -25,9 +25,16 @@
 //!   decision frame for the same session is refused (logged, dropped), so two
 //!   cooperating local clients (e.g. the TUI and a browser tab) don't race to
 //!   resolve the same parked approval.
+//! - **A connection attends the sessions it owns** ([ADR-0247]): owning a
+//!   session registers it — and so every sub-agent it spawns — with the
+//!   engine's [`Attendance`], so its approval cards and questions wait for
+//!   an answer instead of collapsing or timing out. The watch ends when the
+//!   connection closes; a card already waiting keeps waiting, and a
+//!   reconnecting client finds it with `ListPending`/`ListQuestions`.
 //!
 //! [ADR-0048]: ../../docs/adr/0048-serve-head-local-trust-model.md
 //! [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
+//! [ADR-0247]: ../../docs/adr/0247-attended-sessions-wait-for-their-approver.md
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -48,6 +55,12 @@ use axum::{
 };
 use entanglement_core::{Holly, IdKind, InMsg, SessionId, WireError};
 use futures::{SinkExt, StreamExt};
+
+use crate::attendance::{Attendance, Watcher};
+
+mod rejoin;
+mod sleepers;
+pub use rejoin::Rejoin;
 use tokio::sync::broadcast::error::RecvError;
 
 /// Keep an idle socket (and any NAT/proxy in front of a raw client) alive.
@@ -101,13 +114,25 @@ struct ServeState {
     allowed_origin: Option<String>,
     next_conn_id: AtomicU64,
     session_owners: SessionOwners,
+    /// The engine's attendance registry: each connection watches the
+    /// sessions it owns (ADR-0247).
+    attendance: Attendance,
+    /// Resumes a hibernated session a reconnecting client lists (ADR-0247);
+    /// `None` lists it as it is.
+    rejoin: Option<Rejoin>,
 }
 
 /// Bind `127.0.0.1:port` (loopback-only, ADR-0048) and serve the WS head until
 /// Ctrl-C or SIGTERM. Live connections close when the engine shuts down (#699).
 /// The bind is the required non-public control, so no non-loopback bind
 /// is offered.
-pub async fn serve(holly: Holly, port: u16, allowed_origin: Option<String>) -> Result<()> {
+pub async fn serve(
+    holly: Holly,
+    port: u16,
+    allowed_origin: Option<String>,
+    attendance: Attendance,
+    rejoin: Option<Rejoin>,
+) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -116,20 +141,32 @@ pub async fn serve(holly: Holly, port: u16, allowed_origin: Option<String>) -> R
     tracing::info!(%local, "serve head listening (ws: /ws)");
     eprintln!("skutter serve: http://{local}  (WebSocket: ws://{local}/ws)");
 
-    axum::serve(listener, router(holly, allowed_origin))
+    axum::serve(listener, router(holly, allowed_origin, attendance, rejoin))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serve head")
 }
 
 /// Build the axum router. Split from [`serve`] so tests can drive the handlers
-/// over their own ephemeral listener.
-pub fn router(holly: Holly, allowed_origin: Option<String>) -> Router {
+/// over their own ephemeral listener. `attendance` is the registry the
+/// engine's tool executor was built with (ADR-0247); `rejoin`, when set,
+/// lets a filtered listing wake a session this process hibernated.
+pub fn router(
+    holly: Holly,
+    allowed_origin: Option<String>,
+    attendance: Attendance,
+    rejoin: Option<Rejoin>,
+) -> Router {
+    if let Some(rejoin) = &rejoin {
+        rejoin.track(&holly);
+    }
     let state = Arc::new(ServeState {
         holly,
         allowed_origin,
         next_conn_id: AtomicU64::new(0),
         session_owners: SessionOwners::default(),
+        attendance,
+        rejoin,
     });
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -195,6 +232,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
     let default_session = SessionId::new(state.holly.next_id(IdKind::Session));
     // Identifies this connection for approval ownership (#402, ADR-0107).
     let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
+    // Watches the sessions this connection owns until it closes (ADR-0247).
+    let watcher = state.attendance.watcher();
+    let mut relays = rejoin::Relays::default();
 
     // Outbound pump: fan-out events as JSON text frames; a periodic ping keeps an
     // otherwise-silent socket alive.
@@ -257,7 +297,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                     continue;
                 }
                 match serde_json::from_str::<InMsg>(trimmed) {
-                    Ok(m) => {
+                    Ok(mut m) => {
                         // Claim/verify ownership on every session-bearing frame so a
                         // session gets an owner as early as possible (typically the
                         // initiating `Prompt`); only the decision variants are
@@ -266,8 +306,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                         // `AnswerQuestion` — all three resolve the same class of
                         // parked `ask_user` waiter, so a non-owning connection must
                         // not be able to retract/replace one either.
-                        if let Some(session) = m.session() {
-                            let owner_ok = state.session_owners.touch(session, conn_id);
+                        if let Some(session) = claimed(&m) {
+                            let owner_ok = claim(&state, &watcher, session, conn_id);
                             if !owner_ok
                                 && matches!(
                                     m,
@@ -285,6 +325,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                                 );
                                 continue;
                             }
+                            // A listing wakes a session this process
+                            // hibernated; frames behind it queue (ADR-0247).
+                            let (rejoin, wakes) = (state.rejoin.as_ref(), owner_ok && lists(&m));
+                            let session = session.clone();
+                            match relays.route(rejoin, &state.holly, &session, wakes, m).await {
+                                Some(direct) => m = direct,
+                                None => continue,
+                            }
                         }
                         match state.holly.send_from_wire(m).await {
                             Ok(()) => {}
@@ -296,6 +344,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                     }
                     Err(e) => {
                         tracing::debug!("serve: non-InMsg frame treated as prompt ({e})");
+                        claim(&state, &watcher, &default_session, conn_id);
                         if state
                             .holly
                             .send(InMsg::prompt(default_session.clone(), trimmed.to_string()))
@@ -314,12 +363,40 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
     // Release this connection's session ownership so a still-parked approval
     // doesn't deadlock behind a client that just disconnected (#402, ADR-0107).
     state.session_owners.release(conn_id);
+    drop(watcher);
     out.abort();
+}
+
+/// The session a frame claims for its connection: its routing session, or
+/// the filter of a `ListPending{root}`/`ListQuestions{session}` — the
+/// frames a reconnecting client sends to find what still waits for it, so
+/// listing alone attends the session again (ADR-0247).
+fn claimed(m: &InMsg) -> Option<&SessionId> {
+    match m {
+        InMsg::ListPending { root, .. } => root.as_ref(),
+        InMsg::ListQuestions { session, .. } => session.as_ref(),
+        other => other.session(),
+    }
+}
+
+/// A filtered listing — the frames that may wake a hibernated session.
+fn lists(m: &InMsg) -> bool {
+    matches!(m, InMsg::ListPending { .. } | InMsg::ListQuestions { .. })
+}
+
+/// Claim `session` for `conn` (ADR-0107) and, when it is this connection's,
+/// attend it (ADR-0247). Returns whether `conn` owns it.
+fn claim(state: &ServeState, watcher: &Watcher, session: &SessionId, conn: ConnId) -> bool {
+    let owner_ok = state.session_owners.touch(session, conn);
+    if owner_ok {
+        watcher.attend(session);
+    }
+    owner_ok
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{origin_allowed, SessionOwners};
+    use super::{claimed, origin_allowed, SessionOwners};
     use entanglement_core::SessionId;
 
     #[test]
@@ -359,6 +436,30 @@ mod tests {
         // Session B's owner (conn 2) is untouched by conn 1's release.
         assert!(owners.touch(&sid_b, 2));
         assert!(!owners.touch(&sid_b, 3));
+    }
+
+    /// ADR-0247: a reconnecting client's listing claims (so attends) the
+    /// session it filters on; an unfiltered listing claims nothing.
+    #[test]
+    fn a_filtered_listing_claims_its_session() {
+        use entanglement_core::InMsg;
+        let s = SessionId::new("s");
+        let pending = InMsg::ListPending {
+            correlation_id: "c".into(),
+            root: Some(s.clone()),
+        };
+        let questions = InMsg::ListQuestions {
+            correlation_id: "c".into(),
+            session: Some(s.clone()),
+        };
+        assert_eq!(claimed(&pending), Some(&s));
+        assert_eq!(claimed(&questions), Some(&s));
+        let all = InMsg::ListPending {
+            correlation_id: "c".into(),
+            root: None,
+        };
+        assert_eq!(claimed(&all), None);
+        assert_eq!(claimed(&InMsg::prompt(s.clone(), "hi")), Some(&s));
     }
 
     #[test]

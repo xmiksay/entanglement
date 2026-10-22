@@ -12,6 +12,7 @@ mod pairing;
 mod payload;
 mod prefix;
 mod resume_check;
+mod revive;
 mod store;
 mod tree;
 pub use listing::{children_of, first_prompt_snippet, resumable_roots, root_of, SessionMeta};
@@ -19,6 +20,7 @@ pub use pairing::pair_records;
 pub use payload::LogPayload;
 pub use prefix::{resumable_prefix, ResumablePrefix, Truncation};
 pub use resume_check::{check_for_resume, resume_with_mode, Fallback, LaunchMode, ResumeCheck};
+pub use revive::revived_with;
 pub use store::SessionStore;
 
 /// Sanitizes a path for safe filesystem use.

@@ -172,6 +172,7 @@ pub(super) struct LadderCtx {
     pub hooks: Arc<Hooks>,
     pub validation: Arc<crate::arg_validate::LoopBreaker>,
     pub denials: Arc<crate::run_limits::DenialTracker>,
+    pub attendance: crate::attendance::Attendance,
     /// The active provider/model catalog (#560 P12, ADR-0207 §12): read by
     /// `list_models` and by `agent`'s `model` parameter validation. `None` — every lean/test wrapper with no
     /// catalog wired — degrades both to "no catalog configured" rather than
@@ -239,7 +240,7 @@ pub(super) async fn route_tool_exec(
             orchestration::poll(ctx, session, request_id, input).await;
         }
         Intercept::AskUser => {
-            orchestration::ask_user(ctx, session, request_id, input).await;
+            orchestration::ask_user(ctx, spawn_guard, session, request_id, input).await;
         }
         Intercept::ProposePlan => {
             orchestration::propose_plan(ctx, spawn_guard, session, request_id, input).await;

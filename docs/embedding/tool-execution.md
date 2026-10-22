@@ -40,6 +40,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |
 | `catalog(Arc<Catalog>)` | none — `list_models` and `agent`'s `model` validation report "no catalog configured" |
 | `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private advertising state, empty MCP roster) |
+| `attendance(Attendance)` | private — nobody watches, so a mode's `question_timeout` alone decides. Share it with your heads: a head that answers cards registers a `Watcher` (`watch_all()`, or `watcher()` + `attend(&session)`) for as long as it is attached, and that session and its sub-agents then park every `Ask` with no deadline (ADR-0247); pass the same value to `serve::router` |
 
 **Persisted grants are opt-in.** A single-user head that wants `Always`
 approvals written to the managed `grants.yml` must say so —

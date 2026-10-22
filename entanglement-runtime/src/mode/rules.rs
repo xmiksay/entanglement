@@ -51,9 +51,12 @@ use crate::capability::Capability;
 use crate::permission::min_permission;
 use crate::shell_split::{self, SplitOutcome};
 
+mod rank;
+use rank::best_entry;
+
 /// One graded entry: the raw key exactly as written (its character count is
 /// its specificity), the grade it carries, and — for a bare capability-class
-/// key — which class it names, so [`resolve_single`] can test it against a
+/// key — which class it names, so [`rank::best_entry`] can test it against a
 /// call's capability slice instead of its tool name.
 #[derive(Debug, Clone, PartialEq)]
 struct Entry {
@@ -190,30 +193,6 @@ fn tool_rule_matches(key: &str, name: &str, arg: Option<&str>, workdir: Option<&
         == Permission::Allow
 }
 
-/// Most restrictive of two grades — the equal-length tiebreak (module doc):
-/// `deny` beats everything, `prompt`/`Ask` beats `allow`.
-fn most_restrictive(a: Permission, b: Permission) -> Permission {
-    match (a, b) {
-        (Permission::Deny, _) | (_, Permission::Deny) => Permission::Deny,
-        (Permission::Ask, _) | (_, Permission::Ask) => Permission::Ask,
-        _ => Permission::Allow,
-    }
-}
-
-/// Resolve one call (no compound-command splitting) against `rules` +
-/// `default`: the best matching key wins ([`best_match`]), ties break to the more
-/// restrictive grade, no match falls through to `default`.
-fn resolve_single(
-    rules: &Rules,
-    default: Permission,
-    tool_name: &str,
-    capabilities: &[Capability],
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Permission {
-    best_match(rules, tool_name, capabilities, arg, workdir).unwrap_or(default)
-}
-
 /// The grade of the longest rule for literal `tool` that is argument- or
 /// workdir-scoped and matches `arg`; `None` when none does. ADR-0227's
 /// "explicit `http(...)` rule" test: a bare tool or class entry never counts.
@@ -237,7 +216,7 @@ pub(crate) fn scoped_grade(
             .cloned()
             .collect(),
     };
-    best_match(&scoped, tool, &[], arg, None)
+    best_entry(&scoped, tool, &[], arg, None).map(|e| e.grade)
 }
 
 /// The precedence in one sentence — what `skutter inspect modes` prints.
@@ -245,134 +224,53 @@ pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class
     rule competes with a named rule by key length and with a class rule by strictness (the \
     stricter wins); within each kind the longest key wins; ties go to the stricter grade.";
 
-/// Which kind of key matched, for ranking (module doc).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// The key's tool part is the call's tool itself (bare or scoped).
-    Named,
-    /// A capability class (`read`/`write`/...).
-    Class,
-    /// The `*` tool wildcard, bare or scoped (`*`, `*(scripts/*)`).
-    Glob,
-}
-
-/// A key spelling the tool's own name counts as naming it even when it is
-/// also a class (`read` for the `read` tool); for any other tool it is the
-/// class.
-fn kind(entry: &Entry, tool: &str) -> Kind {
-    if canonical_tool(rule_tool_name(&canonicalize_key(&entry.key))) == canonical_tool(tool) {
-        Kind::Named
-    } else if entry.class.is_some() {
-        Kind::Class
-    } else {
-        Kind::Glob
-    }
-}
-
-/// The winning grade (module doc): with a rule naming the tool, it and the
-/// best `*` rule compete by key length (ties to the stricter grade) and
-/// class rules are ignored; without one, the best class rule and the best
-/// `*` rule compete by strictness. Within a kind the longest key wins, ties
-/// to the stricter grade.
-fn best_match(
-    rules: &Rules,
-    tool_name: &str,
-    capabilities: &[Capability],
-    arg: Option<&str>,
-    workdir: Option<&str>,
-) -> Option<Permission> {
-    let mut best: [Option<(usize, Permission)>; 3] = [None; 3];
-    for entry in &rules.entries {
-        let matches = match entry.class {
-            // `control` reaches only a pure orchestration tool (ADR-0232):
-            // as the longest class key it would otherwise out-rank `write`/
-            // `exec` for a mixed tool and widen it past the mode's deny.
-            Some(Capability::Control) => capabilities == [Capability::Control],
-            Some(class) => capabilities.contains(&class),
-            None => tool_rule_matches(&entry.key, tool_name, arg, workdir),
-        };
-        if !matches {
-            continue;
-        }
-        let entry_kind = kind(entry, tool_name);
-        // A rule naming a non-maskable tool is inert (ADR-0232): only its
-        // class (`propose_plan`'s `plan`) or a `*` rule grades it, which is
-        // what the config warning (`config::mode_warn`) promises.
-        if entry_kind == Kind::Named && crate::tool_names::is_non_maskable(tool_name) {
-            continue;
-        }
-        let slot = &mut best[entry_kind as usize];
-        let len = entry.key.chars().count();
-        *slot = Some(match *slot {
-            None => (len, entry.grade),
-            Some((best_len, _)) if len > best_len => (len, entry.grade),
-            Some((best_len, best_grade)) if len == best_len => {
-                (best_len, most_restrictive(best_grade, entry.grade))
-            }
-            Some(existing) => existing,
-        });
-    }
-    let [named, class, glob] = best;
-    match (named, glob) {
-        // Named vs `*`: by key length, ties to the stricter grade. A class
-        // rule never decides once a rule names the tool.
-        (Some((nl, ng)), Some((gl, gg))) => Some(match nl.cmp(&gl) {
-            std::cmp::Ordering::Greater => ng,
-            std::cmp::Ordering::Less => gg,
-            std::cmp::Ordering::Equal => most_restrictive(ng, gg),
-        }),
-        (Some((_, ng)), None) => Some(ng),
-        // No named rule: class vs `*` by strictness.
-        (None, glob) => match (class, glob) {
-            (Some((_, cg)), Some((_, gg))) => Some(most_restrictive(cg, gg)),
-            (c, g) => c.or(g).map(|(_, grade)| grade),
-        },
-    }
-}
-
-/// Per-segment grading for `bash`/`call` (ADR-0197, extended to `call` by
-/// ADR-0207 §4): split on top-level `&&`/`||`/`;`/`|`/`&`, grade each
-/// segment independently and fold to the most restrictive result — any
-/// segment `Deny` denies the whole command, all-`Allow` is `Allow`,
-/// otherwise the fold lands on the most restrictive non-deny grade among
-/// the segments. A simple command splits into exactly one segment equal to
-/// the whole string, so this reduces to a single [`resolve_single`] call
-/// for every non-compound call.
+/// The grade one call resolves to under `rules` + `default`, and the rule
+/// that decided it (`None`: the default did). `bash`/`call` with a command
+/// grade per compound segment (ADR-0197, extended to `call` by ADR-0207
+/// §4): split on top-level `&&`/`||`/`;`/`|`/`&`, grade each segment and
+/// fold to the most restrictive — any segment `Deny` denies the whole
+/// command, all-`Allow` is `Allow`; the deciding rule is the one of the
+/// first segment at the folded grade. A simple command is one segment.
 ///
 /// [`SplitOutcome::Opaque`] grades at `default` directly — a construct the
 /// splitter can't fully account for is never graded on a guess (ADR-0207
 /// §4), so unlike the bash-only legacy resolver in `permission_bash.rs`
 /// (which re-resolved with the argument dropped, still consulting bare/
 /// workdir rules), a mode's `default` already *is* the safe fallback here.
-fn resolve_compound(
-    rules: &Rules,
+fn decide<'a>(
+    rules: &'a Rules,
     default: Permission,
     tool_name: &str,
     capabilities: &[Capability],
-    command: &str,
+    arg: Option<&str>,
     workdir: Option<&str>,
-) -> Permission {
-    match shell_split::split(command) {
-        SplitOutcome::Opaque => default,
-        SplitOutcome::Segments(segments) => segments
-            .iter()
-            .try_fold(Permission::Allow, |acc, seg| {
-                let grade =
-                    resolve_single(rules, default, tool_name, capabilities, Some(seg), workdir);
-                if grade == Permission::Deny {
-                    None
-                } else {
-                    Some(min_permission(acc, grade))
-                }
-            })
-            .unwrap_or(Permission::Deny),
+) -> (Permission, Option<&'a Entry>) {
+    let single = |arg: Option<&str>| {
+        best_entry(rules, tool_name, capabilities, arg, workdir)
+            .map_or((default, None), |e| (e.grade, Some(e)))
+    };
+    let command = arg.filter(|_| matches!(tool_name, "bash" | "call"));
+    let Some(command) = command else {
+        return single(arg);
+    };
+    let SplitOutcome::Segments(segments) = shell_split::split(command) else {
+        return (default, None);
+    };
+    let mut folded: Option<(Permission, Option<&Entry>)> = None;
+    for seg in &segments {
+        let (grade, entry) = single(Some(seg));
+        if grade == Permission::Deny {
+            return (grade, entry);
+        }
+        if folded.is_none_or(|(acc, _)| min_permission(acc, grade) != acc) {
+            folded = Some((grade, entry));
+        }
     }
+    folded.unwrap_or((Permission::Allow, None))
 }
 
 /// Resolve the grade for one call under a mode's `default` + [`Rules`]
-/// (ADR-0207 §4). `bash`/`call` calls with a command argument grade per
-/// compound segment ([`resolve_compound`]); everything else resolves in one
-/// shot ([`resolve_single`]).
+/// (ADR-0207 §4), per compound segment for `bash`/`call` ([`decide`]).
 pub fn resolve(
     rules: &Rules,
     default: Permission,
@@ -381,12 +279,27 @@ pub fn resolve(
     arg: Option<&str>,
     workdir: Option<&str>,
 ) -> Permission {
-    if matches!(tool_name, "bash" | "call") {
-        if let Some(command) = arg {
-            return resolve_compound(rules, default, tool_name, capabilities, command, workdir);
-        }
-    }
-    resolve_single(rules, default, tool_name, capabilities, arg, workdir)
+    decide(rules, default, tool_name, capabilities, arg, workdir).0
+}
+
+/// The key and grade of the rule that decided [`resolve`]'s grade, when it
+/// is a scoped rule naming the tool (`bash(rm -r*)`) — the repeat
+/// escalation's "same call" (ADR-0247). `None` when the mode's `default`
+/// decided, or a rule as wide as the default: a class (`exec`), a `*`, or a
+/// bare tool name, each of which would make every call of the tool "the
+/// same".
+pub(crate) fn deciding_rule(
+    rules: &Rules,
+    default: Permission,
+    tool_name: &str,
+    capabilities: &[Capability],
+    arg: Option<&str>,
+    workdir: Option<&str>,
+) -> Option<(String, Permission)> {
+    decide(rules, default, tool_name, capabilities, arg, workdir)
+        .1
+        .filter(|e| rank::names_tool(e, tool_name) && rule_tool_name(&e.key) != e.key)
+        .map(|e| (e.key.clone(), e.grade))
 }
 
 #[cfg(test)]

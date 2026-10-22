@@ -249,6 +249,24 @@ below realize one model:
   yet, unlike the retired ADR-0117 fan-out — a research-mode session
   therefore prompts/denies an MCP tool by the mode's `default`/`exec`-class
   rules unless a mode rule names it explicitly.
+- **Unattended is a fact about the session**
+  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  §11, amended by
+  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)).
+  A mode with a finite `question_timeout` (`auto`) is unattended only while
+  no head watches the session or any of its ancestors
+  (`entanglement-runtime::attendance`; the TUI watches every session, a
+  `serve` connection the sessions it owns, `run`/`pipe` none). Unattended,
+  a first `Ask` collapses to a refusal, a repeat parks a card bounded by
+  `question_timeout`, and an `ask_user` question defaults to its first
+  option. A repeat is the same call when the same scoped rule naming the
+  tool graded it (`bash(rm -r*)`), else the same exact argument
+  (`run_limits::Repeat`, `Mode::deciding_rule`). Attended, an `Ask` parks
+  at once and nothing times out; a watcher arriving cancels a running
+  deadline for good, and a waiting item outlives its watcher (listed,
+  answerable; resume re-offers it after a hibernate still waiting — the
+  waiver is kept per park until answered or the session ends, in memory, so
+  a restart re-parks it under whoever watches then).
 
 [profile]: ../../../entanglement-core/src/protocol.rs
 

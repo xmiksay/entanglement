@@ -83,6 +83,7 @@ pub(super) fn dispatcher(
         overlay_epochs,
         mode_table: ctx.mode_table.clone(),
         limits,
+        attendance: ctx.attendance.clone(),
         denials: ctx.denials.clone(),
         http_gate: ctx.http_gate.clone(),
         trust: ctx.trust.clone(),
