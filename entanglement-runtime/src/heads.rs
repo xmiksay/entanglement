@@ -99,7 +99,18 @@ pub(crate) async fn dispatch(
             // Runs until Ctrl-C; the executor/persistence teardown in `main`
             // then runs as for any other head. A fresh `Holly` clone keeps the
             // outer handle for that shutdown path.
-            entanglement_runtime::serve::serve(holly.clone(), port, allow_origin).await
+            let rejoin = entanglement_runtime::serve::Rejoin::new(
+                session_store::SessionStore::for_cwd(cwd),
+                head.live_profiles.clone(),
+            );
+            entanglement_runtime::serve::serve(
+                holly.clone(),
+                port,
+                allow_origin,
+                head.attendance,
+                Some(rejoin),
+            )
+            .await
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id =
@@ -272,31 +283,37 @@ async fn launch_tui(
     // `SessionStarted`/`AgentChanged` before `tui()` gets around to
     // subscribing, permanently desyncing the agent badge (#598).
     let holly_sub = holly.subscribe();
-    start_fresh(holly, &session_id, agent, launch.mode.clone()).await?;
-    tui(
-        holly,
-        holly_sub,
-        session_id,
-        head.model_info,
-        head.provider_name,
-        catalog,
-        head.live_profiles,
-        head.live_agent_models,
-        head.live_agent_generation,
-        head.live_aux_models,
-        head.reload_rx,
-        cwd.to_path_buf(),
-        head.tool_names,
-        head.http_client,
-        user_config.editor.clone(),
-        user_config.tui.clone(),
-        head.grants,
-        head.mcp,
-        head.advertising_state,
-        launch,
-        head.live_commands,
-    )
-    .await
+    // The TUI shows every session its engine runs (it auto-discovers each
+    // one), so it attends them all while it runs (ADR-0247).
+    let attendance = head.attendance.clone();
+    let run = async move {
+        start_fresh(holly, &session_id, agent, launch.mode.clone()).await?;
+        tui(
+            holly,
+            holly_sub,
+            session_id,
+            head.model_info,
+            head.provider_name,
+            catalog,
+            head.live_profiles,
+            head.live_agent_models,
+            head.live_agent_generation,
+            head.live_aux_models,
+            head.reload_rx,
+            cwd.to_path_buf(),
+            head.tool_names,
+            head.http_client,
+            user_config.editor.clone(),
+            user_config.tui.clone(),
+            head.grants,
+            head.mcp,
+            head.advertising_state,
+            launch,
+            head.live_commands,
+        )
+        .await
+    };
+    attendance.watching_all(run).await
 }
 
 /// Prints the resumable past root sessions for `cwd` (no compacted-away

@@ -115,6 +115,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         rhai_trusted,
         skill_dirs,
         module_dirs,
+        attendance,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -276,6 +277,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             hooks,
             validation,
             denials,
+            attendance,
             catalog,
             workdirs,
             http_gate,

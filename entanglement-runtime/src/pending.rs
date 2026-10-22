@@ -27,13 +27,13 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use entanglement_core::{
     ApprovalKind, ApprovalOutcome, Holly, PendingApproval as WireApproval, SessionId,
 };
 use tokio::sync::oneshot;
 
+use crate::attendance::Expiry;
 use crate::seam::Decision;
 
 mod park;
@@ -322,18 +322,28 @@ impl PendingDecisions {
         }
     }
 
-    /// [`await_decision_timed`], removing the entry when the deadline elapses
-    /// (#726): nothing else ever would, and in an unattended mode expiry is
-    /// the normal path, so the map (each entry holding a full call `input`)
-    /// would otherwise grow until the session stops.
+    /// Await the decision until `expiry` elapses (`None`: it did), removing
+    /// the entry then (#726): nothing else ever would, and in an unattended
+    /// session expiry is the normal path, so the map (each entry holding a
+    /// full call `input`) would otherwise grow until the session stops. An
+    /// attended session's `expiry` never elapses (ADR-0247).
     pub async fn await_timed(
         &self,
         session: &SessionId,
         request_id: &str,
         rx: oneshot::Receiver<Decision>,
-        timeout: Option<Duration>,
+        expiry: Expiry,
     ) -> Option<Decision> {
-        let decision = await_decision_timed(rx, timeout).await;
+        let decision = tokio::select! {
+            biased;
+            decision = rx => Some(decision.unwrap_or(Decision::Stop)),
+            () = expiry.clone().elapsed() => None,
+        };
+        // An answer spends the park's waiver; a `Stop` (a hibernate's
+        // unwind among them) keeps it for the re-offer (ADR-0247).
+        if decision.as_ref().is_some_and(Decision::settles) {
+            expiry.settle();
+        }
         if decision.is_none() {
             self.forget(session, request_id);
         }
@@ -349,6 +359,7 @@ impl PendingDecisions {
 mod tests {
     use super::*;
     use entanglement_core::ApprovalScope;
+    use std::time::Duration;
 
     /// ADR-0230: a scope the card did not offer is delivered as `Once`; an
     /// offered one passes through.
@@ -520,7 +531,12 @@ mod tests {
         let s = SessionId::new("s");
         let rx = pending.register(&s, "req-1", "tool", "t");
         let d = pending
-            .await_timed(&s, "req-1", rx, Some(Duration::from_millis(10)))
+            .await_timed(
+                &s,
+                "req-1",
+                rx,
+                Expiry::after(Some(Duration::from_millis(10))),
+            )
             .await;
         assert!(d.is_none());
         assert!(

@@ -1,7 +1,7 @@
 //! The tool-call family of [`SessionView::apply_event`]'s fold: streamed
 //! args, the assembled call, approval/question queues, and output folding.
 
-use entanglement_core::{ApprovalScope, Questions};
+use entanglement_core::{ApprovalOutcome, ApprovalScope, Questions};
 
 use super::*;
 
@@ -134,12 +134,36 @@ impl SessionView {
     /// reuses the id. Seq 0 is an end for a session with no sequence
     /// (retired before #884, evicted under #891): dropped by id without
     /// moving the watermark, like a seq-0 `Error` — a seq-0 card never
-    /// folds, so no newer card can carry the id.
-    pub(super) fn fold_approval_resolved(&mut self, seq: u64, request_id: &str) -> bool {
+    /// folds, so no newer card can carry the id. An expired card leaves a
+    /// transcript line (ADR-0247): an approval sent after it would do
+    /// nothing, and the log replays the line on resume.
+    pub(super) fn fold_approval_resolved(
+        &mut self,
+        seq: u64,
+        request_id: &str,
+        outcome: ApprovalOutcome,
+    ) -> bool {
         if seq != 0 && seq <= self.last_seen_seq {
             return false;
         }
         self.last_seen_seq = self.last_seen_seq.max(seq);
+        if outcome == ApprovalOutcome::Expired {
+            let what = self
+                .pending_tool_requests
+                .iter()
+                .find(|req| req.request_id == request_id)
+                .map_or_else(
+                    || format!("card `{request_id}`"),
+                    |req| format!("`{}`", req.tool),
+                );
+            self.transcript.push(TranscriptEntry::ToolOutput {
+                tool: Some("approval".to_string()),
+                output: format!(
+                    "approval for {what} expired — nobody answered within the mode's \
+                     question_timeout; approving it now has no effect"
+                ),
+            });
+        }
         self.drop_approval(request_id);
         true
     }

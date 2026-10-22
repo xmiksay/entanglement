@@ -124,7 +124,7 @@ impl Dispatcher {
                 return Some(Cleared::Run(overlay_entry, escape));
             }
         }
-        let unattended = run_limits::collapses_ask(&self.limits);
+        let unattended = run_limits::unattended(&self.limits, &self.attendance, &self.chain);
         if let Some(host) = &host {
             if unattended {
                 return Some(
@@ -152,11 +152,12 @@ impl Dispatcher {
                 }
             }
             // ADR-0207 §11: unattended, a first `Ask` collapses to a denial;
-            // a repeat of the same call parks (bounded by the timeout).
+            // a repeat of the same call — graded by the same rule, ADR-0247
+            // — parks (bounded by the timeout).
             if unattended
                 && !self
                     .denials
-                    .record_repeat(&self.session, &call.tool, arg.as_deref())
+                    .record_repeat(&self.session, self.repeat_of(call, arg.as_deref()))
             {
                 return Some(Cleared::Refused(format!(
                     "tool `{}` denied — mode `{}` is unattended (question_timeout {}s, no one \
@@ -215,6 +216,26 @@ impl Dispatcher {
     /// in every mode, `auto` included.
     pub(super) fn floored(&self, tool: &str, input: &str) -> bool {
         crate::rhai_trust::floored_write(tool, input, &self.files_root, &self.trust)
+    }
+
+    /// What makes a retry of `call` the same call (ADR-0247): the session
+    /// mode's named rule that graded it `Ask`, else its exact argument —
+    /// a default grade, or an `Ask` from elsewhere (an ancestor's clamp, an
+    /// overlay entry), keys on the argument as before.
+    fn repeat_of(&self, call: &Call, arg: Option<&str>) -> run_limits::Repeat {
+        let tool = graded_name(&call.tool);
+        let rule = self.mode_table.get(&self.mode).and_then(|mode| {
+            let capabilities = capability::capability_of(tool, &self.tools).unwrap_or(&[]);
+            let workdir = crate::permission::permission_workdir(tool, &call.input);
+            mode.deciding_rule(tool, capabilities, arg, workdir.as_deref())
+        });
+        match rule {
+            Some((key, Permission::Ask)) => run_limits::Repeat::Rule(key),
+            _ => run_limits::Repeat::Call {
+                tool: call.tool.clone(),
+                arg: arg.map(str::to_string),
+            },
+        }
     }
 
     /// Whether the mode carries an explicit, argument-scoped `http(...)`

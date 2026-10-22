@@ -71,7 +71,7 @@ async fn a_refused_question_park_replies_with_an_error() {
             s.clone(),
             "q1".into(),
             INPUT.into(),
-            None,
+            crate::attendance::Expiry::never(),
         ),
     )
     .await
@@ -154,7 +154,7 @@ async fn a_refused_re_park_after_a_replace_clears_the_open_question() {
         s.clone(),
         "q1".into(),
         INPUT.into(),
-        None,
+        crate::attendance::Expiry::never(),
     ));
     loop {
         match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {

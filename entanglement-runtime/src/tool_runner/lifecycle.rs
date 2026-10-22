@@ -175,6 +175,7 @@ pub(super) async fn run(
                     ctx.registry.mark_hibernated(&session);
                 } else {
                     ctx.registry.mark_closed(&session);
+                    ctx.attendance.forget_session(&session);
                 }
                 // Drop the closed session's in-memory grants (#174); persisted
                 // "always" grants survive.

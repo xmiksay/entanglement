@@ -98,9 +98,11 @@ stricter grade. The `permissions:` ceiling grades the same way:
   list refuses outright (publishing and destructive commands); deletions
   (`gh … delete`, `cargo yank`, recursive `rm`, …), a path outside the
   project root, a credentialed `http()` host and writes of trusted scripts
-  still ask, bounded by a 60s timeout
+  still ask, bounded by a 60s timeout when nobody watches the session —
+  with the TUI open (or a `serve` client owning it) the card waits for you
   ([ADR-0228](docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
-  amending [ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
+  amending [ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md);
+  [ADR-0247](docs/adr/0247-attended-sessions-wait-for-their-approver.md)).
 
 Select a mode with `--mode` on `run`/`tui` (or `config.yml` `mode:`) and
 switch it live with `/mode` in the TUI. With neither set, a fresh session

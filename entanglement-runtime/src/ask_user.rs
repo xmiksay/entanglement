@@ -34,17 +34,18 @@
 //!
 //! `question_timeout` (ADR-0207 §11, stage 5c) bounds the park: a mode that
 //! declares one (`auto`, or another mode tuned unattended) has no guarantee
-//! anyone is watching. On elapse, [`run_limits::default_answers`] answers
+//! anyone is watching — unless a head watches the session or an ancestor,
+//! which waives it (ADR-0247: the question then waits for its answer,
+//! even after that head leaves). On elapse, [`run_limits::default_answers`] answers
 //! every option-bearing question with its first option; a free-text question
 //! has no default, so it fails the *whole* call as an `is_error` result
 //! instead — the model adapts rather than being fed an invented answer.
-
-use std::time::Duration;
 
 use entanglement_core::{
     AgentState, Holly, OutEvent, Question, QuestionOption, Questions, SessionId, ToolSpec,
 };
 
+use crate::attendance::Expiry;
 use crate::pending::PendingDecisions;
 use crate::questions::OpenQuestions;
 use crate::run_limits;
@@ -216,9 +217,9 @@ pub async fn run_ask_user(
     session: SessionId,
     request_id: String,
     input: String,
-    // `None` waits forever (every attended mode); `Some(d)` is the mode's
-    // `question_timeout` (ADR-0207 §11, stage 5c).
-    timeout: Option<Duration>,
+    // When an unanswered question gives up: the mode's `question_timeout`
+    // (ADR-0207 §11, stage 5c), never for a watched session (ADR-0247).
+    expiry: Expiry,
 ) {
     let mut questions = parse_input(&input);
     // Whether a `WaitingAnswer` went out, so a refusal knows to undo it.
@@ -237,7 +238,7 @@ pub async fn run_ask_user(
         // first and separately: it never targets `open`/`pending` again past
         // this point, matching every other terminal arm below.
         let decision = match pending
-            .await_timed(&session, &request_id, rx, timeout)
+            .await_timed(&session, &request_id, rx, expiry.clone())
             .await
         {
             Some(decision) => decision.into_question(),

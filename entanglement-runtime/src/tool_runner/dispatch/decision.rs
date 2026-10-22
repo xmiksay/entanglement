@@ -1,8 +1,9 @@
 //! The approval park (issue #451, re-cut by ADR-0227): emit the
 //! `ToolRequest`, wait for the head's decision (bounded by the mode's
-//! `question_timeout`), record what the approval earned — an escape-root
-//! grant, a per-host `http` approval, a wider-scope grant, a script's
-//! per-run cache entry — and clear the call to run, or refuse.
+//! `question_timeout` unless a head watches the session, ADR-0247), record
+//! what the approval earned — an escape-root grant, a per-host `http`
+//! approval, a wider-scope grant, a script's per-run cache entry — and clear
+//! the call to run, or refuse.
 
 use std::path::PathBuf;
 
@@ -118,19 +119,23 @@ impl Dispatcher {
             }
         };
         set_state(AgentState::WaitingApproval);
-        let timeout = run_limits::timeout(&self.limits);
+        let expiry = run_limits::expiry(
+            &self.limits,
+            &self.attendance,
+            &self.chain,
+            &call.request_id,
+        );
+        let secs = expiry.secs();
         let decision = self
             .pending
-            .await_timed(&self.session, &call.request_id, rx, timeout)
+            .await_timed(&self.session, &call.request_id, rx, expiry)
             .await;
         let Some(decision) = decision else {
             // Silence is never consent (ADR-0207 §11).
             set_state(AgentState::Thinking);
             return Some(Cleared::Refused(format!(
-                "tool `{}` denied: no response within {}s (mode `{}`)",
-                call.tool,
-                timeout.map(|d| d.as_secs()).unwrap_or_default(),
-                self.mode
+                "tool `{}` denied: no response within {secs}s (mode `{}`)",
+                call.tool, self.mode
             )));
         };
         match decision.into_approval() {

@@ -306,7 +306,11 @@ assistant/tool messages and the model appears to forget the conversation.
   heads. `load_for_resume` also refuses a compacted-away root, one a later
   root log's own `SessionStarted` names as its predecessor
   (`SessionStore::compacted_into`), naming the end of its chain to resume
-  instead. The TUI resume modal and `skutter sessions` list only resumable
+  instead. `resume_with_mode` also resumes, parents first, every sub-agent
+  the root's own hibernate put down (`session_store::revived_with`,
+  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)),
+  which core's cascade skips, so their parked cards come back on every
+  resume path — the TUI, `run --resume`, the `serve` wake. The TUI resume modal and `skutter sessions` list only resumable
   roots (`session_store::resumable_roots`, from `SessionMeta::predecessor`),
   which also keeps `d` off a predecessor file the successor's resume still
   reads for moved sub-agents (ADR-0234); a refusal that still happens is a

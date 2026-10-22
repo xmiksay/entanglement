@@ -245,7 +245,8 @@ fn resolve_path(
 }
 
 /// Park the launch card and wait for the head's choice — bounded by the
-/// mode's `question_timeout` (`None`: it elapsed). Registered before
+/// mode's `question_timeout` unless a head watches the session (ADR-0247;
+/// `None`: it elapsed). Registered before
 /// emitting so a fast answer can't race it.
 async fn ask(
     d: &Dispatcher,
@@ -271,10 +272,10 @@ async fn ask(
     }
     let rx = crate::pending::park_approval(holly, &d.pending, req, RHAI_TOOL);
     holly.emit_status(session, AgentState::WaitingApproval);
-    let timeout = crate::run_limits::timeout(&d.limits);
+    let expiry = crate::run_limits::expiry(&d.limits, &d.attendance, &d.chain, request_id);
     let decision = d
         .pending
-        .await_timed(session, request_id, rx, timeout)
+        .await_timed(session, request_id, rx, expiry)
         .await
         .map(|d| d.into_approval());
     if !matches!(decision, Some(ApprovalDecision::Stop)) {

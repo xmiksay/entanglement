@@ -75,27 +75,27 @@ Now in [§5–§7 — Approvals across restart, MCP & multi-user](embedding/appr
 
 ## Migrating to one advertised surface (ADR-0226, #818)
 
-Now in [Migration notes](embedding/migrations.md#migrating-to-one-advertised-surface-adr-0226-818).
+Now in [Migration notes](embedding/migrations/one-surface-and-rhai.md#migrating-to-one-advertised-surface-adr-0226-818).
 
 ## Migrating to one binding path (ADR-0227, #819)
 
-Now in [Migration notes](embedding/migrations.md#migrating-to-one-binding-path-adr-0227-819).
+Now in [Migration notes](embedding/migrations/one-surface-and-rhai.md#migrating-to-one-binding-path-adr-0227-819).
 
 ## Migrating to `rhai(path)` and skill tools' removal (ADR-0228, #820)
 
-Now in [Migration notes](embedding/migrations.md#migrating-to-rhaipath-and-skill-tools-removal-adr-0228-820).
+Now in [Migration notes](embedding/migrations/one-surface-and-rhai.md#migrating-to-rhaipath-and-skill-tools-removal-adr-0228-820).
 
 ## Migrating to every skill model-visible (ADR-0229, #845)
 
-Now in [Migration notes](embedding/migrations.md#migrating-to-every-skill-model-visible-adr-0229-845).
+Now in [Migration notes](embedding/migrations/one-surface-and-rhai.md#migrating-to-every-skill-model-visible-adr-0229-845).
 
 ## Structured card reason and honest scopes (ADR-0230, #836/#846)
 
-Now in [Migration notes](embedding/migrations.md#structured-card-reason-and-honest-scopes-adr-0230-836846).
+Now in [Migration notes](embedding/migrations/one-surface-and-rhai.md#structured-card-reason-and-honest-scopes-adr-0230-836846).
 
 ## Live-only nested-call events (ADR-0233, #821)
 
-Now in [Migration notes](embedding/migrations.md#live-only-nested-call-events-adr-0233-821).
+Now in [Migration notes](embedding/migrations/cards-and-sessions.md#live-only-nested-call-events-adr-0233-821).
 
 ## TLS and the rustls crypto provider
 

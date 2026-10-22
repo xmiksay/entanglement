@@ -1,6 +1,7 @@
 //! A decision of the wrong kind for its card (#895, ADR-0245): the router
 //! refuses it with an `Error` on the addressed session, and the card stays
-//! parked — never the silent unwind that left the turn waiting forever.
+//! parked — never the silent unwind that left the turn waiting forever. A
+//! decision for no card at all is refused the same way (ADR-0247).
 
 use std::time::Duration;
 
@@ -102,18 +103,77 @@ async fn an_approve_aimed_at_a_question_is_refused_and_the_question_stays() {
     ));
 }
 
-/// A decision for an id nothing holds stays a silent no-op: it is a late
-/// answer, not a misaimed one.
+/// A decision for an id nothing holds is refused with an `Error` (ADR-0247):
+/// a late answer must not look like it took effect.
 #[tokio::test]
-async fn a_decision_for_an_unknown_id_emits_nothing() {
+async fn a_decision_for_an_unknown_id_is_refused() {
     let holly = Holly::spawn(EngineConfig::default());
     let s = SessionId::new("s");
     spawn_session(&holly, &s, None, None).await;
     let r = router(&holly);
     let mut sub = holly.subscribe();
     r.route(InMsg::RetractQuestion {
-        session: s,
+        session: s.clone(),
         request_id: "gone".into(),
     });
-    assert!(drain(&mut sub).0.is_empty());
+    r.route(InMsg::Reject {
+        session: s.clone(),
+        request_id: "gone".into(),
+        reason: None,
+    });
+    let (errors, _) = drain(&mut sub);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors[0]
+            .1
+            .contains("`RetractQuestion` refused: no open question `gone`"),
+        "{}",
+        errors[0].1
+    );
+    assert!(
+        errors[1]
+            .1
+            .contains("`Reject` refused: no pending card `gone`"),
+        "{}",
+        errors[1].1
+    );
+    assert!(errors.iter().all(|(session, _)| *session == s));
+}
+
+/// Two heads approve one card: the first takes it with no `Error`; the
+/// second's late approve learns it had no effect.
+#[tokio::test]
+async fn a_second_heads_late_approve_is_refused() {
+    let holly = Holly::spawn(EngineConfig::default());
+    let s = SessionId::new("s");
+    spawn_session(&holly, &s, None, None).await;
+    let r = router(&holly);
+    let rx = r.pending.register(&s, "c", "tool", "bash");
+    let mut sub = holly.subscribe();
+    let approve = || InMsg::Approve {
+        session: s.clone(),
+        request_id: "c".into(),
+        scope: ApprovalScope::Once,
+        mode: None,
+        run_all: false,
+    };
+    r.route(approve());
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), rx).await,
+        Ok(Ok(Decision::Approve { .. }))
+    ));
+    assert!(
+        drain(&mut sub).0.is_empty(),
+        "the first approve is delivered"
+    );
+    r.route(approve());
+    let (errors, _) = drain(&mut sub);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0]
+            .1
+            .contains("`Approve` refused: no pending card `c`"),
+        "{}",
+        errors[0].1
+    );
 }

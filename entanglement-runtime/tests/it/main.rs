@@ -60,6 +60,17 @@ mod apply_patch;
 mod approval_resolved;
 mod arg_validate;
 mod ask_user;
+mod attended_mode;
+mod attended_rejoin;
+mod attended_resume;
+#[cfg(feature = "serve")]
+mod attended_serve;
+#[cfg(feature = "serve")]
+mod attended_wake;
+#[cfg(feature = "serve")]
+mod attended_wake_queue;
+#[cfg(feature = "serve")]
+mod attended_wake_tree;
 mod aux_models;
 mod compact_fork;
 mod discovery_tools;

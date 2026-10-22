@@ -557,4 +557,79 @@ mod tests {
             .expect_err("the config surface spells Permission::Ask as 'prompt', not 'ask'");
         assert!(err.to_string().contains("prompt"));
     }
+
+    /// #828: `bash` and `call` are one rule set — the same command grades
+    /// the same through either, in every built-in mode, so the model can
+    /// never route around a gate by switching tools.
+    #[test]
+    fn bash_and_call_grade_every_command_alike_in_every_mode() {
+        let modes = modes().expect("built-ins parse");
+        let commands = [
+            "git rm -q a b",
+            "rm -r x",
+            "git push",
+            "git checkout -b x",
+            "gh issue delete 1",
+        ];
+        for mode in &modes {
+            for cmd in commands {
+                assert_eq!(
+                    mode.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                    mode.resolve("call", &[Capability::Exec], Some(cmd), None),
+                    "mode '{}': bash and call disagree on {cmd:?}",
+                    mode.name
+                );
+            }
+        }
+        let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
+        assert_eq!(
+            auto.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("git rm -q a b && echo REMOVED"),
+                None
+            ),
+            auto.resolve("call", &[Capability::Exec], Some("git rm -q a b"), None),
+            "auto: a trailing `&& echo` must not change the grade"
+        );
+    }
+
+    /// ADR-0247: the rule that decided a grade is what a retry is matched
+    /// by — `rm -r x` and `rm -r x 2>&1` share `bash(rm -r*)`; a default
+    /// grade, or a rule as wide as one (`build`'s `exec` class), names none.
+    #[test]
+    fn the_deciding_rule_names_the_winning_key() {
+        let modes = modes().expect("built-ins parse");
+        let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
+        let rule = |cmd| auto.deciding_rule("bash", &[Capability::Exec], Some(cmd), None);
+        let rm = Some(("bash(rm -r*)".to_string(), Permission::Ask));
+        assert_eq!(rule("rm -r x"), rm);
+        assert_eq!(rule("rm -r x 2>&1"), rm);
+        assert_eq!(
+            auto.deciding_rule("call", &[Capability::Exec], Some("rm -r y"), None),
+            rm,
+            "a `call` is graded by the `bash` rule"
+        );
+        assert_eq!(rule("docker ps"), None, "auto's default allowed it");
+        // A compound command: the first segment at the folded grade decides.
+        assert_eq!(rule("ls && rm -r x"), rm, "the stricter segment decides");
+        assert_eq!(rule("rm -r x; rm -R y"), rm);
+        assert_eq!(
+            rule("rm -R y; rm -r x"),
+            Some(("bash(rm -R*)".to_string(), Permission::Ask)),
+            "the first of two equal-grade segments decides"
+        );
+        let build = modes.iter().find(|m| m.name == "build").expect("exists");
+        assert_eq!(
+            build.deciding_rule("bash", &[Capability::Exec], Some("docker ps"), None),
+            None,
+            "build's `exec` class allow is no named rule"
+        );
+        let research = modes.iter().find(|m| m.name == "research").expect("exists");
+        assert_eq!(
+            research.deciding_rule("bash", &[Capability::Exec], Some("docker ps"), None),
+            None,
+            "research's default asked"
+        );
+    }
 }

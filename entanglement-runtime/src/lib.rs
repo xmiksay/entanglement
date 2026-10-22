@@ -40,6 +40,9 @@ pub mod agents;
 // and loop-breaker guards.
 pub mod arg_validate;
 pub mod ask_user;
+// Which sessions a head is watching (ADR-0247): an attended session's
+// cards and questions wait for their approver instead of collapsing.
+pub mod attendance;
 pub mod aux_llm;
 pub mod cancel;
 // The capability vocabulary tools declare (#560, ADR-0207 §3), consumed by

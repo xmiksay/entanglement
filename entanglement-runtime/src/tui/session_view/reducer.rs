@@ -255,8 +255,11 @@ impl SessionView {
                 },
             ),
             OutEvent::ApprovalResolved {
-                seq, request_id, ..
-            } => self.fold_approval_resolved(seq, &request_id),
+                seq,
+                request_id,
+                outcome,
+                ..
+            } => self.fold_approval_resolved(seq, &request_id, outcome),
             OutEvent::UserQuestion {
                 seq,
                 request_id,

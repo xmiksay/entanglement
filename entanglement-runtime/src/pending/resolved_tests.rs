@@ -98,7 +98,12 @@ async fn a_timeout_reports_expired_once() {
     let s = SessionId::new("s");
     let rx = park::park_approval(&holly, &pending, card(&s, "t"), "bash");
     let d = pending
-        .await_timed(&s, "t", rx, Some(Duration::from_millis(10)))
+        .await_timed(
+            &s,
+            "t",
+            rx,
+            crate::attendance::Expiry::after(Some(Duration::from_millis(10))),
+        )
         .await;
     assert!(d.is_none());
     // A late decision finds no card, so nothing more is reported.

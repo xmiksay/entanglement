@@ -16,6 +16,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
+use entanglement_runtime::attendance::Attendance;
 use entanglement_runtime::serve::router;
 use entanglement_runtime::tool_names::ASK_USER_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -30,7 +31,11 @@ async fn spawn_server(holly: Holly, allow_origin: Option<String>) -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
     let port = listener.local_addr().expect("addr").port();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, router(holly, allow_origin)).await;
+        let _ = axum::serve(
+            listener,
+            router(holly, allow_origin, Attendance::new(), None),
+        )
+        .await;
     });
     port
 }

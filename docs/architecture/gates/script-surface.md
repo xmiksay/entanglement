@@ -15,7 +15,11 @@ on it no longer than its budget, §Dispatch-time lazy connect) → `Control` byp
 (every Control-only tool but `agent`/`agent_send`, ADR-0232) →
 overlay deny → grade + grants → `pre_tool_use` → mode deny → escape-root →
 credentialed-`http` gate → run / unattended collapse / park
-(`dispatch/decision.rs`) → execute (`dispatch/execute.rs`: state tools,
+(`dispatch/decision.rs`; "unattended" is the mode's `question_timeout` and
+no head watching the call's ancestor chain, and an attended park has no
+deadline — `run_limits::unattended`/`expiry`,
+[ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)) →
+execute (`dispatch/execute.rs`: state tools,
 arg validation, in-call grader, `FileChange` capture, script budget, loop
 breaker, `post_tool_use`).
 
@@ -193,8 +197,8 @@ approval is once only, and `run_all` is never recorded. Built-in grades:
 `build` asks (`prompt: [rhai]` — a rule naming the tool outranks the class
 allows, [agents & permissions](../agents-and-permissions.md)), `research`/`plan`
 deny (class `write` deny), `auto` allows. **No answerer**: an `Ask` card
-waits for the head unless the mode has `question_timeout`; on that timeout
-it runs Ask per command (an out-of-root launch is refused instead).
+waits for the head unless the mode has `question_timeout` and no head
+watches the session (ADR-0247); on that timeout it runs Ask per command (an out-of-root launch is refused instead).
 `skutter run` answers a launch card at once with Ask per command and rejects
 every nested card. It decides on the card's `reason`, never its text
 (`pending::headless_starts`, [ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):

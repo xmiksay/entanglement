@@ -195,3 +195,58 @@ fn launch_mode_rejects_an_unknown_name_from_either_source() {
         "{config}"
     );
 }
+
+/// ADR-0247 (review F3): a child the root's hibernate put down is rebuilt
+/// by `resume_with_mode`, so it gets the fallback note and the forced
+/// `research` mode like a live one.
+#[test]
+fn a_revived_child_gets_its_fallback_and_forced_mode() {
+    let hibernated = |sid: &str| {
+        out(OutEvent::SessionHibernated {
+            session: SessionId::new(sid),
+            ts: 0,
+        })
+    };
+    let records = [
+        started("root", None, "general"),
+        started("kid", Some("root"), "explore"),
+        LogRecord::new(
+            SessionId::new("root"),
+            LogPayload::In(InMsg::HibernateSession {
+                session: SessionId::new("root"),
+            }),
+        ),
+        hibernated("kid"),
+        hibernated("root"),
+    ];
+    let c = check(&records);
+    let notes: Vec<String> = c.fallbacks.iter().map(|f| f.note(false)).collect();
+    assert_eq!(
+        notes,
+        ["note: session `kid` used retired agent `explore`; resuming as `general` in `research` \
+          mode (ADR-0215)"]
+    );
+    let modes = injected(&c, &records, None);
+    assert!(
+        modes.contains(&("kid".to_string(), "research".to_string())),
+        "{modes:?}"
+    );
+}
+
+/// The resumed root is the one no later root succeeds — not the first root
+/// a tree with a compaction predecessor's records lists.
+#[test]
+fn the_resumed_root_is_the_unsucceeded_one() {
+    let succ = out(OutEvent::SessionStarted {
+        session: SessionId::new("succ"),
+        parent: None,
+        predecessor: Some(SessionId::new("pred")),
+        agent: "general".into(),
+        model: None,
+        root: true,
+        ts: 0,
+        user: None,
+    });
+    let records = [started("pred", None, "general"), succ];
+    assert_eq!(resumed_root(&records), Some(SessionId::new("succ")));
+}

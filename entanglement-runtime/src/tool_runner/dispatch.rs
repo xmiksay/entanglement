@@ -26,6 +26,7 @@ use entanglement_core::{
 };
 
 use crate::arg_validate::LoopBreaker;
+use crate::attendance::Attendance;
 use crate::hooks::Hooks;
 use crate::http_gate::HttpGate;
 use crate::mcp::{ActiveServers, AvailableMcp, McpScopes};
@@ -90,6 +91,9 @@ pub(crate) struct Dispatcher {
     /// Read only for an explicit `http(...)` rule (ADR-0227).
     pub mode_table: Arc<ModeTable>,
     pub limits: Limits,
+    /// Who watches which session: an attended chain never collapses an
+    /// `Ask` and parks with no deadline (ADR-0247).
+    pub attendance: Attendance,
     pub denials: Arc<DenialTracker>,
     pub http_gate: Arc<HttpGate>,
     /// `rhai.trusted` folders and skill dirs, canonical (ADR-0228): what a

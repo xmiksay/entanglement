@@ -2,6 +2,8 @@
 //! stale unless this process still holds the session's live view.
 
 use super::*;
+use crate::tui::session_view::TranscriptEntry;
+use entanglement_core::ApprovalOutcome;
 
 fn card(session: &SessionId, seq: u64, request_id: &str, detached: bool) -> LogRecord {
     LogRecord::new(
@@ -82,4 +84,60 @@ fn a_restore_drops_a_card_the_log_resolved() {
     reg.restore_from_records(s.clone(), &records);
     assert_eq!(front(&reg), Some(("open".into(), false)));
     assert_eq!(reg.active_view().queued_approvals(), 0);
+}
+
+fn resolved(
+    session: &SessionId,
+    seq: u64,
+    request_id: &str,
+    outcome: ApprovalOutcome,
+) -> LogRecord {
+    LogRecord::new(
+        session.clone(),
+        LogPayload::Out(OutEvent::ApprovalResolved {
+            session: session.clone(),
+            seq,
+            request_id: request_id.into(),
+            outcome,
+        }),
+    )
+}
+
+fn approval_notices(reg: &SessionRegistry) -> Vec<String> {
+    reg.active_view()
+        .transcript()
+        .iter()
+        .filter_map(|e| match e {
+            TranscriptEntry::ToolOutput {
+                tool: Some(tool),
+                output,
+            } if tool == "approval" => Some(output.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// ADR-0247: an expired card's notice is rebuilt from the log, naming the
+/// card's tool; an answered card leaves none.
+#[test]
+fn an_expired_cards_notice_renders_on_replay() {
+    let s = SessionId::new("past");
+    let mut reg = SessionRegistry::new(SessionId::new("other"));
+    reg.restore_from_records(
+        s.clone(),
+        &[
+            card(&s, 1, "a", false),
+            resolved(&s, 2, "a", ApprovalOutcome::Expired),
+            card(&s, 3, "b", false),
+            resolved(&s, 4, "b", ApprovalOutcome::Approved),
+        ],
+    );
+    let notices = approval_notices(&reg);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("approval for `edit (rhai)` expired"),
+        "{}",
+        notices[0]
+    );
+    assert_eq!(front(&reg), None, "both cards left the view");
 }

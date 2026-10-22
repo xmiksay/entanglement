@@ -1,20 +1,23 @@
 //! Unattended-run enforcement for a mode's `question_timeout`/`on_timeout`
-//! (ADR-0207 §11, stage 5c: "make `auto` genuinely unattended"). Pure,
-//! runtime-side policy — core carries no notion of any of this, only an
-//! opaque mode name (ADR-0207 §2); every function here is a property of a
-//! [`Limits`] value, never a hardcoded `mode == "auto"` check, so a user
-//! tuning another mode's `question_timeout` gets the identical behavior.
+//! (ADR-0207 §11, stage 5c: "make `auto` genuinely unattended"; ADR-0247:
+//! "unattended" is also a fact about the session). Pure, runtime-side
+//! policy — core carries no notion of any of this, only an opaque mode name
+//! (ADR-0207 §2); every function here is a property of a [`Limits`] value
+//! (plus, since ADR-0247, whether a head watches the session), never a
+//! hardcoded `mode == "auto"` check, so a user tuning another mode's
+//! `question_timeout` gets the identical behavior.
 //!
 //! Three pieces:
-//! - [`collapses_ask`]/[`timeout`]: whether/how long an `Ask` grade waits
-//!   before the mode's `on_timeout` policy applies.
+//! - [`unattended`]/[`expiry`]: whether an `Ask` grade collapses, and when a
+//!   parked card or question gives up — never for an attended session.
 //! - [`default_answers`]: what a timed-out `ask_user` call answers with — a
 //!   question with options defaults to its first, a free-text question (no
 //!   default to fall back to) fails the whole call instead of guessing.
-//! - [`DenialTracker`]: the repeat-denial escalation — a *second* identical
-//!   `(tool, arg)` denial in the same turn parks an approval instead of
-//!   being refused again silently, since a model insisting twice may
-//!   genuinely need it.
+//! - [`DenialTracker`]: the repeat-denial escalation — a *second* denial of
+//!   the same call in the same turn parks an approval instead of being
+//!   refused again silently, since a model insisting twice may genuinely
+//!   need it. "The same call" is the same named mode rule, else the same
+//!   exact argument ([`Repeat`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -22,22 +25,40 @@ use std::time::Duration;
 
 use entanglement_core::{Question, SessionId};
 
+use crate::attendance::{Attendance, Expiry};
 use crate::mode::Limits;
 
-/// Whether an `Ask` grade must collapse to an immediate denial rather than
-/// parking a prompt (ADR-0207 §11: "a `prompt` grade likewise collapses to a
-/// denial here, since there is no one to ask") — true whenever the mode
-/// declares a finite `question_timeout`, the mode's own declaration that a
-/// parked prompt may go unanswered. `0` (every built-in mode but `auto`)
-/// means "wait forever", so nothing collapses there.
+/// Whether the mode declares a finite `question_timeout` — its own
+/// declaration that a parked prompt may go unanswered. `0` (every built-in
+/// mode but `auto`) means "wait forever", so nothing collapses there.
 pub(crate) fn collapses_ask(limits: &Limits) -> bool {
     limits.question_timeout != 0
 }
 
-/// `question_timeout` as a `Duration` for [`crate::pending::await_decision_timed`],
-/// or `None` for "wait forever".
+/// Whether an `Ask` grade collapses to an immediate denial rather than
+/// parking a prompt (ADR-0207 §11: "there is no one to ask"): the mode is
+/// unattended ([`collapses_ask`]) **and** no head watches the session or any
+/// of its ancestors (`chain`, ADR-0247).
+pub(crate) fn unattended(limits: &Limits, attendance: &Attendance, chain: &[SessionId]) -> bool {
+    collapses_ask(limits) && !attendance.attends_any(chain)
+}
+
+/// `question_timeout` as a `Duration`, or `None` for "wait forever".
 pub(crate) fn timeout(limits: &Limits) -> Option<Duration> {
     (limits.question_timeout != 0).then(|| Duration::from_secs(limits.question_timeout))
+}
+
+/// When the park `request_id` of a session with ancestor `chain` gives up
+/// (ADR-0247): never while a head watches the chain or once it was waived,
+/// else after the mode's `question_timeout` — waived for good if a watcher
+/// arrives first.
+pub(crate) fn expiry(
+    limits: &Limits,
+    attendance: &Attendance,
+    chain: &[SessionId],
+    request_id: &str,
+) -> Expiry {
+    Expiry::unless_attended(timeout(limits), attendance, chain, request_id)
 }
 
 /// The default answer set for an `ask_user` call whose `question_timeout`
@@ -65,36 +86,41 @@ pub(crate) fn default_answers(questions: &[Question]) -> Result<Vec<Vec<String>>
         .collect()
 }
 
-/// The grant-store's own `(tool, grading_arg)` key (`apply_grant`/`GrantStore`),
-/// reused here so "the same call" means exactly what it would mean to a
-/// grant.
-type DenialKey = (String, Option<String>);
+/// What makes a retry "the same call" for the repeat escalation (ADR-0247,
+/// amending ADR-0207 §11's "identical repeat"): the named mode rule that
+/// graded it (`bash(rm -r*)` — so `rm -r x` then `rm -r x 2>&1` is a
+/// repeat), else — a default grade — the grant-store's own exact
+/// `(tool, grading_arg)` key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Repeat {
+    Rule(String),
+    Call { tool: String, arg: Option<String> },
+}
 
-/// Tracks, per session, which `(tool, arg)` calls a collapsed `Ask` (see
-/// [`collapses_ask`]) has already denied in the current turn (ADR-0207 §11's
-/// repeat-denial escalation). Cleared on `Done` and on session end/hibernate
-/// — mirrors `tool_runner`'s own `active_skill` per-turn scope — so a new
-/// turn, or a fresh session reusing the same id space, starts clean.
+/// Tracks, per session, which calls a collapsed `Ask` (see [`unattended`])
+/// has already denied in the current turn (ADR-0207 §11's repeat-denial
+/// escalation). Cleared on `Done` and on session end/hibernate — mirrors
+/// `tool_runner`'s own `active_skill` per-turn scope — so a new turn, or a
+/// fresh session reusing the same id space, starts clean.
 #[derive(Default)]
-pub(crate) struct DenialTracker(Mutex<HashMap<SessionId, HashSet<DenialKey>>>);
+pub(crate) struct DenialTracker(Mutex<HashMap<SessionId, HashSet<Repeat>>>);
 
 impl DenialTracker {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Record a denial of `(tool, arg)` at `session`. Returns `true` when
-    /// this exact call was already denied earlier this turn — the signal to
-    /// park an approval instead of refusing silently again.
-    pub(crate) fn record_repeat(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool {
-        let key: DenialKey = (tool.to_string(), arg.map(str::to_string));
+    /// Record a denial of `repeat` at `session`. Returns `true` when the
+    /// same call was already denied earlier this turn — the signal to park
+    /// an approval instead of refusing silently again.
+    pub(crate) fn record_repeat(&self, session: &SessionId, repeat: Repeat) -> bool {
         !self
             .0
             .lock()
             .expect("denial tracker mutex poisoned")
             .entry(session.clone())
             .or_default()
-            .insert(key)
+            .insert(repeat)
     }
 
     /// Drop `session`'s tracked denials: a new turn or a closed session
@@ -159,35 +185,70 @@ mod tests {
         assert!(err.contains("Describe?"));
     }
 
+    fn call(tool: &str, arg: Option<&str>) -> Repeat {
+        Repeat::Call {
+            tool: tool.to_string(),
+            arg: arg.map(str::to_string),
+        }
+    }
+
     #[test]
     fn denial_tracker_first_call_is_not_a_repeat() {
         let tracker = DenialTracker::new();
         let s = SessionId::new("s");
-        assert!(!tracker.record_repeat(&s, "bash", Some("rm x")));
+        assert!(!tracker.record_repeat(&s, call("bash", Some("rm x"))));
     }
 
     #[test]
     fn denial_tracker_second_identical_call_is_a_repeat() {
         let tracker = DenialTracker::new();
         let s = SessionId::new("s");
-        assert!(!tracker.record_repeat(&s, "bash", Some("rm x")));
-        assert!(tracker.record_repeat(&s, "bash", Some("rm x")));
+        assert!(!tracker.record_repeat(&s, call("bash", Some("rm x"))));
+        assert!(tracker.record_repeat(&s, call("bash", Some("rm x"))));
     }
 
+    /// A default grade keys on the exact argument: two different commands
+    /// nothing but the default graded never escalate.
     #[test]
-    fn denial_tracker_distinguishes_by_arg() {
+    fn denial_tracker_distinguishes_default_graded_calls_by_arg() {
         let tracker = DenialTracker::new();
         let s = SessionId::new("s");
-        assert!(!tracker.record_repeat(&s, "bash", Some("rm x")));
-        assert!(!tracker.record_repeat(&s, "bash", Some("rm y")));
+        assert!(!tracker.record_repeat(&s, call("bash", Some("rm x"))));
+        assert!(!tracker.record_repeat(&s, call("bash", Some("rm y"))));
+    }
+
+    /// ADR-0247: a retry graded by the same named rule is a repeat however
+    /// its argument changed.
+    #[test]
+    fn denial_tracker_matches_a_retry_by_its_rule() {
+        let tracker = DenialTracker::new();
+        let s = SessionId::new("s");
+        let rule = || Repeat::Rule("bash(rm -r*)".to_string());
+        assert!(!tracker.record_repeat(&s, rule()));
+        assert!(tracker.record_repeat(&s, rule()));
+        assert!(!tracker.record_repeat(&s, Repeat::Rule("bash(rm -R*)".to_string())));
     }
 
     #[test]
     fn denial_tracker_clear_resets_the_session() {
         let tracker = DenialTracker::new();
         let s = SessionId::new("s");
-        assert!(!tracker.record_repeat(&s, "bash", None));
+        assert!(!tracker.record_repeat(&s, call("bash", None)));
         tracker.clear(&s);
-        assert!(!tracker.record_repeat(&s, "bash", None));
+        assert!(!tracker.record_repeat(&s, call("bash", None)));
+    }
+
+    #[test]
+    fn a_watched_ancestor_makes_the_mode_attended() {
+        let attendance = Attendance::new();
+        let chain = [SessionId::new("child"), SessionId::new("root")];
+        assert!(unattended(&limits(60), &attendance, &chain));
+        assert!(!unattended(&limits(0), &attendance, &chain));
+        let watcher = attendance.watcher();
+        watcher.attend(&chain[1]);
+        assert!(!unattended(&limits(60), &attendance, &chain));
+        assert_eq!(expiry(&limits(60), &attendance, &chain, "a").secs(), 0);
+        drop(watcher);
+        assert_eq!(expiry(&limits(60), &attendance, &chain, "b").secs(), 60);
     }
 }

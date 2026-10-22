@@ -157,6 +157,12 @@ impl Decision {
         )
     }
 
+    /// Whether it ends the park for good — an answer, not a `Replace` (the
+    /// question re-parks) or a `Stop` (a resume may re-offer it).
+    pub fn settles(&self) -> bool {
+        !matches!(self, Decision::Replace { .. } | Decision::Stop)
+    }
+
     /// The `InMsg` variant a decision came from, for a refusal's message.
     pub fn frame(&self) -> &'static str {
         match self {
@@ -305,5 +311,27 @@ impl Decision {
             )),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0247: an answer spends a park's waiver; a `Replace` (the
+    /// question re-parks) and a `Stop` (a resume may re-offer) keep it.
+    #[test]
+    fn only_a_terminal_answer_settles() {
+        let approve = Decision::Approve {
+            scope: ApprovalScope::Once,
+            mode: None,
+            run_all: false,
+        };
+        assert!(approve.settles());
+        assert!(Decision::Reject { reason: None }.settles());
+        assert!(Decision::Answer { answers: vec![] }.settles());
+        assert!(Decision::Retract.settles());
+        assert!(!Decision::Replace { questions: vec![] }.settles());
+        assert!(!Decision::Stop.settles());
     }
 }

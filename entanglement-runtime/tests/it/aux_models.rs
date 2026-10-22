@@ -9,13 +9,19 @@ use entanglement_runtime::config::aux_models::{AuxModelStore, Purpose};
 
 // Every test pins its own temp file through `load_from` — no process env.
 
-fn tmp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("entanglement-aux-models-it-{name}.yml"))
+/// A fresh directory per test, removed with the returned guard (lock file
+/// included): concurrent test processes must not share one file.
+fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join(format!("entanglement-aux-models-it-{name}.yml"));
+    (dir, path)
 }
 
 #[test]
 fn set_round_trips_across_a_reload() {
-    let path = tmp_path("roundtrip");
+    let (_dir, path) = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AuxModelStore::load_from(Some(path.clone()));
@@ -36,7 +42,7 @@ fn set_round_trips_across_a_reload() {
 
 #[test]
 fn an_explicit_file_is_read() {
-    let path = tmp_path("env");
+    let (_dir, path) = tmp_path("env");
     std::fs::write(
         &path,
         "aux:\n  session_title:\n    provider: ollama\n    model: llama3.1\n",
@@ -56,7 +62,7 @@ fn an_explicit_file_is_read() {
 
 #[test]
 fn malformed_file_loads_empty() {
-    let path = tmp_path("malformed");
+    let (_dir, path) = tmp_path("malformed");
     std::fs::write(&path, "aux: [not-a-map\n").unwrap();
 
     // Fail-open: a corrupt file is ignored, not fatal.
@@ -70,7 +76,7 @@ fn malformed_file_loads_empty() {
 fn unrecognized_purpose_key_is_skipped_not_fatal() {
     // A file with a known + an unknown purpose: the known one loads, the
     // unknown one is skipped (debug-logged), and the file is not rejected.
-    let path = tmp_path("unknown-key");
+    let (_dir, path) = tmp_path("unknown-key");
     std::fs::write(
         &path,
         "aux:\n  summarize:\n    provider: zai\n    model: glm-4.5-flash\n  bogus_purpose:\n    provider: x\n    model: y\n",
@@ -93,7 +99,7 @@ fn unrecognized_purpose_key_is_skipped_not_fatal() {
 #[test]
 fn deny_unknown_fields_rejects_a_typo() {
     // A typo'd field name makes the file malformed → fail-open to empty.
-    let path = tmp_path("typo");
+    let (_dir, path) = tmp_path("typo");
     std::fs::write(
         &path,
         "aux:\n  summarize:\n    provider: zai\n    modle: glm-4.5-flash\n",
@@ -110,7 +116,7 @@ fn deny_unknown_fields_rejects_a_typo() {
 fn concurrent_set_from_two_stores_both_survive() {
     // Two "processes" (threads, each with its own `AuxModelStore::load_from(Some(path.clone()))`)
     // race to pin *different* purposes against the same on-disk file (#329).
-    let path = tmp_path("concurrent");
+    let (_dir, path) = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
 
     let a = std::thread::spawn({
@@ -151,7 +157,7 @@ fn concurrent_set_from_two_stores_both_survive() {
 
 #[test]
 fn reload_picks_up_another_process_pin() {
-    let path = tmp_path("reload");
+    let (_dir, path) = tmp_path("reload");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AuxModelStore::load_from(Some(path.clone()));
@@ -178,7 +184,7 @@ fn reload_picks_up_another_process_pin() {
 
 #[test]
 fn rewrite_is_stable_and_ordered() {
-    let path = tmp_path("stable");
+    let (_dir, path) = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AuxModelStore::load_from(Some(path.clone()));
@@ -211,7 +217,7 @@ fn rewrite_is_stable_and_ordered() {
 fn persisted_file_carries_the_header_comment() {
     // The managed file starts with the explanatory header so a user discovering
     // it knows it's managed + how to revert.
-    let path = tmp_path("header");
+    let (_dir, path) = tmp_path("header");
     let _ = std::fs::remove_file(&path);
 
     let mut store = AuxModelStore::load_from(Some(path.clone()));
