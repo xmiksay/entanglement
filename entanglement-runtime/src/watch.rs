@@ -23,15 +23,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use notify_debouncer_mini::DebounceEventResult;
 use sha2::{Digest, Sha256};
 
-use crate::{agents, layers, skills, system_prompt};
+use crate::layers;
 
 mod live;
+use live::reload;
 pub use live::{LiveDefinitions, ReloadNotice};
 
 /// Debounce window collapsing a burst of edits (e.g. an editor's save-as-two-
@@ -122,16 +122,18 @@ type FileStamp = (Option<SystemTime>, u64, String);
 
 /// A content fingerprint of the **definition/config** files under the watched
 /// trees: `path -> (mtime, size, sha256)`. Only files that actually feed a
-/// loader are included (agent/skill `*.md`, managed `*.yml`/`*.yaml`/`.env`) —
-/// a `call`/`bash` output artifact dropped under `.entanglement/tmp/` has none
-/// of those shapes, so it never enters the map and never triggers a reload.
+/// loader are included (see [`is_definition_file`]) — a `call`/`bash` output
+/// artifact dropped under `.entanglement/tmp/` has none of those shapes, so it
+/// never enters the map and never triggers a reload.
 /// Sorted by path (a `BTreeMap`) so comparison is order-independent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Fingerprint(BTreeMap<PathBuf, FileStamp>);
 
 /// Whether a path is a definition/config file worth hashing. Agent/skill
-/// sources are `*.md`; the managed catalog/config/grants files are `*.yml`
-/// (`.yaml` tolerated); the managed key file is `.env` (no extension).
+/// sources are `*.md`; of the `*.rhai` files only a skill's `lib.rhai` and a
+/// module under a `rhai/modules/` dir (ADR-0248) — a scratch or trusted
+/// script feeds no loader; the managed catalog/config/grants files are
+/// `*.yml` (`.yaml` tolerated); the managed key file is `.env` (no extension).
 fn is_definition_file(path: &Path) -> bool {
     // The last-seen MCP tool cache feeds no loader and is rewritten on every
     // MCP connect; reloading every definition for it would be pure churn.
@@ -140,8 +142,17 @@ fn is_definition_file(path: &Path) -> bool {
     }
     match path.extension().and_then(|e| e.to_str()) {
         Some("md") | Some("yml") | Some("yaml") => true,
+        Some("rhai") => is_rhai_definition(path),
         _ => path.file_name().and_then(|n| n.to_str()) == Some(".env"),
     }
+}
+
+fn is_rhai_definition(path: &Path) -> bool {
+    let names: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    path.file_name().is_some_and(|n| n == "lib.rhai")
+        || names
+            .windows(2)
+            .any(|w| w[0] == "rhai" && w[1] == "modules")
 }
 
 /// Build the fingerprint, reusing `prev`'s cached hash for any file whose
@@ -348,48 +359,11 @@ fn watch_paths_from(
     set.into_iter().collect()
 }
 
-/// Re-run the skill + agent-profile loaders, reload the grants/agent-models
-/// stores from disk, and swap the result into `live` — but only if every step
-/// succeeds. A malformed edit mid-save must not crash a long-running watcher
-/// or wipe out a previously-good in-memory registry (unlike startup, which
-/// fails fast) — log and keep serving the last-known-good state instead.
-/// Returns the one-line notice on success. Only called once `spawn_watcher`'s
-/// fingerprint check has already confirmed something on disk actually
-/// changed, so every call here is expected to produce a real notice.
-fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
-    let new_skills = skills::load_registry(cwd)?;
-    let new_commands = crate::slash_commands::load_registry(cwd)?;
-    let prompt_ctx = system_prompt::PromptContext::load(cwd);
-    let mut new_profiles =
-        agents::load_registry(cwd, &prompt_ctx, &new_skills, &live.mcp_capabilities)?;
-
-    // Managed-file mirrors (#329): re-read whatever another skutter instance
-    // may have written since this process's last load, then re-apply pins onto
-    // the freshly-loaded profiles (persisted file > frontmatter, ADR-0081).
-    {
-        let mut agent_models = live.agent_models.lock().unwrap();
-        agent_models.reload();
-        agent_models.apply(&mut new_profiles);
-    }
-    live.grants.reload();
-
-    let agent_count = new_profiles.iter().count();
-    let skill_count = new_skills.disclosures().len();
-    let command_count = new_commands.len();
-    *live.skills.write().unwrap() = Arc::new(new_skills);
-    *live.commands.write().unwrap() = Arc::new(new_commands);
-    *live.agents.write().unwrap() = new_profiles;
-
-    Ok(format!(
-        "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s), \
-         {command_count} command(s) — new sessions see the update"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// #785: a failed definitions reload still yields a notice, so the TUI
     /// re-applies its `tui:` block instead of being blocked by a bad agent.
@@ -449,6 +423,49 @@ mod tests {
             definitions_changed(&fp2, &fp3),
             "an actual content change must be reflected in the fingerprint"
         );
+    }
+
+    /// ADR-0248: a new or changed rhai module under the project's module
+    /// dir is a change, so the reload re-runs module discovery.
+    #[test]
+    fn a_new_or_changed_rhai_module_is_a_change() {
+        let cwd = tempfile::tempdir().unwrap();
+        let dir = cwd.path().join(".entanglement/rhai/modules");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
+        std::fs::write(dir.join("m.rhai"), "fn f() { 1 }").unwrap();
+        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
+        assert!(definitions_changed(&fp1, &fp2), "a new module");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.join("m.rhai"), "fn f() { 22 }").unwrap();
+        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
+        assert!(definitions_changed(&fp2, &fp3), "a changed module");
+    }
+
+    /// Only a `lib.rhai` and a module are definitions; a scratch script or
+    /// a trusted-folder script under a watched tree is not.
+    #[test]
+    fn only_lib_rhai_and_modules_count_among_rhai_files() {
+        let cwd = tempfile::tempdir().unwrap();
+        let ent = cwd.path().join(".entanglement");
+        for dir in ["tmp", "skills/git/scripts"] {
+            std::fs::create_dir_all(ent.join(dir)).unwrap();
+        }
+        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
+        std::fs::write(ent.join("tmp/scratch.rhai"), "1").unwrap();
+        std::fs::write(ent.join("skills/git/scripts/run.rhai"), "1").unwrap();
+        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
+        assert!(
+            !definitions_changed(&fp1, &fp2),
+            "scripts are not definitions"
+        );
+        std::fs::write(ent.join("skills/git/lib.rhai"), "fn f() { 1 }").unwrap();
+        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
+        assert!(definitions_changed(&fp2, &fp3), "a skill lib is");
+        assert!(is_definition_file(Path::new(
+            "/c/entanglement/rhai/modules/a/b.rhai"
+        )));
+        assert!(!is_definition_file(Path::new("/p/rhai/x.rhai")));
     }
 
     /// The core of #1: a write to a non-definition file under a watched tree

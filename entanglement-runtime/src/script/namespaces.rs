@@ -343,6 +343,15 @@ mod tests {
         assert_eq!(listed, 2, "one winner per colliding pair");
     }
 
+    /// A skill lib never imports, so it is built by `eval_ast_as_new` and
+    /// keeps typed methods (ADR-0248 refuses them in modules only).
+    #[test]
+    fn a_skill_lib_typed_method_is_callable() {
+        let mut skills = SkillRegistry::default();
+        skills.insert(skill_with_lib("num", "fn int.dbl() { this * 2 }"));
+        assert_eq!(eval(&[], &skills, "21.dbl()").unwrap(), "42");
+    }
+
     #[test]
     fn colliding_skill_namespaces_keep_the_first() {
         let mut skills = SkillRegistry::default();

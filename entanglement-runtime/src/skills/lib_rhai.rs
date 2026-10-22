@@ -25,7 +25,8 @@ pub struct LibFn {
     pub doc: String,
 }
 
-/// One skill's compiled library.
+/// One skill's compiled library — also the compiled form of an importable
+/// module (ADR-0248).
 #[derive(Clone)]
 pub struct SkillLib {
     /// Every public function, signature-sorted — what `load_skill` lists.
@@ -87,8 +88,7 @@ pub(super) fn load(_skill: &str, _root_dir: Option<&Path>) -> Option<SkillLib> {
 /// Compile `source` into a lib for `skill`. `Err` names why it was refused.
 #[cfg(feature = "rhai")]
 pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
-    let mut engine = rhai::Engine::new_raw();
-    engine.disable_symbol("eval");
+    let engine = compile_engine();
     let ast = engine
         .compile(source)
         .map_err(|e| format!("does not compile: {e}"))?;
@@ -99,13 +99,40 @@ pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
                 .to_string(),
         );
     }
-    let ns = namespace(skill);
+    build(&format!("{}::", namespace(skill)), source, &ast, &[])
+}
+
+/// The engine a lib or module (ADR-0248) is parsed and loaded with.
+#[cfg(feature = "rhai")]
+pub(crate) fn compile_engine() -> rhai::Engine {
+    let mut engine = rhai::Engine::new_raw();
+    engine.disable_symbol("eval");
+    // Rhai halves its parse-depth defaults in debug builds; pin the release
+    // values so a file compiles the same in every build.
+    engine.set_max_expr_depths(64, 32);
+    engine
+}
+
+/// A module's top-level imports (ADR-0248): `(alias, module)`.
+#[cfg(feature = "rhai")]
+pub(crate) type Imports = [(String, rhai::Shared<rhai::Module>)];
+
+/// Load a checked `ast` of `source` as a module, listing each public
+/// function as `<prefix><fn>(…)`; `imports` are the already-loaded modules
+/// its top-level `import`s name.
+#[cfg(feature = "rhai")]
+pub(crate) fn build(
+    prefix: &str,
+    source: &str,
+    ast: &rhai::AST,
+    imports: &Imports,
+) -> Result<SkillLib, String> {
     let docs = super::lib_docs::fn_docs(source);
     let mut functions: Vec<LibFn> = ast
         .iter_functions()
         .filter(|f| f.access == rhai::FnAccess::Public)
         .map(|f| LibFn {
-            signature: format!("{ns}::{}({})", f.name, f.params.join(", ")),
+            signature: format!("{prefix}{}({})", f.name, f.params.join(", ")),
             doc: docs
                 .iter()
                 .find(|d| d.name == f.name && d.arity.is_none_or(|n| n == f.params.len()))
@@ -116,12 +143,52 @@ pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
     functions.sort_by(|a, b| a.signature.cmp(&b.signature));
     // Encapsulated: a lib function resolves its sibling functions inside the
     // lib, and the engine's bindings (`read`, `http`, `mcp::…`) at call time.
-    let module = rhai::Module::eval_ast_as_new(rhai::Scope::new(), &ast, &engine)
-        .map_err(|e| format!("does not load: {e}"))?;
+    let mut module = if imports.is_empty() {
+        rhai::Module::eval_ast_as_new(rhai::Scope::new(), ast, &compile_engine())
+            .map_err(|e| format!("does not load: {e}"))?
+    } else {
+        with_imports(ast, imports)
+    };
+    // Indexed once here, so neither a static registration nor an `import`
+    // re-indexes a copy on every run.
+    module.build_index();
     Ok(SkillLib {
         functions,
         module: rhai::Shared::new(module),
     })
+}
+
+/// The module `eval_ast_as_new` would build, minus its sub-modules: it
+/// makes every import a sub-module, and indexing recurses through every
+/// sub-module path — exponential across an import lattice even when the
+/// shared modules are one instance. Here the imports live only in each
+/// function's encapsulated environ, which is all `alias::f()` needs.
+#[cfg(feature = "rhai")]
+fn with_imports(ast: &rhai::AST, imports: &Imports) -> rhai::Module {
+    let env = rhai::Shared::new(rhai::EncapsulatedEnviron {
+        lib: std::iter::once(ast.shared_lib().clone()).collect(),
+        imports: imports
+            .iter()
+            .map(|(alias, module)| (alias.as_str().into(), module.clone()))
+            .collect(),
+        // A module has no top-level `let`/`const`, so no global constants.
+        constants: None,
+    });
+    let mut module = rhai::Module::new();
+    for f in ast
+        .iter_fn_def()
+        .filter(|f| f.access == rhai::FnAccess::Public)
+    {
+        // Script functions are looked up by name and arity; the parameter
+        // types only size the registration.
+        let arity = vec![std::any::TypeId::of::<rhai::Dynamic>(); f.params.len()];
+        let func = rhai::RhaiFunc::Script {
+            fn_def: f.clone(),
+            env: Some(env.clone()),
+        };
+        rhai::FuncRegistration::new(f.name.as_str()).set_into_module_raw(&mut module, arity, func);
+    }
+    module
 }
 
 #[cfg(all(test, feature = "rhai"))]

@@ -61,6 +61,7 @@ impl ToolExecutor {
             http_gate: None,
             rhai_trusted: Default::default(),
             skill_dirs: Vec::new(),
+            module_dirs: Vec::new(),
         }
     }
 }
@@ -93,6 +94,7 @@ pub struct ToolExecutorBuilder {
     pub(super) http_gate: Option<Arc<crate::http_gate::HttpGate>>,
     pub(super) rhai_trusted: crate::rhai_trust::TrustedFolders,
     pub(super) skill_dirs: Vec<std::path::PathBuf>,
+    pub(super) module_dirs: Vec<std::path::PathBuf>,
 }
 
 impl ToolExecutorBuilder {
@@ -264,6 +266,14 @@ impl ToolExecutorBuilder {
     /// always asks (ADR-0228). Default: none.
     pub fn skill_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
         self.skill_dirs = dirs;
+        self
+    }
+
+    /// The user and project rhai module dirs ([`crate::skills::module_dirs`]):
+    /// a `write`/`edit`/`apply_patch` of a `*.rhai` under one always asks
+    /// (ADR-0248). Default: none.
+    pub fn module_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        self.module_dirs = dirs;
         self
     }
 

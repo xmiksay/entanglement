@@ -377,6 +377,18 @@ No API change; three behaviours an embedder can see.
   are not in the tail; read your records after the hibernate if you need
   them.
 
+## Importable rhai modules (ADR-0248, #835)
+
+- **Added:** `skills::{module_dirs, RhaiModules, rhai_modules}`,
+  `SkillRegistry::modules` (filled by `load_registry_in`: built-ins, plus
+  the user dir under `UserLayer::FromEnv` only, plus the project dir), and
+  `ToolExecutorBuilder::module_dirs(dirs)`, the module write floor (feed it
+  `skills::module_dirs(root, &UserLayer::FromEnv)`; with nothing wired there
+  is no floor), and `LiveDefinitions::with_sessions(store)`, the store whose
+  scratch dir a reload's prompt context names (default: the project's).
+- **Behaviour:** `import "<name>"` now resolves in every run, and the
+  `rhai` guide's `load_skill` result ends with the module listing.
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

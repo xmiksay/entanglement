@@ -27,7 +27,7 @@ use crate::tool_names::RHAI_TOOL;
 /// and [`super::data::register_data_functions`] for the converters — not the
 /// skill text; `spec_description_lists_every_registered_binding` pins the two
 /// together.
-const BINDING_REFERENCE: &str = r#"Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; import/eval are disabled. Only the functions below exist; anything else throws.
+const BINDING_REFERENCE: &str = r#"Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; eval is disabled. Only the functions below exist; anything else throws.
 
 Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, escape-root gate for a path outside the project root, hooks); a refusal throws, catchable with try/catch.
 
@@ -49,6 +49,7 @@ Host bindings:
 Generated namespaces:
   mcp::<server>::<tool>(#{arg: value, ...}) / mcp::<server>::<tool>() -> the MCP tool's text result (parse_json it if JSON); a failure throws. Names map to identifiers: other characters become _, a name not starting with a letter gets a t_ prefix (2fa -> t_2fa), a reserved word a _ suffix — mcp_tools shows each tool's rhai name.
   skill::<skill>::<fn>(...) -> a function from a skill's lib.rhai; load_skill lists them.
+  import "<name>" as m; then m::<fn>(...) -> import a module by name; `load_skill rhai` lists them.
   Nested rhai, the mcp envelope and the session tools (agent, ask_user, poll, list_*, load_skill, ...) cannot be called from a script.
 
 Input:

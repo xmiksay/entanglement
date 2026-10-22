@@ -91,6 +91,8 @@ pub struct Setup {
     pub scope: ApprovalScope,
     /// The skill layer dirs the write floor protects.
     pub skill_dirs: Vec<PathBuf>,
+    /// The rhai module dirs the write floor protects (ADR-0248).
+    pub module_dirs: Vec<PathBuf>,
     /// The live skill registry: `list_skills`, `load_skill` and the
     /// scripts' `skill::` namespaces all read it.
     pub skills: SkillRegistry,
@@ -111,6 +113,7 @@ impl Setup {
             mode: None,
             scope: ApprovalScope::Once,
             skill_dirs: Vec::new(),
+            module_dirs: Vec::new(),
             skills: SkillRegistry::default(),
         }
     }
@@ -225,6 +228,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         .http_gate(setup.gate)
         .rhai_trusted(setup.trusted)
         .skill_dirs(setup.skill_dirs)
+        .module_dirs(setup.module_dirs)
         .live_skills(skills)
         .mode_table(setup.table);
     if setup.escape_root {

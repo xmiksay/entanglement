@@ -111,6 +111,9 @@ mod resume_config_mode;
 mod resume_mode_narrowing;
 mod retired_knobs;
 mod revert_files;
+// ADR-0248: the watcher re-runs rhai module discovery.
+#[cfg(feature = "rhai")]
+mod rhai_module_reload;
 #[cfg(feature = "serve")]
 mod serve;
 mod session_fork;

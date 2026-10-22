@@ -14,7 +14,9 @@ use tokio::sync::mpsc;
 use crate::tool_names::HTTP_TOOL;
 use crate::tool_runner::{Dispatcher, Posture, ScriptCall};
 
-use super::{configure_engine, data, namespaces, register_bindings, service, BindingCall, Launch};
+use super::{
+    configure_engine, data, modules, namespaces, register_bindings, service, BindingCall, Launch,
+};
 
 pub(super) struct RunSpec {
     pub script: String,
@@ -68,6 +70,7 @@ pub(super) async fn run_engine(
             start,
             timeout,
         );
+        engine.set_module_resolver(modules::Resolver(skills.modules.clone()));
         namespaces::register(&mut engine, tx, &mcp, &skills);
         data::register_data_functions(&mut engine);
         // A constant, so `args = …`/`args.n = …` fails: the caller's input

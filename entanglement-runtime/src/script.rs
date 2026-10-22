@@ -29,8 +29,9 @@
 //!
 //! Resource bounds are by construction: `max_operations`, a wall-clock
 //! timeout enforced by the progress callback (and clamped onto each nested
-//! call), `max_call_levels`, string/array/map size caps. `import`/`eval` are
-//! disabled.
+//! call), `max_call_levels`, string/array/map size caps, `max_modules`.
+//! `eval` is disabled; `import` resolves only discovered modules by bare
+//! name (ADR-0248).
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -62,6 +63,8 @@ mod spec;
 mod bindings;
 // The per-run `mcp::…`/`skill::…` namespaces (ADR-0227).
 mod namespaces;
+// `import "<name>"` against the discovered modules (ADR-0248).
+mod modules;
 // Print + return-value composition into the tool output.
 mod output;
 // The async side of the bridge: each binding call through the seam.
@@ -89,6 +92,9 @@ const MAX_CALL_LEVELS: usize = 64;
 const MAX_STRING_SIZE: usize = 256 * 1024;
 const MAX_ARRAY_SIZE: usize = 100_000;
 const MAX_MAP_SIZE: usize = 100_000;
+/// `import`s one run may execute, each counted — an `import` inside a
+/// function counts on every call.
+const MAX_MODULES: usize = 32;
 
 /// Whether a `rhai` call's input requests the detached path (#637) — read by
 /// the executor to skip the session-Stop canceller registration: a

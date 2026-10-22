@@ -1,9 +1,10 @@
-//! Where `config.yml` `rhai.trusted` folders and the skill layer dirs
-//! (ADR-0228) meet the file system.
+//! Where `config.yml` `rhai.trusted` folders, the skill layer dirs
+//! (ADR-0228) and the rhai module dirs (ADR-0248) meet the file system.
 //!
 //! A script inside a trusted folder runs force-allowed with no card, and a
-//! skill's `lib.rhai`/`SKILL.md` is code and instructions every later
-//! session loads — so writing one is as good as running it.
+//! skill's `lib.rhai`/`SKILL.md`, or a module's `*.rhai`, is code and
+//! instructions every later session loads — so writing one is as good as
+//! running it.
 //! [`floored_write`] lets the dispatch grade floor a `write`/`edit`/
 //! `apply_patch` of such a file at `Ask`: the agent cannot author trusted
 //! code unseen. `bash` and MCP filesystem servers are not covered (neither
@@ -78,17 +79,25 @@ pub(crate) struct Trust {
     /// The user and project skill layer dirs, canonical — a missing one by
     /// its nearest existing ancestor, so a skill created later is covered.
     pub skill_dirs: Vec<PathBuf>,
+    /// The user and project rhai module dirs, canonical the same way.
+    pub module_dirs: Vec<PathBuf>,
 }
 
 impl Trust {
-    pub(crate) fn new(folders: TrustedFolders, skill_dirs: &[PathBuf]) -> Self {
-        let skill_dirs = skill_dirs
-            .iter()
-            .filter_map(|d| canonical_target(&lexical(d)))
-            .collect();
+    pub(crate) fn new(
+        folders: TrustedFolders,
+        skill_dirs: &[PathBuf],
+        module_dirs: &[PathBuf],
+    ) -> Self {
+        let canonical = |dirs: &[PathBuf]| -> Vec<PathBuf> {
+            dirs.iter()
+                .filter_map(|d| canonical_target(&lexical(d)))
+                .collect()
+        };
         Trust {
             folders,
-            skill_dirs,
+            skill_dirs: canonical(skill_dirs),
+            module_dirs: canonical(module_dirs),
         }
     }
 }
@@ -115,8 +124,8 @@ pub(crate) fn contains<'a>(dirs: impl IntoIterator<Item = &'a PathBuf>, canon: &
     dirs.into_iter().any(|dir| canon.starts_with(dir))
 }
 
-/// Whether `(tool, input)` mutates a `*.rhai` file inside a trusted folder,
-/// or a `SKILL.md`/`lib.rhai` inside a skill layer dir. A relative `path`
+/// Whether `(tool, input)` mutates a `*.rhai` file inside a trusted folder
+/// or a module dir, or a `SKILL.md`/`lib.rhai` inside a skill layer dir. A relative `path`
 /// resolves against `root`. A target that cannot be resolved counts as
 /// inside (fail closed) — it only ever costs a prompt.
 pub(crate) fn floored_write(tool: &str, input: &str, root: &Path, trust: &Trust) -> bool {
@@ -135,7 +144,7 @@ pub(crate) fn floored_write(tool: &str, input: &str, root: &Path, trust: &Trust)
         None => (abs, false),
     };
     let inside = |dirs: Vec<&PathBuf>| !dirs.is_empty() && (!resolved || contains(dirs, &target));
-    (is_script(&target) && inside(trust.folders.all().collect()))
+    (is_script(&target) && inside(trust.folders.all().chain(&trust.module_dirs).collect()))
         || (is_skill_file(&target) && inside(trust.skill_dirs.iter().collect()))
 }
 
@@ -215,6 +224,7 @@ mod tests {
                 root.join(".entanglement/skills"),
                 root.join(".agents/skills"),
             ],
+            &[root.join(".entanglement/rhai/modules")],
         );
         Fx {
             _tmp: tmp,
@@ -253,6 +263,25 @@ mod tests {
         };
         assert!(!writes(&none, "write", "scripts/ok.rhai"));
         assert!(!writes(&none, "write", ".entanglement/skills/git/SKILL.md"));
+    }
+
+    /// ADR-0248: any `*.rhai` under a module dir, which need not exist yet.
+    #[test]
+    fn module_files_are_caught_even_before_the_dir_exists() {
+        let f = fx();
+        assert!(!f.root.join(".entanglement/rhai").exists());
+        for tool in ["write", "edit", "apply_patch"] {
+            assert!(
+                writes(&f, tool, ".entanglement/rhai/modules/m.rhai"),
+                "{tool}"
+            );
+            assert!(
+                writes(&f, tool, ".entanglement/rhai/modules/a/b.rhai"),
+                "{tool}"
+            );
+        }
+        assert!(!writes(&f, "write", ".entanglement/rhai/modules/notes.md"));
+        assert!(!writes(&f, "write", ".entanglement/rhai/other.rhai"));
     }
 
     #[test]

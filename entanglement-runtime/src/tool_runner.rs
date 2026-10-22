@@ -114,6 +114,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         http_gate,
         rhai_trusted,
         skill_dirs,
+        module_dirs,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -278,7 +279,11 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             catalog,
             workdirs,
             http_gate,
-            trust: Arc::new(crate::rhai_trust::Trust::new(rhai_trusted, &skill_dirs)),
+            trust: Arc::new(crate::rhai_trust::Trust::new(
+                rhai_trusted,
+                &skill_dirs,
+                &module_dirs,
+            )),
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);
