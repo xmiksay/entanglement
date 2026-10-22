@@ -31,9 +31,11 @@ endpoints. Then a long robustness pass over compaction lineage, parked cards
 and seq ordering (#862–#906, #828).
 
 > **Breaking changes — read before upgrading.** Embedders should follow
-> [`docs/embedding/migrations.md`](docs/embedding/migrations.md) for ADR-0226
-> onward (one section per ADR); the earlier breaks are listed here. Session
-> logs persisted by 0.6.0 still load and resume (#720, ADR-0214/0215/0216).
+> [`docs/embedding/migrations.md`](docs/embedding/migrations.md), which covers
+> the embedder breaks, one section per ADR, starting with the
+> [agents, modes & permissions](docs/embedding/migrations/agents-modes-and-permissions.md)
+> page; the summary is below. Session logs persisted by 0.6.0 still load and
+> resume (#720, ADR-0214/0215/0216).
 >
 > **Wire shapes**
 > - *Removed `InMsg` variants:* `SetAgent` (an agent is fixed for a session's
@@ -106,8 +108,17 @@ and seq ordering (#862–#906, #828).
 >   `mcp__<server>__<tool>` is no longer advertised; call it as
 >   `mcp(server, tool, args)` (ADR-0226). A stale name in a rule or mask
 >   warns at startup (ADR-0166).
-> - *Embedder API:* the runtime's `multi_user` module is gone, so `UserId`
->   never enters `entanglement-runtime` (ADR-0181). Per-user seams are
+> - *Embedder API:* `EngineConfig.profiles`/`profile_tool_specs` →
+>   `agents: AgentCatalog`; `AgentProfile`/`ProfileRegistry`/`AgentMode` are
+>   removed (identity is an `Agent` in the catalog, authority the session's
+>   permission mode, ADR-0207); `subagent::spawn_specs_for(profile, registry)`
+>   → `subagent::agent_specs()`; `GrantStore::is_granted`/`record`/
+>   `grant_session_dir` take the `mode: &str` a grant was earned in. The
+>   builder and the deprecated `spawn_tool_executor`/`_with_hooks` shims keep
+>   grants in memory unless given `DefaultGrantStore::load()`. A custom
+>   `Tool` that doesn't override `capabilities()` is `Capability::Write`, so
+>   `plan`/`research` deny it. The runtime's `multi_user` module is gone, so
+>   `UserId` never enters `entanglement-runtime` (ADR-0181). Per-user seams are
 >   session-keyed and provider-hosted (ADR-0184/0188). `ToolExecutor::builder`
 >   replaces the positional constructors (#724). `LlmResponse` gains
 >   `reasoning`/`content_blocks`/`stop_reason`/`usage` (a struct literal needs

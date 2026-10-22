@@ -192,4 +192,4 @@ removes `user_only`. What an embedder has to change:
 
 ---
 
-Previous: [§5–§7 — Approvals across restart, MCP & multi-user](../approvals-mcp-multi-user.md) · Next: [Migration notes — cards, lineages & sessions (ADR-0233–0248)](cards-and-sessions.md)
+Previous: [Migration notes — agents, modes & permissions (0.6 → 0.7, before ADR-0226)](agents-modes-and-permissions.md) · Next: [Migration notes — cards, lineages & sessions (ADR-0233–0248)](cards-and-sessions.md)

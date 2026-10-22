@@ -25,7 +25,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 
 | Setter | Default when not called |
 | --- | --- |
-| `agents(AgentCatalog)` / `live_agents(Arc<RwLock<AgentCatalog>>)` | `AgentCatalog::new()` (built-in profiles) |
+| `agents(AgentCatalog)` / `live_agents(Arc<RwLock<AgentCatalog>>)` | `AgentCatalog::new()` (the built-in `general` agent only) |
 | `live_skills(Arc<RwLock<Arc<SkillRegistry>>>)` | empty registry |
 | `base(PermissionProfile)` | allow-all ceiling (no clamp — same as an absent `permissions:`) |
 | `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `escape_root` is set |
@@ -135,11 +135,28 @@ pub trait PermissionResolver: Send + Sync {
 }
 #[async_trait]
 pub trait GrantStore: Send + Sync {
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>) -> bool;
-    async fn record(&self, session: &SessionId, tool: &str, arg: Option<&str>, scope: ApprovalScope);
+    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool;
+    async fn record(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        arg: Option<&str>,
+        scope: ApprovalScope,
+        mode: &str,
+    );
     fn forget_session(&self, session: &SessionId);
+    // Default: a no-op that echoes `dir` back.
+    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String;
 }
 ```
+
+`mode` is the permission mode the approval was earned in. The executor passes
+the mode the call was graded under to both `is_granted` and `record`, so key your
+grants by it: a grant matches only the mode it was recorded under, and one
+earned in `build` never upgrades a call in `research`
+([ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md) §8).
+A 0.6.0 store gains the parameter on all three methods
+([migration](migrations/agents-modes-and-permissions.md#mode-scoped-grants-adr-0207-8-634)).
 
 `resolve` is called once per session in a call's ancestor chain; the executor
 takes the least-privileged grade across that chain itself, so your resolver
@@ -168,11 +185,12 @@ impl PermissionResolver for TenantResolver {
 }
 ```
 
-`resolve` is `async` (a real embedder hits its DB) but `GrantStore::is_granted`
-is deliberately **sync** — the executor consults it inline before prompting, so
-it must be a fast in-memory/cached check. The write side
-(`record`, only reached on an `ApprovalScope::Always` approval) is async and is
-where a DB write belongs; the corresponding read then goes through your
+`resolve` is `async` (a real embedder hits its DB) but
+`GrantStore::is_granted(session, tool, arg, mode)` is deliberately **sync** —
+the executor consults it inline before prompting, so it must be a fast
+in-memory/cached check. The write side (`record(.., scope, mode)`, called on
+every non-`Once` approval and persisting only an `ApprovalScope::Always` one)
+is async and is where a DB write belongs; the corresponding read then goes through your
 `PermissionResolver` on the *next* call, not through `is_granted` — the trait
 split exists so the store's `is_granted` only has to cover the fast default
 grants the CLI needs, not your DB-backed ones.
