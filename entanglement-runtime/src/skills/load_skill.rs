@@ -128,17 +128,29 @@ fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
 /// Shared by the model-facing [`load`] and the agent-definition **preload**
 /// (#117), so a preloaded skill reads identically to one the model loads itself.
 pub(crate) fn render_skill(skill: &super::SkillMeta) -> String {
-    render_skill_with(skill, None)
+    render_skill_with(skill, None, None)
 }
 
 /// [`render_skill`] with `registry`'s naming pass applied: a lib whose
 /// `skill::` segment another skill claimed first is listed without callable
 /// signatures — the same pass script namespaces are registered with.
+/// The `rhai` guide also lists the importable modules (ADR-0248) — the one
+/// place they are disclosed, so the tool spec stays static.
 pub(crate) fn render_skill_in(registry: &SkillRegistry, skill: &super::SkillMeta) -> String {
-    render_skill_with(skill, registry.lib_collision(&skill.name))
+    let modules = (skill.name == RHAI_GUIDE)
+        .then(|| registry.modules.listing())
+        .flatten();
+    render_skill_with(skill, registry.lib_collision(&skill.name), modules)
 }
 
-fn render_skill_with(skill: &super::SkillMeta, collision: Option<String>) -> String {
+/// The built-in guide skill that lists the modules.
+const RHAI_GUIDE: &str = "rhai";
+
+fn render_skill_with(
+    skill: &super::SkillMeta,
+    collision: Option<String>,
+    modules: Option<String>,
+) -> String {
     // Built-ins have no on-disk home (`root_dir == None`): they are single-file,
     // so there are no relative payload paths to resolve and no refs to list.
     let (content, refs) = match skill.root_dir.as_deref() {
@@ -150,6 +162,10 @@ fn render_skill_with(skill: &super::SkillMeta, collision: Option<String>) -> Str
         .as_ref()
         .filter(|l| !l.functions.is_empty())
         .map(|lib| lib_listing(&lib.functions, collision));
+    let functions = match (functions, modules) {
+        (Some(f), Some(m)) => Some(format!("{f}\n\n{m}")),
+        (f, m) => f.or(m),
+    };
     render(
         &skill.name,
         skill.root_dir.as_deref(),
@@ -325,6 +341,25 @@ mod tests {
         let out = render_skill_in(&reg, &loser);
         assert!(out.contains("collides with skill `git-x`"), "{out}");
         assert!(!out.contains("skill::git_x::b()"), "{out}");
+    }
+
+    /// ADR-0248: the `rhai` guide — and only it — ends with the modules,
+    /// each with its layer and its functions' docs, before the refs.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn the_rhai_guide_lists_the_modules() {
+        let mut reg = registry(vec![skill("rhai", None, "Guide."), skill("x", None, "X.")]);
+        reg.modules = Arc::new(crate::skills::rhai_modules::load_from(&[]));
+        let out = load(&reg, "rhai").unwrap();
+        assert!(
+            out.contains("Guide.\n\nmodules (`import \"<name>\" as m;`"),
+            "{out}"
+        );
+        assert!(out.contains(
+            "\n  json_schema (built-in)\n    validate(value, schema)\n        Validate `value`"
+        ));
+        assert!(out.ends_with("available_refs: none"), "{out}");
+        assert!(!load(&reg, "x").unwrap().contains("json_schema"));
     }
 
     fn skill(name: &str, root_dir: Option<PathBuf>, body: &str) -> SkillMeta {

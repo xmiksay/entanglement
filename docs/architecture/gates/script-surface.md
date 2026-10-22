@@ -103,11 +103,42 @@ or wildcard warns at load. `web_fetch` never injects.
 **Skill libraries** (`skills::lib_rhai`): a `lib.rhai` beside `SKILL.md`
 (any layer, foreign dirs included) compiles once at discovery into an
 encapsulated static module, registered as `skill::<skill>`; only `fn`
-definitions — a top-level statement rejects the whole lib with a warning.
+definitions — a top-level statement rejects the whole lib with a warning;
+an `import` inside a lib function resolves per run through the run's module
+resolver ([ADR-0248](../../adr/0248-importable-rhai-library-modules.md)).
 Live-reloaded with the skill registry; `load_skill` lists the public
 signatures after the body, each with its `///`/`/** */` doc comment (read
 by a text pass, `skills::lib_docs` — not Rhai's `metadata` feature, which
 rejects any doc-style comment not followed by `fn`, [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+
+**Importable modules** ([ADR-0248](../../adr/0248-importable-rhai-library-modules.md),
+`skills::rhai_modules`, `script::modules`): `import "json_schema" as js;`.
+`<name>.rhai` files in three layers, with a later layer winning on a name:
+built-in (embedded) < `${config_dir}/entanglement/rhai/modules/` <
+`<root>/.entanglement/rhai/modules/`. A sub-dir gives a slash name.
+- The run's `Resolver` looks a bare name (`[a-z0-9_]` segments joined by `/`)
+  up in the discovered set and never touches a file. A path, `..` or an
+  extension is refused. `set_max_modules(32)` caps a run's executed
+  `import`s.
+- A module holds `fn`s plus top-level `import "<name>" as x;`. Any other
+  statement, an `import` inside a function, or a typed method (`fn int.f()`)
+  rejects it, and the rejected file still claims its name.
+- Modules are compiled once at discovery. Module-to-module imports resolve
+  there too (`rhai_modules::graph`, iterative): a cycle rejects its members
+  (one warning naming the path), a chain deeper than 8 is rejected, a
+  diamond shares one `Shared<Module>`, and names resolve through the
+  winning layer at every level, so a broken shadow rejects its importers.
+  An importing module carries its imports only in its functions' environ,
+  never as sub-modules (`lib_rhai::with_imports`), so indexing stays
+  linear across an import lattice.
+- The set rides in `SkillRegistry::modules`, so the definitions watcher
+  reloads it (a `lib.rhai` or a file under `rhai/modules/` counts as
+  definition content; other `*.rhai` files do not).
+- Module code runs in the caller's posture: bindings resolve when called.
+- Only `load_skill rhai` lists the modules (layer, imports, signatures with
+  docs). The tool spec stays static.
+- Built-in: `json_schema` (`validate(value, schema)`, a JSON Schema subset,
+  error strings with JSON-pointer paths).
 
 **`rhai(path)` and `args`** ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
 `script::input`/`script::gate`): `path` names a script file — relative paths
@@ -197,9 +228,11 @@ trusted folder with the layer that listed it, and the modes where the
 user layer's trust is suppressed.
 
 **Trusted folders must not be agent-writable.** A script inside one runs
-force-allowed, and a skill's `SKILL.md`/`lib.rhai` is loaded by every later
-session, so writing one is as good as running it: a `write`/`edit`/
-`apply_patch` whose target is a `*.rhai` file inside a trusted folder, or a
+force-allowed, and a skill's `SKILL.md`/`lib.rhai` or a module is loaded by
+every later session, so writing one is as good as running it: a `write`/`edit`/
+`apply_patch` whose target is a `*.rhai` file inside a trusted folder or a
+user/project module dir (`skills::module_dirs`, wired by
+`ToolExecutorBuilder::module_dirs`, [ADR-0248](../../adr/0248-importable-rhai-library-modules.md)), or a
 `SKILL.md`/`lib.rhai` inside any user or project skill layer dir
 (`skills::skill_dirs` — `.entanglement/skills`, `.claude/skills`,
 `.agents/skills`, the user dirs or `ENTANGLEMENT_SKILLS_DIR`; wired by

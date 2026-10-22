@@ -278,8 +278,9 @@ the model revises and re-proposes in the same turn.
 `rhai { script, timeout? }` to run multi-step logic in one call — the sanctioned
 replacement for shelling out to `python3`/`node`. The engine
 (`script/bindings.rs`, `rhai::Engine::new_raw()` + the IO-free `StandardPackage`) has **no**
-filesystem/network/process/env access and **no module resolver** (so `import`
-can't escape); `eval` is disabled. It is resource-bounded by construction:
+filesystem/network/process/env access, and its module resolver serves only
+discovered, precompiled modules by bare name (so `import` can't escape,
+[ADR-0248](../../adr/0248-importable-rhai-library-modules.md)); `eval` is disabled. It is resource-bounded by construction:
 `max_operations`, `max_call_levels`, string/array/map size caps, and a wall-clock
 timeout (default 5s, max 30s) via the `on_progress` interrupt — a runaway script
 dies deterministically, never OOMs. `print(...)` is captured; the last-expression

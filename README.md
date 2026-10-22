@@ -186,7 +186,11 @@ name. The sandboxed `rhai`
 scripting tool ships in every default build (droppable via
 `--no-default-features`, #502) — every call a script makes goes through the
 same permission path as a direct one, MCP tools are callable as
-`mcp::<server>::<tool>(…)`, a skill can ship a `lib.rhai`, and `http()` can
+`mcp::<server>::<tool>(…)`, a skill can ship a `lib.rhai`, a script can
+`import` a library module by name (built-in such as `json_schema`, or a
+`<name>.rhai` in `${config_dir}/entanglement/rhai/modules/` or
+`.entanglement/rhai/modules/`; `load_skill rhai` lists them,
+[ADR-0248](docs/adr/0248-importable-rhai-library-modules.md)), and `http()` can
 attach credentials the user maps per host in `config.yml` `http_auth:` (never
 visible to the model; the first use per host is always approved,
 [ADR-0227](docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as

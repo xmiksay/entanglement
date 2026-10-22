@@ -115,6 +115,10 @@ mod card_reason;
 // closing summary, never persisted (#821).
 #[path = "rhai/nested_calls.rs"]
 mod nested_calls;
+// ADR-0248: importable modules run in the caller's posture, are listed by
+// `load_skill rhai`, and their dirs join the write floor.
+#[path = "rhai/modules.rs"]
+mod modules;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

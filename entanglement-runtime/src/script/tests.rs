@@ -54,20 +54,6 @@ fn unit_return_renders_explicitly() {
 }
 
 #[test]
-fn import_is_refused_no_module_resolver() {
-    let engine = sandbox_engine(Duration::from_secs(5));
-    let err = engine
-        .eval::<Dynamic>(r#"import "std" as s; 1"#)
-        .unwrap_err();
-    // No filesystem module resolver is installed, so `import` cannot escape.
-    let msg = err.to_string().to_lowercase();
-    assert!(
-        msg.contains("module") || msg.contains("import") || msg.contains("resolver"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
 fn no_ambient_file_functions() {
     let engine = sandbox_engine(Duration::from_secs(5));
     // Nothing like `open_file`/`read_file` exists — a bare call is unknown.

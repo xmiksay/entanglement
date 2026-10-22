@@ -13,12 +13,14 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::tool_names::HTTP_TOOL;
 
 use super::{
-    BindingCall, MAX_ARRAY_SIZE, MAX_CALL_LEVELS, MAX_MAP_SIZE, MAX_OPERATIONS, MAX_STRING_SIZE,
+    BindingCall, MAX_ARRAY_SIZE, MAX_CALL_LEVELS, MAX_MAP_SIZE, MAX_MODULES, MAX_OPERATIONS,
+    MAX_STRING_SIZE,
 };
 
 /// Apply the sandbox: standard (IO-free) package, resource caps, disabled
 /// `eval`, the wall-clock progress interrupt, and print capture. `new_raw()`
-/// starts with no module resolver, so `import` cannot reach the filesystem.
+/// starts with no module resolver; the run installs one serving only the
+/// discovered modules (ADR-0248), so `import` cannot reach the filesystem.
 /// `on_print` receives each `print` line (no trailing newline) — the blocking
 /// path buffers them for the final result, the background path (#637) streams
 /// them into its registry entry. `timed_out` is set when the deadline branch
@@ -38,6 +40,7 @@ pub(super) fn configure_engine(
     engine.set_max_string_size(MAX_STRING_SIZE);
     engine.set_max_array_size(MAX_ARRAY_SIZE);
     engine.set_max_map_size(MAX_MAP_SIZE);
+    engine.set_max_modules(MAX_MODULES);
     // No re-entry into the parser from inside a script.
     engine.disable_symbol("eval");
     engine.on_progress(move |_ops| {

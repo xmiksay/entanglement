@@ -4,8 +4,8 @@ description: >-
   Long-form guide to the `rhai` tool: worked examples plus the detail behind the
   signature list the tool spec already carries — permission grading, escape-root
   gating, running a script file by `path` with `args`, `http()`, the
-  `mcp::`/`skill::` namespaces, chaining calls, background runs, output and
-  limits. Load it when a script needs more than the signatures.
+  `mcp::`/`skill::` namespaces, importable modules (listed here), chaining
+  calls, background runs, output and limits. Load it when a script needs more than the signatures.
 ---
 
 # `rhai` guide
@@ -15,8 +15,9 @@ it, plus worked examples.
 
 Rhai (https://rhai.rs) syntax resembles Rust (`fn`, `let`) but is **not**
 Rust: no `use`/crates/`std`. Rhai's own stdlib (strings, arrays, maps, math,
-loops) is built in, no `import`. `import`/`eval` are disabled — a script
-cannot pull in modules or re-enter the parser.
+loops) is built in. `eval` is disabled — a script cannot re-enter the
+parser. `import` a module by name; `load_skill rhai` lists them (see
+*Modules* below).
 
 ## `script` or `path`, and `args`
 
@@ -30,8 +31,8 @@ directly; otherwise the user sees it once and runs it whole, has each
 command asked as it comes, or rejects it. A script in a folder the user
 trusts (their `rhai.trusted` config) runs **without asking**, every call in
 it allowed except what the user's rules explicitly deny. Writing or editing
-a `.rhai` file inside a trusted folder, or a skill's `SKILL.md`/`lib.rhai`,
-always asks the user first.
+a `.rhai` file inside a trusted folder or a module directory, or a skill's
+`SKILL.md`/`lib.rhai`, always asks the user first.
 
 `args` (an object) is available in the script as the constant map `args`,
 for both kinds — `#{}` when you pass none. Read it, don't assign to it
@@ -130,7 +131,26 @@ first call.
 A skill that ships a `lib.rhai` next to its `SKILL.md` adds its functions as
 `skill::<skill>::<fn>(...)`; `load_skill` lists their signatures with the
 `///` doc comments written above them. A lib function can call every binding
-and namespace above.
+and namespace above, and can `import` a module inside its body (it counts
+toward the run's 32 imports on every call).
+
+## Modules: `import "<name>" as m;`
+
+`import "json_schema" as js;` then `js::validate(value, schema)`. A module is
+imported by **bare name** only — `[a-z0-9_]` segments joined by `/`, like
+`net/util`; a path, `..` or an extension is refused, and there are no
+relative imports, for an inline script and a `path` one alike. The modules
+are listed at the end of this guide with their functions. They come from the
+binary (built-in), `${config_dir}/entanglement/rhai/modules/` (user) and
+`<root>/.entanglement/rhai/modules/` (project); a higher layer's module of the
+same name replaces the lower one everywhere, including inside other modules.
+A module holds only `fn` definitions and top-level `import "<name>" as x;`
+lines. An `import` inside one of its functions, or a typed method such as
+`fn int.dbl()`, refuses the module; write `fn dbl(x)` instead. Its functions
+run as part of your script: every binding they call is checked as if you
+made it. A run may execute at most 32 `import`s; put them at the top of the
+script, since one inside a function counts on every call. Writing or editing
+a `.rhai` file in a module directory always asks the user first.
 
 Nested `rhai`, the `mcp` envelope and the session tools (`agent`,
 `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`,

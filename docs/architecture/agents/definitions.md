@@ -241,7 +241,9 @@
   `notify` → reload → …), surfacing as an unbounded stream of "definitions
   reloaded" notices. `watch::spawn_watcher` guards against this with a **content
   fingerprint restricted to the definition/config files** (agent/skill `*.md`,
-  managed `*.yml`/`*.yaml`/`.env`): a `path → (mtime, size, sha256)` map. It is
+  a skill's `lib.rhai` and `rhai/modules/**/*.rhai` —
+  [ADR-0248](../../adr/0248-importable-rhai-library-modules.md) — managed
+  `*.yml`/`*.yaml`/`.env`): a `path → (mtime, size, sha256)` map. It is
   **two-stage** — the mtime+size pair is a cheap gate to skip re-hashing an
   untouched file, and the SHA-256 is the actual arbiter of "did the content
   change". A firing reloads (and emits the "definitions reloaded" notice)

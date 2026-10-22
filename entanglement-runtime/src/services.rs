@@ -150,6 +150,15 @@ pub(crate) fn start(
             cwd,
             &entanglement_runtime::layers::UserLayer::FromEnv,
         ))
+        .module_dirs(
+            entanglement_runtime::skills::module_dirs(
+                cwd,
+                &entanglement_runtime::layers::UserLayer::FromEnv,
+            )
+            .into_iter()
+            .map(|(_, dir)| dir)
+            .collect(),
+        )
         .jobs(jobs)
         .retained(retained)
         .scripts(scripts)
