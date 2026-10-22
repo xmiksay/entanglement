@@ -14,6 +14,272 @@ alternatives behind each design decision live in the ADRs under
 > must never edit it; there is deliberately no `[Unreleased]` section to append
 > to, because concurrent PRs each extending one conflict on every merge.
 
+## [0.7.0] - 2026-10-22
+
+A major release built around three redesigns. **Permission modes** replace
+agent-borne authority (ADR-0207): a session is now an `(agent, mode)` pair,
+and the four runtime-owned modes `research`/`plan`/`build`/`auto` carry every
+permission fact. **One advertised surface** (ADR-0226–0228): a fixed kernel
+that is identical on every wire, MCP reached only through an
+`mcp(server, tool, args)` envelope, and `rhai` as the one scripting path, with
+every binding graded at the dispatch seam. **Unified long-running work**
+(ADR-0161/0162/0165): a `background` flag on every launcher and one `poll`
+tool. Around them: undo/rewind, `/fork`, a per-session working directory,
+`web_fetch`, user slash commands, first-run onboarding, TUI themes,
+keybindings and a status line, more lifecycle hooks, and OAuth for LLM
+endpoints. Then a long robustness pass over compaction lineage, parked cards
+and seq ordering (#862–#906, #828).
+
+> **Breaking changes — read before upgrading.** Embedders should follow
+> [`docs/embedding/migrations.md`](docs/embedding/migrations.md) for ADR-0226
+> onward (one section per ADR); the earlier breaks are listed here. Session
+> logs persisted by 0.6.0 still load and resume (#720, ADR-0214/0215/0216).
+>
+> **Wire shapes**
+> - *Removed `InMsg` variants:* `SetAgent` (an agent is fixed for a session's
+>   life, ADR-0207 §9) and `BashEnable`/`BashDisable` (live bash enablement is
+>   a `SetToolOverlay` entry, ADR-0163). *Removed `OutEvent`:* `BashChanged`.
+>   A 0.6.0 log carrying these kinds skips them as retirements, not as gaps.
+> - *Renamed:* `SessionStarted.profile`/`SessionInfo.profile` → `agent` (a
+>   serde alias still reads 0.6.0 frames). `AgentChanged.profile_detail`,
+>   `SessionInfo.profile_detail` and the `ProfileDetail` type are gone. Ids
+>   are short, sortable and kind-tagged (ADR-0164), minted through a pluggable
+>   `IdGen` that keeps a tenant prefix for children and successors (ADR-0211).
+> - *New `InMsg` variants:* `SetMode` (ADR-0207), `ListOperations` (#607,
+>   ADR-0161), `ListPending` (#726, ADR-0217), `RevertFiles` (ADR-0212),
+>   `ForkSession` (ADR-0223), `SetWorkdir` (ADR-0224).
+> - *New `OutEvent` variants:* `ModeChanged`, `OperationList`, `PendingList`,
+>   `FilesReverted`, `SessionForked`, `WorkdirChanged`, `PlanChanged` (#627),
+>   `ReasoningBlock` (ADR-0160), `PersistenceDegraded`/`PersistenceRecovered`
+>   (#767), `ParentChanged` (ADR-0234), `ApprovalResolved` (ADR-0240), and
+>   the live-only, never-persisted `NestedCall`/`NestedCallSummary`
+>   (ADR-0233).
+> - *New additive fields:* `Approve.mode` (the approver picks how an accepted
+>   plan runs) and `Approve.run_all` (ADR-0228); `Spawn.mode`/`model`/
+>   `workdir` (#725, ADR-0218/0224); `is_error`/`duration_ms`/`exit_code`
+>   on `ToolResult` and `ToolOutput` (ADR-0176/0186); `envelope` on
+>   `ToolCall`/`ToolExec`/`ToolOutput` (the model's original `mcp` call,
+>   ADR-0226); `ToolCall.provider_meta`; `ToolExec.workdir`;
+>   `ToolRequest.reason` (`CardReason`) and `scopes` (ADR-0230) plus
+>   `detached` (ADR-0237), all mirrored on `PendingApproval`;
+>   `Compacted.mode` and `SessionInfo.predecessor` (ADR-0205);
+>   `Usage.purpose`; `McpChanged.error`; `ToolOverlayEntry.arg_pattern`
+>   (ADR-0163); `McpAuthAction::ConnectDeviceCode` and
+>   `McpAuthStatus.user_code` (ADR-0182). `McpServerStatus.state` is retired
+>   and always `None` (ADR-0226).
+> - *`ContentPart`* gains `Reasoning` (ADR-0160) and the replay-only
+>   `ToolReference`/`ToolSearchOutput`. The enum is not `#[non_exhaustive]`,
+>   so an exhaustive `match` needs new arms.
+>
+> **Config, env and definitions**
+> - *Agent frontmatter is identity only* (ADR-0207): `tools`,
+>   `disallowed_tools`, `permission`, `sandbox`, `can_spawn`,
+>   `spawnable_agents` and `mode` are gone. Authority lives in the session's
+>   mode, tuned with `config.yml` `modes:` and clamped by `permissions:`. The
+>   built-in roster is `general`/`plan`/`debug`, and `general` replaces
+>   `build` as the default. `build` and `explore` are retired as agents (their
+>   postures are modes now); a 0.6.0 log naming one resumes as `general`
+>   (ADR-0214/0215).
+> - *Env vars pruned* (ADR-0213): the six managed-state `*_FILE` overrides
+>   become one `ENTANGLEMENT_STATE_DIR`;
+>   `ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE`/`ECHO_FULL`/`LOG_BODIES` fold into
+>   `ENTANGLEMENT_DEBUG`;
+>   `ENTANGLEMENT_TUI_NOTIFY`/`TUI_NO_MOUSE` move to `config.yml` `tui:`;
+>   `ENTANGLEMENT_SESSION_RETENTION_DAYS` becomes the `config.yml` key only;
+>   `{NAME}_RPM`/`{NAME}_CONCURRENCY`/`ENTANGLEMENT_MAX_CONCURRENCY` become
+>   catalog-only; `{NAME}_BASE` and `ENTANGLEMENT_ENABLE_BASH` are removed.
+>   A retired variable that is still set prints one warning naming its
+>   replacement.
+> - *Skills* are additive-only: the `allowed_tools` mask is removed
+>   (ADR-0194), and so is `user_only`/`disable-model-invocation` (every skill
+>   is model-visible, ADR-0229).
+> - *MCP enablement* (#818, ADR-0226): the three-state `state:` key and the
+>   `mcp_enable` tool are retired. A registered server is available,
+>   `disabled: true` is the one opt-out, and servers connect lazily rather
+>   than at startup. A leftover `state:` warns once.
+> - *Retired during this cycle (never in a release, but warned once if
+>   present):* the `tool_advertising` and `discovery` knobs (ADR-0226), the
+>   `config.yml` `endpoints:` tool source (ADR-0227), and skill `tools:`
+>   frontmatter (ADR-0228).
+> - *Tool names:* `bash_output`/`agent_poll` → `poll`; `agent_spawn` →
+>   `agent { background: true }` (ADR-0161); `mcp_enable` is gone, and
+>   `mcp__<server>__<tool>` is no longer advertised; call it as
+>   `mcp(server, tool, args)` (ADR-0226). A stale name in a rule or mask
+>   warns at startup (ADR-0166).
+> - *Embedder API:* the runtime's `multi_user` module is gone, so `UserId`
+>   never enters `entanglement-runtime` (ADR-0181). Per-user seams are
+>   session-keyed and provider-hosted (ADR-0184/0188). `ToolExecutor::builder`
+>   replaces the positional constructors (#724). `LlmResponse` gains
+>   `reasoning`/`content_blocks`/`stop_reason`/`usage` (a struct literal needs
+>   `..Default::default()`), and `LlmRequest` gains `cache_key`/`retry`/
+>   `trailing_notice`, which a literal must set (it has no `Default`).
+>   `DEFAULT_AGENT` (`"general"`) is public, and an
+>   empty-prompt `Spawn` starts idle. MSRV is 1.88; `reqwest` is 0.13.
+
+### Added
+
+- **Permission modes** (ADR-0207/0209/0218/0228): four compiled-in modes with
+  grade-keyed `allow`/`deny`/`prompt` rule lists (longest match wins, a rule
+  naming a tool outranks a class rule), tools that declare a `Capability`,
+  `/mode` and Tab cycling, `request_mode`, `--mode` and `config.yml` `mode:`,
+  an agent `default_mode` that is only a starting hint, and spawn bounds
+  (`max_depth`/`max_agents`) as mode facts. `plan` mode grades authorship by
+  capability, and approving a plan offers *auto*, *build* or *reject*. A
+  shared read-only exec set covers git/gh/glab reads by subcommand, and
+  publishing commands prompt in `build` and are denied in `auto`. `auto` is
+  the unattended posture: default `allow`, with deny and prompt lists. In an
+  attended session a card never times out, and a late answer to an expired
+  card gets an expired notice (#828, ADR-0247).
+- **One advertised surface** (#818, ADR-0226): a fixed `KERNEL` snapshotted
+  per session (host tools, `rhai`, `web_fetch`, `agent`/`agent_send`,
+  `propose_plan`/`request_mode`, the `mcp` envelope), and six `Control`
+  discovery tools: `list_agents`, `list_models`, `list_skills`,
+  `load_skill`, `list_mcp`, `mcp_tools`. MCP servers are "registered =
+  available": they connect lazily, add/remove live, and `disabled: true` is
+  the one opt-out. Tool names last seen are cached in `mcp-tools.yml`.
+  Supersedes this cycle's intermediate `invoke`/`tool_search` designs
+  (ADR-0193/0196/0204).
+- **One `rhai` binding path** (#819/#820/#835, ADR-0227/0228/0248): every
+  binding runs the executor's dispatch seam, so mode, overlay, grants, hooks
+  and `FileChange` all apply. Adds `mcp::<server>::<tool>` and
+  `skill::<skill>::<fn>` namespaces; `http()` with user-layer `http_auth`
+  credentials that the script never sees; per-skill `lib.rhai`; `rhai { path,
+  args }` script files with a graded launch and `rhai.trusted` folders; and
+  importable library modules (built-in < user < project, with a built-in
+  `json_schema`). Also `glob_json`/`grep_json` (ADR-0206), and
+  `rhai` joins `background`/`poll` (ADR-0185).
+- **Unified long-running work** (#604, ADR-0161/0162/0165): a `background`
+  flag on `bash`/`call`/`agent`; one `poll` that joins any handle, lists a
+  session's pending operations (and the whole subtree's, #829), and pages
+  retained output; `agent_send` steers a running child or follows up a
+  finished one; background jobs are bounded by `timeout`, with TTL eviction.
+- **Undo/rewind of file edits** (#731/#787, ADR-0212): per-write backups, not
+  git; `InMsg::RevertFiles` / `/rewind`; configurable backup caps; replay never
+  touches the disk.
+- **`/fork`** (#786, ADR-0223): a non-compacting copy of a session
+  (`InMsg::ForkSession` → `SessionForked`).
+- **Session working directory** (#764, ADR-0224): `/cd`, `Spawn.workdir`,
+  `InMsg::SetWorkdir`. Relative paths are rewritten onto it before grading,
+  and the model learns it from the per-round notice.
+- **`web_fetch`** (#736/#808, ADR-0220/0225): an SSRF-guarded, Exec-graded
+  host tool that grades every redirect hop; clipboard image paste in the TUI
+  for vision models.
+- **User slash commands** (#733, ADR-0221): head-side prompt templates,
+  layered like other definitions.
+- **First-run onboarding and `/init`** (#732, ADR-0222): a provider/key picker
+  replaces the silent `EchoLlm` fallback. Heads without a key print a hint and
+  exit 2; echo is reachable only via `ENTANGLEMENT_PROVIDER=echo`.
+- **TUI**: configurable themes (including a light theme) and keybindings
+  (#735, ADR-0219); an always-visible project/path status line with a command
+  runner (#762); settings, cost and generation views; cache-hit visibility and
+  a sub-agent cost rollup; a stop cascade-vs-detach modal (ADR-0172); real
+  multiline input and bracketed paste.
+- **Lifecycle hooks** (#734): observe-only `SessionStart`/`SessionEnd`,
+  `Stop`, `PreCompact`, `SubagentStop` and `Notification` events.
+- **`ListPending`** (#726, ADR-0217) for parked approvals, and
+  **`ApprovalResolved`** (#883, ADR-0240) when a card is answered, expires or
+  unwinds.
+- **Unknown-session policy** `SpawnBlank | Refuse | Resume(loader)`
+  (#721, ADR-0210), and a tenant-preserving `IdGen` context (#722, ADR-0211).
+- **Persistence outage visibility** (#767, #723): `PersistenceDegraded`/
+  `PersistenceRecovered`, a recorded gap on a failed append, and a
+  resumable-prefix helper.
+- **OAuth for LLM provider endpoints** (#684, ADR-0189), MCP OAuth device-code
+  and web-redirect flows (ADR-0182/0187), and session-keyed per-user MCP
+  scopes (ADR-0188).
+- **Provider**: extended thinking round-trips as `ReasoningBlock` with an
+  adaptive request shape, and Gemini thinking tokens are counted (#602,
+  ADR-0160); catalog effort tiers, `thinking_required`, z.ai thinking control
+  and dual `zai`/`zai_paas` endpoints (ADR-0203); an inline `<think>`
+  `thinking_format` (ADR-0191); Fields-format reasoning capture (ADR-0200);
+  `prompt_cache_key` and a second Anthropic history cache anchor (#673); a
+  non-streaming `Llm::complete` (#728); a per-user admission gate on a shared
+  API key (ADR-0175); and an opt-in `openai_responses` provider for the
+  Responses API, defaulting to `gpt-5.4`.
+- **Live sub-agents survive compaction** (#862, ADR-0234): they are re-parented
+  under the successor (`ParentChanged`), which also inherits background work
+  and parked cards (ADR-0231/0238/0241/0242).
+- **Scoped spawn rules** `agent(<profile>)`/`agent_send(<handle>)` (#867,
+  ADR-0235), with spawning graded (ADR-0232). Config warns on scoped keys or
+  workdir scopes that a tool cannot honor (#878/#881).
+- **Structured tool results** (ADR-0176/0186): `is_error`, `duration_ms` and
+  `exit_code` as fields, with `is_error` rendered on the TUI badge.
+- **`.gitignore`-aware `glob`/`grep`** with a single-pass, budgeted walk
+  (ADR-0170/0178), and a watcher-driven plan-file-changed notice (ADR-0173).
+- **`skutter inspect modes`** and **`inspect commands`**; a
+  `narrate` aux purpose (ADR-0183); startup phase timing and lazy syntect
+  load (#703).
+
+### Changed
+
+- **Agents carry identity, not authority** (ADR-0207): see *Breaking
+  changes*. An agent is chosen at session start and never changes. Built-in
+  agent prompts share one exec-tool decision rule (#740).
+- **Every compaction forks a successor session** (ADR-0205): auto-compaction
+  and the prune-only fallback now fork like `/compact`, so no log is
+  rewritten in place. Prompt-cache discipline: last-turn anchors, full
+  thinking replay, cached-prefix compaction and a session-pinned date
+  (ADR-0202). The mode notice travels out of band so cache anchors keep
+  hitting.
+- **`bash` is the default exec**, registered at startup with curated
+  read-only allow rules (ADR-0195). Compound commands grade per segment and
+  shell escape constructs fail closed (ADR-0197); fd redirects no longer
+  hide a command from its rules.
+- **The tool overlay is wire-allowed when deny-only** (ADR-0177); its grade
+  reaches rhai bindings and child sessions. Rules or overlay entries naming
+  non-maskable tools are refused or warned (#843), and the bookkeeping
+  `Control` tools are non-maskable (#849, ADR-0232).
+- **Model discovery** offers only providers you can reach, and accepts
+  `provider/id` spellings.
+- **Multi-user is an embedder library API** (ADR-0181); no in-tree head is
+  multi-user.
+- **Default models**: `zai` moves to `glm-5.3` (and the new `zai_paas`
+  defaults to it), and `anthropic` moves to `claude-sonnet-5`.
+- **Build**: MSRV raised to 1.88 and CI-tested (`make msrv`); toolchain pinned
+  to 1.99.0; `reqwest` 0.13 with ring and bundled webpki roots and no bare
+  clients; dependency trims and per-crate integration-test harnesses
+  (ADR-0180); `make doc-cap` holds docs to 400 lines (#848); the file-cap gate
+  now counts everything but the `cfg(test)` module.
+
+### Fixed
+
+- **Compaction lineage**: a successor keeps the live model/generation (#768)
+  and the tool overlay (#776). Rewind covers adopted sub-agents' writes
+  (#870, ADR-0236). Heals walk the whole chain (#887/#888, ADR-0242).
+  Lineages stay linear, and a running script reads live mode and overlay
+  (#898–#900, ADR-0243). A resumed sub-agent answers to its ancestors and
+  inherits its predecessor's teardown tail (#905/#906, ADR-0246).
+- **Seqs and tasks**: seqs are delivered in order, leased by detached work,
+  with one supervisor task per id (#891–#893, ADR-0244). A retired session
+  keeps minting real seqs (#884, ADR-0239).
+- **Cards and questions**: a decision only answers its own kind of card, and
+  questions end on their result (#894/#895, ADR-0245). Background-script
+  cards survive a terminal `Status` (#872) and move to the compaction
+  successor (#871).
+- **Replay and resume**: 0.6.0 logs load (#720); a session logged under a
+  retired agent resumes as `general`, judged per session, and a read-only one
+  stays in `research` mode (#757, ADR-0214/0215/0216); replay seeds the
+  agent from `SessionStarted` (#638); the lazy-`Prompt` path refuses a known
+  hibernated child (#639, ADR-0168); resumed sessions announce their resolved
+  model; resuming a long session no longer freezes the TUI.
+- **Engine**: `Holly::shutdown` closes the outbox and `serve` handles SIGTERM
+  (#699/#700); `SetSessionMeta` and child-lifecycle commands apply mid-turn
+  instead of queuing toward the 64-command cap.
+- **Provider**: a bounded, retryable await-headers timeout (#658); MCP client
+  pagination, structured results and ping (#727), with binary never inlined;
+  aux traffic fails fast.
+- **rhai**: a script-triggered lazy MCP connect is bounded by the script's
+  budget (#831), and script calls stay out of the schema dedup and loop
+  breaker (#844).
+- **Runtime**: sub-agent answers page past the output cap (#614);
+  `AgentRegistry` lookups are scoped to the spawning parent (#618); a
+  sandboxed `call`'s `output_file` never rides an escape-root grant; the
+  `run` head relays `Throttle` (#794).
+- **TUI**: the `@file` index builds off the startup path, fixing a black
+  screen in huge trees (#678); tool output wraps and JSON pretty-prints.
+- **Tests**: runtime and provider tests are sandboxed from real user dirs and
+  shared endpoint state (#743, #747, #773).
+
 ## [0.6.0] - 2026-08-02
 
 A major feature release: multi-user mode, MCP OAuth, provider-bundled MCP
@@ -495,6 +761,7 @@ Initial (untagged) crates.io publish — the three-layer engine foundation
 streaming LLM providers, the stdio/TUI/`serve` heads, and the root-contained
 host tools.
 
+[0.7.0]: https://github.com/xmiksay/entanglement/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/xmiksay/entanglement/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.5.0
 [0.4.0]: https://github.com/xmiksay/entanglement/releases/tag/v0.4.0
