@@ -632,7 +632,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "entanglement-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "entanglement-provider"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "entanglement-runtime"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",

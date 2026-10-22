@@ -53,16 +53,16 @@ don't match `workspace.package.version`, and if `CHANGELOG.md` has no
 Then:
 
 ```bash
-make tag VERSION=v0.1.1   # refuses on a dirty tree, red `make verify`, or a
+make tag VERSION=vX.Y.Z   # refuses on a dirty tree, red `make verify`, or a
                            # VERSION that doesn't match workspace.package.version
-git push origin v0.1.1    # separate, explicit — `make tag` never pushes
+git push origin vX.Y.Z    # separate, explicit — `make tag` never pushes
 ```
 
 The pushed tag triggers `.github/workflows/release.yml`: `verify` (the full
 `make verify` gate) → `coverage` (`make coverage`, fails under `COV_MIN`) →
 `publish` (crates.io, see below) — each gated on the previous job.
 
-Convention: tag a `v0.1.x` on any merge an embedder needs, or on a lightweight
+Convention: tag a `vX.Y.Z` release on any merge an embedder needs, or on a lightweight
 cadence — see [`embedding/tls-and-pinning.md`](embedding/tls-and-pinning.md#pinning-a-dependency)'s "Pinning a dependency" section
 for why embedders want a tag over a raw `rev`.
 

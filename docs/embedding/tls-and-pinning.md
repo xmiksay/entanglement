@@ -42,12 +42,12 @@ never used: our clients never consult the OS trust store.
 
 ## Pinning a dependency
 
-Until now there were no tags, so a `Cargo.toml` git dependency had nothing
-stable to pin beyond a raw commit (`rev = "…"`). Starting from this guide,
-notable merges get tagged `v0.1.x`:
+A `Cargo.toml` git dependency can pin a raw commit (`rev = "…"`), but every
+release is tagged `vX.Y.Z` (see [`releasing.md`](../releasing.md)), so pin the
+tag instead:
 
 ```toml
-entanglement-runtime = { git = "https://github.com/xmiksay/entanglement", tag = "v0.1.0", default-features = false }
+entanglement-runtime = { git = "https://github.com/xmiksay/entanglement", tag = "v0.7.0", default-features = false }
 ```
 
 Prefer `tag =` over `rev =` in a site-style consumer — it survives a
@@ -59,7 +59,7 @@ Every tagged release also publishes to crates.io (see
 a plain registry dependency works too and needs no `git`/`tag` at all:
 
 ```toml
-entanglement-runtime = { version = "0.1", default-features = false }
+entanglement-runtime = { version = "0.7", default-features = false }
 ```
 
 ---
