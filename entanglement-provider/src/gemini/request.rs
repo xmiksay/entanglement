@@ -6,6 +6,7 @@
 
 use serde_json::{json, Map, Value};
 
+use super::schema::sanitize_schema;
 use super::{tool_name_from_id, THOUGHT_SIGNATURE_KEY};
 use crate::{
     ContentPart, GenerationParams, ImageSource, Message, MessageRole, ReasoningEffort, ToolCall,
@@ -287,89 +288,6 @@ fn convert_tools(tools: &[ToolSpec]) -> Option<Vec<Value>> {
     )
 }
 
-/// Gemini rejects JSON Schema meta-fields (`$schema`, `additionalProperties`,
-/// `$ref`, `title`, …) and the union `type: ["string","null"]` form. Strip the
-/// unsupported keys recursively, flatten a nullable union to `type` + `nullable`,
-/// and drop `required` entries not present in `properties` (Gemini 400s otherwise).
-fn sanitize_schema(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut out = Map::new();
-            let mut nullable_from_type = false;
-            for (k, v) in map {
-                if matches!(
-                    k.as_str(),
-                    "$schema"
-                        | "$ref"
-                        | "$id"
-                        | "$defs"
-                        | "definitions"
-                        | "additionalProperties"
-                        | "title"
-                        | "examples"
-                        | "default"
-                        | "const"
-                        | "oneOf"
-                        | "anyOf"
-                        | "allOf"
-                        | "not"
-                        | "format"
-                ) {
-                    continue;
-                }
-                if k == "type" {
-                    if let Value::Array(types) = v {
-                        let mut primary: Option<String> = None;
-                        for t in types.iter().filter_map(|t| t.as_str()) {
-                            if t == "null" {
-                                nullable_from_type = true;
-                            } else if primary.is_none() {
-                                primary = Some(t.to_string());
-                            }
-                        }
-                        if let Some(t) = primary {
-                            out.insert("type".into(), Value::String(t));
-                        }
-                        continue;
-                    }
-                }
-                out.insert(k.clone(), sanitize_schema(v));
-            }
-            if nullable_from_type {
-                out.insert("nullable".into(), Value::Bool(true));
-            }
-            prune_required(&mut out);
-            Value::Object(out)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sanitize_schema).collect()),
-        _ => value.clone(),
-    }
-}
-
-/// Drop `required` names not present in `properties`, removing it when empty.
-fn prune_required(out: &mut Map<String, Value>) {
-    let prop_keys: Option<Vec<String>> = out
-        .get("properties")
-        .and_then(|p| p.as_object())
-        .map(|m| m.keys().cloned().collect());
-    let Some(Value::Array(arr)) = out.get("required").cloned() else {
-        out.remove("required");
-        return;
-    };
-    let allowed: Vec<Value> = arr
-        .into_iter()
-        .filter(|v| match (v.as_str(), &prop_keys) {
-            (Some(name), Some(keys)) => keys.iter().any(|k| k == name),
-            _ => false,
-        })
-        .collect();
-    if allowed.is_empty() {
-        out.remove("required");
-    } else {
-        out.insert("required".into(), Value::Array(allowed));
-    }
-}
-
 #[cfg(test)]
 mod request_tests {
     use super::*;
@@ -623,24 +541,5 @@ mod request_tests {
         let inline = &contents[0]["parts"][0]["inlineData"];
         assert_eq!(inline["mimeType"], "image/png");
         assert_eq!(inline["data"], "AAAA");
-    }
-
-    #[test]
-    fn sanitize_strips_meta_fields_and_prunes_required() {
-        let schema = json!({
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "properties": { "a": { "type": ["string", "null"], "format": "uri" } },
-            "required": ["a", "ghost"],
-        });
-        let out = sanitize_schema(&schema);
-        assert!(out.get("$schema").is_none());
-        assert!(out.get("additionalProperties").is_none());
-        assert_eq!(out["properties"]["a"]["type"], "string");
-        assert_eq!(out["properties"]["a"]["nullable"], true);
-        assert!(out["properties"]["a"].get("format").is_none());
-        // "ghost" is not a property, so it is pruned; "a" survives.
-        assert_eq!(out["required"], json!(["a"]));
     }
 }

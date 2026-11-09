@@ -323,6 +323,7 @@ impl Llm for GeminiLlm {
 
 mod cache;
 mod request;
+mod schema;
 mod sse;
 use request::build_body;
 // Private re-imports keep `super::parse_frame`/`super::handle_chunk` valid for
