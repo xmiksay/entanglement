@@ -187,6 +187,26 @@ seam implementations over it. Per seam:
   the in-tree profile expansion, which is process-global — fold
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
+- **Your own tools as an in-process MCP server**
+  ([ADR-0249](../adr/0249-in-process-mcp-servers-and-per-session-skills.md)) —
+  implement `mcp::InProcessMcp` (`list_tools(session)`,
+  `call_tool(session, request_id, name, arguments)` answering an MCP
+  `CallToolResult` object) and put `McpServerConfig::from_in_process(handler)`
+  in each session's scope. The model reaches it like any server — `list_mcp`,
+  `mcp_tools`, the `mcp(...)` envelope, a script's `mcp::<server>::<tool>()` —
+  with no network hop, and your handler learns which session (and request id,
+  stable across a resumed turn, for idempotent writes) every call is. The
+  tool list is cached per `(scope key, server)`: key the scope by everything
+  that changes the list (user, tenant, …) or `evict_scope` when it changes.
+  Grade read-only tools with `capabilities` (`read`); the rest grade `Write`.
+- **Per-session skills** — build skills in code with
+  `SkillMeta::new(name, description, body)` (and `.with_lib(source)` for a
+  `lib.rhai`), collect them in a `SkillRegistry`, and serve each session its
+  own through a `SkillResolver` set twice: on
+  `ToolExecutor::builder(..).skill_resolver(r.clone())` (`list_skills`, the
+  `skill::` namespaces) and on the registered
+  `LoadSkillTool::with_resolver(live, r)`. `None` falls back to the live
+  registry. Keep it an in-memory lookup.
 
 ---
 

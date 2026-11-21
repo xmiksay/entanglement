@@ -216,6 +216,22 @@ No API change; three behaviours an embedder can see.
 - **Behaviour:** `import "<name>"` now resolves in every run, and the
   `rhai` guide's `load_skill` result ends with the module listing.
 
+## In-process MCP servers and per-session skills (ADR-0249)
+
+- **Break:** `McpServerConfig` gains `in_process: Option<InProcessServer>`
+  and derives `Default` — add `in_process: None` to a struct literal, or end
+  it with `..Default::default()`.
+- **Added:** `mcp::{InProcessMcp, InProcessServer}`,
+  `McpServerConfig::from_in_process(handler)`, `Transport::InProcess`,
+  `McpClient::InProcess`, `McpClient::{list_tools_in, call_tool_in}` (the
+  session-aware forms; `list_tools`/`call_tool` refuse an in-process
+  server). An in-process server only connects inside a session's
+  `McpScope` — see [§7](../approvals-mcp-multi-user.md#7-multi-user-per-user-providers-permissions-tokens).
+- **Added:** `skills::{SkillResolver, SessionSkills}`,
+  `ToolExecutorBuilder::skill_resolver(r)`, `LoadSkillTool::with_resolver(live, r)`,
+  `SkillMeta::new(name, description, body)` and, with `rhai`,
+  `SkillMeta::with_lib(source)`. Nothing changes until you set a resolver.
+
 ---
 
 Previous: [Migration notes — one surface, binding path & skills (ADR-0226–0230)](one-surface-and-rhai.md) · Next: [TLS & dependency pinning](../tls-and-pinning.md)

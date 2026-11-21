@@ -144,7 +144,9 @@ impl Dispatcher {
             ));
         }
         let connect: Connect = match target {
-            Target::Scoped(scopes, scope, server) => Box::pin(scopes.script_connect(scope, server)),
+            Target::Scoped(scopes, scope, server) => {
+                Box::pin(scopes.script_connect(self.session.clone(), scope, server))
+            }
             Target::Global(server) => {
                 let (avail, registry, active, http) = (
                     self.mcp_avail.clone(),

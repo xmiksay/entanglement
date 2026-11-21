@@ -36,7 +36,7 @@ use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::questions::OpenQuestions;
-use crate::skills::SkillRegistry;
+use crate::skills::SessionSkills;
 use crate::subagent::SpawnGuard;
 use crate::tool_advertising::SharedAdvertisingState;
 #[cfg(feature = "rhai")]
@@ -159,7 +159,7 @@ pub(super) struct LadderCtx {
     pub plan_root: std::path::PathBuf,
     pub cancels: CancelRegistry,
     pub tools: SharedRegistry,
-    pub skills: Arc<std::sync::RwLock<Arc<SkillRegistry>>>,
+    pub skills: SessionSkills,
     pub mcp_avail: Arc<AvailableMcp>,
     pub mcp_active: ActiveServers,
     pub mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,

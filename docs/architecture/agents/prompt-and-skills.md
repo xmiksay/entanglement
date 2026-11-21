@@ -136,6 +136,13 @@
   Writing a skill's `SKILL.md`/`lib.rhai` (any user or project skill dir)
   always asks, in every mode — the trusted-code write floor
   ([gates & host tools](../gates-and-host-tools.md)).
+- **Per-session skills (✅ [ADR-0249](../../adr/0249-in-process-mcp-servers-and-per-session-skills.md)):**
+  an embedder's `SkillResolver` picks each session's `SkillRegistry`
+  (`skills::SessionSkills`: the live registry plus the resolver) for
+  `list_skills`, `load_skill` (`LoadSkillTool::with_resolver`, resolved in
+  `run_for_session`), a script's `skill::` namespaces and the `SkillActive`
+  bookkeeping; `None` is the live registry. `SkillMeta::new`/`with_lib` build
+  a skill in code, its lib compiled under the discovery rules.
 - **Importable modules (✅ #835, [ADR-0248](../../adr/0248-importable-rhai-library-modules.md)):**
   skill-independent `import "<name>" as m;` libraries. They are layered
   like definitions: built-in < `${config_dir}/entanglement/rhai/modules/` <

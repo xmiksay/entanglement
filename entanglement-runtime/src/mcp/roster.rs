@@ -85,6 +85,7 @@ mod tests {
 
     fn cfg(url: &str, oauth: bool) -> McpServerConfig {
         McpServerConfig {
+            in_process: None,
             command: None,
             args: vec![],
             env: HashMap::new(),

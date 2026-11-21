@@ -32,6 +32,8 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use entanglement_core::{ContentPart, SessionId};
+
 use crate::capability::Capability;
 use crate::tools::Tool;
 use anyhow::{anyhow, Context, Result};
@@ -39,7 +41,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
 
-use super::SkillRegistry;
+use super::{SessionSkills, SkillRegistry, SkillResolver};
 use crate::tool_names::LOAD_SKILL_TOOL;
 
 /// The `load_skill` host tool. Holds the shared, live-reloadable
@@ -47,12 +49,26 @@ use crate::tool_names::LOAD_SKILL_TOOL;
 /// swaps in a fresh registry without restarting the engine) and resolves a
 /// `skill_name` against its *current* value deterministically.
 pub struct LoadSkillTool {
-    registry: Arc<RwLock<Arc<SkillRegistry>>>,
+    skills: SessionSkills,
 }
 
 impl LoadSkillTool {
     pub fn new(registry: Arc<RwLock<Arc<SkillRegistry>>>) -> Self {
-        Self { registry }
+        Self {
+            skills: SessionSkills::new(registry),
+        }
+    }
+
+    /// Resolve each session's skills through `resolver` (ADR-0249), falling
+    /// back to `registry` — pair it with the executor's
+    /// [`skill_resolver`](crate::tool_runner::ToolExecutorBuilder::skill_resolver).
+    pub fn with_resolver(
+        registry: Arc<RwLock<Arc<SkillRegistry>>>,
+        resolver: SkillResolver,
+    ) -> Self {
+        Self {
+            skills: SessionSkills::new(registry).with_resolver(resolver),
+        }
     }
 }
 
@@ -91,14 +107,27 @@ impl Tool for LoadSkillTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        let parsed: LoadSkillInput = serde_json::from_str(input)
-            .context("invalid input to load_skill: expected {\"skill_name\": string}")?;
-        // Snapshot the current registry `Arc` under the lock (cheap — a refcount
-        // bump) rather than holding the lock across the lookup below, so a
-        // concurrent reload's write lock is never contended by this async call.
-        let registry = self.registry.read().unwrap().clone();
-        load(&registry, &parsed.skill_name)
+        // Snapshot the current registry `Arc` (cheap — a refcount bump)
+        // rather than holding the lock across the lookup, so a concurrent
+        // reload's write lock is never contended by this async call.
+        load(&self.skills.live(), &skill_name(input)?)
     }
+
+    async fn run_for_session(
+        &self,
+        session: &SessionId,
+        _request_id: &str,
+        input: &str,
+    ) -> Result<Vec<ContentPart>> {
+        let text = load(&self.skills.for_session(session), &skill_name(input)?)?;
+        Ok(crate::tools::text_parts(text))
+    }
+}
+
+fn skill_name(input: &str) -> Result<String> {
+    let parsed: LoadSkillInput = serde_json::from_str(input)
+        .context("invalid input to load_skill: expected {\"skill_name\": string}")?;
+    Ok(parsed.skill_name)
 }
 
 /// Parse the `skill_id: <name>\n` header a successful [`render`] result begins

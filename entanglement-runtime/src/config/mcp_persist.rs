@@ -83,6 +83,7 @@ mod tests {
 
     fn stdio_cfg(command: &str) -> McpServerConfig {
         McpServerConfig {
+            in_process: None,
             command: Some(command.to_string()),
             args: vec!["-y".to_string()],
             env: HashMap::new(),

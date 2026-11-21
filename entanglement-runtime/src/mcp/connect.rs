@@ -18,7 +18,9 @@ use super::{McpClient, McpServerConfig, McpTool, McpToolCache, McpToolDef};
 /// wire label — meaningful only after [`McpServerConfig::transport`] has already
 /// validated the XOR, so it just reads back which field was set.
 pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
-    if cfg.command.is_some() {
+    if cfg.in_process.is_some() {
+        "in-process"
+    } else if cfg.command.is_some() {
         "stdio"
     } else {
         "http"
@@ -40,13 +42,15 @@ pub(crate) async fn connect_client(
     http: &entanglement_core::HttpClient,
     api_key: Option<&str>,
 ) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
-    connect_client_with_store(name, cfg, secret_env, http, api_key, None).await
+    connect_client_with_store(name, cfg, secret_env, http, api_key, None, None).await
 }
 
 /// [`connect_client`] with the OAuth credential source made explicit (#684):
 /// `token_store` is the per-scope store a session-keyed MCP scope supplies
 /// ([`super::scoped::McpScopes`]), and `None` falls back to the process-global
-/// managed file — byte-identical to every pre-#684 caller.
+/// managed file — byte-identical to every pre-#684 caller. `session` is the
+/// connecting session of a scoped connect, which an in-process server needs
+/// to list its tools (ADR-0249); `None` everywhere else.
 pub(crate) async fn connect_client_with_store(
     name: &str,
     cfg: &McpServerConfig,
@@ -56,6 +60,7 @@ pub(crate) async fn connect_client_with_store(
     #[cfg_attr(not(feature = "mcp-http"), allow(unused_variables))] token_store: Option<
         Arc<dyn entanglement_core::TokenStore>,
     >,
+    session: Option<&entanglement_core::SessionId>,
 ) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
     #[cfg(feature = "mcp-http")]
     let client = McpClient::connect_with_auth(
@@ -69,7 +74,9 @@ pub(crate) async fn connect_client_with_store(
     .await?;
     #[cfg(not(feature = "mcp-http"))]
     let client = McpClient::connect(name, cfg, secret_env, http, api_key).await?;
-    let defs = client.list_tools().await?;
+    // The connecting session reaches an in-process server's `list_tools`
+    // (ADR-0249); a session-less connect of one is refused there.
+    let defs = client.list_tools_in(session).await?;
     Ok((client, defs))
 }
 

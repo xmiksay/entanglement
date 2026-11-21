@@ -225,6 +225,7 @@ mod tests {
 
     fn http_server(url: &str, oauth: Option<entanglement_core::OauthConfig>) -> McpServerConfig {
         McpServerConfig {
+            in_process: None,
             command: None,
             args: vec![],
             env: HashMap::new(),

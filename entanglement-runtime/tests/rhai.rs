@@ -119,6 +119,9 @@ mod nested_calls;
 // `load_skill rhai`, and their dirs join the write floor.
 #[path = "rhai/modules.rs"]
 mod modules;
+// ADR-0249: an in-process MCP server and per-session skills.
+#[path = "rhai/in_process.rs"]
+mod in_process;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the

@@ -74,6 +74,10 @@ Now in [cards, lineages & sessions (ADR-0233–0248)](migrations/cards-and-sessi
 
 Now in [cards, lineages & sessions (ADR-0233–0248)](migrations/cards-and-sessions.md#importable-rhai-modules-adr-0248-835).
 
+## In-process MCP servers and per-session skills (ADR-0249)
+
+Now in [cards, lineages & sessions (ADR-0233–0248)](migrations/cards-and-sessions.md#in-process-mcp-servers-and-per-session-skills-adr-0249).
+
 ---
 
 Previous: [§5–§7 — Approvals across restart, MCP & multi-user](approvals-mcp-multi-user.md) · Next: [TLS & dependency pinning](tls-and-pinning.md)

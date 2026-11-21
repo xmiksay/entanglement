@@ -131,6 +131,7 @@ mod tests {
         config.mcp.insert(
             "docs".to_string(),
             crate::mcp::McpServerConfig {
+                in_process: None,
                 command: Some("docs-server".to_string()),
                 args: vec![],
                 env: HashMap::new(),

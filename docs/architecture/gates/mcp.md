@@ -16,7 +16,14 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
 `mcp_tools`, and calls through the `mcp(server, tool, args)` envelope.
 
 - **Transport (`mcp::client::McpClient`):** an enum over two concrete transports,
-  chosen per server by the `command` XOR `url` config (§ADR-0080/#312). `McpTool`
+  chosen per server by the `command` XOR `url` config (§ADR-0080/#312), plus
+  an embedder's **in-process** server (`McpServerConfig::in_process`,
+  [ADR-0249](../../adr/0249-in-process-mcp-servers-and-per-session-skills.md)):
+  no handshake, its `InProcessMcp` handler is called with the connecting
+  session on `list_tools` and with `(session, request_id)` on every
+  `call_tool` (`McpClient::call_tool_in`, fed by `McpTool::run_with_meta`).
+  It connects only within a session's scope; a session-less connect or call
+  is refused. `McpTool`
   holds an `Arc<McpClient>` and only calls `list_tools`/`call_tool`, so it adapts
   whichever backs a server. Both share the handshake (`initialize` +
   `notifications/initialized`) then `tools/list` (discovery) / `tools/call`

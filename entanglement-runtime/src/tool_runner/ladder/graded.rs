@@ -106,11 +106,7 @@ pub(super) async fn rhai(
     let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
     let launch = crate::script::Launch {
         root: ctx.plan_root.clone(),
-        skills: ctx
-            .skills
-            .read()
-            .expect("skill registry lock poisoned")
-            .clone(),
+        skills: ctx.skills.for_session(&session),
         workdir: ctx
             .workdirs
             .get(&session)
