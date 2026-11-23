@@ -217,7 +217,6 @@ fn render_config(resolved: &Resolved) -> String {
                         .to_string()
                 }
                 Ok(crate::mcp::Transport::Http { url, .. }) => format!("http {url}"),
-                Ok(crate::mcp::Transport::InProcess(_)) => "in-process".to_string(),
                 Err(e) => format!("(invalid: {e})"),
             };
             let _ = writeln!(out, "  {name}{state}: {transport}");

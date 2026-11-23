@@ -282,7 +282,6 @@ async fn collect(
 
 fn mcp_entry(url: &str, disabled: bool) -> McpServerConfig {
     McpServerConfig {
-        in_process: None,
         command: None,
         args: vec![],
         env: HashMap::new(),

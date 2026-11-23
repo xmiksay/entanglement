@@ -116,7 +116,6 @@ fn setup_for(url: &str, dir: &TempDir) -> Setup {
         .record("slow-srv", url, &["ping".to_string()])
         .unwrap();
     let cfg = McpServerConfig {
-        in_process: None,
         command: None,
         args: vec![],
         env: HashMap::new(),

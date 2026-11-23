@@ -65,6 +65,8 @@ pub mod grants;
 pub mod history;
 pub mod hooks;
 pub mod host;
+// Host script namespaces for embedders (ADR-0249).
+pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
 // the dispatch seam; ungated so the lean executor compiles the same ladder.
 pub mod http_gate;

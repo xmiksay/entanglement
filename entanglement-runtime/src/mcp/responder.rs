@@ -338,7 +338,6 @@ mod tests {
 
     fn http_cfg(oauth: bool) -> crate::mcp::McpServerConfig {
         crate::mcp::McpServerConfig {
-            in_process: None,
             command: None,
             args: vec![],
             env: HashMap::new(),

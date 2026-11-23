@@ -110,7 +110,6 @@ async fn run(path: Path, policy: Policy) -> Run {
         .record("stub-srv", &url, &["call".to_string()])
         .unwrap();
     let cfg = McpServerConfig {
-        in_process: None,
         command: None,
         args: vec![],
         env: HashMap::new(),

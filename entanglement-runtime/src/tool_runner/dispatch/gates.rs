@@ -14,7 +14,7 @@ use crate::tools::ToolRegistry;
 use crate::{mode, run_limits};
 
 use super::decision::Prompt;
-use super::grade::{grade_call, graded_name, GradeInputs};
+use super::grade::{grade_call, grade_call_with_capabilities, graded_name, GradeInputs};
 use super::{script, Call, Dispatcher, Outcome, Via};
 
 /// What [`Dispatcher::clear`] decided: run (with the overlay entry that
@@ -181,14 +181,26 @@ impl Dispatcher {
     /// The overlay deny, then the grade (overlay enable entry or mode grade,
     /// grants, the write floor) — the first rungs of every call, shared with
     /// `rhai`'s own launch (ADR-0228). `Err` is the refusal text.
+    ///
+    /// A tool returning [`CallGrading`][crate::tools::CallGrading] from its
+    /// `call_grading(input)` is graded under the target name and capabilities
+    /// it returns (ADR-0249): the overlay, the mode's class rules, the grants
+    /// and the approval card all see the target, not the envelope tool.
     pub(crate) async fn grade(
         &self,
         tools: &ToolRegistry,
         tool: &str,
         input: &str,
     ) -> Result<(Permission, Option<String>, Option<ToolOverlayEntry>), String> {
-        // Read-variants grade as the tool they ride on (ADR-0098/0206).
-        let graded = graded_name(tool);
+        // A per-call grading override: the tool tells us what name and
+        // capabilities to grade as (e.g. an embedder's `invoke` → its target).
+        let call_grade = tools.get(tool).and_then(|t| t.call_grading(input));
+        // Read-variants grade as the tool they ride on (ADR-0098/0206);
+        // a per-call override wins over that.
+        let graded = match &call_grade {
+            Some(cg) => cg.name.as_str(),
+            None => graded_name(tool),
+        };
         // An overlay deny withdraws the tool outright (#634), ahead of hooks.
         if overlay_denies(&self.overlays, &self.chain, graded) {
             return Err(format!(
@@ -196,6 +208,26 @@ impl Dispatcher {
             ));
         }
         let overlay_entry = overlay_grade_entry(&self.overlays, &self.chain, graded);
+        // When per-call grading provides capabilities, bypass the resolver
+        // (which would look up the target name in the registry and find
+        // nothing) and grade directly against the mode table.
+        if let Some(ref cg) = call_grade {
+            let (perm, arg) = grade_call_with_capabilities(
+                &self.mode_table,
+                &*self.grants,
+                &self.chain,
+                &self.session,
+                &self.mode,
+                overlay_entry.as_ref(),
+                &self.ceiling,
+                self.escape_root.as_ref().map(|er| er.root.as_path()),
+                Some((&*self.trust, self.files_root.as_path())),
+                graded,
+                cg.capabilities,
+                input,
+            );
+            return Ok((perm, arg, overlay_entry));
+        }
         let inputs = GradeInputs {
             tools,
             resolver: &*self.resolver,

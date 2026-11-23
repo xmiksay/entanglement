@@ -109,22 +109,22 @@ impl Tool for McpTool {
     }
 
     async fn run(&self, input: &str) -> Result<String> {
-        Ok(content_text(&self.call(None, input).await?.content))
+        Ok(content_text(&self.call(input).await?.content))
     }
 
     async fn run_content(&self, input: &str) -> Result<Vec<ContentPart>> {
-        Ok(self.call(None, input).await?.content)
+        Ok(self.call(input).await?.content)
     }
 
     /// What the registry actually calls: carries the server's `isError` onto
     /// the structured `is_error` side channel (ADR-0176, #727).
     async fn run_with_meta(
         &self,
-        session: &SessionId,
-        request_id: &str,
+        _session: &SessionId,
+        _request_id: &str,
         input: &str,
     ) -> Result<ToolRun> {
-        let McpResult { content, is_error } = self.call(Some((session, request_id)), input).await?;
+        let McpResult { content, is_error } = self.call(input).await?;
         Ok(ToolRun {
             is_error,
             ..ToolRun::new(content)
@@ -134,9 +134,8 @@ impl Tool for McpTool {
 
 impl McpTool {
     /// One `tools/call` round-trip, rendered (text, images, resources) by
-    /// [`render_result`]. `call` is `(session, request_id)` when the registry
-    /// dispatches it — an in-process server needs it (ADR-0249).
-    async fn call(&self, call: Option<(&SessionId, &str)>, input: &str) -> Result<McpResult> {
+    /// [`render_result`].
+    async fn call(&self, input: &str) -> Result<McpResult> {
         // The model sends the tool input as a JSON object string; MCP wants it as
         // the `arguments` object. An empty input is a no-arg call.
         let arguments: Value = if input.trim().is_empty() {
@@ -149,10 +148,7 @@ impl McpTool {
         // `crate::arg_validate` (ADR-0196 §6), which runs against this same
         // `self.schema` (the server's `inputSchema`) before `run` is ever
         // called — so a missing/malformed argument never reaches this point.
-        let result = self
-            .client
-            .call_tool_in(call, &self.remote_name, arguments)
-            .await?;
+        let result = self.client.call_tool(&self.remote_name, arguments).await?;
         Ok(render_result(&result))
     }
 }

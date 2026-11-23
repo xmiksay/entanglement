@@ -10,6 +10,8 @@ use std::path::Path;
 
 use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
 
+use crate::capability::Capability;
+use crate::mode::ModeTable;
 use crate::permission::{clamp_to_base, min_permission};
 use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
@@ -79,6 +81,75 @@ pub(crate) async fn grade_call(
         && g.floor
             .is_some_and(|(trust, root)| crate::rhai_trust::floored_write(tool, input, root, trust))
     {
+        Permission::Ask
+    } else {
+        perm
+    };
+    (perm, arg)
+}
+
+/// Per-call grading with caller-supplied capabilities (ADR-0249): the same
+/// ladder as [`grade_call`] but the capabilities come from
+/// [`Tool::call_grading`][crate::tools::Tool::call_grading] instead of the
+/// registry, and the session's mode grades directly with them (no pluggable
+/// resolver, since the target name is not in the registry).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grade_call_with_capabilities(
+    mode_table: &ModeTable,
+    grants: &dyn GrantStore,
+    _chain: &[SessionId],
+    session: &SessionId,
+    mode: &str,
+    overlay_entry: Option<&ToolOverlayEntry>,
+    ceiling: &PermissionProfile,
+    root: Option<&Path>,
+    floor: Option<(&Trust, &Path)>,
+    tool: &str,
+    capabilities: &[Capability],
+    input: &str,
+) -> (Permission, Option<String>) {
+    let arg = grading_arg(tool, input, root);
+    let workdir = crate::permission::permission_workdir(tool, input);
+    let base = match overlay_entry {
+        Some(entry) => {
+            let overlay_profile = crate::permission::overlay_entry_grade(tool, entry);
+            let grade = crate::permission_bash::resolve_scoped_bash_aware(
+                &overlay_profile,
+                tool,
+                arg.as_deref(),
+                workdir.as_deref(),
+            );
+            clamp_to_base(
+                grade,
+                ceiling,
+                tool,
+                capabilities,
+                arg.as_deref(),
+                workdir.as_deref(),
+            )
+        }
+        None => {
+            // Grade the target against the session's own mode with the
+            // provided capabilities. An unknown mode fails closed.
+            let own = mode_table
+                .get(mode)
+                .map(|m| m.resolve(tool, capabilities, arg.as_deref(), workdir.as_deref()))
+                .unwrap_or(Permission::Deny);
+            clamp_to_base(
+                own,
+                ceiling,
+                tool,
+                capabilities,
+                arg.as_deref(),
+                workdir.as_deref(),
+            )
+        }
+    };
+    let perm = apply_grant(grants, session, tool, arg.as_deref(), base, mode);
+    let perm = if perm == Permission::Allow
+        && floor.is_some_and(|(trust, files_root)| {
+            crate::rhai_trust::floored_write(tool, input, files_root, trust)
+        }) {
         Permission::Ask
     } else {
         perm

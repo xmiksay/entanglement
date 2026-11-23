@@ -63,6 +63,7 @@ impl ToolExecutor {
             skill_dirs: Vec::new(),
             module_dirs: Vec::new(),
             attendance: crate::attendance::Attendance::new(),
+            host_namespaces: Vec::new(),
         }
     }
 }
@@ -97,6 +98,7 @@ pub struct ToolExecutorBuilder {
     pub(super) skill_dirs: Vec<std::path::PathBuf>,
     pub(super) module_dirs: Vec<std::path::PathBuf>,
     pub(super) attendance: crate::attendance::Attendance,
+    pub(super) host_namespaces: Vec<crate::host_ns::HostNamespace>,
 }
 
 impl ToolExecutorBuilder {
@@ -305,6 +307,19 @@ impl ToolExecutorBuilder {
     /// `question_timeout` alone decides.
     pub fn attendance(mut self, attendance: crate::attendance::Attendance) -> Self {
         self.attendance = attendance;
+        self
+    }
+
+    /// Register a host script namespace (ADR-0249): a rhai `<ns>::<fn>(#{…})`
+    /// surface backed by one of the caller's registered tools. Each run
+    /// resolves the session's function set through
+    /// [`HostNamespace::resolver`][crate::host_ns::HostNamespace::resolver]
+    /// and generates one binding per function; a call dispatches to the
+    /// backing tool with `{"tool": "<fn>", "args": {…}}`. The tool's
+    /// [`call_grading`][crate::tools::Tool::call_grading] grades each call
+    /// as its target. Default: none.
+    pub fn host_namespace(mut self, ns: crate::host_ns::HostNamespace) -> Self {
+        self.host_namespaces.push(ns);
         self
     }
 

@@ -107,7 +107,6 @@ async fn spawn_server() -> (String, ServerLog) {
 
 fn oauth_http_server(url: &str) -> McpServerConfig {
     McpServerConfig {
-        in_process: None,
         command: None,
         args: vec![],
         env: HashMap::new(),

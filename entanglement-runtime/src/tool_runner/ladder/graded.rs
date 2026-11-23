@@ -104,6 +104,14 @@ pub(super) async fn rhai(
     input: String,
 ) {
     let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
+    let host_ns: Vec<_> = ctx
+        .host_namespaces
+        .iter()
+        .filter_map(|ns| {
+            let fns = (ns.resolver)(&session)?;
+            Some((ns.name.clone(), ns.tool.clone(), fns))
+        })
+        .collect();
     let launch = crate::script::Launch {
         root: ctx.plan_root.clone(),
         skills: ctx.skills.for_session(&session),
@@ -112,6 +120,7 @@ pub(super) async fn rhai(
             .get(&session)
             .map(|w| (ctx.plan_root.clone(), w)),
         scripts: ctx.scripts.clone(),
+        host_namespaces: host_ns,
     };
     // The blocking engine can't be aborted, so the task abort pairs with a
     // cooperative stop flag its progress callback polls (#167).

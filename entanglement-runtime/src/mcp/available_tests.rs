@@ -10,7 +10,6 @@ use crate::tools::SharedRegistry;
 
 fn http_entry(url: &str) -> McpServerConfig {
     McpServerConfig {
-        in_process: None,
         command: None,
         args: vec![],
         env: HashMap::new(),

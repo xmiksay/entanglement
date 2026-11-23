@@ -47,7 +47,6 @@ pub mod client;
 #[path = "connect.rs"]
 mod connect_impl;
 mod in_flight;
-pub mod in_process;
 mod last_seen;
 pub mod live;
 pub mod oauth_ops;
@@ -60,7 +59,6 @@ pub mod tool;
 
 pub use available::{AvailableMcp, AvailableServer};
 pub use client::{McpClient, McpToolDef};
-pub use in_process::{InProcessMcp, InProcessServer};
 pub use last_seen::McpToolCache;
 // Split out of this file along the 400-line file cap (#559): crate-internal
 // helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
@@ -96,7 +94,7 @@ pub use tool::McpTool;
 /// (#375) lets a live `/mcp add`/`remove` write the section straight back to
 /// `config.yml` (`crate::config::save_mcp`) — the wire shape stays whatever a
 /// hand-edited file already used, field-for-field.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     /// stdio transport: executable to spawn (looked up on `PATH`).
@@ -140,11 +138,6 @@ pub struct McpServerConfig {
     /// (or survive across) the server actually connecting.
     #[serde(default)]
     pub capabilities: HashMap<String, String>,
-    /// In-process transport (ADR-0249): the embedder's own handler, set in
-    /// code — never read from or written to YAML. Exclusive with `command`
-    /// and `url`, and only usable inside a session's [`McpScope`].
-    #[serde(skip)]
-    pub in_process: Option<InProcessServer>,
 }
 
 /// The resolved transport for one server — the `command` XOR `url` choice made
@@ -161,28 +154,13 @@ pub enum Transport {
         url: String,
         headers: HashMap<String, String>,
     },
-    /// Call the embedder's handler in-process (ADR-0249).
-    InProcess(InProcessServer),
 }
 
 impl McpServerConfig {
-    /// An in-process server (ADR-0249): `handler` answers every call with
-    /// the calling session. Register it in a session's [`McpScope`]; set
-    /// `capabilities` to grade its read-only tools as `read`.
-    pub fn from_in_process(handler: std::sync::Arc<dyn InProcessMcp>) -> Self {
-        Self {
-            in_process: Some(InProcessServer::new(handler)),
-            ..Self::default()
-        }
-    }
-
     /// What the server's transport points at — the URL, or the command line —
     /// so the last-seen tool cache never serves a list recorded for a
     /// different endpoint under the same name.
     pub fn target(&self) -> String {
-        if self.in_process.is_some() {
-            return "in-process".to_string();
-        }
         match (&self.url, &self.command) {
             (Some(url), _) => url.clone(),
             (None, Some(command)) => std::iter::once(command.as_str())
@@ -195,12 +173,6 @@ impl McpServerConfig {
 
     /// Resolve the transport, enforcing the `command` XOR `url` rule.
     pub fn transport(&self) -> Result<Transport> {
-        if let Some(handle) = &self.in_process {
-            if self.command.is_some() || self.url.is_some() {
-                bail!("an in-process MCP server sets no `command` or `url`");
-            }
-            return Ok(Transport::InProcess(handle.clone()));
-        }
         match (self.command.as_deref(), self.url.as_deref()) {
             (Some(command), None) => Ok(Transport::Stdio {
                 command: command.to_string(),
@@ -229,7 +201,6 @@ impl McpServerConfig {
 impl From<entanglement_core::McpServerSpec> for McpServerConfig {
     fn from(spec: entanglement_core::McpServerSpec) -> Self {
         Self {
-            in_process: None,
             command: spec.command,
             args: spec.args,
             env: spec.env,
@@ -340,7 +311,6 @@ mod tests {
         user_mcp.insert(
             "web_search_prime".to_string(),
             McpServerConfig {
-                in_process: None,
                 command: None,
                 args: vec![],
                 env: HashMap::new(),

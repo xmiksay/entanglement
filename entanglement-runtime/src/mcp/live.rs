@@ -268,7 +268,6 @@ mod tests {
 
     fn stdio_cfg(command: &str) -> McpServerConfig {
         McpServerConfig {
-            in_process: None,
             command: Some(command.to_string()),
             args: vec![],
             env: HashMap::new(),
@@ -283,7 +282,6 @@ mod tests {
 
     fn http_cfg(url: &str, headers: HashMap<String, String>) -> McpServerConfig {
         McpServerConfig {
-            in_process: None,
             command: None,
             args: vec![],
             env: HashMap::new(),

@@ -56,7 +56,6 @@ impl McpScopes {
     /// `Err` is the tool-error text.
     pub(crate) fn script_connect(
         self: &Arc<Self>,
-        session: SessionId,
         scope: McpScope,
         server: String,
     ) -> impl Future<Output = Result<(), String>> + Send + 'static {
@@ -65,7 +64,7 @@ impl McpScopes {
         // connect, which could only end in "was evicted while connecting".
         let key = format!("{}\0{}\0{server}", scope.key, self.generation(&scope.key));
         self.script_connects.join(key, move || async move {
-            this.ensure_server(&session, &scope, &server)
+            this.ensure_server(&scope, &server)
                 .await
                 .map(drop)
                 .map_err(|e| render_scope_error(&server, &e))
@@ -74,12 +73,9 @@ impl McpScopes {
 
     /// Connect `name` for `scope` if it isn't cached yet — the
     /// `available_enable.rs` double-checked critical section, keyed by
-    /// `(scope key, server)` instead of server alone. `session` is the one
-    /// connecting: an in-process server lists its tools for it (ADR-0249),
-    /// and the list is then shared by the whole scope key.
+    /// `(scope key, server)` instead of server alone.
     pub(super) async fn ensure_server(
         &self,
-        session: &SessionId,
         scope: &McpScope,
         name: &str,
     ) -> Result<Arc<ScopeServer>> {
@@ -139,7 +135,6 @@ impl McpScopes {
                 &self.http,
                 None,
                 scope.token_store.clone(),
-                Some(session),
             ),
         )
         .await
@@ -249,10 +244,10 @@ mod tests {
         );
         let session = SessionId::new("s");
         let scope = || scopes.scope_of(&session).expect("scoped");
-        let first = scopes.script_connect(session.clone(), scope(), "kb".into());
+        let first = scopes.script_connect(scope(), "kb".into());
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         scopes.evict_scope("user-a");
-        let second = scopes.script_connect(session.clone(), scope(), "kb".into());
+        let second = scopes.script_connect(scope(), "kb".into());
         let (first, second) = (first.await, second.await);
         let count = std::fs::read_to_string(&spawns).unwrap().lines().count();
         let _ = std::fs::remove_dir_all(&dir);

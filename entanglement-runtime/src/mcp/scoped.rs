@@ -141,9 +141,8 @@ impl McpScopes {
             let this = self.clone();
             let scope = scope.clone();
             let name = name.clone();
-            let session = session.clone();
             pending.spawn(async move {
-                let result = this.ensure_server(&session, &scope, &name).await;
+                let result = this.ensure_server(&scope, &name).await;
                 (name, result)
             });
         }
@@ -174,7 +173,7 @@ impl McpScopes {
             return Ok(base);
         };
         if let Some(name) = owning_server(&scope, tool) {
-            self.ensure_server(session, &scope, &name)
+            self.ensure_server(&scope, &name)
                 .await
                 .map_err(|e| render_scope_error(&name, &e))?;
         }

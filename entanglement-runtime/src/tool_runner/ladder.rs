@@ -184,6 +184,9 @@ pub(super) struct LadderCtx {
     pub http_gate: Arc<crate::http_gate::HttpGate>,
     /// `rhai.trusted` folders and skill dirs (ADR-0228), canonical.
     pub trust: Arc<crate::rhai_trust::Trust>,
+    /// Host script namespaces (ADR-0249): only read by the `rhai` arm.
+    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+    pub host_namespaces: Vec<crate::host_ns::HostNamespace>,
 }
 
 impl LadderCtx {

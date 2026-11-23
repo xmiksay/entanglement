@@ -307,7 +307,6 @@ fn clash_warning(name: &str, other: &str) -> String {
 /// Convert a catalog [`ProviderMcpServer`] into the runtime config shape.
 fn bundled_config(b: &ProviderMcpServer) -> McpServerConfig {
     McpServerConfig {
-        in_process: None,
         command: b.command.clone(),
         args: b.args.clone(),
         env: b.env.clone(),

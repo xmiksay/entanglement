@@ -187,18 +187,18 @@ seam implementations over it. Per seam:
   the in-tree profile expansion, which is process-global — fold
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
-- **Your own tools as an in-process MCP server**
+- **Your own tools with per-call grading**
   ([ADR-0249](../adr/0249-in-process-mcp-servers-and-per-session-skills.md)) —
-  implement `mcp::InProcessMcp` (`list_tools(session)`,
-  `call_tool(session, request_id, name, arguments)` answering an MCP
-  `CallToolResult` object) and put `McpServerConfig::from_in_process(handler)`
-  in each session's scope. The model reaches it like any server — `list_mcp`,
-  `mcp_tools`, the `mcp(...)` envelope, a script's `mcp::<server>::<tool>()` —
-  with no network hop, and your handler learns which session (and request id,
-  stable across a resumed turn, for idempotent writes) every call is. The
-  tool list is cached per `(scope key, server)`: key the scope by everything
-  that changes the list (user, tenant, …) or `evict_scope` when it changes.
-  Grade read-only tools with `capabilities` (`read`); the rest grade `Write`.
+  register one native `Tool` (e.g. `invoke`) that dispatches to your internal
+  hub, and implement `Tool::call_grading(input)` to return the target name and
+  capabilities per call: the dispatch ladder grades each call as its target
+  (overlay deny/enable, mode class rules, grants, approval cards all see the
+  target name, not the envelope tool's).
+- **Host script namespaces** — `ToolExecutorBuilder::host_namespace(ns)` with
+  `HostNamespace { name, tool, resolver }`: a Rhai `<ns>::<fn>(#{...})`
+  surface backed by your registered tool, with `HostFnResolver` listing the
+  callable function names per session. Each call dispatches as
+  `{"tool": "<fn>", "args": {...}}`, graded by the tool's `call_grading`.
 - **Per-session skills** — build skills in code with
   `SkillMeta::new(name, description, body)` (and `.with_lib(source)` for a
   `lib.rhai`), collect them in a `SkillRegistry`, and serve each session its

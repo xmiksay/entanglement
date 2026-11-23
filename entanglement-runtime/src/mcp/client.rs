@@ -25,9 +25,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
 
-use entanglement_core::SessionId;
-
-use super::in_process::InProcessClient;
 use super::stdio::StdioClient;
 use super::McpServerConfig;
 
@@ -49,9 +46,6 @@ pub enum McpClient {
     /// optionally, an OAuth bearer token (ADR-0153).
     #[cfg(feature = "mcp-http")]
     Http(McpHttpClient),
-    /// The embedder's own handler, called in-process with the calling
-    /// session (ADR-0249).
-    InProcess(InProcessClient),
 }
 
 impl McpClient {
@@ -97,9 +91,6 @@ impl McpClient {
             super::Transport::Stdio { command, args, env } => McpClient::Stdio(
                 StdioClient::spawn(server, &command, &args, &env, secret_env).await?,
             ),
-            super::Transport::InProcess(handle) => {
-                McpClient::InProcess(InProcessClient::new(server, &handle))
-            }
             super::Transport::Http { url, headers } => McpClient::Http(match auth {
                 Some(auth) => {
                     McpHttpClient::connect_authenticated(
@@ -137,9 +128,6 @@ impl McpClient {
             super::Transport::Stdio { command, args, env } => McpClient::Stdio(
                 StdioClient::spawn(server, &command, &args, &env, secret_env).await?,
             ),
-            super::Transport::InProcess(handle) => {
-                McpClient::InProcess(InProcessClient::new(server, &handle))
-            }
             super::Transport::Http { .. } => anyhow::bail!(
                 "MCP server `{server}` uses the HTTP transport, but this build was compiled \
                  without the `mcp-http` feature"
@@ -148,42 +136,21 @@ impl McpClient {
         Ok(Arc::new(client))
     }
 
-    /// Discover the server's tools. An in-process server needs a session —
-    /// use [`list_tools_in`][Self::list_tools_in].
+    /// Discover the server's tools.
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        self.list_tools_in(None).await
-    }
-
-    /// Discover the server's tools on behalf of `session` — what an
-    /// in-process server is told (ADR-0249); stdio/HTTP ignore it.
-    pub async fn list_tools_in(&self, session: Option<&SessionId>) -> Result<Vec<McpToolDef>> {
         match self {
             McpClient::Stdio(c) => c.list_tools().await,
             #[cfg(feature = "mcp-http")]
             McpClient::Http(c) => c.list_tools().await,
-            McpClient::InProcess(c) => c.list_tools(session).await,
         }
     }
 
-    /// Invoke one tool by its remote name. An in-process server needs the
-    /// calling session — use [`call_tool_in`][Self::call_tool_in].
+    /// Invoke one tool by its remote name.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value> {
-        self.call_tool_in(None, name, arguments).await
-    }
-
-    /// Invoke one tool for `call` = `(session, request_id)`: an in-process
-    /// server receives both, stdio/HTTP ignore them.
-    pub async fn call_tool_in(
-        &self,
-        call: Option<(&SessionId, &str)>,
-        name: &str,
-        arguments: Value,
-    ) -> Result<Value> {
         match self {
             McpClient::Stdio(c) => c.call_tool(name, arguments).await,
             #[cfg(feature = "mcp-http")]
             McpClient::Http(c) => c.call_tool(name, arguments).await,
-            McpClient::InProcess(c) => c.call_tool(call, name, arguments).await,
         }
     }
 }

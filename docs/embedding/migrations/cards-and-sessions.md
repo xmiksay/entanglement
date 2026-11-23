@@ -216,17 +216,18 @@ No API change; three behaviours an embedder can see.
 - **Behaviour:** `import "<name>"` now resolves in every run, and the
   `rhai` guide's `load_skill` result ends with the module listing.
 
-## In-process MCP servers and per-session skills (ADR-0249)
+## Per-call tool grading, host script namespaces and per-session skills (ADR-0249)
 
-- **Break:** `McpServerConfig` gains `in_process: Option<InProcessServer>`
-  and derives `Default` — add `in_process: None` to a struct literal, or end
-  it with `..Default::default()`.
-- **Added:** `mcp::{InProcessMcp, InProcessServer}`,
-  `McpServerConfig::from_in_process(handler)`, `Transport::InProcess`,
-  `McpClient::InProcess`, `McpClient::{list_tools_in, call_tool_in}` (the
-  session-aware forms; `list_tools`/`call_tool` refuse an in-process
-  server). An in-process server only connects inside a session's
-  `McpScope` — see [§7](../approvals-mcp-multi-user.md#7-multi-user-per-user-providers-permissions-tokens).
+- **Added:** `tools::CallGrading` and `Tool::call_grading(input) ->
+  Option<CallGrading>` (default `None`): when `Some`, the dispatch ladder
+  grades the call under the returned `name` and `capabilities` instead of
+  the tool's own. The `PermissionResolver`, the `GrantStore` and every
+  `Always` approval see the target name.
+- **Added:** `host_ns::{HostNamespace, HostFn, HostFnResolver}` and
+  `ToolExecutorBuilder::host_namespace(ns)`: a Rhai `<ns>::<fn>(#{...})`
+  surface backed by one registered tool. Each call dispatches to the
+  backing tool with `{"tool": "<fn>", "args": {...}}`, graded via the
+  tool's `call_grading`.
 - **Added:** `skills::{SkillResolver, SessionSkills}`,
   `ToolExecutorBuilder::skill_resolver(r)`, `LoadSkillTool::with_resolver(live, r)`,
   `SkillMeta::new(name, description, body)` and, with `rhai`,

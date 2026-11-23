@@ -59,6 +59,17 @@ pub(super) async fn run_engine(
     let http_enabled = dispatcher.tools.contains(HTTP_TOOL);
     let mcp = namespaces::mcp_entries(&*dispatcher);
     let skills = launch.skills.clone();
+    let host_entries: Vec<namespaces::HostEntry> = launch
+        .host_namespaces
+        .iter()
+        .flat_map(|(ns, tool, fns)| {
+            fns.iter().map(move |f| namespaces::HostEntry {
+                ns: ns.clone(),
+                fn_name: f.name.clone(),
+                tool: tool.clone(),
+            })
+        })
+        .collect();
     let handle = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::new_raw();
         configure_engine(&mut engine, timeout, start, on_print, stop, timed_out);
@@ -71,7 +82,7 @@ pub(super) async fn run_engine(
             timeout,
         );
         engine.set_module_resolver(modules::Resolver(skills.modules.clone()));
-        namespaces::register(&mut engine, tx, &mcp, &skills);
+        namespaces::register(&mut engine, tx, &mcp, &skills, &host_entries);
         data::register_data_functions(&mut engine);
         // A constant, so `args = …`/`args.n = …` fails: the caller's input
         // is not the script's scratch space. Compiled *without* the scope:
