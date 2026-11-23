@@ -119,6 +119,12 @@ mod nested_calls;
 // `load_skill rhai`, and their dirs join the write floor.
 #[path = "rhai/modules.rs"]
 mod modules;
+// ADR-0249: per-session skills (SkillResolver, SessionSkills, SkillMeta).
+#[path = "rhai/session_skills.rs"]
+mod session_skills;
+// ADR-0249: per-call tool grading and host script namespaces.
+#[path = "rhai/host_tools.rs"]
+mod host_tools;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the
