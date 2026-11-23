@@ -161,6 +161,9 @@ impl ModeResolver {
     ) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
+        // Fail-closed (#156, carried into ADR-0207): a session whose
+        // `ModeChanged` broadcast was dropped is unseen here, and an unseen
+        // session must never resolve to allow-all.
         let mode_name = {
             let modes = self.modes.lock().expect("mode mutex poisoned");
             modes.get(session).cloned()
@@ -169,6 +172,9 @@ impl ModeResolver {
             return Permission::Deny;
         };
         let Some(mode) = self.table.get(&mode_name) else {
+            // Defense in depth, not a reachable path for a built-in table:
+            // `InMsg::SetMode` is the only writer of a session's mode, and a
+            // real head validates it against the same table before sending.
             tracing::warn!(%session, mode = %mode_name, "unknown permission mode; denying");
             return Permission::Deny;
         };
