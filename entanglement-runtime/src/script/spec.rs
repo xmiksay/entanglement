@@ -48,6 +48,7 @@ Host bindings:
 
 Generated namespaces:
   mcp::<server>::<tool>(#{arg: value, ...}) / mcp::<server>::<tool>() -> the MCP tool's text result (parse_json it if JSON); a failure throws. Names map to identifiers: other characters become _, a name not starting with a letter gets a t_ prefix (2fa -> t_2fa), a reserved word a _ suffix — mcp_tools shows each tool's rhai name.
+  <host>::<fn>(#{arg: value, ...}) / <host>::<fn>() -> a host-registered namespace; each call dispatches to the backing tool with {"tool": "<fn>", "args": {...}} and is graded as the target function. Available functions depend on the session.
   skill::<skill>::<fn>(...) -> a function from a skill's lib.rhai; load_skill lists them.
   import "<name>" as m; then m::<fn>(...) -> import a module by name; `load_skill rhai` lists them.
   Nested rhai, the mcp envelope and the session tools (agent, ask_user, poll, list_*, load_skill, ...) cannot be called from a script.

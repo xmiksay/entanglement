@@ -342,10 +342,7 @@ pub(super) async fn discover(
         LIST_MODELS_TOOL => Some(discover::models_list(ctx.catalog.as_deref())),
         LIST_MCP_TOOL | MCP_TOOLS_TOOL => None,
         _ => Some(discover::skills_list(
-            &ctx.skills
-                .read()
-                .expect("skill registry lock poisoned")
-                .disclosures(),
+            &ctx.skills.for_session(&session).disclosures(),
         )),
     };
     if let Some(output) = static_reply {

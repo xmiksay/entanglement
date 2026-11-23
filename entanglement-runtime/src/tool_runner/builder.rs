@@ -22,7 +22,7 @@ use crate::plan_files::PlanFileRegistry;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::retained_output::RetainedOutputRegistry;
 use crate::script_ops::ScriptRegistry;
-use crate::skills::SkillRegistry;
+use crate::skills::{SessionSkills, SkillRegistry, SkillResolver};
 use crate::tools::SharedRegistry;
 
 use super::{DiscoverySurface, EscapeRoot};
@@ -44,7 +44,7 @@ impl ToolExecutor {
             retained: RetainedOutputRegistry::new(),
             scripts: ScriptRegistry::new(),
             agents: Arc::new(RwLock::new(AgentCatalog::new())),
-            skills: Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+            skills: SessionSkills::default(),
             base: PermissionProfile::new(Permission::Allow),
             active: Arc::new(Mutex::new(HashMap::new())),
             perm_modes: Arc::new(Mutex::new(HashMap::new())),
@@ -63,6 +63,7 @@ impl ToolExecutor {
             skill_dirs: Vec::new(),
             module_dirs: Vec::new(),
             attendance: crate::attendance::Attendance::new(),
+            host_namespaces: Vec::new(),
         }
     }
 }
@@ -78,7 +79,7 @@ pub struct ToolExecutorBuilder {
     pub(super) retained: RetainedOutputRegistry,
     pub(super) scripts: ScriptRegistry,
     pub(super) agents: Arc<RwLock<AgentCatalog>>,
-    pub(super) skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    pub(super) skills: SessionSkills,
     pub(super) base: PermissionProfile,
     pub(super) active: Arc<Mutex<HashMap<SessionId, Agent>>>,
     pub(super) perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
@@ -97,6 +98,7 @@ pub struct ToolExecutorBuilder {
     pub(super) skill_dirs: Vec<std::path::PathBuf>,
     pub(super) module_dirs: Vec<std::path::PathBuf>,
     pub(super) attendance: crate::attendance::Attendance,
+    pub(super) host_namespaces: Vec<crate::host_ns::HostNamespace>,
 }
 
 impl ToolExecutorBuilder {
@@ -147,7 +149,18 @@ impl ToolExecutorBuilder {
     /// The live skill registry `load_skill` resolves against (#400) — the
     /// executor emits `OutEvent::SkillActive` off it. Default: empty.
     pub fn live_skills(mut self, skills: Arc<RwLock<Arc<SkillRegistry>>>) -> Self {
-        self.skills = skills;
+        self.skills.set_live(skills);
+        self
+    }
+
+    /// Serve each session its own skills (ADR-0249): `list_skills`, the
+    /// executor's `load_skill` bookkeeping and a script's `skill::` namespace
+    /// read `resolver(session)`, falling back to the live registry on `None`.
+    /// Register the matching [`LoadSkillTool::with_resolver`]
+    /// (crate::skills::LoadSkillTool::with_resolver) so the tool itself
+    /// resolves the same way. Default: none.
+    pub fn skill_resolver(mut self, resolver: SkillResolver) -> Self {
+        self.skills = self.skills.with_resolver(resolver);
         self
     }
 
@@ -294,6 +307,19 @@ impl ToolExecutorBuilder {
     /// `question_timeout` alone decides.
     pub fn attendance(mut self, attendance: crate::attendance::Attendance) -> Self {
         self.attendance = attendance;
+        self
+    }
+
+    /// Register a host script namespace (ADR-0249): a rhai `<ns>::<fn>(#{…})`
+    /// surface backed by one of the caller's registered tools. Each run
+    /// resolves the session's function set through
+    /// [`HostNamespace::resolver`][crate::host_ns::HostNamespace::resolver]
+    /// and generates one binding per function; a call dispatches to the
+    /// backing tool with `{"tool": "<fn>", "args": {…}}`. The tool's
+    /// [`call_grading`][crate::tools::Tool::call_grading] grades each call
+    /// as its target. Default: none.
+    pub fn host_namespace(mut self, ns: crate::host_ns::HostNamespace) -> Self {
+        self.host_namespaces.push(ns);
         self
     }
 

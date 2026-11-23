@@ -46,6 +46,21 @@ use crate::tools::SharedRegistry;
 #[async_trait]
 pub trait PermissionResolver: Send + Sync {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission;
+
+    /// Resolve with caller-supplied capabilities (ADR-0249 per-call grading):
+    /// the same grade as [`resolve`][Self::resolve], but the tool's capability
+    /// comes from the caller instead of the registry. The default delegates to
+    /// `resolve` unchanged — only a resolver that grades by capability (e.g.
+    /// `ModeResolver`) overrides this.
+    async fn resolve_with_capabilities(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        input: &str,
+        _capabilities: &[crate::capability::Capability],
+    ) -> Permission {
+        self.resolve(session, tool, input).await
+    }
 }
 
 /// Persist and read "always allow" grants (#174). A grant only ever upgrades a
@@ -136,9 +151,14 @@ impl ModeResolver {
     }
 }
 
-#[async_trait]
-impl PermissionResolver for ModeResolver {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+impl ModeResolver {
+    fn grade(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        input: &str,
+        caps: &[capability::Capability],
+    ) -> Permission {
         let arg = grading_arg(tool, input, self.root.as_deref());
         let workdir = permission_workdir(tool, input);
         // Fail-closed (#156, carried into ADR-0207): a session whose
@@ -158,19 +178,36 @@ impl PermissionResolver for ModeResolver {
             tracing::warn!(%session, mode = %mode_name, "unknown permission mode; denying");
             return Permission::Deny;
         };
-        let capabilities = {
-            let registry = self.registry.read().expect("tool registry lock poisoned");
-            capability::capability_of(tool, &registry).unwrap_or(&[])
-        };
-        let own = mode.resolve(tool, capabilities, arg.as_deref(), workdir.as_deref());
+        let own = mode.resolve(tool, caps, arg.as_deref(), workdir.as_deref());
         clamp_to_base(
             own,
             &self.base,
             tool,
-            capabilities,
+            caps,
             arg.as_deref(),
             workdir.as_deref(),
         )
+    }
+}
+
+#[async_trait]
+impl PermissionResolver for ModeResolver {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+        let caps = {
+            let registry = self.registry.read().expect("tool registry lock poisoned");
+            capability::capability_of(tool, &registry).unwrap_or(&[])
+        };
+        self.grade(session, tool, input, caps)
+    }
+
+    async fn resolve_with_capabilities(
+        &self,
+        session: &SessionId,
+        tool: &str,
+        input: &str,
+        capabilities: &[capability::Capability],
+    ) -> Permission {
+        self.grade(session, tool, input, capabilities)
     }
 }
 

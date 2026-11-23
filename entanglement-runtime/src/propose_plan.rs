@@ -180,7 +180,7 @@ pub async fn run_propose_plan(
     // ADR-0207 §7: graded by capability before anything else runs — a mode
     // that denies `Plan` never even gets a materialized file or a parked
     // approval out of a call it was always going to refuse.
-    let perm = resolve_effective(&*resolver, &chain, PROPOSE_PLAN_TOOL, &input).await;
+    let perm = resolve_effective(&*resolver, &chain, PROPOSE_PLAN_TOOL, &input, None).await;
     if perm == Permission::Deny {
         let output =
             format!("tool `{PROPOSE_PLAN_TOOL}` denied by mode `{mode}` — use /mode to switch");

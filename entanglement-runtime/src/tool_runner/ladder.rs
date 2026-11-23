@@ -36,7 +36,7 @@ use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::questions::OpenQuestions;
-use crate::skills::SkillRegistry;
+use crate::skills::SessionSkills;
 use crate::subagent::SpawnGuard;
 use crate::tool_advertising::SharedAdvertisingState;
 #[cfg(feature = "rhai")]
@@ -159,7 +159,7 @@ pub(super) struct LadderCtx {
     pub plan_root: std::path::PathBuf,
     pub cancels: CancelRegistry,
     pub tools: SharedRegistry,
-    pub skills: Arc<std::sync::RwLock<Arc<SkillRegistry>>>,
+    pub skills: SessionSkills,
     pub mcp_avail: Arc<AvailableMcp>,
     pub mcp_active: ActiveServers,
     pub mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
@@ -184,6 +184,9 @@ pub(super) struct LadderCtx {
     pub http_gate: Arc<crate::http_gate::HttpGate>,
     /// `rhai.trusted` folders and skill dirs (ADR-0228), canonical.
     pub trust: Arc<crate::rhai_trust::Trust>,
+    /// Host script namespaces (ADR-0249): only read by the `rhai` arm.
+    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
+    pub host_namespaces: Vec<crate::host_ns::HostNamespace>,
 }
 
 impl LadderCtx {

@@ -116,6 +116,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         skill_dirs,
         module_dirs,
         attendance,
+        host_namespaces,
     } = b;
     let mode_table = mode_table.unwrap_or_else(|| {
         Arc::new(crate::mode::ModeTable::builtin().expect("built-in permission modes must parse"))
@@ -286,6 +287,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
                 &skill_dirs,
                 &module_dirs,
             )),
+            host_namespaces,
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);

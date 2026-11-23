@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use rhai::{Dynamic, Engine, EvalAltResult, Module};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::rhai_ident::{plan_mcp, plan_skills, RhaiName};
+use crate::rhai_ident::{plan_mcp, plan_skills, rhai_ident, RhaiName};
 use crate::skills::SkillRegistry;
 use crate::tool_runner::Dispatcher;
 
@@ -81,12 +81,24 @@ fn entries_from(
     }
 }
 
-/// Register the `mcp::…` and `skill::…` modules on `engine`.
+/// One function in a host namespace.
+#[derive(Clone)]
+pub(super) struct HostEntry {
+    /// The namespace name (e.g. `infra`).
+    pub ns: String,
+    /// The function name (e.g. `page_edit`).
+    pub fn_name: String,
+    /// The registered backing tool (e.g. `invoke`).
+    pub tool: String,
+}
+
+/// Register the `mcp::…`, `skill::…` and host `<ns>::…` modules on `engine`.
 pub(super) fn register(
     engine: &mut Engine,
     tx: UnboundedSender<BindingCall>,
     mcp: &McpView,
     skills: &SkillRegistry,
+    host_entries: &[HostEntry],
 ) {
     let pairs: Vec<(String, String)> = mcp
         .entries
@@ -135,6 +147,35 @@ pub(super) fn register(
             }
         };
     }
+    // Host namespaces (ADR-0249): `<ns>::<fn>(#{...})` dispatches to the
+    // backing tool with `{"tool": "<fn>", "args": {...}}`.
+    let mut host_modules: BTreeMap<String, Module> = BTreeMap::new();
+    for entry in host_entries {
+        let ns_id = rhai_ident(&entry.ns);
+        let fn_id = rhai_ident(&entry.fn_name);
+        let module = host_modules.entry(ns_id.clone()).or_default();
+        let (t, tool, fn_name, path) = (
+            tx.clone(),
+            entry.tool.clone(),
+            entry.fn_name.clone(),
+            format!("{ns_id}::{fn_id}"),
+        );
+        module.set_native_fn(&fn_id, move |args: rhai::Map| {
+            call_host(&t, &tool, &fn_name, &path, args)
+        });
+        let (t, tool, fn_name, path) = (
+            tx.clone(),
+            entry.tool.clone(),
+            entry.fn_name.clone(),
+            format!("{ns_id}::{fn_id}"),
+        );
+        module.set_native_fn(&fn_id, move || {
+            call_host(&t, &tool, &fn_name, &path, rhai::Map::new())
+        });
+    }
+    for (ns_path, module) in host_modules {
+        engine.register_static_module(ns_path, module.into());
+    }
 }
 
 /// One MCP call: the argument map as the tool's JSON input; the text result.
@@ -150,6 +191,28 @@ fn call_mcp(
                 "{tool}: arguments are not JSON-representable: {e}"
             ))
         })?;
+    super::send_binding(tx, tool, Some(path), input)
+}
+
+/// One host namespace call: wraps the args into `{"tool": "<fn>", "args": {...}}`
+/// and dispatches to the backing tool.
+fn call_host(
+    tx: &UnboundedSender<BindingCall>,
+    tool: &str,
+    fn_name: &str,
+    path: &str,
+    args: rhai::Map,
+) -> Result<String, Box<EvalAltResult>> {
+    let args_value: serde_json::Value = rhai::serde::from_dynamic(&Dynamic::from_map(args))
+        .map_err(|e| {
+            runtime_err(&format!(
+                "{path}: arguments are not JSON-representable: {e}"
+            ))
+        })?;
+    let input = serde_json::json!({
+        "tool": fn_name,
+        "args": args_value,
+    });
     super::send_binding(tx, tool, Some(path), input)
 }
 
@@ -189,7 +252,7 @@ mod tests {
             servers,
             entries: mcp.to_vec(),
         };
-        register(&mut engine, tx, &view, skills);
+        register(&mut engine, tx, &view, skills, &[]);
         let responder = std::thread::spawn(move || {
             while let Some(call) = rx.blocking_recv() {
                 let at = call.rhai_path.map(|p| format!(" @{p}")).unwrap_or_default();

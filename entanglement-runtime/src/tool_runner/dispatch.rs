@@ -19,7 +19,7 @@ mod resolve;
 mod script;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use entanglement_core::{
     ContentPart, Holly, PermissionProfile, SessionId, ToolEnvelope, ToolOverlayEntry,
@@ -35,7 +35,7 @@ use crate::pending::PendingDecisions;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::run_limits::DenialTracker;
 use crate::seam;
-use crate::skills::SkillRegistry;
+use crate::skills::SessionSkills;
 use crate::tool_advertising::SharedAdvertisingState;
 use crate::tool_names::REQUEST_MODE_TOOL;
 use crate::tools::{SharedRegistry, ToolRegistry};
@@ -56,7 +56,7 @@ pub(crate) struct Dispatcher {
     /// The live registry — a lazy MCP connect registers into it and
     /// re-snapshots (ADR-0201).
     pub registry: SharedRegistry,
-    pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    pub skills: SessionSkills,
     pub active_skill: Arc<Mutex<HashSet<SessionId>>>,
     pub resolver: Arc<dyn PermissionResolver>,
     /// The ancestor chain, nearest first (ADR-0024).

@@ -10,6 +10,7 @@ use std::path::Path;
 
 use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
 
+use crate::capability::Capability;
 use crate::permission::{clamp_to_base, min_permission};
 use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
@@ -35,6 +36,10 @@ pub(crate) struct GradeInputs<'a> {
     /// `path` resolves against — for the write floor (ADR-0228); `None`
     /// where the floor does not apply.
     pub floor: Option<(&'a Trust, &'a Path)>,
+    /// Per-call capability override (ADR-0249): when `Some`, this is used
+    /// instead of looking up the tool's capabilities from the registry.
+    /// Set by [`Tool::call_grading`][crate::tools::Tool::call_grading].
+    pub capability_override: Option<&'a [Capability]>,
 }
 
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
@@ -62,7 +67,9 @@ pub(crate) async fn grade_call(
                 arg.as_deref(),
                 workdir.as_deref(),
             );
-            let capabilities = crate::capability::capability_of(tool, g.tools).unwrap_or(&[]);
+            let capabilities = g
+                .capability_override
+                .unwrap_or_else(|| crate::capability::capability_of(tool, g.tools).unwrap_or(&[]));
             clamp_to_base(
                 grade,
                 g.ceiling,
@@ -72,7 +79,7 @@ pub(crate) async fn grade_call(
                 workdir.as_deref(),
             )
         }
-        None => resolve_effective(g.resolver, g.chain, tool, input).await,
+        None => resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await,
     };
     let perm = apply_grant(g.grants, g.session, tool, arg.as_deref(), base, g.mode);
     let perm = if perm == Permission::Allow
@@ -129,17 +136,32 @@ pub(crate) fn apply_grant(
 /// needed. An empty chain is impossible — the leaf session is always present —
 /// but defaults to `Deny` if one ever arrives.
 ///
+/// When `capability_override` is `Some` (ADR-0249 per-call grading), each
+/// session is resolved via
+/// [`resolve_with_capabilities`][PermissionResolver::resolve_with_capabilities]
+/// so a resolver that grades by capability class sees the caller-supplied
+/// ones instead of the registry's.
+///
 /// `pub(crate)` for `propose_plan`'s own gate.
 pub(crate) async fn resolve_effective(
     resolver: &dyn PermissionResolver,
     chain: &[SessionId],
     tool: &str,
     input: &str,
+    capability_override: Option<&[Capability]>,
 ) -> Permission {
     let mut perm = Permission::Allow;
     let mut any = false;
     for session in chain {
-        perm = min_permission(perm, resolver.resolve(session, tool, input).await);
+        let grade = match capability_override {
+            Some(caps) => {
+                resolver
+                    .resolve_with_capabilities(session, tool, input, caps)
+                    .await
+            }
+            None => resolver.resolve(session, tool, input).await,
+        };
+        perm = min_permission(perm, grade);
         any = true;
     }
     if any {
@@ -182,19 +204,19 @@ mod tests {
         );
         let chain = vec![child.clone(), parent.clone()];
         assert_eq!(
-            resolve_effective(&resolver, &chain, "bash", "{}").await,
+            resolve_effective(&resolver, &chain, "bash", "{}", None).await,
             Permission::Ask
         );
         // A root (single-element chain) resolves to its own grade unchanged.
         assert_eq!(
-            resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}").await,
+            resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}", None).await,
             Permission::Allow
         );
         // A parent `Deny` floors the child regardless of the tenant's Allow.
         let deny_parent =
             PerSessionResolver([(parent.clone(), Permission::Deny)].into_iter().collect());
         assert_eq!(
-            resolve_effective(&deny_parent, &chain, "bash", "{}").await,
+            resolve_effective(&deny_parent, &chain, "bash", "{}", None).await,
             Permission::Deny
         );
     }

@@ -58,6 +58,7 @@ impl CallGrader {
             root: self.root.as_deref(),
             // A mid-call target is a fetch, never a file write.
             floor: None,
+            capability_override: None,
         };
         match grade_call(&inputs, tool, input).await.0 {
             Permission::Ask if self.run_all => Permission::Allow,

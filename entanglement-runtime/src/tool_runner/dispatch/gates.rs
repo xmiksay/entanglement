@@ -181,14 +181,26 @@ impl Dispatcher {
     /// The overlay deny, then the grade (overlay enable entry or mode grade,
     /// grants, the write floor) — the first rungs of every call, shared with
     /// `rhai`'s own launch (ADR-0228). `Err` is the refusal text.
+    ///
+    /// A tool returning [`CallGrading`][crate::tools::CallGrading] from its
+    /// `call_grading(input)` is graded under the target name and capabilities
+    /// it returns (ADR-0249): the overlay, the resolver, the grants and the
+    /// approval card all see the target, not the envelope tool.
     pub(crate) async fn grade(
         &self,
         tools: &ToolRegistry,
         tool: &str,
         input: &str,
     ) -> Result<(Permission, Option<String>, Option<ToolOverlayEntry>), String> {
-        // Read-variants grade as the tool they ride on (ADR-0098/0206).
-        let graded = graded_name(tool);
+        // A per-call grading override: the tool tells us what name and
+        // capabilities to grade as (e.g. an embedder's `invoke` -> its target).
+        let call_grade = tools.get(tool).and_then(|t| t.call_grading(input));
+        // Read-variants grade as the tool they ride on (ADR-0098/0206);
+        // a per-call override wins over that.
+        let graded = match &call_grade {
+            Some(cg) => cg.name.as_str(),
+            None => graded_name(tool),
+        };
         // An overlay deny withdraws the tool outright (#634), ahead of hooks.
         if overlay_denies(&self.overlays, &self.chain, graded) {
             return Err(format!(
@@ -207,6 +219,7 @@ impl Dispatcher {
             ceiling: &self.ceiling,
             root: self.escape_root.as_ref().map(|er| er.root.as_path()),
             floor: Some((&*self.trust, self.files_root.as_path())),
+            capability_override: call_grade.as_ref().map(|cg| cg.capabilities),
         };
         let (perm, arg) = grade_call(&inputs, graded, input).await;
         Ok((perm, arg, overlay_entry))

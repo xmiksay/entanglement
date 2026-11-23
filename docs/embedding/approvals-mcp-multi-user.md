@@ -187,6 +187,26 @@ seam implementations over it. Per seam:
   the in-tree profile expansion, which is process-global — fold
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
+- **Your own tools with per-call grading**
+  ([ADR-0249](../adr/0249-in-process-mcp-servers-and-per-session-skills.md)) —
+  register one native `Tool` (e.g. `invoke`) that dispatches to your internal
+  hub, and implement `Tool::call_grading(input)` to return the target name and
+  capabilities per call: the dispatch ladder grades each call as its target
+  (overlay deny/enable, mode class rules, grants, approval cards all see the
+  target name, not the envelope tool's).
+- **Host script namespaces** — `ToolExecutorBuilder::host_namespace(ns)` with
+  `HostNamespace { name, tool, resolver }`: a Rhai `<ns>::<fn>(#{...})`
+  surface backed by your registered tool, with `HostFnResolver` listing the
+  callable function names per session. Each call dispatches as
+  `{"tool": "<fn>", "args": {...}}`, graded by the tool's `call_grading`.
+- **Per-session skills** — build skills in code with
+  `SkillMeta::new(name, description, body)` (and `.with_lib(source)` for a
+  `lib.rhai`), collect them in a `SkillRegistry`, and serve each session its
+  own through a `SkillResolver` set twice: on
+  `ToolExecutor::builder(..).skill_resolver(r.clone())` (`list_skills`, the
+  `skill::` namespaces) and on the registered
+  `LoadSkillTool::with_resolver(live, r)`. `None` falls back to the live
+  registry. Keep it an in-memory lookup.
 
 ---
 

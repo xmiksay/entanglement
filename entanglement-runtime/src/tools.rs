@@ -104,6 +104,32 @@ pub trait Tool: Send + Sync {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }
+
+    /// Per-call grading override: when `Some`, the dispatch ladder grades the
+    /// call under the returned `name` and `capabilities` instead of the
+    /// tool's own. This is how an embedder's envelope tool (e.g. `invoke`)
+    /// is graded as the tool it dispatches to (e.g. `page_edit` with
+    /// `Write`), derived from the call input. The `PermissionResolver`, the
+    /// `GrantStore` and every `Always` approval see the target name, not the
+    /// envelope's.
+    ///
+    /// Default is `None` — the tool grades under its own name and
+    /// capabilities, unchanged.
+    fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+        None
+    }
+}
+
+/// Per-call grading override returned by [`Tool::call_grading`]: the
+/// effective name and capabilities the dispatch gates see instead of the
+/// tool's own.
+#[derive(Debug, Clone)]
+pub struct CallGrading {
+    /// The name the permission resolver, grants and approval cards see.
+    pub name: String,
+    /// The capabilities the mode's class rules (`read`/`write`/`exec`)
+    /// match against.
+    pub capabilities: &'static [Capability],
 }
 
 /// A tool's successful result plus its structured metadata (#681, ADR-0186):

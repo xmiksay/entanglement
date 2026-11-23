@@ -49,6 +49,8 @@ mod discovery;
 mod lib_docs;
 pub mod lib_rhai;
 pub mod load_skill;
+// The embedder's per-session registries + code-built skills (ADR-0249).
+mod session;
 // `SKILL.md` frontmatter parsing, strict and lenient (ADR-0074/0228).
 mod parse;
 // Importable `import "<name>"` script modules (ADR-0248).
@@ -57,6 +59,7 @@ pub mod rhai_modules;
 pub use discovery::skill_dirs;
 pub use load_skill::LoadSkillTool;
 pub use rhai_modules::{module_dirs, RhaiModules};
+pub use session::{SessionSkills, SkillResolver};
 
 use parse::parse_raw;
 

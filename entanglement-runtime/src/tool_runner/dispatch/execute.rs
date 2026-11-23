@@ -7,13 +7,13 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use entanglement_core::{ApprovalScope, Holly, OutEvent, SessionId, ToolCall, ToolOverlayEntry};
 
 use crate::arg_validate;
 use crate::skills::load_skill::parse_skill_id;
-use crate::skills::SkillRegistry;
+use crate::skills::SessionSkills;
 use crate::tool_names::LOAD_SKILL_TOOL;
 use crate::tool_runner::call_grader::{self, CallGrader};
 use crate::tools::{ToolExecution, ToolRegistry};
@@ -197,7 +197,7 @@ impl Dispatcher {
 /// any listening head; a failed load (no header) is a no-op.
 fn activate_skill(
     holly: &Holly,
-    skills: &Arc<RwLock<Arc<SkillRegistry>>>,
+    skills: &SessionSkills,
     active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
     result: &str,
@@ -206,8 +206,7 @@ fn activate_skill(
         return;
     };
     let allowed_tools = skills
-        .read()
-        .expect("skill registry lock poisoned")
+        .for_session(session)
         .get(skill_id)
         .and_then(|s| s.allowed_tools.clone());
     active_skill

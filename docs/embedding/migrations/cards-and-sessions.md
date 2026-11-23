@@ -216,6 +216,23 @@ No API change; three behaviours an embedder can see.
 - **Behaviour:** `import "<name>"` now resolves in every run, and the
   `rhai` guide's `load_skill` result ends with the module listing.
 
+## Per-call tool grading, host script namespaces and per-session skills (ADR-0249)
+
+- **Added:** `tools::CallGrading` and `Tool::call_grading(input) ->
+  Option<CallGrading>` (default `None`): when `Some`, the dispatch ladder
+  grades the call under the returned `name` and `capabilities` instead of
+  the tool's own. The `PermissionResolver`, the `GrantStore` and every
+  `Always` approval see the target name.
+- **Added:** `host_ns::{HostNamespace, HostFn, HostFnResolver}` and
+  `ToolExecutorBuilder::host_namespace(ns)`: a Rhai `<ns>::<fn>(#{...})`
+  surface backed by one registered tool. Each call dispatches to the
+  backing tool with `{"tool": "<fn>", "args": {...}}`, graded via the
+  tool's `call_grading`.
+- **Added:** `skills::{SkillResolver, SessionSkills}`,
+  `ToolExecutorBuilder::skill_resolver(r)`, `LoadSkillTool::with_resolver(live, r)`,
+  `SkillMeta::new(name, description, body)` and, with `rhai`,
+  `SkillMeta::with_lib(source)`. Nothing changes until you set a resolver.
+
 ---
 
 Previous: [Migration notes — one surface, binding path & skills (ADR-0226–0230)](one-surface-and-rhai.md) · Next: [TLS & dependency pinning](../tls-and-pinning.md)

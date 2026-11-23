@@ -153,6 +153,9 @@ pub(crate) struct Launch {
     /// is graded, exactly as a direct call's is.
     pub workdir: Option<(PathBuf, PathBuf)>,
     pub scripts: crate::script_ops::ScriptRegistry,
+    /// Host namespaces resolved for this session (ADR-0249): `(namespace,
+    /// backing tool, function entries)`.
+    pub host_namespaces: Vec<(String, String, Vec<crate::host_ns::HostFn>)>,
 }
 
 /// Orchestrate one `rhai` call: validate the input, gate the launch through
