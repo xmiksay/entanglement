@@ -14,9 +14,9 @@
 //!
 //! ```yaml
 //! servers:
-//!   web_search_prime:
-//!     target: https://api.z.ai/api/mcp/web_search_prime/mcp
-//!     tools: [webSearchPrime]
+//!   docs:
+//!     target: https://docs.example.com/mcp
+//!     tools: [search]
 //! ```
 
 use std::collections::BTreeMap;

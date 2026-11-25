@@ -18,7 +18,7 @@ pub enum McpTier {
     Available,
     /// Explicitly configured `disabled` — a **known** name, deliberately off.
     Disabled,
-    /// No configured or bundled server under this name — genuinely unknown.
+    /// No configured server under this name — genuinely unknown.
     Unknown,
 }
 

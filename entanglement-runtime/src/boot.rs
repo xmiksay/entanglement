@@ -72,13 +72,11 @@ pub(crate) async fn boot(
         Arc::new(RwLock::new(skill_registry.clone()));
     let prompt_ctx = system_prompt::PromptContext::load(cwd);
     // The MCP capability index (#426): config-side `capabilities:` hints on
-    // `user_config.mcp` *and* every catalog-bundled server (e.g. z.ai's
-    // `web_search_prime`, which never joins `user_config.mcp` — #542),
-    // folded into any bare `read`/`write`/`call` permission key alongside the
+    // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission key alongside the
     // fixed built-in set — computed once here (like the ceiling permission
     // below) rather than re-derived on every reload.
-    let mcp_capabilities = mcp::capability_index_with_catalog(catalog, &user_config.mcp)
-        .context("resolving MCP capability hints")?;
+    let mcp_capabilities =
+        mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
     // The skill registry also resolves per-agent `skills:` preload bodies (#117).
     let mut profiles = agents::load_registry(cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
         .context("loading agent definitions")?;
@@ -209,8 +207,7 @@ pub(crate) async fn boot(
     // startup connect, ADR-0226); `ServerConfigs`
     // starts from the *whole* user-configured set (including a disabled/failed
     // one) — the wider map `save_mcp` must round-trip so a live add/remove
-    // never drops an unrelated entry. Catalog-bundled servers (#542) are
-    // deliberately absent: they never persist to `config.yml`.
+    // never drops an unrelated entry.
     let mcp_configs: mcp::ServerConfigs = Arc::new(Mutex::new(user_config.mcp.clone()));
     // Fail fast on a malformed config (e.g. a profile registry without `build`)
     // rather than leaning on the supervisor's synthesized fallback.

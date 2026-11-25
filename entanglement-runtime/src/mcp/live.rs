@@ -82,7 +82,7 @@ pub async fn mcp_add(
     {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http).await?;
     let tools = install_server(registry, active, &name, client, defs, &cfg);
     {
         let mut all = configs.lock().expect("MCP server-config mutex poisoned");
@@ -130,8 +130,7 @@ fn carry_forward_unspecified_fields(
 /// Otherwise identical to `mcp_add`'s upsert — old tools unregistered, old
 /// connection dropped, new tools registered — with the awaits kept outside
 /// every lock (#372). `http` (#559) is the shared endpoint pool the connect
-/// rides; an OAuth-reconnected server authenticates via its bearer token, not
-/// a shared provider key, so it carries no `api_key` (unkeyed, still pooled).
+/// rides.
 pub async fn mcp_reconnect(
     name: &str,
     cfg: &McpServerConfig,
@@ -140,7 +139,7 @@ pub async fn mcp_reconnect(
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let (client, defs) = connect_client(name, cfg, secret_env, http, None).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env, http).await?;
     let tools = install_server(registry, active, name, client, defs, cfg);
     tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
     Ok(tools)
@@ -244,10 +243,7 @@ pub fn mcp_list(active: &ActiveServers) -> Vec<entanglement_core::McpServerStatu
             connected: true,
             tools: server.tools.clone(),
             error: None,
-            // Retired by ADR-0226 (registered = available); kept on the wire
-            // for old logs.
-            state: None,
-            // Likewise filled by the responder, which holds the token store.
+            // Filled by the responder, which holds the token store.
             auth: None,
         })
         .collect();

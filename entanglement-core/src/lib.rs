@@ -30,14 +30,14 @@ pub use entanglement_provider::{
     content_text, mcp_tool_name, stream_from_response, AuxLlmResolver, Catalog, ContentPart,
     DebugFlags, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, HttpClient, ImageSource,
     Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream, Message, MessageRole,
-    ModelEntry, ModelPricing, ModelResolver, ProviderMcpServer, ReasoningEffort, ResolvedModel,
-    RetryConfig, SharedStateLocation, StopReason, ToolCall, ToolSpec, Usage, UserId,
-    WebSearchConfig, Wire, DEBUG_ENV, MCP_TOOL,
+    ModelEntry, ModelPricing, ModelResolver, ReasoningEffort, ResolvedModel, RetryConfig,
+    SharedStateLocation, StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire,
+    DEBUG_ENV, MCP_TOOL,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so
-// the runtime reaches these types on the same path `ProviderMcpServer` already
-// takes, including in the lean build that names no provider dependency of its
+// the runtime reaches these types on the same path as the catalog types above,
+// including in the lean build that names no provider dependency of its
 // own. Nothing in core calls them. `HttpClient` above (#559) is what the MCP
 // HTTP transport is handed so its traffic shares the same per-endpoint
 // pool/RPM/concurrency/retry as LLM traffic — not `McpHttpClient`'s own name.

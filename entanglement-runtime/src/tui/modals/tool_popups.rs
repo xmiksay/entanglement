@@ -259,7 +259,6 @@ mod tests {
                 connected: false,
                 tools: vec![],
                 error: None,
-                state: None,
                 auth: None,
             }],
         });

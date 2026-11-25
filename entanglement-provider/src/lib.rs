@@ -41,7 +41,6 @@ pub mod multi_user;
 pub mod oauth;
 pub mod openai;
 pub mod openai_responses;
-pub mod provider_mcp;
 pub mod response;
 mod sse_frame;
 pub mod web_fetch;
@@ -50,7 +49,7 @@ pub mod web_search;
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
     AnthropicModelSpec, Catalog, EffortTiers, ModelEntry, ModelPricing, ProviderEntry,
-    ProviderMcpServer, ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle, Wire,
+    ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle, Wire,
 };
 pub use client::{
     prune_stale, HttpClient, RetryConfig, SharedStateLocation, StreamGuard, ThrottleStatus,

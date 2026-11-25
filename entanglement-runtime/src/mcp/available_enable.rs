@@ -10,7 +10,7 @@ use anyhow::{bail, Result};
 
 use crate::tools::SharedRegistry;
 
-use super::super::live::{drop_server, install_server, ActiveServers};
+use super::super::live::{install_server, ActiveServers};
 use super::super::{connect_client, record_last_seen};
 use super::AvailableMcp;
 
@@ -23,9 +23,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// into the live `registry` (no persistence — `ServerConfigs` and
 /// `config.yml` are never touched), and record its tool names in the
 /// last-seen cache. Returns the server's registered tool names. `http`
-/// (#559) is the shared endpoint pool the connect rides; a bundled server's
-/// `key_env` is resolved live so its traffic shares pool-key identity with
-/// the LLM endpoint billed against the same key.
+/// (#559) is the shared endpoint pool the connect rides.
 pub async fn ensure_connected(
     avail: &AvailableMcp,
     name: &str,
@@ -80,32 +78,22 @@ async fn connect_locked(
     active: &ActiveServers,
     http: &entanglement_core::HttpClient,
 ) -> Result<Vec<String>> {
-    let Some(server) = avail.get(name) else {
+    let Some(config) = avail.get(name) else {
         bail!(
             "no available MCP server named `{name}` (available: {})",
             avail.available_names().join(", ")
         );
     };
-    if avail.needs_auth(name, &server.config) {
+    if avail.needs_auth(name, &config) {
         bail!(auth_hint(name));
     }
-    let api_key = server
-        .key_env
-        .as_deref()
-        .and_then(|var| std::env::var(var).ok());
-    let connect = connect_client(
-        name,
-        &server.config,
-        avail.secret_env(),
-        http,
-        api_key.as_deref(),
-    );
+    let connect = connect_client(name, &config, avail.secret_env(), http);
     let (client, defs) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(result) => result?,
         Err(_) => bail!("connecting MCP server `{name}` timed out"),
     };
-    let tools = install_server(registry, active, name, client, defs, &server.config);
-    record_last_seen(avail.tool_cache(), name, &server.config, &tools).await;
+    let tools = install_server(registry, active, name, client, defs, &config);
+    record_last_seen(avail.tool_cache(), name, &config, &tools).await;
     tracing::info!("MCP server `{name}`: connected, {} tool(s)", tools.len());
     Ok(tools)
 }
@@ -175,7 +163,7 @@ pub async fn try_lazy_connect(
     // Missing credentials are a user action away, not a transport failure:
     // never start a cooldown that would outlive a successful `/mcp connect`.
     if let Some(server_cfg) = avail.get(server) {
-        if avail.needs_auth(server, &server_cfg.config) {
+        if avail.needs_auth(server, &server_cfg) {
             return LazyConnectOutcome::Failed(auth_hint(server));
         }
     }
@@ -228,14 +216,6 @@ pub async fn resolve_unregistered(
     } else {
         Err(super::missing_tool_decline(&server, tool))
     }
-}
-
-/// Drop a server's connection and tools (the `/mcp remove` arm for a bundled
-/// name). Nothing is persisted — the server stays available and the next
-/// `mcp_tools`/`mcp(...)` reconnects it.
-pub fn disconnect(name: &str, registry: &SharedRegistry, active: &ActiveServers) {
-    drop_server(registry, active, name);
-    tracing::info!("MCP server `{name}`: disconnected (still available)");
 }
 
 #[cfg(test)]

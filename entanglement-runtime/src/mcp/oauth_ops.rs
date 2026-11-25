@@ -199,8 +199,7 @@ async fn connect_device(
     Ok(AuthOutcome::Authorized)
 }
 
-/// The effective config for `server`: a user `mcp:` entry, or a bundled/
-/// available definition (#542) for a server that has no config-map entry.
+/// The effective config for `server`: its user `mcp:` entry.
 fn resolve_config(server: &str, configs: &ServerConfigs) -> Result<McpServerConfig> {
     if let Some(cfg) = configs.lock().unwrap().get(server) {
         return Ok(cfg.clone());

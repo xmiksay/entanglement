@@ -119,7 +119,7 @@ async fn http_transport_lists_and_calls_with_auth() {
     let url = spawn_server().await;
     let headers = HashMap::from([("Authorization".to_string(), TOKEN.to_string())]);
 
-    let client = HttpClient::connect("test", &url, &headers, test_http_client(), None)
+    let client = HttpClient::connect("test", &url, &headers, test_http_client())
         .await
         .expect("handshake");
 
@@ -144,7 +144,7 @@ async fn missing_token_is_rejected() {
     let url = spawn_server().await;
     // No Authorization header → the server 401s `tools/list`; the client surfaces
     // it as an error rather than hanging. (`initialize` is allowed through.)
-    let client = HttpClient::connect("test", &url, &HashMap::new(), test_http_client(), None)
+    let client = HttpClient::connect("test", &url, &HashMap::new(), test_http_client())
         .await
         .expect("handshake");
     let err = client.list_tools().await.unwrap_err();
@@ -211,7 +211,7 @@ async fn mcp_calls_are_serialized_by_the_endpoint_concurrency_cap() {
         concurrency: 1,
         ..RetryConfig::default()
     });
-    let client = HttpClient::connect("test", &url, &HashMap::new(), http, None)
+    let client = HttpClient::connect("test", &url, &HashMap::new(), http)
         .await
         .expect("handshake");
 

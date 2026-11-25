@@ -337,7 +337,6 @@ mod tests {
                 oauth: None,
                 rpm,
                 concurrency: None,
-                mcp_servers: Default::default(),
                 prompt_cache_key: false,
                 thinking_control: None,
                 default_model: "glm-5.2".into(),

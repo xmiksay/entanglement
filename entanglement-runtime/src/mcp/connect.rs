@@ -29,18 +29,15 @@ pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
 /// The two network-I/O awaits (connect + `tools/list`), with no registry
 /// involved — split out of the old single-shot `connect_one` (#375) so a live
 /// `mcp_add` can run these *before* taking the registry's write lock, never
-/// holding it across an `.await`. `http`/`api_key` (#559) are forwarded to the
-/// HTTP transport so its traffic shares the endpoint pool a provider-bundled
-/// server's key already budgets for LLM traffic; `api_key` is `None` for a
-/// user-declared or OAuth-authenticated server (still pooled, just unkeyed).
+/// holding it across an `.await`. `http` (#559) is forwarded to the HTTP
+/// transport so its traffic rides the shared endpoint pool.
 pub(crate) async fn connect_client(
     name: &str,
     cfg: &McpServerConfig,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
-    api_key: Option<&str>,
 ) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
-    connect_client_with_store(name, cfg, secret_env, http, api_key, None).await
+    connect_client_with_store(name, cfg, secret_env, http, None).await
 }
 
 /// [`connect_client`] with the OAuth credential source made explicit (#684):
@@ -52,7 +49,6 @@ pub(crate) async fn connect_client_with_store(
     cfg: &McpServerConfig,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
-    api_key: Option<&str>,
     #[cfg_attr(not(feature = "mcp-http"), allow(unused_variables))] token_store: Option<
         Arc<dyn entanglement_core::TokenStore>,
     >,
@@ -64,11 +60,10 @@ pub(crate) async fn connect_client_with_store(
         secret_env,
         oauth_token_source(name, cfg, token_store),
         http,
-        api_key,
     )
     .await?;
     #[cfg(not(feature = "mcp-http"))]
-    let client = McpClient::connect(name, cfg, secret_env, http, api_key).await?;
+    let client = McpClient::connect(name, cfg, secret_env, http).await?;
     let defs = client.list_tools().await?;
     Ok((client, defs))
 }

@@ -23,7 +23,7 @@
 //! whichever transport backs it.
 //!
 //! Servers are declared in the layered user config's `mcp:` section (a map of
-//! server name → [`McpServerConfig`]) or bundled by a provider in the catalog.
+//! server name → [`McpServerConfig`]).
 //! Registered = available (ADR-0226): nothing connects at startup; the first
 //! `mcp_tools` read or `mcp(...)` call on a server connects it, and a connect
 //! failure is a tool error, never an engine failure. MCP tool schemas are
@@ -38,7 +38,6 @@ use crate::tool_names;
 
 // Via core's re-export (ADR-0053), not `entanglement_provider` directly —
 // that dep is optional (`provider` feature) and absent from the lean build.
-use entanglement_core::Catalog;
 pub use entanglement_core::OauthConfig;
 
 pub mod available;
@@ -57,7 +56,7 @@ pub mod scoped;
 pub mod stdio;
 pub mod tool;
 
-pub use available::{AvailableMcp, AvailableServer};
+pub use available::AvailableMcp;
 pub use client::{McpClient, McpToolDef};
 pub use last_seen::McpToolCache;
 // Split out of this file along the 400-line file cap (#559): crate-internal
@@ -223,9 +222,7 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
 pub type McpCapabilityIndex = HashMap<String, Vec<String>>;
 
 /// Build the [`McpCapabilityIndex`] from every server's `capabilities`
-/// annotation in the given map (`servers` is typically `user_config.mcp` —
-/// see [`capability_index_with_catalog`] for the production path, which also
-/// folds in catalog-bundled servers that never appear in that map). An
+/// annotation in the given map (`servers` is typically `user_config.mcp`). An
 /// unknown capability name is a loud config error, matching every other
 /// `deny_unknown_fields` section — a typo'd capability should never silently
 /// grade as an ungrouped literal tool. Does not require the server to
@@ -254,80 +251,9 @@ pub fn capability_index(servers: &HashMap<String, McpServerConfig>) -> Result<Mc
     Ok(index)
 }
 
-/// [`capability_index`] plus every catalog-bundled server's own capability
-/// hint, merged with any same-name user override
-/// (`available::bundled_capability_configs`). A bundled server (e.g. z.ai's
-/// `web_search_prime`, declared `capabilities: { webSearchPrime: read }` in
-/// the provider catalog) never joins `user_mcp` (#542 partitions it into
-/// [`AvailableMcp`]'s own roster instead), so `capability_index` alone never
-/// sees it — a read-only profile's bare `read: allow` would otherwise never
-/// fan out to a bundled search tool no matter how it's graded. This is the
-/// index every head should build (`boot.rs` does); `capability_index` stays
-/// the lower-level, catalog-free primitive the tests above exercise directly.
-pub fn capability_index_with_catalog(
-    catalog: &Catalog,
-    user_mcp: &HashMap<String, McpServerConfig>,
-) -> Result<McpCapabilityIndex> {
-    let mut merged = available::bundled_capability_configs(catalog, user_mcp);
-    for (name, cfg) in user_mcp {
-        merged.entry(name.clone()).or_insert_with(|| cfg.clone());
-    }
-    capability_index(&merged)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The gap the explore/research MCP fix closes: `capability_index` alone
-    /// (user `mcp:` only) never sees a catalog-bundled server's own
-    /// `capabilities` hint; `capability_index_with_catalog` must fold in the
-    /// real embedded z.ai bundle (`Catalog::builtin()`) so `read: allow`
-    /// fans out to its search tools with zero user config.
-    #[test]
-    fn capability_index_with_catalog_folds_in_bundled_hints() {
-        let catalog = Catalog::builtin();
-        let index = capability_index_with_catalog(&catalog, &HashMap::new()).unwrap();
-        let read = index
-            .get("read")
-            .expect("z.ai's bundle hints every tool read");
-        assert!(read.contains(&"mcp__web_search_prime__webSearchPrime".to_string()));
-        assert!(read.contains(&"mcp__web_reader__webReader".to_string()));
-        assert!(read.contains(&"mcp__zread__search_doc".to_string()));
-        // `capability_index` alone (the pre-fix call main.rs used to make)
-        // must NOT see any of this — it only ever scanned `user_config.mcp`.
-        assert!(!capability_index(&HashMap::new())
-            .unwrap()
-            .contains_key("read"));
-    }
-
-    /// A same-name user `mcp:` override's own `capabilities:` wins over the
-    /// bundle's — mirroring `AvailableMcp::merge_user_over_bundled`'s
-    /// non-empty-wins rule, which `bundled_capability_configs` reuses.
-    #[test]
-    fn capability_index_with_catalog_lets_a_user_override_replace_bundled_hints() {
-        let catalog = Catalog::builtin();
-        let mut user_mcp = HashMap::new();
-        user_mcp.insert(
-            "web_search_prime".to_string(),
-            McpServerConfig {
-                command: None,
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: HashMap::new(),
-                disabled: false,
-                capabilities: HashMap::from([("webSearchPrime".to_string(), "call".to_string())]),
-                oauth: None,
-                description: None,
-            },
-        );
-        let index = capability_index_with_catalog(&catalog, &user_mcp).unwrap();
-        assert!(index["call"].contains(&"mcp__web_search_prime__webSearchPrime".to_string()));
-        assert!(!index
-            .get("read")
-            .is_some_and(|r| r.contains(&"mcp__web_search_prime__webSearchPrime".to_string())));
-    }
 
     #[test]
     fn parses_a_stdio_block() {

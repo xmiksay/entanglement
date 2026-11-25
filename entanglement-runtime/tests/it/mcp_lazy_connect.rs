@@ -25,9 +25,8 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use entanglement_core::{
-    stream_from_response, Agent, AgentCatalog, Catalog, EngineConfig, Holly, InMsg, Llm,
-    LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
-    ToolCall,
+    stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
+    LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
 use entanglement_runtime::policy::{
@@ -296,7 +295,7 @@ fn mcp_entry(url: &str, disabled: bool) -> McpServerConfig {
 
 fn roster(name: &str, cfg: McpServerConfig) -> AvailableMcp {
     let user = HashMap::from([(name.to_string(), cfg)]);
-    AvailableMcp::from_config(&Catalog { providers: vec![] }, &user, vec![])
+    AvailableMcp::from_config(&user, vec![])
 }
 
 /// Every `(request_id, output, is_error)` in `events`, in order.

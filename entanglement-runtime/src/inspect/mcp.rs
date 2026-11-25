@@ -1,10 +1,9 @@
 //! `skutter inspect mcp` (#558).
 //!
-//! Surfaces the *resolved* MCP server roster — provider-bundled servers
-//! (#542) folded with the user's `mcp:` config entries — without spawning the
-//! engine or connecting to anything: every registered server (ADR-0226:
-//! registered = available, nothing connects at startup), its bundling
-//! provider, its description, whether an OAuth-protected one already has a
+//! Surfaces the *resolved* MCP server roster — the user's `mcp:` config
+//! entries — without spawning the engine or connecting to anything: every
+//! registered server (ADR-0226: registered = available, nothing connects at
+//! startup), its transport, its description, whether an OAuth-protected one already has a
 //! stored credential, and the last-seen tool names. This is the static
 //! picture; live connection status is `/mcp list`'s job.
 
@@ -12,32 +11,22 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use entanglement_core::Catalog;
 
 use crate::config::{Config, McpTokenStore};
 use crate::mcp::{transport_label, AvailableMcp, McpToolCache};
 
-/// Resolve the catalog + user config for `cwd` and print the bundled/available
-/// MCP server roster.
+/// Resolve the user config for `cwd` and print the available MCP server
+/// roster.
 pub fn inspect_mcp(cwd: &Path) -> Result<()> {
-    let catalog = Catalog::load().context("loading provider catalog")?;
     let resolved = Config::resolve(cwd).context("resolving user config")?;
     let token_store = McpTokenStore::load();
     let cache = McpToolCache::managed();
-    print!(
-        "{}",
-        render_mcp(&catalog, &resolved.config, &token_store, &cache)
-    );
+    print!("{}", render_mcp(&resolved.config, &token_store, &cache));
     Ok(())
 }
 
-fn render_mcp(
-    catalog: &Catalog,
-    config: &Config,
-    tokens: &McpTokenStore,
-    cache: &McpToolCache,
-) -> String {
-    let avail = AvailableMcp::from_config(catalog, &config.mcp, catalog.key_envs());
+fn render_mcp(config: &Config, tokens: &McpTokenStore, cache: &McpToolCache) -> String {
+    let avail = AvailableMcp::from_config(&config.mcp, Vec::new());
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -51,8 +40,7 @@ fn render_mcp(
             let Some(server) = avail.get(name) else {
                 continue;
             };
-            let provider = server.provider.as_deref().unwrap_or("user-defined");
-            let auth = if server.config.oauth.is_some() {
+            let auth = if server.oauth.is_some() {
                 if tokens.has(name) {
                     " [oauth: authenticated]"
                 } else {
@@ -61,15 +49,11 @@ fn render_mcp(
             } else {
                 ""
             };
-            let _ = writeln!(
-                out,
-                "  {name}: {provider} ({}){auth}",
-                transport_label(&server.config)
-            );
-            if let Some(d) = &server.config.description {
+            let _ = writeln!(out, "  {name} ({}){auth}", transport_label(&server));
+            if let Some(d) = &server.description {
                 let _ = writeln!(out, "    {d}");
             }
-            if let Some(tools) = cache.lookup(name, &server.config.target()) {
+            if let Some(tools) = cache.lookup(name, &server.target()) {
                 let _ = writeln!(out, "    tools (last seen): {}", tools.join(", "));
             }
         }
@@ -82,10 +66,6 @@ mod tests {
     use super::*;
     use entanglement_core::{Permission, PermissionProfile};
     use std::collections::HashMap;
-
-    fn empty_catalog() -> Catalog {
-        Catalog { providers: vec![] }
-    }
 
     fn empty_config() -> Config {
         Config {
@@ -115,7 +95,6 @@ mod tests {
     #[test]
     fn empty_config_reports_no_servers() {
         let rendered = render_mcp(
-            &empty_catalog(),
             &empty_config(),
             &McpTokenStore::at(None),
             &McpToolCache::at(None),
@@ -126,7 +105,6 @@ mod tests {
 
     #[test]
     fn a_user_server_shows_up_with_its_description_and_last_seen_tools() {
-        let catalog = empty_catalog();
         let mut config = empty_config();
         config.mcp.insert(
             "docs".to_string(),
@@ -147,11 +125,8 @@ mod tests {
         cache
             .record("docs", "docs-server", &["search".into()])
             .unwrap();
-        let rendered = render_mcp(&catalog, &config, &McpTokenStore::at(None), &cache);
-        assert!(
-            rendered.contains("docs: user-defined (stdio)"),
-            "{rendered}"
-        );
+        let rendered = render_mcp(&config, &McpTokenStore::at(None), &cache);
+        assert!(rendered.contains("  docs (stdio)"), "{rendered}");
         assert!(rendered.contains("    project docs"), "{rendered}");
         assert!(rendered.contains("tools (last seen): search"), "{rendered}");
     }

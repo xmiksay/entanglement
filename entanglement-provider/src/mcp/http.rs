@@ -19,12 +19,10 @@
 //!
 //! Every request rides the shared [`HttpClient`] endpoint pool (#559) — same
 //! connection pool, RPM/concurrency caps, 429/`Retry-After` handling as LLM
-//! traffic, instead of an unmetered bare `reqwest::Client` (matters for
-//! provider-bundled servers sharing their provider's key/budget with its LLM
-//! endpoint). `connect`/`connect_authenticated` take the caller's `HttpClient`,
-//! and an optional `api_key` for pool-key identity (own
-//! [`EndpointState`](crate::client) bucket regardless, keyed by URL). Every
-//! request, the handshake included, rides the pool's own retry ladder.
+//! traffic, instead of an unmetered bare `reqwest::Client`.
+//! `connect`/`connect_authenticated` take the caller's `HttpClient`; each
+//! server gets its own [`EndpointState`](crate::client) bucket, keyed by URL.
+//! Every request, the handshake included, rides the pool's own retry ladder.
 //!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
 
@@ -67,13 +65,6 @@ pub struct McpHttpClient {
     /// connection pool, RPM/concurrency caps, and 429/`Retry-After` handling
     /// as LLM traffic, instead of an unmetered bare `reqwest::Client`.
     http: HttpClient,
-    /// The provider API key this server shares with its LLM endpoint (e.g.
-    /// z.ai's bundled `web_search_prime`/`web_reader`/`zread`, all billed
-    /// against `ZAI_API_KEY`), when known (#559) — feeds the pool key
-    /// alongside `url`, keeping this server's own endpoint bucket (keyed by
-    /// its own URL) sharing key-hash conventions with the LLM client. `None`
-    /// for a user-declared or OAuth-authenticated server (unkeyed, still pooled).
-    api_key: Option<String>,
     /// Static per-server headers (auth etc.), already `${VAR}`-expanded.
     headers: HeaderMap,
     /// OAuth bearer-token source (ADR-0153). `None` for a server authenticated
@@ -90,15 +81,14 @@ pub struct McpHttpClient {
 
 impl McpHttpClient {
     /// Build a client against `url` with static `headers`, then complete the
-    /// handshake. `http`/`api_key` — see the module docs.
+    /// handshake. `http` — see the module docs.
     pub async fn connect(
         server: &str,
         url: &str,
         headers: &HashMap<String, String>,
         http: HttpClient,
-        api_key: Option<String>,
     ) -> Result<Self> {
-        Self::connect_with(server, url, headers, None, http, api_key).await
+        Self::connect_with(server, url, headers, None, http).await
     }
 
     /// Like [`connect`][Self::connect], but the `Authorization` header comes
@@ -110,9 +100,8 @@ impl McpHttpClient {
         headers: &HashMap<String, String>,
         auth: Arc<dyn AccessTokenSource>,
         http: HttpClient,
-        api_key: Option<String>,
     ) -> Result<Self> {
-        Self::connect_with(server, url, headers, Some(auth), http, api_key).await
+        Self::connect_with(server, url, headers, Some(auth), http).await
     }
 
     async fn connect_with(
@@ -121,7 +110,6 @@ impl McpHttpClient {
         headers: &HashMap<String, String>,
         auth: Option<Arc<dyn AccessTokenSource>>,
         http: HttpClient,
-        api_key: Option<String>,
     ) -> Result<Self> {
         let headers =
             build_headers(headers).with_context(|| format!("MCP server `{server}` headers"))?;
@@ -129,7 +117,6 @@ impl McpHttpClient {
             server: server.to_string(),
             url: url.to_string(),
             http,
-            api_key,
             headers,
             auth,
             protocol_version: Mutex::new(None),
@@ -242,7 +229,7 @@ impl McpHttpClient {
     /// Build and send one `POST` through the shared per-endpoint pool (#559),
     /// layering the static headers, the OAuth bearer (when configured), the
     /// negotiated protocol version, and the session id. Pool key is
-    /// `(self.url, self.api_key)` — this server's own bucket.
+    /// `self.url` — this server's own bucket.
     async fn post_once(
         &self,
         frame: &Value,
@@ -251,23 +238,14 @@ impl McpHttpClient {
     ) -> Result<(reqwest::Response, StreamGuard)> {
         let headers = self.request_headers(force_refresh).await?;
         self.http
-            .execute_with_retry(
-                &self.url,
-                self.api_key.as_deref(),
-                None,
-                None,
-                "",
-                None,
-                None,
-                || {
-                    self.http
-                        .client()
-                        .post(&self.url)
-                        .headers(headers.clone())
-                        .json(frame)
-                        .send()
-                },
-            )
+            .execute_with_retry(&self.url, None, None, None, "", None, None, || {
+                self.http
+                    .client()
+                    .post(&self.url)
+                    .headers(headers.clone())
+                    .json(frame)
+                    .send()
+            })
             .await
             .map_err(|e| anyhow::anyhow!("MCP server `{}` `{method}`: {e}", self.server))
     }

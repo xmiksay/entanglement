@@ -175,8 +175,8 @@ pub(crate) enum InspectCmd {
     /// Print which MCP servers hold a stored OAuth credential (#558), redacted —
     /// never a token value.
     McpTokens,
-    /// Print the resolved bundled/available MCP server roster (#558): which
-    /// servers auto-connect at session start vs. wait for `/enable`.
+    /// Print the resolved MCP server roster (#558): every registered server,
+    /// its transport, OAuth posture and last-seen tools.
     Mcp,
     /// Print one session's resolved live state folded from its persisted log
     /// (#558) — agent, model, and the per-session tool overlay (ADR-0149),

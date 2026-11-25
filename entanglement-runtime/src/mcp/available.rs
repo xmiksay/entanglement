@@ -1,39 +1,23 @@
 //! The MCP server roster (ADR-0226: registered = available).
 //!
-//! Two sources feed it: **provider-bundled** servers from the catalog
-//! (`ProviderEntry::mcp_servers` — e.g. z.ai's `web_search_prime`/
-//! `web_reader`/`zread`, unlocked by the provider's `key_env`) and the user's
-//! `mcp:` entries. Every entry not `disabled: true` is available to every
-//! session; nothing connects at startup. The first `mcp_tools` read or
-//! `mcp(...)` call on a server connects it for the process (`available_enable`),
-//! and each call is still graded by the session's permission mode.
-//!
-//! Key gating is read **live** from the process env on every lookup, so a
-//! `/key` save (which `set_var`s the key) unlocks a provider's bundle with no
-//! restart; a keyless bundle is silently absent everywhere.
+//! The user's `mcp:` entries feed it. Every entry not `disabled: true` is
+//! available to every session; nothing connects at startup. The first
+//! `mcp_tools` read or `mcp(...)` call on a server connects it for the process
+//! (`available_enable`), and each call is still graded by the session's
+//! permission mode.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use tokio::sync::Mutex as AsyncMutex;
-// Catalog types come via core's re-export (ADR-0053): the runtime's direct
-// `entanglement-provider` dep is optional (`provider` feature) and absent
-// from the lean build, but core's unconditional dep carries them everywhere.
-use entanglement_core::{Catalog, ProviderMcpServer};
 
 use super::{McpServerConfig, McpToolCache};
 use crate::config::McpTokenStore;
 
 #[path = "available_enable.rs"]
 mod enable;
-pub use enable::{
-    disconnect, ensure_connected, resolve_unregistered, try_lazy_connect, LazyConnectOutcome,
-};
-
-#[path = "available_catalog.rs"]
-mod catalog;
-pub use catalog::bundled_capability_configs;
+pub use enable::{ensure_connected, resolve_unregistered, try_lazy_connect, LazyConnectOutcome};
 
 #[path = "available_tier.rs"]
 mod tier;
@@ -41,43 +25,13 @@ pub use tier::{
     disabled_decline, missing_tool_decline, server_name_of, unknown_server_decline, McpTier,
 };
 
-/// One available server: its resolved config (bundled definition field-merged
-/// with any same-name user `mcp:` override), the env var gating its
-/// availability (`None` ⇒ ungated, a user-declared entry), and the bundling
-/// provider for display.
-#[derive(Clone)]
-pub struct AvailableServer {
-    pub config: McpServerConfig,
-    pub key_env: Option<String>,
-    pub provider: Option<String>,
-}
-
-impl AvailableServer {
-    /// Availability is key presence, checked live (env or the managed `.env`
-    /// already loaded into the process env; a TUI `/key` save `set_var`s it).
-    pub fn key_ok(&self) -> bool {
-        match &self.key_env {
-            None => true,
-            Some(var) => std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false),
-        }
-    }
-
-    fn user(config: McpServerConfig) -> Self {
-        Self {
-            config,
-            key_env: None,
-            provider: None,
-        }
-    }
-}
-
 /// The available-server roster, shared (`Arc`) by the MCP responder (`/mcp`
 /// list/add/remove), the discovery tools and dispatch's lazy connect.
 #[derive(Default)]
 pub struct AvailableMcp {
     /// Mutable so a live `/mcp add`/`remove` keeps "registered = available"
     /// true without a restart.
-    servers: RwLock<HashMap<String, AvailableServer>>,
+    servers: RwLock<HashMap<String, McpServerConfig>>,
     /// The catalog's provider key envs, scrubbed from any stdio child (#164).
     secret_env: Vec<String>,
     /// Per-server async guard serializing the check-then-connect-then-register
@@ -106,74 +60,33 @@ pub struct AvailableMcp {
 }
 
 impl AvailableMcp {
-    /// Build the roster from the catalog bundles overlaid with the user's
-    /// `mcp:` map. `disabled` entries are left out (and remembered as such).
-    /// The user's own map is kept untouched elsewhere (`ServerConfigs`) —
-    /// bundled servers never join the persistence set.
+    /// Build the roster from the user's `mcp:` map. `disabled` entries are
+    /// left out (and remembered as such).
     pub fn from_config(
-        catalog: &Catalog,
         user_mcp: &HashMap<String, McpServerConfig>,
         secret_env: Vec<String>,
     ) -> AvailableMcp {
-        // Deterministic order — bundles in catalog order, then user entries,
-        // each by name — so which of two clashing names wins never depends
-        // on hash order.
-        let mut candidates: Vec<(String, Option<AvailableServer>)> = Vec::new();
-        for provider in &catalog.providers {
-            let mut bundled: Vec<_> = provider.mcp_servers.iter().collect();
-            bundled.sort_by(|a, b| a.0.cmp(b.0));
-            for (name, bundled) in bundled {
-                let mut cfg = bundled_config(bundled);
-                if let Some(user) = user_mcp.get(name) {
-                    cfg = merge_user_over_bundled(cfg, user);
-                }
-                let entry = (!cfg.disabled).then(|| AvailableServer {
-                    config: cfg,
-                    key_env: provider.key_env.clone(),
-                    provider: Some(provider.name.clone()),
-                });
-                candidates.push((name.clone(), entry));
-            }
-        }
-        let mut user: Vec<_> = user_mcp.iter().collect();
-        user.sort_by(|a, b| a.0.cmp(b.0));
-        for (name, cfg) in user {
-            if candidates.iter().any(|(n, _)| n == name) {
-                continue; // already folded in as an override above
-            }
-            let entry = (!cfg.disabled).then(|| AvailableServer::user(cfg.clone()));
-            candidates.push((name.clone(), entry));
-        }
+        // Deterministic order, by name, so which of two clashing names wins
+        // never depends on hash order.
+        let mut candidates: Vec<_> = user_mcp.iter().collect();
+        candidates.sort_by(|a, b| a.0.cmp(b.0));
         let mut servers = HashMap::new();
         let mut disabled_names = HashSet::new();
         let mut claimed: Vec<String> = Vec::new();
         let mut clash_warnings = Vec::new();
-        // Only a server that can connect now claims its name: a disabled or
-        // keyless one never registers a tool, so it must not knock out a
-        // clashing server that would.
-        let (connectable, inert): (Vec<_>, Vec<_>) = candidates
-            .into_iter()
-            .partition(|(_, entry)| entry.as_ref().is_some_and(AvailableServer::key_ok));
-        for (name, entry) in connectable {
-            if let Some(other) = claimed.iter().find(|k| super::tool::names_clash(k, &name)) {
-                clash_warnings.push(clash_warning(&name, other));
+        for (name, cfg) in candidates {
+            if cfg.disabled {
+                disabled_names.insert(name.clone());
+                continue;
+            }
+            // Checked after `disabled`: a server that never registers a tool
+            // must not knock out a clashing one that would.
+            if let Some(other) = claimed.iter().find(|k| super::tool::names_clash(k, name)) {
+                clash_warnings.push(clash_warning(name, other));
                 continue;
             }
             claimed.push(name.clone());
-            servers.extend(entry.map(|entry| (name, entry)));
-        }
-        for (name, entry) in inert {
-            if claimed.iter().any(|k| super::tool::names_clash(k, &name)) {
-                continue;
-            }
-            match entry {
-                Some(keyless) => {
-                    servers.insert(name, keyless);
-                }
-                None => {
-                    disabled_names.insert(name);
-                }
-            }
+            servers.insert(name.clone(), cfg.clone());
         }
         AvailableMcp {
             servers: RwLock::new(servers),
@@ -228,53 +141,38 @@ impl AvailableMcp {
         &self.tool_cache
     }
 
-    /// Every available server — key resolved — sorted by name. Keyless bundles
-    /// are silently absent (#542).
+    /// Every available server, sorted by name.
     pub fn available_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .read()
-            .iter()
-            .filter(|(_, s)| s.key_ok())
-            .map(|(n, _)| n.clone())
-            .collect();
+        let mut names: Vec<String> = self.read().keys().cloned().collect();
         names.sort();
         names
     }
 
-    /// Look up an available server by name (`None` when unknown, `disabled`,
-    /// or its key doesn't resolve — indistinguishable by design: a keyless
-    /// bundle must look absent, not locked).
-    pub fn get(&self, name: &str) -> Option<AvailableServer> {
-        self.read().get(name).filter(|s| s.key_ok()).cloned()
+    /// Look up an available server's config by name (`None` when unknown or
+    /// `disabled`).
+    pub fn get(&self, name: &str) -> Option<McpServerConfig> {
+        self.read().get(name).cloned()
     }
 
     /// Register a live-added user server (`/mcp add`).
     pub fn insert_user(&self, name: &str, config: McpServerConfig) {
-        self.write()
-            .insert(name.to_string(), AvailableServer::user(config));
+        self.write().insert(name.to_string(), config);
     }
 
-    /// Withdraw a live-removed server (`/mcp remove` of a user entry). A
-    /// bundled server is never removed — it stays available after a
-    /// disconnect.
+    /// Withdraw a live-removed server (`/mcp remove`).
     pub fn remove(&self, name: &str) {
         self.write().remove(name);
-    }
-
-    /// Whether `name` is a provider-bundled server.
-    pub fn is_bundled(&self, name: &str) -> bool {
-        self.read().get(name).is_some_and(|s| s.provider.is_some())
     }
 
     pub(crate) fn secret_env(&self) -> &[String] {
         &self.secret_env
     }
 
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, AvailableServer>> {
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, McpServerConfig>> {
         self.servers.read().expect("MCP roster lock poisoned")
     }
 
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, AvailableServer>> {
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, McpServerConfig>> {
         self.servers.write().expect("MCP roster lock poisoned")
     }
 
@@ -302,65 +200,6 @@ fn clash_warning(name: &str, other: &str) -> String {
         super::tool::namespaced_tool_name(other, ""),
         super::tool::namespaced_tool_name(name, "")
     )
-}
-
-/// Convert a catalog [`ProviderMcpServer`] into the runtime config shape.
-fn bundled_config(b: &ProviderMcpServer) -> McpServerConfig {
-    McpServerConfig {
-        command: b.command.clone(),
-        args: b.args.clone(),
-        env: b.env.clone(),
-        url: b.url.clone(),
-        headers: b.headers.clone(),
-        disabled: b.disabled,
-        capabilities: b.capabilities.clone(),
-        oauth: None,
-        description: b.description.clone(),
-    }
-}
-
-/// Field-wise overlay of a user `mcp:` entry onto a bundled definition (#542):
-/// a field the user *set* (Some / non-empty / true) wins, everything else
-/// keeps the bundled value — so `disabled: true` alone turns a bundle off
-/// without re-declaring its url. Setting one transport clears the bundled
-/// other, keeping the `command` XOR `url` invariant. Limitation (accepted): a
-/// user cannot reset a bundled field back to empty/None, only replace it.
-fn merge_user_over_bundled(mut base: McpServerConfig, user: &McpServerConfig) -> McpServerConfig {
-    if user.command.is_some() {
-        base.command = user.command.clone();
-        base.url = None;
-    }
-    if user.url.is_some() {
-        base.url = user.url.clone();
-        base.command = None;
-        base.args = Vec::new();
-        base.env = HashMap::new();
-    }
-    if !user.args.is_empty() {
-        base.args = user.args.clone();
-    }
-    if !user.env.is_empty() {
-        base.env = user.env.clone();
-    }
-    if !user.headers.is_empty() {
-        base.headers = user.headers.clone();
-    }
-    if !user.capabilities.is_empty() {
-        base.capabilities = user.capabilities.clone();
-    }
-    // A bundled server authenticates with its provider key (a static header), so
-    // the bundle never sets `oauth` — but a user may add it to point a bundled
-    // URL at an OAuth-protected deployment (ADR-0153).
-    if user.oauth.is_some() {
-        base.oauth = user.oauth.clone();
-    }
-    if user.description.is_some() {
-        base.description = user.description.clone();
-    }
-    if user.disabled {
-        base.disabled = true;
-    }
-    base
 }
 
 #[cfg(test)]

@@ -68,11 +68,7 @@ providers:
   # explicitly (`ENTANGLEMENT_PROVIDER=zai_paas`; its env overrides follow the
   # entry name: `ZAI_PAAS_MODEL`, `ZAI_PAAS_API_BASE`, …). The model list is
   # shared via a YAML anchor (`&zai_models` / `*zai_models`); a user override
-  # on either entry merges into that entry alone. The bundled MCP servers stay
-  # on `zai` ONLY: the runtime gathers bundles from every catalog entry keyed
-  # by server name, so a second copy would overwrite this one (last entry
-  # wins), and since both entries share `ZAI_API_KEY` the servers are already
-  # available whichever entry is selected. Different base URLs ⇒ two
+  # on either entry merges into that entry alone. Different base URLs ⇒ two
   # independent endpoint pools (ADR-0050).
   - name: zai
     base_url: https://api.z.ai/api/coding/paas/v4
@@ -88,39 +84,6 @@ providers:
     # concurrency cap exceeds the endpoint's own" on every process's first
     # request and the model cap could never actually be reached.
     concurrency: 5
-    # Provider-bundled MCP servers (#542): z.ai's first-party tool servers,
-    # reachable with the same ZAI_API_KEY (docs.z.ai/devpack/mcp, fetched
-    # 2026-08-01). Registered = available (ADR-0226): listed by `list_mcp`
-    # while the key resolves, silently absent otherwise; nothing connects at
-    # startup — the first `mcp_tools`/`mcp(...)` on a server connects it.
-    # Override per server in your `config.yml` `mcp:` section (merge by
-    # name): `disabled: true` is the one opt-out. Every `mcp(...)` call is
-    # graded by the session's permission mode. The capability hints (#426)
-    # mark every tool read-only so a bare `read: allow` rule covers them.
-    mcp_servers:
-      web_search_prime:
-        description: z.ai web search — ranked results with titles, URLs and summaries
-        url: https://api.z.ai/api/mcp/web_search_prime/mcp
-        headers:
-          Authorization: "Bearer ${ZAI_API_KEY}"
-        capabilities:
-          webSearchPrime: read
-      web_reader:
-        description: z.ai web reader — fetch a URL as clean markdown with metadata
-        url: https://api.z.ai/api/mcp/web_reader/mcp
-        headers:
-          Authorization: "Bearer ${ZAI_API_KEY}"
-        capabilities:
-          webReader: read
-      zread:
-        description: z.ai zread — search and read public GitHub repositories' docs and code
-        url: https://api.z.ai/api/mcp/zread/mcp
-        headers:
-          Authorization: "Bearer ${ZAI_API_KEY}"
-        capabilities:
-          search_doc: read
-          read_file: read
-          get_repo_structure: read
     # Full z.ai text palette (docs.z.ai/guides/overview/pricing and the
     # chat-completion API reference, fetched 2026-09-15). glm-5.3 leads — the
     # `default_model` above; `builtin_parses` asserts the ordering. Pricing is

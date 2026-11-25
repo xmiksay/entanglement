@@ -168,7 +168,6 @@ mod mcp_namespace {
     use axum::response::{IntoResponse, Response};
     use axum::routing::post;
     use axum::{Json, Router};
-    use entanglement_core::Catalog;
     use entanglement_runtime::mcp::{McpServerConfig, McpToolCache};
     use serde_json::{json, Value};
 
@@ -224,12 +223,9 @@ mod mcp_namespace {
             description: None,
         };
         let mut setup = Setup::mode(Permission::Ask, &[], 0);
-        setup.avail = AvailableMcp::from_config(
-            &Catalog { providers: vec![] },
-            &HashMap::from([("stub-srv".to_string(), cfg)]),
-            vec![],
-        )
-        .with_tool_cache(cache);
+        setup.avail =
+            AvailableMcp::from_config(&HashMap::from([("stub-srv".to_string(), cfg)]), vec![])
+                .with_tool_cache(cache);
         let events = tokio::time::timeout(
             Duration::from_secs(20),
             run(r#"mcp::stub_srv::call_(#{msg: "hi"})"#, &dir.path, setup),

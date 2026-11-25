@@ -300,7 +300,6 @@ fn mcp_list_and_changed_events_roundtrip() {
             connected: true,
             tools: vec!["mcp__everything__echo".into()],
             error: None,
-            state: None,
             auth: None,
         }],
     };

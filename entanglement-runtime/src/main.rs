@@ -205,7 +205,7 @@ async fn main() -> Result<()> {
     let provider_names: Vec<&str> = catalog.providers.iter().map(|p| p.name.as_str()).collect();
     // A server dropped for a tool-name clash is a config problem like a
     // retired key: report it alongside, not only in the debug log.
-    let mcp_clashes = mcp::AvailableMcp::from_config(&catalog, &user_config.mcp, Vec::new())
+    let mcp_clashes = mcp::AvailableMcp::from_config(&user_config.mcp, Vec::new())
         .clash_warnings()
         .to_vec();
     for warning in config_warnings

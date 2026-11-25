@@ -23,7 +23,6 @@
 //! Precedence overall is **env > user YAML > embedded defaults** — the env layer
 //! is applied by the head when it reads a resolved [`ProviderEntry`].
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -94,14 +93,6 @@ pub struct ProviderEntry {
     pub default_model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
-    /// Provider-bundled MCP servers (#542): first-party tool servers this
-    /// provider ships (e.g. z.ai's web_search_prime / web_reader / zread),
-    /// available to the runtime whenever this provider's `key_env` resolves.
-    /// Keyed by server name; a user `config.yml` `mcp:` entry of the same name
-    /// overrides field-wise. Mapping-valued, so the catalog merge combines the
-    /// defaults with a user `providers.yml` key-wise for free.
-    #[serde(default)]
-    pub mcp_servers: HashMap<String, ProviderMcpServer>,
     /// Whether this endpoint accepts OpenAI's `prompt_cache_key` implicit-cache
     /// routing hint (#673). Off by default; the embedded defaults enable it
     /// only for providers verified to accept the field — an endpoint that
@@ -118,10 +109,6 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub thinking_control: Option<ThinkingControl>,
 }
-
-// Split to `crate::provider_mcp` for the 400-line file cap; re-exported here
-// so `catalog::ProviderMcpServer` stays a valid path.
-pub use crate::provider_mcp::ProviderMcpServer;
 
 /// Which concrete client talks to a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -913,116 +900,6 @@ mod tests {
     }
 
     #[test]
-    fn zai_ships_the_three_bundled_mcp_servers() {
-        // #542: web_search_prime / web_reader / zread ride the catalog as data,
-        // HTTP transport, keyed by the provider's own ZAI_API_KEY header, all
-        // tools hinted read-only (#426), each with a `list_mcp` description,
-        // none disabled (ADR-0226: registered = available).
-        let c = Catalog::builtin();
-        let zai = c.provider("zai").unwrap();
-        assert_eq!(zai.mcp_servers.len(), 3);
-        for name in ["web_search_prime", "web_reader", "zread"] {
-            let s = zai.mcp_servers.get(name).unwrap_or_else(|| {
-                panic!("bundled z.ai MCP server `{name}` missing from defaults")
-            });
-            assert!(
-                s.url
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("https://api.z.ai/api/mcp/"),
-                "{name}: unexpected url {:?}",
-                s.url
-            );
-            assert!(s.command.is_none());
-            assert_eq!(
-                s.headers.get("Authorization").map(String::as_str),
-                Some("Bearer ${ZAI_API_KEY}")
-            );
-            assert!(!s.disabled, "{name}: bundled servers default on");
-            assert!(s.description.is_some(), "{name}: needs a description");
-            assert!(!s.capabilities.is_empty());
-            assert!(s.capabilities.values().all(|c| c == "read"));
-        }
-        // No other embedded provider bundles servers (yet) — not even the
-        // `zai_paas` twin, whose copy would shadow these by name.
-        for p in &c.providers {
-            if p.name != "zai" {
-                assert!(p.mcp_servers.is_empty(), "{}: unexpected bundle", p.name);
-            }
-        }
-    }
-
-    #[test]
-    fn bundled_mcp_server_disabled_is_user_overridable_field_wise() {
-        // A user providers.yml can switch one bundled server off without
-        // re-declaring (or losing) its url/headers — the mapping merges
-        // key-wise like every other catalog mapping.
-        let c = merge_str(
-            "providers:\n\
-             \x20 - name: zai\n\
-             \x20   mcp_servers:\n\
-             \x20     web_reader:\n\
-             \x20       disabled: true\n",
-        );
-        let zai = c.provider("zai").unwrap();
-        let reader = zai.mcp_servers.get("web_reader").unwrap();
-        assert!(reader.disabled);
-        assert!(reader.url.as_deref().unwrap().contains("web_reader"));
-        // Siblings untouched.
-        assert!(!zai.mcp_servers.get("zread").unwrap().disabled);
-    }
-
-    #[test]
-    fn a_retired_bundled_mcp_state_disabled_still_opts_out() {
-        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-        let over: Value = serde_yaml::from_str(
-            "providers:\n\
-             \x20 - name: zai\n\
-             \x20   mcp_servers:\n\
-             \x20     zread:\n\
-             \x20       state: disabled\n",
-        )
-        .unwrap();
-        let merged = merge::strip_retired_keys(merge_value(base, over));
-        let c: Catalog = serde_yaml::from_value(merged).unwrap();
-        assert!(c.provider("zai").unwrap().mcp_servers["zread"].disabled);
-    }
-
-    #[test]
-    fn a_retired_bundled_mcp_state_key_is_ignored_not_rejected() {
-        // ADR-0226 retired ADR-0152's `state:`; an old user file keeps loading.
-        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-        let over: Value = serde_yaml::from_str(
-            "providers:\n\
-             \x20 - name: zai\n\
-             \x20   mcp_servers:\n\
-             \x20     zread:\n\
-             \x20       state: enabled\n",
-        )
-        .unwrap();
-        let merged = merge_value(base, over);
-        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
-        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
-        let zread = c.provider("zai").unwrap().mcp_servers.get("zread").unwrap();
-        assert!(!zread.disabled);
-    }
-
-    #[test]
-    fn bundled_mcp_server_rejects_unknown_fields() {
-        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-        let over: Value = serde_yaml::from_str(
-            "providers:\n\
-             \x20 - name: zai\n\
-             \x20   mcp_servers:\n\
-             \x20     zread:\n\
-             \x20       typo_field: 1\n",
-        )
-        .unwrap();
-        let err = serde_yaml::from_value::<Catalog>(merge_value(base, over)).unwrap_err();
-        assert!(err.to_string().contains("typo_field"), "got: {err}");
-    }
-
-    #[test]
     fn model_concurrency_is_optional_and_user_overridable() {
         assert_eq!(
             Catalog::builtin()
@@ -1059,8 +936,8 @@ mod tests {
     fn zai_paas_shares_key_and_models_with_the_coding_plan_entry() {
         // Two endpoints, one key env: the Coding Plan entry stays first (the
         // auto-detect winner); a pay-as-you-go key selects `zai_paas`
-        // explicitly. The model list and bundled MCP servers are YAML
-        // anchors/aliases — the alias-expanded doc must survive the
+        // explicitly. The model list is a YAML
+        // anchor/alias — the alias-expanded doc must survive the
         // pre-deserialization merge with an identical model order.
         let c = Catalog::builtin();
         let zai = c.provider("zai").unwrap();
@@ -1079,11 +956,6 @@ mod tests {
         assert_eq!(zai.thinking_control, Some(ThinkingControl::Zai));
         let ids = |p: &ProviderEntry| p.models.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(zai), ids(paas));
-        // The MCP bundle is NOT shared: the runtime keys bundles by server
-        // name across every entry, so a twin copy would overwrite `zai`'s
-        // (last entry wins); the shared key already makes them available.
-        assert_eq!(zai.mcp_servers.len(), 3);
-        assert!(paas.mcp_servers.is_empty());
         let zai_idx = c.providers.iter().position(|p| p.name == "zai").unwrap();
         let paas_idx = c
             .providers

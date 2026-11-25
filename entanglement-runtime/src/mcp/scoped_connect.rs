@@ -133,7 +133,6 @@ impl McpScopes {
                 cfg,
                 &self.secret_env,
                 &self.http,
-                None,
                 scope.token_store.clone(),
             ),
         )

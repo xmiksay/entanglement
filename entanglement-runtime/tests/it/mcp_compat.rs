@@ -107,15 +107,9 @@ async fn connect(fake: Fake, concurrency: usize) -> HttpClient {
         let _ = axum::serve(listener, app).await;
     });
     let url = format!("http://127.0.0.1:{port}/mcp");
-    HttpClient::connect(
-        "srv",
-        &url,
-        &HashMap::new(),
-        test_http_client(concurrency),
-        None,
-    )
-    .await
-    .expect("handshake")
+    HttpClient::connect("srv", &url, &HashMap::new(), test_http_client(concurrency))
+        .await
+        .expect("handshake")
 }
 
 /// Discover every tool (all pages) and register them as `mcp__srv__*`.

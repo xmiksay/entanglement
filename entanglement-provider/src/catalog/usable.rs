@@ -15,8 +15,7 @@ impl ProviderEntry {
     /// (e.g. local Ollama). `key_env: Some(var)` needs `var` set and
     /// non-empty in the *process* environment, read live so a `/key` save
     /// (which `set_var`s the key) is picked up without a restart — mirroring
-    /// `AvailableServer::key_ok` (`mcp/available.rs`) and `select_provider`'s
-    /// own auto-detect check in `main.rs`. Reading live is safe here: the
+    /// `select_provider`'s own auto-detect check in `main.rs`. Reading live is safe here: the
     /// managed `.env` is loaded into the process env once at startup
     /// (`env_file::load`), strictly before the catalog is handed to any
     /// consumer of this predicate — `select_provider`, agent/session

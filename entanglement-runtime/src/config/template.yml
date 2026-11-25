@@ -124,11 +124,8 @@
 #
 #   description  — one line `list_mcp` shows for the server
 #   disabled     — the one opt-out: a disabled server is never listed or
-#                  connected. Provider-bundled servers (z.ai web_search_prime /
-#                  web_reader / zread, unlocked by ZAI_API_KEY) are on while the
-#                  key resolves; a same-name entry here overrides them
-#                  field-wise — e.g. `zread: { disabled: true }` hides one.
-#                  (The old three-state `state:` key is retired, ADR-0226.)
+#                  connected. (The old three-state `state:` key is retired,
+#                  ADR-0226.)
 #   capabilities — (#426) map a server's raw tool name to `read`/`write`/`call`.
 #                  Every MCP tool currently grades as the fail-safe
 #                  Capability::Write regardless of this hint (ADR-0207 §3 left

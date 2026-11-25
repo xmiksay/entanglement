@@ -12,9 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use entanglement_core::{
-    Catalog, Holly, InMsg, LlmResponse, OutEvent, Permission, SessionId, ToolCall,
-};
+use entanglement_core::{Holly, InMsg, LlmResponse, OutEvent, Permission, SessionId, ToolCall};
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use serde_json::{json, Value};
@@ -128,12 +126,9 @@ fn setup_for(url: &str, dir: &TempDir) -> Setup {
     };
     let mut setup = Setup::mode(Permission::Allow, &[], 0);
     setup.timeout = 1;
-    setup.avail = AvailableMcp::from_config(
-        &Catalog { providers: vec![] },
-        &HashMap::from([("slow-srv".to_string(), cfg)]),
-        vec![],
-    )
-    .with_tool_cache(cache);
+    setup.avail =
+        AvailableMcp::from_config(&HashMap::from([("slow-srv".to_string(), cfg)]), vec![])
+            .with_tool_cache(cache);
     setup
 }
 

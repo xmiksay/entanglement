@@ -21,16 +21,15 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::tools::SharedRegistry;
 
-use super::available::{self, AvailableMcp};
+use super::available::AvailableMcp;
 use super::live::{mcp_add, mcp_remove, ActiveServers, ServerConfigs};
 
 /// Spawns a subscriber that answers `InMsg::McpList`/`McpAdd`/`McpRemove`.
 /// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
 /// from any stdio server a live add spawns. `avail` is the server roster
 /// (ADR-0226): `McpList` lists every registered server, a live add/remove
-/// keeps it in step, and a `McpRemove` of a bundled server is a plain
-/// disconnect (it stays available) instead of a config-map removal. `http`
-/// (#559) is the shared endpoint pool every live add/reconnect rides.
+/// keeps it in step. `http` (#559) is the shared endpoint pool every live
+/// add/reconnect rides.
 pub fn spawn_mcp_responder(
     holly: &Holly,
     registry: SharedRegistry,
@@ -115,27 +114,15 @@ pub fn spawn_mcp_responder(
                             }
                         }
                         Ok(InMsg::McpRemove { name }) => {
-                            // A bundled server (#542) has no config-map entry to
-                            // remove — disconnect it (it stays available)
-                            // instead of erroring halfway through `mcp_remove`.
-                            if avail.is_bundled(&name) {
-                                available::disconnect(&name, &registry, &active);
-                                emitter.emit_mcp_changed(name, McpAction::Removed);
-                            } else {
-                                match mcp_remove(&name, &registry, &active, &configs) {
-                                    Ok(()) => {
-                                        avail.remove(&name);
-                                        emitter.emit_mcp_changed(name, McpAction::Removed)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(server = %name, "MCP remove failed: {e:#}");
-                                        let why = format!("{e:#}");
-                                        emitter.emit_mcp_change_failed(
-                                            name,
-                                            McpAction::Removed,
-                                            why,
-                                        );
-                                    }
+                            match mcp_remove(&name, &registry, &active, &configs) {
+                                Ok(()) => {
+                                    avail.remove(&name);
+                                    emitter.emit_mcp_changed(name, McpAction::Removed)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(server = %name, "MCP remove failed: {e:#}");
+                                    let why = format!("{e:#}");
+                                    emitter.emit_mcp_change_failed(name, McpAction::Removed, why);
                                 }
                             }
                         }
@@ -270,7 +257,7 @@ async fn run_auth_op(
                 .map(|s| s.tools.clone());
             if let (Some(tools), Some(server)) = (tools, avail.get(&name)) {
                 avail.clear_connect_failure(&name);
-                super::record_last_seen(avail.tool_cache(), &name, &server.config, &tools).await;
+                super::record_last_seen(avail.tool_cache(), &name, &server, &tools).await;
             }
             report(McpAuthStatus {
                 name,
@@ -300,7 +287,6 @@ async fn run_auth_op(
 /// The `McpList` snapshot: every registered server (ADR-0226), connected or
 /// not, with its OAuth posture (ADR-0153) — an unauthenticated server is
 /// listed `needs auth` so the user learns `/mcp connect` is what's missing.
-/// `state` is retired and left `None` (kept on the wire for old logs).
 fn full_list(active: &ActiveServers, avail: &AvailableMcp) -> Vec<McpServerStatus> {
     super::roster(avail, active)
         .into_iter()
@@ -317,7 +303,6 @@ fn full_list(active: &ActiveServers, avail: &AvailableMcp) -> Vec<McpServerStatu
             connected: row.connected,
             tools: row.tools,
             error: None,
-            state: None,
         })
         .collect()
 }
@@ -361,7 +346,6 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "mine");
         assert!(!list[0].connected);
-        assert_eq!(list[0].state, None);
         assert_eq!(list[0].transport, "http");
         assert!(list[0].tools.is_empty());
         // Not an OAuth server → no auth posture reported.

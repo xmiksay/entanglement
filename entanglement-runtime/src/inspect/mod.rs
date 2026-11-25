@@ -19,9 +19,8 @@
 //!   `/aux-model`.
 //! - [`mcp_tokens`] (#558): which MCP servers hold a stored OAuth credential
 //!   (`mcp-tokens.yml`, ADR-0153), redacted — never a token value.
-//! - [`mcp`] (#558): the resolved bundled/
-//!   available MCP server roster (provider-bundled + user `mcp:` entries),
-//!   which servers auto-connect vs. wait for `/enable`.
+//! - [`mcp`] (#558): the resolved MCP server roster (the user's `mcp:`
+//!   entries), with OAuth posture and last-seen tools.
 //! - [`session`] (#558): a session's resolved live state folded straight from
 //!   its persisted log — closes the one blind spot the four views above can't
 //!   reach, the per-session tool overlay (ADR-0149), which has no managed file

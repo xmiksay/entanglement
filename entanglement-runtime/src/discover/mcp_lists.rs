@@ -151,7 +151,7 @@ pub async fn mcp_tools(src: &McpSources<'_>, session: &SessionId, input: &str) -
                 .read()
                 .expect("tool registry lock poisoned")
                 .specs();
-            let description = src.avail.get(&server).and_then(|s| s.config.description);
+            let description = src.avail.get(&server).and_then(|c| c.description);
             let names = src.avail.available_names();
             // The same server set the script namespaces are planned over.
             let servers = crate::mcp::roster(src.avail, src.active)

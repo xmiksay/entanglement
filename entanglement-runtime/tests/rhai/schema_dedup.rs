@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use entanglement_core::{
-    Catalog, EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission, PermissionProfile,
+    EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission, PermissionProfile,
     SessionId, ToolCall,
 };
 use entanglement_runtime::arg_validate::LOOP_BREAKER_NOTE;
@@ -85,12 +85,8 @@ async fn run_turn() -> Vec<OutEvent> {
         oauth: None,
         description: None,
     };
-    let avail = AvailableMcp::from_config(
-        &Catalog { providers: vec![] },
-        &HashMap::from([("stub-srv".to_string(), cfg)]),
-        vec![],
-    )
-    .with_tool_cache(cache);
+    let avail = AvailableMcp::from_config(&HashMap::from([("stub-srv".to_string(), cfg)]), vec![])
+        .with_tool_cache(cache);
     let script = r#"let out = [];
         for i in 0..2 { try { mcp::stub_srv::call_(#{bad: 1}); } catch (e) { out.push(e); } }
         out"#;

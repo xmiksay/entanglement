@@ -24,8 +24,8 @@ pub struct ServerRow {
 }
 
 /// Every available server plus anything connected outside the roster (a
-/// server live-added by another path), name-sorted. Keyless bundles and
-/// `disabled` servers are absent.
+/// server live-added by another path), name-sorted. `disabled` servers are
+/// absent.
 pub fn roster(avail: &AvailableMcp, active: &ActiveServers) -> Vec<ServerRow> {
     // Snapshot and release: the rows below read the OAuth token file, which
     // must not happen under a lock every dispatch also takes.
@@ -39,8 +39,7 @@ pub fn roster(avail: &AvailableMcp, active: &ActiveServers) -> Vec<ServerRow> {
         .available_names()
         .into_iter()
         .filter_map(|name| {
-            let server = avail.get(&name)?;
-            let cfg = &server.config;
+            let cfg = &avail.get(&name)?;
             let connected = active.get(&name);
             Some(ServerRow {
                 description: cfg.description.clone(),

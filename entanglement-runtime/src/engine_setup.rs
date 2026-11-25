@@ -216,14 +216,13 @@ pub(crate) async fn build_config(
     // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
     // `Capability::Control` like the other discovery tools (ADR-0226).
     tools.register(LoadSkillTool::new(skills));
-    // External MCP tool servers (#198): the roster of catalog-bundled
-    // (key-gated) servers overlaid with the user `mcp:` map. Registered =
-    // available and nothing connects here (ADR-0226): the first `mcp_tools`
+    // External MCP tool servers (#198): the roster of the user `mcp:` map.
+    // Registered = available and nothing connects here (ADR-0226): the first `mcp_tools`
     // or `mcp(...)` on a server connects it, so a down server never delays
     // startup. Its tool schemas are never advertised; the provider-key scrub
     // (#164) applies to every stdio server it later spawns.
     let mcp_available = Arc::new(
-        mcp::AvailableMcp::from_config(catalog, &user_config.mcp, secret_env.clone())
+        mcp::AvailableMcp::from_config(&user_config.mcp, secret_env.clone())
             .with_tool_cache(mcp::McpToolCache::managed()),
     );
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));

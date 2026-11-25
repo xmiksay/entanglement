@@ -61,10 +61,7 @@ fn default_config_dir() -> Option<PathBuf> {
 /// longer carries, so `deny_unknown_fields` doesn't turn an old user file into
 /// a startup error. `advertise_discovered` (ADR-0200) was retired by
 /// ADR-0204; `discovery` and `tool_advertising` were then both retired whole
-/// by ADR-0226 (one advertised surface, no knob), as was a bundled MCP
-/// server's three-state `state:` (registered = available) — whose `disabled`
-/// value becomes `disabled: true`, so an old opt-out never silently flips a
-/// server back on.
+/// by ADR-0226 (one advertised surface, no knob).
 pub(super) fn strip_retired_keys(mut doc: Value) -> Value {
     const RETIRED: &[(&str, &str)] = &[
         ("advertise_discovered", "ADR-0204"),
@@ -81,31 +78,12 @@ pub(super) fn strip_retired_keys(mut doc: Value) -> Value {
             }
         }
     };
-    let retire_mcp_state = |server: &mut Value| {
-        let Some(map) = server.as_mapping_mut() else {
-            return;
-        };
-        if let Some(state) = map.remove("state") {
-            tracing::warn!("ignoring retired MCP server catalog key `state` (ADR-0226)");
-            if state.as_str() == Some("disabled") {
-                map.insert(Value::from("disabled"), Value::Bool(true));
-            }
-        }
-    };
     if let Some(providers) = doc.get_mut("providers").and_then(Value::as_sequence_mut) {
         for provider in providers {
             strip(provider, "provider");
             if let Some(models) = provider.get_mut("models").and_then(Value::as_sequence_mut) {
                 for model in models {
                     strip(model, "model");
-                }
-            }
-            if let Some(servers) = provider
-                .get_mut("mcp_servers")
-                .and_then(Value::as_mapping_mut)
-            {
-                for (_, server) in servers.iter_mut() {
-                    retire_mcp_state(server);
                 }
             }
         }
