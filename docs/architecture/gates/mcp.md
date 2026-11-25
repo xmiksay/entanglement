@@ -69,7 +69,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     (and the negotiated `MCP-Protocol-Version`). Since
     [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md) the transport itself lives in
     **`entanglement-provider::mcp`** (as `McpHttpClient`) and is reached through
-    core's re-export, the same path `ProviderMcpServer` takes — mechanism in the leaf
+    core's re-export — mechanism in the leaf
     crate, policy (config, registry, permissions, the token file, the browser
     launch) in the runtime. The runtime therefore names no `reqwest` of its own;
     `mcp-http` is now a pure compile gate deciding whether the HTTP-MCP paths are
@@ -81,17 +81,11 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     [ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)) —
     `connect`/`connect_authenticated` take the caller's `entanglement_provider::
     HttpClient` (re-exported from core alongside `McpHttpClient` so the
-    `mcp-http`-only lean build still names no direct provider dependency) and
-    an optional `api_key`, and every `POST` goes through
-    `HttpClient::execute_with_retry` exactly like the LLM wire clients — the
-    same connection pool, RPM/concurrency caps, and 429/`Retry-After` handling,
-    keyed by `(this server's own URL, api_key)` so it gets its own bucket,
-    isolated from its provider's LLM endpoint. This closes the gap where a
-    provider-bundled server sharing its provider's key ([config & live](mcp-config-and-live.md)) issued
-    completely unmetered requests against that key's real rate limit. The
-    provider key is resolved from `AvailableServer.key_env` ([config & live](mcp-config-and-live.md)) at the
-    lazy connect; a live `/mcp add` or an OAuth reconnect passes
-    `api_key: None` (still pooled, just unkeyed).
+    `mcp-http`-only lean build still names no direct provider dependency), and
+    every `POST` goes through `HttpClient::execute_with_retry` exactly like the
+    LLM wire clients — the same connection pool, RPM/concurrency caps, and
+    429/`Retry-After` handling, keyed by the server's own URL so it gets its
+    own bucket.
   - **OAuth (✅ [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md)):** a server entry may
     carry an optional `oauth:` block. Present — *even empty* — it switches that
     server from static-header auth to a browser-obtained bearer token, since most

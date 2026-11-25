@@ -183,12 +183,12 @@ the code, never as a description of current behaviour — that is
 | [0149](0149-per-session-tool-overlay.md) | Per-session tool overlay — live injection past the agent mask | current; amended by 0163, 0177, 0207, 0226 | — |
 | [0150](0150-search-tool-cli-ergonomics.md) | Search-tool CLI ergonomics: directory auto-expansion, brace sets, and no silent empty results | current | — |
 | [0151](0151-settable-session-metadata.md) | Settable session display metadata (name + action) | current; amended by 0154, 0183 | — |
-| [0152](0152-provider-bundled-mcp-servers-three-state-enablement.md) | Provider-bundled MCP servers and the three-state enablement model | current; partly superseded by 0226 | — |
+| [0152](0152-provider-bundled-mcp-servers-three-state-enablement.md) | Provider-bundled MCP servers and the three-state enablement model | current; partly superseded by 0226; removed by #915 | — |
 | [0153](0153-mcp-server-oauth.md) | MCP server OAuth, and moving the MCP client mechanism into the provider crate | current; amended by 0157, 0182, 0184, 0187 | — |
 | [0154](0154-per-purpose-auxiliary-models.md) | Per-purpose auxiliary models for side transformations | current; amended by 0158, 0183 | — |
 | [0155](0155-errored-subagent-turn-parks-for-steering.md) | An errored sub-agent turn parks the parent for steering, not unblocks it | current | — |
 | [0156](0156-normalize-and-stabilize-the-endpoint-pool-key.md) | Normalize and stabilize the endpoint pool key | current | — |
-| [0157](0157-mcp-http-transport-shares-the-endpoint-pool.md) | The MCP HTTP transport shares the LLM endpoint pool | current; amended by 0169 | — |
+| [0157](0157-mcp-http-transport-shares-the-endpoint-pool.md) | The MCP HTTP transport shares the LLM endpoint pool | current; amended by 0169; changed by #915 | — |
 | [0158](0158-defer-session-title-aux-call-under-contended-primary-concurrency.md) | Defer the session-title aux call when the primary model's concurrency cap is contended | current | — |
 | [0159](0159-plan-mask-widened-for-explore-delegation.md) | `plan`'s own mask carries `call`/`bash` so its `explore` delegation isn't self-defeating | superseded by 0207 (agent masks are gone; previously unmarked) | — |
 | [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current | — |
@@ -234,7 +234,7 @@ the code, never as a description of current behaviour — that is
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
 | [0201](0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) | Unregistered-but-configured MCP tools resolve truthfully: enable or attributed decline | current; amended by 0226 | — |
 | [0202](0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) | Prompt-cache discipline: last-turn anchors, session-long deferral, full thinking replay, cached-prefix compaction, session-pinned date | current; partly superseded by 0226 | — |
-| [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current | — |
+| [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915 | — |
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
@@ -257,7 +257,7 @@ the code, never as a description of current behaviour — that is
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227 | — |
-| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232 | — |
+| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current | — |

@@ -127,8 +127,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   persisted `/aux-model` pins (`aux-models.yml`); `inspect mcp-tokens` prints
   which MCP servers hold a stored OAuth credential (`mcp-tokens.yml`,
   ADR-0153), redacted — never a token value; `inspect mcp` prints the resolved
-  MCP server roster (provider-bundled servers folded with the user `mcp:` map,
-  #542) — every registered server with its provider, description, OAuth posture
+  MCP server roster (the user `mcp:` map) — every registered server with its
+  transport, description, OAuth posture
   and last-seen tool names (registered = available, nothing connects at startup,
   [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
   `inspect session <id>` folds one **root** session's persisted log into its

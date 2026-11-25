@@ -24,13 +24,7 @@
   reinterpreted as a `Mode` — `mcp::capability_index` folds this hint into an
   `McpCapabilityIndex` keyed by capability name, resolved from config alone
   (no live connection needed) and consumed by `agents::expand_capabilities`
-  so a bare `read: allow` in the ceiling reaches a hinted MCP tool). A
-  catalog-bundled server (below) never joins `user_config.mcp`, so its own
-  `capabilities:` block (e.g. z.ai's `web_search_prime` →
-  `{webSearchPrime: read}`) is invisible to `capability_index` alone;
-  `mcp::capability_index_with_catalog` is what `skutter` actually calls (`boot.rs`) —
-  `capability_index` plus every bundled server's hint, merged with any
-  same-name user override the same way `AvailableMcp::from_config` merges one.
+  so a bare `read: allow` in the ceiling reaches a hinted MCP tool).
 - **Wiring:** `build_config` builds the roster (`AvailableMcp::from_config`)
   and an empty `ActiveServers`; **nothing connects at startup** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
   retiring [ADR-0169](../../adr/archive/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)'s
@@ -102,21 +96,10 @@ both dispatch and model-advertised schemas with no engine restart.
   a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
   §"TUI `/mcp` command" below.
 
-### Registered = available — [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) (bundled servers: [ADR-0152](../../adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md), #542)
+### Registered = available — [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
-Provider-bundled MCP servers are **catalog data**: `ProviderEntry.mcp_servers`
-(name → `ProviderMcpServer` — transport, `${VAR}` headers, #426 capability
-hint, `description`, `disabled`) ships z.ai's `web_search_prime`/
-`web_reader`/`zread` in the embedded `defaults.yml`, authenticated by the
-provider's own `key_env` (`Bearer ${ZAI_API_KEY}`), every tool hinted
-`read`. A same-name user `mcp:` entry overrides field-wise
-(`available::merge_user_over_bundled`); bundled servers never enter
-`ServerConfigs`/`save_mcp` — they are not persistable state, and a
-`McpRemove` of one merely disconnects it (it stays available).
-
-ADR-0152's three states are gone. `AvailableMcp::from_config` builds one
-roster: every bundled server whose provider key resolves (read **live**, so a
-`/key` save unlocks a bundle with no restart; keyless ⇒ silently absent) and
+The user's `mcp:` map is the only source of MCP servers — the provider
+catalog carries none (#915). `AvailableMcp::from_config` builds one roster:
 every configured server, minus those with **`disabled: true`** — the single
 explicit opt-out, kept in `disabled_names` so a call to one is declined
 truthfully rather than as unknown. There is no per-session enablement, no
@@ -144,12 +127,6 @@ catalog, so the first read of a server in the process connects it
 (`available::try_lazy_connect`); every listed tool is marked in the session's
 `DeliveredSchemas`. Both tools are `Capability::Control`: reading a catalog
 grants nothing.
-
-A bundled server's lazy connect resolves `AvailableServer.key_env` live and
-hands the value to the HTTP transport as `api_key` (✅ #559,
-[ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
-its traffic shares the endpoint pool's rate-limit budget with the provider's
-LLM endpoint using the same key — see [§"MCP client"](mcp.md).
 
 ### Dispatch-time lazy connect — [ADR-0201](../../adr/archive/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md), amended by [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 

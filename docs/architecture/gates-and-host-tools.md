@@ -70,9 +70,9 @@ Continued in [§10 — MCP client: config, live management & lazy connect](gates
 
 Now in [§10 — MCP client: config, live management & lazy connect](gates/mcp-config-and-live.md#live-addremovelist--adr-0096--adr-0097-372-375).
 
-### Registered = available — [ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) (bundled servers: [ADR-0152](../adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md), #542)
+### Registered = available — [ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
-Now in [§10 — MCP client: config, live management & lazy connect](gates/mcp-config-and-live.md#registered--available--adr-0226-bundled-servers-adr-0152-542).
+Now in [§10 — MCP client: config, live management & lazy connect](gates/mcp-config-and-live.md#registered--available--adr-0226).
 
 ### Dispatch-time lazy connect — [ADR-0201](../adr/archive/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md), amended by [ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 

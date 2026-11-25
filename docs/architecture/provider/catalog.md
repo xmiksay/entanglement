@@ -35,15 +35,8 @@ from the managed `llm-tokens.yml` via `skutter config connect <provider>
 errs with that hint; auto-detect stays key-based, so an OAuth provider is
 selected explicitly); a multi-user embedder registers a per-user source via
 `UserProviderContext::with_token_source`. No embedded default carries an
-`oauth:` block. A provider entry may also **bundle MCP servers** (#542,
-[ADR-0152](../../adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
-`mcp_servers: {name → ProviderMcpServer}` — transport (`command` XOR `url`,
-validated runtime-side), `${VAR}` headers, the #426 capability hint, a
-`description` for `list_mcp`, and `disabled` (the one opt-out — registered =
-available, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); a retired `state:` key is stripped with a warning). The embedded defaults ship
-z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
-`ZAI_API_KEY`; the runtime (`entanglement-runtime::mcp::available`) owns all
-interpretation — the provider crate only carries the data. `ModelEntry`
+`oauth:` block. The catalog carries no MCP servers — those are the user
+`config.yml` `mcp:` map alone (#915). `ModelEntry`
 carries capability flags (`supports_thinking`, `supports_vision` (image input;
 gates TUI image paste, #736),
 `supports_temperature`, `default_temperature`, `max_output_tokens`,
@@ -152,10 +145,7 @@ entries sharing `ZAI_API_KEY`**: `zai` (Coding Plan endpoint, first in catalog
 order so auto-detect keeps selecting it) and `zai_paas` (pay-as-you-go
 endpoint, selected explicitly; env overrides follow the entry name —
 `ZAI_PAAS_MODEL`, `ZAI_PAAS_API_BASE`), sharing one model list via a YAML
-anchor — two endpoint pools, since the base URL differs. The bundled MCP
-servers stay on `zai` alone: the runtime gathers bundles from every entry keyed
-by server name, so a twin copy would shadow the first, and the shared key
-already makes them available whichever entry is selected.
+anchor — two endpoint pools, since the base URL differs.
 
 ---
 

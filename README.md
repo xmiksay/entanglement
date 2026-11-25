@@ -150,8 +150,8 @@ discovery tools — `list_agents`, `list_models`, `list_skills`, `load_skill`,
 `list_mcp`, `mcp_tools` — and the `mcp(server, tool, args)` envelope, the only
 way to call an MCP tool. MCP schemas are never advertised: `mcp_tools` shows a
 server's tools with their schemas, and an `mcp(...)` call's args are checked
-against the real schema before it reaches the server. Every configured or
-provider-bundled MCP server is available unless `disabled: true`; nothing
+against the real schema before it reaches the server. Every configured MCP
+server is available unless `disabled: true`; nothing
 connects at startup — the first `mcp_tools`/`mcp(...)` on a server connects it,
 and every call is graded by the session's permission mode.
 

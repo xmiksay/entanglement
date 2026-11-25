@@ -126,11 +126,8 @@ threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` �
 `HttpClient` is not LLM-only: since #559
 ([ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)) the
 MCP streamable-HTTP transport (`entanglement-provider::mcp::McpHttpClient`,
-§gates/mcp.md §10) rides the same pool, keyed by its own URL plus
-its bundling provider's API key when known — so a provider-bundled MCP server
-sharing a key with its provider's LLM endpoint (e.g. z.ai's `web_search_prime`/
-`web_reader`/`zread` against `ZAI_API_KEY`) counts against that key's real
-budget instead of bypassing it.
+§gates/mcp.md §10) rides the same pool, keyed by its own URL, instead of an
+unmetered bare `reqwest::Client`.
 
 The concurrency cap + pacing gate + 429 policy
 ([ADR-0111](../../adr/archive/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is

@@ -9,6 +9,7 @@ Split into the pages below to stay under the 400-line doc cap (`make doc-cap`). 
 | [agents-modes-and-permissions](migrations/agents-modes-and-permissions.md) | agents, modes, permissions & the other 0.6 → 0.7 breaks before ADR-0226 (ADR-0207 family, ADR-0213, ADR-0161, #724, ADR-0181) — **start here** |
 | [one-surface-and-rhai](migrations/one-surface-and-rhai.md) | one surface, binding path & skills (ADR-0226–0230) |
 | [cards-and-sessions](migrations/cards-and-sessions.md) | cards, lineages & sessions (ADR-0233–0248) |
+| [0.7-to-0.8](migrations/0.7-to-0.8.md) | 0.7 → 0.8: the #914 cleanup's removals, one section per issue |
 
 ## Migrating to one advertised surface (ADR-0226, #818)
 
