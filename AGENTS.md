@@ -6,7 +6,7 @@ read the authoritative sources it defers to:
 
 - **`.claude/CLAUDE.md`** — the full project brief (stack, crates, contract, conventions, open work). Read this first.
 - **`docs/architecture.md`** — architecture reference, now a per-module index under `docs/architecture/` (actor model, wire protocol, heads, host tools); each module file is an index over the sub-pages in its own directory (e.g. `docs/architecture/gates/`), and every doc page stays under the 400-line cap (`make doc-cap`).
-- **`docs/adr/`** — immutable decision log; the *why* behind every hard-to-reverse choice. Supersede, never edit in place.
+- **`docs/adr/`** — the *why* behind hard-to-reverse choices: topic ADRs indexed in `docs/adr/README.md`; ADR-0001…0249 archived unchanged in `docs/adr/archive/`, each `ADR-NNNN`'s current status in `docs/adr/archive/MAPPING.md`.
 
 ## Commands — drive through `make`, NOT raw `cargo`
 
@@ -48,7 +48,7 @@ Heads depend on core, **never the reverse.**
 
 - **Conventional Commits with a real scope**: `feat(engine): …`, `fix(cli): …`, `docs: …`. No `Co-Authored-By` trailer.
 - **Fast-forward only; never commit to `master`.** Work on a feature branch; rebase; push `--force-with-lease` (never `--force`) after a rebase.
-- **Hard-to-reverse decisions get an ADR** (`docs/adr/`, next number, immutable) **and** a `docs/architecture.md` update, in the same change.
+- **An ADR only for a hard-to-reverse boundary, protocol or security decision** (crate boundary / embedder API, wire shape, permission or trust model) — never one per PR, never for a feature, refactor or fix. Topic ADRs are amended by a new ADR that links back, not edited per PR. Never edit an archived ADR: a PR that removes or changes what one decided updates its row in `docs/adr/archive/MAPPING.md` (`removed by #N` / `changed by #N`). The *what is* goes in `docs/architecture/` in the same change.
 - **Never touch `CHANGELOG.md` in a feature/fix PR.** The changelog is written once, at release time, generated from `git log <last-tag>..HEAD` + the release's closed issues ([`docs/releasing.md`](docs/releasing.md)). Per-PR `[Unreleased]` entries conflict on every concurrent merge — leave the file alone.
 - Full issue→PR loop (branch → push → PR → address review): see the `/git` skill at `.agents/skills/git/SKILL.md`.
 - **Cutting a release**: `make tag VERSION=vX.Y.Z` (refuses dirty tree / red `make verify` / a version that doesn't match `workspace.package.version`), then `git push origin vX.Y.Z`. Full runbook, including the one-time crates.io Trusted Publishing setup: [`docs/releasing.md`](docs/releasing.md).

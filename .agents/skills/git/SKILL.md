@@ -82,7 +82,7 @@ Frame only — this is the actual coding work, governed by `.claude/CLAUDE.md` +
 - **Comments: WHY, not WHAT.**
 - **Files stay under 400 lines of code** — split into modules when a file exceeds the cap (a hard project rule; applies to docs too).
 - **Tests ship with the change** — pure logic in-module `#[cfg(test)]`; actor/protocol behavior in `entanglement-core/tests/`.
-- **Hard-to-reverse choices get an ADR** in `docs/adr/` (numbered, immutable; supersede, never edit in place) + an arch-doc update in the same change.
+- **An ADR only for a hard-to-reverse boundary, protocol or security decision** (topic ADR in `docs/adr/`, amended by a new ADR, never per PR) + an arch-doc update in the same change. Removing or changing what an archived ADR decided → update its row in `docs/adr/archive/MAPPING.md` (`removed by #N` / `changed by #N`).
 - Commit in **coherent steps** as pieces land (each ideally passing `make verify`), not one dump at the end.
 - Stop when the **acceptance criteria from Phase 1** are met, not when it "looks done."
 - Don't amend pushed commits. Add new commits now; squash later if desired.
@@ -141,7 +141,7 @@ EOF
 
 - **Title** is Conventional Commits but human-readable (`feat(engine): retry token refresh on 401`).
 - **`Closes #<issue>` must be in the body** — the issue auto-closes when the PR merges.
-- If an ADR was added, link it in the body (`docs/adr/00NN-…`).
+- If an ADR was added, link it in the body (`docs/adr/NNNN-…`); list any `docs/adr/archive/MAPPING.md` rows the PR changed.
 - Capture the **PR number and URL** from the output; the review loop needs it.
 
 ## Phase 6 — Review loop  (↻ back to Phase 4 until approved)

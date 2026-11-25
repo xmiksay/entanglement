@@ -9,8 +9,9 @@ Architecture & the four interfaces:
 [`../docs/architecture.md`](../docs/architecture.md). Overview:
 [`../README.md`](../README.md). Embedding guide:
 [`../docs/embedding.md`](../docs/embedding.md). Decisions:
-[`../docs/adr/`](../docs/adr/) (numbered, immutable — the index
-[`README.md`](../docs/adr/README.md) flags superseded/amended entries).
+[`../docs/adr/`](../docs/adr/README.md) (topic ADRs; ADR-0001…0249 are
+archived unchanged, their status per number in
+[`archive/MAPPING.md`](../docs/adr/archive/MAPPING.md)).
 Intentional deferrals and docs-drift findings live as GitHub issues, one each
 (#689).
 
@@ -292,11 +293,16 @@ trusted; system < user < repo) and
   generated once, at release time, from `git log <last-tag>..HEAD` + the
   release's closed issues (see [`../docs/releasing.md`](../docs/releasing.md)) —
   per-PR `[Unreleased]` edits conflict on every concurrent merge.
-- **Architecture decisions run ADR + arch doc in parallel.** Any hard-to-reverse
-  design choice gets an ADR in [`../docs/adr/`](../docs/adr/) (numbered,
-  immutable; supersede, never edit). Then update the relevant
-  [`../docs/architecture/`](../docs/architecture/) module and add an inline ADR
-  link. Drift check: `/arch check`.
+- **An ADR only for a hard-to-reverse boundary, protocol or security
+  decision** (crate boundary / embedder API, wire shape, permission or trust
+  model) — never one per PR, never for a feature, refactor or fix. ADRs are
+  topic ADRs in [`../docs/adr/`](../docs/adr/README.md), amended by a new ADR
+  that links back, not edited per PR. Archived ADRs are never edited: a PR
+  that removes or changes what one decided updates its row in
+  [`archive/MAPPING.md`](../docs/adr/archive/MAPPING.md) (`removed by #N` /
+  `changed by #N`). The *what is* goes in the relevant
+  [`../docs/architecture/`](../docs/architecture/) module. Drift check:
+  `/arch check`.
 - **Keep this brief + the `docs/architecture/` modules in sync.** The brief
   carries *pointers*; the architecture docs carry the *what is*; ADRs carry the
   *why*. When a message variant, profile, crate, env var or command changes,
