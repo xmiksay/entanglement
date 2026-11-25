@@ -2,7 +2,7 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736), [ADR-0225](../../adr/0225-web-fetch-grades-redirect-hops.md) (redirect grading, #808)
+### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736), [ADR-0225](../../adr/archive/0225-web-fetch-grades-redirect-hops.md) (redirect grading, #808)
 
 `web_fetch { url, format?: markdown|text|raw, max_bytes?, offset? }`
 (`host::web_fetch`, behind the default-on `web-fetch` feature) fetches one
@@ -10,7 +10,7 @@ http(s) URL. HTML becomes Markdown (`htmd`; script/style/head/svg dropped),
 `text` also strips link/image targets, `raw` is verbatim. Output is paged at
 the 32 KiB host-tool cap with an `offset=` pointer. A non-text body is never
 inlined: `[binary omitted: mime, size, url]`. Registered at startup and part
-of the advertised kernel ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md): with `describe` gone every model-facing host
+of the advertised kernel ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md): with `describe` gone every model-facing host
 tool must be).
 
 **Grading.** It declares `Capability::Exec`: outbound network to a
@@ -25,7 +25,7 @@ dodged with `HTTPS://`, a trailing dot, or `:443`. Write rules as a literal
 (`https://*.example.com/*`) is unsafe.
 
 **Redirect hops are graded like the initial URL**
-([ADR-0225](../../adr/0225-web-fetch-grades-redirect-hops.md), #808). The
+([ADR-0225](../../adr/archive/0225-web-fetch-grades-redirect-hops.md), #808). The
 executor scopes the call's own grading context around every graded dispatch.
 It is a tokio task-local, `tool_runner::call_grader`, and holds the same
 resolver, ancestor chain, grants, overlay and ceiling as `dispatch`, sharing
@@ -93,7 +93,7 @@ The code is in `host/web_fetch/html.rs`.
 - Tests reach `127.0.0.1` fixtures through a `#[cfg(test)]`-only guard
   field. No production build has a bypass.
 
-### Undo / rewind — per-write file backups — [ADR-0212](../../adr/0212-undo-rewind-via-per-write-file-backups.md) (#731)
+### Undo / rewind — per-write file backups — [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md) (#731)
 
 `write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`
 bindings, which run those same registry tools — back up what they replace
@@ -112,14 +112,14 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   manifest. A spawned child's changes land in its root's directory
   (`FileBackups::track_roots` folds `SessionStarted` lineage, and `Status`
   for the busy check below). A child a compaction moved under the successor
-  ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)) keeps
+  ([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)) keeps
   writing to its spawn-time root's directory until a cold resume
   re-announces it under the successor's root.
   Backups ride the log's lifecycle: `SessionStore::delete` removes them with
   the `.jsonl`, and `prune` removes any backup directory whose log is gone —
   session retention is the only retention.
 - **Reading across the tree** (`file_backup/load.rs`,
-  [ADR-0236](../../adr/0236-rewind-follows-adopted-sub-agents.md), #870): a
+  [ADR-0236](../../adr/archive/0236-rewind-follows-adopted-sub-agents.md), #870): a
   revert, an undo and the `/rewind` picker read the log and manifest of
   every file `SessionStore::tree_files` reaches from the target's root (the
   `Adopted` pointers plus the one-hop predecessor fallback, as
@@ -175,7 +175,7 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   change marked `adopted` (`file_backup::without_exec_seq`): the launch's
   seq and request id belong to the predecessor's log, so it is placed by
   timestamp alone
-  ([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)).
+  ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)).
   A prompt in another file than the change (a moved
   sub-agent's write against the successor's prompts) is compared by the
   change's wall-clock `ts`, since two files share no positions. A change

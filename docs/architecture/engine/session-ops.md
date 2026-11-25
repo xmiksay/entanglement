@@ -3,7 +3,7 @@
 > Part of the [per-session engine module](../engine.md) of the [architecture overview](../../architecture.md).
 
 **File revert — `InMsg::RevertFiles` (`session/revert.rs`, #731,
-[ADR-0212](../../adr/0212-undo-rewind-via-per-write-file-backups.md)).** Deferred
+[ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).** Deferred
 exactly like `SetModel`/`Oneshot` (stashed while a turn is live or the session
 is paused), so a revert never races the turn's own tool writes. At idle the
 session awaits the runtime's `EngineConfig::file_reverter` seam (core does no
@@ -18,7 +18,7 @@ of `FilesReverted` (and so pairs with it), yet the live session applied the
 revert first.
 
 **User fork: `InMsg::ForkSession` (`session/user_fork.rs`, #786,
-[ADR-0223](../../adr/0223-non-compacting-session-fork.md)).** This fork does not
+[ADR-0223](../../adr/archive/0223-non-compacting-session-fork.md)).** This fork does not
 compact anything. It is deferred like `RevertFiles`, so it is only ever cut at
 rest: no parked batch and no half-streamed round. At idle the session reads
 `ctx.prefix(at_turn)`. `Context` records the index of every prompt pushed
@@ -42,7 +42,7 @@ running. The fork has no children (it is a root), and its undo history is empty
 
 **Working directory — `InMsg::SetWorkdir` / `Spawn.workdir`
 (`session/workdir.rs`, `holly/supervisor/workdir.rs`, #764,
-[ADR-0224](../../adr/0224-session-working-directory.md)).** Core carries
+[ADR-0224](../../adr/archive/0224-session-working-directory.md)).** Core carries
 `Session::workdir` as an opaque absolute path and does no file I/O: the
 supervisor validates a `SetWorkdir` the moment it arrives through
 `EngineConfig::workdir_resolver(current, dir, approve)` — `current` is its own
@@ -64,7 +64,7 @@ is told through the per-round **trailing notice** —
 the mode notice, never pushed into `Context` and never in the system prompt.
 
 **Single-shot ops — `InMsg::Oneshot` (`session/ops.rs`, #324,
-[ADR-0082](../../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).**
+[ADR-0082](../../adr/archive/0082-single-shot-session-ops-and-persisted-compaction.md)).**
 Separate from the [turn loop](turn-loop.md): `run_oneshot` never streams tool calls and
 never parks — it either completes in one round-trip or fails cleanly. Routed
 like `SetModel` (`SessionCmd::Oneshot`, deferred via the stash gate
@@ -77,13 +77,13 @@ invariant that lets `compact_op` drive a bare `llm.stream(...)` (via
 **aux-resolved**, not necessarily the session's own: `compact_op` first
 resolves `summarize::AuxBackend::for_summarize(cfg)` and then
 `aux.resolve(&mut *s.llm, model, s.generation)` — a `summarize` aux-model pin
-([ADR-0154](../../adr/0154-per-purpose-auxiliary-models.md), next section) routes
+([ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md), next section) routes
 the call to a one-shot pinned client; unset, the triple resolves straight back
 to the session's own `llm`/`model`/`generation`. `"compact"` resolves the
 session's system prompt and tool specs exactly as a turn round does
 (`session/round_inputs.rs`) and summarizes via the shared
 `session/summarize.rs::summarize`, which `session/turn.rs`'s auto-compact path
-([bounds & compaction](bounds-and-compaction.md)) also calls — so it takes the same two request shapes ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4). On the
+([bounds & compaction](bounds-and-compaction.md)) also calls — so it takes the same two request shapes ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4). On the
 session's own backend it is **structured** (that system prompt + specs, the
 head messages verbatim, one trailing no-tools instruction, the session
 `cache_key`; a tool call falls back once to the rendered shape), reusing the
@@ -109,7 +109,7 @@ is untouched. Model resolution and pricing mirror the turn loop: `s.model` →
 `s.profile.model` → (pricing only) `cfg.default_model`.
 
 **Auxiliary models — the `aux_llm_resolver` seam** (Issue 5,
-[ADR-0154](../../adr/0154-per-purpose-auxiliary-models.md)). A side
+[ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)). A side
 transformation (compaction is core's only consumer today; the runtime's
 session-title generator runs outside core entirely) may run on a
 cheaper/faster model than the session's own. `EngineConfig.aux_llm_resolver:
@@ -136,7 +136,7 @@ catalog no longer knows — falls back **field-by-field to the session's own
 and strictly better than a fixed primary model, since a live `/model` switch
 keeps applying to compaction whenever no pin is set.
 
-**Id generation — the `id_gen` seam** ([ADR-0164](../../adr/0164-short-sortable-kind-tagged-ids.md)).
+**Id generation — the `id_gen` seam** ([ADR-0164](../../adr/archive/0164-short-sortable-kind-tagged-ids.md)).
 `EngineConfig.id_gen: Arc<dyn IdGen>` mints every session id, background-job
 id, and runtime-minted request/correlation id — never `Option`, unlike the
 resolver seams above, since there is always a scheme rather than an
@@ -144,7 +144,7 @@ opt-in override. `IdGen::next(kind: IdKind, ctx: &IdContext) -> String`
 defaults to `DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
 counter>`, 15 characters (`s-`/`j-`/`r-`/`o-`/`x-` for `Session`/`Job`/
 `Request`/`Output`/`Script` — the last per #637,
-[ADR-0185](../../adr/0185-rhai-joins-background-and-poll.md)), with a
+[ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)), with a
 process-global `(last_second, counter)` pair (module statics, not per-instance
 state) that makes "never twice" structural rather than probabilistic within
 one process, and waits for the next second rather than repeating on the
@@ -159,7 +159,7 @@ since `SessionId` is an opaque `String` newtype and the two shapes cannot
 collide.
 
 **Lineage context and tenant prefixes** (✅ #722,
-[ADR-0211](../../adr/0211-idgen-context-and-tenant-prefix-inheritance.md)). Every
+[ADR-0211](../../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)). Every
 mint carries a borrowed, `#[non_exhaustive]` `IdContext { parent, predecessor,
 user }` (`IdContext::default()` / `child_of` / `successor_of` / `with_user`).
 `DefaultIdGen` prepends `ctx.inherited_prefix()` — everything up to and
@@ -207,7 +207,7 @@ task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
 uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
 
-**Pause is a hold, not a cancel** (#516, [ADR-0208](../../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+**Pause is a hold, not a cancel** (#516, [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
 `Session.paused: bool` (never persisted/replayed) is set by
 `SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
 existing gates rather than adding a new code path: every command that already

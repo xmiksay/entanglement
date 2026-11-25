@@ -7,15 +7,15 @@
   `{command, args, env}` (stdio) **or** `{url, headers, oauth}` (HTTP; `oauth` is
   the ADR-0153 block in [MCP client](mcp.md)), plus a shared
   `disabled` (the one opt-out) and `description` (shown by `list_mcp`; a
-  retired three-state `state:` is stripped with a warning, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) — resolved by
+  retired three-state `state:` is stripped with a warning, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) — resolved by
   `McpServerConfig::transport()`, which rejects both-set or
   neither-set. `deny_unknown_fields`-validated by the same loader as
   `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
   lists the configured servers and their resolved transport. An optional
   `capabilities: {tool: read|write|call}` map (raw tool name, #426,
-  [ADR-0117](../../adr/0117-mcp-tool-capability-fan-out.md)) hand-annotates a
+  [ADR-0117](../../adr/archive/0117-mcp-tool-capability-fan-out.md)) hand-annotates a
   server's tools — this predates
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)'s
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)'s
   `Capability` system and is **not** wired into it (`McpTool::capabilities()`
   is hardcoded `Write`, [MCP client](mcp.md)); the one place it still feeds is the
   **`config.yml` `permissions:` ceiling's own capability-key expansion**
@@ -32,8 +32,8 @@
   `capability_index` plus every bundled server's hint, merged with any
   same-name user override the same way `AvailableMcp::from_config` merges one.
 - **Wiring:** `build_config` builds the roster (`AvailableMcp::from_config`)
-  and an empty `ActiveServers`; **nothing connects at startup** ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
-  retiring [ADR-0169](../../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)'s
+  and an empty `ActiveServers`; **nothing connects at startup** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
+  retiring [ADR-0169](../../adr/archive/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md)'s
   concurrent startup connect). The first `mcp_tools` read or `mcp(...)` call
   on a server connects it for the process (`available::ensure_connected`,
   per-server guard, 60 s timeout); a failure is a tool error, never a startup
@@ -41,7 +41,7 @@
   the `mcp-http` feature, so an embedder gets stdio tool servers with no
   CLI/TUI/transport dependency and opts into HTTP by enabling the feature.
 
-### Live add/remove/list — [ADR-0096](../../adr/0096-dynamic-toolregistry-sharedregistry.md) + [ADR-0097](../../adr/0097-live-mcp-server-management.md) (#372, #375)
+### Live add/remove/list — [ADR-0096](../../adr/archive/0096-dynamic-toolregistry-sharedregistry.md) + [ADR-0097](../../adr/archive/0097-live-mcp-server-management.md) (#372, #375)
 
 The tool registry is not frozen:
 `entanglement_runtime::SharedRegistry` (`Arc<std::sync::RwLock<ToolRegistry>>`)
@@ -55,7 +55,7 @@ both dispatch and model-advertised schemas with no engine restart.
   `session()` is `None` and `msg_to_cmd` routes them to no session task. Only
   the read-only `McpList` is wire-allowed; `McpAdd`/`McpRemove` are
   **trusted-only** (#472,
-  [ADR-0124](../../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
+  [ADR-0124](../../adr/archive/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
   reversing #375's wire tier — an unapproved `McpAdd` spawns an arbitrary
   local subprocess, and ADR-0047's "enabling is consent" covers the trusted
   config file, not an unauthenticated wire frame). The TUI `/mcp` command is
@@ -102,7 +102,7 @@ both dispatch and model-advertised schemas with no engine restart.
   a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
   §"TUI `/mcp` command" below.
 
-### Registered = available — [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) (bundled servers: [ADR-0152](../../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md), #542)
+### Registered = available — [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) (bundled servers: [ADR-0152](../../adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md), #542)
 
 Provider-bundled MCP servers are **catalog data**: `ProviderEntry.mcp_servers`
 (name → `ProviderMcpServer` — transport, `${VAR}` headers, #426 capability
@@ -147,11 +147,11 @@ grants nothing.
 
 A bundled server's lazy connect resolves `AvailableServer.key_env` live and
 hands the value to the HTTP transport as `api_key` (✅ #559,
-[ADR-0157](../../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
+[ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)), so
 its traffic shares the endpoint pool's rate-limit budget with the provider's
 LLM endpoint using the same key — see [§"MCP client"](mcp.md).
 
-### Dispatch-time lazy connect — [ADR-0201](../../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md), amended by [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+### Dispatch-time lazy connect — [ADR-0201](../../adr/archive/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md), amended by [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
 An unknown-tool dispatch for an `mcp__<server>__*` name — the normal case for
 the first `mcp(...)` on a server, since nothing connects at startup, and for
@@ -199,7 +199,7 @@ namespaced form; `disabled_decline` renders the one truthful-decline string.
   own connect rather than joining the doomed one. A model's call (direct `mcp`
   envelope, `mcp_tools`) waits the connect's timeout as before.
 
-### TUI `/mcp` command — [ADR-0100](../../adr/0100-tui-mcp-command.md) (#373)
+### TUI `/mcp` command — [ADR-0100](../../adr/archive/0100-tui-mcp-command.md) (#373)
 
 `Command::Mcp` (`tui/commands.rs`) joins `all_commands()`; its subcommand
 parsing (`McpCommand::List`/`Add`/`Remove`, `parse_mcp_args`) and the async
@@ -220,7 +220,7 @@ snapshot. `/mcp add <name> -- <command> [args...]` (stdio) / `/mcp add <name>
 `OutEvent::McpChanged` (or a parse error, caught before the engine is
 touched) renders as a transcript status line via `App::handle_mcp_changed`/
 `record_mcp_error`, mirroring `/key`'s save notice. The panel has no enable key
-any more ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)); `/mcp connect` (OAuth) stays. No new wire surface — this
+any more ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)); `/mcp connect` (OAuth) stays. No new wire surface — this
 is entirely a head-side consumer of the `InMsg`/`OutEvent` pair #375 already
 shipped.
 

@@ -79,7 +79,7 @@ pub(super) struct RawConfig {
     /// many idle seconds (#401, ADR-0090/[ADR-0105]). Absent ⇒ `None` ⇒ the
     /// engine default: no sweep, eviction stays embedder-driven.
     ///
-    /// [ADR-0105]: ../../../docs/adr/0105-expose-idle-ttl-via-runtime-config.md
+    /// [ADR-0105]: ../../../docs/adr/archive/0105-expose-idle-ttl-via-runtime-config.md
     #[serde(default)]
     pub(super) idle_ttl_secs: Option<u64>,
     /// Try an LLM summary before the prune-only fallback when a turn's history

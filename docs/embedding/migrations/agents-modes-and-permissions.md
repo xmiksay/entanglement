@@ -11,7 +11,7 @@ embedder hits first. Paths are crate paths at 0.7.0; `core` is
 
 ## Agents replace profiles (ADR-0207, #560)
 
-[ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+[ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 split a 0.6.0 profile in two: **identity** (who answers: prompt, model pin)
 stays on the agent, and **authority** (what may run) moves to the session's
 permission mode (next section).
@@ -91,7 +91,7 @@ permission mode (next section).
   `name`/`description` and ignore the rest. The built-in roster is
   `general`/`plan`/`debug`. A 0.6.0 log naming `build` or `explore` resumes
   as `general`
-  ([ADR-0214](../../adr/0214-retired-agent-logs-resume-as-general.md)).
+  ([ADR-0214](../../adr/archive/0214-retired-agent-logs-resume-as-general.md)).
 
 ## Permission modes carry authority (ADR-0207/0209/0218, #560, #763)
 
@@ -133,7 +133,7 @@ permission mode (next section).
   - Any other tool gets its `default: prompt`.
 
   `auto` allows all but its deny/prompt lists
-  ([ADR-0209](../../adr/0209-auto-mode-defaults-to-prompt-not-deny.md)).
+  ([ADR-0209](../../adr/archive/0209-auto-mode-defaults-to-prompt-not-deny.md)).
 - **Porting a custom profile's `permission:`:** turn the 0.6.0
   `PermissionProfile` into a mode of your own:
 

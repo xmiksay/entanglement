@@ -12,7 +12,7 @@
   out to every live one), and `Ctrl+Space` toggles pause/resume on the active
   session (safe because the engine treats `PauseSession` on an idle session
   and `ResumeSession` on a non-paused one as idempotent no-ops,
-  [ADR-0208](../../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
+  [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
   The sessions modal adds lifecycle **quick keys** on the highlighted row
   (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
   modal staying open so several sessions can be acted on in a row, plus
@@ -21,11 +21,11 @@
   (bare `Esc`, `/stop`'s bare form, the sessions modal's `s`, the command
   palette's `/stop` pick) routes through `tui/stop_command.rs::request_stop`
 (originally #626,
-  [ADR-0172](../../adr/0172-tui-stop-cascade-vs-detach-confirm-modal.md)): it
+  [ADR-0172](../../adr/archive/0172-tui-stop-cascade-vs-detach-confirm-modal.md)): it
   used to arm a cascade-vs-detach confirm modal (`c` cascades, `Enter`/`y`/`d`
   detaches, `Esc`/`n` cancels) when the target was `WaitingAgent` with a live
   **sponsored** `propose_plan` build child
-  (flagged by the since-deleted `SessionStarted.sponsored`). [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  (flagged by the since-deleted `SessionStarted.sponsored`). [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §7 retires that handoff entirely — plan approval switches the session's own
   mode instead of spawning a child, and the `sponsored` field left the wire
   with it — and with the confirm's
@@ -33,10 +33,10 @@
   unconditionally, for every target. `/stop --all` keeps its raw fan-out
   semantics unchanged. `/name <text>` sets the session's
   display name via `InMsg::SetSessionMeta`
-  ([ADR-0151](../../adr/0151-settable-session-metadata.md)); the sidebar and
+  ([ADR-0151](../../adr/archive/0151-settable-session-metadata.md)); the sidebar and
   sessions modal prefer the name over the short id and the live `action` over
   the first-prompt description line. `/undo` and `/rewind <N>`
-  (`tui/undo_command.rs`, [ADR-0212](../../adr/0212-undo-rewind-via-per-write-file-backups.md))
+  (`tui/undo_command.rs`, [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md))
   send `InMsg::RevertFiles` for the active session (`to_turn: None` / `Some(N)`);
   the engine applies it once the session is idle and the reducer renders the
   `FilesReverted` reply as an `undo` notice (`file_backup::summary`: what was
@@ -45,7 +45,7 @@
   turns that still have revertable edits (turn, file count, prompt snippet)
   read straight from the backup store — no engine traffic.
   `/cd [--session|--always] [<dir>]` (`tui/cd_command.rs`, #764,
-  [ADR-0224](../../adr/0224-session-working-directory.md)) sends
+  [ADR-0224](../../adr/archive/0224-session-working-directory.md)) sends
   `InMsg::SetWorkdir` for the active session (bare = the project root, `~`
   expanded); the flag is the escape-root approval for a directory outside the
   root, so a plain `/cd` there is refused with that hint. The reducer folds
@@ -55,7 +55,7 @@
   compared against the root canonicalized once at startup. `!bash` runs in the
   focused session's workdir. `/fork [N]`
   (`tui/fork_command.rs`, #786,
-  [ADR-0223](../../adr/0223-non-compacting-session-fork.md)) sends
+  [ADR-0223](../../adr/archive/0223-non-compacting-session-fork.md)) sends
   `InMsg::ForkSession` for the active session. A `SessionForked` whose source
   is the active session moves the user into the fork (`app/out_event.rs`). The
   reducer (`session_view/reducer/fork.rs`) opens the fork's view on a lineage
@@ -71,14 +71,14 @@
   keeps its blank record and its offset, consistently on both sides: replay
   counts the blank message as turn 1 too. `/init [--update]
   [instructions…]` (`tui/init_command.rs`, ✅ #732,
-  [ADR-0222](../../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)) sends
+  [ADR-0222](../../adr/archive/0222-no-silent-echo-first-run-onboarding-and-init.md)) sends
   a built-in prompt plus a bounded repo snapshot (the `@file` index — the capped
   `glob` walk, built once if not yet landed — summarized as notable files,
   top-level entries, a type histogram and ≤ 200 shallowest paths) as an ordinary
   `Prompt`; the model writes `AGENTS.md` with its own `write`/`edit`, graded by
   the session's mode. An existing `AGENTS.md` refuses a bare `/init`;
   `--update` asks for an in-place improvement. **User slash
-  commands** (#733, [ADR-0221](../../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)): the slash popup, `Ctrl+P` palette,
+  commands** (#733, [ADR-0221](../../adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)): the slash popup, `Ctrl+P` palette,
   input whisper and `/help <cmd>` list the built-ins plus the live
   `slash_commands` registry (description + `argument-hint`; `SlashPopup` holds
   the live handle). Enter on `/name args` that is not a built-in expands the
@@ -93,7 +93,7 @@
   (matching `Esc`), and the wheel moves the modal's selection — the
   transcript-selection path runs only when no modal/popup is open.
   **External editor + export** (✅ #13,
-  [ADR-0029](../../adr/0029-external-editor-and-markdown-export.md), `tui::editor` +
+  [ADR-0029](../../adr/archive/0029-external-editor-and-markdown-export.md), `tui::editor` +
   `tui::export`): `<leader>e` / `/editor` suspends the TUI and opens the resolved
   editor (`pick_editor`: the persisted `config.yml` `editor:` **wins over**
   `$VISUAL`→`$EDITOR`→`vi`, each source skipped when blank) on the input draft,
@@ -103,7 +103,7 @@
   `App` that the event loop (terminal owner) runs, restoring the alternate screen
   symmetrically; an editor failure is logged, not fatal. **`@file` mentions +
   `!bash` passthrough** (✅ #15,
-  [ADR-0030](../../adr/0030-tui-file-mentions-and-bash-passthrough.md), `tui::mention`):
+  [ADR-0030](../../adr/archive/0030-tui-file-mentions-and-bash-passthrough.md), `tui::mention`):
   typing `@` opens a fuzzy file-completion popup over a startup snapshot of the
   working dir (`host::list_files`, minus `target`/`node_modules`/… trees);
   Tab/Enter inserts the pick as `@path` prompt text (the model reads it via the
@@ -122,7 +122,7 @@
   (`inspect::tui_reports` → the shared `render_*` helpers): the Prompt tab is the
   active agent's `--parts` breakdown; the Agents tab is the registry table plus
   the active agent's full detail — **identity and provenance only** since
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   (name, description, model/provider pin, assembled-prompt length,
   overridden lower layers; no more permission/mask/spawn/plan-authorship
   columns to show — that posture is `skutter inspect modes`' job now, not
@@ -138,7 +138,7 @@
   tabs stay single scroll-only documents. `Tab`/`←`/`→`
   switch tabs from either level, arrows/`j`/`k`/`PgUp`/`PgDn` (or the wheel)
   scroll the document panes, `Esc` closes. **`/key`
-  dialog** (✅ #304, [ADR-0073](../../adr/0073-managed-env-file-writer-and-key-surfaces.md),
+  dialog** (✅ #304, [ADR-0073](../../adr/archive/0073-managed-env-file-writer-and-key-surfaces.md),
   `tui::key_dialog`): a two-stage modal after the `/model` pattern — a keyed-provider
   list, then a masked input (`masked()` renders bullets only, the key is never
   shown). On submit it drives the shared `config::env_key::set_key` writer and
@@ -151,7 +151,7 @@
   hidden `rpassword` prompt, or piped stdin — never echoed — and warns when the
   process env already carries a *different* value (env > file). Its OAuth
   sibling is `skutter config connect|disconnect <provider>` (✅ #684,
-  [ADR-0189](../../adr/0189-oauth-for-llm-provider-endpoints.md),
+  [ADR-0189](../../adr/archive/0189-oauth-for-llm-provider-endpoints.md),
   `config::llm_connect`): for a catalog entry carrying an `oauth:` block, it
   runs the browser-loopback (or `--device-code`) authorization against the
   entry's resolved base URL and persists the credential to the managed
@@ -178,7 +178,7 @@
   note that effort/thinking changes rebuild the prompt cache; **Tools** —
   the per-session overlay rows bare `/enable` uses (the advertising-mode and
   discovery rows and whole-server MCP enable rows are gone with
-  [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md):
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md):
   one surface, MCP registered = available); **Aux** — the per-purpose pins. Each tab has its own "save as
   default": Session → the agent-models pin (ADR-0081), Generation → the
   agent-generation store once `GenerationChanged` confirms (ADR-0095), Tools →

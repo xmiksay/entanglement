@@ -3,7 +3,7 @@
 How to build a **custom head** on top of the engine: one process serving many
 users, each isolated, without forking anything. This is the path
 `entanglement-runtime --no-default-features` exists for
-([ADR-0025](adr/0025-runtime-cargo-feature-gates.md)) — the lean library gives
+([ADR-0025](adr/archive/0025-runtime-cargo-feature-gates.md)) — the lean library gives
 you the tool-execution loop, permission dispatch, sub-agent spawn, and
 persistence machinery with zero CLI/TUI/transport weight. Everything below is exercised by compiling, runnable examples — the
 multi-tenant policy seam in

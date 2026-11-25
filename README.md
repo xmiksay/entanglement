@@ -14,7 +14,7 @@ backends wired (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic +
 Gemini). All
 four interfaces now ship. The three-layer re-architecture (core / provider /
 runtime) has landed — see
-[`docs/adr/0006`](docs/adr/0006-core-dependency-hygiene-gate.md) and the crate
+[`docs/adr/0006`](docs/adr/archive/0006-core-dependency-hygiene-gate.md) and the crate
 table below.
 
 ## The contract (one set of types, every head)
@@ -47,7 +47,7 @@ Every frame is **session-scoped** (one connection multiplexes many sessions via
 | **ABI (direct)** | ✅ | Hold a `Holly`, call `holly.send(InMsg)` / `holly.subscribe()`. Zero serialization. The foundation. |
 | **stdio** (`skutter run` / `skutter pipe`) | ✅ | NDJSON over stdin/stdout — one-shot `run` (text or `--format json`, à la `opencode run`) and bidirectional `pipe`. `skutter sessions` lists past sessions; `skutter inspect prompt --agent <name> [--parts]` prints an agent's assembled system prompt (no engine); `skutter inspect agents [name]` shows the resolved agent registry with layer provenance — a table (name, model, default mode, layer, source) or one agent's full resolved identity + what lower layers it overrode; `skutter inspect modes [name]` lists the four permission modes or one mode's resolved rules; `skutter inspect skills [name] [--disclosures]` does the same for skills — a table (name, layer, root_dir, description), the exact `list_skills` roster the model gets (`--disclosures`), or a dry-run of the `load_skill` path substitution for one skill; `skutter inspect commands [name]` lists the user slash commands. |
 | **TUI** (`skutter tui`) | ✅ | opencode-style terminal UI streaming `OutEvent`, tool-approval prompts, plan/task panels; an always-visible top status line shows where it works (`repo › path  ⎇ branch [worktree]`, configurable); `dark`/`light` themes with per-slot colour overrides (`NO_COLOR` honoured) and remappable keys (`Ctrl+X` leader by default; `Ctrl+X ?` lists the bindings in effect). |
-| **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/0048-serve-head-local-trust-model.md), #153). |
+| **WebSocket** (`skutter serve --port <N>`) | ✅ | axum `/ws` (+ `/healthz`), one `broadcast` fan-out per socket relayed as JSON text frames, inbound frames routed through the untrusted `send_from_wire` path, multiplexed by `SessionId`. **Local, single-user, loopback-bound** (`127.0.0.1` only) — the WS is a general protocol interface (a raw local script is as valid a client as any future client), so the `--allow-origin` check is opt-in, never mandatory ([ADR-0048](docs/adr/archive/0048-serve-head-local-trust-model.md), #153). |
 
 Building your own head — a multi-tenant server embedding the engine as a
 library, rather than one of the four above — is covered in
@@ -62,7 +62,7 @@ and [`mcp_http.rs`](entanglement-runtime/examples/mcp_http.rs).
 ## Agents and permission modes
 
 A session is a pair **(agent, mode)** — two independent axes
-([ADR-0207](docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
+([ADR-0207](docs/adr/archive/0207-permission-modes-replace-agent-borne-authority.md)).
 
 An **agent** is *identity only* — `{ name, description, system_prompt,
 model?, provider?, default_mode? }` (opencode-style `.md` files; frontmatter may also set
@@ -100,19 +100,19 @@ stricter grade. The `permissions:` ceiling grades the same way:
   project root, a credentialed `http()` host and writes of trusted scripts
   still ask, bounded by a 60s timeout when nobody watches the session —
   with the TUI open (or a `serve` client owning it) the card waits for you
-  ([ADR-0228](docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
-  amending [ADR-0209](docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md);
-  [ADR-0247](docs/adr/0247-attended-sessions-wait-for-their-approver.md)).
+  ([ADR-0228](docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
+  amending [ADR-0209](docs/adr/archive/0209-auto-mode-defaults-to-prompt-not-deny.md);
+  [ADR-0247](docs/adr/archive/0247-attended-sessions-wait-for-their-approver.md)).
 
 Select a mode with `--mode` on `run`/`tui` (or `config.yml` `mode:`) and
 switch it live with `/mode` in the TUI. With neither set, a fresh session
 starts in its agent's `default_mode` (the built-in `plan` agent starts in
 `plan`; a hint is never wider than `build`, so never `auto`), else `build`; a spawned child only ever takes a `default_mode` no
 wider than its parent's mode, and a resumed session keeps its replayed mode
-([ADR-0218](docs/adr/0218-agent-default-mode-is-a-starting-hint.md)) — except
+([ADR-0218](docs/adr/archive/0218-agent-default-mode-is-a-starting-hint.md)) — except
 that a resumed sub-agent takes its nearest ancestor's current mode when that
 is stricter, even if the ancestor was narrowed while the sub-agent was
-hibernated ([ADR-0246](docs/adr/0246-resume-under-ancestors-and-the-teardown-tail.md)); a blocked model may ask to widen via
+hibernated ([ADR-0246](docs/adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)); a blocked model may ask to widen via
 `request_mode`. Spawning is graded like any tool (`/disable agent` or a mode
 `deny: [agent]` stops it) and bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.
@@ -171,7 +171,7 @@ Agents (`ENTANGLEMENT_AGENTS_DIR`) and skills (`ENTANGLEMENT_SKILLS_DIR`) are
 `.md` files with YAML frontmatter — drop one in and it joins the registry with
 no code change; `skutter inspect agents|skills` shows the resolved set with
 layer provenance. **User slash commands** (`ENTANGLEMENT_COMMANDS_DIR`, #733,
-[ADR-0221](docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)) are prompt templates: drop
+[ADR-0221](docs/adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)) are prompt templates: drop
 `.entanglement/commands/review.md` (or reuse `.claude/commands/` /
 `.opencode/command/` files; `frontend/review.md` is `/frontend:review`) and
 `/review src/a.rs` in the TUI or `skutter run "/review src/a.rs"` sends its
@@ -180,7 +180,7 @@ body with `$ARGUMENTS` / `$1`..`$9` filled in. Frontmatter `description` and
 are ignored, and `` !`cmd` `` / `@file` are sent literally — a command is
 plain text, never shell or file access. Built-in TUI commands win on a name
 clash; `skutter inspect commands` lists what resolved. Beyond the root-contained file tools, `bash` (a real shell) is always registered
-([ADR-0195](docs/adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
+([ADR-0195](docs/adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
 and graded by the session's mode like everything else. `glob`, `grep` and
 `call` (argv exec, no shell) are registered but never advertised: they are
 script-only `rhai` bindings (`call` as `exec`), each call graded under its own
@@ -192,22 +192,22 @@ same permission path as a direct one, MCP tools are callable as
 `import` a library module by name (built-in such as `json_schema`, or a
 `<name>.rhai` in `${config_dir}/entanglement/rhai/modules/` or
 `.entanglement/rhai/modules/`; `load_skill rhai` lists them,
-[ADR-0248](docs/adr/0248-importable-rhai-library-modules.md)), and `http()` can
+[ADR-0248](docs/adr/archive/0248-importable-rhai-library-modules.md)), and `http()` can
 attach credentials the user maps per host in `config.yml` `http_auth:` (never
 visible to the model; the first use per host is always approved,
-[ADR-0227](docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as
+[ADR-0227](docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as
 Markdown behind an SSRF guard: private, loopback, link-local and metadata
 addresses are refused, DNS answers are pinned, and every redirect is checked
 again. It is graded like `curl` (allowed in `build` and `auto`, prompted in `research`/`plan`) and
 can be dropped with the `web-fetch` feature
-([ADR-0220](docs/adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
+([ADR-0220](docs/adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
 In the TUI, `Ctrl+V` pastes a clipboard image into the prompt when the model's
 catalog entry sets `supports_vision`.
 
 ## Crates
 
 Three crates, two seams (core ↔ provider, core ↔ runtime). Dependency direction
-is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/0053-invert-core-provider-seam.md)).
+is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/archive/0053-invert-core-provider-seam.md)).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
@@ -226,7 +226,7 @@ cargo install entanglement-runtime   # installs the `skutter` binary
 Provider API keys live in a managed env file
 (`${config_dir}/entanglement/.env`, override `ENTANGLEMENT_ENV_FILE`), loaded at
 startup for any var the real environment left unset (env > file). Set one without
-hand-editing the file (#304, [ADR-0073](docs/adr/0073-managed-env-file-writer-and-key-surfaces.md)):
+hand-editing the file (#304, [ADR-0073](docs/adr/archive/0073-managed-env-file-writer-and-key-surfaces.md)):
 
 ```bash
 skutter config set-key zai                 # hidden prompt (never echoed)
@@ -243,7 +243,7 @@ in `config.yml`).
 Inside the TUI, `/key` opens the same dialog (provider list → masked input); a key
 set there is picked up on the next `/model` switch with no restart.
 
-**First run, no provider configured** ([ADR-0222](docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)):
+**First run, no provider configured** ([ADR-0222](docs/adr/archive/0222-no-silent-echo-first-run-onboarding-and-init.md)):
 bare `skutter` opens a setup dialog before the TUI starts — pick a provider
 (keyless `ollama` asks for its base URL instead of a key), type the key
 (masked, saved to the managed `.env`), pick a model (the catalog default is
@@ -347,7 +347,7 @@ model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens, the
 last-seen MCP tool-name cache) in one go,
 and `ENTANGLEMENT_DEBUG=bodies,echo,no-shared-state` switches on developer
 diagnostics. Knobs retired in 0.7 still print one startup warning naming
-their replacement ([ADR-0213](docs/adr/0213-prune-env-vars-and-catalog-knobs.md)).
+their replacement ([ADR-0213](docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md)).
 
 ## Build & develop
 

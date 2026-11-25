@@ -1,6 +1,6 @@
 //! Runtime-side throttle-transition responder (#517, ADR-0141): polls the
 //! shared `HttpClient`'s per-endpoint resilience pool
-//! (ADR-0050/[ADR-0111](../../docs/adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md))
+//! (ADR-0050/[ADR-0111](../../docs/adr/archive/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md))
 //! and emits [`OutEvent::Throttle`] only on a transition, so a remote (stdio/
 //! WS) head sees the same stall the TUI already renders directly via
 //! `HttpClient::throttle_status()` (`tui/input_panel.rs`).

@@ -7,9 +7,9 @@
 With thinking enabled, Anthropic requires the unmodified `thinking` /
 `redacted_thinking` block — signature intact — on the **final** assistant
 message whenever tool results are returned, which is exactly a parked turn
-([ADR-0061](../../adr/0061-parked-turn-state-batch-tool-resolution.md)). So
+([ADR-0061](../../adr/archive/0061-parked-turn-state-batch-tool-resolution.md)). So
 reasoning cannot be display-only on that wire
-([ADR-0160](../../adr/0160-extended-thinking-round-trip.md)).
+([ADR-0160](../../adr/archive/0160-extended-thinking-round-trip.md)).
 
 `ContentPart::Reasoning { provider, text, data }` carries it in history: `data`
 is the provider's own wire shape (Anthropic's `signature`, and whether the block
@@ -25,7 +25,7 @@ session log.
 
 | Wire | Capture | Replay when enabled |
 | --- | --- | --- |
-| Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, on **every** assistant message ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md): preserved-thinking models keep prior-turn thinking, so stripping it edits history — a cache bust per round, a 400 on Fable 5.1; older models ignore the blocks unbilled) |
+| Anthropic | `thinking` assembled across `thinking_delta` + `signature_delta`; `redacted_thinking` whole | verbatim, **first** in the block list, on **every** assistant message ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md): preserved-thinking models keep prior-turn thinking, so stripping it edits history — a cache bust per round, a 400 on Fable 5.1; older models ignore the blocks unbilled) |
 | Gemini | thought-text parts | none — the load-bearing `thoughtSignature` round-trips via `ToolCall::provider_meta` (ADR-0085) |
 | OpenAI-compat | structured `reasoning`/`reasoning_content` deltas (`thinking_format: fields`, the default) are accumulated per round and captured into one block at stream finish (ADR-0200), same as a `thinking_format: inline_tags` model's `<think>…</think>` spans split out of `content` (ADR-0191) | as the assistant message's `reasoning_content` field, gated by `replay_thinking` (default **off** on this wire); legacy spans already in history text are stripped regardless |
 
@@ -64,7 +64,7 @@ last assistant turn land one byte later than wherever the server's cache
 entry actually ended (through generation, not just the replayed text) —
 that residual tail divergence is a server-side snapshot-placement question
 (snapshotting at end-of-prefill, before generation), out of this codebase's
-scope; see [ADR-0200](../../adr/0200-fields-reasoning-capture-and-advertise-discovered.md).
+scope; see [ADR-0200](../../adr/archive/0200-fields-reasoning-capture-and-advertise-discovered.md).
 
 Three rules hold regardless of the flag: a block whose `provider` differs from
 the target renders **nothing** (stricter than `ProviderSearch`'s summary
@@ -95,7 +95,7 @@ built-in stub), erroring loudly if its key env is missing; if unset, auto-detect
 by iterating catalog order and picking the first provider whose `key_env` is set
 and non-empty (keyless Ollama is skipped) — preserving z.ai → OpenAI → Anthropic.
 Nothing found is **never** a silent `EchoLlm` fallback
-([ADR-0222](../../adr/0222-no-silent-echo-first-run-onboarding-and-init.md)):
+([ADR-0222](../../adr/archive/0222-no-silent-echo-first-run-onboarding-and-init.md)):
 `run`/`pipe`/`serve` print `provider_setup::no_provider_hint` (the catalog key
 vars, `skutter config set-key <keyed providers>`, `ENTANGLEMENT_PROVIDER=ollama`
 / `=echo`) and exit 2, and the TUI runs its pre-boot onboarding dialog
@@ -114,11 +114,11 @@ retired, ADR-0213 — a still-set one only earns a startup warning). Default mod
 provider's `default_model` (`glm-5.3` / `gpt-4o` / `llama3.1` /
 `claude-sonnet-5`). The TUI model picker + context bar read the same catalog.
 
-**Multi-user provider context (#522, [ADR-0147](../../adr/0147-multi-user-mode-embedder-api.md)):**
+**Multi-user provider context (#522, [ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md)):**
 everything in [provider](../provider.md) up to here is the **single-user** story — one process-global `Catalog`,
 API keys loaded from the managed `.env` file (#220) into `std::env`. A
 multi-user embedder instead builds `ModelResolver`s per user via
-**`entanglement-provider::multi_user`** ([ADR-0184](../../adr/0184-provider-hosted-multi-user-seams.md)
+**`entanglement-provider::multi_user`** ([ADR-0184](../../adr/archive/0184-provider-hosted-multi-user-seams.md)
 relocated it out of the runtime — the runtime crate never names `UserId`,
 ADR-0181, enforced by `make userid`):
 `ModelResolver` itself widened to `Fn(Option<&UserId>, &str, &str) -> Result<ResolvedModel, String>`
@@ -137,14 +137,14 @@ the same provider already get independent `EndpointState`s with no further
 change. `serve` is unaffected — it stays single-user (ADR-0048); this seam is
 reachable only through the embedder library API. Per-user **aux-model** pins
 take no runtime module at all (#635,
-[ADR-0183](../../adr/0183-narrate-purpose-and-per-user-aux-pins.md), conforming
-to [ADR-0181](../../adr/0181-userid-leaves-the-runtime-crate.md)): the embedder
+[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md), conforming
+to [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)): the embedder
 builds a per-user `AuxLlmRegistry` from `AuxModelStore::in_memory` + a
 resolver closure bound to its user — see the [heads & persistence
 doc](../heads/keys-and-aux-models.md)'s §6d.
 
 **Per-user admission gate on a shared literal key** (#632,
-[ADR-0175](../../adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)):
+[ADR-0175](../../adr/archive/0175-per-user-admission-gate-on-a-shared-literal-key.md)):
 two users configured with the *same* literal key land in one `EndpointState`
 (ADR-0050's pool key is blind to caller identity), so
 `resolve_for_user` additionally calls `HttpClient::with_user_budget`,

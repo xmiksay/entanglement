@@ -1,5 +1,5 @@
 //! Root-relative normalization for path-shaped permission arguments (#485,
-//! [ADR-0125](../../../docs/adr/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)).
+//! [ADR-0125](../../../docs/adr/archive/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)).
 //!
 //! [`permission_arg`][crate::permission::permission_arg] extracts a call's
 //! tool-specific argument **verbatim** — the model may spell a `read`/`edit`/

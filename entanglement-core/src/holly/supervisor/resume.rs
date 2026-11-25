@@ -121,7 +121,7 @@ impl Supervisor {
     /// emitting a supervisor `Error` for `target`.
     ///
     /// `records` is the whole root log (children fold into their root's file,
-    /// [ADR-0020](../../docs/adr/0020-event-sourced-session-persistence.md)), and
+    /// [ADR-0020](../../docs/adr/archive/0020-event-sourced-session-persistence.md)), and
     /// [`Session::replay`] scopes its fold to `target`'s own records regardless of
     /// which session in the tree `target` names (#275).
     fn spawn_resumed(

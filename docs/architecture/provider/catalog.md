@@ -3,7 +3,7 @@
 > Part of the [llm i/o module](../provider.md) of the [architecture overview](../../architecture.md).
 
 **Provider/model catalog (`entanglement-provider::catalog`, #118,
-[ADR-0032](../../adr/0032-yaml-provider-model-catalog.md)):** the
+[ADR-0032](../../adr/archive/0032-yaml-provider-model-catalog.md)):** the
 provider + model list is **YAML, not code** — an embedded default
 (`src/defaults.yml`, `include_str!`) deep-merged with an optional user override at
 `${config_dir}/entanglement/providers.yml` (override the path via
@@ -18,7 +18,7 @@ change** — any OpenAI-compatible endpoint (proxy, local vLLM, new vendor) is
 is OpenAI's distinct Responses API — flat input/output items instead of
 Chat Completions' role+content messages; opt-in per catalog entry, never a
 default (`openai` itself stays on Chat Completions). **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
-[ADR-0189](../../adr/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
+[ADR-0189](../../adr/archive/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
 an `oauth:` block (the same `OauthConfig` override fields the `mcp:` blocks
 use) authenticates with an `Authorization: Bearer` token from an
 `AccessTokenSource` instead of a static key — all three wires support it, the
@@ -36,11 +36,11 @@ errs with that hint; auto-detect stays key-based, so an OAuth provider is
 selected explicitly); a multi-user embedder registers a per-user source via
 `UserProviderContext::with_token_source`. No embedded default carries an
 `oauth:` block. A provider entry may also **bundle MCP servers** (#542,
-[ADR-0152](../../adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
+[ADR-0152](../../adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md)):
 `mcp_servers: {name → ProviderMcpServer}` — transport (`command` XOR `url`,
 validated runtime-side), `${VAR}` headers, the #426 capability hint, a
 `description` for `list_mcp`, and `disabled` (the one opt-out — registered =
-available, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); a retired `state:` key is stripped with a warning). The embedded defaults ship
+available, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); a retired `state:` key is stripped with a warning). The embedded defaults ship
 z.ai's `web_search_prime`/`web_reader`/`zread` this way, key-gated on
 `ZAI_API_KEY`; the runtime (`entanglement-runtime::mcp::available`) owns all
 interpretation — the provider crate only carries the data. `ModelEntry`
@@ -75,7 +75,7 @@ under `thinking_control: zai`); `AnthropicLlm` uses `max_output_tokens` in place
 thinking shapes** (below), else passes `temperature` through; `GeminiLlm` maps
 onto `generationConfig.thinkingConfig.thinkingBudget`. Neither Anthropic nor
 Gemini has a native effort field on the budget shape (#374,
-[ADR-0094](../../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)):
+[ADR-0094](../../adr/archive/0094-reasoning-effort-and-per-profile-generation-persistence.md)):
 an explicit `thinking_budget_tokens` always wins; absent one, `reasoning_effort`
 derives a budget from a fixed tier (`High` — shared by `XHigh`/`Max` — or
 `Medium`; `Low`/unset leaves thinking off) — conservative per-client constants, not catalog-driven, since
@@ -85,11 +85,11 @@ the real per-model ceiling varies.
 
 The knobs below describe **what an endpoint or model accepts on the wire** —
 not preferences — so they are catalog data only (`providers.yml`, no env var,
-no `config.yml` key, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
+no `config.yml` key, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
 `thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
 `supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, and the
 `rpm`/`concurrency` caps. The former `tool_advertising`/`discovery` knobs are
-retired ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
+retired ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
 loads with one warning per key.
 A user only touches them to describe an endpoint the embedded defaults don't
 know (or know wrongly). `skutter inspect config` lists every non-default value
@@ -128,7 +128,7 @@ uses the construction model's facts — `web_search_tool_version` included — s
 profile crossing Anthropic generations should pin `provider:` alongside
 `model:` (which rebinds the client).
 
-**Effort tiers, required thinking, z.ai thinking control** ([ADR-0203](../../adr/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)).
+**Effort tiers, required thinking, z.ai thinking control** ([ADR-0203](../../adr/archive/0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md)).
 `ReasoningEffort` has five ordered tiers (`low|medium|high|xhigh|max`).
 `ModelEntry::effort_tiers` lists the ones a model accepts: unset passes any
 tier through, a list clamps to the nearest listed tier (ties round down, so a

@@ -49,8 +49,8 @@ pub fn fixed_thinking_spec(spec: crate::ThinkingSpec) -> ThinkingSpecResolver {
 /// [ADR-0062]). Re-introduce the newtype only when genuinely per-session state
 /// (e.g. a session-pinned model override or conversation-scoped budget) arrives.
 ///
-/// [ADR-0050]: ../../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md
-/// [ADR-0062]: ../../docs/adr/0062-collapse-llmsession-placeholder-newtype.md
+/// [ADR-0050]: ../../docs/adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md
+/// [ADR-0062]: ../../docs/adr/archive/0062-collapse-llmsession-placeholder-newtype.md
 pub type LlmFactory = std::sync::Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>;
 
 /// Everything a live session needs to re-bind itself to a different

@@ -2,7 +2,7 @@
 
 > Part of the [wire protocol module](../protocol.md) of the [architecture overview](../../architecture.md).
 
-## 2. Wire protocol (`protocol.rs` + `protocol/`) — [ADR-0002](../../adr/0002-session-multiplexed-protocol.md)
+## 2. Wire protocol (`protocol.rs` + `protocol/`) — [ADR-0002](../../adr/archive/0002-session-multiplexed-protocol.md)
 
 One set of serde-tagged types crosses every transport:
 
@@ -97,7 +97,7 @@ OutEvent = SessionStarted{session,parent?,predecessor?,agent,model?,root,ts,user
          | NestedCallSummary{session,parent_request_id,suppressed,errors}   // LIVE ONLY, no seq: once at a script's end, only when calls past the 50-call cap were held back — `suppressed` of them, `errors` failed (#821, ADR-0233)
 ```
 
-**Live-only events — a script's nested calls** ([ADR-0233](../../adr/0233-live-only-nested-call-events-for-rhai-scripts.md), #821).
+**Live-only events — a script's nested calls** ([ADR-0233](../../adr/archive/0233-live-only-nested-call-events-for-rhai-scripts.md), #821).
 `NestedCall`/`NestedCallSummary` carry `session` (so every head routes them
 like any session event) but no `seq`, and `OutEvent::is_live_only()` is true
 for exactly these two: the persistence tap skips them, so they never reach a
@@ -110,7 +110,7 @@ binding calls are each reported; the rest are only counted, into one
 `NestedCallSummary` when the script ends — blocking and `background: true`
 runs alike.
 
-**`envelope` — an unwrapped `mcp` call** ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
+**`envelope` — an unwrapped `mcp` call** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 `ToolEnvelope{tool,input}` is the call exactly as the model emitted it: the
 outer name (`mcp`) and the raw argument string. It is present on
 `ToolCall`/`ToolExec`/`ToolOutput` only when the round advertised the
@@ -128,17 +128,17 @@ serialize byte for byte as before.
 
 `AnswerQuestion` mirrors `Approve`/`Reject`: the supervisor drops it off the
 inbound fan-out (core never routes it) and the `ask_user` executor consumes it
-(§8, [ADR-0027](../../adr/0027-ask-user-interactive-prompt.md)). `Question`
+(§8, [ADR-0027](../../adr/archive/0027-ask-user-interactive-prompt.md)). `Question`
 (`{question, options:[QuestionOption], multi_select}`) supersedes the v1
 `question`/`options`/`allow_free_form` triple (#488,
-[ADR-0127](../../adr/0127-ask-user-v2-multi-question-envelope.md)): `ask_user` can
+[ADR-0127](../../adr/archive/0127-ask-user-v2-multi-question-envelope.md)): `ask_user` can
 batch several questions into one call, a typed "Other" answer is unconditional
 (no flag to opt into it), and `multi_select` lets a question accept more than
 one picked option — `answers` carries one inner vec per question, in call
 order.
 
 **List/retract/replace an open question** (#515,
-[ADR-0146](../../adr/0146-ask-user-list-retract-replace.md)). `RetractQuestion`/
+[ADR-0146](../../adr/archive/0146-ask-user-list-retract-replace.md)). `RetractQuestion`/
 `ReplaceQuestion` join `AnswerQuestion` at the same supervisor bypass and the
 same runtime consumer (`seam::Decision::from_inmsg` maps all three off the
 inbound fan-out) — both carry a mandatory `session` but are core-oblivious
@@ -163,7 +163,7 @@ head's per-connection approval-ownership gate (#402, ADR-0107) covers all
 three decision variants alike.
 
 A decision only answers its own kind of park
-([ADR-0245](../../adr/0245-a-decision-only-answers-its-own-kind-of-card.md),
+([ADR-0245](../../adr/archive/0245-a-decision-only-answers-its-own-kind-of-card.md),
 #895): the three question frames reach only an `ask_user` park, and
 `Approve`/`Reject` only an approval card. A frame aimed at the other kind is
 refused with an `Error` on the session it addressed, and the card stays
@@ -173,7 +173,7 @@ answers it, it is retracted, or the mode's `question_timeout` elapses (#894);
 a replace sends no result, so a head replaces the queued entry in place.
 A decision whose id no park holds — the card expired, another head already
 answered it, or it never existed — is refused the same way
-([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)):
+([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)):
 an `Error` on the addressed session, ``"`Approve` refused: no pending card
 `<id>` (it expired, was answered, or never existed)"`` (a question frame
 says `no open question`), so a late approval is never silently lost.
@@ -191,7 +191,7 @@ answers the same question for the model (see
 [gates & host tools](../gates-and-host-tools.md)), sharing this exact function
 rather than duplicating the join logic.
 
-`ListPending{correlation_id,root?}` (#726, [ADR-0217](../../adr/0217-list-pending-query-for-parked-approvals.md))
+`ListPending{correlation_id,root?}` (#726, [ADR-0217](../../adr/archive/0217-list-pending-query-for-parked-approvals.md))
 is the approval counterpart: same session-less-query shape and wire-allowed
 read-only rationale, answered by `entanglement_runtime::pending::list_pending`
 from the `PendingDecisions` registry every approval parks in. `root` (not
@@ -204,10 +204,10 @@ the exact prompt it missed. The decision router handles `ListPending` in
 order with `Approve`/`Reject`, so a listing after a decision never shows the
 decided call; a timed-out park removes its entry, and one whose task was
 aborted is skipped. After a compaction a background script's card moves
-to the successor and is listed under it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
+to the successor and is listed under it ([ADR-0238](../../adr/archive/0238-compaction-moves-a-background-scripts-card.md)).
 Whatever removes a parked card — a decision from any head, a timeout, an
 unwind, a superseding re-offer — emits `ApprovalResolved` on the card's home
-([ADR-0240](../../adr/0240-approval-resolved-event.md)), so a head drops it by
+([ADR-0240](../../adr/archive/0240-approval-resolved-event.md)), so a head drops it by
 `request_id` instead of guessing from `Status` or polling `ListPending`. It is
 emitted under the registry lock the card's `ToolRequest` was, so it never
 precedes the card, and exactly once per removal. A head folds it past its seq
@@ -220,19 +220,19 @@ card uses. A consumer built against an older `OutEvent` cannot parse the new
 `kind: "rhai"` marks both a rhai binding's card (tool
 `<name> (rhai)`) and the rhai **launch card** — told apart by `tool == "rhai"`
 exactly; only the launch card is answered with `Approve.run_all`
-([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)). Ownership filtering is the head's job, as with
+([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)). Ownership filtering is the head's job, as with
 `ListSessions` (a multi-tenant head must scope `root` and route the reply to
 its requesting connection only, [embedding](../../embedding/tenants-and-heads.md#1-one-engine-many-tenants) §1); the reply
 names no session, so it is never persisted.
 
-**Card reason and scopes** ([ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
+**Card reason and scopes** ([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
 `scopes` lists exactly what an `Approve` on the card honors, so a head offers
 those and nothing else. It is computed by `pending::scopes_for(kind, tool, card)`
 and is `[once]` for `propose_plan`/`request_mode` (the approver picks a mode),
 a **floored write** (it always asks, so no grant is recorded) and an **inline**
 rhai launch (no path to key a grant on, likewise a `path` launch whose
 script could not be read). An `agent_send` card gets once/session only (its
-grant is keyed on a handle minted for this run, [ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md)). Every other card gets once/session/always, plus
+grant is keyed on a handle minted for this run, [ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md)). Every other card gets once/session/always, plus
 `session_dir` for the read triad — but not on a `root_escape` card, whose
 grant is keyed on the exact path. The runtime **enforces** the list:
 `PendingDecisions::resolve` clamps an `Approve` whose scope the card did not

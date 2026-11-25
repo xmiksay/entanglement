@@ -2,7 +2,7 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-### Script surface — namespaces, `http()`, skill libraries — [ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md) (#819)
+### Script surface — namespaces, `http()`, skill libraries — [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md) (#819)
 
 **The dispatch seam.** `tool_runner::dispatch` splits the old
 `run_and_reply` into `Dispatcher::run` (grade + execute → `Outcome::Refused`
@@ -18,12 +18,12 @@ credentialed-`http` gate → run / unattended collapse / park
 (`dispatch/decision.rs`; "unattended" is the mode's `question_timeout` and
 no head watching the call's ancestor chain, and an attended park has no
 deadline — `run_limits::unattended`/`expiry`,
-[ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)) →
+[ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)) →
 execute (`dispatch/execute.rs`: state tools,
 arg validation, in-call grader, `FileChange` capture, script budget, loop
 breaker, `post_tool_use`).
 
-**Live nested-call reports** ([ADR-0233](../../adr/0233-live-only-nested-call-events-for-rhai-scripts.md), #821,
+**Live nested-call reports** ([ADR-0233](../../adr/archive/0233-live-only-nested-call-events-for-rhai-scripts.md), #821,
 `script::activity`). The bridge's service loop is the one place every binding
 of every run passes, skill-library and `mcp::` calls included. It times each
 `Dispatcher::run` and reports it as a live-only `OutEvent::NestedCall`:
@@ -59,7 +59,7 @@ call connects lazily — graded and executed under the real
 `mcp__<server>__<tool>` name; a scoped session lists only its scope's servers
 and never the shared cache (ADR-0188). `skill::<skill>::<fn>(…)` for every
 skill's `lib.rhai` — every skill is model-visible, there is no hidden-skill
-filter ([ADR-0229](../../adr/0229-every-skill-is-model-visible-user-only-removed.md)). Identifier mapping (`rhai_ident`): non-identifier
+filter ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)). Identifier mapping (`rhai_ident`): non-identifier
 characters → `_`, a result with no letter before its first digit (or no
 letter at all) gets a `t_` prefix, a Rhai keyword/reserved word a `_` suffix
 — validity per Rhai's own `is_valid_identifier`/`is_valid_function_name`; one
@@ -109,13 +109,13 @@ or wildcard warns at load. `web_fetch` never injects.
 encapsulated static module, registered as `skill::<skill>`; only `fn`
 definitions — a top-level statement rejects the whole lib with a warning;
 an `import` inside a lib function resolves per run through the run's module
-resolver ([ADR-0248](../../adr/0248-importable-rhai-library-modules.md)).
+resolver ([ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md)).
 Live-reloaded with the skill registry; `load_skill` lists the public
 signatures after the body, each with its `///`/`/** */` doc comment (read
 by a text pass, `skills::lib_docs` — not Rhai's `metadata` feature, which
-rejects any doc-style comment not followed by `fn`, [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+rejects any doc-style comment not followed by `fn`, [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 
-**Importable modules** ([ADR-0248](../../adr/0248-importable-rhai-library-modules.md),
+**Importable modules** ([ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md),
 `skills::rhai_modules`, `script::modules`): `import "json_schema" as js;`.
 `<name>.rhai` files in three layers, with a later layer winning on a name:
 built-in (embedded) < `${config_dir}/entanglement/rhai/modules/` <
@@ -144,7 +144,7 @@ built-in (embedded) < `${config_dir}/entanglement/rhai/modules/` <
 - Built-in: `json_schema` (`validate(value, schema)`, a JSON Schema subset,
   error strings with JSON-pointer paths).
 
-**`rhai(path)` and `args`** ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
+**`rhai(path)` and `args`** ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md),
 `script::input`/`script::gate`): `path` names a script file — relative paths
 are rewritten onto the session workdir first (ADR-0224) — that the runtime
 reads off the async runtime (256 KiB cap on the bytes read) *before* the
@@ -154,7 +154,7 @@ opens with the runtime's own `// inline script` line instead, so script
 text can never pass itself off as a path card. A head tells the two apart
 by the card's `reason` (`script_launch` / `inline_launch`), and an inline
 card's `scopes` are `[once]`, so no path grant is offered for it
-([ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). The read canonicalizes
+([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). The read canonicalizes
 once, opens that canonical path (non-blocking, no final-symlink follow — a
 FIFO is refused as "not a file" instead of hanging the launch), checks the
 opened file's `(dev, ino)` against the canonical path's and reads from that
@@ -170,7 +170,7 @@ file in a trusted folder (`rhai_trust::is_script`, shared with the write
 floor).
 
 **The launch** (`script::gate`) is graded like any tool
-([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
+([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
 `Dispatcher::grade` — the overlay deny (`/disable rhai` is an ordinary
 deny), then the overlay enable entry or the mode's rules, the ceiling and
 grants — then the `pre_tool_use` veto, all before the file is opened. The
@@ -201,7 +201,7 @@ waits for the head unless the mode has `question_timeout` and no head
 watches the session (ADR-0247); on that timeout it runs Ask per command (an out-of-root launch is refused instead).
 `skutter run` answers a launch card at once with Ask per command and rejects
 every nested card. It decides on the card's `reason`, never its text
-(`pending::headless_starts`, [ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
+(`pending::headless_starts`, [ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
 only `script_launch`/`inline_launch` start, so an out-of-root launch
 (`launch_escape`) is refused.
 
@@ -236,7 +236,7 @@ force-allowed, and a skill's `SKILL.md`/`lib.rhai` or a module is loaded by
 every later session, so writing one is as good as running it: a `write`/`edit`/
 `apply_patch` whose target is a `*.rhai` file inside a trusted folder or a
 user/project module dir (`skills::module_dirs`, wired by
-`ToolExecutorBuilder::module_dirs`, [ADR-0248](../../adr/0248-importable-rhai-library-modules.md)), or a
+`ToolExecutorBuilder::module_dirs`, [ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md)), or a
 `SKILL.md`/`lib.rhai` inside any user or project skill layer dir
 (`skills::skill_dirs` — `.entanglement/skills`, `.claude/skills`,
 `.agents/skills`, the user dirs or `ENTANGLEMENT_SKILLS_DIR`; wired by
@@ -253,7 +253,7 @@ non-`.rhai` file can never run by `path`. When the escape-root card is what
 parks a floored write, its reason names the floor too. A floored card
 carries `reason: floored_write` (which outranks `root_escape`) and
 `scopes: [once]`, because a wider approval would never be consulted
-([ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). `bash` (and a
+([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). `bash` (and a
 `call`/`exec` command) cannot be parsed reliably, and an **MCP filesystem
 server**'s writes are not host-tool writes, so neither is covered: a
 trusted folder the agent can reach that way is effectively an auto-allow
@@ -266,16 +266,16 @@ assignment). `script` XOR `path`, the field types and unknown keys are
 validated before the launch. A background run detaches after the launch and
 the read; its listing label is `rhai: <path>`. After its session compacts,
 a background run's nested calls grade, grant and park as the successor
-([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). A
+([ADR-0241](../../adr/archive/0241-background-script-follows-compaction.md)). A
 background run holds a `SeqLease` on its session, and on each successor it
 follows, until it ends, so a card it parks after those sessions retired
 keeps a real seq however many other sessions retire meanwhile
-([ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). Every
+([ADR-0244](../../adr/archive/0244-seq-order-leases-and-one-task-per-id.md)). Every
 run, blocking or background, re-reads its session's mode before each nested
 call, so a `SetMode` mid-run changes its grant scope, and a session's overlay
 entry (an ancestor's too, across its compaction) stops applying to it
 once that session switched mode, and the run's earlier approvals lapse
-([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)). Separately, for every tool, an
+([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)). Separately, for every tool, an
 escape card that also cleared a graded `Ask` records both grants on a
 `Session`/`Always` approval.
 

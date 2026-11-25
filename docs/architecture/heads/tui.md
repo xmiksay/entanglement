@@ -12,24 +12,24 @@
   body too long for the parked tail. Cards queue per session (#273); a
   terminal `Status` (`Idle`/`Done`/`Error`) drops the finished turn's cards
   but keeps a background script's (`ToolRequest.detached`, #872,
-  [ADR-0237](../../adr/0237-detached-flag-on-tool-request.md)), still parked
+  [ADR-0237](../../adr/archive/0237-detached-flag-on-tool-request.md)), still parked
   in the runtime. Every `Stop` (`Esc`, `/stop [--all]`, sessions-modal `s`,
   palette) goes through `stop_command::request_stop`, which clears the
   target's whole queue, since `stop_session` unwinds those cards too. A
   resumed view carries its detached cards over from the view this process
   already had (a hibernated session's are still parked) and drops them for a
   session it never saw. After a compaction the runtime re-announces a
-  background script's card on the successor ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)); the
+  background script's card on the successor ([ADR-0238](../../adr/archive/0238-compaction-moves-a-background-scripts-card.md)); the
   `SessionRegistry` then drops that request id from the successor's
   predecessor views (`SessionView::predecessor`, from `SessionStarted`, or
   completed from `Holly::predecessors_of` where a link was lost, which also
   moves a user watching the ancestor a learned link names to the successor,
-  [ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)), so
+  [ADR-0242](../../adr/archive/0242-compaction-heals-walk-the-whole-chain.md)), so
   the card lives on the view a `Stop` clears; a newer card with an id the
   view already queues replaces that entry in place. When a terminal `Status` moves the prompt to another
   card, the pager closes and a half-typed reject reason is cleared, so no key
   answers the wrong card (ADR-0237 §6).
-  `OutEvent::ApprovalResolved` ([ADR-0240](../../adr/0240-approval-resolved-event.md),
+  `OutEvent::ApprovalResolved` ([ADR-0240](../../adr/archive/0240-approval-resolved-event.md),
   #883) drops the card by id whatever ended it — another head's decision, a
   `question_timeout` expiry, a `Stop` — from the view and along its
   predecessor chain. The fold is seq-gated like the card (a seq-0 end, from a
@@ -38,7 +38,7 @@
   when the dropped card was prompted. A resumed view folds the logged end
   too. An `expired` end also leaves a transcript line ("approval for
   `<tool>` expired — … approving it now has no effect",
-  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)),
+  [ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)),
   replayed from the log like the end itself. The TUI registers one
   `Attendance::watch_all` watcher for its whole run (`heads::launch_tui`): it
   shows every session its engine runs, so every session — sub-agents
@@ -48,7 +48,7 @@
   predecessor drop on a moved card) stay as belt and braces.
   An `ask_user` question leaves the view on its call's `ToolOutput` (same
   `request_id`, seq-gated), so one answered by another head, retracted or
-  timed out clears mid-turn ([ADR-0245](../../adr/0245-a-decision-only-answers-its-own-kind-of-card.md),
+  timed out clears mid-turn ([ADR-0245](../../adr/archive/0245-a-decision-only-answers-its-own-kind-of-card.md),
   #894); the next queued call takes the prompt and attention follows the
   queue. A question never moves to a successor, so no predecessor walk is
   needed. A `UserQuestion` for a queued id (a `ReplaceQuestion`) replaces
@@ -60,7 +60,7 @@
   bracketed paste so a multi-line paste lands as one buffer edit (each
   embedded newline starts a new `SimpleInput` row) instead of a flood of key
   events whose embedded newlines each fire the Enter-to-send binding.
-  **Clipboard image paste** (#736, [ADR-0220](../../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)):
+  **Clipboard image paste** (#736, [ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)):
   `Ctrl+V`, or an empty bracketed paste, reads the clipboard image by shelling
   out to `wl-paste` (Wayland), `xclip` (X11) or `osascript` (macOS). There is
   no clipboard crate. A headless session or a missing tool shows a toast. The
@@ -84,7 +84,7 @@
   rendered fresh per frame after the cached body. The memo lives on
   `SessionView` beside `expanded_blocks`, so each session keeps its own. Mouse capture is on by default
   (opt out with `config.yml` `tui: {mouse: false}`, which restores native
-  terminal text selection; live-reloaded, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)): the wheel scrolls the chat (or the open modal's selection).
+  terminal text selection; live-reloaded, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)): the wheel scrolls the chat (or the open modal's selection).
   **Left button drives transcript selection + copy** (`tui::selection`,
   `tui::clipboard`): a drag paints a reversed-video highlight over the selected
   span (`apply_highlight` re-splits the rendered `Line` spans at the selection
@@ -107,8 +107,8 @@
   `request_id`, so batch results still pair correctly), both expanded on click
   (or via the leader `t` key, which toggles the most recent block of either kind).
   Every call renders by its **real name** with a readable summary
-  ([ADR-0204](../../adr/0204-invoke-fallback-for-client-side-discovery.md) §6,
-  kept by [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
+  ([ADR-0204](../../adr/archive/0204-invoke-fallback-for-client-side-discovery.md) §6,
+  kept by [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
   `tui::tool_render`, one renderer per tool family, sharing the ratatui-free
   `run::summary` helpers with the `run` text head's `→`/`=` lines): the header
   is `{tool}  {primary_arg}` (`mcp__server__tool` reads `server › tool`), and the
@@ -121,7 +121,7 @@
   and one `- tool: description` line plus its `call as:` line per tool.
   The bottom **info line** (`draw_input_info`) reads
   `zai · GLM-5.2 | ctx 87.3k/200k 44% | $1.2345 | last: 51.2k in (94% cached) · out 1.1k`
-  ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §7,
+  ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §7,
   `tui/input_panel/status_usage.rs`): `ctx` is the last **turn** round's billed
   prompt (uncached + cache-read + cache-write — `OutEvent::Usage.input_tokens`
   is the uncached portion only) against the model's context window, omitted
@@ -160,7 +160,7 @@
   reaches **stdio/WS heads**, which have no direct `HttpClient` handle: the
   runtime's `throttle::spawn_throttle_responder` polls every endpoint and
   emits a wire-visible `OutEvent::Throttle` on each one's own enter/exit
-  transition (#517, [ADR-0141](../../adr/0141-wire-visible-throttle-transitions.md)) —
+  transition (#517, [ADR-0141](../../adr/archive/0141-wire-visible-throttle-transitions.md)) —
   engine-global, not per-session, since the resilience pool is per-endpoint
   (ADR-0050). `run` relays it past its own-session filter (#794) — `--format
   text` renders it in full on stdout, `--format json` emits it as an NDJSON
@@ -191,7 +191,7 @@
   `status.repo/path/branch/worktree/text/dim/attention` theme slots.
   **Status command** (#762 part B, `tui::statusline::command`):
   `tui.statusline.command` (an `sh -c` string, allowed from the project
-  layer per [ADR-0047](../../adr/0047-local-trust-boundary.md) like project
+  layer per [ADR-0047](../../adr/archive/0047-local-trust-boundary.md) like project
   hooks) replaces the *left* template with its first stdout line; `right`
   and the counters stay template-driven. It reads a versioned JSON payload
   on stdin (`tui::statusline::payload`, `{"v":1, session, cwd, root, repo,
@@ -220,7 +220,7 @@
   `bash` and hooks, the group is killed only on timeout or cancel: a
   grandchild that redirects its output away keeps running after a
   successful run.
-  **Themes** (#735, [ADR-0219](../../adr/0219-tui-themes-and-keybindings.md),
+  **Themes** (#735, [ADR-0219](../../adr/archive/0219-tui-themes-and-keybindings.md),
   `config::theme` + `tui::theme`): every colour the TUI draws is one named
   `Slot` of a resolved `Theme` palette — no widget names a `Color` itself
   (fenced-code syntax colours are the one exception: they follow the base's
@@ -273,7 +273,7 @@
   Focus reporting (crossterm `EnableFocusChange`) mutes signals while the
   terminal is focused, but best-effort only — terminals that never report focus
   always signal. **Attention panel + jump**
-  ([ADR-0136](../../adr/0136-tui-attention-panel-signpost-and-jump.md),
+  ([ADR-0136](../../adr/archive/0136-tui-attention-panel-signpost-and-jump.md),
   `tui::ui::alerts`): a **background** session parked on an approval or
   `ask_user` question surfaces as a one-line panel directly above the input box
   — absent (a `Length(0)` layout row) while nothing waits — naming the oldest
@@ -305,7 +305,7 @@
   (`SessionRegistry::usage_rollup`, #560); it's a dollar figure only when
   every contributing session carried catalog pricing, else token counts, and
   it's head-side aggregation of already-broadcast `OutEvent::Usage` totals,
-  no protocol change. **Two-stage Ctrl+C** ([ADR-0087](../../adr/0087-two-stage-ctrl-c.md)):
+  no protocol change. **Two-stage Ctrl+C** ([ADR-0087](../../adr/archive/0087-two-stage-ctrl-c.md)):
   a first Ctrl+C clears the transient input (text buffer, `@file` popup,
   multiline mode) and arms a pending quit; a second within 3s quits. It is
   intercepted **once** at the top of `handle_event`'s key-press block (before

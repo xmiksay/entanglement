@@ -10,7 +10,7 @@
 //! single [`OutEvent::History`] snapshot with the requester's `correlation_id`
 //! echoed so a multiplexed head can pair the reply.
 //!
-//! Scope (local single-user, [ADR-0048](../../docs/adr/0048-serve-head-local-trust-model.md)):
+//! Scope (local single-user, [ADR-0048](../../docs/adr/archive/0048-serve-head-local-trust-model.md)):
 //! the request `session` is read as a **root** log id. A child session's history
 //! lives in its root's file, so a `ReplayFrom` naming a child yields an empty
 //! reply until the per-connection replay of the WS `serve` head (#153) maps it.

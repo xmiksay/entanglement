@@ -1,9 +1,9 @@
 //! [`list_files`] — the shared glob-walk + root-containment engine behind
 //! `glob`/`grep` (ADR-0008; symlink-safe containment ADR-0054/#163; the
-//! escape-root search-widening path #482/[ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md);
+//! escape-root search-widening path #482/[ADR-0132](../../../docs/adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md);
 //! CLI-shaped ergonomics — brace sets, directory auto-expansion, cap/out-of-root
-//! reporting — [ADR-0150](../../../docs/adr/0150-search-tool-cli-ergonomics.md);
-//! `.gitignore` awareness — [ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md),
+//! reporting — [ADR-0150](../../../docs/adr/archive/0150-search-tool-cli-ergonomics.md);
+//! `.gitignore` awareness — [ADR-0170](../../../docs/adr/archive/0170-gitignore-aware-glob-grep-walk.md),
 //! single-pass + bounded since #678).
 //! Split out of `host/mod.rs` to stay under the 400-line file cap (#451).
 
@@ -76,7 +76,7 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// nested, plus `.git/info/exclude` and the user's global excludes file) is
 /// never visited at all: the traversal is the `ignore` crate's own walker
 /// (ripgrep's engine), which prunes ignored directories before descending
-/// (#629/[ADR-0170](../../../docs/adr/0170-gitignore-aware-glob-grep-walk.md);
+/// (#629/[ADR-0170](../../../docs/adr/archive/0170-gitignore-aware-glob-grep-walk.md);
 /// single-pass since #678 — the earlier two-pass shape eagerly enumerated the
 /// whole tree first, unbounded). Skips directories (counted in
 /// [`FileList::matched_dirs`]) and logs unreadable entries as `warn!`
@@ -96,7 +96,7 @@ pub fn list_files(root: &Path, pattern: &str, excludes: &[String]) -> Result<Fil
 /// durable grant, or the pattern is left alone.
 ///
 /// `extra_roots` widens containment for `glob`/`grep` (#482,
-/// [ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)):
+/// [ADR-0132](../../../docs/adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)):
 /// a match whose canonical path escapes `root` is still admitted when it (or
 /// an ancestor of it) has a **durable** (`Session`/`Always`) `read`-tool grant
 /// in the store — a search never forces its own approval prompt, it only rides

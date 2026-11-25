@@ -3,14 +3,14 @@
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
 - **Spawn bounds come from the mode, not the agent** (✅ #119
-  [ADR-0040](../../adr/0040-per-profile-spawn-control.md), superseded by
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0040](../../adr/archive/0040-per-profile-spawn-control.md), superseded by
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §6): the old per-profile `can_spawn`/`spawnable_agents` quartet is gone —
   **any agent may spawn any registered agent now**. `agent`/`agent_send` are
-  `Capability::Control` but graded like any tool ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), amending
+  `Capability::Control` but graded like any tool ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), amending
   ADR-0207 §6): the overlay and the mode's rules reach them, and the
   built-ins class-allow `control`. Their permission argument is the target
-  ([ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md)) —
+  ([ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md)) —
   the profile a spawn runs (`deny: ["agent(debug)"]`; an omitted `agent`
   grades as `general`) and `agent_send`'s trimmed `agent_id` handle (a
   minted id, so in practice `agent_send(<tenant>:*)` or a bare rule) — so a
@@ -27,7 +27,7 @@
   its spawn until its answer arrives (a `SpawnSlot` held by its launch task),
   so a session delegating one task at a time never runs out; an idle child
   re-woken by `agent_send` is not counted again. **The spawn tree survives
-  compaction** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)):
+  compaction** ([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)):
   a compacting session's live children move under its successor
   (`OutEvent::ParentChanged`) instead of dying in its close cascade, and a
   compacting sub-agent's successor starts under the same parent; the parent's
@@ -46,21 +46,21 @@
   now only accepts a mention/slash suggestion or opens the command palette).
   Choosing a starting agent lives at session start (`--agent` /
   `config.yml` `agent:`) or in a spawn's own `agent` argument instead.
-- **Task state tool (✅ #231, [ADR-0049](../../adr/0049-plan-task-tools-as-runtime-state-tools.md)):**
+- **Task state tool (✅ #231, [ADR-0049](../../adr/archive/0049-plan-task-tools-as-runtime-state-tools.md)):**
   `update_tasks` is a **runtime** state tool, not a core built-in. It replaces
   the session's *display* task outline; the runtime executor emits the
   `OutEvent::TaskList` snapshot (a fresh per-session seq, #157) and acks the
   model — the engine holds no task state. It rides `Capability::Control`
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §3), so it is now **never graded**: it runs (and acks) unconditionally in
   every mode, including `research`/`auto`, since it touches only session
   bookkeeping, not the host or a file — a real posture change from before
   ADR-0207, when a read-only `explore` had it masked out *and*
   permission-denied (#175). It rides the shared `tool_specs`, advertised to
   every session identically.
-- **One plan tool — `propose_plan` (✅ #141/#513, [ADR-0042](../../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)/[ADR-0145](../../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
-  amended by [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §7, which **retires** [ADR-0138](../../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+- **One plan tool — `propose_plan` (✅ #141/#513, [ADR-0042](../../adr/archive/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)/[ADR-0145](../../adr/archive/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
+  amended by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+  §7, which **retires** [ADR-0138](../../adr/archive/0138-sponsored-build-child-and-propose-plan-cycle.md)
   wholesale — no sponsored child, no permission root, no blocking
   report fold-back):**
   `update_plan` is **gone** — `propose_plan(content: Option<String>, path:
@@ -120,7 +120,7 @@
   `auto` ("go implement this" is usually what an accept means) with an
   explicit opt-in to `build` available too, and a reject that carries the
   approver's reason back to the model (TUI `[u]`/`[b]`/`[n]`/`[e]`). Since
-  [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+  [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
   `auto` runs everything except its deny list and its prompt list of
   destructive deletions, bounded by its `max_turns`/`max_duration` budgets
   and `question_timeout` — an approver who wants each unlisted call seen
@@ -145,7 +145,7 @@
   an unattended run never starts auto-accepting its own plans.
   Built-in `plan` mode (§the four built-in modes in [definitions](definitions.md)) is physically
   read-only apart from one carve-out (#524,
-  [ADR-0142](../../adr/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
+  [ADR-0142](../../adr/archive/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md)):
   `deny: [write]` plus the argument-scoped `write(.entanglement/plans/*.md):
   allow` — out-ranking the class deny by longest match — grades every write
   outside `.entanglement/plans/*.md` as `Deny`, the opencode-style

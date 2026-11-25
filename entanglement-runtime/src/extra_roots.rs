@@ -14,7 +14,7 @@
 //! plus the normalized absolute path.
 //!
 //! `glob`/`grep` never trigger this approval flow themselves (#482,
-//! [ADR-0132](../../../docs/adr/0132-glob-grep-escape-root-search-via-durable-grant.md)):
+//! [ADR-0132](../../../docs/adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)):
 //! a recursive search has no single path to approve, so it never forces an
 //! `Ask`. Instead it **rides** an existing `read`-tool grant — a durable
 //! (`Session`/`Always`) grant on a directory (or an ancestor of one) widens

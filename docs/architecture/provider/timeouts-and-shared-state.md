@@ -54,7 +54,7 @@ frame to show a throttle indicator only while backing off (see heads doc),
 rendering the model id alongside the host when it is the binding constraint.
 `ThrottleStatus` also carries `next_request_in: Option<Duration>` — the AIMD
 pacing gate's own `next_slot` countdown, surfaced only while `penalized`
-(#517, [ADR-0141](../../adr/0141-wire-visible-throttle-transitions.md)) — so the
+(#517, [ADR-0141](../../adr/archive/0141-wire-visible-throttle-transitions.md)) — so the
 TUI's "pacing" label can show a live wait, not just the bare word.
 **Cross-process facts are folded in too (#552):** before this, `ThrottleStatus`
 read only in-process state, so a peer process's parked 429, a lease it held
@@ -92,21 +92,21 @@ different patience budget (the aux narrate/session-title paths always, summarize
 pinned `summarize` model — `LlmRequest::retry = Some(RetryConfig::minimal())`) can swap
 just the failure-path knobs while still riding the same endpoint's
 RPM/concurrency/429 admission as everyone else. The MCP startup handshake
-that first used it ([ADR-0169](../../adr/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md))
+that first used it ([ADR-0169](../../adr/archive/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md))
 is retired with the startup connect (ADR-0226; its `handshake_retry`
 parameter removed, #855). This
 per-endpoint state is the reason a session carries **no** per-session connection
 handle: the `LlmSession` newtype was collapsed to a plain `Box<dyn Llm>` (#195,
-[ADR-0062](../../adr/0062-collapse-llmsession-placeholder-newtype.md)) — resilience
+[ADR-0062](../../adr/archive/0062-collapse-llmsession-placeholder-newtype.md)) — resilience
 belongs to the endpoint, shared across sessions, not to the conversation. A
 **live model/provider switch** (#218,
-[ADR-0063](../../adr/0063-realtime-model-provider-switch.md)) rebuilds that
+[ADR-0063](../../adr/archive/0063-realtime-model-provider-switch.md)) rebuilds that
 `Box<dyn Llm>` from a `ResolvedModel` the runtime resolves against this catalog +
 the warm per-endpoint client, so switching mid-session neither restarts the engine
 nor cold-starts the pool.
 
 **Shared across processes, not just across sessions** (#523,
-[ADR-0144](../../adr/0144-file-backed-shared-endpoint-state-across-instances.md)):
+[ADR-0144](../../adr/archive/0144-file-backed-shared-endpoint-state-across-instances.md)):
 everything in [provider](../provider.md) up to here coordinates every session *within one `skutter` process* —
 but two processes talking to the same `(endpoint, api-key)` used to each run a
 fully independent `EndpointPool`, so N processes collectively sent up to N×

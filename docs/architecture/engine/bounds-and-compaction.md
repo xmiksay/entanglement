@@ -3,7 +3,7 @@
 > Part of the [per-session engine module](../engine.md) of the [architecture overview](../../architecture.md).
 
 **Parked-turn re-offer timer** (✅ #274,
-[ADR-0071](../../adr/0071-parked-turn-reoffer-timer.md)). `OutEvent::ToolExec` rides
+[ADR-0071](../../adr/archive/0071-parked-turn-reoffer-timer.md)). `OutEvent::ToolExec` rides
 the lossy outbound `broadcast`, so the runtime executor can lag
 (`RecvError::Lagged`), drop an offer, and strand the parked turn with no
 in-process recovery — restart + `Holly::resume` was the only cure. So while
@@ -18,7 +18,7 @@ idempotent by `request_id` (a per-session in-flight set, cleared on the resolvin
 double-run. At-least-once, exactly like resume.
 
 **Optional idle-TTL auto-hibernation sweep** (✅ #363,
-[ADR-0090](../../adr/0090-idle-ttl-auto-hibernation.md)). `EngineConfig.idle_ttl:
+[ADR-0090](../../adr/archive/0090-idle-ttl-auto-hibernation.md)). `EngineConfig.idle_ttl:
 Option<Duration>` (`None` by default — the ADR-0077 stance that eviction stays
 embedder-driven) arms a supervisor-level sweep, not another per-session timer:
 `holly::supervisor` wraps its `rx.recv()` in a `tokio::select!` with a
@@ -37,24 +37,24 @@ settled, and the sub-tree's idle clock starts at the *latest* member's settle
 time, so one parked child pins its whole ancestry live regardless of how long
 the root itself has sat idle. A member with no task (a hibernated child
 `parent_links` still lists) counts as settled; one with a load in flight does
-not ([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)). A qualifying root hibernates through the same
+not ([ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)). A qualifying root hibernates through the same
 `hibernate_subtree` helper `InMsg::HibernateSession` uses — the identical
 teardown, `OutEvent::SessionHibernated`, and resumability (#318, ADR-0077) as a
 manual eviction. A task started for a hibernated id before the old one
 has exited waits inside itself for the old task's exit signal before it
 registers or emits; the supervisor never waits (#892,
-[ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). The
+[ADR-0244](../../adr/archive/0244-seq-order-leases-and-one-task-per-id.md)). The
 signal carries the old task's teardown tail (every outbox event for the id
 except live-only ones, from the `Hibernate` send to its exit,
 `session::predecessor::collect_tail`), which a resumed task re-folds with its
 records through `Session::replay` before it starts, and the task's final mode
 and tool overlay, which it takes as they are (#906,
-[ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+[ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 Deliberately **stricter** than manual `HibernateSession`
 (which is stop-then-hibernate): a timer must never cancel live work, so the
 sweep only touches a session already at rest, never one mid-stream.
 `entanglement-runtime` exposes this as the `idle_ttl_secs` `config.yml` setting
-(#401, [ADR-0105](../../adr/0105-expose-idle-ttl-via-runtime-config.md)) — whole
+(#401, [ADR-0105](../../adr/archive/0105-expose-idle-ttl-via-runtime-config.md)) — whole
 seconds, copied onto `EngineConfig.idle_ttl` in `build_config` alongside
 `max_turns`; one engine-global setting shared by every head (`Holly::spawn`
 runs once before the subcommand match), mainly useful for a long-lived
@@ -62,7 +62,7 @@ multi-session `skutter serve`. Unset (the default) stays `None`, byte-identical
 to before this config surface existed.
 
 **Unknown-session policy** (✅ #721,
-[ADR-0210](../../adr/0210-unknown-session-policy.md)). A routable message
+[ADR-0210](../../adr/archive/0210-unknown-session-policy.md)). A routable message
 (`Prompt`, `ToolResult`, `Stop`, `Pause`/`ResumeSession`, `SetMode`,
 `SetModel`, `SetGeneration`, `SetSessionMeta`, `SetToolOverlay`, `Oneshot`)
 addressed to an id with no live task goes through
@@ -81,18 +81,18 @@ in-flight load and replays them through the normal handler in arrival order;
 `CloseSession` abandons it. A load that finishes with an ancestor closed, or
 with the id itself or an ancestor hibernated while it ran and still down, does not start the session: each
 queued message is refused once with an `Error` naming why
-([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md));
+([ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md));
 a load that merely finds its ancestors not live (a fresh process) starts as an
 explicit `Resume` would. `Holly::is_live` reads the per-session seq
 registry's live counters (registered before `SessionStarted`, retired before
 `SessionEnded`/`SessionHibernated`; a retired id's counter does not
-count, [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)) — advisory; the policy is the race-free
+count, [ADR-0239](../../adr/archive/0239-retired-session-keeps-a-seq-high-water.md)) — advisory; the policy is the race-free
 way to address a possibly-evicted id.
 
 **Loop bounds — `max_turns` and context-over-limit** (`session/round.rs` for
 the per-attempt cap, `session/turn.rs` for the once-per-round context-window
 gate). The turn is capped at `EngineConfig.max_turns` rounds (default 200; user-configurable
-via `config.yml`, [ADR-0089](../../adr/0089-user-configurable-max-turns.md)), one
+via `config.yml`, [ADR-0089](../../adr/archive/0089-user-configurable-max-turns.md)), one
 round = one LLM round-trip that may fan out into tool calls, counted on
 `TurnState::iterations` and reset per prompt (#177 — a fresh `TurnState` per
 `Prompt`; a folded mid-turn prompt does not reset it), so a model wedged in a
@@ -105,7 +105,7 @@ turn boundary exactly where the live engine drew it (it used to emit only the
 `Error`, #177).
 
 **Ambiguous-stop retry — `max_ambiguous_stop_retries`** (`session/round.rs`,
-[ADR-0118](../../adr/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
+[ADR-0118](../../adr/archive/0118-ambiguous-stop-reason-bounded-retry.md)). A round that
 ends with empty `tool_calls` is classified by `StopReason::is_confident_stop`
 (#433 — an exhaustive method on `StopReason` itself, in
 `entanglement-provider/src/llm/types.rs`, so a new variant is a compile error until
@@ -160,7 +160,7 @@ budget is `INPUT_BUDGET_FRACTION` (0.85) of the active model's catalog
 an unknown model (`EchoLlm`, or an env-override id absent from the catalog) falls
 back to the flat `CONTEXT_LIMIT_TOKENS` (180k). Over budget, core now tries three
 recovery steps in order (#398,
-[ADR-0103](../../adr/0103-auto-summarize-on-context-overflow.md)):
+[ADR-0103](../../adr/archive/0103-auto-summarize-on-context-overflow.md)):
 1. **Auto-summarize into a successor**, gated by `EngineConfig::auto_compact` (default
    `true`, exposed to users as `config.yml`'s `auto_compact:` — copied onto the
    engine config in `build_config` beside `max_turns`/`idle_ttl_secs`, the
@@ -177,13 +177,13 @@ recovery steps in order (#398,
    `Context::safe_kept` exactly as #397/ADR-0102 does), then **forks a
    successor session** seeded with that summary plus the verbatim
    kept tail (`summarize::compose_report`) — the live `Context` is never
-   mutated ([ADR-0205](../../adr/0205-every-compaction-forks-a-successor-session.md)
+   mutated ([ADR-0205](../../adr/archive/0205-every-compaction-forks-a-successor-session.md)
    amends ADR-0103's in-place design; a turn mid-flight no longer needs a head
    to fork into, because the engine forks for itself). On success it emits
    `OutEvent::Compacted { auto: true, mode: summary, .. }`. The request reuses the round's
    own system prompt and tool specs — `run_round` resolves both once, *before*
    this gate (`session/round_inputs.rs`), so a remote `system_prompt_resolver`
-   is never fetched twice — and its shape follows the backend ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4,
+   is never fetched twice — and its shape follows the backend ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §4,
    `session/compaction_request.rs`). On the session's own backend it is
    **structured**: that system prompt, those specs, the head messages verbatim
    plus one trailing instruction, and the session `cache_key` — byte-identical
@@ -248,17 +248,17 @@ live with. Delivery runs on a detached task, so a session task never blocks
 while the supervisor may be waiting to route into that very session, and the
 frames go out only after the source has finished writing its own log tail.
 
-**The successor inherits background work** ([ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md)).
+**The successor inherits background work** ([ADR-0231](../../adr/archive/0231-compaction-successor-inherits-background-work.md)).
 The runtime moves the predecessor's background jobs, scripts and retained
 outputs to the successor when it sees `SessionStarted { predecessor }`, and
-moves a background script's parked approval cards to it ([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)).
+moves a background script's parked approval cards to it ([ADR-0238](../../adr/archive/0238-compaction-moves-a-background-scripts-card.md)).
 Both moves walk the whole compaction chain back, so work two compactions
-behind still arrives ([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
+behind still arrives ([ADR-0242](../../adr/archive/0242-compaction-heals-walk-the-whole-chain.md)).
 The script then grades, grants and parks its nested calls as the successor
-([ADR-0241](../../adr/0241-background-script-follows-compaction.md)). See
+([ADR-0241](../../adr/archive/0241-background-script-follows-compaction.md)). See
 [gates & host tools](../gates/host-tools-contracts.md) §poll.
 
-**The successor keeps the spawn tree** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)).
+**The successor keeps the spawn tree** ([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)).
 The supervisor places the successor where its source was: `Spawn.parent` is
 `None` on the fork, and a successor whose source had a parent inherits it, so
 a sub-agent that compacts stays under its parent (its mode is still the
@@ -278,7 +278,7 @@ grows at its end: `Spawn` refuses a second successor of one source, a
 resume re-learning an older log's lineage never branches or prepends a
 known chain, and a compacted-away session is not resumable (resume its
 successor; fork the successor to branch)
-([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)). A moved child keeps logging to the predecessor's
+([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)). A moved child keeps logging to the predecessor's
 root file; the successor's file gets an adoption pointer that resume follows,
 so a cold resume of the successor restores it (see
 [heads & persistence](../heads-and-persistence.md)).
@@ -321,7 +321,7 @@ forking; in that case the overlay is dropped. The overlay is logged as
 `ToolOverlayChanged` after the successor's `ModeChanged`, so neither replay
 nor the runtime reads it as cleared by a switch. Carrying it never changes
 the successor's tools array: the overlay is consulted at dispatch only, and
-an enable never edits the advertised surface ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
+an enable never edits the advertised surface ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)).
 
 **A resumed session's overlay is re-announced and enforced again.** This
 covers any session, a successor included. The runtime grades dispatch off its

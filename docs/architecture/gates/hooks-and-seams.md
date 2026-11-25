@@ -2,7 +2,7 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-## 9. Lifecycle hooks — [ADR-0066](../../adr/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
+## 9. Lifecycle hooks — [ADR-0066](../../adr/archive/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
 
 User-configured external commands run around tool execution and on prompt
 ingress, for policy, telemetry, and formatting side-effects. Hooks are a
@@ -28,7 +28,7 @@ new protocol surface is added.
 subscriber from events core has already acted on, so there is nothing left to
 veto without a new core seam — and core stays policy-free (ADR-0066). That
 holds even for `pre_compact`, the one that sounds like a gate: since
-[ADR-0205](../../adr/0205-every-compaction-forks-a-successor-session.md) every
+[ADR-0205](../../adr/archive/0205-every-compaction-forks-a-successor-session.md) every
 compaction forks and never rewrites the source log, so a hook has no history
 to rescue first, and an auto-compaction must never be held back into a
 context overflow anyway. Blocking stays `pre_tool_use`'s alone, exactly
@@ -70,7 +70,7 @@ ADR-0066's model.
   (aux models: `summarize`/`session_title`/`narrate`) open no session and so
   fire nothing; a spawned child is an ordinary session and does.
 
-### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../../adr/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
+### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../../adr/archive/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
 
 The executor hard-codes *no* policy source. `ToolExecutor::builder(..)
 .resolver(Arc<dyn PermissionResolver>).grants(Arc<dyn GrantStore>)` (traits in
@@ -105,7 +105,7 @@ hooks, rhai, and plan/tasks tools.
   binding call grades through this *same* resolver + ancestor chain — it runs
   the executor's own dispatch seam (ADR-0227).
 
-### Dynamic `ToolRegistry` — `SharedRegistry` — [ADR-0096](../../adr/0096-dynamic-toolregistry-sharedregistry.md) (#372)
+### Dynamic `ToolRegistry` — `SharedRegistry` — [ADR-0096](../../adr/archive/0096-dynamic-toolregistry-sharedregistry.md) (#372)
 
 `ToolExecutor::builder`'s required `tools` argument is a `SharedRegistry`
 (`Arc<std::sync::RwLock<ToolRegistry>>`, `ToolRegistry::shared()`), not an owned
@@ -123,7 +123,7 @@ does.
 Each `ToolExec` dispatch takes a brief **synchronous** read lock and clones an
 owned snapshot before spawning its detached task — `std::sync::RwLock`, not
 `tokio::sync`, because `EngineConfig.tool_spec_resolver`
-([ADR-0076](../../adr/0076-per-session-dynamic-tool-specs.md)) is a plain sync
+([ADR-0076](../../adr/archive/0076-per-session-dynamic-tool-specs.md)) is a plain sync
 `Fn` consulted on the turn's hot path and must never block on I/O; a
 `tokio::sync::RwLock` would force that closure into `blocking_read` or break
 0076's no-async contract. `skutter` (`boot.rs`) wires the resolver to read through the
@@ -132,7 +132,7 @@ same `SharedRegistry` handle it hands the executor, reproducing
 pseudo-tool specs that aren't `ToolRegistry` entries
 (`update_tasks`/`ask_user`/`poll`/`bash`/`rhai`), sorted by name and deduped.
 The resolver projects the one **`KERNEL`** surface out of that roster and
-snapshots it per session ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface in [one surface](one-surface.md)) — dynamic
+snapshots it per session ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface in [one surface](one-surface.md)) — dynamic
 tools (MCP, script-only built-ins) stay registered and dispatchable, just
 absent from the advertised array.
 Because core advertises the resolver's output verbatim now — there is no

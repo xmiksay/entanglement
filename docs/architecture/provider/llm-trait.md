@@ -2,16 +2,16 @@
 
 > Part of the [llm i/o module](../provider.md) of the [architecture overview](../../architecture.md).
 
-## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../../adr/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../../adr/0053-invert-core-provider-seam.md)
+## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../../adr/archive/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../../adr/archive/0053-invert-core-provider-seam.md)
 
 The `Llm` **trait** — together with its DTOs (`LlmRequest`/`LlmResponse`/
 `LlmEvent`/`LlmStream`, `LlmFactory`, `ToolCall`, `ToolSpec`,
 `stream_from_response`, the last two in `src/response.rs`), the stub backends
 (`DummyLlm`/`EchoLlm`, in `src/llm/stub.rs`), and the wire message types (`Message`/`MessageRole` plus the
 multimodal `ContentPart`/`ImageSource`, in `src/message.rs` — a `Message`'s body
-is `content: Vec<ContentPart>`, #197/[ADR-0064](../../adr/0064-message-content-blocks.md))
+is `content: Vec<ContentPart>`, #197/[ADR-0064](../../adr/archive/0064-message-content-blocks.md))
 — lives **in `entanglement-provider`**. Since
-[ADR-0053](../../adr/0053-invert-core-provider-seam.md) inverted the seam, the
+[ADR-0053](../../adr/archive/0053-invert-core-provider-seam.md) inverted the seam, the
 provider is a **leaf crate** (no `entanglement-*` deps) that owns this LLM ABI;
 `entanglement-core` *depends on* provider, consumes the `Llm` trait from its turn
 loop, and re-exports these types for its heads. The provider *may* depend on
@@ -46,7 +46,7 @@ trait Llm: Send {
   mid-stream-errored round's tool calls. A stream that ends cleanly without a
   `Finish` still returns (the turn loop likewise still executes its tool calls)
   with `stop_reason: None` — embedders should treat that as an ambiguous stop
-  ([ADR-0118](../../adr/0118-ambiguous-stop-reason-bounded-retry.md)), not a
+  ([ADR-0118](../../adr/archive/0118-ambiguous-stop-reason-bounded-retry.md)), not a
   confident end of turn. `stream_from_response`
   is its inverse for scripted backends (a `None` stop reason is derived from
   the tool calls). The turn loop keeps its own fold: it interleaves display
@@ -86,7 +86,7 @@ trait Llm: Send {
   from answer text. This is the *display* rail — it is deliberately never folded
   into `Context`. The *replay* rail is a separate
   `LlmEvent::ContentBlock(ContentPart::Reasoning)`
-  ([ADR-0160](../../adr/0160-extended-thinking-round-trip.md)); both are emitted for
+  ([ADR-0160](../../adr/archive/0160-extended-thinking-round-trip.md)); both are emitted for
   the same thinking. See [**Extended thinking: capture and replay**](thinking-and-selection.md#extended-thinking-capture-and-replay).
 - **`LlmEvent::ToolCallDelta`** (#194) streams a tool call's JSON arguments as
   they arrive — OpenAI `tool_calls[].function.arguments` fragments, Anthropic
@@ -97,7 +97,7 @@ trait Llm: Send {
   still gets the full `ToolCall` (replay reconstructs state from that, not the
   fragments).
 - **`LlmEvent::Finish`** is normalized (#192,
-  [ADR-0055](../../adr/0055-usage-cost-and-stop-reason-surfacing.md)): `StopReason`
+  [ADR-0055](../../adr/archive/0055-usage-cost-and-stop-reason-surfacing.md)): `StopReason`
   collapses `finish_reason`/`stop_reason` across both wires, and `Usage` splits the
   token counts so each maps to one pricing dimension — `input_tokens` is the
   *uncached* input (the OpenAI client subtracts `prompt_tokens_details.cached_tokens`
@@ -155,7 +155,7 @@ trait Llm: Send {
   it in the fixed tools → system → messages render order), the last `tools`
   entry, and the last content block of the **last** and third-to-last
   `user`-role messages (`place_history_breakpoint`,
-  [ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
+  [ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
   The near anchor sits on the newest turn, so everything a request sends is
   written now and read back next round — the earlier second-to-last placement
   billed that tail uncached this round *and* as a cache write the next (~2.25×
@@ -167,7 +167,7 @@ trait Llm: Send {
   assistant turn (see [*Extended thinking*](thinking-and-selection.md#extended-thinking-capture-and-replay)). Four is exactly the API's
   marker cap, locked in by test.
 - `GeminiLlm` is native, **not** Gemini's OpenAI-compat surface (#309,
-  [ADR-0085](../../adr/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
+  [ADR-0085](../../adr/archive/0085-gemini-native-wire-and-opaque-provider-meta.md)): the
   compat endpoint drops `thoughtSignature`, the opaque per-call token a 2.5
   thinking model must echo back verbatim or the API 4xxs on replayed history. It
   streams `candidates[].content.parts[]` (text / `thought:true` reasoning /
@@ -217,7 +217,7 @@ trait Llm: Send {
   / Gemini `functionResponse.name` (the bare name recovered from the synthesized
   `name#ordinal` id, above).
 - A `Message`'s `content: Vec<ContentPart>` renders per wire (#197,
-  [ADR-0064](../../adr/0064-message-content-blocks.md)): text-only user content stays
+  [ADR-0064](../../adr/archive/0064-message-content-blocks.md)): text-only user content stays
   a plain string (OpenAI) / string content (Anthropic); an image part switches to
   the block array — OpenAI `image_url` with a `data:` URL, Anthropic an `image`
   block with a base64 `source` (incl. image `tool_result`s, the #221 path); Gemini

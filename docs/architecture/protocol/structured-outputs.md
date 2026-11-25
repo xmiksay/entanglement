@@ -2,19 +2,19 @@
 
 > Part of the [wire protocol module](../protocol.md) of the [architecture overview](../../architecture.md).
 
-## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../../adr/0004-structured-plan-and-task-events.md)
+## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../../adr/archive/0004-structured-plan-and-task-events.md)
 
 Two artifacts the engine owns and re-emits as **full snapshots** on every change
 (the `agent`/`design` "snapshot on change" pattern — idempotent, trivial to
 render/dedupe):
 
 - **Plan** — markdown strategy prose (`OutEvent::Plan { content, path }`, `path`
-  added #513/[ADR-0145](../../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) —
+  added #513/[ADR-0145](../../adr/archive/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) —
   the plan is a **file** now, `.entanglement/plans/<short-id>.md` by default;
   `#[serde(default)]` on `path` keeps a pre-#513 persisted log replayable).
 - **TaskList** — markdown task outline, typically a `- [ ]`/`- [x]` checklist
   (`OutEvent::TaskList`). Plain `content` like the plan (✅ #142,
-  [ADR-0039](../../adr/0039-markdown-task-list.md), supersedes ADR-0004's structured
+  [ADR-0039](../../adr/archive/0039-markdown-task-list.md), supersedes ADR-0004's structured
   `Vec<TaskItem>`): the outline is **user-facing progress info** — the engine
   never consumed the item structure and the list is not fed back to the model,
   so the per-item id/status JSON envelope was pure model overhead.
@@ -24,9 +24,9 @@ Both are written by **runtime state/orchestration tools** the model calls —
 exactly one of the two — file-backed, not an in-memory snapshot; see the
 engine doc's "Plan acceptance" section) and `update_tasks { content }`
 (markdown, ✅ #231,
-[ADR-0049](../../adr/0049-plan-task-tools-as-runtime-state-tools.md)). Neither is
+[ADR-0049](../../adr/archive/0049-plan-task-tools-as-runtime-state-tools.md)). Neither is
 an engine built-in: `update_tasks` carries `Capability::Control`
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 §3), so it is **never graded** — it runs (and the runtime executor emits its
 `OutEvent::TaskList` snapshot) unconditionally in every mode, since it
 touches only session bookkeeping, not the host (the engine holds no task
@@ -47,7 +47,7 @@ This is why `entanglement` has *both* an agent-identity axis *and* structured
 events: the permission **mode** controls **what the session is permitted to
 do**; structured events give every head a native plan/task panel to render.
 
-**Usage & cost** (✅ #192, [ADR-0055](../../adr/0055-usage-cost-and-stop-reason-surfacing.md)).
+**Usage & cost** (✅ #192, [ADR-0055](../../adr/archive/0055-usage-cost-and-stop-reason-surfacing.md)).
 The provider normalizes each round-trip's terminal `LlmEvent::Finish` to
 `{ stop_reason: StopReason, usage: Usage }` — `StopReason` collapses both wire
 vocabularies (`EndTurn | ToolUse | MaxTokens | StopSequence | Other`), and `Usage`

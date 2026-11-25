@@ -8,7 +8,7 @@
 //! child restriction, and a child session task stays alive after its turn
 //! ends, so prompting it starts a fresh turn on its existing context. This
 //! module is structurally "a launcher against an existing session": it shares
-//! the `background` flag ([ADR-0161](../../../docs/adr/0161-unified-async-work-background-flag-and-one-poll.md))
+//! the `background` flag ([ADR-0161](../../../docs/adr/archive/0161-unified-async-work-background-flag-and-one-poll.md))
 //! and the [`collect_child_answer`][crate::subagent::collect_child_answer]
 //! wait with `agent`, and reuses [`AgentRegistry`] for both the descendant
 //! check (a handle is only ever sendable by the session that launched it) and

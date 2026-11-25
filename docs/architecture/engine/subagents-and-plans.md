@@ -2,13 +2,13 @@
 
 > Part of the [per-session engine module](../engine.md) of the [architecture overview](../../architecture.md).
 
-**Sub-agent spawn** (✅ #60, [ADR-0022](../../adr/0022-subagent-spawn.md), builds on the
-[ADR-0021](../../adr/0021-hierarchical-session-model.md) tree). The model calls a
+**Sub-agent spawn** (✅ #60, [ADR-0022](../../adr/archive/0022-subagent-spawn.md), builds on the
+[ADR-0021](../../adr/archive/0021-hierarchical-session-model.md) tree). The model calls a
 runtime-owned `agent { agent, prompt, background? }` tool (renamed from
 `spawn_agent`, ✅ #120,
-[ADR-0033](../../adr/0033-agent-tool-family-and-blocking-agent.md); the separate
+[ADR-0033](../../adr/archive/0033-agent-tool-family-and-blocking-agent.md); the separate
 `agent_spawn` tool it was later split into is retired again, ✅ #606,
-[ADR-0161](../../adr/0161-unified-async-work-background-flag-and-one-poll.md) —
+[ADR-0161](../../adr/archive/0161-unified-async-work-background-flag-and-one-poll.md) —
 one tool, `background: bool` picks the return shape). The runtime executor
 intercepts it before per-tool permission resolution (it starts a session rather
 than touching a host resource), mints a child `SessionId`, and sends `InMsg::Spawn { session: child, parent, agent,
@@ -17,7 +17,7 @@ the child `session_loop` under the requested profile with the prompt queued — 
 the child's `SessionStarted` carries the parent link and the tree-walk helpers
 (`children_of` / `root_of`) reflect reality. `background: true` is
 **non-blocking** (✅ #89,
-[ADR-0026](../../adr/0026-async-subagent-spawn-and-poll.md), supersedes ADR-0022's
+[ADR-0026](../../adr/archive/0026-async-subagent-spawn-and-poll.md), supersedes ADR-0022's
 synchronous relay): the call replies to the parent *immediately* with the
 child handle (`agent_id`) instead of parking the turn on the child's `Done`, so
 one turn can launch several sub-agents that then run concurrently. The launch
@@ -29,7 +29,7 @@ parent — a session polling a handle it did not launch (even one it learned or
 guessed) gets the same "unknown handle" `ToolOutput` a genuinely nonexistent
 handle would (#605 adopts this error convention over `bash_output`'s former
 return-it-as-text). The parent collects a result with the runtime-owned join tool,
-`poll { handle, timeout_secs? }` (✅ #605, [ADR-0161](../../adr/0161-unified-async-work-background-flag-and-one-poll.md),
+`poll { handle, timeout_secs? }` (✅ #605, [ADR-0161](../../adr/archive/0161-unified-async-work-background-flag-and-one-poll.md),
 replacing the former `agent_poll`/`bash_output` outright) — also intercepted
 before permission resolution (it starts no session and touches no host
 resource): it dispatches on the handle's kind prefix (a sub-agent handle is a
@@ -46,7 +46,7 @@ the child's genuine completion and folds its answer directly into the
 `AgentRegistry`, so a parent `Stop` while parked leaves the child collectable
 via `poll`. Both routes share `subagent::collect_child_answer`, which
 does **not** treat a bare `Done` as final (✅ #562,
-[ADR-0155](../../adr/0155-errored-subagent-turn-parks-for-steering.md)): the
+[ADR-0155](../../adr/archive/0155-errored-subagent-turn-parks-for-steering.md)): the
 engine emits `Done` even for a turn that ended in `Error`
 (`emit_turn_error`), so a `Done` with no accumulated text and an `Error` on
 that turn clears the per-turn state and keeps watching instead of unblocking
@@ -69,7 +69,7 @@ check above and the listing, merged with an equivalent job-registry snapshot by
 Refusals (depth, budget, capability) are identical regardless of `background`
 — one shared guard path.
 
-**Sub-agent follow-up** (✅ #609, [ADR-0162](../../adr/0162-agent-send-supervising-a-sub-agent.md)).
+**Sub-agent follow-up** (✅ #609, [ADR-0162](../../adr/archive/0162-agent-send-supervising-a-sub-agent.md)).
 A child can be talked to more than once: `agent_send { agent_id, prompt,
 background? }` sends `InMsg::Prompt` at an existing child launched via `agent`
 instead of minting a new `InMsg::Spawn` — the child session
@@ -111,13 +111,13 @@ never answering blind.
 Both reuse the #58 round-trip, so core's turn loop needs no notion of a
 "child session". Spawning is bounded by the session's **permission mode**
 now, not the agent
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§6, superseding [ADR-0023](../../adr/0023-subagent-spawn-limits.md)/[ADR-0040](../../adr/0040-per-profile-spawn-control.md)):
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+§6, superseding [ADR-0023](../../adr/archive/0023-subagent-spawn-limits.md)/[ADR-0040](../../adr/archive/0040-per-profile-spawn-control.md)):
 the old per-profile `can_spawn`/`spawnable_agents` gates and the
 process-global `MAX_SPAWN_DEPTH`/`MAX_SPAWNS_PER_ROOT` constants are gone —
 **any agent may spawn any registered agent**. `agent`/`agent_send` are
 `Capability::Control` but graded like any tool before they launch
-([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): an overlay deny or a mode `Deny` refuses with an
+([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): an overlay deny or a mode `Deny` refuses with an
 error result and starts no child, and the built-in modes class-allow
 `control`. Past that grade, two mode facts bound the session's whole
 spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents` (concurrent
@@ -140,9 +140,9 @@ custom resolver. Filesystem isolation (a separate child root) and
 bidirectional session-to-session messaging are still deferred (see
 ADR-0022/0024).
 
-**Roster disclosure** (✅ #112, [ADR-0034](../../adr/0034-file-based-agent-definitions.md),
-unscoped by [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§6, superseding [ADR-0040](../../adr/0040-per-profile-spawn-control.md)).
+**Roster disclosure** (✅ #112, [ADR-0034](../../adr/archive/0034-file-based-agent-definitions.md),
+unscoped by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+§6, superseding [ADR-0040](../../adr/archive/0040-per-profile-spawn-control.md)).
 The `agent` tool description carries one `name: description` line per
 registered agent, and the `agent` argument's schema constrains the name to an
 `enum` — so the model learns *who it may spawn* at the call site, and
@@ -158,9 +158,9 @@ related supervisor wart is fixed too: an `InMsg::Spawn` naming an unknown
 profile emits a supervisor `Error` instead of silently resolving to a
 default.
 
-**Ask-user prompt** (✅ #90, [ADR-0027](../../adr/0027-ask-user-interactive-prompt.md);
-v2 #488, [ADR-0127](../../adr/0127-ask-user-v2-multi-question-envelope.md);
-draft-until-submit #518, [ADR-0143](../../adr/0143-ask-user-draft-until-submit.md)).
+**Ask-user prompt** (✅ #90, [ADR-0027](../../adr/archive/0027-ask-user-interactive-prompt.md);
+v2 #488, [ADR-0127](../../adr/archive/0127-ask-user-v2-multi-question-envelope.md);
+draft-until-submit #518, [ADR-0143](../../adr/archive/0143-ask-user-draft-until-submit.md)).
 The model calls a runtime-owned `ask_user { questions: [{question, options,
 multi_select}] }` tool — one call can batch several questions, each optionally
 `multi_select`; a typed "Other" answer is unconditional (no `allow_free_form`
@@ -168,7 +168,7 @@ flag to opt into it, dropped in v2). The runtime executor (`ask_user.rs`)
 intercepts it on `ToolExec` — before permission resolution, like `agent`
 — emits a single dedicated `OutEvent::UserQuestion` carrying the whole
 `questions` array and parks at `WaitingAnswer` (#160,
-[ADR-0072](../../adr/0072-protocol-warts-settled-before-serve.md): a question is not
+[ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md): a question is not
 a permission decision, so it is distinct from the `WaitingApproval` an `Ask` tool
 raises). The head renders the labelled choices Claude-style (the TUI's
 `PendingQuestion` interaction state, alongside `ApprovalMode`, models one
@@ -195,9 +195,9 @@ accepts the answers as-is — neither has a draft step, since both resolve the
 whole call in one shot.
 
 **Plan acceptance, file-backed, approval as a mode switch — `propose_plan`**
-(✅ #141/#513, [ADR-0042](../../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)/[ADR-0145](../../adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
-[ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§7 **retires** [ADR-0138](../../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+(✅ #141/#513, [ADR-0042](../../adr/archive/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md)/[ADR-0145](../../adr/archive/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md),
+[ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+§7 **retires** [ADR-0138](../../adr/archive/0138-sponsored-build-child-and-propose-plan-cycle.md)
 wholesale — no sponsored child, no permission root, no blocking build wait).
 The plan agent calls a runtime-owned `propose_plan(content: Option<String>,
 path: Option<String>)` — **exactly one** of the two. `content` materializes
@@ -221,7 +221,7 @@ resolved `{content, path}` JSON regardless of which the model sent.
 
 The staleness guard above only fires at the *next* `propose_plan(path=...)`
 call; a dedicated, debounced plans-folder watch (#627,
-[ADR-0173](../../adr/0173-watcher-driven-plan-file-changed-notice.md),
+[ADR-0173](../../adr/archive/0173-watcher-driven-plan-file-changed-notice.md),
 `entanglement-runtime/src/plan_watch.rs`) surfaces the same out-of-band-edit
 detection live instead. It reuses `watch.rs`'s `spawn_debounced_watcher`
 primitive only — never its agent/skill/config `LiveDefinitions` reload, a
@@ -242,7 +242,7 @@ it switched to; the same turn continues, implementing the plan directly.
 optional `mode`. The prompt offers `[u]` accept → `auto`, `[b]` accept →
 `build`, `[n]`/`[e]` reject with a reason the model reads. A bare accept (no
 `mode`) goes to `auto`, since accepting a plan usually means "go do it". Since
-[ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+[ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
 `auto` runs everything except its deny list (destructive and publishing
 commands) and its prompt list (deletions such as `gh … delete`, `cargo yank`,
 recursive `rm`), within its run budgets and `question_timeout` — the approver
@@ -274,13 +274,13 @@ rejected (plan file: <path>): <reason>` back, still naming the file
 the model revises and re-proposes in the same turn.
 
 **Sandboxed script tool — `rhai`** (✅ #122,
-[ADR-0046](../../adr/0046-rhai-sandboxed-script-tool.md)). The model calls
+[ADR-0046](../../adr/archive/0046-rhai-sandboxed-script-tool.md)). The model calls
 `rhai { script, timeout? }` to run multi-step logic in one call — the sanctioned
 replacement for shelling out to `python3`/`node`. The engine
 (`script/bindings.rs`, `rhai::Engine::new_raw()` + the IO-free `StandardPackage`) has **no**
 filesystem/network/process/env access, and its module resolver serves only
 discovered, precompiled modules by bare name (so `import` can't escape,
-[ADR-0248](../../adr/0248-importable-rhai-library-modules.md)); `eval` is disabled. It is resource-bounded by construction:
+[ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md)); `eval` is disabled. It is resource-bounded by construction:
 `max_operations`, `max_call_levels`, string/array/map size caps, and a wall-clock
 timeout (default 5s, max 30s) via the `on_progress` interrupt — a runaway script
 dies deterministically, never OOMs. `print(...)` is captured; the last-expression
@@ -298,7 +298,7 @@ first `edit` asks; approval covers the rest). Because the bindings *are* the
 always-registered quintet, `rhai` is precisely as privileged as those tools —
 so it is registered by default in the shared `tool_specs`, and it is itself a
 multi-`Capability` tool (`Read`+`Write`+`Exec`,
-[ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+[ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 §3), so a mode denying any of those classes declines it, and `research`
 mode's curated posture grades it `Ask` like the exec tools rather than
 outright denying it. The executor intercepts `rhai`

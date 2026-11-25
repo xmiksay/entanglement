@@ -2,22 +2,22 @@
 
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
-## 3. Agent profiles + permission modes — [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+## 3. Agent profiles + permission modes — [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 
 **Authority is a second, independent axis from identity** — a session is a
 pair `(agent, mode)`. The agent supplies *who the session is* — a persona,
 chosen once at session start and fixed for that session's life. The mode
 supplies *what it may do* — every permission fact — and is orthogonal:
 switching mode never touches the agent, and vice versa. This replaces the
-pre-[ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+pre-[ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 world, where `Agent` carried both in one struct (`permission`,
 `tools`/`disallowed_tools`, `can_spawn`/`spawnable_agents`, `sandbox`, `mode:
 primary|subagent|all`) and nothing could change posture without changing
 persona, or persona without changing posture
-([ADR-0003](../../adr/0003-agent-and-permission-profiles.md),
-[ADR-0038](../../adr/0038-physical-per-agent-tool-restriction.md),
-[ADR-0040](../../adr/0040-per-profile-spawn-control.md),
-[ADR-0134](../../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) —
+([ADR-0003](../../adr/archive/0003-agent-and-permission-profiles.md),
+[ADR-0038](../../adr/archive/0038-physical-per-agent-tool-restriction.md),
+[ADR-0040](../../adr/archive/0040-per-profile-spawn-control.md),
+[ADR-0134](../../adr/archive/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) —
 all superseded).
 
 A session runs under exactly one core [`Agent`][profile], now
@@ -33,9 +33,9 @@ agent may be a session root or a spawn target now; there is no more
 
 Authority lives entirely in the runtime, as the session's **permission mode**
 — see §permission modes below for the full rule engine
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)).
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)).
 
-**Starting mode** ([ADR-0218](../../adr/0218-agent-default-mode-is-a-starting-hint.md),
+**Starting mode** ([ADR-0218](../../adr/archive/0218-agent-default-mode-is-a-starting-hint.md),
 #752/#763). `default_mode` is a starting hint, not authority.
 
 - **Allowed values.** It must name a built-in mode no wider than `build`
@@ -71,9 +71,9 @@ Authority lives entirely in the runtime, as the session's **permission mode**
   logged one, itself clamped by its own ancestors. This holds on every
   resume path (explicit, cascade, ADR-0210 load, fresh process), and a
   change is a real switch, logged by the start-up `ModeChanged`
-  ([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+  ([ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 
-**At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../../adr/0044-agents-skills-system-prompt-epic-synthesis.md)).**
+**At a glance (epic [#111](https://github.com/xmiksay/entanglement/issues/111), synthesized in [ADR-0044](../../adr/archive/0044-agents-skills-system-prompt-epic-synthesis.md)).**
 Agents and skills are **data, not code** — discovered from files, disclosed
 progressively, and assembled into system prompts deterministically. The pieces
 below realize one model:
@@ -92,7 +92,7 @@ below realize one model:
   `agents::load_registry_in`/`resolve_registry_in`/`prompt_report_in`,
   `slash_commands::resolve_registry_in`) for tests and embedders that must not
   touch process env or the real user dirs (#773). **Cross-vendor dirs are scanned too**
-  ([ADR-0074](../../adr/0074-cross-vendor-skill-and-agent-discovery.md)): within
+  ([ADR-0074](../../adr/archive/0074-cross-vendor-skill-and-agent-discovery.md)): within
   the user layer `~/.claude/<kind>` before the native `${config_dir}` dir, and
   within the project layer `.claude/<kind>` then `.agents/<kind>` before the
   native `.entanglement/<kind>` — native always wins on a `name` collision, and
@@ -104,11 +104,11 @@ below realize one model:
   user config/settings file follows it too) and the project layer is **trusted** —
   running inside a repo means the repo is trusted, with inspection (`skutter
   inspect`) as the mitigation rather than an enforced boundary
-  ([ADR-0047](../../adr/0047-local-trust-boundary.md)).
+  ([ADR-0047](../../adr/archive/0047-local-trust-boundary.md)).
 - **Progressive disclosure, recursively** — the model sees only *descriptions*
   until it acts: `name: description` rows from `list_agents` (agents) and
   `list_skills` (skills) — no roster in the `agent` schema or the prompt any
-  more, so both stay byte-stable ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) →
+  more, so both stay byte-stable ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) →
   full body on `load_skill` **or** preload (skills tier-2) → the definition body
   *becomes* a child's own assembled prompt at spawn.
 - **Model decides *whether*, harness decides *how*** — selection is LLM reasoning
@@ -132,7 +132,7 @@ below realize one model:
 - An agent is chosen once, at session start (`--agent`, `config.yml` `agent:`,
   or a spawning `agent` tool call's own argument), and is fixed for that
   session's life — there is no live `SetAgent` any more
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §9: a persona is text already sent, so "switching" would only ever append a
   second one; a spawned sub-agent is a fresh session with its own system
   prompt, which is what delegating to a different persona actually needs). A
@@ -141,8 +141,8 @@ below realize one model:
   pinning* in [definitions](definitions.md)) — `SetModel`/`SetGeneration` themselves are unaffected and
   stay live.
 - **Permission modes are the rule engine** — `entanglement-runtime::mode`
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §2/§4, superseding [ADR-0003](../../adr/0003-agent-and-permission-profiles.md)/[ADR-0038](../../adr/0038-physical-per-agent-tool-restriction.md)/[ADR-0040](../../adr/0040-per-profile-spawn-control.md)/[ADR-0114](../../adr/0114-capability-level-permission-keys.md)/[ADR-0134](../../adr/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)/[ADR-0148](../../adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0192](../../adr/0192-universal-advertisement-enforcement-at-dispatch.md)/[ADR-0198](../../adr/0198-out-of-mask-tool-calls-are-approvable.md)).
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+  §2/§4, superseding [ADR-0003](../../adr/archive/0003-agent-and-permission-profiles.md)/[ADR-0038](../../adr/archive/0038-physical-per-agent-tool-restriction.md)/[ADR-0040](../../adr/archive/0040-per-profile-spawn-control.md)/[ADR-0114](../../adr/archive/0114-capability-level-permission-keys.md)/[ADR-0134](../../adr/archive/0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md)/[ADR-0148](../../adr/archive/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0192](../../adr/archive/0192-universal-advertisement-enforcement-at-dispatch.md)/[ADR-0198](../../adr/archive/0198-out-of-mask-tool-calls-are-approvable.md)).
   A `Mode` is `{ name, default: Permission, rules: Rules, limits: Limits,
   sandbox: Option<String>, sandbox_network: bool }`; a `ModeTable` is a named
   set of them. `skutter` compiles in exactly four — `research`, `plan`,
@@ -174,7 +174,7 @@ below realize one model:
   host itself. The exception is **spawning**: `agent`/`agent_send` stay
   `Control` (so a `control` class rule reaches them) but are graded like any
   tool, since a spawn starts a session that runs tools
-  ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)) — the built-in modes class-allow `control`, so spawning
+  ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)) — the built-in modes class-allow `control`, so spawning
   runs unprompted unless a rule says otherwise. The `control` class key
   matches only a tool whose capabilities are exactly `[Control]`: as the
   longest class name it would otherwise out-rank `write`/`exec` and widen a
@@ -189,12 +189,12 @@ below realize one model:
   `bash`/`call`, the target path for `edit`/`write`/`read`/`apply_patch`,
   the `pattern` for `glob`, the file filter for `grep`, the script
   `path` for `rhai` — canonicalized, so a link grades as where it points
-  ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
+  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
   the normalized URL for `web_fetch`, `{METHOD} {url}` for `http`, the
   profile a spawn runs for `agent` (an omitted `agent` is the default
   `general`, so `agent(general)` covers it) and the trimmed `agent_id`
   handle for `agent_send`
-  ([ADR-0235](../../adr/0235-scoped-spawn-rules-grade-the-target.md));
+  ([ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md));
   path args grade **root-relative**, ADR-0125; any other tool — every
   `mcp__<server>__<tool>` among them — has no argument, so only its bare
   rule matches, and a scoped key on one warns at config load
@@ -214,7 +214,7 @@ below realize one model:
   declared: `write(docs/*)` (13 chars) out-ranks bare `write` (5 chars) with
   no separate "scoped beats bare" rule needed, and a reader determines the
   outcome by inspection alone. Refined by
-  [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+  [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
   (amending ADR-0207 §4), for modes and the `permissions:` ceiling alike:
   **a rule naming the tool outranks a capability-class rule; a `*` rule
   competes with a named rule by key length and with a class rule by
@@ -241,7 +241,7 @@ below realize one model:
   denied by mode `research` — use /mode to switch ``), no prompt, no escape
   hatch except the user's own `/mode`/`request_mode`; `Ask` parks an ordinary
   approval exactly as before. (The skill-alias rewrite that used to precede
-  grading is gone with skill `tools:`, [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md).)
+  grading is gone with skill `tools:`, [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md).)
   MCP tools grade like any other tool by name
   or pattern; today every `mcp__*` tool's `Capability` is hardcoded to
   `Write` (`McpTool::capabilities`, a deliberate fail-safe — an external
@@ -250,9 +250,9 @@ below realize one model:
   therefore prompts/denies an MCP tool by the mode's `default`/`exec`-class
   rules unless a mode rule names it explicitly.
 - **Unattended is a fact about the session**
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §11, amended by
-  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)).
+  [ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)).
   A mode with a finite `question_timeout` (`auto`) is unattended only while
   no head watches the session or any of its ancestors
   (`entanglement-runtime::attendance`; the TUI watches every session, a

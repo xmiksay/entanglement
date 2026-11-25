@@ -162,7 +162,7 @@ pub struct Session {
     pub action: Option<String>,
     /// The engine's own inbox, for the one thing a session task cannot do
     /// alone: mint another session. A compaction forks a **successor**
-    /// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md))
+    /// ([ADR-0205](../../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md))
     /// by sending `Spawn` + `CloseSession` back through the supervisor, the
     /// same two frames the TUI used to send head-side for `/compact` — which
     /// is why the fork now works for *every* head, not just an interactive

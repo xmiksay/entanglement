@@ -4,7 +4,7 @@
 
 - **Bounded output:** 32 KiB byte cap with a truncation notice; `read` defaults
   to 2000 lines; `glob`/`grep` cap at 1000 results **with a one-line notice
-  when the cap fires** (`FileList.capped`, [ADR-0150](../../adr/0150-search-tool-cli-ergonomics.md)
+  when the cap fires** (`FileList.capped`, [ADR-0150](../../adr/archive/0150-search-tool-cli-ergonomics.md)
   — a silently truncated broad search used to read as a clean no-match past
   the first 1000 files). Prevents a huge file/tree
   from blowing the context window. `read`/`glob`/`grep`/MCP tools cap
@@ -21,8 +21,8 @@
   much of a candidate file it reads and searches) is a separate, grep-local 1
   MiB bound (`MAX_SCAN_BYTES`), not the 32 KiB output cap — conflating the two
   meant any file over 32 KiB was silently skipped regardless of the
-  match-output size ([ADR-0091](../../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md), #380).
-- **Empty-result contract (ADR-0016, extended by [ADR-0150](../../adr/0150-search-tool-cli-ergonomics.md)):**
+  match-output size ([ADR-0091](../../adr/archive/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md), #380).
+- **Empty-result contract (ADR-0016, extended by [ADR-0150](../../adr/archive/0150-search-tool-cli-ergonomics.md)):**
   a host tool may not return a silent zero-output — **`glob`/`grep` never
   return the empty string at all**. `list_files` returns `FileList { files,
   matched_dirs, skipped_errors, capped, out_of_root }`; per-entry walk errors
@@ -43,11 +43,11 @@
   surfaced as a labeled notice (capped preview, `... and N more` past 20
   entries per reason) appended to the result regardless of match count —
   otherwise a match that exists only in an excluded file would look identical
-  to a genuine no-match ([ADR-0091](../../adr/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
+  to a genuine no-match ([ADR-0091](../../adr/archive/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
-- **Wiring (ADR-0010, amended by [ADR-0093](../../adr/0093-call-registration-independent-of-bash-opt-in.md);
-  bash posture superseded by [ADR-0195](../../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
+- **Wiring (ADR-0010, amended by [ADR-0093](../../adr/archive/0093-call-registration-independent-of-bash-opt-in.md);
+  bash posture superseded by [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
   `host_tools(root)` registers the **root-contained sextet**
   (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`; `write` added in
   ADR-0031, `apply_patch` in #455). The
@@ -78,9 +78,9 @@
   (or `bash(find *): ask`) forces the prompt back over any curated Allow,
   exactly as it clamps a mode's own `Allow`. Graded per
   top-level segment of a compound command, not the whole raw string, since
-  [ADR-0197](../../adr/0197-compound-bash-commands-grade-per-segment.md). See
+  [ADR-0197](../../adr/archive/0197-compound-bash-commands-grade-per-segment.md). See
   [agents & permissions](../agents/approvals-and-grants.md) §permission ceiling.
-  **Advertisement ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `call` (like `glob`/`grep`) is registered but
+  **Advertisement ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `call` (like `glob`/`grep`) is registered but
   **never advertised** — a script-only `rhai` binding, still graded under its
   own name; `bash` is in the kernel.
   The overlay grade lookup that finds the applicable entry
@@ -93,8 +93,8 @@
 
 Every session is advertised the same tool set — there is no more per-agent
 mask to narrow advertisement or dispatch with
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md),
-superseding [ADR-0038](../../adr/0038-physical-per-agent-tool-restriction.md);
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md),
+superseding [ADR-0038](../../adr/archive/0038-physical-per-agent-tool-restriction.md);
 see [agents & permissions](../agents/modes.md) §permission modes).
 What differs now is the session's **mode**, not the agent, and it carves the
 exec surface differently per mode: `build` mode auto-allows
@@ -105,7 +105,7 @@ outright except the plans-folder carve-out (ADR-0142), with exec ungraded
 `plan` outright while curated-allowing a read-only `bash`/`call` verb list
 and prompting on everything else; `auto` mode allows by default, bar a
 destructive and network-mutating deny list and a prompt list of
-destructive deletions — [ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+destructive deletions — [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
 amends ADR-0209 here. Registration and mode grading are two
 orthogonal axes: registration decides whether the tool can *execute* at all
 (unconditional for both `call` and `bash`, ADR-0195), and the mode's rule
@@ -128,8 +128,8 @@ truncated `call`/`bash` result, so the dropped middle isn't silently lost —
 `poll` pages it back. (`propose_plan`'s own approval reply is a much smaller
 `InMsg::SetMode` mode-switch acknowledgment now — no build child, no
 result to bound —
-[ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-§7 retires [ADR-0138](../../adr/0138-sponsored-build-child-and-propose-plan-cycle.md)
+[ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+§7 retires [ADR-0138](../../adr/archive/0138-sponsored-build-child-and-propose-plan-cycle.md)
 wholesale; see [engine](../engine/subagents-and-plans.md) §plan acceptance.)
 
 `agent_send { agent_id, prompt, background? }` (#609, ADR-0162) is a launcher
@@ -165,7 +165,7 @@ the engine-wide `SessionStarted`/`SessionHibernated`/`SessionEnded` broadcast
 single join tool for all four: it dispatches on the handle's kind prefix
 (ADR-0164) to the job registry (`j-`), the background-script registry (`x-`,
 a `rhai background=true` launch — #637,
-[ADR-0185](../../adr/0185-rhai-joins-background-and-poll.md)), the
+[ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)), the
 retained-output registry (`o-`, a
 completed operation whose result overflowed its cap — #608, ADR-0161 §7), or
 the sub-agent registry (anything else, a `s-` session id), waiting up to
@@ -222,7 +222,7 @@ the same engine-bound lifetime — so neither can outlive it; a resumed session
 can therefore legitimately show agents and no jobs/scripts. When anything
 is pending in the caller's spawn sub-tree (#829 — the half of the retired
 `explore(kind: "pending")` recovery report that
-[ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+[ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 deferred), the listing is followed by a `subtree (this session and its
 sub-agents):` section (`poll/subtree.rs`) with up to three groups: retained
 outputs (owned by the caller, so pollable, or by a descendant, named for
@@ -238,7 +238,7 @@ in the caller's own spawn sub-tree, never a sibling or an ancestor. Ownerless
 retained entries (the session-less `Tool::run` path) are pollable by anyone
 holding the handle, so they belong to no sub-tree and are never listed.
 **A compaction successor owns its predecessor's work**
-([ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md)):
+([ADR-0231](../../adr/archive/0231-compaction-successor-inherits-background-work.md)):
 on `SessionStarted { predecessor: Some(p) }` the executor's lifecycle loop
 calls `reassign_owner(p, successor)` on `JobRegistry`, `ScriptRegistry` and
 `RetainedOutputRegistry`, so the successor's handle-less `poll` lists the
@@ -250,9 +250,9 @@ idempotent move from the supervisor's directory. A lagged-away
 adopted before the poll reads anything. The fold and every heal take the
 whole chain back (`Holly::predecessors_of`), not one hop, so two compactions
 before either runs still reach the oldest ancestor
-([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
+([ADR-0242](../../adr/archive/0242-compaction-heals-walk-the-whole-chain.md)).
 **A script's parked card moves with it**
-([ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md)):
+([ADR-0238](../../adr/archive/0238-compaction-moves-a-background-scripts-card.md)):
 a parked card keeps its key and gains a `home`, and
 `PendingDecisions::reassign_detached` re-homes every detached card from the
 ancestors onto the live end of the chain (`pending::live_end`, which also
@@ -269,21 +269,21 @@ card; a timeout's `forget` removes only its own closed entry. Every
 approval park heals first, and a home never holds two live cards with one
 id: only a turn card supersedes a live turn card, any other park sharing a
 live card's key or id is refused with a reason. **The script follows too**
-([ADR-0241](../../adr/0241-background-script-follows-compaction.md)): before
+([ADR-0241](../../adr/archive/0241-background-script-follows-compaction.md)): before
 each nested call a background run's dispatcher switches to the live end of
 its session's lineage (`Holly::successor_of`, once the executor folded that
 session's mode), so later calls grade, grant and park as the successor, and
 re-reads the session's mode before every call (every script run does,
 blocking ones too, and drops each overlay entry whose session switched
 mode since the snapshot, by its compaction lineage's epoch,
-[ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)); a
+[ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)); a
 call in flight finishes as the predecessor, but its `Session` grant or `http`
 unlock is recorded where the next call will be graded (the same switch
 condition). Closing the predecessor never
 killed these entries, so ordering against its `SessionEnded` does not
 matter. A `/fork` copy carries no `predecessor` and leaves its live source
 owning everything. **Sub-agents follow too**
-([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)): core moves the
+([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)): core moves the
 predecessor's live children under the successor (`OutEvent::ParentChanged`),
 and an `AgentRegistry` entry stays keyed by the handle its parent was given
 while aliasing the live `session` that answers for it. The lifecycle loop
@@ -308,11 +308,11 @@ turn (`InMsg::RetractQuestion`), or swap its content in place
 registry beside `PendingDecisions`), and
 `propose_plan { plan }`, the plan agent's finalize step, force-parked on the
 user-approval round-trip since acceptance *is* its semantics (#141,
-[ADR-0042](../../adr/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md);
+[ADR-0042](../../adr/archive/0042-plan-acceptance-via-propose-plan-approval-roundtrip.md);
 advertised only to a profile that explicitly allowlists it, #231). The `rhai`
 script tool (table in [host tools](host-tools.md)) is intercepted the same way but is **not** a bypass:
 it resolves its own `Allow`/`Ask`/`Deny` live inside the sandboxed script task
-(#122, [ADR-0046](../../adr/0046-rhai-sandboxed-script-tool.md)).
+(#122, [ADR-0046](../../adr/archive/0046-rhai-sandboxed-script-tool.md)).
 
 ---
 

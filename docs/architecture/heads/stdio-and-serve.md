@@ -2,7 +2,7 @@
 
 > Part of the [heads & persistence module](../heads-and-persistence.md) of the [architecture overview](../../architecture.md).
 
-## 6. Heads — ADRs [0005](../../adr/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](../../adr/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](../../adr/0011-tui-head-ratatui-crossterm.md)–[0015](../../adr/0015-rich-text-pipeline-syntect.md) (TUI)
+## 6. Heads — ADRs [0005](../../adr/archive/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](../../adr/archive/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](../../adr/archive/0011-tui-head-ratatui-crossterm.md)–[0015](../../adr/archive/0015-rich-text-pipeline-syntect.md) (TUI)
 
 All heads live in one crate, **`entanglement-runtime`** (✅ #56; binary
 `skutter`), as subcommands. The "four interfaces"
@@ -14,8 +14,8 @@ The heads (and the `skutter` binary that carries them) need the crate's
 **default features** — `default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]` pulls
 clap + the providers + the render stack + the axum WS server + the
 streamable-HTTP MCP transport (ADR-0080) + the sandboxed script tool
-([ADR-0135](../../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md))
-+ the `web_fetch` tool ([ADR-0220](../../adr/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)),
+([ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md))
++ the `web_fetch` tool ([ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)),
 and `[[bin]] skutter` declares
 `required-features = ["cli","provider","tui"]` (the `provider` feature was split
 out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
@@ -24,7 +24,7 @@ providers without dragging in clap or the TUI stack).
 Building the crate with `default-features = false` yields an **embeddable
 library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
 persistence machinery with none of the CLI/TUI/transport weight
-([ADR-0025](../../adr/0025-runtime-cargo-feature-gates.md), §7). Wiring a custom,
+([ADR-0025](../../adr/archive/0025-runtime-cargo-feature-gates.md), §7). Wiring a custom,
 multi-tenant head on top of this library (session namespacing, the trust
 split, pluggable persistence/policy, approval-across-restart) is covered in
 [`../embedding.md`](../../embedding.md), backed by a compiling
@@ -45,10 +45,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   approval). Every other `ToolRequest` auto-rejects with a reason, including an
   out-of-root `launch_escape` and every nested card. The decision is read off
   the structured `reason`, never the card text (`pending::headless_starts`,
-  [ADR-0230](../../adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
+  [ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
   `--mode auto` is the unattended posture; `--yes` is retired. `run` and
   `pipe` never register as watchers, so they stay unattended
-  ([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)). `ask_user` questions keep
+  ([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)). `ask_user` questions keep
   auto-answering their first option (ADR-0027). `skutter inspect prompt --agent <name> [--parts]` prints an
   agent's **assembled** system prompt (#184) — it re-runs the load-time discovery
   (`PromptContext::load` + skill/agent registries) with no engine, so a wrong
@@ -63,7 +63,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   `name`, the full resolved profile — **identity and provenance only**
   now — name, description, model/provider pin, assembled-prompt length,
   plus which lower-layer definitions it overrode.
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   moved every permission fact (the tool mask, the permission rules, plan
   authorship, spawn control, sandbox confinement) off `Agent` and
   onto the session's independent permission mode, so this view lost the
@@ -83,7 +83,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   pseudo-tools (`capability::static_capability_of`), and MCP tools
   are necessarily absent — a dynamic, environment-dependent surface out of
   scope for a static report.
-  `skutter inspect commands [name]` (#733, [ADR-0221](../../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)) lists the
+  `skutter inspect commands [name]` (#733, [ADR-0221](../../adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)) lists the
   user slash commands — usage, winning layer, source file, description, and a
   marker on any file a built-in name hides — or one command's provenance and
   raw template.
@@ -91,10 +91,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   **skill** registry — the authoring loop was "start a session and ask the model":
   no `name` prints a table (name, winning layer, `root_dir`,
   description); `--disclosures` prints the **exact** roster the model is handed
-  — every skill ([ADR-0229](../../adr/0229-every-skill-is-model-visible-user-only-removed.md)),
+  — every skill ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)),
   the same `discover::skills_list` text the `list_skills` discovery tool
   replies with (`inspect/skills.rs::render_disclosures`; the roster is no
-  longer in the system prompt, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
+  longer in the system prompt, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
   a `name` **dry-runs the `load_skill` path
   substitution** (`${SKILL_DIR}` + relative-ref resolution) plus layer provenance,
   so a wrong payload path surfaces without a model. Engine-free via
@@ -118,7 +118,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   user config with per-field provenance — every fallback setting in
   [`config::Config`](../../../entanglement-runtime/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
-  and the `tui:` block (#558, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)), any retired key a layer still carries
+  and the `tui:` block (#558, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)), any retired key a layer still carries
   (as a `warnings:` section), and an **advanced catalog** section listing each
   provider/model's non-default wire facts (`thinking_*`, `effort_tiers`,
   rate limits, … — [provider](../provider/catalog.md#advanced-catalog-wire-facts) §advanced catalog). Four more
@@ -130,7 +130,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   MCP server roster (provider-bundled servers folded with the user `mcp:` map,
   #542) — every registered server with its provider, description, OAuth posture
   and last-seen tool names (registered = available, nothing connects at startup,
-  [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
   `inspect session <id>` folds one **root** session's persisted log into its
   resolved agent/model/name plus its live tool overlay (ADR-0149) — the one
   piece of session state with no managed file of its own, so it is read
@@ -139,7 +139,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
   liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text
   frames (every event, so a client sees `ApprovalResolved` for a card another
-  socket or the TUI answered, [ADR-0240](../../adr/0240-approval-resolved-event.md)), each inbound text frame parsed into an `InMsg` and routed through the
+  socket or the TUI answered, [ADR-0240](../../adr/archive/0240-approval-resolved-event.md)), each inbound text frame parsed into an `InMsg` and routed through the
   **untrusted** `send_from_wire` (#155) so a forged `ToolResult`/`Spawn`/`Resume`
   is refused per-frame (a non-JSON line falls back to a `Prompt` on the socket's
   own default session, `pipe` parity); a 30s ping keeps an idle socket alive and
@@ -160,10 +160,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   scope of ADR-0048's local single-user trust model; revisit if `serve` ever
   grows beyond loopback. The wire hygiene it consumes (`seq`
   uniqueness #157, protocol warts #160) was frozen first, per the pre-`serve`
-  hardening epic ([ADR-0048](../../adr/0048-serve-head-local-trust-model.md)). Lives
+  hardening epic ([ADR-0048](../../adr/archive/0048-serve-head-local-trust-model.md)). Lives
   behind the `serve` feature (implies `cli` + `provider`) so axum stays out of
   the lean library / `--no-default-features` build (ADR-0025). **Per-connection
-  approval ownership** (#402, [ADR-0107](../../adr/0107-ws-per-connection-approval-ownership.md)):
+  approval ownership** (#402, [ADR-0107](../../adr/archive/0107-ws-per-connection-approval-ownership.md)):
   a `SessionOwners` map on `ServeState` claims a session for the first
   connection to send any frame referencing it (first-writer-wins); a later
   connection's `Approve`/`Reject`/`AnswerQuestion` for that session is refused
@@ -171,7 +171,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   unaffected by ownership. Released on disconnect, so a still-parked approval
   is reclaimable rather than deadlocked behind a client that went away.
   **A connection attends the sessions it owns**
-  ([ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)):
+  ([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)):
   owning one registers it with the runtime's `attendance::Attendance` (the
   same registry the executor's gate reads, passed to `serve::router`), so
   that session and every sub-agent under it park their `Ask`s instead of
@@ -203,10 +203,10 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   listing, is listed as is.
   `serve` stays exactly local/single-user/unauthenticated as scoped above —
   no in-tree head ships multi-user. The authenticated multi-user mode
-  designed by [ADR-0174](../../adr/0174-authenticated-multi-user-wire-head.md)
+  designed by [ADR-0174](../../adr/archive/0174-authenticated-multi-user-wire-head.md)
   (#674, `serve/auth.rs`) was built, then removed (#686): `UserId` must not
   appear anywhere in `entanglement-runtime`
-  ([ADR-0181](../../adr/0181-userid-leaves-the-runtime-crate.md)). An
+  ([ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)). An
   authenticated wire head binding credentials to `UserId` is an embedder's
   own build, out of tree, on the same `Holly`/`send_from_wire` seams a
   single-user head uses.

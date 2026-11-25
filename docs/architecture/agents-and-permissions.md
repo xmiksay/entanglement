@@ -13,7 +13,7 @@ This module is split into the pages below, one per seam; each stays under the 40
 | [spawn-tasks-plans](agents/spawn-tasks-plans.md) | §3 — Spawn bounds, task state & the plan tool |
 | [prompt-and-skills](agents/prompt-and-skills.md) | §3 — System prompt, skills, slash commands & dispatch |
 
-## 3. Agent profiles + permission modes — [ADR-0207](../adr/0207-permission-modes-replace-agent-borne-authority.md)
+## 3. Agent profiles + permission modes — [ADR-0207](../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 
 Now in [§3 — Identity vs authority, starting mode & permission modes](agents/modes.md#3-agent-profiles--permission-modes--adr-0207).
 Continued in [§3 — Mode tuning, approvals, grants & the permission ceiling](agents/approvals-and-grants.md).

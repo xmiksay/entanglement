@@ -6,7 +6,7 @@
 
 The reference persistence layer
 (`entanglement-runtime/src/persistence.rs`,
-[ADR-0020](../adr/0020-event-sourced-session-persistence.md)) is already split
+[ADR-0020](../adr/archive/0020-event-sourced-session-persistence.md)) is already split
 into a fixed *tap* and a pluggable *sink* (#313), so a DB-backed embedder swaps
 one trait impl instead of forking the subscriber:
 
@@ -32,7 +32,7 @@ whose stream holds the sub-agent's history. To resume that root with its
 moved sub-agents, prepend the named root's records for that sub-tree, as
 `SessionStore::read_tree` does for files. `RecordSink::touch(from)` is called
 alongside, so a sink with time-based retention can keep the named root
-([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)).
+([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)).
 
 **Gap ownership (#723): return `Err` for every record you lose.** An `Err`
 from `append` means "this record is gone", and the tap marks it for you: it
@@ -116,7 +116,7 @@ holly.resume(root, pair_records(&prefix.records)).await?;
 ```
 
 **Let the engine resume on demand: `EngineConfig::unknown_session`**
-([ADR-0210](../adr/0210-unknown-session-policy.md)). By default a routable
+([ADR-0210](../adr/archive/0210-unknown-session-policy.md)). By default a routable
 message (`Prompt`, `ToolResult`, `Stop`, `SetModel`, …) for an id with no live
 task lazily spawns a **blank** root (`UnknownSession::SpawnBlank`) — right for
 a single-user CLI, wrong for you: after an idle-TTL hibernation (or a
@@ -172,7 +172,7 @@ during its teardown first (ADR-0246). `Holly::is_live(&id)` answers "is it runni
 for display — not for check-then-send.
 
 **Ownership of a live session: `Holly::session_info(&id)`**
-([ADR-0211](../adr/0211-idgen-context-and-tenant-prefix-inheritance.md)). A
+([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)). A
 resolver deciding whether a session's tool call belongs to a user (a
 permission seam, a per-user MCP scope) reads the engine's own directory
 synchronously — `SessionInfo { user, parent, predecessor, agent, root, .. }`

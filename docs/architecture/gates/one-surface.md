@@ -2,10 +2,10 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-### One advertised surface and discovery — [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+### One advertised surface and discovery — [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
 
-(Supersedes [ADR-0196](../../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
-§1–§4 and [ADR-0204](../../adr/0204-invoke-fallback-for-client-side-discovery.md).)
+(Supersedes [ADR-0196](../../adr/archive/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
+§1–§4 and [ADR-0204](../../adr/archive/0204-invoke-fallback-for-client-side-discovery.md).)
 There is no advertising mode, per-wire encoding or discovery strategy. Every
 session on every wire is advertised the compiled-in **`KERNEL`**
 (`tool_names::KERNEL`): `read`/`edit`/`write`/`apply_patch`/`bash`/`web_fetch`,
@@ -20,18 +20,18 @@ forgets the snapshot; a resume rebuilds the same bytes. Not advertised:
 `call`/`glob`/`grep` (script-only `rhai` bindings, graded under their own
 names, like `read_raw`/`glob_json`/`grep_json`) and every `mcp__*` tool.
 ADR-0226's interim `endpoint__*`/`skill__*` additions are gone
-([ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md),
-[ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
+([ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md),
+[ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
 the surface is exactly `KERNEL`.
 
 **The six discovery tools** — each with no argument or one `name`, all
 `Capability::Control` and non-maskable — the `poll` pattern: a Control
-tool other than `agent`/`agent_send` is never graded ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md) §3;
-`tool_names::DISCOVERY_TOOLS`, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
+tool other than `agent`/`agent_send` is never graded ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md) §3;
+`tool_names::DISCOVERY_TOOLS`, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
 returns before the mode, overlay or ceiling are consulted, so nothing can
 withdraw or decline them.
 
-**Which Control tools are graded** ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), #849). The ungraded
+**Which Control tools are graded** ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), #849). The ungraded
 ones are the bookkeeping tools — `poll`, `ask_user`, `update_tasks`,
 `request_mode` (plus the discovery tools above): each only collects or
 reports work the mode already authorized, or asks the user, so the dispatch
@@ -53,20 +53,20 @@ nested cards. A resume re-offers a parked `ToolExec`. A background
 (`detached`) script's nested card is exempt there. It is no `ToolExec`, so
 nothing would re-offer it, and the script outlives the session (a compaction
 successor inherits it,
-[ADR-0231](../../adr/0231-compaction-successor-inherits-background-work.md),
-its card moves to the successor, [ADR-0238](../../adr/0238-compaction-moves-a-background-scripts-card.md),
-and its later calls park on the successor as its own, [ADR-0241](../../adr/0241-background-script-follows-compaction.md)).
+[ADR-0231](../../adr/archive/0231-compaction-successor-inherits-background-work.md),
+its card moves to the successor, [ADR-0238](../../adr/archive/0238-compaction-moves-a-background-scripts-card.md),
+and its later calls park on the successor as its own, [ADR-0241](../../adr/archive/0241-background-script-follows-compaction.md)).
 A session `Stop` is different: it unwinds every card of the session,
 background ones included (`stop_session`). `Stop` is the user's explicit
 escape hatch and the TUI clears its card view on it, while an attended park
 never times out. The card itself says it is detached (`ToolRequest.detached`,
-[ADR-0237](../../adr/0237-detached-flag-on-tool-request.md)), so the TUI keeps
+[ADR-0237](../../adr/archive/0237-detached-flag-on-tool-request.md)), so the TUI keeps
 it past the turn's terminal `Status`. Whatever removes a card from
 `PendingDecisions` (a decision from any head, a timeout, an unwind, a
 superseding re-offer) emits `OutEvent::ApprovalResolved` on its home under
 the registry lock, so every head drops it
-([ADR-0240](../../adr/0240-approval-resolved-event.md)). The script itself is not aborted
-([ADR-0185](../../adr/0185-rhai-joins-background-and-poll.md)): its nested call
+([ADR-0240](../../adr/archive/0240-approval-resolved-event.md)). The script itself is not aborted
+([ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)): its nested call
 fails with "rhai run stopped" and the run ends. The built-in modes class-allow `control`, so a spawn runs
 unprompted by default and a rule naming `agent` outranks that.
 `propose_plan` grades only its own `plan` class (`resolve_effective`, before
@@ -115,7 +115,7 @@ where an unknown tool is, via `tool_advertising::unknown_tool_reply`, on the
 ADR-0176 `is_error` channel with the envelope's shape and schema. Calling an
 `mcp__*` name natively is not advertised but dispatches and grades the same.
 
-### Error taxonomy — five cases — [ADR-0196](../../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) §6
+### Error taxonomy — five cases — [ADR-0196](../../adr/archive/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) §6
 
 One wording family on the ADR-0176 `is_error` channel:
 
@@ -142,7 +142,7 @@ contract, and every real structured tool declares at least one of
 `properties`/`required`. An MCP call through the `mcp` envelope is validated
 the same way against the server's real schema, so a violation never reaches
 the server; its decline shows the example as the `mcp {server, tool, args}`
-call that reaches the tool ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)). Two guards ride alongside: per-session
+call that reaches the tool ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)). Two guards ride alongside: per-session
 delivered-schema tracking (`tool_advertising::DeliveredSchemas`, marked by
 every `mcp_tools` delivery and every decline to the model — never re-send a
 schema already in context; reply with the diff instead) and a
@@ -167,10 +167,10 @@ question to answer here.
 ### Definition-driven tool sources — removed
 
 The #560 P8 sources are gone: `config.yml` `endpoints:` and the skill-tool
-`endpoint` kind ([ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)),
+`endpoint` kind ([ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)),
 then the whole `SKILL.md` `tools:` frontmatter — its preset-script `rhai`
 and `alias` kinds, `AliasTool`, `Tool::alias_rewrite` and the ladder's
-alias-rewrite step ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+alias-rewrite step ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 A skill ships callable behavior as `lib.rhai` functions (§Script surface) and
 predefined scripts as files run with `rhai` `path`. A stale `endpoints:` key
 warns and is ignored; a native `SKILL.md` still declaring `tools:` is skipped

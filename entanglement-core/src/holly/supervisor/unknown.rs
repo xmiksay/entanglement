@@ -1,4 +1,4 @@
-//! The unknown-session policy ([ADR-0210](../../../../docs/adr/0210-unknown-session-policy.md)):
+//! The unknown-session policy ([ADR-0210](../../../../docs/adr/archive/0210-unknown-session-policy.md)):
 //! a routable message for an id with no live task spawns a blank root, is
 //! refused, or waits on the embedder's [`SessionLoader`] and is delivered once
 //! the session is resumed.

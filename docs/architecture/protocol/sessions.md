@@ -2,7 +2,7 @@
 
 > Part of the [wire protocol module](../protocol.md) of the [architecture overview](../../architecture.md).
 
-**Trusted/untrusted frame split** (#155, [ADR-0069](../../adr/0069-trusted-untrusted-wire-frame-split.md)).
+**Trusted/untrusted frame split** (#155, [ADR-0069](../../adr/archive/0069-trusted-untrusted-wire-frame-split.md)).
 `InMsg` has two entry points. `Holly::send` is **privileged in-process**: an
 embedder holding a `Holly` (a head, the runtime tool executor) authors any
 frame. `Holly::send_from_wire` is the **untrusted** path a wire head (stdio
@@ -14,39 +14,39 @@ a parked turn on `request_id` alone, bypassing execution *and* permission),
 (internal, `#[serde(skip)]`), `HibernateSession` (an embedder memory-eviction
 control — a wire head must not evict another session's in-memory state, #318),
 `McpAdd`/`McpRemove` (#472,
-[ADR-0124](../../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
+[ADR-0124](../../adr/archive/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md),
 reversing #375's wire tier: an unapproved `McpAdd` spawns an arbitrary local
 subprocess, and with the `serve` origin gate opt-in-off a hostile web page
 could drive it cross-origin — the read-only `McpList` stays wire-allowed, and
 the TUI `/mcp` path is unaffected since it sends over the privileged
 `Holly::send`), `McpAuth`
-([ADR-0153](../../adr/0153-mcp-server-oauth.md), sharpening ADR-0124: a forged
+([ADR-0153](../../adr/archive/0153-mcp-server-oauth.md), sharpening ADR-0124: a forged
 `Connect` opens a browser and mints a durable credential, a forged
 `Disconnect` destroys one, and even `Check` mutates state by refreshing — so
 unlike the read-only `McpList`, none of the three actions is wire-allowed),
-`SetMode` ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md):
+`SetMode` ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md):
 the mode *is* the session's authority, so a forged one widens every later
 tool grade — e.g. into `auto` — with no approval; the model's own way to
 widen is the force-parked `request_mode` tool, and the TUI `/mode` sends over
 `Holly::send`),
-`RevertFiles` (#731, [ADR-0212](../../adr/0212-undo-rewind-via-per-write-file-backups.md):
+`RevertFiles` (#731, [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md):
 it rewrites and deletes files in the user's working tree from the session's
-backups), `ForkSession` (#786, [ADR-0223](../../adr/0223-non-compacting-session-fork.md):
+backups), `ForkSession` (#786, [ADR-0223](../../adr/archive/0223-non-compacting-session-fork.md):
 it mints a session, so it stays a trusted head's call like `Spawn`), `SetWorkdir` (#764,
-[ADR-0224](../../adr/0224-session-working-directory.md): its `approve` records an
+[ADR-0224](../../adr/archive/0224-session-working-directory.md): its `approve` records an
 escape-root grant), and, for an **enable** entry, `SetToolOverlay` (#539,
-[ADR-0149](../../adr/0149-per-session-tool-overlay.md), the `McpAdd` rationale
+[ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md), the `McpAdd` rationale
 again: it grades a tool `allow` past the session's own mode grade, with no
 approval prompt (ADR-0163's lazily-registering-a-closed-table-built-in clause
 — #611, folding in the bespoke `BashEnable`/`BashDisable` pair of #498/
-[ADR-0133](../../adr/0133-live-bash-enablement-graded-by-permission.md), now
+[ADR-0133](../../adr/archive/0133-live-bash-enablement-graded-by-permission.md), now
 superseded — is itself retired by
-[ADR-0195](../../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md),
+[ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md),
 `bash` registering at startup; the grade-only form stands) — the TUI
 `/enable`/`/disable` commands send over `Holly::send`). A
 **deny-only** `SetToolOverlay` (every entry `deny: true`, including the empty
 list) is wire-allowed (#634,
-[ADR-0177](../../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending
+[ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md) amending
 ADR-0149): it can only withdraw tools the profile already advertises, never
 widen the model's surface, so `wire_allowed()` is content-aware for this one
 variant — any enable entry present refuses the whole (full-replacement) frame
@@ -59,25 +59,25 @@ compile error to skip, mirroring `session()`/`variant_name()`. The executor
 folds a completed tool round-trip back
 over the named privileged handle `Holly::submit_tool_result` (used by
 `seam::reply_content`, the single fold-back site). Under the local single-user
-`serve` scope ([ADR-0048](../../adr/0048-serve-head-local-trust-model.md)) this is
+`serve` scope ([ADR-0048](../../adr/archive/0048-serve-head-local-trust-model.md)) this is
 robustness/UX — which cooperating local client owns a frame — not defence against
 a remote attacker; the WS head routes every inbound frame through
 `send_from_wire` and implements per-connection `Approve` ownership (#402,
-[ADR-0107](../../adr/0107-ws-per-connection-approval-ownership.md)).
+[ADR-0107](../../adr/archive/0107-ws-per-connection-approval-ownership.md)).
 
-**Session lifecycle** (✅ #21, [ADR-0028](../../adr/0028-session-lifecycle-enumeration-and-backpressure.md)).
+**Session lifecycle** (✅ #21, [ADR-0028](../../adr/archive/0028-session-lifecycle-enumeration-and-backpressure.md)).
 `ListSessions` and `CloseSession` are **supervisor-global**: the supervisor
 answers/acts on them directly rather than routing to a session task.
 `ListSessions` returns one `SessionList` snapshot of the live
 `SessionInfo{session,parent?,predecessor?,agent,root,user?}` set (`predecessor`: a compaction successor's source, ADR-0211; the same record `Holly::session_info` reads synchronously; `parent` is the one field that can change later, on a `ParentChanged`, ADR-0234) — a reconnecting
 head enumerates in one round-trip instead of folding the whole broadcast. Both
 the query and the reply carry an opaque **`correlation_id`** the head mints and
-the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../../adr/0072-protocol-warts-settled-before-serve.md)),
+the reply echoes — not an overloaded `SessionId` (#160, [ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md)),
 so `InMsg::session()`/`OutEvent::session()` return `Option<&SessionId>` and are
 `None` for these session-less queries (a head's event router drops a `None`
 rather than keying a phantom per-session view). The **`profile_detail`** field
 this paragraph used to describe (**#189**, on `AgentChanged`/`SessionInfo`) is
-**deleted entirely** — [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+**deleted entirely** — [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 retired the `mode`/tool-mask/`PermissionProfile` posture it carried along
 with `Agent`'s authority fields, so there is nothing left to resolve
 into it. A head wanting a session's permission posture reads `ModeChanged`
@@ -95,12 +95,12 @@ to un-polled `agent { background: true }` children, ADR-0026 — collected via `
 `SessionEnded`, mint a fresh id — `SessionId::new_uuid()` (kept name for
 call-site compatibility; it mints the ADR-0164 `s-<hex>` scheme, not an actual
 UUID) or, when a `Holly` handle is in scope, `Holly::next_id(IdKind::Session)`
-to go through the engine's *configured* [`IdGen`](../../adr/0164-short-sortable-kind-tagged-ids.md)
+to go through the engine's *configured* [`IdGen`](../../adr/archive/0164-short-sortable-kind-tagged-ids.md)
 — rather than reuse a closed id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
 than parking its single loop and stalling every other session.
 
-**Session hibernation** (#318, [ADR-0077](../../adr/0077-session-hibernation-evictable-resumable.md))
+**Session hibernation** (#318, [ADR-0077](../../adr/archive/0077-session-hibernation-evictable-resumable.md))
 is a **third lifecycle state** between `live` and the terminal `closed`
 tombstone. `HibernateSession{session}` (trusted-only — an embedder memory-eviction
 control, not wire-allowed; `Holly::hibernate` is the wrapper) tears the session
@@ -109,7 +109,7 @@ each `Context`, but records **no** tombstone in the `closed` set — the map ent
 removed (memory released, gone from `ListSessions`) yet the id stays **resumable**:
 a later `Holly::resume(id, records)` rebuilds it from the embedder's event log
 exactly like the restart path, re-offering a turn parked mid-approval
-([ADR-0061](../../adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../../adr/0071-parked-turn-reoffer-timer.md)).
+([ADR-0061](../../adr/archive/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0071](../../adr/archive/0071-parked-turn-reoffer-timer.md)).
 The task emits a distinct lifecycle `SessionHibernated{session,ts}` (no `seq`) so
 heads/persistence taps tell eviction from termination; the runtime executor
 releases its per-session bookkeeping on it as on `SessionEnded`. Hibernating a
@@ -121,14 +121,14 @@ log. `closed` ids stay terminal (`resume` still refuses them); the embedder is
 expected to `resume` before re-prompting a hibernated id. Core snapshots nothing —
 rebuild is the embedder's log replay, keeping the no-DB-in-core boundary intact.
 An **optional idle-TTL sweep** now drives `HibernateSession` automatically
-(#363, [ADR-0090](../../adr/0090-idle-ttl-auto-hibernation.md)): `EngineConfig.idle_ttl`
+(#363, [ADR-0090](../../adr/archive/0090-idle-ttl-auto-hibernation.md)): `EngineConfig.idle_ttl`
 (`None` by default — eviction stays embedder-driven when unset) arms a
 supervisor-level poll that auto-hibernates a **settled** root (and its whole
 spawn sub-tree) once idle past the TTL — see the engine doc for the mechanism;
 a hibernated descendant counts as settled, one still loading does not
-([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+([ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 **A resumed sub-agent answers to its ancestors**
-([ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)):
+([ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)):
 on every resume path its replayed mode is clamped to its nearest ancestor's
 current mode (live, else logged) when that is provably stricter, once (a
 later widening of the ancestor does not undo it), and an ADR-0210 load that
@@ -136,7 +136,7 @@ finishes with an ancestor closed, or with the id itself or an ancestor
 hibernated while it ran and still down, refuses its queued sends instead of
 starting it.
 
-**Session pause** (#516, [ADR-0208](../../adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md))
+**Session pause** (#516, [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md))
 is a hold `Stop` and `HibernateSession` don't cover: `Stop` destroys the
 in-flight round, `HibernateSession` evicts memory — neither is "hold this
 session's next piece of work without losing it or evicting it."
@@ -162,7 +162,7 @@ session reports `AgentState::Paused`, not `Done`, until an explicit
 `ResumeSession`. A new `AgentState::Paused` (ADR-0139's dedicated-state
 precedent) is never observed while genuinely streaming, for the reason above.
 
-**Late-subscriber history fetch** (#160, [ADR-0072](../../adr/0072-protocol-warts-settled-before-serve.md)).
+**Late-subscriber history fetch** (#160, [ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks
 `ReplayFrom{session,correlation_id,after_seq}` for the events it missed. Because
 the event log is the **runtime's** persistence seam (core holds no log), this is
@@ -181,7 +181,7 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
   history (`agent`'s pattern); lifecycle/query frames (`Status`, `AgentChanged`,
   `SessionList`, `History`, …) carry no `seq`. `OutEvent::seq()` returns
   `Option<u64>` — `None` for those — so the real seq-`0` sentinel below is a
-  distinct `Some(0)`, not confused with "no seq" (#160, [ADR-0072](../../adr/0072-protocol-warts-settled-before-serve.md)).
+  distinct `Some(0)`, not confused with "no seq" (#160, [ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md)).
 - **`(session, seq)` is unique across every authored content event** (#157). The
   seq comes from **one per-session counter** (`Arc<SeqCell>`), shared by the
   core session task and the runtime through a supervisor-held registry: a session
@@ -194,14 +194,14 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
   `Status` transitions the runtime emits around a parked call go through
   `Holly::emit_status`; the raw outbound sender is no longer exposed.
   - **Delivery order is seq order** (#893,
-    [ADR-0244](../../adr/0244-seq-order-leases-and-one-task-per-id.md)). Every
+    [ADR-0244](../../adr/archive/0244-seq-order-leases-and-one-task-per-id.md)). Every
     emitter mints the seq and broadcasts the event inside the session's own
     `SeqCell` lock (`SeqCell::emit` in the session task, `emit_for_session`
     and supervisor errors through the registry), so two emitters for one
     session can't deliver seq 6 before seq 5. The lock is per session and the
     broadcast `send` never blocks.
   - **A retired session keeps its counter** (#884,
-    [ADR-0239](../../adr/0239-retired-session-keeps-a-seq-high-water.md)).
+    [ADR-0239](../../adr/archive/0239-retired-session-keeps-a-seq-high-water.md)).
     Retiring a session (hibernate, end or close) moves its cell to the
     registry's `retired` map. Detached work still running for the id (a
     background script's card, ADR-0237) mints above every seq already used,
@@ -228,7 +228,7 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     (which will hold its `SessionHibernated`, unless its task panicked)
     would.
   - **The teardown tail** (#906,
-    [ADR-0246](../../adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+    [ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
     The exit signal carries every outbox event for the id except live-only
     ones from the `Hibernate` send to the old task's exit (at most 1024;
     none after a panic or a lagged tap), and the old task's final mode and
@@ -249,7 +249,7 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     channel, a `Prompt` racing behind a close) mints a real seq and takes its
     ordered place in that stream.
 
-**Single-shot session ops — `InMsg::Oneshot`** (#324, [ADR-0082](../../adr/0082-single-shot-session-ops-and-persisted-compaction.md)).
+**Single-shot session ops — `InMsg::Oneshot`** (#324, [ADR-0082](../../adr/archive/0082-single-shot-session-ops-and-persisted-compaction.md)).
 A generic **wire envelope** — `{session, op: String, args: Value}` — for a single
 out-of-band LLM call outside the turn loop, not a plugin registry: the
 genericity lives in the wire shape, so a future op needs no new `InMsg`
@@ -265,7 +265,7 @@ inbox `select!`. On success it emits the **persisted, seq-bearing**
 `OutEvent::Compacted{session,seq,summary,kept,auto,mode}` — persistence and
 `ReplayFrom` history cover it for free (both are variant-agnostic over any
 `seq()`-bearing event). **Every compaction forks a successor and retires this
-session** ([ADR-0205](../../adr/0205-every-compaction-forks-a-successor-session.md),
+session** ([ADR-0205](../../adr/archive/0205-every-compaction-forks-a-successor-session.md),
 generalizing ADR-0101/0110): the source's `Context` is **never** mutated on any
 path, so this event is always a *report*, and `Session::replay`'s `Compacted`
 fold is a **no-op** in every case — including legacy `auto: true` records, whose
@@ -284,9 +284,9 @@ just relays (`pipe`, `serve`) needs no change at all. A `ToolResult` still
 addressed to the retired source is redirected to its successor by the
 supervisor rather than refused as a closed id; `Holly::successor_of` reads the
 same source → successor chain synchronously, and `Holly::predecessors_of`
-walks it backwards, nearest first ([ADR-0242](../../adr/0242-compaction-heals-walk-the-whole-chain.md)).
+walks it backwards, nearest first ([ADR-0242](../../adr/archive/0242-compaction-heals-walk-the-whole-chain.md)).
 
-**Sub-agents survive the fork** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)).
+**Sub-agents survive the fork** ([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)).
 While handling the successor's `Spawn`, before the source's `CloseSession` is
 dequeued, the supervisor moves the source's live direct children under the
 successor and announces each with `ParentChanged{session,parent}`, so the close
@@ -302,7 +302,7 @@ summarized with no verbatim tail, matching every pre-#397 record.
 `auto` and `mode` (`#[serde(default)]`, so every older record deserializes
 unchanged) name which path ran: `auto: false` + `mode: summary` is the manual
 `/compact` op; `auto: true` + `mode: summary` is auto-summarize on context
-overflow (#398, [ADR-0103](../../adr/0103-auto-summarize-on-context-overflow.md));
+overflow (#398, [ADR-0103](../../adr/archive/0103-auto-summarize-on-context-overflow.md));
 `auto: true` + `mode: prune` is the prune-only fallback, which has no LLM
 summary — `summary` then carries the placeholder-pruned transcript that seeds
 the successor. That last case is new wire surface: ADR-0121 had the prune stay

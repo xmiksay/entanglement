@@ -518,7 +518,7 @@ pub enum OutEvent {
     Done { session: SessionId, seq: u64 },
     /// Session compaction ran (#324, ADR-0082 → ADR-0101/0103/0205): this
     /// session was compacted into a **successor session**, and this event is
-    /// the announcement. Since [ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)
+    /// the announcement. Since [ADR-0205](../../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md)
     /// **every** compaction forks — the source session's `Context` is never
     /// mutated, on any path — so this is always a *report*, never a
     /// confirmation of mutation, and `Session::replay`'s fold is always a

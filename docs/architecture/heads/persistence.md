@@ -2,7 +2,7 @@
 
 > Part of the [heads & persistence module](../heads-and-persistence.md) of the [architecture overview](../../architecture.md).
 
-## 6b. Session persistence & resume — [ADR-0020](../../adr/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
+## 6b. Session persistence & resume — [ADR-0020](../../adr/archive/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 
 Sessions are event-sourced to disk, one JSONL file per **root** session under
 `<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl` (`session_store`).
@@ -30,7 +30,7 @@ assistant/tool messages and the model appears to forget the conversation.
   child to its parent's root file until the child's own `SessionStarted`
   arrives — logging it earlier would create a stray child root). Its `prompt`
   **is** captured, though (#421,
-  [ADR-0113](../../adr/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)):
+  [ADR-0113](../../adr/archive/0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md)):
   the tap caches it (`pending_spawn_prompts: HashMap<SessionId, String>`, keyed
   by child id) and, once that `SessionStarted` resolves `roots`, synthesizes an
   `InMsg::Prompt { session: child, .. }` record right after it — so replay
@@ -43,7 +43,7 @@ assistant/tool messages and the model appears to forget the conversation.
   replayable record of the whole session tree. A sub-agent's compaction
   successor starts under that sub-agent's parent, so it folds into the same
   root file like any sub-agent. **A session logs to the root it started under
-  for life** ([ADR-0234](../../adr/0234-live-sub-agents-survive-compaction.md)):
+  for life** ([ADR-0234](../../adr/archive/0234-live-sub-agents-survive-compaction.md)):
   when a parent's compaction moves a live child under the successor
   (`OutEvent::ParentChanged`), the child's records, the move included, keep
   going to the predecessor's file, and the tap appends a
@@ -51,7 +51,7 @@ assistant/tool messages and the model appears to forget the conversation.
   successor's root file, deferred until that root resolves and skipped when
   both are the same file. Moving the history instead would need the tap to
   re-read its sink, which `RecordSink` (append-only) cannot.
-- **The `<env>` date is pinned per session** ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §5,
+- **The `<env>` date is pinned per session** ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) §5,
   `env_date::EnvDatePins` on the shared `AdvertisingState`): the system-prompt
   resolver stamps the date a session first resolves and patches every later
   turn's `Date:` line back to it — even after midnight or a definitions reload
@@ -77,7 +77,7 @@ assistant/tool messages and the model appears to forget the conversation.
   sessions for the cwd); the TUI `/resume` modal restores the full visible
   transcript (`restore_from_records`) *and* reseeds engine context. **Resume
   cascades over the spawn sub-tree** (#415,
-  [ADR-0112](../../adr/0112-resume-cascades-over-the-spawn-subtree.md)): since a
+  [ADR-0112](../../adr/archive/0112-resume-cascades-over-the-spawn-subtree.md)): since a
   root file already carries every spawned child's interleaved records
   (previous bullet), the supervisor doesn't stop at re-materializing the
   requested id — it walks that session's replay-reconstructed `children` and
@@ -87,7 +87,7 @@ assistant/tool messages and the model appears to forget the conversation.
   parent resumed after a crash/hibernation can still reach and continue its
   sub-agents instead of them silently vanishing (touching an untouched child
   id would otherwise hit the lazy-`Prompt` path's known-child refusal,
-  [ADR-0168](../../adr/0168-lazy-prompt-refuses-a-known-hibernated-child.md)/#639,
+  [ADR-0168](../../adr/archive/0168-lazy-prompt-refuses-a-known-hibernated-child.md)/#639,
   rather than actually resuming it). Replay folds `ParentChanged`, so a moved
   child resumes under its successor parent, and the runtime's lifecycle loop
   registers each resumed sub-agent new to this process with the parent's
@@ -98,7 +98,7 @@ assistant/tool messages and the model appears to forget the conversation.
   file-backup reads follow pointers (backups are still *written* per file;
   a revert reads them across the tree through `SessionStore::tree_files`
   and takes the changes whose recorded `ancestry` names its target,
-  [ADR-0236](../../adr/0236-rewind-follows-adopted-sub-agents.md));
+  [ADR-0236](../../adr/archive/0236-rewind-follows-adopted-sub-agents.md));
   `skutter sessions` and `ReplayFrom` stay per file.
   Both listings carry a **first-prompt snippet** (#327): `list_sessions` captures the
   first `InMsg::Prompt` in the same pass that finds `SessionStarted` (no extra
@@ -107,7 +107,7 @@ assistant/tool messages and the model appears to forget the conversation.
   and the `/resume` rows render it beside the full session id. The in-memory
   `ListSessions`/`SessionList` supervisor query is unaffected (no capture-at-spawn).
 - **Mid-turn tails are resumable** (#271/#272,
-  [ADR-0061](../../adr/0061-parked-turn-state-batch-tool-resolution.md)). A log
+  [ADR-0061](../../adr/archive/0061-parked-turn-state-batch-tool-resolution.md)). A log
   ending after `ToolCall`/`ToolExec` with no matching `ToolOutput` replays into
   a **parked `TurnState`**: the completed assistant message commits, logged
   outputs fold, and the unanswered calls become `Session.turn.pending`. On
@@ -125,13 +125,13 @@ assistant/tool messages and the model appears to forget the conversation.
   `ToolRegistry` is process-lifetime, never logged; a re-offered
   `mcp__<server>__*` call connects its server lazily at dispatch time, like any
   first call
-  ([ADR-0201](../../adr/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md),
-  [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
+  ([ADR-0201](../../adr/archive/0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md),
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md),
   §"MCP client" in [gates & host tools](../gates/mcp.md)).
 - **Every compaction forks a successor — nothing is ever mutated in place**
-  (#324, [ADR-0082](../../adr/0082-single-shot-session-ops-and-persisted-compaction.md)
-  → [ADR-0101](../../adr/0101-compaction-forks-into-a-new-session-copy-on-write.md)
-  → [ADR-0205](../../adr/0205-every-compaction-forks-a-successor-session.md)).
+  (#324, [ADR-0082](../../adr/archive/0082-single-shot-session-ops-and-persisted-compaction.md)
+  → [ADR-0101](../../adr/archive/0101-compaction-forks-into-a-new-session-copy-on-write.md)
+  → [ADR-0205](../../adr/archive/0205-every-compaction-forks-a-successor-session.md)).
   All three paths — the `"compact"` op, auto-summarize on overflow, and the
   prune-only fallback — emit `OutEvent::Compacted{summary,kept,auto,mode}`, an
   ordinary seq-bearing content event, so they needed **zero** persistence-tap
@@ -146,7 +146,7 @@ assistant/tool messages and the model appears to forget the conversation.
   summary is refused outright (`StopReason::MaxTokens` → `Error`) so it never
   forks either.
   **Keep-tail** (#397,
-  [ADR-0102](../../adr/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):
+  [ADR-0102](../../adr/archive/0102-compact-keep-tail-verbatim-in-the-fork-prompt.md)):
   `args.kept: u64` (optional, default `0`) requests that the last `kept`
   messages ride into the successor **verbatim** instead of being paraphrased
   into the summary. `Context::safe_kept` clamps the request to the nearest safe
@@ -175,8 +175,8 @@ assistant/tool messages and the model appears to forget the conversation.
   pure relays and need no change: they forward both events and their client
   follows the same lineage.
 - **The automatic paths are not an exception any more** (#398,
-  [ADR-0103](../../adr/0103-auto-summarize-on-context-overflow.md), amended by
-  [ADR-0205](../../adr/0205-every-compaction-forks-a-successor-session.md)). A
+  [ADR-0103](../../adr/archive/0103-auto-summarize-on-context-overflow.md), amended by
+  [ADR-0205](../../adr/archive/0205-every-compaction-forks-a-successor-session.md)). A
   turn overflowing its context window used to mutate `Context` directly,
   because it had no head to fork into; the engine now forks for itself, so the
   overflow paths mark the same wire event `OutEvent::Compacted { auto: true,
@@ -185,7 +185,7 @@ assistant/tool messages and the model appears to forget the conversation.
   fallback, whose `summary` field carries the pruned transcript that seeds the
   successor rather than an LLM-authored summary (ADR-0121's silence retired).
 - **Pluggable append target — `RecordSink`** (#313,
-  [ADR-0086](../../adr/0086-recordsink-pluggable-persistence-append-target.md)).
+  [ADR-0086](../../adr/archive/0086-recordsink-pluggable-persistence-append-target.md)).
   The tap's *what to persist*
   (route each record to its root, tombstone lag gaps) is split from its *where to
   persist*: it appends every finished `LogRecord` through a
@@ -280,9 +280,9 @@ assistant/tool messages and the model appears to forget the conversation.
   history rather than the summary (a manual 0.6.0 compaction never rewrote,
   so it resumes exactly).
   A log naming a retired built-in *agent* (`build`/`explore`/`research`)
-  resumes too ([ADR-0214](../../adr/0214-retired-agent-logs-resume-as-general.md),
+  resumes too ([ADR-0214](../../adr/archive/0214-retired-agent-logs-resume-as-general.md),
   replacing ADR-0207 stage 6a's refusal; refined by
-  [ADR-0215](../../adr/0215-resume-fallback-per-session-and-read-only-narrowing.md)).
+  [ADR-0215](../../adr/archive/0215-resume-fallback-per-session-and-read-only-narrowing.md)).
   Each rebuilt session is judged on its last effective agent. One whose
   agent fell back resumes as the last agent the catalog still carries, else
   `general`. If it was read-only (`explore`/`research`), it is narrowed to
@@ -294,7 +294,7 @@ assistant/tool messages and the model appears to forget the conversation.
   spans the spawn sub-tree, ADR-0207 §6). The CLI's own `--mode`/config
   `mode:` must not undo it: a `SetMode` on the root cascades over the whole
   tree and would widen a forced child until a re-narrowing landed (#757,
-  [ADR-0216](../../adr/0216-resume-modes-ride-the-replay.md)). So
+  [ADR-0216](../../adr/archive/0216-resume-modes-ride-the-replay.md)). So
   `session_store::resume_with_mode` carries *every* mode in the replay when
   anything is forced — `research` inside a forced sub-tree, the configured
   mode everywhere else — and sends the ordinary cascading `SetMode` only when
@@ -308,14 +308,14 @@ assistant/tool messages and the model appears to forget the conversation.
   (`SessionStore::compacted_into`), naming the end of its chain to resume
   instead. `resume_with_mode` also resumes, parents first, every sub-agent
   the root's own hibernate put down (`session_store::revived_with`,
-  [ADR-0247](../../adr/0247-attended-sessions-wait-for-their-approver.md)),
+  [ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)),
   which core's cascade skips, so their parked cards come back on every
   resume path — the TUI, `run --resume`, the `serve` wake. The TUI resume modal and `skutter sessions` list only resumable
   roots (`session_store::resumable_roots`, from `SessionMeta::predecessor`),
   which also keeps `d` off a predecessor file the successor's resume still
   reads for moved sub-agents (ADR-0234); a refusal that still happens is a
   TUI status line
-  ([ADR-0243](../../adr/0243-running-script-reads-mode-and-overlay-epochs.md)).
+  ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)).
 - **Deletion + startup auto-prune** (Issue 4, 15175e0). Session logs can be
   deleted explicitly — `d`/`Delete` on the TUI sessions modal removes the
   highlighted session's `.jsonl` (a **live** session is refused with a status
@@ -326,9 +326,9 @@ assistant/tool messages and the model appears to forget the conversation.
   set), removing root files older by mtime than the retention window from
   **the current project's session dir only**. The window resolves
   `config.yml`'s `session_retention_days` > the embedded default `30` (the
-  env override is retired, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)); an
+  env override is retired, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)); an
   unreadable dir/entry is a warn-and-skip, never fatal. A root's per-write
-  file backups (`backups/<root_id>/`, [ADR-0212](../../adr/0212-undo-rewind-via-per-write-file-backups.md))
+  file backups (`backups/<root_id>/`, [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md))
   share its fate: `delete` removes them with the `.jsonl`, and `prune`
   removes every backup directory whose `.jsonl` is gone. `prune` is
   stat-only; a file moved sub-agents were adopted from stays fresh because

@@ -12,7 +12,7 @@ This module is split into the pages below, one per seam; each stays under the 40
 | [catalog](provider/catalog.md) | §5b — Provider/model catalog & advanced wire facts |
 | [thinking-and-selection](provider/thinking-and-selection.md) | §5b — Extended thinking, provider selection & multi-user |
 
-## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../adr/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../adr/0053-invert-core-provider-seam.md)
+## 5b. LLM I/O (`entanglement-provider`) — [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md), [ADR-0053](../adr/archive/0053-invert-core-provider-seam.md)
 
 Now in [§5b — The `Llm` trait, TLS & provider topology](provider/llm-trait.md#5b-llm-io-entanglement-provider--adr-0007-adr-0053).
 Continued in [§5b — Advertised surface, web search & per-endpoint resilience](provider/surface-and-resilience.md).

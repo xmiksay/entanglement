@@ -32,9 +32,9 @@
 //!   connection closes; a card already waiting keeps waiting, and a
 //!   reconnecting client finds it with `ListPending`/`ListQuestions`.
 //!
-//! [ADR-0048]: ../../docs/adr/0048-serve-head-local-trust-model.md
-//! [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
-//! [ADR-0247]: ../../docs/adr/0247-attended-sessions-wait-for-their-approver.md
+//! [ADR-0048]: ../../docs/adr/archive/0048-serve-head-local-trust-model.md
+//! [ADR-0107]: ../../docs/adr/archive/0107-ws-per-connection-approval-ownership.md
+//! [ADR-0247]: ../../docs/adr/archive/0247-attended-sessions-wait-for-their-approver.md
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -81,8 +81,8 @@ type ConnId = u64;
 /// still-parked approval doesn't deadlock behind a client that went away —
 /// robustness among cooperating clients (ADR-0048), not a security boundary.
 ///
-/// [ADR-0107]: ../../docs/adr/0107-ws-per-connection-approval-ownership.md
-/// [ADR-0069]: ../../docs/adr/0069-trusted-untrusted-wire-frame-split.md
+/// [ADR-0107]: ../../docs/adr/archive/0107-ws-per-connection-approval-ownership.md
+/// [ADR-0069]: ../../docs/adr/archive/0069-trusted-untrusted-wire-frame-split.md
 #[derive(Default)]
 struct SessionOwners {
     owners: Mutex<HashMap<SessionId, ConnId>>,

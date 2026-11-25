@@ -2,7 +2,7 @@
 
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
-- **System-prompt assembly (✅ #113, [ADR-0035](../../adr/0035-deterministic-system-prompt-assembly.md)):**
+- **System-prompt assembly (✅ #113, [ADR-0035](../../adr/archive/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
   is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
   ordered, optional parts — **shared preamble** (safety/tool-use/output invariants
@@ -13,7 +13,7 @@
   never model-guessed) + **tool conventions** (one static line,
   `system_prompt::TOOL_CONVENTIONS`: call the advertised tools directly, MCP
   through `mcp(server, tool, args)`, `rhai` for anything else — the skill
-  roster that used to sit here moved to `list_skills`, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) + **preloaded skill bodies** (frontmatter
+  roster that used to sit here moved to `list_skills`, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) + **preloaded skill bodies** (frontmatter
   `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load(root)`
   (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
   `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets `preamble + body (+ brief)` +
@@ -23,10 +23,10 @@
   `Agent.system_prompt` at load time, so session start / spawn
   both read the finished prompt and core stays a verbatim pass-through into
   `LlmRequest.system` — there is no more live `SetAgent` to re-read it on
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §9). `list_skills` reads the skill registry (✅ #114, below) and lists every
   discoverable skill regardless of session mode.
-  **Per-turn prompt override (✅ #310, [ADR-0078](../../adr/0078-per-turn-dynamic-system-prompt.md)):**
+  **Per-turn prompt override (✅ #310, [ADR-0078](../../adr/archive/0078-per-turn-dynamic-system-prompt.md)):**
   an optional `EngineConfig.system_prompt_resolver: Option<Arc<dyn Fn(&SessionId,
   &Agent) -> Option<String> + Send + Sync>>` (type alias
   `SystemPromptResolver`) is consulted fresh at every turn build in `run_round`
@@ -45,8 +45,8 @@
   resolution (`env_date::EnvDatePins`, forgotten on session end): a session
   keeps its start date for its whole life, even across midnight, so its system
   prompt stays byte-identical and provider-cache-safe; a new session gets
-  today's date ([ADR-0202](../../adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
-- **Skill discovery + registry (✅ #114, [ADR-0036](../../adr/0036-skill-discovery-and-registry.md)):**
+  today's date ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
+- **Skill discovery + registry (✅ #114, [ADR-0036](../../adr/archive/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
   (`references/*.md`, `scripts/*`). The **runtime**
@@ -63,35 +63,35 @@
   error in the native dirs, warned-and-skipped in the cross-vendor ones (which
   read only `name`+`description`, ignoring every other key — Claude's
   `disable-model-invocation` and `allowed-tools` included,
-  [ADR-0074](../../adr/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0229](../../adr/0229-every-skill-is-model-visible-user-only-removed.md)).
+  [ADR-0074](../../adr/archive/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
   Frontmatter: `name` + `description` (required) and
   `allowed_tools` (parsed-but-ignored with a one-time load warning — the
   skill-scoped mask it named is removed by
-  [ADR-0194](../../adr/0194-skills-are-additive-only.md); skills are
+  [ADR-0194](../../adr/archive/0194-skills-are-additive-only.md); skills are
   additive-only). The `tools:` key is retired
-  ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
+  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
   a native `SKILL.md` still carrying it is **skipped** with an error-level log
   naming the replacement (`lib.rhai` functions, or a script file run with
   `rhai` `path`) — never a registry-load abort, so one stale skill cannot brick
   startup; a foreign dir drops it like any unknown key. `user_only` is removed
-  ([ADR-0229](../../adr/0229-every-skill-is-model-visible-user-only-removed.md)): **every skill is model-visible** — listed, loadable,
+  ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)): **every skill is model-visible** — listed, loadable,
   its `lib.rhai` callable from any script; a native `SKILL.md` still carrying the
   key loads normally and warns once per sighting (`config::warn_once`: live
   reloads stay quiet, a removed-then-restored key warns again). A skill the model must not run is a permission-mode question (rules on
   the commands it performs), not a visibility one. Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
   yields one `name: description` row per skill, which `list_skills`
-  returns on request ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) — no longer in the system prompt); bodies are never preloaded. **Selection stays
+  returns on request ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) — no longer in the system prompt); bodies are never preloaded. **Selection stays
   the model's own reasoning** — no keyword router or embedding gate; the model
   matches its task against the `description` in its forward pass, so description
   quality is the contract. Bodies + payload (`references/`/`scripts/`) are tier-2,
   loaded on demand (`load_skill`, ✅ #115, below).
-- **Tier-2 skill loading (✅ #115, [ADR-0037](../../adr/0037-load-skill-tool-deterministic-resolution.md)):**
+- **Tier-2 skill loading (✅ #115, [ADR-0037](../../adr/archive/0037-load-skill-tool-deterministic-resolution.md)):**
   one generic `load_skill { skill_name }` tool (not one-per-skill) resolves a
   skill's body on demand. It is a *real host tool* in the `ToolRegistry`
   (`entanglement_runtime::skills::load_skill::LoadSkillTool`, holding a
   shared `Arc<SkillRegistry>`), but since
-  [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
   it is one of the six discovery tools: `Capability::Control`, ungraded, and
   non-maskable — it only reads the skill catalog the runtime already
   discovered, so it runs in every mode and an overlay entry or mode rule
@@ -109,11 +109,11 @@
   author's explicit escape hatch. The result is an ordinary `tool_result` carrying
   `skill_id` + `skill_dir`, the substituted body, then — when the skill ships
   one — its `lib.rhai` public function signatures, each followed by its
-  `///`/`/** */` doc comment ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
+  `///`/`/** */` doc comment ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
   then `available_refs` (supporting files listed as absolute paths, **not**
   loaded; a `.rhai` file among them runs via `rhai` `path`) — never a spoofed
   user message, so the authorship trail stays honest.
-- **Skill libraries — `lib.rhai` (✅ #819, [ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)):**
+- **Skill libraries — `lib.rhai` (✅ #819, [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)):**
   a `lib.rhai` beside `SKILL.md` — any layer, foreign skill dirs included
   (`root_dir` is pre-resolved by both parsers) — compiles once at discovery
   (`skills::lib_rhai`) into an encapsulated static module every `rhai` run
@@ -132,18 +132,18 @@
   like any tool on that path (an `Ask` grade shows the launch card: Run all
   · Ask per command · Reject), or run unasked when the user lists the
   skill's folder in `config.yml` `rhai.trusted`
-  ([ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
+  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
   Writing a skill's `SKILL.md`/`lib.rhai` (any user or project skill dir)
   always asks, in every mode — the trusted-code write floor
   ([gates & host tools](../gates-and-host-tools.md)).
-- **Per-session skills (✅ [ADR-0249](../../adr/0249-in-process-mcp-servers-and-per-session-skills.md)):**
+- **Per-session skills (✅ [ADR-0249](../../adr/archive/0249-in-process-mcp-servers-and-per-session-skills.md)):**
   an embedder's `SkillResolver` picks each session's `SkillRegistry`
   (`skills::SessionSkills`: the live registry plus the resolver) for
   `list_skills`, `load_skill` (`LoadSkillTool::with_resolver`, resolved in
   `run_for_session`), a script's `skill::` namespaces and the `SkillActive`
   bookkeeping; `None` is the live registry. `SkillMeta::new`/`with_lib` build
   a skill in code, its lib compiled under the discovery rules.
-- **Importable modules (✅ #835, [ADR-0248](../../adr/0248-importable-rhai-library-modules.md)):**
+- **Importable modules (✅ #835, [ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md)):**
   skill-independent `import "<name>" as m;` libraries. They are layered
   like definitions: built-in < `${config_dir}/entanglement/rhai/modules/` <
   `<root>/.entanglement/rhai/modules/`, a later layer winning on a name at
@@ -155,9 +155,9 @@
   - Writing a `*.rhai` in a module dir always asks: the same write floor.
   - Detail: [script surface](../gates/script-surface.md).
 - **Skills are additive-only — the `allowed_tools` mask is removed (✅ ADR-0194,
-  [0194](../../adr/0194-skills-are-additive-only.md), superseding
-  [ADR-0106](../../adr/0106-skill-scoped-allowed-tools-enforcement.md) and retiring
-  [ADR-0129](../../adr/0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
+  [0194](../../adr/archive/0194-skills-are-additive-only.md), superseding
+  [ADR-0106](../../adr/archive/0106-skill-scoped-allowed-tools-enforcement.md) and retiring
+  [ADR-0129](../../adr/archive/0129-thread-the-skill-mask-into-rhai-binding-resolution.md)):**
   a skill adds capabilities (its body, its `lib.rhai` functions, its script
   files) and **never restricts** the session's tool set. The session-keyed
   `ActiveSkill` map, `permission::skill_masked`, the `load_skill`
@@ -176,13 +176,13 @@
   The foreign (cross-vendor) layer already drops it, exactly as it drops
   Claude-style `allowed-tools`. The honest cost, recorded in the ADR: skill
   authors lose their only self-imposed guardrail — and, since
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   retired the per-agent `tools:` mask this bullet originally pointed an
   author at too, **the only standing control left is the session's
   permission mode**: an author wanting a restricted session picks a
   stricter mode (or tunes one via `config.yml` `modes:`), never an agent
   definition or skill frontmatter — neither carries authority any more.
-- **Skill preload vs access — two independent mechanisms (✅ #117, [ADR-0043](../../adr/0043-skill-preload-vs-access-independent-mechanisms.md)):** an agent
+- **Skill preload vs access — two independent mechanisms (✅ #117, [ADR-0043](../../adr/archive/0043-skill-preload-vs-access-independent-mechanisms.md)):** an agent
   definition controls skills along two orthogonal axes, deliberately *not* merged
   (merging loses expressiveness). **Preload** is `skills: [name, …]` frontmatter:
   the listed skills' full bodies are injected into that agent's assembled system
@@ -193,14 +193,14 @@
   `load_skill`, an unknown name is a loud load-time error.
   **Access** is not an agent field: `load_skill` is a non-maskable discovery
   tool (`Capability::Control`, ungraded since
-  [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
   so no mode or overlay withdraws it; what a loaded skill's scripts and
   commands may *do* is graded call by call like any other tool.
   `skills: [x]` therefore only preloads — a subagent may still discover and
   load any other skill exactly like its parent; to keep a skill from running,
   grade its effects in the mode (a `prompt:`/`deny:` rule on what it does) or
   remove it from the discovered skill dirs.
-- **User slash commands — prompt templates (✅ #733, [ADR-0221](../../adr/0221-user-slash-commands-are-head-side-prompt-templates.md)):**
+- **User slash commands — prompt templates (✅ #733, [ADR-0221](../../adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)):**
   `entanglement_runtime::slash_commands` discovers every `*.md` under the
   layered `commands` dirs through the same `layers::candidate_dirs` as skills —
   user `~/.claude/commands`, `${config_dir}/opencode/command` and `…/commands`
@@ -233,12 +233,12 @@
   description (or one command's provenance and raw template).
 - **Where dispatch runs (✅ #59):** the `Agent` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
-  **runtime** concern ([ADR-0003](../../adr/0003-agent-and-permission-profiles.md) /
-  [ADR-0010](../../adr/0010-single-head-crate-and-bash-opt-in.md), authority
+  **runtime** concern ([ADR-0003](../../adr/archive/0003-agent-and-permission-profiles.md) /
+  [ADR-0010](../../adr/archive/0010-single-head-crate-and-bash-opt-in.md), authority
   itself moved to the mode by
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)).
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)).
   Core emits `ToolExec` for *every* host tool — the whole batch up front
-  since #270 ([ADR-0061](../../adr/0061-parked-turn-state-batch-tool-resolution.md))
+  since #270 ([ADR-0061](../../adr/archive/0061-parked-turn-state-batch-tool-resolution.md))
   — and parks the turn as explicit `TurnState` until each `ToolResult` lands
   (§8); it carries the opaque `mode: String` and never evaluates it, exactly
   as it never read `PermissionProfile` before. The runtime's
@@ -248,8 +248,8 @@
   `ToolRequest` prompt and awaits `Approve`/`Reject`/`Stop`, so every head
   stays a thin protocol adapter (it just sends the same frames; the runtime,
   not core, acts on them).
-- **Authoritative gating, fail-closed (✅ #156, [ADR-0070](../../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md),
-  carried into [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+- **Authoritative gating, fail-closed (✅ #156, [ADR-0070](../../adr/archive/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md),
+  carried into [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   per `ModeResolver`'s own doc comment):** the pre-ADR-0207 profile map was
   folded *only* from the **lossy** `SessionStarted`/`AgentChanged` broadcast,
   with a fail-*open* default — an unseen session resolved to `Allow` and

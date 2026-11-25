@@ -11,8 +11,8 @@ sessions are cheap tasks keyed by `SessionId`
 on first message per the unknown-session policy (§3). Spinning up a whole
 engine per user buys you nothing the session key doesn't already give you, and
 it multiplies every piece of shared state (the provider connection pool,
-[ADR-0050](../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md); the
-definitions watcher, [ADR-0084](../adr/0084-runtime-live-reload-and-managed-file-locking.md))
+[ADR-0050](../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md); the
+definitions watcher, [ADR-0084](../adr/archive/0084-runtime-live-reload-and-managed-file-locking.md))
 by tenant count for no isolation benefit — `SessionId` is a plain string
 (`pub struct SessionId(pub String)`), so the isolation you actually need is a
 **naming convention**, not a process boundary.
@@ -30,12 +30,12 @@ fn tenant_of(session: &SessionId) -> &str {
 Two kinds of session are minted by the engine, not by your head: a sub-agent
 child (the runtime's `agent` tool) and a **compaction successor** — every
 compaction forks one (`predecessor: Some(source)`,
-[ADR-0205](../adr/0205-every-compaction-forks-a-successor-session.md)), a root
+[ADR-0205](../adr/archive/0205-every-compaction-forks-a-successor-session.md)), a root
 when its source was one and a child of the source's parent when the source was
-a sub-agent ([ADR-0234](../adr/0234-live-sub-agents-survive-compaction.md)). Both go
+a sub-agent ([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)). Both go
 through `EngineConfig::id_gen` with an `IdContext` naming their lineage, and
 the default `DefaultIdGen` copies the parent's — else the predecessor's —
-prefix up to and including the first `:` ([ADR-0211](../adr/0211-idgen-context-and-tenant-prefix-inheritance.md)):
+prefix up to and including the first `:` ([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)):
 the child or successor of `acme:s-6a70…` is `acme:s-6a71…`. So `tenant_of`
 holds for the whole lineage **by construction, with the default generator**.
 A root with no `:` mints unprefixed descendants, as before.
@@ -75,7 +75,7 @@ loop {
 
 `OutEvent::session()` returns `None` for the supervisor-global query replies
 (`SessionList`, `QuestionList`, `OperationList`, `PendingList`, `McpList` —
-[ADR-0072](../adr/0072-protocol-warts-settled-before-serve.md)), so the filter
+[ADR-0072](../adr/archive/0072-protocol-warts-settled-before-serve.md)), so the filter
 above passes none of them. Several of these replies **do carry tenant data**,
 and an unscoped query covers every session in the process:
 
@@ -84,7 +84,7 @@ and an unscoped query covers every session in the process:
 - `OperationList.operations`: every background job's command line.
 - `PendingList.approvals`: every parked tool call's full `input`, i.e. plan
   bodies, file contents and commands
-  ([ADR-0217](../adr/0217-list-pending-query-for-parked-approvals.md)).
+  ([ADR-0217](../adr/archive/0217-list-pending-query-for-parked-approvals.md)).
 
 A multi-tenant head that forwards these queries over `send_from_wire` **must**:
 
@@ -99,7 +99,7 @@ A multi-tenant head that forwards these queries over `send_from_wire` **must**:
 
 `Holly` exposes two inbound entry points, and picking the wrong one is a
 privilege-escalation bug, not a style choice
-([ADR-0069](../adr/0069-trusted-untrusted-wire-frame-split.md)):
+([ADR-0069](../adr/archive/0069-trusted-untrusted-wire-frame-split.md)):
 
 - **`Holly::send`** — the privileged, in-process path. Use it for anything
   *your embedder itself* decided to send: a `Prompt` you constructed from a

@@ -3,7 +3,7 @@
 > Part of the [wire protocol module](../protocol.md) of the [architecture overview](../../architecture.md).
 
 **Live generation-parameter changes — `InMsg::SetGeneration`** (#374,
-[ADR-0094](../../adr/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
+[ADR-0094](../../adr/archive/0094-reasoning-effort-and-per-profile-generation-persistence.md)).
 `SetGeneration{session,overrides:GenerationParams}` merges a **partial**
 `GenerationParams` (temperature / max-output / thinking-budget / the new
 `reasoning_effort`) onto the session's current one via
@@ -18,7 +18,7 @@ alone to confirm the write landed. The merged result is also recorded into
 generation-parameter analogue of `Session.profile_models`, #323/ADR-0081), so a
 later session spawned under that same profile re-applies it at start —
 `SetAgent` is gone
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 §9), so session start is the only re-application locus left. Deferred
 (stashed) while a turn is live, like `SetModel` (unlike `SetMode`, which
 applies immediately, #560). See the engine doc
@@ -26,7 +26,7 @@ for the session-start overlay precedence and the runtime doc for the
 per-profile persisted store.
 
 **Settable session display metadata — `InMsg::SetSessionMeta`**
-([ADR-0151](../../adr/0151-settable-session-metadata.md)).
+([ADR-0151](../../adr/archive/0151-settable-session-metadata.md)).
 `SetSessionMeta{session,name?,action?,if_unset=false}` merges a
 human-readable display `name` (a session title, e.g. derived from the first
 prompt) and/or the current `action` ("what the agent is doing now") onto
@@ -60,10 +60,10 @@ so an already-named resumed session skips the aux call on its next prompt too
 (see [heads & persistence §6d](../heads/keys-and-aux-models.md#6d-per-purpose-auxiliary-models--auto-session-titles--adr-0154adr-0183-aux_llm--configaux_models--session_title--narrate)).
 
 **Live tool overlay — `InMsg::SetToolOverlay`** (#539,
-[ADR-0149](../../adr/0149-per-session-tool-overlay.md); live bash enablement
-grades folded in, #611, [ADR-0163](../../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md)
+[ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md); live bash enablement
+grades folded in, #611, [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md)
 — its registration half retired by
-[ADR-0195](../../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)).
+[ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)).
 `SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}`
 **replaces** the session's live tool overlay: `*`/`?` patterns (unchanged
 ADR-0148 glob semantics) that override the session's own **permission mode**
@@ -79,7 +79,7 @@ always emits `OutEvent::ToolOverlayChanged` with the full effective list —
 which is also what persistence logs and `Session::replay` folds back (by
 overwrite), so a resumed session keeps its overlay. Session-scoped, but now
 **mode-scoped too**
-([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
 §8): it is dropped wholesale on any live `SetMode` — an entry enabled under
 one mode carries no meaning in another — where it used to simply survive
 `SetAgent` unconditionally. `allow: false` (default) grades matching calls
@@ -107,7 +107,7 @@ the reply, and the TUI refuses to send one (#843,
 Trusted-only for an **enable** entry
 (wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
 `deny: true`, including the empty list) is wire-allowed instead (#634,
-[ADR-0177](../../adr/0177-wire-allowed-deny-only-tool-overlay.md) amending this
+[ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md) amending this
 ADR) — it can only withdraw tools from dispatch, so a `serve`/`pipe` client
 can self-restrict a session without an in-process head, though it still
 cannot grant anything. The TUI drives the full surface via
@@ -115,7 +115,7 @@ cannot grant anything. The TUI drives the full surface via
 dialog — the overlay as a diff against the mode's own grade) and the `/mcp`
 panel's `d` key, which denies a server's `mcp__<name>__*` tools for the
 session: with every registered server on by default
-([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
+([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
 that per-session opt-out is the user control left (there is no enable key).
 The overlay never touches the advertised array (ADR-0226 pins it per
 session); it is still stash-deferred while a turn is live, like `SetModel`,

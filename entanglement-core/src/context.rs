@@ -223,7 +223,7 @@ impl Context {
     /// turn rather than shipping an over-window request.
     ///
     /// The engine never calls this on a **live** session's history
-    /// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)):
+    /// ([ADR-0205](../../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md)):
     /// the overflow guard prunes a *clone* and seeds a successor session with
     /// the result, so no session's history is ever rewritten behind its own
     /// append-only log. ADR-0121's silent in-place prune — and the live/replay

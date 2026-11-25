@@ -2,7 +2,7 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-## 10. MCP client — external tool servers — [ADR-0067](../../adr/0067-mcp-client-as-runtime-tool-provider.md) (#198)
+## 10. MCP client — external tool servers — [ADR-0067](../../adr/archive/0067-mcp-client-as-runtime-tool-provider.md) (#198)
 
 Attach any external [MCP](https://modelcontextprotocol.io) tool server as a
 **runtime-side tool provider**, with **no core change**. Since the `Tool` trait +
@@ -12,7 +12,7 @@ client (`entanglement-runtime::mcp`) connects each server on first use,
 discovers its tools, and registers them into the same registry — so they ride
 the `ToolExec`/`ToolResult` round-trip (execution) unchanged, graded by the
 same permission modes as `read`/`bash`. Their schemas are **never advertised**
-([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the model lists servers with `list_mcp`, reads one server's catalog with
+([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the model lists servers with `list_mcp`, reads one server's catalog with
 `mcp_tools`, and calls through the `mcp(server, tool, args)` envelope.
 
 - **Transport (`mcp::client::McpClient`):** an enum over two concrete transports,
@@ -31,7 +31,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   an id the client has in flight. No client-side keepalive ping is sent.
   stdio keeps a flat **60 s** per-request timeout so a hung subprocess can't
   park a turn; HTTP's per-request bound is now the shared endpoint pool's own
-  ([config & live](mcp-config-and-live.md), [ADR-0157](../../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)).
+  ([config & live](mcp-config-and-live.md), [ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)).
   - **stdio (`mcp::stdio::StdioClient`, #198):** one JSON-RPC 2.0 session over the
     spawned subprocess's stdio, newline-delimited frames. A background reader task
     demultiplexes responses to callers by JSON-RPC `id`; notifications are dropped,
@@ -41,7 +41,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     (`kill_on_drop`); keeping the registered tools alive keeps the server alive.
     The child env is the inherited environment **minus the provider API-key
     vars** (`catalog.key_envs()`, the same #164 scrub `bash`/`call` apply —
-    #472, [ADR-0124](../../adr/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md));
+    #472, [ADR-0124](../../adr/archive/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md));
     an explicit per-server `env:` entry naming a key still wins, since writing
     it into the server's own config block is deliberate consent.
     Lives in the **lean library** (tokio process + `serde_json` only).
@@ -57,17 +57,17 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     `headers` (e.g. `Authorization: Bearer …`) authenticate every request, with
     `${VAR}` expanded from the environment so a token stays out of the config file;
     the flip side of that expansion is a documented, accepted leak surface
-    (§ADR-0080/[ADR-0128](../../adr/0128-mcp-http-var-header-expansion-leak-surface.md)):
+    (§ADR-0080/[ADR-0128](../../adr/archive/0128-mcp-http-var-header-expansion-leak-surface.md)):
     `expand_env` resolves `${VAR}` against the engine's whole process
     environment with no allowlist, so a header naming a provider secret sends
     that secret's live value to the configured server — consent, not a bug,
     since the config file is trusted and enabling a server is consent
-    ([ADR-0047](../../adr/0047-local-trust-boundary.md)), same as the stdio
+    ([ADR-0047](../../adr/archive/0047-local-trust-boundary.md)), same as the stdio
     transport's `env:` block. Any future logging of resolved request headers
     must redact expanded values; none exists today. An `Mcp-Session-Id`
     handed back on `initialize` is echoed on every later request
     (and the negotiated `MCP-Protocol-Version`). Since
-    [ADR-0153](../../adr/0153-mcp-server-oauth.md) the transport itself lives in
+    [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md) the transport itself lives in
     **`entanglement-provider::mcp`** (as `McpHttpClient`) and is reached through
     core's re-export, the same path `ProviderMcpServer` takes — mechanism in the leaf
     crate, policy (config, registry, permissions, the token file, the browser
@@ -78,7 +78,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     historical name, still **public** so an embedder can build a per-tenant client
     with a per-user token and register its tools without the YAML path.
     Every request rides the **shared per-endpoint pool** (✅ #559,
-    [ADR-0157](../../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)) —
+    [ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)) —
     `connect`/`connect_authenticated` take the caller's `entanglement_provider::
     HttpClient` (re-exported from core alongside `McpHttpClient` so the
     `mcp-http`-only lean build still names no direct provider dependency) and
@@ -92,7 +92,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     provider key is resolved from `AvailableServer.key_env` ([config & live](mcp-config-and-live.md)) at the
     lazy connect; a live `/mcp add` or an OAuth reconnect passes
     `api_key: None` (still pooled, just unkeyed).
-  - **OAuth (✅ [ADR-0153](../../adr/0153-mcp-server-oauth.md)):** a server entry may
+  - **OAuth (✅ [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md)):** a server entry may
     carry an optional `oauth:` block. Present — *even empty* — it switches that
     server from static-header auth to a browser-obtained bearer token, since most
     remote MCP servers are OAuth-protected and issue no pre-registered
@@ -127,7 +127,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     server that issues static bearer tokens has no such endpoints, so the flow
     can never complete no matter what the `oauth:` block contains; `connect`'s
     error says so and points at static `headers:` + the managed `.env` instead
-    (#561). **Device-code flow (✅ [ADR-0182](../../adr/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md),
+    (#561). **Device-code flow (✅ [ADR-0182](../../adr/archive/0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md),
     #631):** `/mcp connect <name> --device-code` runs RFC 8628 instead — no
     browser, no loopback listener. `DeviceFlow` shares discovery/DCR with the
     browser flow (registration now declares an explicit `grant_types`, e.g.
@@ -142,7 +142,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     the whole load→refresh→save section instead of just the write, so two
     `skutter` instances can no longer both redeem the same rotating refresh
     token — a losing racer picks up the winner's already-refreshed token instead
-    of failing. **Web-redirect flow (✅ [ADR-0187](../../adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md),
+    of failing. **Web-redirect flow (✅ [ADR-0187](../../adr/archive/0187-mcp-oauth-web-redirect-flow-for-embedders.md),
     #684):** a server-side web embedder can't use either in-tree flow — the
     loopback listener is CLI-shaped and device-code trades UX for it — so
     `provider::oauth::web::WebFlow` prepares the same authorization-code +
@@ -159,7 +159,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     `StoredAuth` the embedder saves into its per-user `UserTokenStore`
     (ADR-0184). The runtime/TUI never drive it; core deliberately does not
     re-export it (embedder-facing, like `user_store`).
-- **Session-keyed per-user scopes (✅ [ADR-0188](../../adr/0188-session-keyed-per-user-mcp-scopes.md),
+- **Session-keyed per-user scopes (✅ [ADR-0188](../../adr/archive/0188-session-keyed-per-user-mcp-scopes.md),
   #684):** `mcp::scoped::McpScopes` gives a multi-user embedder per-user MCP
   server *sets* and credentials with no user identity in the runtime
   (ADR-0181): an embedder-supplied `McpScopeResolver` maps a `SessionId` to an
@@ -170,7 +170,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   `mcp__*` namespace is entirely scope-owned — `list_mcp`/`mcp_tools` resolve
   through the scope (`McpScopes::rows`, `overlay_registry_for_call`; a scoped
   session never sees a global server and never reads the shared last-seen
-  cache, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) and global MCP tools are stripped from every dispatch snapshot
+  cache, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) and global MCP tools are stripped from every dispatch snapshot
   (`overlay_registry_for_call`, applied in the executor's detached task before
   `dispatch`; a script binding resolves through the same call, its wait on
   a lazy connect bounded by the script's budget, #831) —
@@ -207,11 +207,11 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   through rhai's `http()` binding or `web_fetch` instead. `isError: true` sets
   `ToolRun::is_error`, so the call
   reaches `OutEvent::ToolOutput`/hooks with the structured `is_error` flag
-  ([ADR-0176](../../adr/0176-structured-tool-result-is-error-and-duration-fields.md));
+  ([ADR-0176](../../adr/archive/0176-structured-tool-result-is-error-and-duration-fields.md));
   the `MCP tool reported an error:` text prefix stays, since no provider wire
   carries `is_error` to the model.
   Registered (dispatch) name **`mcp__<server>__<tool>`** — never advertised
-  ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) —
+  ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) —
   with every character outside `[A-Za-z0-9_-]` mapped to `_` by the one
   shared rule (`mcp_tool_name`) that both core's `mcp` unwrap and the
   runtime's registration use, so `my.docs` registers as `mcp__my_docs__…`.
@@ -229,7 +229,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   later is skipped with a warning).
   Governed by the same session permission mode as any host tool — there is
   no more agent tool mask to opt an MCP tool into or out of
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   retired the `tools:`/`disallowed_tools:` wildcard pattern this row used to
   describe, ADR-0148 with it); a mode rule names one MCP tool exactly
   (`mcp__<server>__<tool>`, optionally scoped) or uses the `*` wildcard —

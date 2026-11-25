@@ -25,14 +25,14 @@ Intentional deferrals and docs-drift findings live as GitHub issues, one each
 ## Workspace
 
 Three crates, dependency direction `provider (leaf) ← core ← runtime`
-([ADR-0053](../docs/adr/0053-invert-core-provider-seam.md)); layering detail in
+([ADR-0053](../docs/adr/archive/0053-invert-core-provider-seam.md)); layering detail in
 [layers & ABI](../docs/architecture/layers-and-abi.md).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
-| `entanglement-runtime` | head crate (binary `skutter`): `Tool`/`ToolRegistry`, host tools, permission dispatch, `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config`; also a lean embedder library. Features `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch`, default `tui`+`serve`+`mcp-http`+`rhai`+`web-fetch` ([ADR-0025](../docs/adr/0025-runtime-cargo-feature-gates.md)). [heads & persistence](../docs/architecture/heads-and-persistence.md), [gates & host tools](../docs/architecture/gates-and-host-tools.md) | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | head crate (binary `skutter`): `Tool`/`ToolRegistry`, host tools, permission dispatch, `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config`; also a lean embedder library. Features `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch`, default `tui`+`serve`+`mcp-http`+`rhai`+`web-fetch` ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md)). [heads & persistence](../docs/architecture/heads-and-persistence.md), [gates & host tools](../docs/architecture/gates-and-host-tools.md) | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
 
 ## Commands — drive through `make`
 
@@ -71,7 +71,7 @@ dev-profile tuning lives in the workspace `../Cargo.toml`.
 Set `ENTANGLEMENT_PROVIDER`, or let it auto-detect by key (z.ai first). No key
 → the TUI's first-run dialog, every other head a hint + exit 2; `EchoLlm` only
 via `ENTANGLEMENT_PROVIDER=echo`
-([ADR-0222](../docs/adr/0222-no-silent-echo-first-run-onboarding-and-init.md)).
+([ADR-0222](../docs/adr/archive/0222-no-silent-echo-first-run-onboarding-and-init.md)).
 
 | `ENTANGLEMENT_PROVIDER` | wire | key env | model env (default) | base env |
 | --- | --- | --- | --- | --- |
@@ -87,19 +87,19 @@ The table is **catalog data** (`entanglement-provider/src/defaults.yml`
 deep-merged with `${config_dir}/entanglement/providers.yml`; precedence env >
 user YAML > embedded): a `wire:` tag adds any OpenAI-compatible endpoint, an
 `oauth:` block authenticates one
-([ADR-0189](../docs/adr/0189-oauth-for-llm-provider-endpoints.md)), and the
+([ADR-0189](../docs/adr/archive/0189-oauth-for-llm-provider-endpoints.md)), and the
 per-model wire-fact knobs are catalog-only
-([ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md)) — see
+([ADR-0213](../docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — see
 [provider §advanced catalog](../docs/architecture/provider/catalog.md#advanced-catalog-wire-facts).
 Resilience (pool, retry, RPM/concurrency caps, AIMD pacing, 429 park,
 per-model caps, cross-process shared state) is **per endpoint**:
 [provider](../docs/architecture/provider.md),
-[ADR-0050](../docs/adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0144](../docs/adr/0144-file-backed-shared-endpoint-state-across-instances.md).
+[ADR-0050](../docs/adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0144](../docs/adr/archive/0144-file-backed-shared-endpoint-state-across-instances.md).
 
 ### Env vars — the one-place index
 
 Each is documented inline at the feature that reads it.
-[ADR-0213](../docs/adr/0213-prune-env-vars-and-catalog-knobs.md) pruned the
+[ADR-0213](../docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md) pruned the
 list; a retired var still set prints one warning naming its replacement
 (`config::retired`).
 
@@ -152,53 +152,53 @@ doc, never here**:
 - **Tool execution is a protocol round-trip, parked as data** — a `ToolExec`
   batch parks the turn as serde `TurnState`; results (structured
   `is_error`/`duration_ms`/`exit_code`/`envelope`) resolve in any order
-  ([engine](../docs/architecture/engine.md), [ADR-0061](../docs/adr/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0176](../docs/adr/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/0186-exit-code-joins-the-structured-tool-result-side-channel.md)).
+  ([engine](../docs/architecture/engine.md), [ADR-0061](../docs/adr/archive/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0176](../docs/adr/archive/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/archive/0186-exit-code-joins-the-structured-tool-result-side-channel.md)).
 - **One advertised surface** — the compiled-in `KERNEL`, snapshotted at a
   session's first resolution, identical on every wire, never changed
   mid-session (any change busts the prompt cache); no mode, no knob
-  ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0202](../docs/adr/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
+  ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0202](../docs/adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
 - **Authority is the session's permission mode, not the agent** —
   `research`/`plan`/`build`/`auto` (`auto` = allow all but its deny/prompt lists),
   graded at the runtime's dispatch gate (a rule naming the tool outranks a
   class rule; a `*` rule meets a named one by length, a class one by
   strictness; longest within a kind; a rule naming a non-maskable tool never
   matches; `agent`/`agent_send` scope on their target); there is no agent tool mask
-  ([agents & permissions §3](../docs/architecture/agents/modes.md), [ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)/[ADR-0235](../docs/adr/0235-scoped-spawn-rules-grade-the-target.md)).
+  ([agents & permissions §3](../docs/architecture/agents/modes.md), [ADR-0207](../docs/adr/archive/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/archive/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/archive/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)/[ADR-0235](../docs/adr/archive/0235-scoped-spawn-rules-grade-the-target.md)).
 - **The tool overlay is the user's own trusted voice** — per-session,
   mode-scoped enable/deny entries over the mode's grade
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/0177-wire-allowed-deny-only-tool-overlay.md)).
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/archive/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/archive/0177-wire-allowed-deny-only-tool-overlay.md)).
 - **Trusted/untrusted frame split** — `Holly::send` is privileged;
   `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`); every
-  refused variant + why: [protocol §2 trusted/untrusted split](../docs/architecture/protocol/sessions.md) ([ADR-0069](../docs/adr/0069-trusted-untrusted-wire-frame-split.md)).
+  refused variant + why: [protocol §2 trusted/untrusted split](../docs/architecture/protocol/sessions.md) ([ADR-0069](../docs/adr/archive/0069-trusted-untrusted-wire-frame-split.md)).
 - **Session-multiplexed** — every frame carries `SessionId`; `(session, seq)`
   is unique per authored event and delivered in seq order; one task per id;
   `List*`/`McpList` are correlation-id queries
-  ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/0068-shared-per-session-seq-counter.md)/[ADR-0239](../docs/adr/0239-retired-session-keeps-a-seq-high-water.md)/[ADR-0244](../docs/adr/0244-seq-order-leases-and-one-task-per-id.md)).
+  ([protocol](../docs/architecture/protocol.md), [ADR-0068](../docs/adr/archive/0068-shared-per-session-seq-counter.md)/[ADR-0239](../docs/adr/archive/0239-retired-session-keeps-a-seq-high-water.md)/[ADR-0244](../docs/adr/archive/0244-seq-order-leases-and-one-task-per-id.md)).
 - **Model/generation switching is live; aux models resolve per purpose**
-  ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0063](../docs/adr/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/0154-per-purpose-auxiliary-models.md)).
+  ([engine](../docs/architecture/engine.md), [heads §6d](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0063](../docs/adr/archive/0063-realtime-model-provider-switch.md)/[ADR-0154](../docs/adr/archive/0154-per-purpose-auxiliary-models.md)).
 - **Compaction always forks a successor session** — no path rewrites a live
   context, so every log replays exactly; the successor keeps the source's
   place in the spawn tree, its live sub-agents and its background work (a
   background script then grades and grants as the successor); `/fork` is
   the non-compacting copy; a lineage is linear — a compacted-away session is
   not resumable
-  ([ADR-0243](../docs/adr/0243-running-script-reads-mode-and-overlay-epochs.md))
-  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/0234-live-sub-agents-survive-compaction.md)/[ADR-0241](../docs/adr/0241-background-script-follows-compaction.md)).
+  ([ADR-0243](../docs/adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md))
+  ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/archive/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/archive/0234-live-sub-agents-survive-compaction.md)/[ADR-0241](../docs/adr/archive/0241-background-script-follows-compaction.md)).
 - **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
   idle TTL, unknown-session policy, tenant-prefixed ids; a resumed sub-agent
   is clamped to its nearest ancestor's mode and folds its predecessor's
   teardown tail
-  ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0077](../docs/adr/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/0211-idgen-context-and-tenant-prefix-inheritance.md)/[ADR-0246](../docs/adr/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+  ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0077](../docs/adr/archive/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/archive/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)/[ADR-0246](../docs/adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 - **A session has a working directory** — relative path args are rewritten
   onto it *before* grading; the model learns it from the per-round notice
-  ([gates §8 session working directory](../docs/architecture/gates/host-tools.md), [engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/0224-session-working-directory.md)).
+  ([gates §8 session working directory](../docs/architecture/gates/host-tools.md), [engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/archive/0224-session-working-directory.md)).
 - **Filesystem containment** — symlink-safe root containment, approval-gated
   escape hatch, optional bubblewrap sandbox as a mode fact
-  ([gates §8](../docs/architecture/gates/host-tools.md), [ADR-0054](../docs/adr/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md)).
+  ([gates §8](../docs/architecture/gates/host-tools.md), [ADR-0054](../docs/adr/archive/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/archive/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/archive/0104-bubblewrap-sandbox-for-bash-call.md)).
 - **Undo/rewind is per-write backups, not git** — exec changes are never
   tracked; replay never touches the disk; each change records the live tree
   it was made in, so a successor's rewind reaches its moved sub-agents' writes
-  ([gates §undo](../docs/architecture/gates/web-fetch-and-undo.md), [ADR-0212](../docs/adr/0212-undo-rewind-via-per-write-file-backups.md)/[ADR-0236](../docs/adr/0236-rewind-follows-adopted-sub-agents.md)).
+  ([gates §undo](../docs/architecture/gates/web-fetch-and-undo.md), [ADR-0212](../docs/adr/archive/0212-undo-rewind-via-per-write-file-backups.md)/[ADR-0236](../docs/adr/archive/0236-rewind-follows-adopted-sub-agents.md)).
 - **`rhai` is a sandboxed script tool whose every binding runs the executor's
   dispatch seam** — `mcp::<server>::<tool>`/`skill::<skill>::<fn>`
   namespaces, `http()` with user-layer-only `http_auth` credentials; inline
@@ -208,12 +208,12 @@ doc, never here**:
   force-allowed with no card; `import` takes bare-name layered modules
   listed by `load_skill rhai`; writes of trusted scripts, skill files and
   modules always ask, in every mode
-  ([gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0046](../docs/adr/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0248](../docs/adr/0248-importable-rhai-library-modules.md)).
+  ([gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0046](../docs/adr/archive/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/archive/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0248](../docs/adr/archive/0248-importable-rhai-library-modules.md)).
 - **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
   `mcp__<server>__<tool>`), schemas never advertised; registered = available
   (`disabled: true` the one opt-out), lazy connect, live add/remove,
   provider-bundled servers, OAuth, per-user scopes
-  ([gates §10](../docs/architecture/gates/mcp.md), [ADR-0067](../docs/adr/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/0188-session-keyed-per-user-mcp-scopes.md)).
+  ([gates §10](../docs/architecture/gates/mcp.md), [ADR-0067](../docs/adr/archive/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0152](../docs/adr/archive/0152-provider-bundled-mcp-servers-three-state-enablement.md)/[ADR-0153](../docs/adr/archive/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/archive/0188-session-keyed-per-user-mcp-scopes.md)).
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
   `mcp_tools` reads (and lazily connects) one server's catalog; they, `mcp`,
@@ -222,44 +222,44 @@ doc, never here**:
   `propose_plan`) are non-maskable — an overlay entry or rule naming one is
   refused/warned, never a silent no-op (#843); `agent`/`agent_send` are
   graded like any tool
-  ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0232](../docs/adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
+  ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0232](../docs/adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
 - **Skills are additive-only and all model-visible; slash commands are
   head-side templates** — a skill ships `lib.rhai` functions and script
   files; `tools:`/`user_only` frontmatter removed (`tools:` skips the skill,
   `user_only` loads with a warning)
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/0229-every-skill-is-model-visible-user-only-removed.md)).
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/archive/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
   trusted); managed files are advisory-locked and live-reloaded
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0047](../docs/adr/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md)).
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0047](../docs/adr/archive/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)).
 - **Plans** — `propose_plan` (only in `plan` mode) is file-backed; approval
   switches the session's mode in place, to the approver's choice
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0145](../docs/adr/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0207](../docs/adr/0207-permission-modes-replace-agent-borne-authority.md)).
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0145](../docs/adr/archive/0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md)/[ADR-0207](../docs/adr/archive/0207-permission-modes-replace-agent-borne-authority.md)).
 - **Approval cards are data** — `ToolRequest.reason` says why a card
   parked and `scopes` what an approval honors; heads never parse card text
-  ([protocol](../docs/architecture/protocol.md), [ADR-0230](../docs/adr/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
+  ([protocol](../docs/architecture/protocol.md), [ADR-0230](../docs/adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
 - **`ask_user` questions are listable/retractable/replaceable**; a decision
   only answers its own kind of park, and a question ends on its `ToolOutput`
-  ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/0146-ask-user-list-retract-replace.md)/[ADR-0245](../docs/adr/0245-a-decision-only-answers-its-own-kind-of-card.md)).
+  ([protocol](../docs/architecture/protocol.md), [ADR-0146](../docs/adr/archive/0146-ask-user-list-retract-replace.md)/[ADR-0245](../docs/adr/archive/0245-a-decision-only-answers-its-own-kind-of-card.md)).
 - **A parked approval card's end is wire-visible** — `ApprovalResolved` on its
   home whenever it leaves `PendingDecisions`, after its `ToolRequest`
-  ([protocol](../docs/architecture/protocol.md), [ADR-0240](../docs/adr/0240-approval-resolved-event.md)).
+  ([protocol](../docs/architecture/protocol.md), [ADR-0240](../docs/adr/archive/0240-approval-resolved-event.md)).
 - **Unattended is a fact about the session** — a watched session (TUI, a
   `serve` owner) or a child of one never collapses an `Ask` and its cards
   and questions never time out; a decision for no card gets an `Error`
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0247](../docs/adr/0247-attended-sessions-wait-for-their-approver.md)).
+  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0247](../docs/adr/archive/0247-attended-sessions-wait-for-their-approver.md)).
 - **An ambiguous LLM stop retries in place**, bounded and persisted
-  ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/0118-ambiguous-stop-reason-bounded-retry.md)).
+  ([engine](../docs/architecture/engine.md), [ADR-0118](../docs/adr/archive/0118-ambiguous-stop-reason-bounded-retry.md)).
 - **Throttle and persistence outages are wire-visible transitions**
-  ([provider](../docs/architecture/provider.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0141](../docs/adr/0141-wire-visible-throttle-transitions.md)).
+  ([provider](../docs/architecture/provider.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0141](../docs/adr/archive/0141-wire-visible-throttle-transitions.md)).
 - **A script's nested calls are live-only events** — one `NestedCall` per
   binding call (first 50 per run, then one `NestedCallSummary`), never
   persisted or replayed
-  ([protocol](../docs/architecture/protocol.md), [gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0233](../docs/adr/0233-live-only-nested-call-events-for-rhai-scripts.md)).
+  ([protocol](../docs/architecture/protocol.md), [gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0233](../docs/adr/archive/0233-live-only-nested-call-events-for-rhai-scripts.md)).
 - **Reasoning has two rails** — `ReasoningDelta` renders, `ReasoningBlock`
-  replays ([provider §extended thinking](../docs/architecture/provider/thinking-and-selection.md#extended-thinking-capture-and-replay), [ADR-0160](../docs/adr/0160-extended-thinking-round-trip.md)).
+  replays ([provider §extended thinking](../docs/architecture/provider/thinking-and-selection.md#extended-thinking-capture-and-replay), [ADR-0160](../docs/adr/archive/0160-extended-thinking-round-trip.md)).
 - **Multi-user is an embedder library API** — `UserId` never appears in
   `entanglement-runtime` (`make userid`); no in-tree head is multi-user
-  ([embedding §7](../docs/embedding/approvals-mcp-multi-user.md), [ADR-0147](../docs/adr/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/0181-userid-leaves-the-runtime-crate.md)).
+  ([embedding §7](../docs/embedding/approvals-mcp-multi-user.md), [ADR-0147](../docs/adr/archive/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/archive/0181-userid-leaves-the-runtime-crate.md)).
 
 | Topic | Module |
 | --- | --- |
@@ -274,9 +274,9 @@ doc, never here**:
 Debugging: `skutter inspect prompt|agents|skills|commands|config|modes|aux-models|mcp-tokens|mcp|session`
 re-runs load-time discovery with **no engine** and prints the resolved state,
 including the winning layer; the TUI shows the same via `/inspect` (`<leader>i`).
-Trust & scope: [ADR-0047](../docs/adr/0047-local-trust-boundary.md) (repo
+Trust & scope: [ADR-0047](../docs/adr/archive/0047-local-trust-boundary.md) (repo
 trusted; system < user < repo) and
-[ADR-0048](../docs/adr/0048-serve-head-local-trust-model.md) (local-only `serve`).
+[ADR-0048](../docs/adr/archive/0048-serve-head-local-trust-model.md) (local-only `serve`).
 
 ## Conventions (project-specific)
 

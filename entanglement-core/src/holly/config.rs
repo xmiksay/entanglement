@@ -181,7 +181,7 @@ pub struct EngineConfig {
     /// executor gets another chance to run it. Sound only because the runtime
     /// executor dedupes by `request_id` — a re-offer to a still-in-flight call is
     /// a no-op there, not a double-run
-    /// ([ADR-0071](../../docs/adr/0071-parked-turn-reoffer-timer.md)). `None`
+    /// ([ADR-0071](../../docs/adr/archive/0071-parked-turn-reoffer-timer.md)). `None`
     /// disables the timer (a turn parks indefinitely). Default: 60s.
     pub reoffer_interval: Option<Duration>,
     /// Cap on the inner LLM→tool loop within a single turn (#177): the maximum
@@ -211,10 +211,10 @@ pub struct EngineConfig {
     /// hibernates through the same [`InMsg::HibernateSession`][crate::protocol::InMsg::HibernateSession]
     /// path as a manual eviction — emitting the same [`OutEvent::SessionHibernated`][crate::protocol::OutEvent::SessionHibernated],
     /// resumable exactly like a manual hibernate
-    /// ([ADR-0090](../../docs/adr/0090-idle-ttl-auto-hibernation.md)). `None`
+    /// ([ADR-0090](../../docs/adr/archive/0090-idle-ttl-auto-hibernation.md)). `None`
     /// (the default) disables the sweep entirely — eviction stays
     /// embedder-driven via [`Holly::hibernate`][crate::Holly::hibernate], the
-    /// stance [ADR-0077](../../docs/adr/0077-session-hibernation-evictable-resumable.md)
+    /// stance [ADR-0077](../../docs/adr/archive/0077-session-hibernation-evictable-resumable.md)
     /// originally left open.
     pub idle_ttl: Option<Duration>,
     /// Try an LLM-generated summary before falling back to placeholder pruning
@@ -223,7 +223,7 @@ pub struct EngineConfig {
     /// oldest history and **forks a successor session** seeded with that
     /// summary plus the kept tail, retiring the source unchanged — the same
     /// copy-on-write shape the manual `/compact` has always had (ADR-0101),
-    /// made universal by [ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md).
+    /// made universal by [ADR-0205](../../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md).
     /// It falls through to the prune-only fork (a successor seeded from the
     /// pruned transcript) when the attempt's own guard trips (an oversized
     /// transcript/tail, an LLM error, or a truncated summary) or the result
@@ -240,7 +240,7 @@ pub struct EngineConfig {
     /// always-a-policy default (ADR-0134).
     pub id_gen: Arc<dyn IdGen>,
     /// What a routable message addressed to a session with no live task does
-    /// ([ADR-0210](../../docs/adr/0210-unknown-session-policy.md)): spawn a
+    /// ([ADR-0210](../../docs/adr/archive/0210-unknown-session-policy.md)): spawn a
     /// blank root (the default — every in-tree single-user head), refuse with
     /// an `Error`, or resume it through the embedder's [`SessionLoader`][super::SessionLoader].
     pub unknown_session: UnknownSession,

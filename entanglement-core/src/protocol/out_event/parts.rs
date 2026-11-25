@@ -18,7 +18,7 @@ pub enum UsagePurpose {
 }
 
 /// How a [`Compacted`][OutEvent::Compacted] compaction reclaimed room
-/// ([ADR-0205](../../docs/adr/0205-every-compaction-forks-a-successor-session.md)).
+/// ([ADR-0205](../../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md)).
 /// Orthogonal to that event's `auto` flag, which says *who asked*: `auto`
 /// alone cannot tell the overflow guard's two fallbacks apart, and a head
 /// renders them differently — one carries a real summary, the other does not.

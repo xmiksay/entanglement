@@ -2,7 +2,7 @@
 
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
-- **Tuning — `config.yml` `modes:`** ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+- **Tuning — `config.yml` `modes:`** ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §5): adds rules to one built-in mode in the same grammar, keyed by mode
   name; **no removal syntax** — longest-match already makes a shipped rule
   overridable by adding a longer, more specific one (to stop `bash(wc *)`
@@ -21,7 +21,7 @@
   engine (not its own struct's older last-matching-rule-wins `resolve`), so
   it grades by capability class exactly like a real mode and still clamps
   least-privilege over every mode's own grade.
-- **Lag-proof decision delivery (✅ #156, [ADR-0070](../../adr/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
+- **Lag-proof decision delivery (✅ #156, [ADR-0070](../../adr/archive/0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md)):**
   the `Ask` park (and `ask_user`/`propose_plan`/each `rhai` binding) no longer holds
   its own `broadcast` subscription of the inbound fan-out — that per-task subscriber
   could *lag* under burst and silently drop the `Approve`/`Reject`/`AnswerQuestion`
@@ -31,7 +31,7 @@
   executor's `Stop`/`user_prompt_submit` watcher, now the sole inbound consumer for
   decisions) fans each decision to its waiter and unwinds a session's waiters on
   `Stop`.
-- **Approval scope + persisted grants (✅ #174, [ADR-0052](../../adr/0052-approval-scope-and-persisted-grants.md)):**
+- **Approval scope + persisted grants (✅ #174, [ADR-0052](../../adr/archive/0052-approval-scope-and-persisted-grants.md)):**
   `InMsg::Approve` carries a `scope: Once | Session | Always` (core enum, default
   `Once`, `skip_serializing_if` so a bare approve is wire-identical to the pre-#174
   shape — older heads omit it). Approval semantics stay runtime-only: a
@@ -42,7 +42,7 @@
   #173 resolves against, computed once in `dispatch` and threaded into the
   post-approval record rather than re-derived, so the pre-prompt lookup and
   the record provably share one key. **Mode-scoped** since
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §8: `GrantKey` also carries the mode it was earned in and matches only that
   mode exactly — a grant earned in `build` is inert in `research`, closing the
   old cross-agent leak where a grant earned under a permissive profile
@@ -59,7 +59,7 @@
   never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
   **managed** file `<state dir>/grants.yml` (the managed-state dir,
   `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
-  eight managed files, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
+  eight managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
   loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
   `DefaultGrantStore::load_from` take an explicit path, or `None` for an
   in-memory-only store — the `ToolExecutor::builder` default every test
@@ -70,7 +70,7 @@
   store loads empty and a write failure is logged — both fail *closed* (ask again),
   the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
-- **Session-scoped directory grants (✅ #486, [ADR-0126](../../adr/0126-session-scoped-directory-grants.md)):**
+- **Session-scoped directory grants (✅ #486, [ADR-0126](../../adr/archive/0126-session-scoped-directory-grants.md)):**
   a fourth `ApprovalScope::SessionDir` — session-only like `Session`, but
   widened to every later call whose grading argument falls under the approved
   call's directory (`grants::dir_covers`, a plain path-component-prefix check
@@ -99,8 +99,8 @@
   `grant_session_dir` synchronously through a cloned `Arc<DefaultGrantStore>`
   handle threaded into the TUI, introducing no new wire surface (`Approve`
   was already wire-allowed).
-- **Per-user permission ceiling + grants (#522, [ADR-0147](../../adr/0147-multi-user-mode-embedder-api.md);
-  reframed embedder-side by [ADR-0181](../../adr/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../../adr/0184-provider-hosted-multi-user-seams.md)):**
+- **Per-user permission ceiling + grants (#522, [ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md);
+  reframed embedder-side by [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../../adr/archive/0184-provider-hosted-multi-user-seams.md)):**
   built entirely on the #311 seams above, no core change. A session carries an
   optional `UserId` (`Session.user`, spawn-time-fixed like `parent` — a
   child/compaction-successor inherits its parent's/predecessor's user rather
@@ -119,7 +119,7 @@
   scope stays keyed by `SessionId`, since a session belongs to exactly one
   user already). Reachable only through the embedder library API — `serve`
   stays single-user (ADR-0048).
-- **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/0109-escape-root-access-via-approval.md)):**
+- **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
   path, a `rhai` script `path` or a `bash`/`call` `workdir` that resolves **outside** root is detected in
   the executor (`permission::escape_root_target` + `host::escaping_path`) and
@@ -130,7 +130,7 @@
   **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use,
   additionally bound to the approving call's `request_id` so a concurrent
   in-flight call can't spend it, #449,
-  [ADR-0120](../../adr/0120-once-scoped-escape-root-grant-bound-to-request-id.md)) /
+  [ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md)) /
   `Session` (process-lifetime) / `Always` (persisted) scope. The host tools
   consult it via `resolve_under_root_or_grant` to relax containment for the
   approved path (matched against the symlink-canonicalized target). Reuses the
@@ -138,7 +138,7 @@
   strictly root-contained. The store is separate from `grants.yml` because the
   key spaces differ — a permission grant upgrades `Ask→Allow` on a `tool(command)`
   key, an escape grant relaxes *containment* on a `(tool, absolute-path)` key.
-- **User config file + permission ceiling (✅ #172, [ADR-0047](../../adr/0047-local-trust-boundary.md)):**
+- **User config file + permission ceiling (✅ #172, [ADR-0047](../../adr/archive/0047-local-trust-boundary.md)):**
   a general user settings file, same layered loader as everything else — embedded
   default (`entanglement-runtime/src/config/defaults.yml`) < user
   (`${config_dir}/entanglement/config.yml`, path override `ENTANGLEMENT_CONFIG_FILE`)
@@ -174,7 +174,7 @@
   is skipped in the merge (`read_layer`), and changes nothing until edited; it
   only exists as a discoverable starting point. Best-effort: a write failure is
   logged, never fatal. **Curated read-only Allow rules (ADR-0195,
-  [0195](../../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
+  [0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
   the embedded defaults additionally ship a small set of exact-prefix
   argument-scoped **Allow** rules — `bash(find *)`, `bash(grep *)`,
   `call(rg *)`, and ls/cat/head/tail/wc for both exec tools — so a read-only
@@ -184,17 +184,17 @@
   (a user `bash: ask` ceiling forces the prompt back over a curated Allow).
   The list is deliberately short and exact-prefix — no `git *` (it writes),
   no `echo *` (redirection writes), no class patterns — and grows only by a
-  reviewed embedded-defaults change. Since [ADR-0197](../../adr/0197-compound-bash-commands-grade-per-segment.md)
+  reviewed embedded-defaults change. Since [ADR-0197](../../adr/archive/0197-compound-bash-commands-grade-per-segment.md)
   these Allow rules grade each top-level segment of a compound command
   independently (`find . | grep x | wc -l` allows with no prompt) instead of
   the whole raw string, closing the over-match a trailing `*` used to open
   (`find . && rm -rf /` no longer rides `bash(find *)`).
 - **Live tool-overlay grades compose with the ceiling too (✅ #498/#539,
-  originally [ADR-0133](../../adr/0133-live-bash-enablement-graded-by-permission.md),
+  originally [ADR-0133](../../adr/archive/0133-live-bash-enablement-graded-by-permission.md),
   generalized by
-  [ADR-0163](../../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md),
+  [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md),
   #611; the registration half retired by
-  [ADR-0195](../../adr/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
+  [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
   a live `/enable tool bash --allow` grade — a session
   `ToolOverlayEntry` — overrides the session's own **mode** grade for that
   tool specifically via `tool_runner`'s generic overlay-grade dispatch
@@ -203,7 +203,7 @@
   still wins over a live `Allow`, same as it wins over any mode's own
   `Allow`. This composes for any tool the overlay enables, not only `bash`.
   The overlay is now **mode-scoped**
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §8): dropped wholesale on any live `SetMode` (an entry enabled under one
   mode carries no meaning in another), and an **enable** entry still overrides
   even a mode `Deny` for that session — the model can't reach the overlay
@@ -211,7 +211,7 @@
   human's own escape hatch surviving past a mode's own class deny, not a
   model-reachable one. The grade override still reaches past the exact
   session that set it: `permission::overlay_grade_entry` walks the same
-  nearest-link-first ancestor chain [ADR-0024](../../adr/0024-subagent-permission-gating.md)'s
+  nearest-link-first ancestor chain [ADR-0024](../../adr/archive/0024-subagent-permission-gating.md)'s
   privilege ceiling already does (`permission::ancestor_chain`) — the whole
   spawn sub-tree shares one **mode** now (§6), so this walk exists purely for
   the overlay/grant layer riding on top of it, not for re-deriving the mode

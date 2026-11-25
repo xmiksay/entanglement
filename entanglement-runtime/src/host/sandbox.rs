@@ -8,8 +8,8 @@
 //! binary, unprivileged user namespaces disabled), so a sandboxed spawn that
 //! can't run simply errors like any other missing binary (ADR-0016).
 //!
-//! [adr]: ../../../../docs/adr/0104-bubblewrap-sandbox-for-bash-call.md
-//! [adr47]: ../../../../docs/adr/0047-local-trust-boundary.md
+//! [adr]: ../../../../docs/adr/archive/0104-bubblewrap-sandbox-for-bash-call.md
+//! [adr47]: ../../../../docs/adr/archive/0047-local-trust-boundary.md
 
 use std::path::Path;
 
@@ -20,7 +20,7 @@ use tokio::process::Command;
 pub enum SandboxBackend {
     /// No confinement — today's behavior, the [ADR-0047][adr47] default.
     ///
-    /// [adr47]: ../../../../docs/adr/0047-local-trust-boundary.md
+    /// [adr47]: ../../../../docs/adr/archive/0047-local-trust-boundary.md
     #[default]
     None,
     /// Confine via bubblewrap (`bwrap` on `PATH`).

@@ -4,7 +4,7 @@
 
 ## Migrating to one advertised surface (ADR-0226, #818)
 
-[ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) removed the advertising modes and MCP's three states. What an
+[ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md) removed the advertising modes and MCP's three states. What an
 embedder has to change:
 
 - **Removed types/consts:** `ToolAdvertising`, `Discovery`, `INVOKE_TOOL`,
@@ -32,7 +32,7 @@ embedder has to change:
   the one opt-out); `ProviderMcpServer.state` → `description` + `disabled`.
 - **Retired config/catalog keys** (ignored with one warning each):
   `config.yml` `tool_advertising:`, `mcp.<name>.state:` (and `discovery:`,
-  already retired by [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md));
+  already retired by [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md));
   `providers.yml` provider/model `discovery`/`tool_advertising` and a bundled
   server's `state`.
 - **Wire:** `McpServerStatus.state` stays serde-defaulted for old logs but is
@@ -44,7 +44,7 @@ embedder has to change:
 
 ## Migrating to one binding path (ADR-0227, #819)
 
-[ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md) routes every `rhai` binding through the executor's dispatch seam
+[ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md) routes every `rhai` binding through the executor's dispatch seam
 and removes the declared endpoint tools. What an embedder has to change:
 
 - **Removed:** `script::BindingPolicy` (bindings grade through the executor's
@@ -77,7 +77,7 @@ and removes the declared endpoint tools. What an embedder has to change:
 
 ## Migrating to `rhai(path)` and skill tools' removal (ADR-0228, #820)
 
-[ADR-0228](../../adr/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
+[ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
 gives `rhai` a `path`/`args` input and removes skill `tools:` frontmatter.
 What an embedder has to change:
 
@@ -144,7 +144,7 @@ What an embedder has to change:
 
 ## Migrating to every skill model-visible (ADR-0229, #845)
 
-[ADR-0229](../../adr/0229-every-skill-is-model-visible-user-only-removed.md)
+[ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)
 removes `user_only`. What an embedder has to change:
 
 - **Removed:** `SkillMeta::user_only` (drop `user_only: …` from a struct
@@ -164,7 +164,7 @@ removes `user_only`. What an embedder has to change:
   that, grade its effects in the permission mode (e.g. a `prompt:` or
   `deny:` rule on the deploy command), remove the skill (or its dir) from
   the discovered skill dirs, or set `ENTANGLEMENT_SKILLS_DIR`, which
-  replaces the whole user layer ([ADR-0074](../../adr/0074-cross-vendor-skill-and-agent-discovery.md)).
+  replaces the whole user layer ([ADR-0074](../../adr/archive/0074-cross-vendor-skill-and-agent-discovery.md)).
 
 ## Structured card reason and honest scopes (ADR-0230, #836/#846)
 

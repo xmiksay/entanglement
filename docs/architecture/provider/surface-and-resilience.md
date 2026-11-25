@@ -2,8 +2,8 @@
 
 > Part of the [llm i/o module](../provider.md) of the [architecture overview](../../architecture.md).
 
-**One advertised surface, no deferral** ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), superseding
-[ADR-0196](../../adr/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
+**One advertised surface, no deferral** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), superseding
+[ADR-0196](../../adr/archive/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
 §1–§4) — every wire receives the same pinned `tools` array, so the provider
 crate carries no tool-search machinery: `ToolSpec` has no `defer_loading`, the
 Anthropic client sends no `defer_loading`/`tool_reference`, and the
@@ -22,7 +22,7 @@ event shapes, per-provider quirks) live in
 `scratch/tool-search-wire-reference.md`.
 
 **The general request behind `web_fetch` and `http()`** (`web_fetch::request`,
-[ADR-0227](../../adr/0227-one-binding-path-namespaces-http-skill-libraries.md)) —
+[ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)) —
 `WebFetcher::request(HttpRequest{method, url, headers, body, max_bytes},
 check_hop, credentials)`: any method from the closed `HTTP_METHODS` set, the
 same SSRF guard and manual re-validated redirects as `fetch` (which now
@@ -37,8 +37,8 @@ normalized scheme/host the runtime matches `http_auth` entries against. (The
 per-URL — is removed with the declared endpoint tools.)
 
 **Provider-side web search** (#305,
-[ADR-0075](../../adr/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
-#481, [ADR-0131](../../adr/0131-web-search-post-mvp-follow-ups.md)) — opt-in,
+[ADR-0075](../../adr/archive/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
+#481, [ADR-0131](../../adr/archive/0131-web-search-post-mvp-follow-ups.md)) — opt-in,
 **client-construction-time** config, **no core/protocol change**.
 `WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
 `deny_unknown_fields`) is bound onto a client by its factory as an `Option` (the
@@ -77,7 +77,7 @@ already flows as `Text`, and its own `web_search` source array now also emits a
 `ContentBlock(provider: "zai")` alongside the existing `Reasoning` lines, so
 citations from either provider survive into a later turn's history instead of
 vanishing with the round. The z.ai array's streaming placement is **confirmed**
-(#625, [ADR-0171](../../adr/0171-zai-streaming-web-search-placement-confirmed.md),
+(#625, [ADR-0171](../../adr/archive/0171-zai-streaming-web-search-placement-confirmed.md),
 verified live against a working Coding Plan key): it is a top-level sibling of
 `choices`, delivered once on the same final chunk that carries
 `finish_reason`/`usage`, never nested under `choices[0].delta` — `handle_chunk`
@@ -97,10 +97,10 @@ the cap is hit, the client's own `Finish` still reports it (mapped to
 `StopReason::Other`), and the turn loop's ADR-0118 ambiguous-stop retry is the
 fallback safety net — the pre-#481 behavior this replaces as the primary path.
 Enabling web search *is* consent — the search runs provider-side, **outside**
-the runtime permission ladder ([ADR-0047](../../adr/0047-local-trust-boundary.md)).
+the runtime permission ladder ([ADR-0047](../../adr/archive/0047-local-trust-boundary.md)).
 
 **Resilience the provider layer owns — per endpoint** (#217,
-[ADR-0050](../../adr/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
+[ADR-0050](../../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
 tuned `reqwest::Client` is shared (it already pools TCP connections per host),
 but the **rate-limit budget and retry/backoff state are keyed by `(endpoint,
 api-key)`** — the provider's base URL plus a *hash* of the API key (if any) — in
@@ -118,13 +118,13 @@ toolchains) since #551, because it also becomes the cross-process shared-state
 processes, not merely process-local. Before #217 a single global 50-RPM
 `Semaphore` was shared across *all* providers. The bucket's RPM is **catalog data** (#241): the provider entry's
 optional `rpm` (user `providers.yml` > embedded default — no env override
-since [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md)),
+since [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)),
 threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
 `EndpointState::new`; when unset it falls back to the client default
 (`RetryConfig::rpm`, 50).
 
 `HttpClient` is not LLM-only: since #559
-([ADR-0157](../../adr/0157-mcp-http-transport-shares-the-endpoint-pool.md)) the
+([ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)) the
 MCP streamable-HTTP transport (`entanglement-provider::mcp::McpHttpClient`,
 §gates/mcp.md §10) rides the same pool, keyed by its own URL plus
 its bundling provider's API key when known — so a provider-bundled MCP server
@@ -133,7 +133,7 @@ sharing a key with its provider's LLM endpoint (e.g. z.ai's `web_search_prime`/
 budget instead of bypassing it.
 
 The concurrency cap + pacing gate + 429 policy
-([ADR-0111](../../adr/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is
+([ADR-0111](../../adr/archive/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is
 what makes the pool coordinate *across sessions* — the property that "spawn many
 sub-agents" needs and ADR-0050 lacked. The **primary** guard is a per-endpoint
 `concurrency` semaphore. **Also catalog data, mirroring `rpm`** (#414): the
@@ -177,11 +177,11 @@ set by a different caller (or read back from the persisted shared file after a
 restart) can never park a caller longer than its own budget allows.
 
 **Per-model concurrency, layered on top of the endpoint cap** (#521,
-[ADR-0140](../../adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)):
+[ADR-0140](../../adr/archive/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)):
 some providers — z.ai in particular — cap concurrency **per model**, not just
 per endpoint (documented: `GLM-4.7-Flash` allows only 1 in-flight request,
 `GLM-5.2` allows 5, on the same base URL/key), and per-profile model pinning
-([ADR-0081](../../adr/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
+([ADR-0081](../../adr/archive/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
 makes a mixed-model workload on one endpoint the normal case. `ModelEntry`
 gains an optional `concurrency` (catalog data, mirroring `ProviderEntry`'s;
 YAML-only, no env override in v1 — model ids contain `.`/`-` with no
@@ -234,7 +234,7 @@ and just wants to judge a `(provider, model)` pair's cap once — the runtime's
 `AuxLlmRegistry` uses it to decide whether firing an aux call alongside a
 primary-model call risks contending for the same permit (see the *Per-purpose
 auxiliary models* section of the [heads & persistence
-doc](../heads-and-persistence.md), [ADR-0158](../../adr/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
+doc](../heads-and-persistence.md), [ADR-0158](../../adr/archive/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
 
 ---
 

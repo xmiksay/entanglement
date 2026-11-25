@@ -2,7 +2,7 @@
 
 > Part of the [heads & persistence module](../heads-and-persistence.md) of the [architecture overview](../../architecture.md).
 
-## 6c. Managed provider-key env file — [ADR-0073](../../adr/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
+## 6c. Managed provider-key env file — [ADR-0073](../../adr/archive/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
 
 Provider API keys live in `${config_dir}/entanglement/.env` (override
 `ENTANGLEMENT_ENV_FILE`, #220), a sibling of `config.yml`. `env_file` scaffolds a
@@ -19,7 +19,7 @@ handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 `set_key_at(path, …)` is the same write against an explicit path.
 
 **First-run onboarding** (✅ #732,
-[ADR-0222](../../adr/0222-no-silent-echo-first-run-onboarding-and-init.md),
+[ADR-0222](../../adr/archive/0222-no-silent-echo-first-run-onboarding-and-init.md),
 `tui::onboarding` + `provider_setup`): `main` checks
 `provider_setup::provider_configured` (an `ENTANGLEMENT_PROVIDER`, a config
 `provider:`, or a non-empty catalog `key_env` after the `.env` load) before
@@ -38,11 +38,11 @@ model is displayed as `echo mode (no provider)`. `Ctrl+C` quits. The other
 heads never onboard: with nothing configured, `select_provider` prints the hint
 and exits 2.
 
-## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../../adr/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../../adr/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
+## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 
 Side transformations (a compaction summary, an auto session title) can run on
 a cheaper/faster model than the session's own. The pin store is a managed
-`<state dir>/aux-models.yml` (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../../adr/0213-prune-env-vars-and-catalog-knobs.md), sibling
+`<state dir>/aux-models.yml` (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md), sibling
 of `agent-models.yml`, same
 `with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
 (`summarize` | `session_title` | `narrate`) to a `{provider, model}` pin.
@@ -60,7 +60,7 @@ transformation). Three consumers reach it by deliberately different routes:
   **first `Prompt` of an unnamed session**, spawns a detached one-shot call to
   the `session_title` aux LLM (prompt capped ~2k chars, output capped 80) and
   sets the result via an `InMsg::SetSessionMeta` with **`if_unset: true`**
-  ([ADR-0151](../../adr/0151-settable-session-metadata.md)) — best-effort
+  ([ADR-0151](../../adr/archive/0151-settable-session-metadata.md)) — best-effort
   throughout (a failed/empty generation is logged and dropped), idempotent per
   session (a titled-set guards late second prompts), and never clobbering an
   already-named session (#553): `if_unset` makes the engine's fold a no-op
@@ -75,8 +75,8 @@ transformation). Three consumers reach it by deliberately different routes:
   pin yields the primary model. It fires **concurrently** with the main turn
   by default — except when `AuxLlmRegistry::concurrency_cap(SessionTitle)`
   reports the resolved model's effective per-model cap
-  ([ADR-0140](../../adr/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
-  at 1 or below ([ADR-0158](../../adr/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md),
+  ([ADR-0140](../../adr/archive/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md))
+  at 1 or below ([ADR-0158](../../adr/archive/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md),
   #589): with only one permit, the main turn's own request is guaranteed to
   hold it first, so the generator instead waits for that session's first
   `Done`/`Error` (bounded, 300s safety net) before making its aux call,
@@ -94,7 +94,7 @@ transformation). Three consumers reach it by deliberately different routes:
   present-tense phrase, and sends it back via `InMsg::SetSessionMeta { action:
   Some(_), if_unset: false, .. }` — `action` is unconditionally overwritten on
   `Some` (unlike `name`'s `if_unset` guard), so it's the first in-tree
-  producer of [ADR-0151](../../adr/0151-settable-session-metadata.md)'s
+  producer of [ADR-0151](../../adr/archive/0151-settable-session-metadata.md)'s
   mid-turn-mutable `Session.action`. Like the title generator, it has no
   session backend to fall back to, so it calls `AuxLlmRegistry::resolve`
   directly. Unlike the title generator (fires once per session, permanently
@@ -135,8 +135,8 @@ over the same store; it can move a pin but not clear one (the store has no
 remove), so "(primary model)" is offered only for a purpose that started
 unpinned.
 
-**Per-user aux pins** (#635/[ADR-0183](../../adr/0183-narrate-purpose-and-per-user-aux-pins.md),
-conforming to [ADR-0181](../../adr/0181-userid-leaves-the-runtime-crate.md)):
+**Per-user aux pins** (#635/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md),
+conforming to [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)):
 the runtime holds **no per-user module** — a multi-user embedder builds a
 per-user registry itself from two public pieces. It looks the user's pins up
 in its own storage (it owns the session→user mapping) and wraps them via
@@ -147,7 +147,7 @@ in a small adapter closure *before* constructing an ordinary, unmodified
 `None` to its injected resolver, so the closure substitutes the captured
 user. That wrap also fixes a real failure mode: `resolve`/`resolve_pin`
 always call the resolver with a hardcoded `None` user, and a multi-user
-`ModelResolver` ([ADR-0147](../../adr/0147-multi-user-mode-embedder-api.md))
+`ModelResolver` ([ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md))
 treats a missing user as a hard error — unwrapped, every aux call would be
 rejected regardless of the pins. A per-user registry is typically built once
 at session start and cached by the embedder; `AuxLlmRegistry` re-reads its

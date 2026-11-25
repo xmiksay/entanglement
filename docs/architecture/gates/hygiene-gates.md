@@ -2,14 +2,14 @@
 
 > Part of the [gates & host tools module](../gates-and-host-tools.md) of the [architecture overview](../../architecture.md).
 
-## 7. Hygiene gates — [ADR-0006](../../adr/0006-core-dependency-hygiene-gate.md) + [ADR-0053](../../adr/0053-invert-core-provider-seam.md) (`tree`), [ADR-0025](../../adr/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../../adr/0053-invert-core-provider-seam.md) (`check-lean`)
+## 7. Hygiene gates — [ADR-0006](../../adr/archive/0006-core-dependency-hygiene-gate.md) + [ADR-0053](../../adr/archive/0053-invert-core-provider-seam.md) (`tree`), [ADR-0025](../../adr/archive/0025-runtime-cargo-feature-gates.md) + [ADR-0053](../../adr/archive/0053-invert-core-provider-seam.md) (`check-lean`)
 
 `entanglement-core` must stay free of UI/web-server deps. Enforced by
 `make tree`, which runs `cargo tree -e normal -p entanglement-core` and **fails**
 if a forbidden crate appears — ADR-0053's named set
 (`clap`/`axum`/`tonic`/`crossterm`/`ratatui`) plus the web/websocket stacks a
 name blocklist must also cover (`warp`/`actix`/`rocket`/`tungstenite`/`ureq`,
-issue #207). Since [ADR-0053](../../adr/0053-invert-core-provider-seam.md) inverted
+issue #207). Since [ADR-0053](../../adr/archive/0053-invert-core-provider-seam.md) inverted
 the seam, core depends on `entanglement-provider`, so `reqwest`/`hyper`/`tower`
 (the LLM transport) are now **legitimately** in core's transitive tree and are
 not forbidden. It is part of `make verify`. Current core direct deps:
@@ -29,7 +29,7 @@ type-checks the lib + the integration tests with the bin auto-skipped via
 `required-features` — the load-bearing check). It joins `tree` in `make verify`.
 `rhai` is deliberately **not** in `LEAN_FORBIDDEN` — the sandboxed script tool
 lives behind its own default-on `rhai` feature (#502,
-[ADR-0135](../../adr/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
+[ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
 amending ADR-0025; the tool itself is documented in §8, [host tools](host-tools.md)), so
 `--no-default-features` now excludes it (a
 lean embedder that never registers the tool sheds one of the heaviest

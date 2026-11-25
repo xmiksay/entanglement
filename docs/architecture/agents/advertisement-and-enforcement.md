@@ -3,8 +3,8 @@
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
 - **Advertisement is universal and session-stable — enforcement lives entirely
-  at dispatch** (✅ #116/#560, [ADR-0038](../../adr/0038-physical-per-agent-tool-restriction.md)/[ADR-0148](../../adr/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0192](../../adr/0192-universal-advertisement-enforcement-at-dispatch.md)/[ADR-0198](../../adr/0198-out-of-mask-tool-calls-are-approvable.md),
-  all superseded by [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)):
+  at dispatch** (✅ #116/#560, [ADR-0038](../../adr/archive/0038-physical-per-agent-tool-restriction.md)/[ADR-0148](../../adr/archive/0148-glob-patterns-in-the-agent-tool-mask.md)/[ADR-0192](../../adr/archive/0192-universal-advertisement-enforcement-at-dispatch.md)/[ADR-0198](../../adr/archive/0198-out-of-mask-tool-calls-are-approvable.md),
+  all superseded by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)):
   there is no more agent tool mask to decouple from advertisement — core's
   turn loop (`run_round`) advertises `EngineConfig.tool_specs` (or the
   resolver's replacement, below) **verbatim**, with no filter of any kind.
@@ -14,7 +14,7 @@
   traded away is only "the model cannot even attempt the call" — every
   attempt is now visibly graded instead, and no capability changes hands.
   The universal, session-stable surface is the compiled-in `KERNEL`
-  ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); see [engine](../engine/turn-loop.md) §turn loop): `read`/`edit`/`write`/
+  ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); see [engine](../engine/turn-loop.md) §turn loop): `read`/`edit`/`write`/
   `apply_patch`/`bash`/`web_fetch`, `rhai` when the feature is on,
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
@@ -25,7 +25,7 @@
   rule naming one warns, #843). They are not the only ones — the full
   non-maskable set (`tool_names::NON_MASKABLE_TOOLS`, §session tool overlay
   below) also holds the bookkeeping Control tools, and `agent`/`agent_send`
-  are deliberately outside it ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep`/`call` stay registered as
+  are deliberately outside it ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep`/`call` stay registered as
   script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
@@ -34,7 +34,7 @@
   base `tool_specs` unconditionally rather than gated per profile. The one
   acknowledged dynamic seam left is **MCP tools** (`mcp__*`), since a
   server's tools are unknowable until it connects. **Per-session base specs
-  (✅ #308, [ADR-0076](../../adr/0076-per-session-dynamic-tool-specs.md)):** an
+  (✅ #308, [ADR-0076](../../adr/archive/0076-per-session-dynamic-tool-specs.md)):** an
   optional `EngineConfig.tool_spec_resolver: Option<Arc<dyn Fn(&SessionId,
   SessionModel<'_>) -> Vec<ToolSpec> + Send + Sync>>` (alias
   `ToolSpecResolver`) lets one `Holly` advertise a **different base tool
@@ -50,8 +50,8 @@
   cache. `None` (the default) keeps the engine-global specs — a no-op for
   single-user heads.
 - **Enforcement, now a single hard boundary: `Deny` declines, `Ask` prompts**
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
-  §4, retiring [ADR-0198](../../adr/0198-out-of-mask-tool-calls-are-approvable.md)'s
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
+  §4, retiring [ADR-0198](../../adr/archive/0198-out-of-mask-tool-calls-are-approvable.md)'s
   mask-miss approval ladder — "there is no mask left to miss"): a call grades
   through the session's permission mode (§permission modes in [modes](modes.md)) before it
   runs. `Ask` emits `ToolRequest` and parks an ordinary approval — the
@@ -68,20 +68,20 @@
   `Deny`, reversible by the same human voice that set it. The bookkeeping
   `Capability::Control` tools bypass this whole ladder (§permission modes
   in [modes](modes.md)) — never graded, never declined for authority reasons. `agent`/
-  `agent_send` climb it before launching like any tool ([ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)):
+  `agent_send` climb it before launching like any tool ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)):
   an overlay deny or a mode `Deny` refuses with an error result and starts
   no child, a `prompt` rule parks an approval card; past the ladder they are
   bounded by the mode's `max_depth`/`max_agents` (an `is_error`) and refused
   for an unknown target or model.
 - **The session tool overlay survives as the user's own direct voice**
-  (✅ #539, [ADR-0149](../../adr/0149-per-session-tool-overlay.md); live bash
+  (✅ #539, [ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md); live bash
   enablement folded in, #611,
-  [ADR-0163](../../adr/0163-live-bash-enablement-is-a-tool-overlay-entry.md);
+  [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md);
   now **mode-scoped**,
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §8): the live **tool overlay** — `InMsg::SetToolOverlay` (trusted-only for
   an enable entry; a deny-only overlay is wire-allowed, #634,
-  [ADR-0177](../../adr/0177-wire-allowed-deny-only-tool-overlay.md)) — is a
+  [ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md)) — is a
   per-session list of `ToolOverlayEntry { pattern, allow, deny, arg_pattern?
   }` overriding the session's mode grade in both directions: an **enable**
   entry makes a tool's grade `Allow` (or, `arg_pattern`-narrowed, an
@@ -107,7 +107,7 @@
   roster seeded from effective availability; `Enter` submits the overlay as
   a diff against the mode's own grade); see the protocol doc for the wire
   shape. (`/enable mcp`/`/disable mcp` and the `/mcp` panel's `e` key are
-  gone: an MCP server is available the moment it is registered, [ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
+  gone: an MCP server is available the moment it is registered, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
   the panel's `d` key stays — a per-session deny of the server's
   `mcp__<name>__*` tools.) **Names no entry can match** (#843,
   `tool_names::NON_MASKABLE_TOOLS`) are kept off the checklist, the `/set`
@@ -119,9 +119,9 @@
   from config), the six discovery tools (always
   available, not maskable — below), the script-only read variants
   `read_raw`/`glob_json`/`grep_json` (graded as `read`/`glob`/`grep`) and
-  the **bookkeeping Control tools** (#849, [ADR-0232](../../adr/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): `poll`,
+  the **bookkeeping Control tools** (#849, [ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): `poll`,
   `ask_user` and `update_tasks` only collect or report work the mode
-  already authorized ([ADR-0190](../../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)'s
+  already authorized ([ADR-0190](../../adr/archive/0190-poll-is-always-on-non-maskable-internal-tool.md)'s
   argument — withdrawing one strands work, it never reduces capability);
   `request_mode` only asks the user for more authority (always an approval
   card, refused in `auto`); `propose_plan` is gated by its `plan` class
@@ -145,7 +145,7 @@
   typed `/enable <name-or-glob> [--allow […]]` also reports how many
   currently-registered tools the pattern matched, as a transcript status
   line (#560 P9,
-  [ADR-0199](../../adr/0199-session-tool-listing-and-enablement-drive-advertisement.md)).
+  [ADR-0199](../../adr/archive/0199-session-tool-listing-and-enablement-drive-advertisement.md)).
   **`/tools`** (same ADR) is a separate, read-heavy *browser* — not an
   overlay editor — over the session's whole reachable surface (host tools,
   MCP servers + their tools, skills, endpoints via `discover::index_rows`):
@@ -157,21 +157,21 @@
   `Enter` on a row enables it through the same `/enable` path (closing the
   view). An enable never changes the advertised array — only how a call is
   graded.
-- **Discovery is six plain tools** ([ADR-0226](../../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), amending
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+- **Discovery is six plain tools** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), amending
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §12's `explore`/`describe` kinds): `list_agents` (name, description, model
   pin), `list_models` (the usable catalog: provider/id, display name, context
   window), `list_skills` (name + description), `load_skill`, `list_mcp` and
   `mcp_tools` (see [gates & host tools](../gates/mcp.md) §MCP) — each
   with no argument or one `name`, all `Capability::Control`, always-on,
-  non-maskable ([ADR-0190](../../adr/0190-poll-is-always-on-non-maskable-internal-tool.md)
+  non-maskable ([ADR-0190](../../adr/archive/0190-poll-is-always-on-non-maskable-internal-tool.md)
   pattern), available in every mode. The old `modes` kind is covered by the
   static modes preamble in the system prompt; the old `pending` kind's
   in-flight recovery is the handle-less `poll` (a session's own outstanding
   jobs, scripts and sub-agents, then, when non-empty, its sub-tree's retained
   outputs, open questions and parked approvals, #829).
 - **`request_mode` — a blocked model's escape hatch**
-  ([ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §10): a `Capability::Control` tool advertised unconditionally, so a blocked
   model can always name what it needs. It force-parks an approval exactly
   like `propose_plan` — widening a session's own authority is a decision
@@ -202,8 +202,8 @@
   spawned under `build`/`auto` mode to reproduce, fix, and verify a bug
   (compile, run tests).
 - **No startup warning for a stale tool name in a mode rule (a gap left by
-  [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)):**
-  [ADR-0166](../../adr/0166-migration-note-and-startup-warning-for-stale-tool-names.md)'s
+  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)):**
+  [ADR-0166](../../adr/archive/0166-migration-note-and-startup-warning-for-stale-tool-names.md)'s
   `tool_names::is_recognized_mask_entry`/`agents::warn_unrecognized_mask_entries`
   — a startup `tracing::warn!` for any agent-mask entry or `permission:` rule
   key that matched no known tool name, e.g. a config written against a tool a
@@ -217,8 +217,8 @@
   as before: a stale grant key is inert by construction (exact-match against
   a live call), so nothing degrades quietly there.
 - **In-app tool-allowlist editing is retired, not replaced (✅ #330 →
-  [ADR-0083](../../adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md),
-  amended by [ADR-0207](../../adr/0207-permission-modes-replace-agent-borne-authority.md)
+  [ADR-0083](../../adr/archive/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md),
+  amended by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §13):** the old TUI checklist (`tui::tools_dialog::ToolsDialog`, opened
   with `e` on the `/agent` picker's highlighted profile) wrote a per-agent
   `tools:`/`disallowed_tools:` frontmatter override via

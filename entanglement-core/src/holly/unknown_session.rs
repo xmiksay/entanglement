@@ -1,4 +1,4 @@
-//! The unknown-session policy ([ADR-0210](../../../docs/adr/0210-unknown-session-policy.md)):
+//! The unknown-session policy ([ADR-0210](../../../docs/adr/archive/0210-unknown-session-policy.md)):
 //! what the supervisor does with a routable message addressed to a session id
 //! that has no live task. Public seam types only; the behavior lives in
 //! `supervisor/unknown.rs`.

@@ -38,8 +38,8 @@
 //! want: persisting sets the default for the **next** session, while the live
 //! re-pin changes the running one.
 //!
-//! [ADR-0084]: ../../../docs/adr/0084-runtime-live-reload-and-managed-file-locking.md
-//! [ADR-0083]: ../../../docs/adr/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md
+//! [ADR-0084]: ../../../docs/adr/archive/0084-runtime-live-reload-and-managed-file-locking.md
+//! [ADR-0083]: ../../../docs/adr/archive/0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md
 
 use std::path::PathBuf;
 

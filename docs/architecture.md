@@ -6,8 +6,8 @@ each choice here is recorded in the [decision log](adr/README.md) (ADRs).
 
 This document describes the current *what is* — the three-layer dependency
 direction `provider ← core ← runtime`
-([ADR-0053](adr/0053-invert-core-provider-seam.md), superseding the direction
-of [ADR-0006](adr/0006-core-dependency-hygiene-gate.md)'s original gate).
+([ADR-0053](adr/archive/0053-invert-core-provider-seam.md), superseding the direction
+of [ADR-0006](adr/archive/0006-core-dependency-hygiene-gate.md)'s original gate).
 Decided-but-pending work lives in GitHub issues, not inline here.
 
 ## Modules
@@ -29,8 +29,8 @@ numbers (§0–§10) referenced throughout the docs and ADRs map as follows:
 | [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–10 | dependency gates, host tools (model-facing `read`/`write`/`edit`/`apply_patch` + `bash` + `web_fetch`; script-only `glob`/`grep`/`call`), the one advertised surface |
 
 Trust & scope decisions cut across modules: the local trust boundary
-([ADR-0047](adr/0047-local-trust-boundary.md)) and the local-only `serve` head
-([ADR-0048](adr/0048-serve-head-local-trust-model.md)).
+([ADR-0047](adr/archive/0047-local-trust-boundary.md)) and the local-only `serve` head
+([ADR-0048](adr/archive/0048-serve-head-local-trust-model.md)).
 
 Building a custom, multi-tenant head on top of `entanglement-runtime`'s
 embeddable library (rather than one of the four shipped interfaces) is a

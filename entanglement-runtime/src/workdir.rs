@@ -1,5 +1,5 @@
 //! Session working directories (#764,
-//! [ADR-0224](../../docs/adr/0224-session-working-directory.md)) — the
+//! [ADR-0224](../../docs/adr/archive/0224-session-working-directory.md)) — the
 //! runtime half.
 //!
 //! Core carries a session's workdir as an opaque absolute path: it stores,

@@ -6,7 +6,7 @@
 
 A turn that ends on tool calls **parks** as explicit session state
 (`Session.turn: Option<TurnState>`,
-[ADR-0061](../adr/0061-parked-turn-state-batch-tool-resolution.md)) rather than
+[ADR-0061](../adr/archive/0061-parked-turn-state-batch-tool-resolution.md)) rather than
 living only on an async stack — this is what makes it safe to persist a
 mid-turn session and pick it up later, in a different process, after a crash
 or a deploy. Three things follow that a custom executor/resolver must honor:
@@ -19,7 +19,7 @@ or a deploy. Three things follow that a custom executor/resolver must honor:
 - **Idempotency is keyed on `request_id`, not the tool + args.** The reference
   executor tracks an in-flight `HashSet<String>` per session and skips a
   `ToolExec` whose `request_id` it's already running
-  ([ADR-0071](../adr/0071-parked-turn-reoffer-timer.md)) — this is what makes the
+  ([ADR-0071](../adr/archive/0071-parked-turn-reoffer-timer.md)) — this is what makes the
   *in-process* re-offer timer (60s of silence on a parked turn) safe without a
   restart. A custom executor needs the equivalent: track in-flight
   `request_id`s yourself if you don't reuse `ToolExecutor::builder`'s
@@ -32,12 +32,12 @@ or a deploy. Three things follow that a custom executor/resolver must honor:
   arbitrate that for you.
 
 **`Holly::hibernate` is the embedder-driven counterpart to all of this**
-([ADR-0077](../adr/0077-session-hibernation-evictable-resumable.md)): it tears
+([ADR-0077](../adr/archive/0077-session-hibernation-evictable-resumable.md)): it tears
 down a session's in-memory state — same as a crash, but on purpose, to cap
 memory across many idle tenants — without tombstoning the id, so a later
 `resume` rebuilds it from your log exactly like the restart path above,
 re-offering any pending call the same way. `EngineConfig.idle_ttl`
-([ADR-0090](../adr/0090-idle-ttl-auto-hibernation.md)) automates the sweep if you'd
+([ADR-0090](../adr/archive/0090-idle-ttl-auto-hibernation.md)) automates the sweep if you'd
 rather not call `hibernate` yourself.
 [`examples/embedded_lifecycle.rs`](../../entanglement-runtime/examples/embedded_lifecycle.rs)
 drives the whole `hibernate` → `pair_records` → `resume` → continue round-trip
@@ -46,12 +46,12 @@ against its own `RecordSink`.
 ## 6. Attaching MCP servers programmatically
 
 The YAML `mcp:` config section (`mcp::AvailableMcp::from_config`, connected
-lazily on first use — [ADR-0067](../adr/0067-mcp-client-as-runtime-tool-provider.md),
-[ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) is one static
+lazily on first use — [ADR-0067](../adr/archive/0067-mcp-client-as-runtime-tool-provider.md),
+[ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) is one static
 `command`/`url` per server, shared by every session — not what a multi-tenant
 embedder needs when each tenant has their own remote server or their own
 per-user auth token. `mcp::HttpClient::connect(server, url, headers, http, api_key)`
-([ADR-0080](../adr/0080-mcp-streamable-http-transport.md), behind the `mcp-http`
+([ADR-0080](../adr/archive/0080-mcp-streamable-http-transport.md), behind the `mcp-http`
 feature) is public for exactly this: build a client straight from a token you
 already looked up (`http` is the shared endpoint pool, `api_key` an optional
 pool-key identity — `None` for a per-tenant server), wrap it in
@@ -81,7 +81,7 @@ lazy connecting, and per-session discovery/dispatch replacement for you.
 ## 7. Multi-user: per-user providers, permissions, tokens
 
 Multi-user mode is an **embedder API**, and by
-[ADR-0181](../adr/0181-userid-leaves-the-runtime-crate.md) the runtime crate
+[ADR-0181](../adr/archive/0181-userid-leaves-the-runtime-crate.md) the runtime crate
 never names `UserId` (`make userid` enforces it): the type lives in
 `entanglement-provider` (re-exported by core, riding `InMsg::Spawn { user }`),
 and every per-user seam is something *you* implement and hand in. You already
@@ -91,12 +91,12 @@ it from a session-id convention like §1's `{tenant}:{uuid}`) and close your
 seam implementations over it. Per seam:
 
 - **Providers, API keys, RPM/concurrency budgets** —
-  [`entanglement_provider::multi_user`](../adr/0184-provider-hosted-multi-user-seams.md):
+  [`entanglement_provider::multi_user`](../adr/archive/0184-provider-hosted-multi-user-seams.md):
   implement `UserProviderStore` over your tenant storage and wire
   `build_user_model_resolver(store, http_client, web_search)` onto
   `EngineConfig::model_resolver`. Each user gets their own `Catalog` + keys
   (never `std::env`); two users sharing one literal key each get their own
-  admission slice ([ADR-0175](../adr/0175-per-user-admission-gate-on-a-shared-literal-key.md)).
+  admission slice ([ADR-0175](../adr/archive/0175-per-user-admission-gate-on-a-shared-literal-key.md)).
   To start a session on a user-chosen model, put it on the session's own
   `Spawn` — `model: Some(ModelChoice::new(provider, model))` (#725). It
   resolves through that same resolver under the session's user before the
@@ -115,12 +115,12 @@ seam implementations over it. Per seam:
   reach another's session (`Session` scope stays per-session — a session
   belongs to exactly one user).
 - **Aux-model pins** — no module either
-  ([ADR-0183](../adr/0183-narrate-purpose-and-per-user-aux-pins.md)): snapshot
+  ([ADR-0183](../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md)): snapshot
   the user's pins via `AuxModelStore::in_memory` and close your multi-user
   `ModelResolver` over the user before constructing a plain
   `AuxLlmRegistry`.
 - **OAuth-protected LLM endpoints** —
-  [ADR-0189](../adr/0189-oauth-for-llm-provider-endpoints.md): a catalog entry
+  [ADR-0189](../adr/archive/0189-oauth-for-llm-provider-endpoints.md): a catalog entry
   carrying an `oauth:` block sends an `Authorization: Bearer` from an
   `AccessTokenSource` instead of a static key. Register each user's source on
   their context:
@@ -133,9 +133,9 @@ seam implementations over it. Per seam:
   `entanglement_provider::oauth::UserTokenStore` over your storage;
   `user_scoped(store, user)` presents one user's slice as the plain
   per-connection `TokenStore` every auth consumer takes
-  ([ADR-0184](../adr/0184-provider-hosted-multi-user-seams.md)). Minting the
+  ([ADR-0184](../adr/archive/0184-provider-hosted-multi-user-seams.md)). Minting the
   tokens from a web app is `WebFlow`
-  ([ADR-0187](../adr/0187-mcp-oauth-web-redirect-flow-for-embedders.md)) — two
+  ([ADR-0187](../adr/archive/0187-mcp-oauth-web-redirect-flow-for-embedders.md)) — two
   handlers on your own domain:
 
   ```rust,ignore
@@ -152,14 +152,14 @@ seam implementations over it. Per seam:
   ```
 
 - **Per-user MCP connections** — `mcp::scoped::McpScopes`
-  ([ADR-0188](../adr/0188-session-keyed-per-user-mcp-scopes.md)) routes a scoped
+  ([ADR-0188](../adr/archive/0188-session-keyed-per-user-mcp-scopes.md)) routes a scoped
   session's `mcp__*` calls over that user's own servers and credentials
   (replace semantics — the global MCP set disappears for scoped sessions;
   same-named servers across users stay distinct via the `(scope key, server)`
   connection cache). Close an `McpScopeResolver` over your session→user map,
   and hand the `McpScopes` to `ToolExecutor::builder(..).mcp_scopes(scopes)`
   (leaving the setter out keeps single-user behavior). MCP schemas are never
-  advertised ([ADR-0226](../adr/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)), so there is no spec overlay to wire: a scoped
+  advertised ([ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)), so there is no spec overlay to wire: a scoped
   session's `list_mcp`/`mcp_tools` resolve through its scope and its
   `mcp(...)` calls dispatch over it.
 
@@ -188,7 +188,7 @@ seam implementations over it. Per seam:
   `mcp::capability_index(&scope.servers)` into your own per-user
   `PermissionResolver` if you grade by capability.
 - **Your own tools with per-call grading**
-  ([ADR-0249](../adr/0249-in-process-mcp-servers-and-per-session-skills.md)) —
+  ([ADR-0249](../adr/archive/0249-in-process-mcp-servers-and-per-session-skills.md)) —
   register one native `Tool` (e.g. `invoke`) that dispatches to your internal
   hub, and implement `Tool::call_grading(input)` to return the target name and
   capabilities per call: the dispatch ladder grades each call as its target
