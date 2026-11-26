@@ -154,18 +154,12 @@ async fn reasoning_block_and_tool_round() {
         text: "think".into(),
         data: serde_json::json!({ "signature": "abc" }),
     };
-    let search = ContentPart::provider_search(
-        "anthropic",
-        "[web_search] q",
-        serde_json::json!({ "type": "server_tool_use" }),
-    );
     let mut script = tool_round(vec![signed]);
     script.splice(
         0..0,
         [
             Step::Reasoning("think"),
             Step::Block(block),
-            Step::Block(search),
             Step::Text("reading"),
         ],
     );
@@ -175,7 +169,7 @@ async fn reasoning_block_and_tool_round() {
     live.result("c1", "out").await;
     live.until_done().await;
     let history = assert_resume_is_byte_identical(live).await;
-    assert_eq!(history[1].content.len(), 3, "text, reasoning, search");
+    assert_eq!(history[1].content.len(), 2, "text, reasoning");
     assert!(history[1].tool_calls[0].provider_meta.is_some());
 }
 

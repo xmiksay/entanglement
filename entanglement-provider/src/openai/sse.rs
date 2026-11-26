@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{ContentPart, LlmEvent, ToolCall, Usage};
+use crate::{LlmEvent, ToolCall, Usage};
 use serde_json::Value;
 
 use super::think::ThinkSplitter;
@@ -119,17 +119,6 @@ pub(super) fn handle_chunk(
         }
     }
 
-    // Provider-side web search (#305): z.ai streams the source list as a
-    // `web_search` array, a top-level sibling of `choices` on the same final
-    // chunk that carries `finish_reason`/`usage` — confirmed against a live
-    // Coding Plan key (#625, ADR-0171); it never nests under
-    // `choices[0].delta`, so that scan site (carried defensively since the
-    // #305 MVP) is gone. Each source surfaces as one Reasoning line (cited
-    // answer text already flows as `Text`), plus one persisted `ContentBlock`
-    // (#481) so citations survive into a later turn's history instead of
-    // vanishing with the round.
-    emit_web_search(data.get("web_search"), &mut out);
-
     let Some(choice) = data.pointer("/choices/0") else {
         return Ok(out);
     };
@@ -238,51 +227,6 @@ pub(super) fn flush_pending_tools(
         }
     }
     emitted_any
-}
-
-/// Render a z.ai `web_search` source array (#305) as one `[web_search] {title} —
-/// {url}` [`LlmEvent::Reasoning`] line per entry, plus one persisted
-/// `ContentBlock` (#481) carrying a newline-joined `summary` of those same
-/// lines — the z.ai wire has no documented replay format for a search block, so
-/// `summary` (rendered as plain text by every converter, #481's
-/// `assistant_text`) is the whole persisted representation; there is no opaque
-/// `data` payload worth keeping beyond the entries themselves, which ride in
-/// `data` unmodified. A non-array (or an entry with neither title nor link) is
-/// ignored — this stays a best-effort surface since invocation itself is
-/// model-decided (the search tool being offered doesn't guarantee the model
-/// calls it), even though the placement is now confirmed (#625).
-fn emit_web_search(value: Option<&Value>, out: &mut Vec<LlmEvent>) {
-    let Some(entries) = value.and_then(|v| v.as_array()) else {
-        return;
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for entry in entries {
-        let title = entry
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        let url = entry
-            .get("link")
-            .or_else(|| entry.get("url"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if title.is_empty() && url.is_empty() {
-            continue;
-        }
-        lines.push(format!("[web_search] {title} — {url}"));
-    }
-    for line in &lines {
-        out.push(LlmEvent::Reasoning(line.clone()));
-    }
-    if !lines.is_empty() {
-        out.push(LlmEvent::ContentBlock(ContentPart::provider_search(
-            "zai",
-            lines.join("\n"),
-            Value::Array(entries.clone()),
-        )));
-    }
 }
 
 /// One tool call being assembled from per-index deltas across the stream.

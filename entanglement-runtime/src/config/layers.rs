@@ -128,7 +128,6 @@ pub(super) fn provenance(raw_layers: &[RawLayer]) -> Vec<(String, ConfigLayer)> 
         "hooks",
         "mcp",
         "http_auth",
-        "web_search",
         "max_turns",
         "idle_ttl_secs",
         "auto_compact",

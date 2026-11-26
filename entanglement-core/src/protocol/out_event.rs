@@ -666,23 +666,8 @@ pub enum OutEvent {
         seq: u64,
         nudge: String,
     },
-    /// A provider-side web-search result block was minted this round (#481,
-    /// follow-up to #305/ADR-0075's "not persisted" MVP limitation). Persisted
-    /// and seq-bearing (like `AmbiguousRetry`) so `Session::replay` reconstructs
-    /// the assistant message's content verbatim — including the provider-native
-    /// `data` payload `part` carries, needed to replay the search back to the
-    /// same provider on a later turn (mirrors `ToolCall.provider_meta`'s opaque
-    /// round-trip contract). A different provider's converter (and any
-    /// renderer) reads only `part`'s `summary`, never its opaque `data`. Heads
-    /// render `summary` as a one-line notice, mirroring how `ReasoningDelta`
-    /// already renders the live query/source lines for this same search.
-    SearchResult {
-        session: SessionId,
-        seq: u64,
-        part: ContentPart,
-    },
     /// A model's extended-thinking block was captured this round. Persisted and
-    /// seq-bearing for the same reason as `SearchResult`: `Session::replay` must
+    /// seq-bearing (like `AmbiguousRetry`): `Session::replay` must
     /// reconstruct the assistant message's content verbatim, including the
     /// provider-native `data` payload, or a resumed parked turn cannot present
     /// the block the provider requires on the next request.

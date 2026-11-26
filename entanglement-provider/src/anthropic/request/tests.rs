@@ -35,8 +35,6 @@ fn body_omits_tools_when_empty() {
         &[],
         1024,
         None,
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -57,8 +55,6 @@ fn body_includes_input_schema_when_tools_present() {
         &[msg(MessageRole::User, "hi")],
         &[spec],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -81,8 +77,6 @@ fn generation_max_output_tokens_overrides_fallback() {
             thinking_budget_tokens: None,
             reasoning_effort: None,
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -105,8 +99,6 @@ fn thinking_budget_enables_thinking_and_drops_temperature() {
             thinking_budget_tokens: Some(10_000),
             reasoning_effort: None,
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -133,8 +125,6 @@ fn thinking_budget_bumps_max_tokens_when_it_would_swallow_the_cap() {
             thinking_budget_tokens: Some(4000),
             reasoning_effort: None,
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -157,8 +147,6 @@ fn high_reasoning_effort_enables_thinking_at_the_tier_default_budget() {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::High),
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -185,8 +173,6 @@ fn medium_reasoning_effort_uses_a_smaller_tier_budget() {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::Medium),
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -210,8 +196,6 @@ fn low_reasoning_effort_leaves_thinking_off() {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::Low),
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -233,8 +217,6 @@ fn explicit_thinking_budget_wins_over_reasoning_effort() {
             thinking_budget_tokens: Some(1234),
             reasoning_effort: Some(ReasoningEffort::High),
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -257,8 +239,6 @@ fn adaptive_style_emits_adaptive_thinking_and_effort_not_a_budget() {
             thinking_budget_tokens: None,
             reasoning_effort: Some(ReasoningEffort::High),
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Adaptive, false),
         None,
     );
@@ -291,8 +271,6 @@ fn adaptive_style_maps_every_effort_tier() {
                 thinking_budget_tokens: None,
                 reasoning_effort: Some(effort),
             }),
-            None,
-            None,
             model_spec(ThinkingStyle::Adaptive, false),
             None,
         );
@@ -320,8 +298,6 @@ fn adaptive_style_without_effort_leaves_thinking_off() {
             thinking_budget_tokens: None,
             reasoning_effort: None,
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Adaptive, false),
         None,
     );
@@ -347,8 +323,6 @@ fn adaptive_style_ignores_a_thinking_budget_and_never_bumps_max_tokens() {
             thinking_budget_tokens: Some(64_000),
             reasoning_effort: None,
         }),
-        None,
-        None,
         model_spec(ThinkingStyle::Adaptive, false),
         None,
     );
@@ -517,120 +491,6 @@ fn tool_result_with_image_renders_block_array() {
     );
 }
 
-// ── provider-side web search (#305, version flag #481) ─────────────────
-
-#[test]
-fn body_omits_web_search_server_tool_without_config() {
-    let body = build_body(
-        "claude-sonnet-4-5",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        1024,
-        None,
-        None,
-        None,
-        model_spec(ThinkingStyle::Budget, false),
-        None,
-    );
-    assert!(body.get("tools").is_none());
-}
-
-#[test]
-fn body_pushes_web_search_server_tool_when_configured() {
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: Some(4),
-        allowed_domains: vec!["docs.rs".into()],
-    };
-    let body = build_body(
-        "claude-sonnet-4-5",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        1024,
-        None,
-        Some(&ws),
-        None,
-        model_spec(ThinkingStyle::Budget, false),
-        None,
-    );
-    let tools = body["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["type"], "web_search_20250305");
-    assert_eq!(tools[0]["name"], "web_search");
-    assert_eq!(tools[0]["max_uses"], 4);
-    assert_eq!(tools[0]["allowed_domains"][0], "docs.rs");
-}
-
-#[test]
-fn web_search_server_tool_omits_unset_knobs() {
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: None,
-        allowed_domains: vec![],
-    };
-    let body = build_body(
-        "claude-sonnet-4-5",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        1024,
-        None,
-        Some(&ws),
-        None,
-        model_spec(ThinkingStyle::Budget, false),
-        None,
-    );
-    let tool = &body["tools"][0];
-    assert_eq!(tool["type"], "web_search_20250305");
-    assert!(tool.get("max_uses").is_none());
-    assert!(tool.get("allowed_domains").is_none());
-}
-
-#[test]
-fn web_search_tool_version_overrides_the_hardcoded_default() {
-    // #481: a `ModelEntry::web_search_tool_version` capability flag selects
-    // the newer server-tool type with no code change.
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: None,
-        allowed_domains: vec![],
-    };
-    let body = build_body(
-        "claude-sonnet-4-6",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        1024,
-        None,
-        Some(&ws),
-        Some("web_search_20260209"),
-        model_spec(ThinkingStyle::Budget, false),
-        None,
-    );
-    assert_eq!(body["tools"][0]["type"], "web_search_20260209");
-}
-
-#[test]
-fn provider_search_block_from_anthropic_replays_verbatim() {
-    // A search block minted by *this* provider round-trips as its raw
-    // stored `data` (#481) — the cache-benefit / continuity path.
-    let raw = json!({ "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": { "query": "rust" } });
-    let assistant = Message::assistant_content(
-        vec![
-            ContentPart::text("searching"),
-            ContentPart::provider_search("anthropic", "[web_search] rust", raw.clone()),
-        ],
-        vec![],
-    );
-    let out = convert_messages(&[assistant], false);
-    let blocks = out[0]["content"].as_array().unwrap();
-    assert_eq!(blocks.len(), 2);
-    assert_eq!(blocks[0], json!({ "type": "text", "text": "searching" }));
-    assert_eq!(blocks[1], raw);
-}
-
 // ── prompt caching breakpoints (#566) ───────────────────────────────────
 
 #[test]
@@ -641,8 +501,6 @@ fn system_block_carries_a_cache_breakpoint() {
         &[msg(MessageRole::User, "hi")],
         &[],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -663,8 +521,6 @@ fn last_tool_entry_carries_a_cache_breakpoint() {
         &specs,
         1024,
         None,
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -681,8 +537,6 @@ fn single_user_turn_carries_the_history_breakpoint() {
         &[msg(MessageRole::User, "hi")],
         &[],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -707,8 +561,6 @@ fn last_user_turn_carries_the_near_breakpoint() {
         &msgs,
         &[],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -742,8 +594,6 @@ fn long_history_carries_two_anchors_and_at_most_four_markers_total() {
         &msgs,
         &specs,
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -817,8 +667,6 @@ fn trailing_notice_does_not_break_the_growing_history_prefix() {
         &[],
         1024,
         None,
-        None,
-        None,
         spec,
         Some("[mode: research]"),
     );
@@ -837,8 +685,6 @@ fn trailing_notice_does_not_break_the_growing_history_prefix() {
         &round_n1_history,
         &[],
         1024,
-        None,
-        None,
         None,
         spec,
         Some("[mode: build]"),
@@ -888,8 +734,6 @@ fn short_history_marks_only_the_near_anchor() {
         &[],
         1024,
         None,
-        None,
-        None,
         model_spec(ThinkingStyle::Budget, false),
         None,
     );
@@ -919,25 +763,6 @@ fn count_cache_controls(v: &serde_json::Value) -> usize {
     }
 }
 
-#[test]
-fn provider_search_block_from_another_provider_is_dropped() {
-    // A block minted by z.ai (crossed over via a live provider switch) has
-    // no Anthropic-native wire shape — it must not leak `data` verbatim.
-    let assistant = Message::assistant_content(
-        vec![
-            ContentPart::text("searching"),
-            ContentPart::provider_search("zai", "[web_search] rust", json!(["anything"])),
-        ],
-        vec![],
-    );
-    let out = convert_messages(&[assistant], false);
-    let blocks = out[0]["content"].as_array().unwrap();
-    assert_eq!(
-        blocks,
-        &vec![json!({ "type": "text", "text": "searching" })]
-    );
-}
-
 // ── tool entries (ADR-0226: no deferred loading) ───────────────────────
 
 #[test]
@@ -952,8 +777,6 @@ fn tool_entries_carry_no_defer_loading_key() {
         &[msg(MessageRole::User, "hi")],
         &[plain, other],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -976,8 +799,6 @@ fn cache_breakpoint_lands_on_the_last_tool_entry() {
         &[msg(MessageRole::User, "hi")],
         &[kernel, other],
         1024,
-        None,
-        None,
         None,
         model_spec(ThinkingStyle::Budget, false),
         None,
@@ -1040,8 +861,6 @@ fn effort_body(effort: Option<ReasoningEffort>, spec: AnthropicModelSpec) -> ser
             thinking_budget_tokens: None,
             reasoning_effort: effort,
         }),
-        None,
-        None,
         spec,
         None,
     )

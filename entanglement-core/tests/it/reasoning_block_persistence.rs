@@ -86,10 +86,7 @@ async fn thinking_block_emits_a_persisted_reasoning_block() {
 }
 
 #[tokio::test]
-async fn reasoning_block_rides_its_own_variant_not_search_result() {
-    // The two persisted content-block rails must stay distinct: a reader that
-    // treats every persisted block as a search result would mislabel reasoning,
-    // and pre-existing logs must keep replaying unchanged.
+async fn reasoning_block_is_emitted_exactly_once() {
     let holly = Holly::spawn(config());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -106,12 +103,6 @@ async fn reasoning_block_rides_its_own_variant_not_search_result() {
             .count(),
         1,
         "exactly one reasoning block, not duplicated"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, OutEvent::SearchResult { .. })),
-        "a thinking block must not be persisted as a search result"
     );
 }
 

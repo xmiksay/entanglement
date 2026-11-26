@@ -44,7 +44,6 @@ mod tests;
 mod think;
 
 use crate::client::HttpClient;
-use crate::web_search::WebSearchConfig;
 use crate::{LimitsResolver, Llm, LlmRequest, LlmStream, MessageRole};
 use async_trait::async_trait;
 use sse::PendingTool;
@@ -71,9 +70,6 @@ pub struct OpenAiLlm {
     /// Resolves the endpoint's and the requested model's rate limits, per
     /// request (#550).
     limits: LimitsResolver,
-    /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
-    /// the z.ai `web_search` tool. Bound at construction, invisible to core.
-    web_search: Option<WebSearchConfig>,
     /// Whether to forward [`LlmRequest::cache_key`] as OpenAI's
     /// `prompt_cache_key` implicit-cache routing hint (#673). Catalog-gated
     /// per provider (`ProviderEntry::prompt_cache_key`) — off for endpoints
@@ -91,17 +87,14 @@ pub struct OpenAiLlm {
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
     /// sent as `Bearer`. `limits` is consulted per request (#550).
-    /// `web_search = Some(..)` requests provider-side web search (#305).
     /// `thinking_spec` resolves the model's thinking handling per request
     /// (ADR-0191); `fixed_thinking_spec(ThinkingSpec::default())` keeps the
     /// pre-ADR-0191 behavior.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
         limits: LimitsResolver,
-        web_search: Option<WebSearchConfig>,
         send_prompt_cache_key: bool,
         thinking_spec: crate::ThinkingSpecResolver,
         http: HttpClient,
@@ -111,7 +104,6 @@ impl OpenAiLlm {
             api_key,
             default_model: default_model.into(),
             limits,
-            web_search,
             send_prompt_cache_key,
             thinking_spec,
             http,
@@ -121,18 +113,14 @@ impl OpenAiLlm {
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
 /// optional key, the default model id, the rate-limit resolver
-/// (`Catalog::limits_resolver`, or `fixed_limits`), and the opt-in
-/// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
-/// `thinking_spec` resolves the model's
-/// thinking handling per request (ADR-0191) —
+/// (`Catalog::limits_resolver`, or `fixed_limits`). `thinking_spec` resolves
+/// the model's thinking handling per request (ADR-0191) —
 /// `Catalog::thinking_spec_resolver(provider)` is the catalog-driven form.
-#[allow(clippy::too_many_arguments)]
 pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
     limits: LimitsResolver,
-    web_search: Option<WebSearchConfig>,
     send_prompt_cache_key: bool,
     thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
@@ -142,7 +130,6 @@ pub fn openai_factory(
         api_key,
         default_model,
         limits,
-        web_search,
         send_prompt_cache_key,
         thinking_spec,
         http,
@@ -169,7 +156,6 @@ impl Llm for OpenAiLlm {
             req.messages,
             req.tools,
             req.generation,
-            self.web_search.as_ref(),
             req.cache_key.filter(|_| self.send_prompt_cache_key),
             thinking,
             req.trailing_notice.as_deref(),

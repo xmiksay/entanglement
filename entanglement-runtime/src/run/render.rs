@@ -236,9 +236,6 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // Render a one-line notice; its non-delta arrival also flushes the
         // preceding partial `TextDelta` line so the retry's text stays separate.
         OutEvent::AmbiguousRetry { .. } => writeln!(out, "↻ model stop was ambiguous — retrying")?,
-        // Persisted provider-side web-search block (#481): already rendered
-        // live via `ReasoningDelta`'s query/source lines — nothing new to show.
-        OutEvent::SearchResult { .. } => {}
         // Captured extended-thinking block: the persistence rail for reasoning
         // already rendered live via `ReasoningDelta` — nothing new to show.
         OutEvent::ReasoningBlock { .. } => {}

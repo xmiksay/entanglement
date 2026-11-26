@@ -64,7 +64,7 @@ pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 out.push(json!({ "role": "user", "content": responses_content(&m.content) }));
             }
             MessageRole::Assistant => {
-                let text = assistant_text(&m.content);
+                let text = crate::content_text(&m.content);
                 if !text.is_empty() {
                     out.push(json!({ "role": "assistant", "content": text }));
                 }
@@ -147,9 +147,6 @@ fn responses_content(content: &[ContentPart]) -> Value {
                 "type": "input_image",
                 "image_url": format!("data:{media_type};base64,{data}"),
             }),
-            ContentPart::ProviderSearch { summary, .. } => {
-                json!({ "type": "input_text", "text": summary })
-            }
             ContentPart::Reasoning { .. } => json!(null),
             ContentPart::ToolReference { tool_name } => json!({
                 "type": "input_text",
@@ -162,24 +159,6 @@ fn responses_content(content: &[ContentPart]) -> Value {
         .filter(|v| !v.is_null())
         .collect();
     Value::Array(parts)
-}
-
-/// An assistant message's `content` string: its text parts plus any
-/// [`ContentPart::ProviderSearch`] summary appended as its own line (mirrors
-/// the OpenAI-compat client's `assistant_text`). No thinking-rail handling —
-/// this client doesn't (yet) capture/replay a Responses `reasoning` item;
-/// see the module doc.
-fn assistant_text(content: &[ContentPart]) -> String {
-    let mut text = crate::content_text(content);
-    for p in content {
-        if let ContentPart::ProviderSearch { summary, .. } = p {
-            if !text.is_empty() {
-                text.push_str("\n\n");
-            }
-            text.push_str(summary);
-        }
-    }
-    text
 }
 
 fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {

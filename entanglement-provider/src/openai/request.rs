@@ -3,7 +3,6 @@
 //! keep the streaming client itself under the file-size cap.
 
 use crate::catalog::ThinkingControl;
-use crate::web_search::WebSearchConfig;
 use crate::{ContentPart, GenerationParams, ImageSource, Message, MessageRole, ToolSpec};
 use serde_json::{json, Value};
 
@@ -18,7 +17,6 @@ pub(super) fn build_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: Option<GenerationParams>,
-    web_search: Option<&WebSearchConfig>,
     cache_key: Option<&str>,
     thinking: crate::ThinkingSpec,
     trailing_notice: Option<&str>,
@@ -40,19 +38,7 @@ pub(super) fn build_body(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    // The z.ai request dialect (`ProviderEntry::thinking_control: zai`) gates
-    // both z.ai-only body shapes below: the `thinking` object and the
-    // server-executed `web_search` tool entry. OpenAI proper 400s on either
-    // (unknown field; a non-`function` tool type), and the runtime hands every
-    // OpenAI-wire provider the same enabled `web_search` config.
-    let zai = thinking.control == Some(ThinkingControl::Zai);
-    // Function tools (core-advertised) plus the opt-in provider-side `web_search`
-    // entry (#305). The z.ai server tool rides the same `tools` array, so it is
-    // requestable even when no function tools are present.
-    let mut tool_entries = convert_tools(tools);
-    if let Some(ws) = web_search.filter(|_| zai) {
-        tool_entries.push(web_search_tool_entry(ws));
-    }
+    let tool_entries = convert_tools(tools);
     if !tool_entries.is_empty() {
         body["tools"] = Value::Array(tool_entries);
     }
@@ -78,7 +64,9 @@ pub(super) fn build_body(
         body["reasoning_effort"] = json!(effort);
     }
     // Always explicit on z.ai: with no object sent, z.ai thinks at `max`.
-    if zai {
+    // Gated on the z.ai request dialect (`ProviderEntry::thinking_control:
+    // zai`): OpenAI proper 400s on the unknown `thinking` field.
+    if thinking.control == Some(ThinkingControl::Zai) {
         let kind = if resolved.enabled {
             "enabled"
         } else {
@@ -240,11 +228,7 @@ pub(super) fn convert_messages(messages: &[Message], thinking: crate::ThinkingSp
 
 /// Render a message's content to OpenAI's `content` field. All-text collapses to
 /// a plain string (the common case, smaller wire); any image part switches to the
-/// multimodal block array (`text` / `image_url` with a `data:` URL, #197/#221). A
-/// [`ContentPart::ProviderSearch`] block (#481) always renders as its `summary`
-/// text — the OpenAI-compat wire has no native block format to replay a search
-/// call/result verbatim, so `summary` (never the opaque `data`) is the portable
-/// fallback, regardless of which provider minted it.
+/// multimodal block array (`text` / `image_url` with a `data:` URL, #197/#221).
 fn openai_content(content: &[ContentPart]) -> Value {
     if content
         .iter()
@@ -262,9 +246,6 @@ fn openai_content(content: &[ContentPart]) -> Value {
                 "type": "image_url",
                 "image_url": { "url": format!("data:{media_type};base64,{data}") },
             }),
-            ContentPart::ProviderSearch { summary, .. } => {
-                json!({ "type": "text", "text": summary })
-            }
             // A captured Reasoning block never rides the user/tool message
             // content arrays: replay is the assistant message's
             // `reasoning_content` field (ADR-0191), not a block here, and
@@ -282,8 +263,7 @@ fn openai_content(content: &[ContentPart]) -> Value {
             // Not expected here in practice either (rides tool-result content
             // from a `responses_native` session, handled separately in
             // `convert_messages`'s `MessageRole::Tool` arm above) — degrades
-            // to `summary` text, same portable-fallback contract as
-            // `ProviderSearch`.
+            // to its portable `summary` text.
             ContentPart::ToolSearchOutput { summary, .. } => {
                 json!({ "type": "text", "text": summary })
             }
@@ -293,12 +273,7 @@ fn openai_content(content: &[ContentPart]) -> Value {
     Value::Array(blocks)
 }
 
-/// An assistant message's `content` string: its text parts, plus any
-/// [`ContentPart::ProviderSearch`] block's `summary` appended as its own line
-/// (#481) — otherwise a search call/result minted earlier in the conversation
-/// (by this provider or, after a live `/model` switch, another one) would
-/// silently vanish from the request OpenAI-compat sends, since an assistant
-/// message here is a plain string with no block-array form.
+/// An assistant message's `content` string: its text parts.
 ///
 /// `strip_inline` (set when the model declared
 /// `thinking_format: inline_tags`, ADR-0191) removes `<think>…</think>` spans
@@ -306,19 +281,12 @@ fn openai_content(content: &[ContentPart]) -> Value {
 /// committed before the flag existed (capture-side routing already keeps new
 /// spans out of text). An unterminated span strips to the end of the text.
 fn assistant_text(content: &[ContentPart], strip_inline: bool) -> String {
-    let mut text = crate::content_text(content);
-    for p in content {
-        if let ContentPart::ProviderSearch { summary, .. } = p {
-            if !text.is_empty() {
-                text.push_str("\n\n");
-            }
-            text.push_str(summary);
-        }
-    }
+    let text = crate::content_text(content);
     if strip_inline {
-        text = strip_think_spans(&text);
+        strip_think_spans(&text)
+    } else {
+        text
     }
-    text
 }
 
 /// Remove complete `<think>…</think>` spans and everything from an
@@ -357,23 +325,4 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-/// The z.ai provider-side web-search tools entry (#305):
-/// `{"type":"web_search","web_search":{...}}`. `search_result: true` asks z.ai to
-/// return the source list (so `handle_chunk` can surface citations); `count` and
-/// `search_domain_filter` map the optional config knobs when set.
-fn web_search_tool_entry(ws: &WebSearchConfig) -> Value {
-    let mut inner = json!({
-        "enable": true,
-        "search_result": true,
-    });
-    if let Some(max) = ws.max_uses {
-        inner["count"] = json!(max);
-    }
-    if !ws.allowed_domains.is_empty() {
-        // z.ai's domain filter is a single string; join the configured domains.
-        inner["search_domain_filter"] = json!(ws.allowed_domains.join(","));
-    }
-    json!({ "type": "web_search", "web_search": inner })
 }

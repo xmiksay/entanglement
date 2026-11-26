@@ -45,7 +45,6 @@ impl OutEvent {
             | OutEvent::SessionForked { session, .. }
             | OutEvent::SkillActive { session, .. }
             | OutEvent::AmbiguousRetry { session, .. }
-            | OutEvent::SearchResult { session, .. }
             | OutEvent::ReasoningBlock { session, .. }
             | OutEvent::NestedCall { session, .. }
             | OutEvent::NestedCallSummary { session, .. } => Some(session),
@@ -122,7 +121,6 @@ impl OutEvent {
             | OutEvent::SessionForked { seq, .. }
             | OutEvent::SkillActive { seq, .. }
             | OutEvent::AmbiguousRetry { seq, .. }
-            | OutEvent::SearchResult { seq, .. }
             | OutEvent::ReasoningBlock { seq, .. } => Some(*seq),
         }
     }

@@ -34,19 +34,6 @@ pub enum ContentPart {
     /// An image block. First emitted by #221 (`read` on an image file); the
     /// converters render it to each provider's native image wire format.
     Image { source: ImageSource },
-    /// A provider-side web-search result block, minted server-side (#481,
-    /// follow-up to #305/ADR-0075's "not persisted" MVP limitation). `data` is
-    /// opaque JSON in `provider`'s own wire shape — it round-trips **verbatim**
-    /// only when replaying to that same provider (mirrors
-    /// [`ToolCall::provider_meta`][crate::ToolCall]'s opaque round-trip
-    /// contract); every other converter (a different provider, or a plain
-    /// renderer) reads only `summary`, a human-readable one-or-multi-line
-    /// rendering of the query/results, and never inspects `data`.
-    ProviderSearch {
-        provider: String,
-        summary: String,
-        data: serde_json::Value,
-    },
     /// A model's extended-thinking block, captured so it can be replayed to the
     /// provider that minted it. Anthropic requires the unmodified block —
     /// signature included — on the final assistant message whenever tool results
@@ -55,7 +42,6 @@ pub enum ContentPart {
     ///
     /// `data` is opaque JSON in `provider`'s own wire shape and round-trips
     /// **verbatim** only to that same provider (the
-    /// [`ProviderSearch`][ContentPart::ProviderSearch] /
     /// [`ToolCall::provider_meta`][crate::ToolCall] contract). Provider-shaped
     /// details — Anthropic's `signature`, whether the block was
     /// `redacted_thinking` — live inside it rather than as fields here, so the
@@ -63,8 +49,7 @@ pub enum ContentPart {
     /// and **may be empty**: current models omit thinking text by default while
     /// still returning a live signature, and such a block must still replay.
     ///
-    /// Unlike `ProviderSearch`, a foreign converter emits *nothing* rather than
-    /// falling back to text — reasoning is not answer content, so leaking it into
+    /// A foreign converter emits *nothing* rather than falling back to text — reasoning is not answer content, so leaking it into
     /// history on a model switch would corrupt the conversation.
     Reasoning {
         provider: String,
@@ -102,20 +87,6 @@ impl ContentPart {
                 media_type: media_type.into(),
                 data: data.into(),
             },
-        }
-    }
-
-    /// A provider-side web-search result block (#481). See
-    /// [`ProviderSearch`][ContentPart::ProviderSearch].
-    pub fn provider_search(
-        provider: impl Into<String>,
-        summary: impl Into<String>,
-        data: serde_json::Value,
-    ) -> Self {
-        ContentPart::ProviderSearch {
-            provider: provider.into(),
-            summary: summary.into(),
-            data,
         }
     }
 
@@ -164,7 +135,6 @@ impl ContentPart {
         match self {
             ContentPart::Text { text } => Some(text),
             ContentPart::Image { .. }
-            | ContentPart::ProviderSearch { .. }
             | ContentPart::Reasoning { .. }
             | ContentPart::ToolReference { .. }
             | ContentPart::ToolSearchOutput { .. } => None,
@@ -176,8 +146,7 @@ impl ContentPart {
 /// part on a wire with no native `tool_reference` mechanism (OpenAI-compat,
 /// Gemini) — both converters' tool-result branch append this to the result
 /// text so a discovered-tool outcome never silently vanishes from what the
-/// model sees, mirroring [`ProviderSearch::summary`][ContentPart::ProviderSearch]'s
-/// degrade-to-text contract.
+/// model sees.
 pub fn tool_reference_fallback_text(tool_name: &str) -> String {
     format!("[discovered tool: {tool_name}]")
 }
@@ -288,7 +257,7 @@ impl Message {
         Self::assistant_content(text_content(text), tool_calls)
     }
     /// An assistant turn with explicit multimodal content — text plus any
-    /// provider-native blocks (a search call/result, #481) in arrival order.
+    /// provider-native blocks (a reasoning block) in arrival order.
     pub fn assistant_content(content: Vec<ContentPart>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: MessageRole::Assistant,
@@ -359,21 +328,6 @@ mod tests {
     fn text_constructors_skip_empty_bodies() {
         assert!(Message::user("").content.is_empty());
         assert_eq!(Message::user("hi").content, vec![ContentPart::text("hi")]);
-    }
-
-    #[test]
-    fn provider_search_block_serializes_and_roundtrips() {
-        let part = ContentPart::provider_search(
-            "anthropic",
-            "[web_search] rust async",
-            serde_json::json!({ "type": "server_tool_use", "id": "srvtoolu_1" }),
-        );
-        let msg = Message::assistant_content(vec![ContentPart::text("here"), part.clone()], vec![]);
-        assert_eq!(msg.text(), "here", "as_text skips the search block");
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: Message = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.content, msg.content);
-        assert_eq!(back.content[1], part);
     }
 
     #[test]

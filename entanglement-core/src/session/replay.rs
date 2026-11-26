@@ -165,11 +165,9 @@ impl Session {
                 OutEvent::ReasoningDelta { .. } | OutEvent::ToolCallDelta { .. } => {
                     fold.round_event(ctx)
                 }
-                // Persisted reasoning (ADR-0160) and provider-search (#481)
-                // blocks join the round's assistant message after its text.
-                OutEvent::ReasoningBlock { part, .. } | OutEvent::SearchResult { part, .. } => {
-                    fold.push_block(ctx, part.clone())
-                }
+                // Persisted reasoning blocks (ADR-0160) join the round's
+                // assistant message after its text.
+                OutEvent::ReasoningBlock { part, .. } => fold.push_block(ctx, part.clone()),
                 // Context gets the call as emitted: the fold rebuilds an
                 // unwrapped `mcp` call (or an old log's `invoke`) from its
                 // envelope (ADR-0226).
@@ -486,23 +484,23 @@ mod tests {
         );
     }
 
-    /// A `SearchResult` (#481) folds into the same assistant message as the
+    /// A `ReasoningBlock` folds into the same assistant message as the
     /// surrounding `TextDelta`s, not a separate one — mirroring the live
-    /// commit in `session/round.rs`, which appends search blocks after the
+    /// commit in `session/round.rs`, which appends content blocks after the
     /// round's text in one `Message::assistant_content` push.
     #[test]
-    fn replay_folds_search_result_into_the_assistant_message_content() {
+    fn replay_folds_reasoning_block_into_the_assistant_message_content() {
         let cfg = EngineConfig::default();
         let sid = SessionId::new("root");
-        let part = entanglement_provider::ContentPart::provider_search(
+        let part = entanglement_provider::ContentPart::reasoning(
             "anthropic",
-            "[web_search] rust async",
-            serde_json::json!({ "type": "server_tool_use", "id": "srvtoolu_1" }),
+            "thinking",
+            serde_json::json!({ "type": "thinking", "thinking": "thinking", "signature": "sig" }),
         );
         let records: Vec<(Option<InMsg>, OutEvent)> = vec![
             (None, started("root", None, None)),
             (
-                Some(InMsg::prompt(sid.clone(), "search for rust async")),
+                Some(InMsg::prompt(sid.clone(), "think it over")),
                 OutEvent::TextDelta {
                     session: sid.clone(),
                     seq: 1,
@@ -511,7 +509,7 @@ mod tests {
             ),
             (
                 None,
-                OutEvent::SearchResult {
+                OutEvent::ReasoningBlock {
                     session: sid.clone(),
                     seq: 2,
                     part: part.clone(),

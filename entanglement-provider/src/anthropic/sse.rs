@@ -1,12 +1,11 @@
 //! Server-Sent-Events frame parsing: one Anthropic SSE frame → zero or more
-//! [`LlmEvent`]s, plus the raw content-block accumulation `mod.rs`'s
-//! `pause_turn` continuation loop needs (#481). Split out of `anthropic/mod.rs`
-//! to keep the streaming client itself under the file-size cap.
+//! [`LlmEvent`]s. Split out of `anthropic/mod.rs` to keep the streaming client
+//! itself under the file-size cap.
 //!
 //! # Wire shape
 //! - `message_start`            → input token usage
-//! - `content_block_start`      → start a `text`/`tool_use`/`server_tool_use`
-//!   block, or a complete `web_search_tool_result` block
+//! - `content_block_start`      → start a `tool_use`/`thinking` block, or a
+//!   complete `redacted_thinking` block
 //! - `content_block_delta`      → `text_delta` / `input_json_delta` /
 //!   `thinking_delta`
 //! - `content_block_stop`       → finalize the pending block
@@ -21,11 +20,6 @@ pub(super) struct PendingTool {
     pub id: String,
     pub name: String,
     pub input_buf: String,
-    /// `true` for a `server_tool_use` block (provider-side web search, #305):
-    /// the provider runs it, so on stop it surfaces as `Reasoning` +
-    /// `ContentBlock`, **never** a `ToolCall`, and its arg fragments are not
-    /// streamed as `ToolCallDelta`.
-    pub is_server: bool,
 }
 
 /// An extended-thinking block being assembled across deltas. Both halves arrive
@@ -65,27 +59,15 @@ pub(super) fn parse_frame(frame: &str) -> (String, Option<Value>) {
 /// state. Tool input is assembled across `content_block_delta` events and
 /// finalized on `content_block_stop`. Pure (no I/O) so it unit-tests directly.
 ///
-/// `assembled_blocks` accumulates every finalized content block (text,
-/// `tool_use`, `server_tool_use`, `web_search_tool_result`) in its raw
-/// Anthropic wire shape, in arrival order — not for [`LlmEvent`] emission, but
-/// for `mod.rs`'s `pause_turn` continuation (#481): resending the paused turn's
-/// content verbatim is exactly this array. `pause_turn` is set when a
-/// `message_delta`'s `stop_reason` is `"pause_turn"`; the caller owns deciding
-/// whether/how to continue. Extended-thinking blocks are captured alongside the
-/// rest — signature included — which both closes the earlier `pause_turn`
-/// limitation (a pause landing mid-thinking-block used to lose it) and gives the
-/// turn loop the block Anthropic requires back on a tool round-trip.
-#[allow(clippy::too_many_arguments)]
+/// Extended-thinking blocks are captured whole — signature included — as a
+/// `ContentBlock`, the block Anthropic requires back on a tool round-trip.
 pub(super) fn handle_frame(
     event: &str,
     data: Option<Value>,
     current_tool: &mut Option<PendingTool>,
-    current_text: &mut Option<String>,
     current_thinking: &mut Option<PendingThinking>,
-    assembled_blocks: &mut Vec<Value>,
     usage: &mut Usage,
     stop_reason: &mut Option<StopReason>,
-    pause_turn: &mut bool,
 ) -> Result<Vec<LlmEvent>, anyhow::Error> {
     let mut out = Vec::new();
     let data = data.unwrap_or(Value::Null);
@@ -121,20 +103,12 @@ pub(super) fn handle_frame(
             }
             if let Some(r) = data.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
                 *stop_reason = Some(StopReason::from_anthropic(r));
-                *pause_turn = r == "pause_turn";
             }
         }
         "content_block_start" => {
             let block_type = data.pointer("/content_block/type").and_then(|v| v.as_str());
             match block_type {
-                Some("text") => {
-                    *current_text = Some(String::new());
-                }
-                // A client tool-call block (assembled, then flushed as `ToolCall`)
-                // or a provider-side `server_tool_use` block (#305): the latter is
-                // executed by the provider, so on stop it surfaces as `Reasoning`
-                // + `ContentBlock`, never a `ToolCall`.
-                Some(kind @ ("tool_use" | "server_tool_use")) => {
+                Some("tool_use") => {
                     let id = data
                         .pointer("/content_block/id")
                         .and_then(|v| v.as_str())
@@ -149,17 +123,7 @@ pub(super) fn handle_frame(
                         id,
                         name,
                         input_buf: String::new(),
-                        is_server: kind == "server_tool_use",
                     });
-                }
-                // The provider streams the executed search's sources (or an error)
-                // as a complete `web_search_tool_result` block (#305) — no deltas,
-                // so it's captured and finalized right here.
-                Some("web_search_tool_result") => {
-                    if let Some(block) = data.pointer("/content_block") {
-                        assembled_blocks.push(block.clone());
-                        emit_web_search_result(block, &mut out);
-                    }
                 }
                 // Extended thinking: text and signature both arrive as deltas, so
                 // accumulate until `content_block_stop`. Started even when the
@@ -169,12 +133,11 @@ pub(super) fn handle_frame(
                 Some("thinking") => {
                     *current_thinking = Some(PendingThinking::default());
                 }
-                // Redacted thinking arrives whole, like a search result: opaque
-                // `data`, no text to show, and it must be echoed back verbatim
-                // alongside its siblings.
+                // Redacted thinking arrives whole: opaque `data`, no text to
+                // show, and it must be echoed back verbatim alongside its
+                // siblings.
                 Some("redacted_thinking") => {
                     if let Some(block) = data.pointer("/content_block") {
-                        assembled_blocks.push(block.clone());
                         out.push(LlmEvent::ContentBlock(ContentPart::reasoning(
                             "anthropic",
                             "",
@@ -191,9 +154,6 @@ pub(super) fn handle_frame(
                     Some("text_delta") => {
                         if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
                             out.push(LlmEvent::Text(text.to_string()));
-                            if let Some(t) = current_text.as_mut() {
-                                t.push_str(text);
-                            }
                         }
                     }
                     Some("input_json_delta") => {
@@ -206,16 +166,12 @@ pub(super) fn handle_frame(
                                 // Surface the raw arg fragment as it streams (#194)
                                 // so heads can render file-sized `edit`/`write`
                                 // inputs before `content_block_stop` finalizes the
-                                // assembled `ToolCall`. A `server_tool_use` block is
-                                // provider-internal (#305) — accumulate its query but
-                                // don't stream it as a client tool delta.
-                                if !tool.is_server {
-                                    out.push(LlmEvent::ToolCallDelta {
-                                        id: tool.id.clone(),
-                                        name: tool.name.clone(),
-                                        delta: partial.to_string(),
-                                    });
-                                }
+                                // assembled `ToolCall`.
+                                out.push(LlmEvent::ToolCallDelta {
+                                    id: tool.id.clone(),
+                                    name: tool.name.clone(),
+                                    delta: partial.to_string(),
+                                });
                             }
                         }
                     }
@@ -249,45 +205,12 @@ pub(super) fn handle_frame(
                 } else {
                     tool.input_buf
                 };
-                let parsed_input: Value =
-                    serde_json::from_str(&input).unwrap_or_else(|_| json!({}));
-                if tool.is_server {
-                    let block = json!({
-                        "type": "server_tool_use",
-                        "id": tool.id,
-                        "name": tool.name,
-                        "input": parsed_input,
-                    });
-                    assembled_blocks.push(block.clone());
-                    // Provider-side web search (#305): surface the query as a
-                    // Reasoning line + a persisted ContentBlock (#481); the
-                    // provider runs the search itself, so this must never
-                    // become a `ToolCall`.
-                    let query = parsed_input
-                        .get("query")
-                        .and_then(|q| q.as_str())
-                        .unwrap_or_default();
-                    let summary = format!("[web_search] {query}");
-                    out.push(LlmEvent::Reasoning(summary.clone()));
-                    out.push(LlmEvent::ContentBlock(ContentPart::provider_search(
-                        "anthropic",
-                        summary,
-                        block,
-                    )));
-                } else {
-                    assembled_blocks.push(json!({
-                        "type": "tool_use",
-                        "id": tool.id.clone(),
-                        "name": tool.name.clone(),
-                        "input": parsed_input,
-                    }));
-                    out.push(LlmEvent::ToolCall(crate::ToolCall {
-                        id: tool.id,
-                        name: tool.name,
-                        input,
-                        provider_meta: None,
-                    }));
-                }
+                out.push(LlmEvent::ToolCall(crate::ToolCall {
+                    id: tool.id,
+                    name: tool.name,
+                    input,
+                    provider_meta: None,
+                }));
             } else if let Some(thinking) = current_thinking.take() {
                 // Rebuild the block in Anthropic's own wire shape so replay can
                 // send it back byte-for-byte. Empty `thinking` text is normal and
@@ -299,16 +222,11 @@ pub(super) fn handle_frame(
                     "signature": thinking.signature,
                 });
                 if !thinking.signature.is_empty() {
-                    assembled_blocks.push(block.clone());
                     out.push(LlmEvent::ContentBlock(ContentPart::reasoning(
                         "anthropic",
                         thinking.text,
                         block,
                     )));
-                }
-            } else if let Some(text) = current_text.take() {
-                if !text.is_empty() {
-                    assembled_blocks.push(json!({ "type": "text", "text": text }));
                 }
             }
         }
@@ -323,54 +241,6 @@ pub(super) fn handle_frame(
         _ => {}
     }
     Ok(out)
-}
-
-/// Render a `web_search_tool_result` block (#305) as `Reasoning` lines — an
-/// array of `web_search_result` entries → one `[web_search] {title} — {url}`
-/// line each, an error object → a single `[web_search] error: {code}` line —
-/// plus one persisted `ContentBlock` (#481) carrying the whole raw `block` and
-/// a newline-joined `summary` of those same lines, so a non-Anthropic renderer
-/// (or a converter on another provider's wire) has a readable fallback without
-/// ever needing `block` itself.
-fn emit_web_search_result(block: &Value, out: &mut Vec<LlmEvent>) {
-    let content = block.get("content");
-    let mut lines: Vec<String> = Vec::new();
-    if let Some(entries) = content.and_then(Value::as_array) {
-        for entry in entries {
-            let title = entry
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let url = entry
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            if title.is_empty() && url.is_empty() {
-                continue;
-            }
-            lines.push(format!("[web_search] {title} — {url}"));
-        }
-    } else if content.and_then(|c| c.get("type")).and_then(|v| v.as_str())
-        == Some("web_search_tool_result_error")
-    {
-        let code = content
-            .and_then(|c| c.get("error_code"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        lines.push(format!("[web_search] error: {code}"));
-    }
-    for line in &lines {
-        out.push(LlmEvent::Reasoning(line.clone()));
-    }
-    if !lines.is_empty() {
-        out.push(LlmEvent::ContentBlock(ContentPart::provider_search(
-            "anthropic",
-            lines.join("\n"),
-            block.clone(),
-        )));
-    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,6 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::engine_setup::build_config;
 use crate::factories::build_model_resolver;
-use crate::providers::web_search_config;
 use crate::tool_runner::EscapeRoot;
 use crate::{
     agents, config, file_backup, host, logging, mcp, mode, policy, retained_output, script_ops,
@@ -177,11 +176,7 @@ pub(crate) async fn boot(
     let primary_concurrency = catalog.effective_concurrency(&provider_name, &model_info.id);
     let aux_registry = crate::aux_llm::AuxLlmRegistry::new(
         live_aux_models.clone(),
-        build_model_resolver(
-            catalog.clone(),
-            http_client.clone(),
-            web_search_config(user_config),
-        ),
+        build_model_resolver(catalog.clone(), http_client.clone()),
         engine_config.llm_factory.clone(),
         catalog.clone(),
         primary_concurrency,

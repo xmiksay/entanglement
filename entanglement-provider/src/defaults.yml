@@ -400,8 +400,6 @@ providers:
     #   to any model, so this only documents the fact.
     # - `replay_thinking: true`: preserved-thinking models keep prior-turn
     #   thinking, so every captured block replays (ADR-0202).
-    # - `web_search_tool_version: web_search_20260209` on the 4.6+ models; the
-    #   budget-style holdovers keep the client's `_20250305` fallback.
     # `thinking_budget_tokens` stays unset everywhere; `max_output_tokens` is
     # generous because the cap covers thinking *and* the answer.
     models:
@@ -416,7 +414,6 @@ providers:
         supports_temperature: false
         thinking_required: true
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 10.0
           output: 50.0
@@ -433,7 +430,6 @@ providers:
         supports_temperature: false
         thinking_required: true
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 10.0
           output: 50.0
@@ -449,7 +445,6 @@ providers:
         thinking_style: adaptive
         supports_temperature: false
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -465,7 +460,6 @@ providers:
         thinking_style: adaptive
         supports_temperature: false
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -481,7 +475,6 @@ providers:
         thinking_style: adaptive
         supports_temperature: false
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -496,7 +489,6 @@ providers:
         replay_thinking: true
         thinking_style: adaptive
         effort_tiers: [low, medium, high, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 5.0
           output: 25.0
@@ -512,7 +504,6 @@ providers:
         thinking_style: adaptive
         supports_temperature: false
         effort_tiers: [low, medium, high, xhigh, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 2.0
           output: 10.0
@@ -527,7 +518,6 @@ providers:
         replay_thinking: true
         thinking_style: adaptive
         effort_tiers: [low, medium, high, max]
-        web_search_tool_version: web_search_20260209
         pricing:
           input: 3.0
           output: 15.0

@@ -12,8 +12,8 @@ use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc};
 
 use super::emit::{
-    emit_reasoning_block, emit_search_result, emit_tool_call, emit_tool_exec, emit_turn_done,
-    emit_turn_error, emit_usage, Caller,
+    emit_reasoning_block, emit_tool_call, emit_tool_exec, emit_turn_done, emit_turn_error,
+    emit_usage, Caller,
 };
 use super::mcp_envelope::unwrap_batch;
 use super::stream::{stream_round, StreamedRound};
@@ -189,18 +189,11 @@ pub(super) async fn run_attempt(
     }
     content.extend(content_blocks.iter().cloned());
     if !(content.is_empty() && tool_calls.is_empty()) {
-        // Persisted before the message itself is pushed (#481): each block gets
-        // its own seq-bearing content event so `Session::replay` can reconstruct
-        // this exact content, mirroring `AmbiguousRetry`. Reasoning blocks ride
-        // their own variant rather than `SearchResult` — same rail, honest name,
-        // and pre-existing session logs keep replaying unchanged.
+        // Persisted before the message itself is pushed: each block gets its
+        // own seq-bearing content event so `Session::replay` can reconstruct
+        // this exact content, mirroring `AmbiguousRetry`.
         for part in &content_blocks {
-            match part {
-                ContentPart::Reasoning { .. } => {
-                    emit_reasoning_block(events, session, part.clone(), &s.seq)
-                }
-                _ => emit_search_result(events, session, part.clone(), &s.seq),
-            }
+            emit_reasoning_block(events, session, part.clone(), &s.seq);
         }
         s.ctx
             .push(Message::assistant_content(content, tool_calls.clone()));

@@ -4,11 +4,10 @@
 use std::sync::Arc;
 
 use entanglement_provider::{
-    Catalog, HttpClient, LlmFactory, ModelResolver, ProviderEntry, ResolvedModel, WebSearchConfig,
-    Wire,
+    Catalog, HttpClient, LlmFactory, ModelResolver, ProviderEntry, ResolvedModel, Wire,
 };
 
-use crate::providers::{env_nonempty, resolve_base, web_search_tool_version};
+use crate::providers::{env_nonempty, resolve_base};
 
 /// Build a Gemini-wire [`LlmFactory`] for an explicit `(entry, model)`. Shared by
 /// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
@@ -60,7 +59,6 @@ pub(crate) fn openai_factory_for(
     model: &str,
     http_client: &HttpClient,
     catalog: &Catalog,
-    web_search: Option<WebSearchConfig>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
     let key = match (explicit_key, &entry.key_env) {
@@ -77,7 +75,6 @@ pub(crate) fn openai_factory_for(
         key,
         model.to_string(),
         catalog.limits_resolver(&entry.name),
-        web_search,
         entry.prompt_cache_key,
         catalog.thinking_spec_resolver(&entry.name),
         http_client.clone(),
@@ -117,8 +114,7 @@ pub(crate) fn openai_responses_factory_for(
 
 /// Build an Anthropic-wire [`LlmFactory`] for an explicit `(entry, model)`.
 /// Shared by startup and the live-switch resolver (#218). Always keyed;
-/// `Err(message)` when the key env is absent/unset. `web_search_tool_version`
-/// selects the server-tool type (#481) when web search is enabled. Base from
+/// `Err(message)` when the key env is absent/unset. Base from
 /// `{NAME}_API_BASE` env else `entry.base_url` else the client's
 /// own [`entanglement_provider::ANTHROPIC_BASE`] default — mirroring
 /// [`openai_factory_for`]/[`gemini_factory_for`] (#551; before this a
@@ -127,14 +123,11 @@ pub(crate) fn openai_responses_factory_for(
 /// `explicit_key`, when `Some`, is used verbatim instead of reading
 /// `entry.key_env` from the process environment (#522 multi-user seam,
 /// mirroring [`gemini_factory_for`]).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn anthropic_factory_for(
     entry: &ProviderEntry,
     model: &str,
     http_client: &HttpClient,
     catalog: &Catalog,
-    web_search: Option<WebSearchConfig>,
-    web_search_tool_version: Option<String>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
     let key = match explicit_key {
@@ -153,11 +146,7 @@ pub(crate) fn anthropic_factory_for(
         key,
         model.to_string(),
         catalog.limits_resolver(&entry.name),
-        web_search,
-        web_search_tool_version,
-        // Thinking shape, replay, effort tiers, temperature support — resolved
-        // inside the factory builder (not threaded like
-        // `web_search_tool_version`) because they apply to every request. An
+        // Thinking shape, replay, effort tiers, temperature support. An
         // unlisted model gets `AnthropicModelSpec::default()`: budget shape,
         // replay on (the API requires the block back on a tool round-trip).
         catalog.anthropic_model_spec(&entry.name, model),
@@ -171,26 +160,14 @@ pub(crate) fn anthropic_factory_for(
 /// an explicit `(provider, model)` — so a mid-session switch binds exactly like a
 /// fresh launch would, minus the model-default fallback (the model is chosen by
 /// the head). An unknown provider / missing key comes back as `Err` for the head
-/// to surface. The opt-in [`WebSearchConfig`] (#305) is captured too, so a live
-/// switch binds provider-side web search exactly as startup did.
-pub(crate) fn build_model_resolver(
-    catalog: Catalog,
-    http_client: HttpClient,
-    web_search: Option<WebSearchConfig>,
-) -> ModelResolver {
+/// to surface.
+pub(crate) fn build_model_resolver(catalog: Catalog, http_client: HttpClient) -> ModelResolver {
     // Single-user mode: every session shares this one process-global catalog +
     // client, so the resolving session's user (#522) is simply ignored — a
     // multi-user embedder wires `entanglement_provider::multi_user::
     // build_user_model_resolver` onto this seam instead (ADR-0184).
     Arc::new(move |_user, provider: &str, model: &str| {
-        resolve_catalog_entry(
-            &catalog,
-            &http_client,
-            web_search.clone(),
-            provider,
-            model,
-            None,
-        )
+        resolve_catalog_entry(&catalog, &http_client, provider, model, None)
     })
 }
 
@@ -202,7 +179,6 @@ pub(crate) fn build_model_resolver(
 fn resolve_catalog_entry(
     catalog: &Catalog,
     http_client: &HttpClient,
-    web_search: Option<WebSearchConfig>,
     provider: &str,
     model: &str,
     explicit_key: Option<&str>,
@@ -211,18 +187,8 @@ fn resolve_catalog_entry(
         .provider(provider)
         .ok_or_else(|| format!("unknown provider `{provider}`"))?;
     let llm_factory = match entry.wire {
-        Wire::Openai => {
-            openai_factory_for(entry, model, http_client, catalog, web_search, explicit_key)?
-        }
-        Wire::Anthropic => anthropic_factory_for(
-            entry,
-            model,
-            http_client,
-            catalog,
-            web_search,
-            web_search_tool_version(entry, model, catalog),
-            explicit_key,
-        )?,
+        Wire::Openai => openai_factory_for(entry, model, http_client, catalog, explicit_key)?,
+        Wire::Anthropic => anthropic_factory_for(entry, model, http_client, catalog, explicit_key)?,
         Wire::Gemini => gemini_factory_for(entry, model, http_client, catalog, explicit_key)?,
         Wire::OpenaiResponses => {
             openai_responses_factory_for(entry, model, http_client, catalog, explicit_key)?

@@ -44,7 +44,6 @@ pub mod openai_responses;
 pub mod response;
 mod sse_frame;
 pub mod web_fetch;
-pub mod web_search;
 
 pub use anthropic::{anthropic_factory, AnthropicLlm, ANTHROPIC_BASE};
 pub use catalog::{
@@ -87,4 +86,3 @@ pub use openai::{
 };
 pub use openai_responses::{openai_responses_factory, OpenAiResponsesLlm, OPENAI_RESPONSES_BASE};
 pub use response::{stream_from_response, LlmResponse};
-pub use web_search::WebSearchConfig;

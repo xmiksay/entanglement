@@ -374,17 +374,13 @@ impl SessionView {
             // text renders as its own bubble instead of concatenating onto the
             // truncated one.
             OutEvent::AmbiguousRetry { seq, .. } => self.fold_ambiguous_retry(seq),
-            // Persisted provider-side web-search block (#481): already rendered
-            // live via `ReasoningDelta`'s query/source lines — this is the
-            // persisted-to-history echo, so advance the seq dedupe guard but
-            // don't push a second, duplicate transcript entry.
-            // Same shape for the captured extended-thinking block: the live
-            // `ReasoningDelta` lines already rendered this reasoning, so advance
-            // the dedupe guard without adding a duplicate transcript entry.
             ev @ (OutEvent::NestedCall { .. } | OutEvent::NestedCallSummary { .. }) => {
                 self.fold_nested_call(&ev)
             }
-            OutEvent::SearchResult { seq, .. } | OutEvent::ReasoningBlock { seq, .. } => {
+            // The captured extended-thinking block: the live `ReasoningDelta`
+            // lines already rendered this reasoning, so advance the seq dedupe
+            // guard without adding a duplicate transcript entry.
+            OutEvent::ReasoningBlock { seq, .. } => {
                 if seq > self.last_seen_seq {
                     self.last_seen_seq = seq;
                     true

@@ -8,7 +8,6 @@ use super::sse::{
     SseEvent,
 };
 use super::PendingTool;
-use crate::web_search::WebSearchConfig;
 use crate::{
     ContentPart, GenerationParams, LlmEvent, Message, MessageRole, StopReason, ThinkingSpec,
     ToolCall, ToolSpec, Usage,
@@ -37,7 +36,6 @@ fn body_carries_prompt_cache_key_when_given() {
         &[msg(MessageRole::User, "hi")],
         &[],
         None,
-        None,
         Some("s-abc123"),
         ThinkingSpec::default(),
         None,
@@ -52,7 +50,6 @@ fn body_prepends_system_message_and_omits_tools_when_empty() {
         "be helpful",
         &[msg(MessageRole::User, "hi")],
         &[],
-        None,
         None,
         None,
         ThinkingSpec::default(),
@@ -134,7 +131,6 @@ fn body_includes_tools_with_parameters_schema() {
         &[spec],
         None,
         None,
-        None,
         ThinkingSpec::default(),
         None,
     );
@@ -158,7 +154,6 @@ fn generation_params_set_temperature_and_max_tokens() {
             reasoning_effort: None,
         }),
         None,
-        None,
         ThinkingSpec::default(),
         None,
     );
@@ -181,7 +176,6 @@ fn reasoning_effort_passes_through_verbatim_lowercase() {
             reasoning_effort: Some(crate::ReasoningEffort::High),
         }),
         None,
-        None,
         ThinkingSpec::default(),
         None,
     );
@@ -196,7 +190,6 @@ fn generation_params_omit_unset_knobs() {
         &[msg(MessageRole::User, "hi")],
         &[],
         Some(GenerationParams::default()),
-        None,
         None,
         ThinkingSpec::default(),
         None,
@@ -471,143 +464,6 @@ fn stream_without_finish_reason_flushes_pending_tools() {
     assert!(!tools.is_empty(), "tools should still be pending");
 }
 
-// ── provider-side web search (#305, persistence + version flag #481) ───────
-
-#[test]
-fn body_omits_web_search_tool_without_config() {
-    let body = build_body(
-        "glm-5.2",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        None,
-        None,
-        None,
-        ThinkingSpec::default(),
-        None,
-    );
-    assert!(body.get("tools").is_none());
-}
-
-#[test]
-fn body_pushes_web_search_tool_when_configured() {
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: Some(3),
-        allowed_domains: vec!["docs.rs".into(), "example.com".into()],
-    };
-    let body = build_body(
-        "glm-5.2",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[],
-        None,
-        Some(&ws),
-        None,
-        zai_spec("zai", "glm-5.2"),
-        None,
-    );
-    let tools = body["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["type"], "web_search");
-    assert_eq!(tools[0]["web_search"]["enable"], true);
-    assert_eq!(tools[0]["web_search"]["search_result"], true);
-    assert_eq!(tools[0]["web_search"]["count"], 3);
-    assert_eq!(
-        tools[0]["web_search"]["search_domain_filter"],
-        "docs.rs,example.com"
-    );
-}
-
-#[test]
-fn web_search_tool_rides_alongside_function_tools() {
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: None,
-        allowed_domains: vec![],
-    };
-    let body = build_body(
-        "glm-5.2",
-        "sys",
-        &[msg(MessageRole::User, "hi")],
-        &[ToolSpec::new("greet", "say hi")],
-        None,
-        Some(&ws),
-        None,
-        zai_spec("zai", "glm-5.2"),
-        None,
-    );
-    let tools = body["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 2);
-    assert_eq!(tools[0]["type"], "function");
-    assert_eq!(tools[1]["type"], "web_search");
-    // No knobs set ⇒ no `count` / `search_domain_filter`.
-    assert!(tools[1]["web_search"].get("count").is_none());
-    assert!(tools[1]["web_search"].get("search_domain_filter").is_none());
-}
-
-#[test]
-fn web_search_array_surfaces_as_reasoning_and_content_block() {
-    // A chunk carrying a `web_search` source array — a top-level sibling of
-    // `choices`, the placement confirmed live against a Coding Plan key
-    // (#625, ADR-0171) — yields one Reasoning line per entry, no
-    // Text/ToolCall, plus one persisted ContentBlock (#481) summarizing the
-    // same lines.
-    let data = json!({ "web_search": [
-        { "title": "Rust async", "link": "https://docs.rs/async" },
-        { "title": "Tokio", "url": "https://tokio.rs" },
-    ] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
-    assert_eq!(
-        evs,
-        vec![
-            LlmEvent::Reasoning("[web_search] Rust async — https://docs.rs/async".into()),
-            LlmEvent::Reasoning("[web_search] Tokio — https://tokio.rs".into()),
-            LlmEvent::ContentBlock(ContentPart::provider_search(
-                "zai",
-                "[web_search] Rust async — https://docs.rs/async\n[web_search] Tokio — https://tokio.rs",
-                data["web_search"].clone(),
-            )),
-        ]
-    );
-}
-
-#[test]
-fn chunk_without_web_search_array_emits_no_reasoning() {
-    let data = json!({ "choices": [{ "delta": { "content": "hi" } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
-    assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
-}
-
-#[test]
-fn web_search_array_nested_under_delta_is_not_scanned() {
-    // The pre-#625 defensive scan also checked `choices[0].delta.web_search`;
-    // live verification confirmed z.ai never places it there (always a
-    // top-level sibling of `choices`), so that scan site was dropped. A
-    // payload shaped that way must not surface as a search result.
-    let data = json!({ "choices": [{ "delta": { "content": "hi", "web_search": [
-        { "title": "Rust async", "link": "https://docs.rs/async" },
-    ] } }] });
-    let evs = handle_chunk(&data, &mut BTreeMap::new(), &mut Usage::default(), None).unwrap();
-    assert_eq!(evs, vec![LlmEvent::Text("hi".into())]);
-}
-
-#[test]
-fn assistant_provider_search_block_renders_as_appended_text() {
-    // #481: the OpenAI-compat wire has no native replay format for a search
-    // block, so its `summary` rides as plain text on the assistant message —
-    // regardless of which provider minted it (no `data` is ever sent).
-    let assistant = Message::assistant_content(
-        vec![
-            ContentPart::text("found it"),
-            ContentPart::provider_search("anthropic", "[web_search] rust", json!({"raw": true})),
-        ],
-        vec![],
-    );
-    let out = convert_messages(&[assistant], ThinkingSpec::default());
-    assert_eq!(out[0]["content"], "found it\n\n[web_search] rust");
-}
-
 // ── tool search / deferred loading foreign-wire fallback (ADR-0196 §3) ──
 
 #[test]
@@ -644,7 +500,6 @@ fn request_body_with_a_tool_reference_never_emits_the_native_key() {
         "sys",
         &[msg(MessageRole::User, "hi"), tool_result],
         &[tool],
-        None,
         None,
         None,
         ThinkingSpec::default(),
@@ -900,7 +755,6 @@ fn effort_body(
             ..GenerationParams::default()
         }),
         None,
-        None,
         thinking,
         None,
     )
@@ -969,34 +823,4 @@ fn openai_without_control_never_sends_a_thinking_object() {
     assert!(body.get("thinking").is_none());
     // No tiers in the catalog ⇒ pass-through.
     assert_eq!(body["reasoning_effort"], "xhigh");
-}
-
-#[test]
-fn web_search_entry_rides_only_the_zai_dialect() {
-    // OpenAI proper 400s on a non-`function` tool type, and the runtime binds
-    // the same enabled config onto every OpenAI-wire provider.
-    let ws = WebSearchConfig {
-        enabled: true,
-        max_uses: None,
-        allowed_domains: vec![],
-    };
-    let with = |thinking: ThinkingSpec| {
-        build_body(
-            "m",
-            "sys",
-            &[msg(MessageRole::User, "hi")],
-            &[],
-            None,
-            Some(&ws),
-            None,
-            thinking,
-            None,
-        )
-    };
-    assert!(with(zai_spec("openai", "gpt-4o")).get("tools").is_none());
-    assert!(with(ThinkingSpec::default()).get("tools").is_none());
-    assert_eq!(
-        with(zai_spec("zai_paas", "glm-5.3"))["tools"][0]["type"],
-        "web_search"
-    );
 }

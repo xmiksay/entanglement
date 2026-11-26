@@ -11,7 +11,7 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 use crate::factories::build_model_resolver;
 use crate::host::{GlobJsonTool, GrepJsonTool, ReadRawTool};
 use crate::mode::ModeTable;
-use crate::providers::{select_provider, web_search_config};
+use crate::providers::select_provider;
 use crate::skills::LoadSkillTool;
 use crate::tool_runner::EscapeRoot;
 
@@ -86,11 +86,7 @@ pub(crate) async fn build_config(
     // Realtime model/provider switch (#218): give the engine a resolver so a
     // session can re-bind its LLM from the catalog with no restart. Captures the
     // catalog + the warm per-endpoint HTTP client (#217).
-    cfg.model_resolver = Some(build_model_resolver(
-        catalog.clone(),
-        http_client.clone(),
-        web_search_config(user_config),
-    ));
+    cfg.model_resolver = Some(build_model_resolver(catalog.clone(), http_client.clone()));
     // File-based agent definitions (#112) replace core's hardcoded fallback trio.
     cfg.agents = agents;
     // Lets a spawned child's agent `default_mode` narrow it, never widen (#763).

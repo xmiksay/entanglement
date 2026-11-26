@@ -21,7 +21,7 @@ use entanglement_provider::{
 /// Outcome of one streamed round-trip.
 pub(super) enum StreamedRound {
     /// Stream completed: committed-ready text, assembled calls, any persisted
-    /// search-result blocks (#481), `Finish` payload.
+    /// reasoning blocks, `Finish` payload.
     Complete {
         text: String,
         tool_calls: Vec<ToolCall>,

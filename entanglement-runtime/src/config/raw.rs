@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::WebSearchConfig;
 use serde::Deserialize;
 
 use super::ceiling;
@@ -66,12 +65,6 @@ pub(super) struct RawConfig {
     /// Stripped from the project layer before the merge.
     #[serde(default)]
     pub(super) http_auth: super::http_auth::HttpAuth,
-    /// Provider-side web search (#305, ADR-0075): opt-in, bound onto the LLM
-    /// client at build time — never seen by core. Absent ⇒ disabled. Enabling
-    /// it is consent (the server tool runs provider-side, *outside* the runtime
-    /// permission ladder).
-    #[serde(default)]
-    pub(super) web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). Default 200.
     #[serde(default)]
     pub(super) max_turns: Option<usize>,

@@ -71,10 +71,8 @@ impl OpenAiResponsesLlm {
 
 /// Factory for one per-session [`OpenAiResponsesLlm`]. Mirrors
 /// [`crate::openai_factory`]'s parameter shape, minus the OpenAI-compat-only
-/// knobs this wire doesn't (yet) carry: provider-side web search and the
-/// `prompt_cache_key` hint (neither is part of the P7 scope — see the module
-/// doc; both can be added later without touching the reserved-name contract
-/// above). `thinking_spec` resolves the request model's effort tiers
+/// `prompt_cache_key` hint this wire doesn't (yet) carry (not part of the P7
+/// scope — see the module doc). `thinking_spec` resolves the request model's effort tiers
 /// (`Catalog::thinking_spec_resolver`), clamping `reasoning.effort` per request.
 pub fn openai_responses_factory(
     base_url: impl Into<String>,

@@ -200,13 +200,6 @@ pub struct ModelEntry {
     /// listed tier instead of sending a `disabled` shape the API rejects.
     #[serde(default)]
     pub thinking_required: bool,
-    /// Anthropic web-search server-tool type string to request for this model
-    /// (#481, follow-up to #305/ADR-0075's hardcoded `web_search_20250305`) —
-    /// e.g. `"web_search_20260209"` for a model that requires the newer tool
-    /// version. `None` (the default) keeps the client's own `_20250305`
-    /// fallback. Anthropic-wire only; ignored for every other wire.
-    #[serde(default)]
-    pub web_search_tool_version: Option<String>,
     /// Limits on **this model** on its provider's endpoint, enforced on top
     /// of the provider's own `limits` — same shape. Some providers (z.ai) cap
     /// concurrency per model: GLM-4.7-Flash allows 1 in flight, GLM-5.2 5, on
@@ -688,41 +681,6 @@ mod tests {
     }
 
     #[test]
-    fn web_search_tool_version_is_optional_and_user_overridable() {
-        // Unset in the embedded defaults → None (the client's own fallback).
-        assert_eq!(
-            Catalog::builtin()
-                .model("anthropic", "claude-sonnet-4-5")
-                .unwrap()
-                .web_search_tool_version,
-            None
-        );
-        // A user file can pin a model to the newer server-tool version without
-        // touching sibling fields (#481).
-        let c = merge_str(
-            "providers:\n\
-             \x20 - name: anthropic\n\
-             \x20   models:\n\
-             \x20     - id: claude-sonnet-4-5\n\
-             \x20       web_search_tool_version: web_search_20260209\n",
-        );
-        assert_eq!(
-            c.model("anthropic", "claude-sonnet-4-5")
-                .unwrap()
-                .web_search_tool_version
-                .as_deref(),
-            Some("web_search_20260209")
-        );
-        assert_eq!(
-            c.model("anthropic", "claude-sonnet-4-5")
-                .unwrap()
-                .context_window,
-            Some(200000),
-            "sibling fields survive the merge untouched"
-        );
-    }
-
-    #[test]
     fn thinking_style_defaults_to_budget_and_is_user_overridable() {
         // Unset everywhere in the embedded defaults, so every pre-existing user
         // catalog keeps emitting the fixed-budget shape it emitted before.
@@ -1000,10 +958,6 @@ mod tests {
         assert_eq!(fable.replay_thinking, Some(true));
         assert_eq!(fable.thinking_style, Some(ThinkingStyle::Adaptive));
         assert_eq!(
-            fable.web_search_tool_version.as_deref(),
-            Some("web_search_20260209")
-        );
-        assert_eq!(
             fable.effort_tiers.map(Vec::from),
             Some(vec![Low, Medium, High, XHigh, Max])
         );
@@ -1020,11 +974,10 @@ mod tests {
                 .unwrap()
                 .thinking_required
         );
-        // The budget-style holdovers keep the older search tool.
+        // The budget-style holdovers keep the fixed-budget thinking shape.
         for id in ["claude-sonnet-4-5", "claude-haiku-4-5"] {
             let m = c.model("anthropic", id).unwrap();
             assert_eq!(m.thinking_style, None, "{id}");
-            assert_eq!(m.web_search_tool_version, None, "{id}");
             assert_eq!(m.context_window, Some(200_000), "{id}");
         }
         assert_eq!(

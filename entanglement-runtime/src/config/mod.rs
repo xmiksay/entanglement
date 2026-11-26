@@ -90,7 +90,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use entanglement_core::{PermissionProfile, WebSearchConfig};
+use entanglement_core::PermissionProfile;
 use serde_yaml::Value;
 
 use crate::hooks::Hooks;
@@ -196,8 +196,6 @@ pub struct Config {
     /// `rhai(path)` inside one runs with no launch card, force-allowed —
     /// a user-layer one not in a mode the project config prompts in.
     pub rhai_trusted: crate::rhai_trust::TrustedFolders,
-    /// Provider-side web search (#305). Disabled by default (a no-op).
-    pub web_search: WebSearchConfig,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
     /// the engine default (200). User-configurable so a long autonomous run can
     /// be loosened (or a runaway tightened) without a recompile.
@@ -330,7 +328,6 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         http_auth: raw.http_auth,
         untrusted_http_rules,
         rhai_trusted,
-        web_search: raw.web_search,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
         auto_compact: raw.auto_compact,

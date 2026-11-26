@@ -99,7 +99,6 @@ async fn openai_compat_sends_the_static_key_as_bearer() {
         Some(KEY.into()),
         "m",
         fixed_limits(RateLimits::default()),
-        None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
         http(),
@@ -135,8 +134,6 @@ async fn anthropic_sends_the_static_key_as_x_api_key() {
         KEY,
         "m",
         fixed_limits(RateLimits::default()),
-        None,
-        None,
         AnthropicModelSpec::default(),
         http(),
     ))

@@ -27,7 +27,6 @@ use crate::gemini::{gemini_factory, GEMINI_BASE};
 use crate::llm::{ModelResolver, ResolvedModel, UserId};
 use crate::openai::{openai_factory, OPENAI_BASE};
 use crate::openai_responses::{openai_responses_factory, OPENAI_RESPONSES_BASE};
-use crate::web_search::WebSearchConfig;
 use crate::{anthropic_factory, ANTHROPIC_BASE};
 
 /// One user's provider surface: their own [`Catalog`] (same shape as the
@@ -118,7 +117,6 @@ impl UserProviderStore for InMemoryUserProviderStore {
 pub fn build_user_model_resolver(
     store: Arc<dyn UserProviderStore>,
     http_client: HttpClient,
-    web_search: Option<WebSearchConfig>,
 ) -> ModelResolver {
     Arc::new(move |user, provider, model| {
         let user =
@@ -126,14 +124,13 @@ pub fn build_user_model_resolver(
         let ctx = store
             .context(user)
             .ok_or_else(|| format!("no provider context configured for user `{user}`"))?;
-        resolve_for_user(&ctx, &http_client, web_search.clone(), provider, model)
+        resolve_for_user(&ctx, &http_client, provider, model)
     })
 }
 
 fn resolve_for_user(
     ctx: &UserProviderContext,
     http_client: &HttpClient,
-    web_search: Option<WebSearchConfig>,
     provider: &str,
     model: &str,
 ) -> Result<ResolvedModel, String> {
@@ -156,7 +153,6 @@ fn resolve_for_user(
                 key.map(str::to_string),
                 model.to_string(),
                 limits.clone(),
-                web_search,
                 entry.prompt_cache_key,
                 ctx.catalog.thinking_spec_resolver(provider),
                 http_client.clone(),
@@ -170,17 +166,11 @@ fn resolve_for_user(
                 .base_url
                 .clone()
                 .unwrap_or_else(|| ANTHROPIC_BASE.to_string());
-            let web_search_tool_version = ctx
-                .catalog
-                .model(provider, model)
-                .and_then(|m| m.web_search_tool_version.clone());
             anthropic_factory(
                 base,
                 key,
                 model.to_string(),
                 limits.clone(),
-                web_search,
-                web_search_tool_version,
                 ctx.catalog.anthropic_model_spec(provider, model),
                 http_client.clone(),
             )
@@ -271,7 +261,6 @@ mod tests {
                     thinking_required: false,
                     pricing: None,
                     limits: crate::RateLimits::default(),
-                    web_search_tool_version: None,
                 }],
             }],
         }
@@ -280,7 +269,7 @@ mod tests {
     #[test]
     fn resolver_errors_without_a_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(store, test_http_client(), None);
+        let resolver = build_user_model_resolver(store, test_http_client());
         let err = resolver(None, "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("session user"));
     }
@@ -288,7 +277,7 @@ mod tests {
     #[test]
     fn resolver_errors_for_an_unregistered_user() {
         let store: Arc<dyn UserProviderStore> = Arc::new(InMemoryUserProviderStore::new());
-        let resolver = build_user_model_resolver(store, test_http_client(), None);
+        let resolver = build_user_model_resolver(store, test_http_client());
         let user = UserId::new("alice");
         let err = resolver(Some(&user), "zai", "glm-5.2").err().unwrap();
         assert!(err.contains("alice"));
@@ -303,7 +292,7 @@ mod tests {
             UserProviderContext::new(zai_catalog(Some(7))).with_key("ZAI_API_KEY", "alice-key"),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(store, test_http_client(), None);
+        let resolver = build_user_model_resolver(store, test_http_client());
         let resolved = resolver(Some(&alice), "zai", "glm-5.2").expect("resolves");
         assert_eq!(resolved.provider, "zai");
         assert_eq!(resolved.model, "glm-5.2");
@@ -325,7 +314,7 @@ mod tests {
             UserProviderContext::new(Catalog { providers: vec![] }),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(store, test_http_client(), None);
+        let resolver = build_user_model_resolver(store, test_http_client());
 
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         let err = resolver(Some(&bob), "zai", "glm-5.2").err().unwrap();
@@ -348,7 +337,7 @@ mod tests {
             UserProviderContext::new(zai_catalog(Some(2))).with_key("ZAI_API_KEY", "shared-key"),
         );
         let store: Arc<dyn UserProviderStore> = Arc::new(store);
-        let resolver = build_user_model_resolver(store, test_http_client(), None);
+        let resolver = build_user_model_resolver(store, test_http_client());
 
         assert!(resolver(Some(&alice), "zai", "glm-5.2").is_ok());
         assert!(resolver(Some(&bob), "zai", "glm-5.2").is_ok());

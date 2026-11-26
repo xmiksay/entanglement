@@ -1,8 +1,7 @@
 //! `skutter inspect config`'s "advanced catalog" section (ADR-0213).
 //!
 //! The wire-fact knobs — `thinking_*`, `effort_tiers`, `supports_temperature`,
-//! `web_search_tool_version`, `prompt_cache_key`, rate limits — are catalog
-//! data describing
+//! `prompt_cache_key`, rate limits — are catalog data describing
 //! what an endpoint/model accepts, not user preferences, so they live only in
 //! `providers.yml`. They stay visible here so "why did the request carry that
 //! shape?" still has an answer without reading YAML. Only facts that differ
@@ -63,11 +62,6 @@ fn model_facts(m: &ModelEntry) -> Vec<String> {
     if !m.supports_temperature {
         facts.push("supports_temperature=false".to_string());
     }
-    push_opt(
-        &mut facts,
-        "web_search_tool_version",
-        m.web_search_tool_version.as_deref(),
-    );
     push_limits(&mut facts, &m.limits);
     facts
 }

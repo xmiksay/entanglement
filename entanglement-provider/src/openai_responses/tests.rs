@@ -249,21 +249,6 @@ fn assistant_text_only_round_trips_without_a_tool_call_item() {
 }
 
 #[test]
-fn a_provider_search_block_appends_to_assistant_text() {
-    let history = vec![Message::assistant_content(
-        vec![
-            ContentPart::text("here's what I found"),
-            ContentPart::provider_search("openai_responses", "[web] rust async", json!({})),
-        ],
-        vec![],
-    )];
-    let items = convert_messages(&history);
-    let content = items[0]["content"].as_str().unwrap();
-    assert!(content.starts_with("here's what I found"));
-    assert!(content.contains("[web] rust async"));
-}
-
-#[test]
 fn reasoning_effort_is_clamped_to_the_request_models_tiers() {
     // ADR-0203 on this wire too: an unaccepted tier snaps to the nearest
     // listed one (ties down); the empty set sends no `reasoning` object.

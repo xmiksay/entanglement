@@ -2,7 +2,6 @@
 //! Anthropic Messages API wire shape. Split out of `anthropic/mod.rs` (#481)
 //! to keep the streaming client itself under the file-size cap.
 
-use crate::web_search::WebSearchConfig;
 use crate::{
     AnthropicModelSpec, ContentPart, GenerationParams, ImageSource, Message, MessageRole,
     ThinkingStyle, ToolSpec,
@@ -13,10 +12,6 @@ use serde_json::{json, Value};
 mod thinking;
 use thinking::{apply_adaptive_thinking, apply_budget_thinking};
 
-/// Fallback Anthropic web-search server-tool type when no `ModelEntry`
-/// capability flag names a newer one (#481, follow-up to #305/ADR-0075's
-/// hardcoded `_20250305`).
-const DEFAULT_WEB_SEARCH_TOOL_VERSION: &str = "web_search_20250305";
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_body(
     model: &str,
@@ -25,8 +20,6 @@ pub(super) fn build_body(
     tools: &[ToolSpec],
     default_max_tokens: u32,
     generation: Option<GenerationParams>,
-    web_search: Option<&WebSearchConfig>,
-    web_search_tool_version: Option<&str>,
     spec: AnthropicModelSpec,
     trailing_notice: Option<&str>,
 ) -> Value {
@@ -67,13 +60,7 @@ pub(super) fn build_body(
         "messages": messages,
         "stream": true,
     });
-    // Function tools (core-advertised) plus the opt-in provider-side web-search
-    // server tool (#305). The server tool rides the same `tools` array, so it is
-    // requestable even with no function tools present.
     let mut tool_entries = convert_tools(tools);
-    if let Some(ws) = web_search {
-        tool_entries.push(web_search_tool_entry(ws, web_search_tool_version));
-    }
     // Cache breakpoint lands on the last tool entry (wire reference §1.4).
     if let Some(last) = tool_entries.last_mut() {
         last["cache_control"] = json!({ "type": "ephemeral" });
@@ -275,14 +262,13 @@ pub(crate) fn append_final_user_block(messages: &mut Vec<Value>, block: Value, c
 }
 
 /// Render a message's content parts to Anthropic content blocks: `text` /
-/// `image` with a base64 source (#197/#221), and a [`ContentPart::ProviderSearch`]
-/// block (#481) minted by *this* provider replays verbatim as its raw stored
-/// block — one minted by a different provider (a message that crossed a live
-/// `/model` switch) is opaque here and dropped, matching the "replays only to
-/// the provider that minted it" contract (mirrors `ToolCall.provider_meta`).
+/// `image` with a base64 source (#197/#221).
 ///
-/// [`ContentPart::Reasoning`] follows the same provider-match rule but is
-/// additionally gated on `replay_reasoning`, and is emitted **first**: Anthropic
+/// [`ContentPart::Reasoning`] replays verbatim only to the provider that
+/// minted it (one from a different provider — a message that crossed a live
+/// `/model` switch — is opaque here and dropped, mirroring
+/// `ToolCall.provider_meta`), is gated on `replay_reasoning`, and is emitted
+/// **first**: Anthropic
 /// requires the thinking block to lead the assistant message. The turn loop
 /// appends content blocks after the round's text, so the ordering is restored
 /// here rather than constraining core. [`ContentPart::ToolReference`] and
@@ -300,10 +286,6 @@ fn anthropic_blocks(content: &[ContentPart], replay_reasoning: bool) -> Vec<Valu
                 "type": "image",
                 "source": { "type": "base64", "media_type": media_type, "data": data },
             })),
-            ContentPart::ProviderSearch { provider, data, .. } if provider == "anthropic" => {
-                rest.push(data.clone())
-            }
-            ContentPart::ProviderSearch { .. } => {}
             ContentPart::Reasoning { provider, data, .. }
                 if replay_reasoning && provider == "anthropic" =>
             {
@@ -342,26 +324,6 @@ fn convert_tools(tools: &[ToolSpec]) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-/// The Anthropic provider-side web-search server tool (#305):
-/// `{"type":"<version>","name":"web_search"}` plus the optional `max_uses` /
-/// `allowed_domains` knobs. `tool_version` is the catalog's per-model
-/// `ModelEntry::web_search_tool_version` capability flag (#481, follow-up to
-/// the hardcoded `_20250305`); `None` falls back to
-/// [`DEFAULT_WEB_SEARCH_TOOL_VERSION`].
-fn web_search_tool_entry(ws: &WebSearchConfig, tool_version: Option<&str>) -> Value {
-    let mut entry = json!({
-        "type": tool_version.unwrap_or(DEFAULT_WEB_SEARCH_TOOL_VERSION),
-        "name": "web_search",
-    });
-    if let Some(max) = ws.max_uses {
-        entry["max_uses"] = json!(max);
-    }
-    if !ws.allowed_domains.is_empty() {
-        entry["allowed_domains"] = json!(ws.allowed_domains);
-    }
-    entry
 }
 
 #[cfg(test)]

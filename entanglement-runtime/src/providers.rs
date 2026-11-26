@@ -5,8 +5,7 @@ use std::collections::HashMap;
 
 use entanglement_core::EngineConfig;
 use entanglement_provider::{
-    Catalog, GenerationParams, HttpClient, ModelInfo, ModelPricing, ProviderEntry, WebSearchConfig,
-    Wire,
+    Catalog, GenerationParams, HttpClient, ModelInfo, ModelPricing, ProviderEntry, Wire,
 };
 
 use crate::config;
@@ -126,17 +125,6 @@ fn resolve_model(entry: &ProviderEntry, user_config: &config::Config) -> String 
         .unwrap_or_else(|| entry.default_model.clone())
 }
 
-/// The opt-in provider-side web search settings to bind onto the LLM client
-/// (#305), or `None` when the config leaves it disabled — the disabled case makes
-/// the client request no web-search tool, exactly as before. Cloned so both
-/// startup and the live `/model` switch resolver bind identically.
-pub(crate) fn web_search_config(user_config: &config::Config) -> Option<WebSearchConfig> {
-    user_config
-        .web_search
-        .enabled
-        .then(|| user_config.web_search.clone())
-}
-
 /// Endpoint base URL: `{NAME}_API_BASE` env > the entry's `base_url` (the
 /// embedded catalog deep-merged under the user `providers.yml`) > `fallback`,
 /// the wire client's own default. The legacy `{NAME}_BASE` spelling is
@@ -205,15 +193,7 @@ fn openai_wire_config(
     let model = resolve_model(entry, user_config);
     // Reuse the mid-session builder so startup and a live switch resolve the
     // wire/base/key identically (#218); a keyed provider missing its key → skip.
-    let llm_factory = openai_factory_for(
-        entry,
-        &model,
-        http_client,
-        catalog,
-        web_search_config(user_config),
-        None,
-    )
-    .ok()?;
+    let llm_factory = openai_factory_for(entry, &model, http_client, catalog, None).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -227,19 +207,6 @@ fn openai_wire_config(
     ))
 }
 
-/// Anthropic web-search server-tool version for `model` (#481, follow-up to
-/// the hardcoded `_20250305`): the catalog's `ModelEntry::web_search_tool_version`
-/// capability flag, or `None` to keep the client's own fallback.
-pub(crate) fn web_search_tool_version(
-    entry: &ProviderEntry,
-    model: &str,
-    catalog: &Catalog,
-) -> Option<String> {
-    catalog
-        .model(&entry.name, model)
-        .and_then(|m| m.web_search_tool_version.clone())
-}
-
 /// Anthropic-wire provider. Always keyed; base from env/catalog else the
 /// client's own default (#551, see [`anthropic_factory_for`]).
 fn anthropic_wire_config(
@@ -249,16 +216,7 @@ fn anthropic_wire_config(
     user_config: &config::Config,
 ) -> Option<(EngineConfig, ModelInfo)> {
     let model = resolve_model(entry, user_config);
-    let llm_factory = anthropic_factory_for(
-        entry,
-        &model,
-        http_client,
-        catalog,
-        web_search_config(user_config),
-        web_search_tool_version(entry, &model, catalog),
-        None,
-    )
-    .ok()?;
+    let llm_factory = anthropic_factory_for(entry, &model, http_client, catalog, None).ok()?;
     eprintln!("skutter: provider={} model={model}", entry.name);
     Some((
         EngineConfig {
@@ -273,8 +231,7 @@ fn anthropic_wire_config(
 }
 
 /// Gemini-wire provider (#309). Always keyed; base is the client's own default
-/// (`GEMINI_BASE`) unless overridden. Gemini has no provider-side web-search knob,
-/// so — unlike the OpenAI/Anthropic arms — none is threaded here.
+/// (`GEMINI_BASE`) unless overridden.
 fn gemini_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,
@@ -298,9 +255,9 @@ fn gemini_wire_config(
 
 /// OpenAI Responses API wire (P7, ADR-0196 §3). Key/base resolution mirrors
 /// [`openai_wire_config`] (same `key_env`/`{NAME}_API_BASE` precedence); no
-/// provider-side web search or `prompt_cache_key` hint — see
-/// `entanglement_provider::openai_responses`'s module doc for why this
-/// client doesn't (yet) carry those OpenAI-compat-only knobs.
+/// `prompt_cache_key` hint — see `entanglement_provider::openai_responses`'s
+/// module doc for why this client doesn't (yet) carry that OpenAI-compat-only
+/// knob.
 fn openai_responses_wire_config(
     entry: &ProviderEntry,
     http_client: &HttpClient,

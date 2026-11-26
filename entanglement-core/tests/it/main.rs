@@ -44,7 +44,6 @@ mod resume_predecessor;
 mod resume_reoffer;
 mod resume_tail;
 mod revert_files;
-mod search_result_persistence;
 mod seq_one_task;
 mod seq_one_task_probes;
 mod seq_resume_race;
