@@ -149,18 +149,8 @@
   (`config::keys`, a pre-engine fast path like `inspect`): it resolves the catalog
   `key_env` (keyless Ollama → clean error), sources the value from `--key`, a
   hidden `rpassword` prompt, or piped stdin — never echoed — and warns when the
-  process env already carries a *different* value (env > file). Its OAuth
-  sibling is `skutter config connect|disconnect <provider>` (✅ #684,
-  [ADR-0189](../../adr/archive/0189-oauth-for-llm-provider-endpoints.md),
-  `config::llm_connect`): for a catalog entry carrying an `oauth:` block, it
-  runs the browser-loopback (or `--device-code`) authorization against the
-  entry's resolved base URL and persists the credential to the managed
-  `llm-tokens.yml` (in the managed-state dir, `ENTANGLEMENT_STATE_DIR`) — the same file
-  format, locking, and quarantine as `mcp-tokens.yml` (one shared
-  implementation, `McpTokenStore::load_llm()`), keyed by provider name and a
-  deliberately *separate* file so neither surface's writes contend with the
-  other's credentials. `disconnect` revokes best-effort (RFC 7009) then
-  deletes locally. **Session settings dialog** (`tui::settings_dialog`,
+  process env already carries a *different* value (env > file). **Session
+  settings dialog** (`tui::settings_dialog`,
   `tui::app::settings`, `tui::modals::settings`): bare `/set` (or `/set` from
   the palette) opens a tabbed modal; `/set <key> <value>` stays the ADR-0095
   one-shot. `Tab`/`Shift+Tab` or a click on a title switch tabs, `↑↓` move,

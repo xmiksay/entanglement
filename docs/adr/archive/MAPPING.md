@@ -220,7 +220,7 @@ the code, never as a description of current behaviour — that is
 | [0186](0186-exit-code-joins-the-structured-tool-result-side-channel.md) | `exit_code` joins the structured tool-result side channel | current; changed by #916 | — |
 | [0187](0187-mcp-oauth-web-redirect-flow-for-embedders.md) | MCP OAuth web-redirect flow for embedders | current | — |
 | [0188](0188-session-keyed-per-user-mcp-scopes.md) | Session-keyed per-user MCP scopes | current; amended by 0226, 0227 | — |
-| [0189](0189-oauth-for-llm-provider-endpoints.md) | OAuth for LLM provider endpoints | current | — |
+| [0189](0189-oauth-for-llm-provider-endpoints.md) | OAuth for LLM provider endpoints | current; removed by #917 | — |
 | [0190](0190-poll-is-always-on-non-maskable-internal-tool.md) | `poll` is an always-on, non-maskable internal tool | current; partly superseded by 0192; amended by 0232 | — |
 | [0191](0191-inline-think-tags-catalog-format.md) | Inline `<think>` tags: a catalog-declared thinking format for the OpenAI-compat wire | current | — |
 | [0192](0192-universal-advertisement-enforcement-at-dispatch.md) | The advertised tool surface is universal and session-stable; masks enforce at dispatch | superseded by 0207 | — |
@@ -244,7 +244,7 @@ the code, never as a description of current behaviour — that is
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
-| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current | — |
+| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |
 | [0216](0216-resume-modes-ride-the-replay.md) | Resume modes ride the replay when any session is forced | current; amended by 0218 | — |

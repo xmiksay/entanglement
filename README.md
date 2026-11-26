@@ -342,7 +342,7 @@ config error.
 
 The few remaining environment knobs beyond provider keys/models:
 `ENTANGLEMENT_STATE_DIR` relocates every file skutter manages for you (grants,
-model/generation/aux pins, escape-root grants, MCP/LLM OAuth tokens, the
+model/generation/aux pins, escape-root grants, MCP OAuth tokens, the
 last-seen MCP tool-name cache) in one go,
 and `ENTANGLEMENT_DEBUG=bodies,echo,no-shared-state` switches on developer
 diagnostics. Knobs retired in 0.7 still print one startup warning naming

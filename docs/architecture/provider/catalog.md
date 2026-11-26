@@ -17,25 +17,10 @@ change** — any OpenAI-compatible endpoint (proxy, local vLLM, new vendor) is
 `wire: openai` + `base_url` + `key_env`. `openai_responses` (ADR-0196 §3, P7)
 is OpenAI's distinct Responses API — flat input/output items instead of
 Chat Completions' role+content messages; opt-in per catalog entry, never a
-default (`openai` itself stays on Chat Completions). **Or `oauth:` instead of `key_env`** (✅ #684 edge d,
-[ADR-0189](../../adr/archive/0189-oauth-for-llm-provider-endpoints.md)): an entry carrying
-an `oauth:` block (the same `OauthConfig` override fields the `mcp:` blocks
-use) authenticates with an `Authorization: Bearer` token from an
-`AccessTokenSource` instead of a static key — all three wires support it, the
-token is fetched *before* `execute_with_retry` (its request closure is
-sync-to-build; the MCP transport's pre-fetch shape) and retried exactly once
-with a forced refresh on a `401` (Gemini's context-cache call carries the same
-credential; Anthropic's `pause_turn` continuations re-fetch per POST). The
-endpoint-pool identity stays decoupled from the rotating bearer — an OAuth
-endpoint pools **unkeyed**, since the `endpoint#sha256(key)` pool key with
-never-evicted entries (ADR-0156) would otherwise mint a fresh rate-limit
-bucket + cross-process state file per refresh. Single-user credentials come
-from the managed `llm-tokens.yml` via `skutter config connect <provider>
-[--device-code]` (a factory resolving an `oauth:` entry with no stored token
-errs with that hint; auto-detect stays key-based, so an OAuth provider is
-selected explicitly); a multi-user embedder registers a per-user source via
-`UserProviderContext::with_token_source`. No embedded default carries an
-`oauth:` block. The catalog carries no MCP servers — those are the user
+default (`openai` itself stays on Chat Completions). An entry authenticates
+with its static `key_env` key, or none (keyless); there is no LLM-endpoint
+OAuth (#917 — an `oauth:` key on a provider entry is rejected like any
+unknown field). The catalog carries no MCP servers — those are the user
 `config.yml` `mcp:` map alone (#915). `ModelEntry`
 carries capability flags (`supports_thinking`, `supports_vision` (image input;
 gates TUI image paste, #736),

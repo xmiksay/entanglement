@@ -86,10 +86,9 @@ via `ENTANGLEMENT_PROVIDER=echo`
 
 The table is **catalog data** (`entanglement-provider/src/defaults.yml`
 deep-merged with `${config_dir}/entanglement/providers.yml`; precedence env >
-user YAML > embedded): a `wire:` tag adds any OpenAI-compatible endpoint, an
-`oauth:` block authenticates one
-([ADR-0189](../docs/adr/archive/0189-oauth-for-llm-provider-endpoints.md)), and the
-per-model wire-fact knobs are catalog-only
+user YAML > embedded): a `wire:` tag adds any OpenAI-compatible endpoint
+(authenticated by its static `key_env` key), and the per-model wire-fact
+knobs are catalog-only
 ([ADR-0213](../docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — see
 [provider §advanced catalog](../docs/architecture/provider/catalog.md#advanced-catalog-wire-facts).
 Resilience (pool, retry, RPM/concurrency caps, AIMD pacing, 429 park,
@@ -111,7 +110,7 @@ list; a retired var still set prints one warning naming its replacement
 | `ENTANGLEMENT_PROVIDERS_FILE` / `ENTANGLEMENT_CONFIG_FILE` / `ENTANGLEMENT_ENV_FILE` | override the provider catalog / layered `config.yml` / managed key `.env` path |
 | `ENTANGLEMENT_AGENTS_DIR` / `ENTANGLEMENT_SKILLS_DIR` / `ENTANGLEMENT_COMMANDS_DIR` | replace the whole user agents/skills/slash-commands layer (also the cross-vendor opt-out) |
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
-| `ENTANGLEMENT_STATE_DIR` | relocate all eight managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `llm-tokens`, `mcp-tools` `.yml`; default `${config_dir}/entanglement`) |
+| `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `mcp-tools` `.yml`; default `${config_dir}/entanglement`) |
 | `ENTANGLEMENT_DEBUG` | comma list: `bodies` (LLM request-body logging), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing); unknown token warns once |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
 | `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by the runtime (read-only context) |

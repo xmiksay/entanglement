@@ -59,7 +59,7 @@
   never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
   **managed** file `<state dir>/grants.yml` (the managed-state dir,
   `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
-  eight managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
+  seven managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
   loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
   `DefaultGrantStore::load_from` take an explicit path, or `None` for an
   in-memory-only store — the `ToolExecutor::builder` default every test
