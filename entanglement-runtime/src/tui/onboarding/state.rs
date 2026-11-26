@@ -1,10 +1,9 @@
 //! The first-run onboarding dialog's state machine (#732): pure, terminal-free,
 //! driven one [`KeyEvent`] at a time so the whole flow is unit-testable.
 //!
-//! Stages: pick a provider (every catalog entry except OAuth-only ones, which
-//! need `skutter config connect`) → enter its key (masked) **or**, for a
-//! keyless provider, confirm its base URL → pick a model (catalog default
-//! preselected). `Esc` on the first stage continues in echo mode; on a later
+//! Stages: pick a provider (every catalog entry) → enter its key (masked)
+//! **or**, for a keyless provider, confirm its base URL → pick a model
+//! (catalog default preselected). `Esc` on the first stage continues in echo mode; on a later
 //! stage it steps back, wiping a typed key.
 
 use entanglement_provider::Catalog;
@@ -46,7 +45,6 @@ fn options_with(catalog: &Catalog, env: impl Fn(&str) -> Option<String>) -> Vec<
     catalog
         .providers
         .iter()
-        .filter(|p| p.key_env.is_some() || p.oauth.is_none())
         .map(|p| {
             let mut models: Vec<String> = p.models.iter().map(|m| m.id.clone()).collect();
             if !models.contains(&p.default_model) {

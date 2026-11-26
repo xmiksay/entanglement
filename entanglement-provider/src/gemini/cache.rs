@@ -63,9 +63,7 @@ impl CacheHandle {
         &self,
         http: &HttpClient,
         base_url: &str,
-        // The resolved request auth header — `x-goog-api-key` or an OAuth
-        // `authorization: Bearer` (#684), built by `super::auth_header`.
-        auth: &(&'static str, String),
+        api_key: &str,
         model: &str,
         system: &str,
         tools: &[ToolSpec],
@@ -91,7 +89,7 @@ impl CacheHandle {
             }
         };
         if let Some(name) = replaced {
-            spawn_delete(http, base_url, auth, name);
+            spawn_delete(http, base_url, api_key, name);
         }
         if cache_prefix_size(system, tools) < MIN_CACHEABLE_CHARS {
             *self.0.lock().await = Some(CacheState {
@@ -100,7 +98,7 @@ impl CacheHandle {
             });
             return None;
         }
-        let entry = match create(http, base_url, auth, model, system, tools).await {
+        let entry = match create(http, base_url, api_key, model, system, tools).await {
             Some(name) => CacheEntry::Ready(name),
             None => CacheEntry::Skip,
         };
@@ -136,7 +134,7 @@ fn cache_key(model: &str, system: &str, tools: &[ToolSpec]) -> u64 {
 async fn create(
     http: &HttpClient,
     base_url: &str,
-    auth: &(&'static str, String),
+    api_key: &str,
     model: &str,
     system: &str,
     tools: &[ToolSpec],
@@ -147,7 +145,7 @@ async fn create(
     let response = match http
         .client()
         .post(&url)
-        .header(auth.0, &auth.1)
+        .header("x-goog-api-key", api_key)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -184,12 +182,17 @@ fn api_root(base_url: &str) -> &str {
 /// Fire-and-forget `DELETE {root}/{name}` for a replaced resource. Detached so
 /// a slow or dead endpoint never delays the turn; any failure is only logged —
 /// the resource still expires at its TTL.
-fn spawn_delete(http: &HttpClient, base_url: &str, auth: &(&'static str, String), name: String) {
+fn spawn_delete(http: &HttpClient, base_url: &str, api_key: &str, name: String) {
     let client = http.client().clone();
     let url = format!("{}/{name}", api_root(base_url));
-    let (header, value) = (auth.0, auth.1.clone());
+    let api_key = api_key.to_string();
     tokio::spawn(async move {
-        match client.delete(&url).header(header, value).send().await {
+        match client
+            .delete(&url)
+            .header("x-goog-api-key", api_key)
+            .send()
+            .await
+        {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
                 tracing::debug!(status = %r.status(), %name, "gemini cachedContents delete rejected")
@@ -227,14 +230,7 @@ mod tests {
         let http = test_http_client();
         let handle = CacheHandle::new();
         let name = handle
-            .resolve(
-                &http,
-                super::super::GEMINI_BASE,
-                &("x-goog-api-key", "key".to_string()),
-                "model",
-                "",
-                &[],
-            )
+            .resolve(&http, super::super::GEMINI_BASE, "key", "model", "", &[])
             .await;
         assert!(name.is_none());
     }
@@ -248,7 +244,7 @@ mod tests {
             .resolve(
                 &http,
                 super::super::GEMINI_BASE,
-                &("x-goog-api-key", "key".to_string()),
+                "key",
                 "model",
                 "short system prompt",
                 &[],
@@ -261,7 +257,7 @@ mod tests {
             .resolve(
                 &http,
                 super::super::GEMINI_BASE,
-                &("x-goog-api-key", "key".to_string()),
+                "key",
                 "model",
                 "short system prompt",
                 &[],
@@ -324,7 +320,6 @@ mod tests {
         let (base, mut seen) = mock_gemini();
         let http = test_http_client();
         let handle = CacheHandle::new();
-        let auth = ("x-goog-api-key", "k1".to_string());
         let sys_a = "a".repeat(MIN_CACHEABLE_CHARS);
         let sys_b = "b".repeat(MIN_CACHEABLE_CHARS);
 
@@ -333,7 +328,7 @@ mod tests {
             (&sys_a, "cachedContents/1"),
             (&sys_b, "cachedContents/2"),
         ] {
-            let name = handle.resolve(&http, &base, &auth, "m", system, &[]).await;
+            let name = handle.resolve(&http, &base, "k1", "m", system, &[]).await;
             assert_eq!(name.as_deref(), Some(want));
         }
 

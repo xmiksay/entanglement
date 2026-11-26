@@ -41,9 +41,6 @@ pub const OPENAI_RESPONSES_BASE: &str = "https://api.openai.com/v1";
 pub struct OpenAiResponsesLlm {
     base_url: String,
     api_key: Option<String>,
-    /// OAuth bearer source (mirrors [`crate::OpenAiLlm::auth`]) — `Some` wins
-    /// over `api_key`; the pool identity stays `api_key` (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: String,
     rpm: Option<u32>,
     concurrency: Option<usize>,
@@ -69,7 +66,6 @@ impl OpenAiResponsesLlm {
         Self {
             base_url: base_url.into(),
             api_key,
-            auth: None,
             default_model: default_model.into(),
             rpm,
             concurrency,
@@ -77,13 +73,6 @@ impl OpenAiResponsesLlm {
             thinking_spec,
             http,
         }
-    }
-
-    /// Authenticate with an OAuth bearer from `auth` instead of a static key
-    /// — see [`crate::OpenAiLlm::with_auth`]'s field docs for the pool-identity rule.
-    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
-        self.auth = Some(auth);
-        self
     }
 }
 
@@ -98,7 +87,6 @@ impl OpenAiResponsesLlm {
 pub fn openai_responses_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
@@ -106,7 +94,7 @@ pub fn openai_responses_factory(
     thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let mut llm = OpenAiResponsesLlm::new(
+    let llm = OpenAiResponsesLlm::new(
         base_url,
         api_key,
         default_model,
@@ -116,9 +104,6 @@ pub fn openai_responses_factory(
         thinking_spec,
         http,
     );
-    if let Some(auth) = auth {
-        llm = llm.with_auth(auth);
-    }
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -147,59 +132,41 @@ impl Llm for OpenAiResponsesLlm {
         );
         crate::client::log_request_body("openai_responses", &body);
 
-        let mut forced_refresh = false;
-        let (response, guard) = loop {
-            let bearer = match &self.auth {
-                Some(source) => Some(source.access_token(forced_refresh).await.map_err(|e| {
-                    anyhow::anyhow!("fetching the OAuth token for `{}`: {e:#}", self.base_url)
-                })?),
-                None => self.api_key.clone(),
-            };
-            let (response, guard) = self
-                .http
-                .execute_with_retry(
-                    &self.base_url,
-                    self.api_key.as_deref(),
-                    self.rpm,
-                    self.concurrency,
-                    &model,
-                    model_concurrency,
-                    req.retry,
-                    || {
-                        let mut request = self.http.client().post(&url);
-                        if let Some(key) = &bearer {
-                            request = request.bearer_auth(key);
-                        }
-                        request.json(&body).send()
-                    },
-                )
-                .await
-                .map_err(|e| match e {
-                    crate::client::RetryError::Permanent(e) => {
-                        anyhow::anyhow!("openai-responses request failed: {e}")
+        let (response, guard) = self
+            .http
+            .execute_with_retry(
+                &self.base_url,
+                self.api_key.as_deref(),
+                self.rpm,
+                self.concurrency,
+                &model,
+                model_concurrency,
+                req.retry,
+                || {
+                    let mut request = self.http.client().post(&url);
+                    if let Some(key) = &self.api_key {
+                        request = request.bearer_auth(key);
                     }
-                    crate::client::RetryError::Exhausted(attempts, e) => anyhow::anyhow!(
-                        "openai-responses request failed after {} attempts: {e}",
-                        attempts
-                    ),
-                    crate::client::RetryError::RateLimited => anyhow::anyhow!(
-                        "openai-responses rate limited: gave up waiting for the endpoint to clear"
-                    ),
-                    crate::client::RetryError::HeaderTimeout(timeout, attempts) => anyhow::anyhow!(
-                        "openai-responses request failed: no response headers within {timeout:?} \
-                         after {attempts} attempt(s)"
-                    ),
-                })?;
-            if response.status().as_u16() == 401 && self.auth.is_some() && !forced_refresh {
-                tracing::warn!(
-                    base = %self.base_url,
-                    "openai-responses 401 with an OAuth bearer; forcing one refresh and retrying"
-                );
-                forced_refresh = true;
-                continue;
-            }
-            break (response, guard);
-        };
+                    request.json(&body).send()
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                crate::client::RetryError::Permanent(e) => {
+                    anyhow::anyhow!("openai-responses request failed: {e}")
+                }
+                crate::client::RetryError::Exhausted(attempts, e) => anyhow::anyhow!(
+                    "openai-responses request failed after {} attempts: {e}",
+                    attempts
+                ),
+                crate::client::RetryError::RateLimited => anyhow::anyhow!(
+                    "openai-responses rate limited: gave up waiting for the endpoint to clear"
+                ),
+                crate::client::RetryError::HeaderTimeout(timeout, attempts) => anyhow::anyhow!(
+                    "openai-responses request failed: no response headers within {timeout:?} \
+                     after {attempts} attempt(s)"
+                ),
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();

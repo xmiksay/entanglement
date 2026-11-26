@@ -165,13 +165,6 @@ async fn main() -> Result<()> {
             ConfigCmd::SetKey { provider, key } => {
                 config::keys::set_key(&catalog, provider, key.clone())
             }
-            ConfigCmd::Connect {
-                provider,
-                device_code,
-            } => config::llm_connect::connect(&catalog, provider, *device_code).await,
-            ConfigCmd::Disconnect { provider } => {
-                config::llm_connect::disconnect(&catalog, provider).await
-            }
         };
     }
 

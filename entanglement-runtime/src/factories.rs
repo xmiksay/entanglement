@@ -10,32 +10,6 @@ use entanglement_provider::{
 
 use crate::providers::{env_nonempty, resolve_base, web_search_tool_version};
 
-/// The OAuth bearer source for a catalog entry declaring `oauth:` (#684 edge
-/// d): tokens come from the managed LLM token file
-/// (`llm-tokens.yml` in the managed-state dir), keyed by the provider
-/// name, minted by `skutter config connect <provider>`. `Err` with that hint
-/// when nothing is stored yet — an OAuth endpoint without a token could only
-/// ever 401, so the miss surfaces here exactly like an unset `key_env`.
-fn llm_oauth_source(
-    entry: &ProviderEntry,
-) -> Result<Option<Arc<dyn entanglement_core::AccessTokenSource>>, String> {
-    if entry.oauth.is_none() {
-        return Ok(None);
-    }
-    let store = entanglement_runtime::config::McpTokenStore::load_llm();
-    if !store.has(&entry.name) {
-        return Err(format!(
-            "provider `{}` is OAuth-protected and not yet authorized — run \
-             `skutter config connect {}`",
-            entry.name, entry.name
-        ));
-    }
-    Ok(Some(Arc::new(entanglement_core::StoredTokenSource::new(
-        entry.name.clone(),
-        Arc::new(store) as Arc<dyn entanglement_core::TokenStore>,
-    ))))
-}
-
 /// Build a Gemini-wire [`LlmFactory`] for an explicit `(entry, model)`. Shared by
 /// startup and the live-switch resolver (#218). Always keyed; `Err(message)` when
 /// the key env is absent/unset. Base from `{NAME}_API_BASE` env else
@@ -53,12 +27,9 @@ pub(crate) fn gemini_factory_for(
     catalog: &Catalog,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let auth = llm_oauth_source(entry)?;
-    let key = match (&auth, explicit_key) {
-        // The bearer replaces the static key on the wire (#684 edge d).
-        (Some(_), _) => String::new(),
-        (None, Some(k)) => k.to_string(),
-        (None, None) => {
+    let key = match explicit_key {
+        Some(k) => k.to_string(),
+        None => {
             let key_env = entry
                 .key_env
                 .as_deref()
@@ -70,7 +41,6 @@ pub(crate) fn gemini_factory_for(
     Ok(entanglement_provider::gemini_factory(
         base,
         key,
-        auth,
         model.to_string(),
         entry.rpm,
         entry.concurrency,
@@ -95,24 +65,18 @@ pub(crate) fn openai_factory_for(
     web_search: Option<WebSearchConfig>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let auth = llm_oauth_source(entry)?;
-    let key = match (&auth, explicit_key) {
-        // The bearer replaces the static key on the wire (#684 edge d).
-        (Some(_), _) => None,
-        (None, Some(k)) => Some(k.to_string()),
-        (None, None) => match &entry.key_env {
-            Some(k) => Some(
-                env_nonempty(k)
-                    .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
-            ),
-            None => None, // keyless (Ollama)
-        },
+    let key = match (explicit_key, &entry.key_env) {
+        (Some(k), _) => Some(k.to_string()),
+        (None, Some(k)) => Some(
+            env_nonempty(k)
+                .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+        ),
+        (None, None) => None, // keyless (Ollama)
     };
     let base = resolve_base(entry, entanglement_provider::OPENAI_BASE);
     Ok(entanglement_provider::openai_factory(
         base,
         key,
-        auth,
         model.to_string(),
         entry.rpm,
         entry.concurrency,
@@ -136,23 +100,18 @@ pub(crate) fn openai_responses_factory_for(
     catalog: &Catalog,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let auth = llm_oauth_source(entry)?;
-    let key = match (&auth, explicit_key) {
-        (Some(_), _) => None,
-        (None, Some(k)) => Some(k.to_string()),
-        (None, None) => match &entry.key_env {
-            Some(k) => Some(
-                env_nonempty(k)
-                    .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
-            ),
-            None => None,
-        },
+    let key = match (explicit_key, &entry.key_env) {
+        (Some(k), _) => Some(k.to_string()),
+        (None, Some(k)) => Some(
+            env_nonempty(k)
+                .ok_or_else(|| format!("{k} is not set for provider `{}`", entry.name))?,
+        ),
+        (None, None) => None, // keyless (Ollama)
     };
     let base = resolve_base(entry, entanglement_provider::OPENAI_RESPONSES_BASE);
     Ok(entanglement_provider::openai_responses_factory(
         base,
         key,
-        auth,
         model.to_string(),
         entry.rpm,
         entry.concurrency,
@@ -184,12 +143,9 @@ pub(crate) fn anthropic_factory_for(
     web_search_tool_version: Option<String>,
     explicit_key: Option<&str>,
 ) -> Result<LlmFactory, String> {
-    let auth = llm_oauth_source(entry)?;
-    let key = match (&auth, explicit_key) {
-        // The bearer replaces the static key on the wire (#684 edge d).
-        (Some(_), _) => String::new(),
-        (None, Some(k)) => k.to_string(),
-        (None, None) => {
+    let key = match explicit_key {
+        Some(k) => k.to_string(),
+        None => {
             let key_env = entry
                 .key_env
                 .as_deref()
@@ -201,7 +157,6 @@ pub(crate) fn anthropic_factory_for(
     Ok(entanglement_provider::anthropic_factory(
         base,
         key,
-        auth,
         model.to_string(),
         entry.rpm,
         entry.concurrency,

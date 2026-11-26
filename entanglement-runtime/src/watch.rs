@@ -41,7 +41,7 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 /// Env vars whose file, if overridden, needs its parent dir watched too (the
 /// default `${config_dir}/entanglement/` catch-all below already covers the
 /// un-overridden case — this list only matters when one is relocated outside
-/// that directory, #558). The eight managed-state files move together with
+/// that directory, #558). The seven managed-state files move together with
 /// `ENTANGLEMENT_STATE_DIR` (ADR-0213), watched as a directory in
 /// [`watch_paths`].
 const MANAGED_FILE_ENVS: &[&str] = &[

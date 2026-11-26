@@ -1,6 +1,6 @@
 //! SSE chunk → [`LlmEvent`] mapping for the Gemini wire — the pure parsing
-//! half of `gemini.rs`, split out along the 400-line file cap (#684 grew the
-//! parent with the OAuth-bearer request loop). No I/O anywhere here.
+//! half of `gemini.rs`, split out along the 400-line file cap. No I/O
+//! anywhere here.
 
 use serde_json::{json, Value};
 

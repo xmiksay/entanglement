@@ -64,12 +64,6 @@ const MAX_PAUSE_CONTINUATIONS: usize = 6;
 #[derive(Clone)]
 pub struct AnthropicLlm {
     api_key: String,
-    /// OAuth bearer source (#684 edge d): `Some` replaces the `x-api-key`
-    /// header with `Authorization: Bearer <token>` fetched per POST (cached
-    /// until expiry by the source), with one forced-refresh retry on a `401`.
-    /// The endpoint-pool identity becomes `None` then — a rotating bearer
-    /// must never key the pool (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     /// Base URL, no trailing slash required — `/v1/messages` is appended per
     /// request. Defaults to [`ANTHROPIC_BASE`]; a catalog `base_url` (a
     /// proxy/gateway) overrides it (#551).
@@ -165,7 +159,6 @@ impl Llm for AnthropicLlm {
 
         let http = self.http.clone();
         let api_key = self.api_key.clone();
-        let auth = self.auth.clone();
         // Base defaults to `ANTHROPIC_BASE`; a catalog `base_url` (a
         // proxy/gateway speaking the Anthropic wire) overrides it (#551) — the
         // trim mirrors `openai`/`gemini`'s own request-URL construction.
@@ -193,69 +186,42 @@ impl Llm for AnthropicLlm {
             let mut continuations: usize = 0;
 
             loop {
-                // An OAuth bearer (#684 edge d) is fetched per POST — cached
-                // until expiry by the source — replacing `x-api-key`, with one
-                // forced-refresh retry on a `401`. Pool identity is `None`
-                // then: a rotating bearer must never key the pool (ADR-0156).
-                let mut forced_refresh = false;
-                let (response, guard) = loop {
-                    let bearer = match &auth {
-                        Some(source) => {
-                            Some(source.access_token(forced_refresh).await.map_err(|e| {
-                                anyhow::anyhow!("fetching the OAuth token for `{url}`: {e:#}")
-                            })?)
+                let (response, guard) = http
+                    .execute_with_retry(
+                        &url,
+                        Some(api_key.as_str()),
+                        rpm,
+                        concurrency,
+                        &request_model,
+                        model_concurrency,
+                        retry,
+                        || {
+                            http.client()
+                                .post(&url)
+                                .header("anthropic-version", ANTHROPIC_VERSION)
+                                .header("x-api-key", &api_key)
+                                .json(&body)
+                                .send()
+                        },
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        crate::client::RetryError::Permanent(e) => {
+                            anyhow::anyhow!("anthropic request failed: {e}")
                         }
-                        None => None,
-                    };
-                    let pool_identity = if auth.is_some() { None } else { Some(api_key.as_str()) };
-                    let (response, guard) = http
-                        .execute_with_retry(
-                            &url,
-                            pool_identity,
-                            rpm,
-                            concurrency,
-                            &request_model,
-                            model_concurrency,
-                            retry,
-                            || {
-                                let request = http
-                                    .client()
-                                    .post(&url)
-                                    .header("anthropic-version", ANTHROPIC_VERSION);
-                                let request = match &bearer {
-                                    Some(token) => request.bearer_auth(token),
-                                    None => request.header("x-api-key", &api_key),
-                                };
-                                request.json(&body).send()
-                            },
-                        )
-                        .await
-                        .map_err(|e| match e {
-                            crate::client::RetryError::Permanent(e) => {
-                                anyhow::anyhow!("anthropic request failed: {e}")
-                            }
-                            crate::client::RetryError::Exhausted(attempts, e) => {
-                                anyhow::anyhow!("anthropic request failed after {attempts} attempts: {e}")
-                            }
-                            crate::client::RetryError::RateLimited => {
-                                anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
-                            }
-                            crate::client::RetryError::HeaderTimeout(timeout, attempts) => {
-                                anyhow::anyhow!(
-                                    "anthropic request failed: no response headers within \
-                                     {timeout:?} after {attempts} attempt(s)"
-                                )
-                            }
-                        })?;
-                    if response.status().as_u16() == 401 && auth.is_some() && !forced_refresh {
-                        tracing::warn!(
-                            "anthropic 401 with an OAuth bearer; forcing one refresh and retrying"
-                        );
-                        forced_refresh = true;
-                        continue;
-                    }
-                    break (response, guard);
-                };
+                        crate::client::RetryError::Exhausted(attempts, e) => {
+                            anyhow::anyhow!("anthropic request failed after {attempts} attempts: {e}")
+                        }
+                        crate::client::RetryError::RateLimited => {
+                            anyhow::anyhow!("anthropic rate limited: gave up waiting for the endpoint to clear")
+                        }
+                        crate::client::RetryError::HeaderTimeout(timeout, attempts) => {
+                            anyhow::anyhow!(
+                                "anthropic request failed: no response headers within \
+                                 {timeout:?} after {attempts} attempt(s)"
+                            )
+                        }
+                    })?;
 
                 let response = ensure_success(response).await?;
 

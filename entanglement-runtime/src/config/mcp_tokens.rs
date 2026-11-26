@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;
 
-use super::state_dir::{state_file, LLM_TOKENS_FILE, MCP_TOKENS_FILE, STATE_DIR_ENV};
+use super::state_dir::{state_file, MCP_TOKENS_FILE, STATE_DIR_ENV};
 
 /// On-disk shape: a single `servers:` map.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -99,16 +99,6 @@ impl McpTokenStore {
     /// steering process-global env.
     pub fn at(path: Option<PathBuf>) -> Self {
         Self { path }
-    }
-
-    /// The sibling store for OAuth-protected **LLM provider endpoints** (#684
-    /// edge d): same file format and locking, keyed by catalog provider name
-    /// instead of MCP server name, at `llm-tokens.yml` in the managed-state
-    /// dir. A separate file — not a
-    /// namespace inside `mcp-tokens.yml` — so neither surface's writes ever
-    /// contend with (or quarantine) the other's credentials.
-    pub fn load_llm() -> Self {
-        Self::at(state_file(LLM_TOKENS_FILE))
     }
 
     /// Every server with a stored credential — the `/mcp list` "authenticated"
@@ -310,18 +300,6 @@ fn quarantine(path: &Path, parse_err: &str) -> Result<()> {
 mod tests {
     use super::*;
     use entanglement_core::TokenSet;
-
-    /// The LLM sibling store (#684 edge d) resolves its own file, fully
-    /// independent of the MCP one — both inside the managed-state dir. Checked
-    /// on the file names: resolving the real stores would read the developer's
-    /// own token files (#773).
-    #[test]
-    fn llm_store_resolves_its_own_file() {
-        assert_ne!(LLM_TOKENS_FILE, MCP_TOKENS_FILE);
-        for file in [LLM_TOKENS_FILE, MCP_TOKENS_FILE] {
-            assert!(super::super::state_dir::MANAGED_STATE_FILES.contains(&file));
-        }
-    }
 
     fn store_at(label: &str) -> (McpTokenStore, PathBuf) {
         let path = std::env::temp_dir().join(format!(

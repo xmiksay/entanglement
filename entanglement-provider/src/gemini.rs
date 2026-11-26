@@ -56,13 +56,6 @@ pub(crate) fn tool_name_from_id(id: &str) -> &str {
 pub struct GeminiLlm {
     base_url: String,
     api_key: String,
-    /// OAuth bearer source (#684 edge d): `Some` replaces `x-goog-api-key`
-    /// with `Authorization: Bearer <token>` fetched per request (cached until
-    /// expiry by the source; the context-cache call reuses the same token),
-    /// with one forced-refresh retry on a `401`. The endpoint-pool identity
-    /// becomes `None` then — a rotating bearer must never key the pool
-    /// (ADR-0156).
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: String,
     /// Catalog-provided per-minute budget for this endpoint (`None` = client
     /// default). Threaded into the per-endpoint rate limiter (#241).
@@ -95,32 +88,12 @@ impl GeminiLlm {
         Self {
             base_url: base_url.into(),
             api_key: api_key.into(),
-            auth: None,
             default_model: default_model.into(),
             rpm,
             concurrency,
             model_concurrency,
             http,
             cache: cache::CacheHandle::new(),
-        }
-    }
-
-    /// Authenticate with an OAuth bearer from `auth` instead of the static
-    /// `x-goog-api-key` (#684 edge d) — see the field docs for the
-    /// pool-identity rule. The `api_key` passed at construction is ignored on
-    /// the wire then (pass an empty string for a purely OAuth endpoint).
-    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
-        self.auth = Some(auth);
-        self
-    }
-
-    /// The per-request bearer, when this client authenticates via OAuth.
-    async fn bearer(&self, force_refresh: bool) -> anyhow::Result<Option<String>> {
-        match &self.auth {
-            Some(source) => Ok(Some(source.access_token(force_refresh).await.map_err(
-                |e| anyhow::anyhow!("fetching the OAuth token for `{}`: {e:#}", self.base_url),
-            )?)),
-            None => Ok(None),
         }
     }
 }
@@ -130,20 +103,17 @@ impl GeminiLlm {
 /// defaults; `model_concurrency` resolves a tighter per-model cap per request
 /// (`|_| None` disables it, #521, resolved per request rather than once at
 /// construction, #550).
-/// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
-/// replacing `x-goog-api-key` on the wire (pass an empty `api_key` then).
 #[allow(clippy::too_many_arguments)]
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
     model_concurrency: ModelConcurrencyResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let mut llm = GeminiLlm::new(
+    let llm = GeminiLlm::new(
         base_url,
         api_key,
         default_model,
@@ -152,19 +122,7 @@ pub fn gemini_factory(
         model_concurrency,
         http,
     );
-    if let Some(auth) = auth {
-        llm = llm.with_auth(auth);
-    }
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
-}
-
-/// The request auth header: the OAuth bearer when one is in play (#684),
-/// else the static Gemini API key.
-fn auth_header(bearer: &Option<String>, api_key: &str) -> (&'static str, String) {
-    match bearer {
-        Some(token) => ("authorization", format!("Bearer {token}")),
-        None => ("x-goog-api-key", api_key.to_string()),
-    }
 }
 
 #[async_trait]
@@ -175,10 +133,6 @@ impl Llm for GeminiLlm {
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
         let model_concurrency = (self.model_concurrency)(&model);
-        // An OAuth bearer (#684 edge d) is fetched per request — cached until
-        // expiry by the source — replacing `x-goog-api-key` on both the
-        // generate call and the cache call below.
-        let mut bearer = self.bearer(false).await?;
         // Best-effort context caching (#587): reuse or create a
         // `cachedContents` resource for the stable system+tools prefix so it
         // isn't re-billed at the full input rate on every turn, mirroring
@@ -189,7 +143,7 @@ impl Llm for GeminiLlm {
             .resolve(
                 &self.http,
                 &self.base_url,
-                &auth_header(&bearer, &self.api_key),
+                &self.api_key,
                 &model,
                 req.system,
                 req.tools,
@@ -216,50 +170,32 @@ impl Llm for GeminiLlm {
 
         // The rate-limit / retry pool is keyed by (endpoint, api_key); use the
         // base (key-agnostic) so every model on this endpoint shares one bucket.
-        // With OAuth the identity is `None` — a rotating bearer must never key
-        // the pool (ADR-0156). One forced-refresh retry on a `401`.
-        let mut forced_refresh = false;
-        let (response, guard) = loop {
-            let (name, value) = auth_header(&bearer, &self.api_key);
-            let pool_identity = if self.auth.is_some() {
-                None
-            } else {
-                Some(self.api_key.as_str())
-            };
-            let (response, guard) = self
-                .http
-                .execute_with_retry(
-                    base,
-                    pool_identity,
-                    self.rpm,
-                    self.concurrency,
-                    &model,
-                    model_concurrency,
-                    req.retry,
-                    || {
-                        self.http
-                            .client()
-                            .post(&url)
-                            .header(name, &value)
-                            .header("content-type", "application/json")
-                            .json(&body)
-                            .send()
-                    },
-                )
-                .await
-                // `RetryError`'s own `Display` (thiserror) already carries the
-                // per-variant detail (attempts, elapsed timeout, ...); just
-                // prefix it with the provider so mixed-provider logs stay
-                // attributable.
-                .map_err(|e| anyhow::anyhow!("gemini request failed: {e}"))?;
-            if response.status().as_u16() == 401 && self.auth.is_some() && !forced_refresh {
-                tracing::warn!("gemini 401 with an OAuth bearer; forcing one refresh and retrying");
-                forced_refresh = true;
-                bearer = self.bearer(true).await?;
-                continue;
-            }
-            break (response, guard);
-        };
+        let (response, guard) = self
+            .http
+            .execute_with_retry(
+                base,
+                Some(self.api_key.as_str()),
+                self.rpm,
+                self.concurrency,
+                &model,
+                model_concurrency,
+                req.retry,
+                || {
+                    self.http
+                        .client()
+                        .post(&url)
+                        .header("x-goog-api-key", &self.api_key)
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
+            .await
+            // `RetryError`'s own `Display` (thiserror) already carries the
+            // per-variant detail (attempts, elapsed timeout, ...); just
+            // prefix it with the provider so mixed-provider logs stay
+            // attributable.
+            .map_err(|e| anyhow::anyhow!("gemini request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();

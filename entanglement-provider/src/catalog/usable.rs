@@ -8,12 +8,8 @@
 use super::ProviderEntry;
 
 impl ProviderEntry {
-    /// `oauth: Some(_)` is usable unconditionally — the endpoint authenticates
-    /// with a refreshed bearer token (`skutter config connect`), and a
-    /// missing/expired token is a runtime failure surfaced at request time,
-    /// not a catalog fact this predicate can see. `key_env: None` is keyless
-    /// (e.g. local Ollama). `key_env: Some(var)` needs `var` set and
-    /// non-empty in the *process* environment, read live so a `/key` save
+    /// `key_env: None` is keyless (e.g. local Ollama). `key_env: Some(var)`
+    /// needs `var` set and non-empty in the *process* environment, read live so a `/key` save
     /// (which `set_var`s the key) is picked up without a restart — mirroring
     /// `select_provider`'s own auto-detect check in `main.rs`. Reading live is safe here: the
     /// managed `.env` is loaded into the process env once at startup
@@ -27,9 +23,6 @@ impl ProviderEntry {
     /// [`is_usable`](Self::is_usable) over an injected env lookup, so the
     /// predicate is unit-testable without mutating process env (#773).
     fn is_usable_with(&self, env: impl Fn(&str) -> Option<String>) -> bool {
-        if self.oauth.is_some() {
-            return true;
-        }
         match &self.key_env {
             None => true,
             Some(var) => env(var).is_some_and(|v| !v.is_empty()),
@@ -49,14 +42,6 @@ mod tests {
     #[test]
     fn keyless_is_usable() {
         assert!(entry("").is_usable());
-    }
-
-    #[test]
-    fn oauth_is_usable_regardless_of_key_env() {
-        assert!(entry(
-            "oauth:\n  authorization_url: https://as.example/authorize\n  token_url: https://as.example/token\n"
-        )
-        .is_usable());
     }
 
     #[test]

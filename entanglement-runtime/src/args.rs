@@ -109,23 +109,6 @@ pub(crate) enum ConfigCmd {
         #[arg(long)]
         key: Option<String>,
     },
-    /// Authorize an OAuth-protected LLM provider (#684): run the browser (or
-    /// device-code) flow against a catalog entry carrying an `oauth:` block
-    /// and persist the credential to the managed `llm-tokens.yml`.
-    Connect {
-        /// Provider name (a catalog entry with an `oauth:` block).
-        provider: String,
-        /// RFC 8628 device-code flow: no browser, no loopback listener —
-        /// for SSH/headless hosts.
-        #[arg(long)]
-        device_code: bool,
-    },
-    /// Drop an OAuth LLM provider's stored credential (revoking it upstream
-    /// when the server supports RFC 7009).
-    Disconnect {
-        /// Provider name.
-        provider: String,
-    },
 }
 
 #[derive(Subcommand)]

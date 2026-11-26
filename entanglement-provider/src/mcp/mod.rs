@@ -13,9 +13,7 @@
 //!
 //! - [`http`] — the streamable-HTTP transport ([`McpHttpClient`]), previously
 //!   `entanglement-runtime::mcp::http` (#312, ADR-0080). Authenticated via
-//!   [`crate::oauth`] — the OAuth 2.1 mechanism started life here as
-//!   `mcp::auth` (ADR-0153) and was promoted to a crate-level module when the
-//!   LLM wires became its second consumer (ADR-0189).
+//!   [`crate::oauth`], the OAuth 2.1 mechanism (ADR-0153).
 //! - The shared JSON-RPC/tool-definition helpers both the HTTP transport and the
 //!   runtime's stdio transport parse responses with — including `tools/list`
 //!   pagination ([`list_tools_paginated`]) and the reply to a server-initiated

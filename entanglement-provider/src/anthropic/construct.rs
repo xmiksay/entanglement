@@ -1,6 +1,5 @@
-//! Construction for [`AnthropicLlm`]: the constructor, the OAuth-bearer
-//! opt-in, and [`anthropic_factory`] — split out of `mod.rs` along the
-//! 400-line file cap (#684 grew the parent with the bearer request loop).
+//! Construction for [`AnthropicLlm`]: the constructor and
+//! [`anthropic_factory`] — split out of `mod.rs` along the 400-line file cap.
 
 use crate::catalog::AnthropicModelSpec;
 use crate::client::HttpClient;
@@ -24,7 +23,6 @@ impl AnthropicLlm {
     ) -> Self {
         Self {
             api_key: api_key.into(),
-            auth: None,
             base_url: base_url.into(),
             default_model: default_model.into(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
@@ -36,15 +34,6 @@ impl AnthropicLlm {
             model_spec,
             http,
         }
-    }
-
-    /// Authenticate with an OAuth bearer from `auth` instead of the static
-    /// `x-api-key` (#684 edge d) — see the field docs for the pool-identity
-    /// rule. The `api_key` passed at construction is ignored on the wire then
-    /// (pass an empty string for a purely OAuth endpoint).
-    pub fn with_auth(mut self, auth: std::sync::Arc<dyn crate::oauth::AccessTokenSource>) -> Self {
-        self.auth = Some(auth);
-        self
     }
 }
 
@@ -58,13 +47,10 @@ impl AnthropicLlm {
 /// when set (#481); `model_spec` carries the bound model's thinking shape,
 /// replay flag, effort tiers and temperature support
 /// (`Catalog::anthropic_model_spec`, resolved once for `default_model`).
-/// `auth = Some(..)` switches the endpoint to an OAuth bearer (#684 edge d),
-/// replacing `x-api-key` on the wire (pass an empty `api_key` then).
 #[allow(clippy::too_many_arguments)]
 pub fn anthropic_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
-    auth: Option<std::sync::Arc<dyn crate::oauth::AccessTokenSource>>,
     default_model: impl Into<String>,
     rpm: Option<u32>,
     concurrency: Option<usize>,
@@ -74,7 +60,7 @@ pub fn anthropic_factory(
     model_spec: AnthropicModelSpec,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let mut llm = AnthropicLlm::new(
+    let llm = AnthropicLlm::new(
         base_url,
         api_key,
         default_model,
@@ -86,8 +72,5 @@ pub fn anthropic_factory(
         model_spec,
         http,
     );
-    if let Some(auth) = auth {
-        llm = llm.with_auth(auth);
-    }
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }

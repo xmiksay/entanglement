@@ -1,9 +1,9 @@
-//! The managed-state directory (ADR-0213): where skutter keeps the eight
+//! The managed-state directory (ADR-0213): where skutter keeps the seven
 //! files **it** writes on the user's behalf — grants, per-agent model pins and
-//! generation overrides, aux-model pins, escape-root grants, the MCP/LLM
-//! OAuth token stores, and the last-seen MCP tool-name cache (ADR-0226).
+//! generation overrides, aux-model pins, escape-root grants, the MCP OAuth
+//! token store, and the last-seen MCP tool-name cache (ADR-0226).
 //!
-//! One `ENTANGLEMENT_STATE_DIR` relocates all eight together, replacing the
+//! One `ENTANGLEMENT_STATE_DIR` relocates all seven together, replacing the
 //! seven per-file `ENTANGLEMENT_*_FILE` overrides it superseded: the files are
 //! siblings by design, and nobody needs to scatter them. The hand-edited
 //! inputs — `config.yml`, `providers.yml`, the provider-key `.env`, agents,
@@ -21,18 +21,16 @@ pub const AGENT_GENERATION_FILE: &str = "agent-generation.yml";
 pub const AUX_MODELS_FILE: &str = "aux-models.yml";
 pub const EXTRA_ROOTS_FILE: &str = "extra-roots.yml";
 pub const MCP_TOKENS_FILE: &str = "mcp-tokens.yml";
-pub const LLM_TOKENS_FILE: &str = "llm-tokens.yml";
 pub const MCP_TOOLS_FILE: &str = "mcp-tools.yml";
 
 /// Every file [`STATE_DIR_ENV`] relocates — and nothing else.
-pub const MANAGED_STATE_FILES: [&str; 8] = [
+pub const MANAGED_STATE_FILES: [&str; 7] = [
     GRANTS_FILE,
     AGENT_MODELS_FILE,
     AGENT_GENERATION_FILE,
     AUX_MODELS_FILE,
     EXTRA_ROOTS_FILE,
     MCP_TOKENS_FILE,
-    LLM_TOKENS_FILE,
     MCP_TOOLS_FILE,
 ];
 
@@ -86,11 +84,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_eight_managed_files_and_no_hand_edited_input() {
+    fn exactly_the_seven_managed_files_and_no_hand_edited_input() {
         let mut names = MANAGED_STATE_FILES.to_vec();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 8, "eight distinct managed files");
+        assert_eq!(names.len(), 7, "seven distinct managed files");
         for input in ["config.yml", "providers.yml", ".env"] {
             assert!(!MANAGED_STATE_FILES.contains(&input), "{input}");
         }
