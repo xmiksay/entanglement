@@ -1,16 +1,10 @@
 //! What an old task hands its successor survives the edges (#906,
-//! ADR-0246): a successor hibernated before it ran passes it on, a dropped
-//! tail still leaves the final state, and a `Hibernate` stashed behind a
-//! mid-stream `Pause` hibernates.
+//! ADR-0246): a successor hibernated before it ran passes it on, and a
+//! dropped tail still leaves the final state.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use entanglement_core::{
-    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, SessionId, ToolOverlayEntry,
-};
+use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolOverlayEntry};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 
@@ -136,55 +130,5 @@ async fn a_dropped_tail_still_hands_over_the_teardown_deny() {
         started_overlay(&mut sub, &sid).await,
         Some(vec![ToolOverlayEntry::deny("bash")]),
         "the deny reached the successor through its final state"
-    );
-}
-
-struct SlowLlm;
-
-#[async_trait]
-impl Llm for SlowLlm {
-    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        Ok(stream_from_response(LlmResponse {
-            text: "r".into(),
-            ..Default::default()
-        }))
-    }
-}
-
-/// `Pause` then `HibernateSession` while a round streams: both are stashed,
-/// the hold waits on a closed inbox, and the stashed `Hibernate` still
-/// hibernates the session rather than ending it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pause_then_hibernate_mid_stream_hibernates() {
-    let holly = Holly::spawn(EngineConfig {
-        llm_factory: Arc::new(|| Box::new(SlowLlm) as Box<dyn Llm>),
-        ..EngineConfig::default()
-    });
-    let mut sub = holly.subscribe();
-    let sid = SessionId::new("held");
-    holly.send(InMsg::prompt(sid.clone(), "x")).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    let pause = InMsg::PauseSession {
-        session: sid.clone(),
-    };
-    holly.send(pause).await.unwrap();
-    holly.hibernate(sid.clone()).await.unwrap();
-    let end = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let ev = next_for(&mut sub, &sid).await;
-            if matches!(
-                ev,
-                OutEvent::SessionHibernated { .. } | OutEvent::SessionEnded { .. }
-            ) {
-                return ev;
-            }
-        }
-    })
-    .await
-    .expect("the session ended somehow");
-    assert!(
-        matches!(end, OutEvent::SessionHibernated { .. }),
-        "got {end:?}"
     );
 }

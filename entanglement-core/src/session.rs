@@ -118,22 +118,15 @@ pub(crate) async fn session_loop(
                 s.turn.is_none().then(tokio::time::Instant::now),
             );
 
-        // Pop the stash only when idle *and not paused* (#516, ADR-0208): a
-        // command stashed during a live turn replays after the turn ends
-        // (ADR-0018). While parked, or while paused, popping a stashed command
-        // here would only re-stash it below — a busy loop.
+        // Pop the stash only when idle: a command stashed during a live turn
+        // replays after the turn ends (ADR-0018). While parked, popping a
+        // stashed command here would only re-stash it below — a busy loop.
         let cmd = if s.turn.is_none() {
-            if s.paused {
-                rx.recv().await
-            } else if let Some(c) = stash.pop_front() {
+            if let Some(c) = stash.pop_front() {
                 Some(c)
             } else {
                 rx.recv().await
             }
-        } else if s.paused {
-            // Parked and held (#516): suspend the reoffer timer too — a paused
-            // session shouldn't keep nagging the runtime executor while held.
-            rx.recv().await
         } else {
             // Parked on unresolved tool calls (#274, ADR-0071). Bound the wait:
             // after `reoffer_interval` of silence (no `ToolResult` arriving)
@@ -157,16 +150,12 @@ pub(crate) async fn session_loop(
                 None => rx.recv().await,
             }
         };
-        // A `Hibernate` stashed behind a mid-stream `Pause` waits out the hold
-        // in the stash, but its inbox is closed by then: hibernate, not end.
-        let cmd = cmd.or_else(|| cmd::take_hibernate(&mut stash));
         match cmd {
             Some(SessionCmd::Prompt(content)) => {
-                if s.turn.is_some() || s.paused {
-                    // Mid-turn steering (#182, ADR-0058) or a paused idle
-                    // session (#516, ADR-0208): stash it — the next round, or
-                    // `Unpause`'s resulting idle pop, folds a stashed prompt
-                    // into the live context before the model request.
+                if s.turn.is_some() {
+                    // Mid-turn steering (#182, ADR-0058): stash it — the next
+                    // round folds a stashed prompt into the live context
+                    // before the model request.
                     stash_or_reject(
                         &mut stash,
                         SessionCmd::Prompt(content),
@@ -191,7 +180,7 @@ pub(crate) async fn session_loop(
                 }
             }
             // Live mode switch (ADR-0207): applied immediately, turn live or
-            // paused or not — unlike `SetModel`/`SetGeneration`/
+            // not — unlike `SetModel`/`SetGeneration`/
             // `SetToolOverlay` below, a mode is never deferred. Those defer
             // because they touch something a live round is actively using
             // (the backend, generation knobs riding the in-flight request,
@@ -226,13 +215,8 @@ pub(crate) async fn session_loop(
             // every call still in flight for the rest of the turn running
             // under the old, wider mode.
             //
-            // Paused: a held session has nothing actively grading either —
-            // whatever is parked was already dispatched under whatever mode
-            // was live at the time, and nothing new dispatches until
-            // `ResumeSession` — so applying now vs. after `Unpause` changes
-            // nothing observable, and immediate is simpler than one more
-            // deferred-command special case. `SetSessionMeta` and the
-            // lineage mirror apply immediately too — see `immediate.rs`.
+            // `SetSessionMeta` and the lineage mirror apply immediately too —
+            // see `immediate.rs`.
             Some(
                 cmd @ (SessionCmd::SetMode(_)
                 | SessionCmd::SetSessionMeta(..)
@@ -242,8 +226,8 @@ pub(crate) async fn session_loop(
                 let _ = immediate::try_apply(cmd, immediate::fields!(s), &session, &events);
             }
             // A deferrable command (`SetModel`/`SetGeneration`/`SetToolOverlay`/
-            // `Oneshot`) arriving during a live turn or a pause is stashed and
-            // replays once the turn ends or the hold lifts (stash replay).
+            // `Oneshot`) arriving during a live turn is stashed and replays
+            // once the turn ends (stash replay).
             Some(
                 cmd @ (SessionCmd::SetModel(..)
                 | SessionCmd::SetGeneration(_)
@@ -252,7 +236,7 @@ pub(crate) async fn session_loop(
                 | SessionCmd::RevertFiles(_)
                 | SessionCmd::Fork(_)
                 | SessionCmd::SetWorkdir(_)),
-            ) if s.turn.is_some() || s.paused => {
+            ) if s.turn.is_some() => {
                 stash_or_reject(&mut stash, cmd, &session, &events, &s.seq);
             }
             // Live model/provider switch (#218): re-resolve against the runtime's
@@ -294,13 +278,7 @@ pub(crate) async fn session_loop(
             // arrival — arrival order, matching replay's `ToolOutput`-order
             // fold — and continue the turn once the batch drains. No match:
             // stale (late result after a cancel), duplicate, or unknown id —
-            // drop it rather than corrupt context. While paused (#516,
-            // ADR-0208) the fold still happens — a resolver isn't blocked by a
-            // hold, and stashing this would deadlock (the batch could never
-            // drain if its own resolution waited on `s.turn` going idle) — but
-            // the drained batch does *not* re-enter `drive_turn`: the next
-            // model round-trip is exactly what `Paused` holds back, and
-            // `Unpause` continues it without a fresh prompt.
+            // drop it rather than corrupt context.
             Some(SessionCmd::ToolResult(id, content, is_error, duration_ms, exit_code)) => {
                 match s.turn.as_mut().and_then(|t| t.resolve(&id)) {
                     Some((call, envelope)) => {
@@ -317,7 +295,7 @@ pub(crate) async fn session_loop(
                             &s.seq,
                         );
                         s.ctx.push_tool_content(&call.id, content);
-                        if !s.paused && s.turn.as_ref().is_some_and(TurnState::is_drained) {
+                        if s.turn.as_ref().is_some_and(TurnState::is_drained) {
                             forked =
                                 drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg)
                                     .await
@@ -334,22 +312,6 @@ pub(crate) async fn session_loop(
             // already-arrived outputs stay in Context. Idle Stop is a no-op
             // (a mid-stream Stop is caught inside the streamed round).
             Some(SessionCmd::Stop) => commands::stop(&mut s, &session, &events),
-            // Hold the session at `Paused` (#516, ADR-0208) — see
-            // `SessionCmd::Pause`'s doc for what this defers. Idempotent: no
-            // duplicate `Status` for an already-paused session.
-            Some(SessionCmd::Pause) => commands::pause(&mut s, &session, &events),
-            // Lift a hold placed by `Pause` (#516, ADR-0208). A drained-but-
-            // undriven parked batch (every `ToolResult` already folded while
-            // paused) continues the turn immediately — no new prompt needed;
-            // otherwise report the state the session is actually resting in
-            // now (`Working` if still parked on unresolved calls, `Done` if
-            // idle — matching `Stop`'s resting-state convention, ADR-0139).
-            Some(SessionCmd::Unpause) => {
-                if commands::unpause(&mut s, &session, &events) {
-                    forked = drive_turn(&session, &mut rx, &mut s, &events, &mut stash, &cfg).await
-                        == Forked::Yes;
-                }
-            }
             // Memory eviction without tombstoning (#318, ADR-0077). Drop `Session`
             // (Context/history) and retire the shared seq counter, which the
             // registry keeps (ADR-0239, ADR-0244), then emit the distinct

@@ -72,7 +72,6 @@ actions! {
     JumpAttention => "jump_attention" ["ctrl+g"] "Sessions" "Jump to the session waiting on you",
     NewSession => "new_session" ["leader n"] "Sessions" "Create a new session",
     ListSessions => "list_sessions" ["leader l", "ctrl+l"] "Sessions" "List and switch sessions",
-    PauseToggle => "pause_toggle" ["ctrl+space"] "Sessions" "Pause / resume the active session",
     PickAgent => "pick_agent" ["leader a", "ctrl+a"] "Agent" "Show available agents",
     PickModel => "pick_model" ["leader m"] "Agent" "Pick model",
     Inspect => "inspect" ["leader i"] "Agent" "Inspect prompt, agents & skills",

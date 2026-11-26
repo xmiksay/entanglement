@@ -322,8 +322,7 @@
 #  #   scroll_up pageup         scroll_down pagedown
 #  #   toggle_reasoning leader t     jump_attention ctrl+g
 #  #   new_session leader n     list_sessions [leader l, ctrl+l]
-#  #   pause_toggle ctrl+space  pick_agent [leader a, ctrl+a]
-#  #   pick_model leader m      inspect leader i
+#  #   pick_agent [leader a, ctrl+a]  pick_model leader m  inspect leader i
 #  #   toggle_sidebar leader s  open_editor leader e     export leader E
 #  #   command_palette [leader p, ctrl+p]  interrupt leader c  quit leader q
 #  #   help [leader ?, leader h]

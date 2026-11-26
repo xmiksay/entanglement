@@ -6,7 +6,6 @@ use anyhow::Result;
 use entanglement_core::{Holly, InMsg};
 
 use super::normal_keys::submit;
-use super::slash_send::send_pause_resume_toggle;
 use crate::tui::app::App;
 use crate::tui::keybindings::Action;
 
@@ -20,7 +19,6 @@ pub(super) async fn run_action(app: &mut App, holly: &Holly, action: Action) -> 
         }
         Action::CycleMode => cycle_mode(app, holly, true).await,
         Action::CycleModeBack => cycle_mode(app, holly, false).await,
-        Action::PauseToggle => send_pause_resume_toggle(app, holly).await,
         Action::PasteImage => app.paste_clipboard_image().await,
         _ => return Ok(app.dispatch_action(action)),
     }

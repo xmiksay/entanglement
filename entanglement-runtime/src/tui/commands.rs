@@ -31,8 +31,6 @@ pub enum Command {
     Enable,
     Disable,
     Tools,
-    Pause,
-    Continue,
     Stop,
     Name,
     AuxModel,
@@ -72,8 +70,6 @@ impl Command {
             Command::Enable => "enable",
             Command::Disable => "disable",
             Command::Tools => "tools",
-            Command::Pause => "pause",
-            Command::Continue => "continue",
             Command::Stop => "stop",
             Command::Name => "name",
             Command::AuxModel => "aux-model",
@@ -119,12 +115,6 @@ impl Command {
             }
             Command::Tools => {
                 "Browse this session's tool surface — host tools, MCP servers, skills (filter as you type, Tab cycles category, Enter enables the highlighted row)"
-            }
-            Command::Pause => {
-                "Pause the current session (--all for every live session)"
-            }
-            Command::Continue => {
-                "Resume a paused session (--all for every live session)"
             }
             Command::Stop => {
                 "Stop/cancel the current session's in-flight turn (--all for every live session)"
@@ -181,8 +171,6 @@ pub fn all_commands() -> Vec<Command> {
         Command::Enable,
         Command::Disable,
         Command::Tools,
-        Command::Pause,
-        Command::Continue,
         Command::Stop,
         Command::Name,
         Command::AuxModel,
@@ -226,14 +214,13 @@ pub fn parse_compact_args(text: &str) -> Result<(u64, Option<String>), String> {
     crate::tui::command_args::parse_compact_via_clap(text)
 }
 
-/// Parse the `--all` flag shared by `/stop`, `/pause`, `/continue` (#6).
+/// Parse `/stop`'s `--all` flag (#6).
 /// `text` is the raw input including the leading slash command. Returns
 /// whether the flag was present; an unknown token is a friendly `Err`.
 ///
 /// Issue 2: the `--all`/`-a` grammar is now clap-derived
 /// ([`crate::tui::command_args::parse_lifecycle_via_clap`]); this thin wrapper
-/// keeps the historical call-site path so the three `event_loop::send_*`
-/// helpers are untouched.
+/// keeps the historical call-site path for `event_loop::send_stop`.
 pub fn parse_all_flag(text: &str, cmd: Command) -> Result<bool, String> {
     crate::tui::command_args::parse_lifecycle_via_clap(text, cmd)
 }
@@ -515,22 +502,15 @@ mod tests {
 
     #[test]
     fn new_lifecycle_commands_parse() {
-        assert_eq!(parse_command("/pause"), Some(Command::Pause));
-        assert_eq!(parse_command("/continue"), Some(Command::Continue));
         assert_eq!(parse_command("/stop"), Some(Command::Stop));
+        assert_eq!(parse_command("/pause"), None);
+        assert_eq!(parse_command("/continue"), None);
     }
 
     #[test]
     fn new_commands_appear_in_all_commands_and_palette_filter() {
-        assert!(all_commands().iter().any(|c| matches!(c, Command::Pause)));
-        assert!(all_commands()
-            .iter()
-            .any(|c| matches!(c, Command::Continue)));
         assert!(all_commands().iter().any(|c| matches!(c, Command::Stop)));
         // `filter_in` is what the palette uses.
-        assert!(filter_in(all_commands(), "pause")
-            .iter()
-            .any(|c| matches!(c, Command::Pause)));
         assert!(filter_in(all_commands(), "stop")
             .iter()
             .any(|c| matches!(c, Command::Stop)));
@@ -600,11 +580,7 @@ mod tests {
     fn parse_all_flag_bare_and_flagged() {
         assert_eq!(parse_all_flag("/stop", Command::Stop), Ok(false));
         assert_eq!(parse_all_flag("/stop --all", Command::Stop), Ok(true));
-        assert_eq!(parse_all_flag("/pause -a", Command::Pause), Ok(true));
-        assert_eq!(
-            parse_all_flag("/continue --all", Command::Continue),
-            Ok(true)
-        );
+        assert_eq!(parse_all_flag("/stop -a", Command::Stop), Ok(true));
     }
 
     #[test]

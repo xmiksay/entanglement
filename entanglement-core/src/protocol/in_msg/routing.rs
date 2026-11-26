@@ -28,8 +28,6 @@ impl InMsg {
             | InMsg::RetractQuestion { session, .. }
             | InMsg::ReplaceQuestion { session, .. }
             | InMsg::Stop { session }
-            | InMsg::PauseSession { session }
-            | InMsg::ResumeSession { session }
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
             | InMsg::HibernateSession { session }
@@ -135,8 +133,6 @@ impl InMsg {
             | InMsg::RetractQuestion { .. }
             | InMsg::ReplaceQuestion { .. }
             | InMsg::Stop { .. }
-            | InMsg::PauseSession { .. }
-            | InMsg::ResumeSession { .. }
             | InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
             | InMsg::ListOperations { .. }
@@ -179,8 +175,6 @@ impl InMsg {
             InMsg::RetractQuestion { .. } => "retract_question",
             InMsg::ReplaceQuestion { .. } => "replace_question",
             InMsg::Stop { .. } => "stop",
-            InMsg::PauseSession { .. } => "pause_session",
-            InMsg::ResumeSession { .. } => "resume_session",
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::ListQuestions { .. } => "list_questions",
             InMsg::ListOperations { .. } => "list_operations",

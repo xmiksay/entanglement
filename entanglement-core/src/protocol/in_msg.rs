@@ -164,30 +164,6 @@ pub enum InMsg {
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },
-    /// Hold a live session at [`AgentState::Paused`] (#516, ADR-0208) without
-    /// cancelling anything or evicting memory — the middle ground `Stop`
-    /// (destroys the in-flight round) and `HibernateSession` (evicts memory)
-    /// don't cover. An idle session defers its next `Prompt` (and
-    /// `SetModel`/`SetGeneration`/`Oneshot`) until
-    /// [`ResumeSession`][InMsg::ResumeSession]; a session parked on a tool-call
-    /// batch keeps folding arriving `ToolResult`s into `Context` as normal, but
-    /// the turn does not continue past a drained batch until resumed — so the
-    /// same round picks up again with no re-prompt needed. A session actively
-    /// streaming when this arrives is unaffected until the round reaches its
-    /// next safe point (turn end or park) — mirroring how a mid-stream
-    /// `SetModel` is deferred, *not* raced via `tokio::select!` like
-    /// `Stop` — so `PauseSession` never interrupts an in-flight model
-    /// round-trip; use `Stop` for that. `Stop`/`HibernateSession` always take
-    /// priority: both apply regardless of `paused`, and neither clears it.
-    /// Idempotent; wire-allowed like `Stop` (no elevated capability).
-    PauseSession { session: SessionId },
-    /// Lift a hold placed by [`PauseSession`][InMsg::PauseSession] (#516,
-    /// ADR-0208). A deferred idle `Prompt`/`SetModel`/
-    /// `SetGeneration`/`Oneshot` now applies; a parked turn whose batch already
-    /// drained while paused continues immediately with no new model request
-    /// needed to re-enter it. A no-op on a session that isn't paused.
-    /// Wire-allowed like `PauseSession`.
-    ResumeSession { session: SessionId },
     /// Enumerate the engine's currently-live sessions. The supervisor answers
     /// with a single [`OutEvent::SessionList`] snapshot (ADR-0028); this message
     /// is supervisor-global, not routed to a session task. `correlation_id` is an
@@ -460,8 +436,8 @@ pub enum InMsg {
     /// request to the runtime's `EngineConfig::file_reverter` seam, then
     /// emits [`OutEvent::FilesReverted`] with the outcome and, when anything
     /// was restored, appends a user-role note to `Context` so the model does
-    /// not assume its edits still exist. Deferred while a turn is live or the
-    /// session is paused (stash replay), like `SetModel` — a revert must
+    /// not assume its edits still exist. Deferred while a turn is live (stash
+    /// replay), like `SetModel` — a revert must
     /// never race the turn's own tool writes. Changes made by `bash`/
     /// `rhai` exec are not tracked and never reverted. **Trusted-only** (not
     /// wire-allowed): it writes and deletes files on disk.
@@ -481,8 +457,8 @@ pub enum InMsg {
     /// source stays live and untouched — nothing is logged against it.
     /// Announced by the fork's own `SessionStarted` followed by
     /// [`OutEvent::SessionForked`], which carries the seed history so the
-    /// fork's log replays exactly. Deferred while a turn is live or the
-    /// session is paused (stash replay), like `RevertFiles`, so a fork is
+    /// fork's log replays exactly. Deferred while a turn is live (stash
+    /// replay), like `RevertFiles`, so a fork is
     /// always cut at rest: it never carries a parked tool batch or a
     /// half-streamed round, and it starts idle. Spawned children are not
     /// cloned (the fork is a root with none), and file backups are per root,

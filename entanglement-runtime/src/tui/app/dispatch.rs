@@ -92,11 +92,11 @@ impl App {
                 self.open_tools_view();
                 false
             }
-            // Lifecycle commands (#6): `/stop`, `/pause`, `/continue` need `holly`
-            // (plus the optional `--all` text) — both call sites (the Enter
-            // handler and the command palette) intercept them before reaching
-            // this dispatch, exactly like `Compact`/`Set`/`Mcp` above.
-            Command::Stop | Command::Pause | Command::Continue => false,
+            // Lifecycle command (#6): `/stop` needs `holly` (plus the optional
+            // `--all` text) — both call sites (the Enter handler and the
+            // command palette) intercept it before reaching this dispatch,
+            // exactly like `Compact`/`Set`/`Mcp` above.
+            Command::Stop => false,
             // Same shape again: `/name <text>` needs `holly` plus the trailing
             // text — both call sites intercept it before reaching this dispatch.
             Command::Name => false,
@@ -202,7 +202,6 @@ impl App {
             | Action::Newline
             | Action::CycleMode
             | Action::CycleModeBack
-            | Action::PauseToggle
             | Action::PasteImage => false,
         }
     }

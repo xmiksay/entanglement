@@ -29,7 +29,7 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
     let state_color = theme.c(match app.state() {
         AgentState::Idle => Slot::Success,
         AgentState::Thinking | AgentState::Working => Slot::Warning,
-        AgentState::WaitingAgent | AgentState::Paused => Slot::Special,
+        AgentState::WaitingAgent => Slot::Special,
         AgentState::WaitingApproval | AgentState::WaitingAnswer => Slot::Accent,
         AgentState::Done => Slot::Info,
         AgentState::Error => Slot::Error,
@@ -42,7 +42,6 @@ pub fn draw_profile_badge(f: &mut Frame, area: Rect, app: &App) {
         AgentState::WaitingAgent => "WaitingAgent",
         AgentState::WaitingApproval => "WaitingApproval",
         AgentState::WaitingAnswer => "WaitingAnswer",
-        AgentState::Paused => "Paused",
         AgentState::Done => "Done",
         AgentState::Error => "Error",
     };

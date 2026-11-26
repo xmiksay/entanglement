@@ -154,8 +154,7 @@ pub struct DisableArgs {
     pub target: Option<EnableTarget>,
 }
 
-/// `/stop`, `/pause`, `/continue` shared `--all`/`-a` flag (#6). `Continue` is
-/// the resume-a-paused-session command (named `Continue`, not `Resume`).
+/// `/stop`'s `--all`/`-a` flag (#6).
 #[derive(Parser, Debug)]
 #[command(name = "/lifecycle")]
 pub struct LifecycleArgs {

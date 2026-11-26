@@ -74,22 +74,12 @@ impl Command {
             Command::Allow => render_help::<AllowArgs>(),
             Command::Enable => render_help::<EnableArgs>(),
             Command::Disable => render_help::<DisableArgs>(),
-            Command::Pause | Command::Continue | Command::Stop => {
-                // Lifecycle structs share one shape; name it after the command
-                // so the rendered usage reads `/stop`/`/pause`/`/continue`.
-                let name = match self {
-                    Command::Pause => "pause",
-                    Command::Continue => "continue",
-                    Command::Stop => "stop",
-                    _ => unreachable!("only lifecycle commands reach here"),
-                };
-                LifecycleArgs::command()
-                    .name(name)
-                    .render_help()
-                    .to_string()
-                    .trim_end()
-                    .to_string()
-            }
+            Command::Stop => LifecycleArgs::command()
+                .name("stop")
+                .render_help()
+                .to_string()
+                .trim_end()
+                .to_string(),
             // First line is the whisper's usage hint; the rest is `/help <cmd>`.
             Command::User(c) => format!(
                 "{} — {}\n(user command, {}: {})",
@@ -105,7 +95,7 @@ impl Command {
     }
 
     /// Whether this command accepts clap-renderable arguments (so `/cmd -h` is
-    /// meaningful). The lifecycle trio counts even though they share one struct.
+    /// meaningful).
     pub fn has_args(&self) -> bool {
         matches!(
             self,
@@ -115,8 +105,6 @@ impl Command {
                 | Command::Allow
                 | Command::Enable
                 | Command::Disable
-                | Command::Pause
-                | Command::Continue
                 | Command::Stop
         )
     }
@@ -194,7 +182,7 @@ pub(crate) fn parse_set_via_clap(
     Ok(overrides)
 }
 
-/// Parse `/stop`/`/pause`/`/continue`'s shared `--all`/`-a` flag via clap.
+/// Parse `/stop`'s `--all`/`-a` flag via clap.
 pub(crate) fn parse_lifecycle_via_clap(text: &str, cmd: Command) -> Result<bool, String> {
     let argv = tokens_after_slash(text, &cmd).unwrap_or_default();
     let args: LifecycleArgs = parse_or_usage(argv)?;
@@ -410,15 +398,7 @@ mod tests {
     #[test]
     fn lifecycle_all_flag_short() {
         assert_eq!(
-            parse_lifecycle_via_clap("/pause -a", Command::Pause),
-            Ok(true)
-        );
-    }
-
-    #[test]
-    fn lifecycle_continue_alias() {
-        assert_eq!(
-            parse_lifecycle_via_clap("/continue --all", Command::Continue),
+            parse_lifecycle_via_clap("/stop -a", Command::Stop),
             Ok(true)
         );
     }

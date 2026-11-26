@@ -29,7 +29,6 @@ mod model_switch;
 mod multi_user;
 mod oneshot_op;
 mod parallel_tools;
-mod pause_semantics;
 mod reasoning_block_persistence;
 mod reparent;
 mod replay;

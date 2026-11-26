@@ -98,7 +98,7 @@ pub(super) use fields;
 /// A command arriving while a round streams: applied now if it can be,
 /// otherwise stashed for after the turn. The user-issued, deferrable commands
 /// go through the same capped [`stash_or_reject`] the session loop uses;
-/// lifecycle commands (`Hibernate`, `Pause`/`Unpause`, `ToolResult`) are
+/// lifecycle commands (`Hibernate`, `ToolResult`) are
 /// never dropped.
 pub(super) fn apply_or_stash_mid_stream(
     cmd: SessionCmd,

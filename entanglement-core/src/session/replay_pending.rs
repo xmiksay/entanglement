@@ -114,15 +114,15 @@ impl TurnFold {
         self.end_turn(ctx);
     }
 
-    /// A resting `Status` (`Done`, or `Paused` for a paused session) with no
-    /// `Done` before it: a `Stop` cancelled the turn. Without a logged `Stop`
-    /// (an embedder log), an open round or batch still proves it — never a
+    /// A resting `Status` (`Done`) with no `Done` before it: a `Stop`
+    /// cancelled the turn. Without a logged `Stop` (an embedder log), an open
+    /// round or batch still proves it — never a
     /// trailing `Status` after `Done`, which an early-logged prompt can
     /// precede. The live engine never committed the interrupted stream, but
     /// an emitted batch was committed before its calls went out.
-    pub(super) fn cancelled(&mut self, ctx: &mut Context, paused: bool) {
+    pub(super) fn cancelled(&mut self, ctx: &mut Context) {
         let open = self.round_started || self.batch.is_some();
-        if !(self.stop_requested || (!paused && open)) {
+        if !(self.stop_requested || open) {
             return;
         }
         self.drop_uncommitted_stream();
@@ -276,12 +276,12 @@ mod tests {
         let (mut fold, mut ctx) = (TurnFold::default(), Context::new());
         prompt(&mut fold, &mut ctx, "go");
         fold.push_text(&mut ctx, "partial");
-        fold.cancelled(&mut ctx, false);
+        fold.cancelled(&mut ctx);
         assert_eq!(shape(&ctx), ["User:go:0"]);
 
         prompt(&mut fold, &mut ctx, "again");
         fold.push_call(&mut ctx, call("c1"), None);
-        fold.cancelled(&mut ctx, false);
+        fold.cancelled(&mut ctx);
         assert_eq!(shape(&ctx), ["User:go:0", "User:again:0", "Assistant::1"]);
         assert!(fold.into_parked_turn(&mut ctx).is_none());
     }
@@ -290,26 +290,13 @@ mod tests {
     fn a_logged_stop_ends_a_turn_that_never_streamed() {
         let (mut fold, mut ctx) = (TurnFold::default(), Context::new());
         prompt(&mut fold, &mut ctx, "go");
-        fold.cancelled(&mut ctx, false);
+        fold.cancelled(&mut ctx);
         assert!(fold.in_turn, "no stop, nothing open: not a cancel");
         fold.stop();
-        fold.cancelled(&mut ctx, false);
+        fold.cancelled(&mut ctx);
         assert!(!fold.in_turn);
         prompt(&mut fold, &mut ctx, "two");
         assert_eq!(shape(&ctx), ["User:go:0", "User:two:0"]);
-    }
-
-    #[test]
-    fn a_pause_is_a_cancel_only_after_a_stop() {
-        let (mut fold, mut ctx) = (TurnFold::default(), Context::new());
-        prompt(&mut fold, &mut ctx, "go");
-        fold.push_call(&mut ctx, call("c1"), None);
-        fold.tool_output(&mut ctx, "c1", Vec::new());
-        fold.cancelled(&mut ctx, true);
-        assert!(fold.batch.is_some(), "a bare pause keeps the turn");
-        fold.stop();
-        fold.cancelled(&mut ctx, true);
-        assert!(fold.batch.is_none() && !fold.in_turn);
     }
 
     #[test]
@@ -326,7 +313,7 @@ mod tests {
         fold.push_text(&mut ctx, "hi");
         fold.done(&mut ctx);
         prompt(&mut fold, &mut ctx, "next");
-        fold.cancelled(&mut ctx, false);
+        fold.cancelled(&mut ctx);
         assert!(fold.in_turn);
         assert_eq!(shape(&ctx), ["User:go:0", "Assistant:hi:0", "User:next:0"]);
     }

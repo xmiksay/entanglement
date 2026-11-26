@@ -201,13 +201,13 @@ mod tests {
     }
 
     #[test]
-    fn co_prefix_narrows_to_compact_and_continue() {
+    fn co_prefix_narrows_to_compact_and_cost() {
         let mut popup = SlashPopup::new();
         popup.update("/co");
         assert!(popup.visible());
         let names: Vec<&str> = popup.matches().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"compact"), "names={names:?}");
-        assert!(names.contains(&"continue"), "names={names:?}");
+        assert!(names.contains(&"cost"), "names={names:?}");
         // Every match's name or description contains "co" — case-insensitively,
         // matching `filter_in`'s own lowercasing (`resume` matches on
         // "Continue a past session").

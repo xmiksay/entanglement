@@ -65,8 +65,6 @@ pub const RESERVED_NAMES: &[&str] = &[
     "enable",
     "disable",
     "tools",
-    "pause",
-    "continue",
     "stop",
     "name",
     "aux-model",

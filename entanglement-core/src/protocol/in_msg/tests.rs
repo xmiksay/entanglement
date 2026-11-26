@@ -106,8 +106,6 @@ fn wire_allowlist_refuses_the_privileged_frames() {
         },
         InMsg::answer_question(s.clone(), "r", vec![vec!["a".into()]]),
         InMsg::Stop { session: s.clone() },
-        InMsg::PauseSession { session: s.clone() },
-        InMsg::ResumeSession { session: s.clone() },
         InMsg::ListSessions {
             correlation_id: "c1".into(),
         },

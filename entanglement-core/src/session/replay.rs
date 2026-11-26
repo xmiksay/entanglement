@@ -210,9 +210,9 @@ impl Session {
                     ..
                 } => fold.round_event(ctx),
                 OutEvent::Status {
-                    state: state @ (AgentState::Done | AgentState::Paused),
+                    state: AgentState::Done,
                     ..
-                } => fold.cancelled(ctx, *state == AgentState::Paused),
+                } => fold.cancelled(ctx),
                 OutEvent::SessionHibernated { .. } => fold.hibernated(ctx),
                 OutEvent::AgentChanged { agent, .. } => {
                     if let Some(profile) = cfg.agents.get(agent) {

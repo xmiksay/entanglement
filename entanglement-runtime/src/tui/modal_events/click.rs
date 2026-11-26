@@ -238,18 +238,6 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
         } else if cmd == crate::tui::commands::Command::Stop {
             let target = app.active_session_id().clone();
             crate::tui::stop_command::request_stop(app, holly, target).await;
-        } else if cmd == crate::tui::commands::Command::Pause {
-            let _ = holly
-                .send(InMsg::PauseSession {
-                    session: app.active_session_id().clone(),
-                })
-                .await;
-        } else if cmd == crate::tui::commands::Command::Continue {
-            let _ = holly
-                .send(InMsg::ResumeSession {
-                    session: app.active_session_id().clone(),
-                })
-                .await;
         } else if cmd == crate::tui::commands::Command::Undo {
             crate::tui::undo_command::send_undo(app, holly).await;
         } else if cmd == crate::tui::commands::Command::Rewind {

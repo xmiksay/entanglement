@@ -148,7 +148,6 @@ fn direct_defaults_match_the_pre_735_keys() {
     );
     assert_eq!(act(KeyCode::PageUp, none), Some(Action::ScrollUp));
     assert_eq!(act(KeyCode::PageDown, none), Some(Action::ScrollDown));
-    assert_eq!(act(KeyCode::Char(' '), ctrl), Some(Action::PauseToggle));
     assert_eq!(act(KeyCode::Char('g'), ctrl), Some(Action::JumpAttention));
     assert_eq!(act(KeyCode::Char('l'), ctrl), Some(Action::ListSessions));
     assert_eq!(act(KeyCode::Char('a'), ctrl), Some(Action::PickAgent));

@@ -12,10 +12,10 @@ use crate::holly::SeqCell;
 use crate::protocol::InMsg;
 use crate::protocol::{OutEvent, SessionId, ToolOverlayEntry};
 
-/// Ceiling on the deferred-command queue (#556): while paused (or mid-turn),
-/// every wire-allowed command that arrives is stashed until the hold lifts or
-/// the live turn ends — a stuck automation retrying against a paused/busy
-/// session must not grow this without bound.
+/// Ceiling on the deferred-command queue (#556): mid-turn, every wire-allowed
+/// command that arrives is stashed until the live turn ends — a stuck
+/// automation retrying against a busy session must not grow this without
+/// bound.
 const MAX_STASHED_COMMANDS: usize = 64;
 
 /// Push `cmd` onto `stash` unless it's already at [`MAX_STASHED_COMMANDS`], in
@@ -33,7 +33,7 @@ pub(super) fn stash_or_reject(
             session: session.clone(),
             seq,
             message: format!(
-                "too many commands queued while this session is busy/paused \
+                "too many commands queued while this session is busy \
                  (cap {MAX_STASHED_COMMANDS}) — dropped"
             ),
         });
@@ -46,15 +46,6 @@ pub(super) fn stash_or_reject(
 /// and re-broadcast on every set, so an unbounded value bloats the event log
 /// and every session listing one write at a time.
 const MAX_SESSION_META_LEN: usize = 200;
-
-/// Take a stashed `Hibernate`, if any: once the inbox has closed, it is the
-/// only command left that can still end the session as asked.
-pub(super) fn take_hibernate(stash: &mut VecDeque<SessionCmd>) -> Option<SessionCmd> {
-    let at = stash
-        .iter()
-        .position(|c| matches!(c, SessionCmd::Hibernate))?;
-    stash.remove(at)
-}
 
 /// Byte-cap `s` at [`MAX_SESSION_META_LEN`], backing off to the nearest UTF-8
 /// char boundary rather than panicking mid-character.
@@ -112,25 +103,18 @@ pub(crate) enum SessionCmd {
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     /// Revert tracked file edits after a turn (#731, ADR-0212) through
-    /// `EngineConfig::file_reverter`. Deferred mid-turn/paused like
+    /// `EngineConfig::file_reverter`. Deferred mid-turn like
     /// `SetModel`: a revert must not race the turn's own tool writes.
     RevertFiles(Option<u32>),
     /// Fork this session into a new root (#786, ADR-0223), whole or cut after
-    /// a turn. Deferred mid-turn/paused like `RevertFiles`, so the fork is
+    /// a turn. Deferred mid-turn like `RevertFiles`, so the fork is
     /// always taken at rest and never carries a parked batch.
     Fork(Option<u32>),
     /// Set the working directory (#764, ADR-0224) — already validated and
-    /// absolute. Deferred mid-turn/paused like `SetModel`, so every call of
+    /// absolute. Deferred mid-turn like `SetModel`, so every call of
     /// one turn runs under one workdir.
     SetWorkdir(String),
     Stop,
-    /// Hold the session at `AgentState::Paused` (#516, ADR-0208) — never
-    /// interrupts an in-flight round (a mid-stream arrival is stashed by the
-    /// existing generic mechanism in `stream.rs` and applied once the turn
-    /// ends — unlike `SetMode`, which applies even mid-stream). Idempotent.
-    Pause,
-    /// Lift a hold placed by `Pause` (#516, ADR-0208). A no-op if not paused.
-    Unpause,
     /// Evict this session from memory without tombstoning its id (#318,
     /// ADR-0077). The task emits [`OutEvent::SessionHibernated`], drops its shared
     /// seq counter, and exits — dropping `Session` (the `Context`/history). The

@@ -35,7 +35,6 @@ pub(crate) async fn send_fork(app: &mut App, holly: &Holly, text: &str) {
 fn deferral_note(state: AgentState) -> Option<&'static str> {
     match state {
         AgentState::Idle | AgentState::Done | AgentState::Error => None,
-        AgentState::Paused => Some("fork queued until the session is resumed"),
         _ => Some("fork queued until the turn ends"),
     }
 }
@@ -77,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_sent_while_busy_or_paused_says_it_is_queued() {
+    fn a_fork_sent_while_busy_says_it_is_queued() {
         assert_eq!(deferral_note(AgentState::Done), None);
         assert_eq!(deferral_note(AgentState::Idle), None);
         assert!(
@@ -85,7 +84,6 @@ mod tests {
         );
         assert!(deferral_note(AgentState::WaitingApproval)
             .is_some_and(|n| n.contains("until the turn ends")));
-        assert!(deferral_note(AgentState::Paused).is_some_and(|n| n.contains("resumed")));
     }
 
     #[tokio::test]

@@ -10,8 +10,8 @@ use tracing::debug;
 
 use super::actions::run_action;
 use super::slash_send::{
-    run_bash_passthrough, send_compact, send_help_if_requested, send_name, send_pause, send_resume,
-    send_show, send_stop, send_user_command,
+    run_bash_passthrough, send_compact, send_help_if_requested, send_name, send_show, send_stop,
+    send_user_command,
 };
 use crate::tui::app::App;
 
@@ -208,19 +208,10 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                         crate::tui::init_command::send_init(app, holly, &text).await;
                         return Ok(false);
                     }
-                    // Lifecycle commands (#6): `/stop`,
-                    // `/pause`, `/continue` need `holly`
+                    // Lifecycle command (#6): `/stop` needs `holly`
                     // and the optional `--all` text.
                     if cmd == crate::tui::commands::Command::Stop {
                         send_stop(app, holly, &text).await;
-                        return Ok(false);
-                    }
-                    if cmd == crate::tui::commands::Command::Pause {
-                        send_pause(app, holly, &text).await;
-                        return Ok(false);
-                    }
-                    if cmd == crate::tui::commands::Command::Continue {
-                        send_resume(app, holly, &text).await;
                         return Ok(false);
                     }
                     if app.execute_command(cmd) {

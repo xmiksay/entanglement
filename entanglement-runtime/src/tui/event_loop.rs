@@ -859,12 +859,12 @@ mod tests {
         );
     }
 
-    // --- Issue #6: Esc stops the turn; /stop, /pause, /continue commands ----
+    // --- Issue #6: Esc stops the turn; the /stop command ---------------------
     //
     // These cover the control-flow invariants the feature depends on: bare Esc
     // no longer quits (it stops the active turn), the mention-popup and
-    // multiline-collapse layers still win over stop, and the three slash
-    // commands route through their interceptors without quitting. The fan-out
+    // multiline-collapse layers still win over stop, and `/stop` routes
+    // through its interceptor without quitting. The fan-out
     // of `--all` is asserted by counting inbound `InMsg`s on
     // `holly.subscribe_inbound()` — deterministic, no engine-timing dependency.
 
@@ -1088,74 +1088,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn slash_pause_and_continue_each_send_one_message_and_do_not_quit() {
-        let sid = SessionId::new("s1");
-        let mut app = App::new_for_test(sid.clone());
-        let holly = engine();
-        let mut attention = Attention::new(false);
-
-        // /pause → one PauseSession for the active session.
-        let mut rx_pause = holly.subscribe_inbound();
-        app.set_input_text("/pause".to_string());
-        let quit = handle_event(
-            &mut app,
-            &holly,
-            &mut attention,
-            Event::Key(key(KeyCode::Enter)),
-        )
-        .await
-        .unwrap();
-        assert!(!quit, "/pause does not quit");
-        assert_eq!(
-            drain_inbound(&mut rx_pause).await,
-            vec![InMsg::PauseSession {
-                session: sid.clone()
-            }],
-            "bare /pause sends exactly one PauseSession"
-        );
-
-        // /continue → one ResumeSession for the active session.
-        let mut rx_resume = holly.subscribe_inbound();
-        app.set_input_text("/continue".to_string());
-        let quit = handle_event(
-            &mut app,
-            &holly,
-            &mut attention,
-            Event::Key(key(KeyCode::Enter)),
-        )
-        .await
-        .unwrap();
-        assert!(!quit, "/continue does not quit");
-        assert_eq!(
-            drain_inbound(&mut rx_resume).await,
-            vec![InMsg::ResumeSession { session: sid }],
-            "bare /continue sends exactly one ResumeSession"
-        );
-    }
-
-    #[tokio::test]
-    async fn ctrl_space_pause_resume_toggle_does_not_quit() {
-        let sid = SessionId::new("s1");
-        let mut app = App::new_for_test(sid.clone());
-        let holly = engine();
-        let mut rx = holly.subscribe_inbound();
-        let mut attention = Attention::new(false);
-
-        // An idle session is not Paused, so the toggle sends PauseSession.
-        let toggle =
-            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
-        let quit = handle_event(&mut app, &holly, &mut attention, Event::Key(toggle))
-            .await
-            .unwrap();
-        assert!(!quit, "Ctrl+Space does not quit");
-        assert_eq!(
-            drain_inbound(&mut rx).await,
-            vec![InMsg::PauseSession { session: sid }],
-            "Ctrl+Space on a non-paused session pauses it"
-        );
-    }
-
     // --- Issue 2: `/help <cmd>` and `/cmd -h`/`--help` ----------------------
     //
     // Both surface the clap-generated help as a transcript status line (never
@@ -1279,7 +1211,7 @@ mod tests {
         .await
         .unwrap();
         assert!(app.slash_visible(), "popup stays open while typing /co");
-        // `/co` narrows to compact/continue (both name-prefix matches).
+        // `/co` narrows to compact/cost (both name-prefix matches).
         let names: Vec<&str> = app.slash().matches().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"compact"), "names={names:?}");
     }

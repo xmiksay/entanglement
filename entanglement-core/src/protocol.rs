@@ -108,21 +108,6 @@ pub enum AgentState {
     /// [`WaitingApproval`][AgentState::WaitingApproval] (#160): a question is not
     /// a permission decision, and heads render the two differently.
     WaitingAnswer,
-    /// Explicitly held by `InMsg::PauseSession` (#516, ADR-0208) — distinct from
-    /// every wait state above, which are all waiting on *something specific*
-    /// ([`WaitingApproval`][AgentState::WaitingApproval]/
-    /// [`WaitingAnswer`][AgentState::WaitingAnswer]/
-    /// [`WaitingAgent`][AgentState::WaitingAgent] resolve themselves once their
-    /// event arrives). `Paused` never self-resolves: a new turn is deferred (an
-    /// idle session) and a parked batch's already-arrived results still fold
-    /// into `Context`, but the turn does not continue past the drained batch,
-    /// until `InMsg::ResumeSession` lifts the hold. A session mid-stream when
-    /// `PauseSession` arrives is not interrupted — the pause takes effect at the
-    /// next round boundary (turn end or tool-call park), the same "deferred until
-    /// safe" mechanism `SetModel` already uses mid-stream — so this
-    /// state is never observed while actively streaming; send `Stop` for an
-    /// immediate interrupt.
-    Paused,
     /// Last turn finished cleanly. The resting state after a turn ends or is
     /// cancelled by `Stop` (ADR-0139) — the user prefers it over `Idle` so a
     /// completed interaction is never rendered the same as never-run-yet.

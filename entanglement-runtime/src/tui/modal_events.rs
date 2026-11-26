@@ -54,27 +54,16 @@ pub(super) async fn handle_sessions_modal_event(
             app.create_session();
             app.close_sessions_modal();
         }
-        // Lifecycle quick keys (#6) act on the highlighted session: `s` stops
-        // its in-flight turn, `p` pauses it, `r` resumes it. The modal stays
-        // open so the user can act on several in a row. No-op on a session in
-        // an incompatible state (idempotent server-side). `s` routes through
-        // `request_stop` (#626): a highlighted plan session parked on a live
+        // Lifecycle quick key (#6) acts on the highlighted session: `s` stops
+        // its in-flight turn. The modal stays open so the user can act on
+        // several in a row. No-op on an idle session (idempotent server-side).
+        // `s` routes through `request_stop` (#626): a highlighted plan session parked on a live
         // sponsored build child arms the cascade-vs-detach confirm (which
         // takes over key dispatch on the next event) instead of detaching
         // right away.
         KeyCode::Char('s') => {
             if let Some(id) = app.modal_selected_session_id() {
                 crate::tui::stop_command::request_stop(app, holly, id).await;
-            }
-        }
-        KeyCode::Char('p') => {
-            if let Some(id) = app.modal_selected_session_id() {
-                let _ = holly.send(InMsg::PauseSession { session: id }).await;
-            }
-        }
-        KeyCode::Char('r') => {
-            if let Some(id) = app.modal_selected_session_id() {
-                let _ = holly.send(InMsg::ResumeSession { session: id }).await;
             }
         }
         // `d`/`Delete` (Issue 4, Phase 4.1): delete the highlighted session's
@@ -153,18 +142,6 @@ pub(super) async fn handle_command_palette_event(
                     // single-target `Stop` site.
                     let target = app.active_session_id().clone();
                     crate::tui::stop_command::request_stop(app, holly, target).await;
-                } else if cmd == crate::tui::commands::Command::Pause {
-                    let _ = holly
-                        .send(InMsg::PauseSession {
-                            session: app.active_session_id().clone(),
-                        })
-                        .await;
-                } else if cmd == crate::tui::commands::Command::Continue {
-                    let _ = holly
-                        .send(InMsg::ResumeSession {
-                            session: app.active_session_id().clone(),
-                        })
-                        .await;
                 } else if cmd == crate::tui::commands::Command::Undo {
                     super::undo_command::send_undo(app, holly).await;
                 } else if cmd == crate::tui::commands::Command::Rewind {

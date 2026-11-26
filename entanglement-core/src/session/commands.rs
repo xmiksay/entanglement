@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use entanglement_provider::GenerationParams;
 use tokio::sync::broadcast;
 
-use super::{Session, TurnState};
+use super::Session;
 use crate::holly::{ActivityRegistry, SeqRegistry};
 use crate::protocol::{AgentState, OutEvent, SessionId, ToolOverlayEntry};
 use crate::EngineConfig;
@@ -94,59 +94,12 @@ pub(super) fn stop(s: &mut Session, session: &SessionId, events: &broadcast::Sen
         // A cancelled turn is still a completed interaction — `Done`
         // is the resting state, not `Idle` (which stays reserved for
         // the genuinely-never-run-yet case at session start,
-        // ADR-0139). `Stop` always cancels regardless of a pause
-        // (#516, ADR-0208) — but doesn't lift one: pause and cancel
-        // are orthogonal holds, so a still-paused session reports
-        // `Paused`, not `Done`, until an explicit `ResumeSession`.
-        let state = if s.paused {
-            AgentState::Paused
-        } else {
-            AgentState::Done
-        };
+        // ADR-0139).
         let _ = events.send(OutEvent::Status {
             session: session.clone(),
-            state,
+            state: AgentState::Done,
         });
     }
-}
-
-/// `Pause` (#516, ADR-0208). Idempotent: no duplicate `Status` for an
-/// already-paused session.
-pub(super) fn pause(s: &mut Session, session: &SessionId, events: &broadcast::Sender<OutEvent>) {
-    if !s.paused {
-        s.paused = true;
-        let _ = events.send(OutEvent::Status {
-            session: session.clone(),
-            state: AgentState::Paused,
-        });
-    }
-}
-
-/// `Unpause` (#516, ADR-0208): lift the hold. Returns `true` when a
-/// drained-but-undriven parked batch should continue the turn now; otherwise
-/// reports the state the session is resting in.
-pub(super) fn unpause(
-    s: &mut Session,
-    session: &SessionId,
-    events: &broadcast::Sender<OutEvent>,
-) -> bool {
-    if !s.paused {
-        return false;
-    }
-    s.paused = false;
-    if s.turn.as_ref().is_some_and(TurnState::is_drained) {
-        return true;
-    }
-    let state = if s.turn.is_some() {
-        AgentState::Working
-    } else {
-        AgentState::Done
-    };
-    let _ = events.send(OutEvent::Status {
-        session: session.clone(),
-        state,
-    });
-    false
 }
 
 /// Retire `session`'s shared seq counter and drop its settledness entry,

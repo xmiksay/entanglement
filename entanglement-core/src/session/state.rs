@@ -169,13 +169,6 @@ pub struct Session {
     /// one. `None` for a `Session` built outside a running engine (a direct
     /// `new_empty`/`replay` in a test); such a session simply cannot fork.
     pub(crate) engine: Option<mpsc::Sender<ForkFrame>>,
-    /// Held by `InMsg::PauseSession`, lifted by `InMsg::ResumeSession` (#516,
-    /// ADR-0208). Deliberately **not** persisted/replayed — like `Stop`'s
-    /// cancel, a pause is ephemeral engine-loop state, not committed
-    /// conversation content, so `Session::replay` always reconstructs `false`
-    /// (a hibernate-then-resume cycle drops a pending pause, same as it drops
-    /// an uncommitted mid-stream tail).
-    pub paused: bool,
 }
 
 /// Running per-session usage tally (#192): the sum of every round-trip's
@@ -219,7 +212,6 @@ impl Session {
             name: None,
             action: None,
             engine: None,
-            paused: false,
         }
     }
 
