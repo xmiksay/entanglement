@@ -114,7 +114,7 @@ pub(super) async fn stream_round(
         );
         // Race the pre-stream phase against the inbox too (#547): everything
         // `s.llm.stream()` does before the first byte — the endpoint's
-        // retry-after wait, the pacing gate, the cross-process shared gate,
+        // retry-after wait, the rate-limit window, the cross-process shared gate,
         // in-process semaphores, and any 429 backoff sleep — used to run
         // outside any `select!`, so a `Stop` sent while parked there had to
         // wait for the whole pre-stream phase to finish before it was even

@@ -45,7 +45,7 @@ mod think;
 
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
-use crate::{Llm, LlmRequest, LlmStream, MessageRole, ModelConcurrencyResolver};
+use crate::{LimitsResolver, Llm, LlmRequest, LlmStream, MessageRole};
 use async_trait::async_trait;
 use sse::PendingTool;
 use think::ThinkSplitter;
@@ -68,17 +68,9 @@ pub struct OpenAiLlm {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    /// Catalog-provided per-minute budget for this endpoint (`None` = client
-    /// default). Threaded into the per-endpoint rate limiter (#241).
-    rpm: Option<u32>,
-    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
-    /// client default). Threaded into the per-endpoint concurrency permit (#414).
-    concurrency: Option<usize>,
-    /// Resolves the in-flight concurrency cap for whichever model a given
-    /// request actually names, re-run per request rather than baked in at
-    /// construction (#521/#550, ADR-0140) — threaded into the per-model
-    /// concurrency permit layered under the endpoint permit.
-    model_concurrency: ModelConcurrencyResolver,
+    /// Resolves the endpoint's and the requested model's rate limits, per
+    /// request (#550).
+    limits: LimitsResolver,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the z.ai `web_search` tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
@@ -98,8 +90,7 @@ pub struct OpenAiLlm {
 
 impl OpenAiLlm {
     /// `api_key = None` sends no `Authorization` header (Ollama). A `Some` key is
-    /// sent as `Bearer`. `rpm`/`concurrency = None` use the client's (or the
-    /// endpoint's) defaults; `model_concurrency` is consulted per request (#550).
+    /// sent as `Bearer`. `limits` is consulted per request (#550).
     /// `web_search = Some(..)` requests provider-side web search (#305).
     /// `thinking_spec` resolves the model's thinking handling per request
     /// (ADR-0191); `fixed_thinking_spec(ThinkingSpec::default())` keeps the
@@ -109,9 +100,7 @@ impl OpenAiLlm {
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
-        rpm: Option<u32>,
-        concurrency: Option<usize>,
-        model_concurrency: ModelConcurrencyResolver,
+        limits: LimitsResolver,
         web_search: Option<WebSearchConfig>,
         send_prompt_cache_key: bool,
         thinking_spec: crate::ThinkingSpecResolver,
@@ -121,9 +110,7 @@ impl OpenAiLlm {
             base_url: base_url.into(),
             api_key,
             default_model: default_model.into(),
-            rpm,
-            concurrency,
-            model_concurrency,
+            limits,
             web_search,
             send_prompt_cache_key,
             thinking_spec,
@@ -133,10 +120,8 @@ impl OpenAiLlm {
 }
 
 /// Factory for one per-session [`OpenAiLlm`]. Pass the provider's base URL, an
-/// optional key, the default model id, the endpoint's rpm budget, the endpoint's
-/// concurrency cap (#414), a resolver for the model's own tighter concurrency
-/// cap on that endpoint (`|_| None` disables the extra gate, #521; resolved
-/// per request rather than once at construction, #550), and the opt-in
+/// optional key, the default model id, the rate-limit resolver
+/// (`Catalog::limits_resolver`, or `fixed_limits`), and the opt-in
 /// [`WebSearchConfig`] (`None` disables provider-side web search, #305).
 /// `thinking_spec` resolves the model's
 /// thinking handling per request (ADR-0191) —
@@ -146,9 +131,7 @@ pub fn openai_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
+    limits: LimitsResolver,
     web_search: Option<WebSearchConfig>,
     send_prompt_cache_key: bool,
     thinking_spec: crate::ThinkingSpecResolver,
@@ -158,9 +141,7 @@ pub fn openai_factory(
         base_url,
         api_key,
         default_model,
-        rpm,
-        concurrency,
-        model_concurrency,
+        limits,
         web_search,
         send_prompt_cache_key,
         thinking_spec,
@@ -176,7 +157,7 @@ impl Llm for OpenAiLlm {
         // Resolved against *this* request's model, not baked in at
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
-        let model_concurrency = (self.model_concurrency)(&model);
+        let limits = (self.limits)(&model);
         let thinking = (self.thinking_spec)(&model);
         let think = match thinking.format {
             crate::ThinkingFormat::InlineTags => Some(ThinkSplitter::new()),
@@ -210,10 +191,9 @@ impl Llm for OpenAiLlm {
             .execute_with_retry(
                 &self.base_url,
                 self.api_key.as_deref(),
-                self.rpm,
-                self.concurrency,
                 &model,
-                model_concurrency,
+                limits,
+                limits.estimate_tokens(&body),
                 req.retry,
                 || {
                     let mut request = self.http.client().post(&url);

@@ -1,5 +1,6 @@
-//! Unit tests for the shared HTTP transport (pool identity, pacing gate,
-//! retry-after window, transient-error classification).
+//! Unit tests for the shared HTTP transport (pool identity, the retry loop,
+//! transient-error classification, the byte pump). The limiter's own tests
+//! live in `limiter_tests.rs`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -8,327 +9,8 @@ use tokio::sync::Semaphore;
 
 use super::backoff::*;
 use super::endpoint::*;
-use super::rate_limiter::RateLimiter;
 use super::stream::*;
 use super::*;
-
-/// A standalone endpoint at the default RPM with shared state disabled.
-fn endpoint_state(concurrency: usize) -> EndpointState {
-    EndpointState::new(
-        RPM_LIMIT,
-        concurrency,
-        "test",
-        &SharedStateLocation::Disabled,
-    )
-}
-
-#[test]
-fn test_new_http_client() {
-    let _client = test_http_client();
-}
-
-#[test]
-fn endpoints_are_isolated_and_stable_by_key() {
-    let http = test_http_client();
-    let a1 = http.endpoint("https://api.a/v1", None, None);
-    let a2 = http.endpoint("https://api.a/v1", None, None);
-    let b = http.endpoint("https://api.b/v1", None, None);
-    // Same key → same state; different keys → isolated state.
-    assert!(Arc::ptr_eq(&a1, &a2));
-    assert!(!Arc::ptr_eq(&a1, &b));
-}
-
-#[test]
-fn endpoint_uses_provided_rpm_budget() {
-    let http = test_http_client();
-    // A per-provider rpm sets the pacing gate's base interval (60s / rpm);
-    // `None` falls back to the pool default (RetryConfig::rpm).
-    let custom = http.endpoint("https://api.custom/v1", Some(6), None);
-    assert_eq!(custom.limiter.base, Duration::from_millis(60_000 / 6));
-    let default = http.endpoint("https://api.default/v1", None, None);
-    assert_eq!(
-        default.limiter.base,
-        Duration::from_millis(60_000 / RPM_LIMIT as u64)
-    );
-}
-
-#[test]
-fn endpoint_concurrency_permits_match_config() {
-    let http = test_http_client_with(RetryConfig {
-        concurrency: 2,
-        ..RetryConfig::default()
-    });
-    let ep = http.endpoint("https://api.x/v1", None, None);
-    // The in-flight cap is seeded from config; the default is DEFAULT_CONCURRENCY.
-    assert_eq!(ep.concurrency.available_permits(), 2);
-    let dflt = test_http_client().endpoint("https://api.y/v1", None, None);
-    assert_eq!(dflt.concurrency.available_permits(), DEFAULT_CONCURRENCY);
-}
-
-#[test]
-fn endpoint_uses_provided_concurrency_cap_over_pool_default() {
-    let http = test_http_client_with(RetryConfig {
-        concurrency: 2,
-        ..RetryConfig::default()
-    });
-    // A per-provider concurrency override wins over the pool-wide default.
-    let custom = http.endpoint("https://api.custom/v1", None, Some(5));
-    assert_eq!(custom.concurrency.available_permits(), 5);
-    let default = http.endpoint("https://api.default/v1", None, None);
-    assert_eq!(default.concurrency.available_permits(), 2);
-}
-
-#[tokio::test]
-async fn endpoint_concurrency_bounds_in_flight() {
-    // With a cap of 1, a second owned permit can't be taken until the first
-    // is dropped — the property that serializes a spawn-storm.
-    let ep = endpoint_state(1);
-    let first = ep.concurrency.clone().acquire_owned().await.unwrap();
-    assert!(ep.concurrency.clone().try_acquire_owned().is_err());
-    drop(first);
-    assert!(ep.concurrency.clone().try_acquire_owned().is_ok());
-}
-
-#[tokio::test]
-async fn model_slot_bounds_in_flight_per_model() {
-    // With a per-model cap of 1 (e.g. GLM-4.7-Flash), a second owned permit for
-    // that same model can't be taken until the first is dropped — the property
-    // that serializes calls to a model z.ai only allows one in-flight for
-    // (#521).
-    let ep = endpoint_state(DEFAULT_CONCURRENCY);
-    let slot = ep.model_slot("glm-4.7-flash", 1);
-    let first = slot.semaphore.clone().acquire_owned().await.unwrap();
-    assert!(slot.semaphore.clone().try_acquire_owned().is_err());
-    drop(first);
-    assert!(slot.semaphore.clone().try_acquire_owned().is_ok());
-}
-
-#[tokio::test]
-async fn model_slot_is_independent_across_models_on_the_same_endpoint() {
-    // GLM-5.2 (cap 5) and GLM-4.7-Flash (cap 1) share one endpoint but must
-    // meter independently — one saturated model must never block another
-    // (#521): the mixed-model scenario ADR-0140 exists to fix.
-    let ep = endpoint_state(DEFAULT_CONCURRENCY);
-    let flash = ep.model_slot("glm-4.7-flash", 1);
-    let glm52 = ep.model_slot("glm-5.2", 5);
-    let _flash_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
-    // Flash is now saturated (cap 1), but GLM-5.2's independent semaphore is
-    // untouched — up to 5 concurrent GLM-5.2 permits are still available.
-    assert!(flash.semaphore.clone().try_acquire_owned().is_err());
-    let permits: Vec<_> = (0..5)
-        .map(|_| glm52.semaphore.clone().try_acquire_owned().unwrap())
-        .collect();
-    assert!(glm52.semaphore.clone().try_acquire_owned().is_err());
-    drop(permits);
-}
-
-#[tokio::test]
-async fn model_permit_blocked_never_holds_the_endpoint_permit_hostage() {
-    // Regression for the #521 refinement: `execute_with_retry` acquires the
-    // model permit *before* the endpoint permit specifically so a caller
-    // blocked on its own saturated model never sits holding a scarce
-    // endpoint-wide permit — which would starve every *other* model sharing
-    // the endpoint of admission, even with room to spare.
-    use futures::FutureExt;
-
-    let ep = endpoint_state(2);
-    let flash = ep.model_slot("glm-4.7-flash", 1);
-
-    // One in-flight Flash call: holds both its model permit and one of the
-    // endpoint's two permits, exactly as `execute_with_retry` would.
-    let _flash_model_permit = flash.semaphore.clone().acquire_owned().await.unwrap();
-    let _flash_endpoint_permit = ep.concurrency.clone().acquire_owned().await.unwrap();
-
-    // A second Flash call queues on the now-exhausted model semaphore — it
-    // must not complete, and critically must never have touched the endpoint
-    // semaphore to get there.
-    let second_flash_model_attempt = flash.semaphore.clone().acquire_owned();
-    assert!(
-        second_flash_model_attempt.now_or_never().is_none(),
-        "a second call to a saturated model must block on the model semaphore"
-    );
-    assert_eq!(
-        ep.concurrency.available_permits(),
-        1,
-        "the endpoint's spare permit must stay free while a caller is \
-         blocked purely on its own model's semaphore"
-    );
-
-    // A *different* model, sharing the same endpoint, must still get that
-    // spare endpoint permit immediately — it is not starved by Flash's
-    // internally-queued caller.
-    assert!(
-        ep.concurrency.clone().try_acquire_owned().is_ok(),
-        "a sibling model must not be starved of endpoint room by another \
-         model's queued caller"
-    );
-}
-
-#[tokio::test]
-async fn model_permit_wait_does_not_hold_the_shared_cross_process_lease() {
-    // Regression for #546: `execute_with_retry` must acquire the shared
-    // cross-process lease *after* both in-process permits (the innermost
-    // gate). The shipped z.ai config that triggered this: endpoint cap 3,
-    // `glm-4.7-flash` model cap 1 — a caller queued on the model semaphore
-    // must not sit holding one of the 3 shared leases, or it starves sibling
-    // `skutter` processes sharing the same endpoint+key even though this
-    // process has sent nothing.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let key = "https://api.example/v1#shared-lease-test";
-    let http = HttpClient::with_shared_state(
-        SharedStateLocation::Dir(dir.path().to_path_buf()),
-        RetryConfig {
-            concurrency: 3,
-            ..RetryConfig::default()
-        },
-    )
-    .unwrap();
-    let ep = http.endpoint(key, None, Some(3));
-
-    // Simulate one in-flight Flash call already holding the model's only permit.
-    let model_slot = ep.model_slot("glm-4.7-flash", 1);
-    let _held_model_permit = model_slot.semaphore.clone().acquire_owned().await.unwrap();
-
-    // A second call to the same model, driven through the real entry point,
-    // must queue on the model semaphore before ever touching the shared gate.
-    let http2 = http.clone();
-    let key2 = key.to_string();
-    let blocked = tokio::spawn(async move {
-        let _ = http2
-            .execute_with_retry(
-                &key2,
-                None,
-                None,
-                Some(3),
-                "glm-4.7-flash",
-                Some(1),
-                None,
-                || async {
-                    std::future::pending::<Result<reqwest::Response, reqwest::Error>>().await
-                },
-            )
-            .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(
-        !blocked.is_finished(),
-        "must still be queued on the saturated model permit"
-    );
-
-    // A sibling "process" touching the same shared-state file must be able to
-    // take the *whole* endpoint-wide shared budget (3) right away — proving
-    // the blocked caller holds none of it. Bounded by a timeout: under the
-    // pre-fix ordering this would hang forever (the blocked caller holds one
-    // of the 3 leases and never releases it).
-    let sibling_deadline = Instant::now() + Duration::from_secs(10);
-    let siblings = tokio::time::timeout(
-        Duration::from_secs(10),
-        futures::future::join_all(
-            (0..3).map(|_| ep.shared.acquire(RPM_LIMIT, 3, sibling_deadline)),
-        ),
-    )
-    .await
-    .expect(
-        "a sibling process must not be starved while the caller is blocked \
-         purely on its own model permit",
-    );
-    assert!(
-        siblings.iter().all(|s| matches!(s, Ok(Some(_)))),
-        "the full shared cap must be available to siblings"
-    );
-
-    blocked.abort();
-}
-
-#[test]
-fn model_cap_wider_than_endpoint_cap_warns_but_is_still_honored() {
-    // A model cap wider than its endpoint's own is a likely misconfiguration
-    // (the narrower endpoint cap binds first, so the model cap can never
-    // actually be reached) but must warn, not refuse to build the slot.
-    let ep = endpoint_state(2);
-    let slot = ep.model_slot("glm-5.2", 10);
-    assert_eq!(slot.cap, 10);
-    assert_eq!(slot.semaphore.available_permits(), 10);
-}
-
-#[test]
-fn model_slot_is_stable_by_model_id_while_the_cap_agrees() {
-    let ep = endpoint_state(DEFAULT_CONCURRENCY);
-    let a1 = ep.model_slot("glm-5.2", 5);
-    let a2 = ep.model_slot("glm-5.2", 5);
-    // Same model id, same cap → the same slot (and thus the same live
-    // semaphore state) — no needless churn on the common case.
-    assert!(Arc::ptr_eq(&a1, &a2));
-    assert_eq!(a1.cap, 5);
-    // A different model id gets its own independent slot.
-    let flash = ep.model_slot("glm-4.7-flash", 1);
-    assert!(!Arc::ptr_eq(&a1, &flash));
-    assert_eq!(flash.cap, 1);
-}
-
-#[test]
-fn model_slot_corrects_a_stale_cap_instead_of_latching_it_forever() {
-    // #550: a wrong cap reaching `model_slot` first (e.g. resolved against the
-    // wrong model before the per-request fix) must not stick for the rest of
-    // the process — a later, correct caller has to be able to fix it.
-    let ep = endpoint_state(DEFAULT_CONCURRENCY);
-    let wrong = ep.model_slot("glm-4.7-flash", 5);
-    assert_eq!(wrong.cap, 5);
-    let corrected = ep.model_slot("glm-4.7-flash", 1);
-    assert!(!Arc::ptr_eq(&wrong, &corrected));
-    assert_eq!(corrected.cap, 1);
-    // Every subsequent caller now sees the corrected slot.
-    let again = ep.model_slot("glm-4.7-flash", 1);
-    assert!(Arc::ptr_eq(&corrected, &again));
-}
-
-#[test]
-fn rate_limiter_penalize_doubles_and_caps() {
-    let rl = RateLimiter::new(60); // base = 1s
-    assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(1));
-    // Each penalty doubles the spacing…
-    rl.penalize();
-    assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(2));
-    rl.penalize();
-    assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(4));
-    // …but never past base × SLOWDOWN_CAP.
-    for _ in 0..10 {
-        rl.penalize();
-    }
-    assert_eq!(rl.state.lock().unwrap().interval, rl.max);
-    assert_eq!(rl.max, rl.base * SLOWDOWN_CAP);
-}
-
-#[test]
-fn rate_limiter_relax_steps_back_to_base_and_floors() {
-    let rl = RateLimiter::new(60); // base = 1s
-    rl.penalize();
-    rl.penalize(); // interval = 4s
-    rl.relax(); // -1 base → 3s
-    assert_eq!(rl.state.lock().unwrap().interval, Duration::from_secs(3));
-    // Relaxing past base clamps at base, never below.
-    for _ in 0..10 {
-        rl.relax();
-    }
-    assert_eq!(rl.state.lock().unwrap().interval, rl.base);
-}
-
-#[tokio::test]
-async fn rate_limiter_spaces_concurrent_acquires() {
-    // A burst of acquires against one gate must be paced ≥ interval apart,
-    // not all released at once (the anti-burst property).
-    let rl = RateLimiter::new(600); // base = 100ms
-    let start = Instant::now();
-    rl.acquire().await; // first slot: immediate
-    rl.acquire().await; // second slot: ~100ms later
-    rl.acquire().await; // third slot: ~200ms later
-    assert!(
-        start.elapsed() >= Duration::from_millis(180),
-        "three acquires should span ~2 intervals, got {:?}",
-        start.elapsed()
-    );
-}
 
 #[test]
 fn pool_key_partitions_by_endpoint_and_api_key() {
@@ -387,44 +69,6 @@ fn pool_key_is_stable_across_calls_within_and_across_processes() {
     let mut hasher = Sha256::new();
     hasher.update(b"supersecret");
     assert!(a.ends_with(&format!("#{:x}", hasher.finalize())));
-}
-
-#[test]
-fn retry_after_window_extends_never_shrinks() {
-    let state = endpoint_state(DEFAULT_CONCURRENCY);
-    state.set_retry_after(Duration::from_secs(10));
-    let long = state.retry_after.lock().unwrap().unwrap();
-    // A shorter window must not overwrite a longer one.
-    state.set_retry_after(Duration::from_secs(1));
-    assert_eq!(state.retry_after.lock().unwrap().unwrap(), long);
-    // A longer window does extend it.
-    state.set_retry_after(Duration::from_secs(60));
-    assert!(state.retry_after.lock().unwrap().unwrap() > long);
-}
-
-#[tokio::test]
-async fn wait_for_retry_after_gives_up_when_the_cool_down_exceeds_the_deadline() {
-    // #547: a caller must never sleep past its own `rate_limit_max_elapsed`
-    // budget, regardless of how far out the endpoint's cool-down is.
-    let state = endpoint_state(DEFAULT_CONCURRENCY);
-    state.set_retry_after(Duration::from_secs(3600));
-    let deadline = Instant::now() + Duration::from_millis(50);
-    let result = tokio::time::timeout(
-        Duration::from_millis(500),
-        state.wait_for_retry_after(deadline),
-    )
-    .await
-    .expect("must give up promptly instead of sleeping toward the cool-down");
-    assert_eq!(result, Err(()), "a cool-down past the deadline must bail");
-}
-
-#[tokio::test]
-async fn wait_for_retry_after_waits_normally_within_the_deadline() {
-    let state = endpoint_state(DEFAULT_CONCURRENCY);
-    state.set_retry_after(Duration::from_millis(20));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let result = state.wait_for_retry_after(deadline).await;
-    assert_eq!(result, Ok(()));
 }
 
 #[test]
@@ -514,7 +158,6 @@ async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
         max_attempts: 3,
         initial_backoff: Duration::from_millis(10),
         max_backoff: Duration::from_millis(10),
-        rpm: 100_000, // effectively no pacing gap between attempts
         // Wide enough that the retry's own (prompt) reply always beats it on a
         // loaded host; the silent first connection still trips it.
         response_header_timeout: Duration::from_millis(500),
@@ -524,9 +167,15 @@ async fn header_timeout_retries_and_recovers_when_the_server_replies_late() {
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
-            http.client().get(&url).send()
-        }),
+        http.execute_with_retry(
+            &url,
+            None,
+            "test-model",
+            RequestLimits::default(),
+            0,
+            None,
+            || http.client().get(&url).send(),
+        ),
     )
     .await
     .expect("must not hang past the header timeout + one retry");
@@ -557,7 +206,6 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
         max_attempts: 2,
         initial_backoff: Duration::from_millis(5),
         max_backoff: Duration::from_millis(5),
-        rpm: 100_000,
         response_header_timeout: Duration::from_millis(200),
         ..RetryConfig::default()
     });
@@ -565,9 +213,15 @@ async fn header_timeout_exhausted_after_max_attempts_returns_a_typed_error() {
     let url = format!("http://{addr}/");
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
-            http.client().get(&url).send()
-        }),
+        http.execute_with_retry(
+            &url,
+            None,
+            "test-model",
+            RequestLimits::default(),
+            0,
+            None,
+            || http.client().get(&url).send(),
+        ),
     )
     .await
     .expect("must not hang past 2 attempts × the header timeout");
@@ -597,10 +251,7 @@ async fn minimal_retry_config_gives_up_fast_against_a_dead_endpoint() {
 
     // The pool's own config stays the ordinary default; `minimal()` rides in
     // as the per-call override, exactly like the aux call sites do.
-    let http = test_http_client_with(RetryConfig {
-        rpm: 100_000, // effectively no pacing gap between attempts
-        ..RetryConfig::default()
-    });
+    let http = test_http_client();
 
     let url = format!("http://{addr}/");
     let started = std::time::Instant::now();
@@ -609,10 +260,9 @@ async fn minimal_retry_config_gives_up_fast_against_a_dead_endpoint() {
         http.execute_with_retry(
             &url,
             None,
-            None,
-            None,
             "test-model",
-            None,
+            RequestLimits::default(),
+            0,
             Some(RetryConfig::minimal()),
             || http.client().get(&url).send(),
         ),
@@ -660,7 +310,6 @@ async fn header_timeout_does_not_apply_once_headers_have_arrived() {
     });
 
     let http = test_http_client_with(RetryConfig {
-        rpm: 100_000,
         response_header_timeout: Duration::from_millis(300),
         ..RetryConfig::default()
     });
@@ -668,9 +317,15 @@ async fn header_timeout_does_not_apply_once_headers_have_arrived() {
     let url = format!("http://{addr}/");
     let (response, _guard) = tokio::time::timeout(
         Duration::from_secs(30),
-        http.execute_with_retry(&url, None, None, None, "test-model", None, None, || {
-            http.client().get(&url).send()
-        }),
+        http.execute_with_retry(
+            &url,
+            None,
+            "test-model",
+            RequestLimits::default(),
+            0,
+            None,
+            || http.client().get(&url).send(),
+        ),
     )
     .await
     .expect("must not hang")
@@ -732,6 +387,138 @@ fn next_backoff_caps_at_max() {
     assert!(d >= max && d < max * 2, "got {d:?}");
 }
 
+// ── 429 + `Retry-After` through the retry loop (#918) ───────────────────────
+
+/// Serve `first` on the first connection and a 200 on every later one,
+/// returning the address and the instant each request arrived.
+fn serve_then_ok(
+    first: &'static [u8],
+) -> (std::net::SocketAddr, Arc<Mutex<Vec<std::time::Instant>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let seen = arrivals.clone();
+    std::thread::spawn(move || {
+        while let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let n = {
+                let mut seen = seen.lock().unwrap();
+                seen.push(std::time::Instant::now());
+                seen.len()
+            };
+            let reply: &[u8] = if n == 1 {
+                first
+            } else {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            };
+            let _ = sock.write_all(reply);
+            let _ = sock.flush();
+        }
+    });
+    (addr, arrivals)
+}
+
+#[tokio::test]
+async fn a_429_parks_the_endpoint_for_retry_after_then_succeeds() {
+    let (addr, arrivals) = serve_then_ok(
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    let http = test_http_client();
+    let url = format!("http://{addr}/");
+    let (response, _guard) = tokio::time::timeout(
+        Duration::from_secs(20),
+        http.execute_with_retry(&url, None, "m", RequestLimits::default(), 0, None, || {
+            http.client().get(&url).send()
+        }),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the retry after the cool-down succeeds");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let arrivals = arrivals.lock().unwrap().clone();
+    assert_eq!(arrivals.len(), 2);
+    assert!(
+        arrivals[1] - arrivals[0] >= Duration::from_millis(900),
+        "the retry must wait out Retry-After, waited {:?}",
+        arrivals[1] - arrivals[0]
+    );
+}
+
+#[tokio::test]
+async fn a_retry_after_past_the_budget_surfaces_the_429() {
+    let (addr, arrivals) = serve_then_ok(
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    let http = test_http_client_with(RetryConfig {
+        rate_limit_max_elapsed: Duration::from_secs(5),
+        ..RetryConfig::default()
+    });
+    let url = format!("http://{addr}/");
+    let (response, _guard) = tokio::time::timeout(
+        Duration::from_secs(10),
+        http.execute_with_retry(&url, None, "m", RequestLimits::default(), 0, None, || {
+            http.client().get(&url).send()
+        }),
+    )
+    .await
+    .expect("gives up instead of sleeping an hour")
+    .expect("the 429 itself comes back for the caller to report");
+    assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(arrivals.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_caller_queued_on_its_model_holds_no_shared_lease() {
+    // #546: the cross-process lease is taken last, so a caller waiting on
+    // its own model's slot never starves sibling processes of the endpoint.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = "https://api.example/v1#shared-lease-test";
+    let http = HttpClient::with_shared_state(
+        SharedStateLocation::Dir(dir.path().to_path_buf()),
+        RetryConfig::default(),
+    )
+    .unwrap();
+    let limits = RequestLimits {
+        endpoint: RateLimits {
+            concurrency: Some(3),
+            ..RateLimits::default()
+        },
+        model: RateLimits {
+            concurrency: Some(1),
+            ..RateLimits::default()
+        },
+    };
+    let ep = http.endpoint(key, limits.endpoint);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let _held = ep
+        .admit("glm-4.7-flash", limits, 0, deadline)
+        .await
+        .unwrap();
+
+    let http2 = http.clone();
+    let blocked = tokio::spawn(async move {
+        let _ = http2
+            .execute_with_retry(key, None, "glm-4.7-flash", limits, 0, None, || async {
+                std::future::pending::<Result<reqwest::Response, reqwest::Error>>().await
+            })
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!blocked.is_finished(), "queued on the model slot");
+
+    // The held call has one lease; siblings must get the other two at once.
+    let siblings = tokio::time::timeout(
+        Duration::from_secs(10),
+        futures::future::join_all((0..2).map(|_| ep.shared.acquire(1000, 3, deadline))),
+    )
+    .await
+    .expect("siblings are not starved by the queued caller");
+    assert!(siblings.iter().all(|s| matches!(s, Ok(Some(_)))));
+    blocked.abort();
+}
+
 #[test]
 fn waiter_guard_increments_on_construction_and_decrements_on_drop() {
     let counter = AtomicUsize::new(0);
@@ -787,7 +574,7 @@ async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops()
 
     let sem = Arc::new(Semaphore::new(1));
     let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(permit, None, None, None);
+    let guard = StreamGuard(Some(permit), None, None);
 
     let rx = spawn_byte_stream(response, "test", guard);
     // No one ever reads from `rx` — simulates `Stop` dropping the whole
@@ -831,7 +618,7 @@ async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
 
     let sem = Arc::new(Semaphore::new(1));
     let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(permit, None, None, None);
+    let guard = StreamGuard(Some(permit), None, None);
 
     let mut rx = spawn_byte_stream(response, "test", guard);
     let mut collected = Vec::new();

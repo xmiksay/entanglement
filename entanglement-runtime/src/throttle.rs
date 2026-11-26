@@ -1,7 +1,5 @@
 //! Runtime-side throttle-transition responder (#517, ADR-0141): polls the
-//! shared `HttpClient`'s per-endpoint resilience pool
-//! (ADR-0050/[ADR-0111](../../docs/adr/archive/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md))
-//! and emits [`OutEvent::Throttle`] only on a transition, so a remote (stdio/
+//! shared `HttpClient`'s per-endpoint limiters and emits [`OutEvent::Throttle`] only on a transition, so a remote (stdio/
 //! WS) head sees the same stall the TUI already renders directly via
 //! `HttpClient::throttle_status()` (`tui/input_panel.rs`).
 //!
@@ -23,12 +21,13 @@ use entanglement_provider::{HttpClient, ThrottleStatus};
 
 /// How often the poller re-reads the pool's live state. Only a *transition*
 /// gets emitted (never every tick), so this just bounds detection latency —
-/// short enough that a 429 cool-down or pacing slowdown surfaces promptly.
+/// short enough that a 429 cool-down or a full request window surfaces promptly.
 const THROTTLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// One endpoint's throttle posture, coarsened to the granularity a head
 /// actually renders differently (mirrors the TUI's `throttle_label` ordering:
-/// an active cool-down wins over pacing, which wins over a bare saturated cap).
+/// an active cool-down wins over a full request window (`Pacing`), which wins
+/// over a bare saturated cap).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThrottleClass {
     AtRest,
@@ -40,7 +39,7 @@ enum ThrottleClass {
 fn classify(status: &ThrottleStatus) -> ThrottleClass {
     if status.backoff_remaining.is_some() {
         ThrottleClass::Backoff
-    } else if status.penalized {
+    } else if status.next_request_in.is_some() {
         ThrottleClass::Pacing
     } else if status.in_flight >= status.cap
         || status
@@ -80,8 +79,7 @@ fn diff_and_emit(
         last.insert(status.endpoint.clone(), class);
 
         let retry_in_ms = status.backoff_remaining.map(|d| d.as_millis() as u64);
-        // Only surfaced while actually pacing — a stale `next_request_in` from
-        // a since-cleared penalty would be misleading alongside `throttled: false`.
+        // Only surfaced while pacing — a cool-down outranks it (ADR-0141).
         let pacing_in_ms = (class == ThrottleClass::Pacing)
             .then_some(status.next_request_in)
             .flatten()
@@ -137,7 +135,6 @@ mod tests {
             in_flight: 0,
             cap: 3,
             backoff_remaining: None,
-            penalized: false,
             model: None,
             next_request_in: None,
             waiters: 0,
@@ -199,12 +196,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn penalized_pacing_emits_a_pacing_transition_with_a_countdown() {
+    async fn a_full_window_emits_a_pacing_transition_with_a_countdown() {
         let holly = empty_engine();
         let mut sub = holly.subscribe();
         let mut last = HashMap::new();
         let mut paced = status("https://api.paced/v1");
-        paced.penalized = true;
         paced.next_request_in = Some(StdDuration::from_millis(1200));
         diff_and_emit(&holly, &mut last, vec![paced]);
 

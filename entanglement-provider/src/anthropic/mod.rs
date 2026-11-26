@@ -33,8 +33,7 @@ mod sse;
 use crate::client::HttpClient;
 use crate::web_search::WebSearchConfig;
 use crate::{
-    AnthropicModelSpec, Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason,
-    Usage,
+    AnthropicModelSpec, LimitsResolver, Llm, LlmEvent, LlmRequest, LlmStream, StopReason, Usage,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -72,17 +71,9 @@ pub struct AnthropicLlm {
     /// Fallback output cap ([`DEFAULT_MAX_TOKENS`]) used only when a request omits
     /// its own [`GenerationParams::max_output_tokens`] (#191).
     default_max_tokens: u32,
-    /// Catalog-provided per-minute budget for this endpoint (`None` = client
-    /// default). Threaded into the per-endpoint rate limiter (#241).
-    rpm: Option<u32>,
-    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
-    /// client default). Threaded into the per-endpoint concurrency permit (#414).
-    concurrency: Option<usize>,
-    /// Resolves the in-flight concurrency cap for whichever model a given
-    /// request actually names, re-run per request rather than baked in at
-    /// construction (#521/#550, ADR-0140) — threaded into the per-model
-    /// concurrency permit layered under the endpoint permit.
-    model_concurrency: ModelConcurrencyResolver,
+    /// Resolves the endpoint's and the requested model's rate limits, per
+    /// request (#550).
+    limits: LimitsResolver,
     /// Opt-in provider-side web search (#305): when `Some`, `build_body` requests
     /// the web-search server tool. Bound at construction, invisible to core.
     web_search: Option<WebSearchConfig>,
@@ -108,9 +99,7 @@ impl AnthropicLlm {
         base_url: impl Into<String>,
         api_key: impl Into<String>,
         default_model: impl Into<String>,
-        rpm: Option<u32>,
-        concurrency: Option<usize>,
-        model_concurrency: ModelConcurrencyResolver,
+        limits: LimitsResolver,
         web_search: Option<WebSearchConfig>,
         web_search_tool_version: Option<String>,
         model_spec: AnthropicModelSpec,
@@ -121,9 +110,7 @@ impl AnthropicLlm {
             base_url: base_url.into(),
             default_model: default_model.into(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
-            rpm,
-            concurrency,
-            model_concurrency,
+            limits,
             web_search,
             web_search_tool_version,
             model_spec,
@@ -134,10 +121,8 @@ impl AnthropicLlm {
 
 /// Build an [`LlmFactory`] wired to Anthropic. Each session gets its own cloned
 /// [`AnthropicLlm`]. `base_url` overrides [`ANTHROPIC_BASE`] — a proxy/gateway
-/// catalog entry (#551); `rpm`/`concurrency = None` use the client's (or
-/// endpoint's) defaults; `model_concurrency` resolves a tighter per-model cap
-/// per request (`|_| None` disables it, #521, resolved per request rather than
-/// once at construction, #550); `web_search = Some(..)` requests provider-side
+/// catalog entry (#551); `limits` resolves the endpoint's and the request
+/// model's rate limits per request (#550); `web_search = Some(..)` requests provider-side
 /// web search (#305); `web_search_tool_version` selects the server-tool type
 /// when set (#481); `model_spec` carries the bound model's thinking shape,
 /// replay flag, effort tiers and temperature support
@@ -147,9 +132,7 @@ pub fn anthropic_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     default_model: impl Into<String>,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
+    limits: LimitsResolver,
     web_search: Option<WebSearchConfig>,
     web_search_tool_version: Option<String>,
     model_spec: AnthropicModelSpec,
@@ -159,9 +142,7 @@ pub fn anthropic_factory(
         base_url,
         api_key,
         default_model,
-        rpm,
-        concurrency,
-        model_concurrency,
+        limits,
         web_search,
         web_search_tool_version,
         model_spec,
@@ -226,18 +207,16 @@ impl Llm for AnthropicLlm {
         // proxy/gateway speaking the Anthropic wire) overrides it (#551) — the
         // trim mirrors `openai`/`gemini`'s own request-URL construction.
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let rpm = self.rpm;
-        let concurrency = self.concurrency;
         // Aux fail-fast override (#560 follow-up): `Copy`, so extracted here
-        // like `rpm`/`concurrency` — `req`'s borrow can't cross into the
-        // `'static` `try_stream!` generator below.
+        // — `req`'s borrow can't cross into the `'static` `try_stream!`
+        // generator below.
         let retry = req.retry;
         // Resolved against *this* request's model, not baked in at
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`. The
         // `pause_turn` continuation loop below keeps re-POSTing the same
         // `request_model`, so this stays valid for every continuation too.
-        let model_concurrency = (self.model_concurrency)(&model);
+        let limits = (self.limits)(&model);
         // A separate clone for the stream body below: `model` itself is still
         // read after the block builds (the "stream started" trace), and
         // `try_stream!` captures by move.
@@ -253,10 +232,9 @@ impl Llm for AnthropicLlm {
                     .execute_with_retry(
                         &url,
                         Some(api_key.as_str()),
-                        rpm,
-                        concurrency,
                         &request_model,
-                        model_concurrency,
+                        limits,
+                        limits.estimate_tokens(&body),
                         retry,
                         || {
                             http.client()

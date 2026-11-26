@@ -30,7 +30,7 @@ const RETIRED_ENV: &[(&str, &str)] = &[
     ),
     (
         "ENTANGLEMENT_MAX_CONCURRENCY",
-        "a per-provider `concurrency:` in providers.yml",
+        "a per-provider `limits: {concurrency: N}` in providers.yml",
     ),
     (
         "ENTANGLEMENT_NO_SHARED_ENDPOINT_STATE",
@@ -60,10 +60,13 @@ const STATE_DIR_HINT: &str = "`ENTANGLEMENT_STATE_DIR` (one directory for all ma
 /// uppercased name; `{NAME}` in the replacement is filled in.
 const RETIRED_PROVIDER_SUFFIXES: &[(&str, &str)] = &[
     ("_BASE", "`{NAME}_API_BASE`"),
-    ("_RPM", "`rpm:` on the provider in providers.yml"),
+    (
+        "_RPM",
+        "`limits: {rpm: N}` on the provider in providers.yml",
+    ),
     (
         "_CONCURRENCY",
-        "`concurrency:` on the provider in providers.yml",
+        "`limits: {concurrency: N}` on the provider in providers.yml",
     ),
 ];
 

@@ -25,7 +25,7 @@ use tokio::net::TcpListener;
 use entanglement_runtime::mcp::HttpClient;
 // The shared per-endpoint pool (#559) — distinct from `mcp::HttpClient` above,
 // which is the MCP *transport*'s historical name (ADR-0153).
-use entanglement_provider::{HttpClient as PoolHttpClient, RetryConfig};
+use entanglement_provider::{HttpClient as PoolHttpClient, RateLimits};
 
 const SESSION_ID: &str = "sess-abc123";
 const TOKEN: &str = "Bearer sekret-token";
@@ -39,11 +39,6 @@ fn test_http_client() -> PoolHttpClient {
         entanglement_core::RetryConfig::default(),
     )
     .unwrap()
-}
-
-fn test_http_client_with(config: RetryConfig) -> PoolHttpClient {
-    PoolHttpClient::with_shared_state(entanglement_core::SharedStateLocation::Disabled, config)
-        .unwrap()
 }
 
 /// The `initialize` reply carries the session id; `tools/list` answers over SSE;
@@ -207,9 +202,9 @@ async fn spawn_slow_server() -> (String, ConcurrencyTracker) {
 #[tokio::test]
 async fn mcp_calls_are_serialized_by_the_endpoint_concurrency_cap() {
     let (url, tracker) = spawn_slow_server().await;
-    let http = test_http_client_with(RetryConfig {
-        concurrency: 1,
-        ..RetryConfig::default()
+    let http = test_http_client().with_default_limits(RateLimits {
+        concurrency: Some(1),
+        ..RateLimits::default()
     });
     let client = HttpClient::connect("test", &url, &HashMap::new(), http)
         .await

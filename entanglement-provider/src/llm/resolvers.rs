@@ -1,31 +1,30 @@
 //! The runtime-supplied resolution seams: per-request model facts
-//! (concurrency cap, thinking handling), the per-session [`LlmFactory`],
+//! (rate limits, thinking handling), the per-session [`LlmFactory`],
 //! and the model/generation/aux resolvers a live switch goes through.
 
 use super::{GenerationParams, Llm};
 
-/// Resolves a model id to its per-model in-flight concurrency cap on a given
-/// provider's endpoint (#521, ADR-0140), re-run **on every request** rather
-/// than baked in once at client construction (#550): a backend's
-/// `default_model` and a given [`LlmRequest::model`](super::LlmRequest::model) can diverge — a
-/// profile's `model:` set without `provider:` is the documented
-/// request-level fallback (`Agent::model_pin` returns `None`, so
-/// `SetAgent` doesn't rebind the client) — and resolving the cap once from
-/// the client's construction-time model would then pair the *wrong* model's
-/// cap with the *actual* request's model. `None` ⇒ no per-model cap; the
-/// request admits solely through the endpoint-wide gate.
-pub type ModelConcurrencyResolver = std::sync::Arc<dyn Fn(&str) -> Option<usize> + Send + Sync>;
+/// Resolves a model id to the [`RequestLimits`](crate::RequestLimits) its
+/// request admits under — its endpoint's and its own — re-run **on every
+/// request** rather than baked in at client construction (#550): a profile's
+/// `model:`-only pin can send a request under a different model than the
+/// client's `default_model`, and that actual model's limits must apply.
+/// `Catalog::limits_resolver` is the catalog-driven form.
+pub type LimitsResolver = std::sync::Arc<dyn Fn(&str) -> crate::RequestLimits + Send + Sync>;
 
-/// A [`ModelConcurrencyResolver`] that ignores the model and always returns
-/// `cap` — for callers with no catalog to resolve against (tests, or a
-/// backend that only ever serves one fixed model).
-pub fn fixed_model_concurrency(cap: Option<usize>) -> ModelConcurrencyResolver {
-    std::sync::Arc::new(move |_: &str| cap)
+/// A [`LimitsResolver`] that applies `endpoint` to every request and no
+/// per-model limits — for callers with no catalog to resolve against.
+pub fn fixed_limits(endpoint: crate::RateLimits) -> LimitsResolver {
+    let limits = crate::RequestLimits {
+        endpoint,
+        model: crate::RateLimits::default(),
+    };
+    std::sync::Arc::new(move |_: &str| limits)
 }
 
 /// Resolves a model id to the OpenAI-wire thinking handling ([`crate::
 /// ThinkingSpec`], ADR-0191), re-run **on every request** — the same #550
-/// property as [`ModelConcurrencyResolver`]: a `model:`-only profile pin can
+/// property as [`LimitsResolver`]: a `model:`-only profile pin can
 /// send a request under a different model than the client's construction-time
 /// `default_model`, and that actual model's `thinking_format` must win.
 pub type ThinkingSpecResolver = std::sync::Arc<dyn Fn(&str) -> crate::ThinkingSpec + Send + Sync>;
@@ -41,7 +40,7 @@ pub fn fixed_thinking_spec(spec: crate::ThinkingSpec) -> ThinkingSpecResolver {
 ///
 /// A session simply owns its `Box<dyn Llm>`; there is deliberately **no
 /// per-session wrapper**. The provider layer's resilience state (connection pool,
-/// retry/backoff, RPM budget + `Retry-After` window) is **keyed per endpoint**,
+/// retry/backoff, the rate limiter + `Retry-After` window) is **keyed per endpoint**,
 /// not per session, since #217 / [ADR-0050]: sessions talking to the same endpoint
 /// share one budget so a throttled endpoint doesn't starve siblings. There is thus
 /// no honest session-scoped state for a handle to hold — the earlier `LlmSession`

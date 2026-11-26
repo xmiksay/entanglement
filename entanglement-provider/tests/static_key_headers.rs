@@ -5,8 +5,8 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use entanglement_provider::{
-    fixed_model_concurrency, fixed_thinking_spec, AnthropicLlm, AnthropicModelSpec, GeminiLlm,
-    HttpClient, Llm, LlmRequest, Message, OpenAiLlm, OpenAiResponsesLlm, RetryConfig,
+    fixed_limits, fixed_thinking_spec, AnthropicLlm, AnthropicModelSpec, GeminiLlm, HttpClient,
+    Llm, LlmRequest, Message, OpenAiLlm, OpenAiResponsesLlm, RateLimits, RetryConfig,
     SharedStateLocation, ThinkingSpec,
 };
 use futures::StreamExt;
@@ -98,9 +98,7 @@ async fn openai_compat_sends_the_static_key_as_bearer() {
         &base,
         Some(KEY.into()),
         "m",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -121,9 +119,7 @@ async fn responses_sends_the_static_key_as_bearer() {
         &base,
         Some(KEY.into()),
         "m",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         fixed_thinking_spec(ThinkingSpec::default()),
         http(),
     ))
@@ -138,9 +134,7 @@ async fn anthropic_sends_the_static_key_as_x_api_key() {
         &base,
         KEY,
         "m",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         None,
         AnthropicModelSpec::default(),
@@ -157,9 +151,7 @@ async fn gemini_sends_the_static_key_as_x_goog_api_key() {
         &base,
         KEY,
         "m",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         http(),
     ))
     .await;

@@ -42,9 +42,7 @@ pub(crate) fn gemini_factory_for(
         base,
         key,
         model.to_string(),
-        entry.rpm,
-        entry.concurrency,
-        catalog.model_concurrency_resolver(&entry.name),
+        catalog.limits_resolver(&entry.name),
         http_client.clone(),
     ))
 }
@@ -78,9 +76,7 @@ pub(crate) fn openai_factory_for(
         base,
         key,
         model.to_string(),
-        entry.rpm,
-        entry.concurrency,
-        catalog.model_concurrency_resolver(&entry.name),
+        catalog.limits_resolver(&entry.name),
         web_search,
         entry.prompt_cache_key,
         catalog.thinking_spec_resolver(&entry.name),
@@ -113,9 +109,7 @@ pub(crate) fn openai_responses_factory_for(
         base,
         key,
         model.to_string(),
-        entry.rpm,
-        entry.concurrency,
-        catalog.model_concurrency_resolver(&entry.name),
+        catalog.limits_resolver(&entry.name),
         catalog.thinking_spec_resolver(&entry.name),
         http_client.clone(),
     ))
@@ -158,9 +152,7 @@ pub(crate) fn anthropic_factory_for(
         base,
         key,
         model.to_string(),
-        entry.rpm,
-        entry.concurrency,
-        catalog.model_concurrency_resolver(&entry.name),
+        catalog.limits_resolver(&entry.name),
         web_search,
         web_search_tool_version,
         // Thinking shape, replay, effort tiers, temperature support — resolved

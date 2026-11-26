@@ -131,14 +131,14 @@ pub enum OutEvent {
     /// again with the terminal `state` or `error`.
     McpAuthChanged { status: McpAuthStatus },
     /// An LLM endpoint's throttle posture changed (lifecycle event, no `seq`,
-    /// #517). The provider's per-endpoint resilience pool (`HttpClient`, ADR-0050/
-    /// ADR-0111) is **engine-global, not per-session** — many sessions can share
+    /// #517). The provider's per-endpoint limiters (`HttpClient`, ADR-0050)
+    /// are **engine-global, not per-session** — many sessions can share
     /// one endpoint, and one throttled endpoint never blocks another — so this
     /// mirrors [`McpChanged`][OutEvent::McpChanged]'s
     /// shape rather than naming a session. Emitted by the runtime's throttle
     /// responder polling `HttpClient::throttle_statuses()` (it alone owns the
     /// `HttpClient`), **only on a transition** — entering/leaving a 429 cool-down,
-    /// the adaptive pacing gate penalizing/relaxing, or clearing back to rest —
+    /// an endpoint's `rpm`/`tpm` window filling/freeing, or clearing back to rest —
     /// not on every poll tick, so a remote (stdio/WS) head isn't spammed while a
     /// stall holds steady. `throttled` is `false` exactly when every other field
     /// but `endpoint`/`in_flight`/`cap` is at rest — a head clears its indicator

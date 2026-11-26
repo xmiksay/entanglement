@@ -25,7 +25,7 @@ mod sse;
 mod tests;
 
 use crate::client::HttpClient;
-use crate::{Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, Usage};
+use crate::{LimitsResolver, Llm, LlmEvent, LlmRequest, LlmStream, Usage};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -42,9 +42,7 @@ pub struct OpenAiResponsesLlm {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
+    limits: LimitsResolver,
     /// Resolves the request model's thinking facts per request (#550 shape,
     /// mirroring [`crate::OpenAiLlm`]) — here only the effort clamp is used.
     thinking_spec: crate::ThinkingSpecResolver,
@@ -52,14 +50,11 @@ pub struct OpenAiResponsesLlm {
 }
 
 impl OpenAiResponsesLlm {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<String>,
         default_model: impl Into<String>,
-        rpm: Option<u32>,
-        concurrency: Option<usize>,
-        model_concurrency: ModelConcurrencyResolver,
+        limits: LimitsResolver,
         thinking_spec: crate::ThinkingSpecResolver,
         http: HttpClient,
     ) -> Self {
@@ -67,9 +62,7 @@ impl OpenAiResponsesLlm {
             base_url: base_url.into(),
             api_key,
             default_model: default_model.into(),
-            rpm,
-            concurrency,
-            model_concurrency,
+            limits,
             thinking_spec,
             http,
         }
@@ -83,14 +76,11 @@ impl OpenAiResponsesLlm {
 /// doc; both can be added later without touching the reserved-name contract
 /// above). `thinking_spec` resolves the request model's effort tiers
 /// (`Catalog::thinking_spec_resolver`), clamping `reasoning.effort` per request.
-#[allow(clippy::too_many_arguments)]
 pub fn openai_responses_factory(
     base_url: impl Into<String>,
     api_key: Option<String>,
     default_model: impl Into<String>,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
+    limits: LimitsResolver,
     thinking_spec: crate::ThinkingSpecResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
@@ -98,9 +88,7 @@ pub fn openai_responses_factory(
         base_url,
         api_key,
         default_model,
-        rpm,
-        concurrency,
-        model_concurrency,
+        limits,
         thinking_spec,
         http,
     );
@@ -111,7 +99,7 @@ pub fn openai_responses_factory(
 impl Llm for OpenAiResponsesLlm {
     async fn stream(&mut self, req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
         let model = req.model.unwrap_or(&self.default_model).to_string();
-        let model_concurrency = (self.model_concurrency)(&model);
+        let limits = (self.limits)(&model);
         let thinking = (self.thinking_spec)(&model);
         let body = request::build_body(
             &model,
@@ -137,10 +125,9 @@ impl Llm for OpenAiResponsesLlm {
             .execute_with_retry(
                 &self.base_url,
                 self.api_key.as_deref(),
-                self.rpm,
-                self.concurrency,
                 &model,
-                model_concurrency,
+                limits,
+                limits.estimate_tokens(&body),
                 req.retry,
                 || {
                     let mut request = self.http.client().post(&url);

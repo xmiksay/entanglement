@@ -74,17 +74,11 @@ pub struct ProviderEntry {
     /// Env var holding the API key; `None` = keyless (e.g. local Ollama).
     #[serde(default)]
     pub key_env: Option<String>,
-    /// Requests-per-minute budget for this provider's endpoint bucket; `None`
-    /// falls back to the client's default (`RetryConfig::rpm`). Plumbed into the
-    /// per-endpoint rate limiter so each provider gets its real budget (#241).
+    /// This provider's endpoint limits (`limits: {rpm, tpm, concurrency}`);
+    /// an unset `rpm`/`concurrency` falls back to the client's built-in
+    /// default (50 rpm, 3 in flight).
     #[serde(default)]
-    pub rpm: Option<u32>,
-    /// Max simultaneously in-flight requests to this provider's endpoint; `None`
-    /// falls back to the client's default (`RetryConfig::concurrency`, 3).
-    /// Plumbed into the per-endpoint concurrency permit so each provider gets its
-    /// own storm guard rather than sharing one pool-global cap (#414).
-    #[serde(default)]
-    pub concurrency: Option<usize>,
+    pub limits: crate::RateLimits,
     pub default_model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
@@ -213,15 +207,13 @@ pub struct ModelEntry {
     /// fallback. Anthropic-wire only; ignored for every other wire.
     #[serde(default)]
     pub web_search_tool_version: Option<String>,
-    /// Max simultaneously in-flight requests to **this model** on its provider's
-    /// endpoint, layered on top of (never looser than) the provider-level
-    /// `ProviderEntry::concurrency` (#521, ADR-0140). Some providers — z.ai in
-    /// particular — cap concurrency *per model*, not just per endpoint (e.g.
-    /// GLM-4.7-Flash allows only 1 in-flight request while GLM-5.2 allows 5, on
-    /// the same base URL/key). `None` (the default) means this model has no
-    /// tighter cap than its endpoint's own.
+    /// Limits on **this model** on its provider's endpoint, enforced on top
+    /// of the provider's own `limits` — same shape. Some providers (z.ai) cap
+    /// concurrency per model: GLM-4.7-Flash allows 1 in flight, GLM-5.2 5, on
+    /// one base URL and key. Unset axes leave the model bound by the endpoint
+    /// alone.
     #[serde(default)]
-    pub concurrency: Option<usize>,
+    pub limits: crate::RateLimits,
     #[serde(default)]
     pub pricing: Option<ModelPricing>,
 }
@@ -281,34 +273,30 @@ impl Catalog {
         self.provider(provider)?.models.iter().find(|m| m.id == id)
     }
 
-    /// Build a [`crate::ModelConcurrencyResolver`] that looks `provider`'s
-    /// per-model `concurrency` cap up **at request time**, against whatever
-    /// model id it is called with (#550) — instead of baking one model's cap
-    /// into the client at construction, which then goes stale the moment a
-    /// request's actual model diverges from the one the client was built for
-    /// (a `model:`-only profile pin, the documented request-level fallback
-    /// that skips a client rebind). Clones `self` into the closure so the
-    /// resolver stays `'static` and cheap to clone thereafter (it is
-    /// `Arc`-wrapped) even though every session's `Llm` backend clone carries
-    /// one.
-    pub fn model_concurrency_resolver(&self, provider: &str) -> crate::ModelConcurrencyResolver {
+    /// Build a [`crate::LimitsResolver`] for `provider`: per request, its
+    /// endpoint `limits` plus the requested model's own (#550 — resolved
+    /// against the request's model, not the client's construction-time one).
+    pub fn limits_resolver(&self, provider: &str) -> crate::LimitsResolver {
         let catalog = self.clone();
         let provider = provider.to_string();
-        std::sync::Arc::new(move |model: &str| {
-            catalog.model(&provider, model).and_then(|m| m.concurrency)
+        std::sync::Arc::new(move |model: &str| crate::RequestLimits {
+            endpoint: catalog
+                .provider(&provider)
+                .map(|p| p.limits)
+                .unwrap_or_default(),
+            model: catalog
+                .model(&provider, model)
+                .map(|m| m.limits)
+                .unwrap_or_default(),
         })
     }
 
-    /// One-shot snapshot of the effective per-model in-flight cap: `model`'s
-    /// own `concurrency`, else its provider's endpoint-wide `concurrency`,
-    /// else `None` (falls back to the client default). Unlike
-    /// [`model_concurrency_resolver`], not a resolver closure for a live
-    /// client — for a caller (#589's aux-LLM registry) judging contention risk
-    /// against a `(provider, model)` pair already in hand.
+    /// The tightest configured in-flight cap for `(provider, model)`: the
+    /// model's own, else its provider's, else `None` (the client default).
     pub fn effective_concurrency(&self, provider: &str, model: &str) -> Option<usize> {
         self.model(provider, model)
-            .and_then(|m| m.concurrency)
-            .or_else(|| self.provider(provider).and_then(|p| p.concurrency))
+            .and_then(|m| m.limits.concurrency)
+            .or_else(|| self.provider(provider).and_then(|p| p.limits.concurrency))
     }
 
     /// Find a model by id across *all* providers (the model picker only carries
@@ -826,94 +814,91 @@ mod tests {
     }
 
     #[test]
-    fn rpm_is_optional_and_user_overridable() {
-        // Unset in the embedded defaults → None (falls back to the client default).
-        assert_eq!(Catalog::builtin().provider("zai").unwrap().rpm, None);
-        // A user file can set a per-provider rpm without touching sibling fields.
-        let c = merge_str("providers:\n  - name: zai\n    rpm: 120\n");
-        assert_eq!(c.provider("zai").unwrap().rpm, Some(120));
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
-    }
-
-    #[test]
-    fn concurrency_is_optional_and_user_overridable() {
-        // zai ships its own documented endpoint ceiling (#550) — it must be at
-        // least glm-5.2's model-level cap (5) or that model's cap can never
-        // bind (`model_slot` would warn on every process's first request).
+    fn provider_limits_are_optional_and_user_overridable() {
+        // zai ships its documented endpoint ceiling — at least glm-5.2's own
+        // cap (5), or that model's cap could never bind.
+        let zai = Catalog::builtin().provider("zai").unwrap().limits;
+        assert_eq!((zai.rpm, zai.tpm, zai.concurrency), (None, None, Some(5)));
+        // A user file sets one axis without touching the others or siblings.
+        let c = merge_str("providers:\n  - name: zai\n    limits:\n      rpm: 120\n");
+        let zai = c.provider("zai").unwrap();
         assert_eq!(
-            Catalog::builtin().provider("zai").unwrap().concurrency,
-            Some(5)
+            (zai.limits.rpm, zai.limits.concurrency),
+            (Some(120), Some(5))
         );
-        // A user file can set a per-provider concurrency without touching siblings.
-        let c = merge_str("providers:\n  - name: zai\n    concurrency: 8\n");
-        assert_eq!(c.provider("zai").unwrap().concurrency, Some(8));
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
+        assert_eq!(zai.default_model, "glm-5.3");
     }
 
     #[test]
-    fn model_concurrency_ships_the_known_zai_tiers() {
-        // z.ai enforces these two documented tiers per model, distinct from the
-        // provider-level endpoint cap (#521): GLM-4.7-Flash serializes at 1,
-        // GLM-5.2 allows 5 concurrent streams.
+    fn the_retired_flat_rpm_and_concurrency_keys_are_rejected() {
+        for yaml in [
+            "providers:\n  - name: zai\n    rpm: 120\n",
+            "providers:\n  - name: zai\n    concurrency: 8\n",
+            "providers:\n  - name: zai\n    models:\n      - id: glm-4.6\n        concurrency: 2\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("providers.yml");
+            std::fs::write(&path, yaml).unwrap();
+            assert!(Catalog::load_from(&path).is_err(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn model_limits_ship_the_known_zai_tiers_and_are_overridable() {
         let c = Catalog::builtin();
         assert_eq!(
-            c.model("zai", "glm-4.7-flash").unwrap().concurrency,
+            c.model("zai", "glm-4.7-flash").unwrap().limits.concurrency,
             Some(1)
         );
-        assert_eq!(c.model("zai", "glm-5.2").unwrap().concurrency, Some(5));
-        // A model with no documented per-model tier stays unset — falls back to
-        // the provider/client cap rather than an invented guess.
-        assert_eq!(c.model("zai", "glm-4.7").unwrap().concurrency, None);
-    }
-
-    #[test]
-    fn effective_concurrency_prefers_model_then_provider_then_unset() {
-        // #589: a caller judging contention risk (the aux-LLM registry) wants
-        // one snapshot number, not the model/provider fallback chain spelled
-        // out at every call site.
-        let c = Catalog::builtin();
-        // glm-4.7-flash carries its own tight tier — wins over zai's provider
-        // cap of 5.
-        assert_eq!(c.effective_concurrency("zai", "glm-4.7-flash"), Some(1));
-        // glm-4.7 has no model-level cap — falls back to the provider's.
-        assert_eq!(c.effective_concurrency("zai", "glm-4.7"), Some(5));
-        // An unknown model on a known provider still falls back to that
-        // provider's endpoint cap — only an unknown provider is uncapped.
-        assert_eq!(c.effective_concurrency("zai", "no-such-model"), Some(5));
-        assert_eq!(c.effective_concurrency("no-such-provider", "x"), None);
-    }
-
-    #[test]
-    fn model_concurrency_is_optional_and_user_overridable() {
         assert_eq!(
-            Catalog::builtin()
-                .model("zai", "glm-4.6")
-                .unwrap()
-                .concurrency,
-            None
+            c.model("zai", "glm-5.2").unwrap().limits.concurrency,
+            Some(5)
         );
-        // A user file can set/override a per-model concurrency without touching
-        // sibling fields on that model or other models.
+        // No documented tier → unset, bound by the endpoint alone.
+        assert_eq!(
+            c.model("zai", "glm-4.7").unwrap().limits,
+            crate::RateLimits::default()
+        );
+
         let c = merge_str(
             "providers:\n\
              \x20 - name: zai\n\
              \x20   models:\n\
              \x20     - id: glm-4.6\n\
-             \x20       concurrency: 2\n\
-             \x20     - id: glm-5.2\n\
-             \x20       concurrency: 10\n",
+             \x20       limits: { concurrency: 2, tpm: 100000 }\n",
         );
-        assert_eq!(c.model("zai", "glm-4.6").unwrap().concurrency, Some(2));
+        let glm46 = c.model("zai", "glm-4.6").unwrap();
         assert_eq!(
-            c.model("zai", "glm-4.6").unwrap().context_window,
-            Some(204800)
+            (glm46.limits.concurrency, glm46.limits.tpm),
+            (Some(2), Some(100_000))
         );
-        assert_eq!(c.model("zai", "glm-5.2").unwrap().concurrency, Some(10));
-        // The untouched z.ai-documented default survives when not overridden.
+        assert_eq!(glm46.context_window, Some(204800));
         assert_eq!(
-            c.model("zai", "glm-4.7-flash").unwrap().concurrency,
+            c.model("zai", "glm-4.7-flash").unwrap().limits.concurrency,
             Some(1)
         );
+    }
+
+    #[test]
+    fn limits_resolver_pairs_the_endpoint_with_the_requested_model() {
+        let resolve = Catalog::builtin().limits_resolver("zai");
+        let flash = resolve("glm-4.7-flash");
+        assert_eq!(flash.endpoint.concurrency, Some(5));
+        assert_eq!(flash.model.concurrency, Some(1));
+        let unknown = resolve("no-such-model");
+        assert_eq!(unknown.endpoint.concurrency, Some(5));
+        assert_eq!(unknown.model, crate::RateLimits::default());
+        let none = Catalog::builtin().limits_resolver("no-such-provider")("x");
+        assert_eq!(none, crate::RequestLimits::default());
+    }
+
+    #[test]
+    fn effective_concurrency_prefers_model_then_provider_then_unset() {
+        let c = Catalog::builtin();
+        assert_eq!(c.effective_concurrency("zai", "glm-4.7-flash"), Some(1));
+        assert_eq!(c.effective_concurrency("zai", "glm-4.7"), Some(5));
+        assert_eq!(c.effective_concurrency("zai", "no-such-model"), Some(5));
+        assert_eq!(c.effective_concurrency("no-such-provider", "x"), None);
     }
 
     #[test]

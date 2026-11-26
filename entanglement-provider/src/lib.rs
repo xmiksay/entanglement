@@ -52,16 +52,16 @@ pub use catalog::{
     ThinkingControl, ThinkingFormat, ThinkingSpec, ThinkingStyle, Wire,
 };
 pub use client::{
-    prune_stale, HttpClient, RetryConfig, SharedStateLocation, StreamGuard, ThrottleStatus,
-    UserBudget,
+    prune_stale, HttpClient, RateLimits, RequestLimits, RetryConfig, SharedStateLocation,
+    StreamGuard, ThrottleStatus,
 };
 pub use debug::{DebugFlags, DEBUG_ENV};
 pub use gemini::{gemini_factory, GeminiLlm, GEMINI_BASE};
 pub use llm::{
-    fixed_model_concurrency, fixed_thinking_spec, mcp_tool_name, AuxLlmResolver, DummyLlm, EchoLlm,
-    GenerationParams, GenerationResolver, Llm, LlmEvent, LlmFactory, LlmRequest, LlmStream,
-    ModelConcurrencyResolver, ModelResolver, ReasoningEffort, ResolvedModel, StopReason,
-    ThinkingSpecResolver, ToolCall, ToolSpec, Usage, UserId, MCP_TOOL,
+    fixed_limits, fixed_thinking_spec, mcp_tool_name, AuxLlmResolver, DummyLlm, EchoLlm,
+    GenerationParams, GenerationResolver, LimitsResolver, Llm, LlmEvent, LlmFactory, LlmRequest,
+    LlmStream, ModelResolver, ReasoningEffort, ResolvedModel, StopReason, ThinkingSpecResolver,
+    ToolCall, ToolSpec, Usage, UserId, MCP_TOOL,
 };
 // The MCP client mechanism (ADR-0153). `HttpClient` above is the *LLM* endpoint
 // client, so the MCP transport keeps its qualified `McpHttpClient` name rather

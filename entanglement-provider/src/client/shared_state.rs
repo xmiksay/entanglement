@@ -1,8 +1,8 @@
 //! Cross-process shared endpoint resilience state (#523, ADR-0144).
 //!
 //! Multiple `skutter` processes talking to the same `(base URL, API-key)`
-//! endpoint used to each run a fully independent in-process pool
-//! (`EndpointState`, ADR-0050/ADR-0111/ADR-0122) — N processes each believed
+//! endpoint used to each run a fully independent in-process limiter
+//! (`Limiter`) — N processes each believed
 //! they owned the whole RPM/concurrency budget, so together they could send
 //! up to N× the configured rate and hold N× the configured concurrency
 //! against a provider that has no idea it's talking to more than one client.
@@ -15,9 +15,9 @@
 //! 400-line cap, #552); this module owns the public API and admission
 //! policy.
 //!
-//! The AIMD pacing gate (`RateLimiter`, ADR-0111) stays **per-process** (v1) —
-//! see ADR-0144 for the full reasoning and rejected alternatives (a broker
-//! daemon, static partitioning).
+//! The `tpm` window and per-model gates stay **per-process** — see ADR-0144
+//! for the reasoning and rejected alternatives (a broker daemon, static
+//! partitioning).
 //!
 //! Concurrency is **lease-based**, not a shared semaphore: each admitted
 //! request writes a lease (an id + owning pid + expiry) and renews it on a

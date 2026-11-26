@@ -13,21 +13,16 @@
 //! embedder maps its sessions to users itself and hands the finished
 //! [`ModelResolver`] in.
 //!
-//! Rate-limit isolation falls out of the existing per-endpoint pool for free
-//! (ADR-0050): [`HttpClient`] keys its `EndpointState` by `(base_url,
-//! sha256(api_key))`, so two users with distinct keys on the same provider
-//! already get separate RPM/concurrency/429 cool-down state with no extra
-//! plumbing here. Two users configured to *share* one literal key additionally
-//! get a per-user admission gate layered on top of that shared endpoint state
-//! (#632, ADR-0175, [`HttpClient::with_user_budget`]) — resolved from *that
-//! user's own* catalog `rpm`/`concurrency` rather than whichever user's
-//! session happened to size the endpoint first.
+//! Rate limits need no per-user plumbing: [`HttpClient`] keys its limiter by
+//! `(base_url, sha256(api_key))`, so two users with distinct keys on the same
+//! provider get separate limits, and two users sharing one key share that
+//! key's limits — which is what the provider enforces.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::catalog::{Catalog, ProviderEntry, Wire};
-use crate::client::{HttpClient, UserBudget};
+use crate::client::HttpClient;
 use crate::gemini::{gemini_factory, GEMINI_BASE};
 use crate::llm::{ModelResolver, ResolvedModel, UserId};
 use crate::openai::{openai_factory, OPENAI_BASE};
@@ -36,8 +31,8 @@ use crate::web_search::WebSearchConfig;
 use crate::{anthropic_factory, ANTHROPIC_BASE};
 
 /// One user's provider surface: their own [`Catalog`] (same shape as the
-/// process-global `providers.yml`, #118 — providers, models, per-provider
-/// `rpm`/`concurrency`) and their own API keys, keyed by the catalog entry's
+/// process-global `providers.yml`, #118 — providers, models, their
+/// `limits`) and their own API keys, keyed by the catalog entry's
 /// `key_env` name purely as a stable per-provider label (the value is never
 /// read from or written to an actual environment variable in multi-user
 /// mode).
@@ -131,14 +126,7 @@ pub fn build_user_model_resolver(
         let ctx = store
             .context(user)
             .ok_or_else(|| format!("no provider context configured for user `{user}`"))?;
-        resolve_for_user(
-            &ctx,
-            &http_client,
-            web_search.clone(),
-            provider,
-            model,
-            user,
-        )
+        resolve_for_user(&ctx, &http_client, web_search.clone(), provider, model)
     })
 }
 
@@ -148,30 +136,14 @@ fn resolve_for_user(
     web_search: Option<WebSearchConfig>,
     provider: &str,
     model: &str,
-    user: &UserId,
 ) -> Result<ResolvedModel, String> {
     let entry = ctx
         .catalog
         .provider(provider)
         .ok_or_else(|| format!("unknown provider `{provider}` for this user"))?;
     let key = ctx.key_for(entry);
-    let rpm = entry.rpm;
-    let concurrency = entry.concurrency;
-    // Resolved per request against the user's own catalog (#550), not once
-    // here against just this call's `model` — see `Catalog::
-    // model_concurrency_resolver`.
-    let model_concurrency = ctx.catalog.model_concurrency_resolver(provider);
-    // Per-user admission gate on top of the shared endpoint pool (#632,
-    // ADR-0175): this user's own rpm/concurrency becomes an additional,
-    // narrower budget keyed by `user` — so two users sharing one literal key
-    // each stay within their own slice regardless of who sized the shared
-    // endpoint first.
-    let http_client = http_client.with_user_budget(UserBudget {
-        user: user.clone(),
-        rpm,
-        concurrency,
-    });
-    let http_client = &http_client;
+    // Resolved per request against the user's own catalog (#550).
+    let limits = ctx.catalog.limits_resolver(provider);
 
     let llm_factory = match entry.wire {
         Wire::Openai => {
@@ -183,9 +155,7 @@ fn resolve_for_user(
                 base,
                 key.map(str::to_string),
                 model.to_string(),
-                rpm,
-                concurrency,
-                model_concurrency,
+                limits.clone(),
                 web_search,
                 entry.prompt_cache_key,
                 ctx.catalog.thinking_spec_resolver(provider),
@@ -208,9 +178,7 @@ fn resolve_for_user(
                 base,
                 key,
                 model.to_string(),
-                rpm,
-                concurrency,
-                model_concurrency,
+                limits.clone(),
                 web_search,
                 web_search_tool_version,
                 ctx.catalog.anthropic_model_spec(provider, model),
@@ -229,9 +197,7 @@ fn resolve_for_user(
                 base,
                 key,
                 model.to_string(),
-                rpm,
-                concurrency,
-                model_concurrency,
+                limits.clone(),
                 http_client.clone(),
             )
         }
@@ -244,9 +210,7 @@ fn resolve_for_user(
                 base,
                 key.map(str::to_string),
                 model.to_string(),
-                rpm,
-                concurrency,
-                model_concurrency,
+                limits.clone(),
                 ctx.catalog.thinking_spec_resolver(provider),
                 http_client.clone(),
             )
@@ -275,14 +239,17 @@ mod tests {
     use crate::{catalog::ModelEntry, client::test_http_client};
 
     fn zai_catalog(rpm: Option<u32>) -> Catalog {
+        let limits = crate::RateLimits {
+            rpm,
+            ..crate::RateLimits::default()
+        };
         Catalog {
             providers: vec![ProviderEntry {
                 name: "zai".into(),
                 wire: Wire::Openai,
                 base_url: None,
                 key_env: Some("ZAI_API_KEY".into()),
-                rpm,
-                concurrency: None,
+                limits,
                 prompt_cache_key: false,
                 thinking_control: None,
                 default_model: "glm-5.2".into(),
@@ -303,7 +270,7 @@ mod tests {
                     effort_tiers: None,
                     thinking_required: false,
                     pricing: None,
-                    concurrency: None,
+                    limits: crate::RateLimits::default(),
                     web_search_tool_version: None,
                 }],
             }],
@@ -367,12 +334,8 @@ mod tests {
 
     #[test]
     fn two_users_sharing_one_literal_key_both_resolve() {
-        // The scenario #632/ADR-0175 is about: two users configured with the
-        // *same* literal key on the same provider. Both must still resolve
-        // (each through their own `with_user_budget`-attached `HttpClient`,
-        // not just whichever resolves first) — the actual admission
-        // isolation this produces is verified deeply in `client::user_budget`
-        // tests, since that's where the per-user slot state lives.
+        // Two users configured with the *same* literal key on the same
+        // provider both resolve; they share that key's endpoint limiter.
         let store = InMemoryUserProviderStore::new();
         let alice = UserId::new("alice");
         let bob = UserId::new("bob");

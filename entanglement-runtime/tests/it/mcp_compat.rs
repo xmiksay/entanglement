@@ -22,18 +22,18 @@ use entanglement_runtime::mcp::{HttpClient, McpClient};
 use entanglement_runtime::tools::{ToolExecution, ToolRegistry};
 
 /// Never touches the real data dir: shared endpoint state is disabled (#743).
-/// Unpaced, so the default 50-RPM spacing doesn't add seconds per request;
+/// No `rpm` window, so the looping 100-page test never waits out a minute;
 /// `concurrency` is the endpoint's in-flight cap.
 fn test_http_client(concurrency: usize) -> entanglement_core::HttpClient {
     entanglement_core::HttpClient::with_shared_state(
         entanglement_core::SharedStateLocation::Disabled,
-        entanglement_core::RetryConfig {
-            rpm: 1_000_000,
-            concurrency,
-            ..entanglement_core::RetryConfig::default()
-        },
+        entanglement_core::RetryConfig::default(),
     )
     .unwrap()
+    .with_default_limits(entanglement_core::RateLimits {
+        concurrency: Some(concurrency),
+        ..entanglement_core::RateLimits::default()
+    })
 }
 
 /// A 1×1 PNG, base64 — the payload the fake `pic` tool returns.

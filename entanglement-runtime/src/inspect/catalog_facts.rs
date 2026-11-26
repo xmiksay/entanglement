@@ -11,7 +11,7 @@
 use std::fmt::Debug;
 use std::fmt::Write as _;
 
-use entanglement_core::{Catalog, ModelEntry};
+use entanglement_core::{Catalog, ModelEntry, RateLimits};
 
 /// Append the section for every catalog provider to `out`.
 pub(super) fn render(out: &mut String, catalog: &Catalog) {
@@ -21,8 +21,7 @@ pub(super) fn render(out: &mut String, catalog: &Catalog) {
     );
     for p in &catalog.providers {
         let mut facts = vec![format!("wire={}", snake(&p.wire))];
-        push_opt(&mut facts, "rpm", p.rpm);
-        push_opt(&mut facts, "concurrency", p.concurrency);
+        push_limits(&mut facts, &p.limits);
         if p.prompt_cache_key {
             facts.push("prompt_cache_key=true".to_string());
         }
@@ -69,8 +68,14 @@ fn model_facts(m: &ModelEntry) -> Vec<String> {
         "web_search_tool_version",
         m.web_search_tool_version.as_deref(),
     );
-    push_opt(&mut facts, "concurrency", m.concurrency);
+    push_limits(&mut facts, &m.limits);
     facts
+}
+
+fn push_limits(facts: &mut Vec<String>, limits: &RateLimits) {
+    push_opt(facts, "limits.rpm", limits.rpm);
+    push_opt(facts, "limits.tpm", limits.tpm);
+    push_opt(facts, "limits.concurrency", limits.concurrency);
 }
 
 fn push_opt(facts: &mut Vec<String>, key: &str, value: Option<impl std::fmt::Display>) {
@@ -117,7 +122,7 @@ mod tests {
             "providers:\n\
              \x20 - name: p\n\
              \x20   default_model: a\n\
-             \x20   rpm: 40\n\
+             \x20   limits: { rpm: 40 }\n\
              \x20   models:\n\
              \x20     - id: a\n\
              \x20     - id: b\n\
@@ -128,7 +133,7 @@ mod tests {
         .unwrap();
         let mut out = String::new();
         render(&mut out, &catalog);
-        assert!(out.contains("  p: wire=openai rpm=40"), "{out}");
+        assert!(out.contains("  p: wire=openai limits.rpm=40"), "{out}");
         assert!(
             !out.contains("    a:"),
             "a default-only model is omitted: {out}"

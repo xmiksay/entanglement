@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use entanglement_provider::{
-    fixed_model_concurrency, fixed_thinking_spec, ContentPart, HttpClient, OpenAiLlm, RetryConfig,
+    fixed_limits, fixed_thinking_spec, ContentPart, HttpClient, OpenAiLlm, RateLimits, RetryConfig,
     SharedStateLocation, ThinkingFormat, ThinkingSpec,
 };
 use entanglement_provider::{Llm, LlmEvent, LlmRequest, Message};
@@ -149,9 +149,7 @@ async fn collect_events(base_url: &str) -> Vec<LlmEvent> {
         base_url,
         Some("test-key".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -280,13 +278,13 @@ async fn tool_call_with_malformed_json_args_is_skipped_on_explicit_finish_reason
     );
 }
 
-// ── rate-limit / retry path (per endpoint, ADR-0050 + ADR-0111) ─────────────
+// ── rate-limit / retry path (per endpoint) ──────────────────────────────────
 //
 // A 429 is "wait your turn", not a failure: the client parks the endpoint and
-// retries **until it clears**, never surfacing it as an error (ADR-0111). These
-// tests drive a `[429, ok]` mock and assert the client rides past the 429 to the
-// good stream. A high-`rpm`, tiny-429-backoff test config keeps the pacing gate
-// and retry wait from dominating wall-clock. `retryable_500_then_success` drives
+// retries **until it clears**, never surfacing it as an error. These tests
+// drive a `[429, ok]` mock and assert the client rides past the 429 to the good
+// stream. A tiny-429-backoff test config keeps the retry wait from dominating
+// wall-clock. `retryable_500_then_success` drives
 // the *bounded* 5xx retry path with a two-response mock (500 then a good stream).
 
 /// Bind an ephemeral port and serve `responses` in order, one per accepted
@@ -306,11 +304,10 @@ async fn serve_raw_seq(responses: Vec<Vec<u8>>) -> String {
     format!("http://{addr}")
 }
 
-/// A retry config with a tiny 429 schedule and a high RPM, so a `[429, ok]`
-/// sequence retries near-instantly instead of on the production ≈5s→10min ramp.
+/// A retry config with a tiny 429 schedule, so a `[429, ok]` sequence
+/// retries near-instantly instead of on the production ≈5s→10min ramp.
 fn fast_rate_limit_config() -> RetryConfig {
     RetryConfig {
-        rpm: 60_000, // base pacing ≈1ms — pacing must not dominate the assertion
         rate_limit_initial_backoff: Duration::from_millis(10),
         rate_limit_max_backoff: Duration::from_millis(50),
         ..RetryConfig::default()
@@ -323,9 +320,7 @@ async fn collect_events_with(base_url: &str, config: RetryConfig) -> Vec<LlmEven
         base_url,
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -415,7 +410,6 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
     let base_url = serve_raw_seq(vec![huge_429, ok]).await;
 
     let config = RetryConfig {
-        rpm: 60_000,
         rate_limit_max_backoff: Duration::from_millis(50),
         rate_limit_max_elapsed: Duration::from_millis(200),
         ..RetryConfig::default()
@@ -440,9 +434,7 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         base_url.as_str(),
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -453,15 +445,13 @@ async fn huge_retry_after_does_not_park_a_sibling_caller_for_the_full_duration()
         .expect("caller A must give up well within its own budget, not hang");
 
     // Caller B, a fresh request to the *same* endpoint (same base URL + key,
-    // so the same `EndpointState`), must not be parked for anywhere near the
+    // so the same limiter), must not be parked for anywhere near the
     // raw 3600s `Retry-After` — only up to the clamped `rate_limit_max_backoff`.
     let mut llm_b = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -561,7 +551,7 @@ async fn tool_call_argument_survives_multibyte_char_split_across_chunks() {
     assert_eq!(call.input, r#"{"city": "Curaçao"}"#);
 }
 
-// ── per-model concurrency admission (#521, ADR-0140) ────────────────────────
+// ── per-model concurrency admission (#521) ──────────────────────────────────
 //
 // z.ai enforces concurrency per *model*, not just per endpoint — GLM-4.7-Flash
 // allows only 1 in-flight stream, GLM-5.2 allows 5, on the same base URL/key.
@@ -572,14 +562,16 @@ async fn tool_call_argument_survives_multibyte_char_split_across_chunks() {
 // unit tests in `src/client/tests.rs`), asserting on *when the mock server
 // sees each connection arrive*.
 
-/// A `RetryConfig` with pacing effectively disabled (a huge `rpm`), so the
-/// adaptive spacing gate can't introduce its own inter-request delay and
-/// confound a timing assertion aimed at the per-model semaphore alone.
-fn no_pacing_config() -> RetryConfig {
-    RetryConfig {
-        rpm: 60_000,
-        ..RetryConfig::default()
-    }
+/// A limits resolver capping every model at `cap` in flight, endpoint at
+/// its defaults.
+fn model_cap(cap: usize) -> entanglement_provider::LimitsResolver {
+    Arc::new(move |_: &str| entanglement_provider::RequestLimits {
+        endpoint: RateLimits::default(),
+        model: RateLimits {
+            concurrency: Some(cap),
+            ..RateLimits::default()
+        },
+    })
 }
 
 /// Serve exactly `n` connections **one at a time**: `listener.accept()` for
@@ -647,14 +639,12 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
     let delay = Duration::from_millis(300);
     let (base_url, accept_times) = serve_sequential_with_delay(ok_body(), 2, delay).await;
 
-    let http = test_http_client_with(no_pacing_config());
+    let http = test_http_client();
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
         "glm-4.7-flash",
-        None,
-        None,
-        fixed_model_concurrency(Some(1)),
+        model_cap(1),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -664,9 +654,7 @@ async fn per_model_concurrency_cap_serializes_two_calls_to_the_same_model() {
         base_url.as_str(),
         Some("k".into()),
         "glm-4.7-flash",
-        None,
-        None,
-        fixed_model_concurrency(Some(1)),
+        model_cap(1),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -729,19 +717,23 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
     let delay = Duration::from_millis(300);
     let (base_url, accept_times) = serve_sequential_with_delay(ok_body(), 2, delay).await;
 
-    let resolver: entanglement_provider::ModelConcurrencyResolver =
-        Arc::new(|model: &str| match model {
-            "glm-4.7-flash" => Some(1),
-            "glm-5.2" => Some(5),
-            _ => None,
+    let resolver: entanglement_provider::LimitsResolver =
+        Arc::new(|model: &str| entanglement_provider::RequestLimits {
+            endpoint: RateLimits::default(),
+            model: RateLimits {
+                concurrency: match model {
+                    "glm-4.7-flash" => Some(1),
+                    "glm-5.2" => Some(5),
+                    _ => None,
+                },
+                ..RateLimits::default()
+            },
         });
-    let http = test_http_client_with(no_pacing_config());
+    let http = test_http_client();
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
         resolver.clone(),
         None,
         false,
@@ -752,8 +744,6 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
         base_url.as_str(),
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
         resolver,
         None,
         false,
@@ -804,7 +794,7 @@ async fn model_concurrency_resolves_the_requests_model_not_the_clients_default()
 
 #[tokio::test]
 async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
-    // The mixed-model scenario ADR-0140 exists to fix: GLM-4.7-Flash (cap 1)
+    // The mixed-model scenario: GLM-4.7-Flash (cap 1)
     // occupies its one slot for `delay`, but a concurrent GLM-5.2 (cap 5) call
     // on the *same endpoint* must not wait behind it.
     let delay = Duration::from_millis(300);
@@ -814,14 +804,12 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
     ])
     .await;
 
-    let http = test_http_client_with(no_pacing_config());
+    let http = test_http_client();
     let mut flash = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
         "glm-4.7-flash",
-        None,
-        None,
-        fixed_model_concurrency(Some(1)),
+        model_cap(1),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -831,9 +819,7 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
         base_url.as_str(),
         Some("k".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(Some(5)),
+        model_cap(5),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -869,20 +855,18 @@ async fn per_model_concurrency_is_independent_across_models_on_one_endpoint() {
 
 #[tokio::test]
 async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
-    // A model with no catalog `concurrency` entry (`model_concurrency: None`)
+    // A model with no catalog `limits` entry
     // must behave byte-identically to pre-#521: two concurrent calls admit
     // together, bounded only by the (generous, default) endpoint cap.
     let delay = Duration::from_millis(200);
     let base_url = serve_concurrent(vec![(ok_body(), delay), (ok_body(), delay)]).await;
 
-    let http = test_http_client_with(no_pacing_config());
+    let http = test_http_client();
     let mut llm_a = OpenAiLlm::new(
         base_url.as_str(),
         Some("k".into()),
         "glm-4.6",
-        None,
-        None,
-        fixed_model_concurrency(None), // no per-model cap
+        fixed_limits(RateLimits::default()), // no per-model cap
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -892,9 +876,7 @@ async fn absent_model_cap_admits_solely_through_the_endpoint_cap() {
         base_url.as_str(),
         Some("k".into()),
         "glm-4.6",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -975,17 +957,15 @@ async fn endpoint_permit_frees_promptly_when_a_keep_alive_proxy_holds_the_body_o
     });
     let base_url = format!("http://{addr}");
 
-    let http = test_http_client_with(RetryConfig {
-        concurrency: 1,
-        ..RetryConfig::default()
-    });
+    let http = test_http_client();
     let mut llm = OpenAiLlm::new(
         base_url.as_str(),
         Some("test-key".into()),
         "glm-5.2",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits {
+            concurrency: Some(1),
+            ..RateLimits::default()
+        }),
         None,
         false,
         fixed_thinking_spec(ThinkingSpec::default()),
@@ -1066,9 +1046,7 @@ async fn inline_think_stream_routes_reasoning_and_captures_a_block() {
         base_url.as_str(),
         Some("k".into()),
         "qwen3.5",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(inline_thinking_spec()),
@@ -1141,9 +1119,7 @@ async fn second_request_never_carries_thinking_back_to_an_inline_model() {
         base_url.as_str(),
         Some("k".into()),
         "qwen3.5",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(inline_thinking_spec()),
@@ -1254,9 +1230,7 @@ async fn fields_reasoning_stream_captures_a_block() {
         base_url.as_str(),
         Some("k".into()),
         "qwen-fields",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(fields_thinking_spec(false)),
@@ -1330,9 +1304,7 @@ async fn second_request_replays_fields_reasoning_byte_identical_when_on() {
         base_url.as_str(),
         Some("k".into()),
         "qwen-fields",
-        None,
-        None,
-        fixed_model_concurrency(None),
+        fixed_limits(RateLimits::default()),
         None,
         false,
         fixed_thinking_spec(fields_thinking_spec(true)),

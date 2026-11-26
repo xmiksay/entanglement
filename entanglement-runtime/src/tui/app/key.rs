@@ -118,7 +118,7 @@ impl App {
                 // already-running session to rebind — that only happens on its
                 // own `/model` switch) keeps its old pool bucket alive until it
                 // does; once every such session has moved off, the old key's
-                // `EndpointState` and shared-state file (#523) are orphaned
+                // limiter and shared-state file (#523) are orphaned
                 // with nothing else to remove them. Sweep now, off the
                 // keypress path (`spawn_blocking` — the sweep locks and
                 // fsyncs files) — a short idle threshold, since this is a

@@ -101,10 +101,9 @@ pub(crate) async fn boot(
         config::agent_generation::AgentGenerationStore::load(),
     ));
 
-    // Per-endpoint in-flight cap: the client default (3) unless the catalog
-    // entry sets `concurrency:` (catalog data only, ADR-0213). Bounds how many
-    // requests (incl. streaming sub-agents) hit one provider at once, so a
-    // spawn-storm queues instead of 429-storming (ADR-0111).
+    // Per-endpoint limits come from each catalog entry's `limits:` (client
+    // default 50 rpm / 3 in flight), so a sub-agent spawn-storm queues
+    // instead of 429-storming.
     let http_client = HttpClient::new()?;
     // Per-write file backups (ADR-0212), kept beside the session logs in the
     // same store the persistence tap writes — a revert reads that log's turns.

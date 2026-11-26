@@ -175,7 +175,7 @@ async fn stop_preempts_a_stalled_stream() {
 
 /// An `Llm` whose `stream()` call itself never resolves — modelling the
 /// pre-stream phase a real provider client runs before the first byte
-/// (endpoint retry-after wait, pacing gate, cross-process shared gate,
+/// (endpoint retry-after wait, rate-limit window, cross-process shared gate,
 /// semaphores, 429 backoff sleep, #547). Records requests into `seen` so a
 /// follow-up turn can be asserted.
 struct StallsBeforeStreamingLlm {
@@ -195,7 +195,7 @@ impl Llm for StallsBeforeStreamingLlm {
 /// just a stalled stream once it's started. Before the fix,
 /// `s.llm.stream(req).await` in `session/stream.rs` ran outside any
 /// `select!`, so a `Stop` sent while the provider client was still parked on
-/// its retry-after wait / pacing gate / shared gate / semaphores couldn't be
+/// its retry-after wait / rate-limit window / shared gate / semaphores couldn't be
 /// observed until `stream()` itself returned. This test would hang (fail on
 /// the collect timeout) under the old code, since `StallsBeforeStreamingLlm`
 /// never returns from `stream()` at all.

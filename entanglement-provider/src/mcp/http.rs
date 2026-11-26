@@ -18,10 +18,11 @@
 //! so an embedder can build one directly, bypassing the YAML config path.
 //!
 //! Every request rides the shared [`HttpClient`] endpoint pool (#559) — same
-//! connection pool, RPM/concurrency caps, 429/`Retry-After` handling as LLM
+//! connection pool, rate limits, 429/`Retry-After` handling as LLM
 //! traffic, instead of an unmetered bare `reqwest::Client`.
 //! `connect`/`connect_authenticated` take the caller's `HttpClient`; each
-//! server gets its own [`EndpointState`](crate::client) bucket, keyed by URL.
+//! server gets its own endpoint limiter, keyed by URL, at the client's
+//! default limits (`HttpClient::with_default_limits`).
 //! Every request, the handshake included, rides the pool's own retry ladder.
 //!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
@@ -35,7 +36,7 @@ use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
-use crate::client::{HttpClient, StreamGuard};
+use crate::client::{HttpClient, RequestLimits, StreamGuard};
 
 use super::headers::build_headers;
 pub use super::headers::resource_metadata_url;
@@ -62,7 +63,7 @@ pub struct McpHttpClient {
     /// The single JSON-RPC endpoint every request is `POST`ed to.
     url: String,
     /// The shared per-endpoint pool (#559): MCP traffic rides the same
-    /// connection pool, RPM/concurrency caps, and 429/`Retry-After` handling
+    /// connection pool, rate limits, and 429/`Retry-After` handling
     /// as LLM traffic, instead of an unmetered bare `reqwest::Client`.
     http: HttpClient,
     /// Static per-server headers (auth etc.), already `${VAR}`-expanded.
@@ -238,14 +239,22 @@ impl McpHttpClient {
     ) -> Result<(reqwest::Response, StreamGuard)> {
         let headers = self.request_headers(force_refresh).await?;
         self.http
-            .execute_with_retry(&self.url, None, None, None, "", None, None, || {
-                self.http
-                    .client()
-                    .post(&self.url)
-                    .headers(headers.clone())
-                    .json(frame)
-                    .send()
-            })
+            .execute_with_retry(
+                &self.url,
+                None,
+                "",
+                RequestLimits::default(),
+                0,
+                None,
+                || {
+                    self.http
+                        .client()
+                        .post(&self.url)
+                        .headers(headers.clone())
+                        .json(frame)
+                        .send()
+                },
+            )
             .await
             .map_err(|e| anyhow::anyhow!("MCP server `{}` `{method}`: {e}", self.server))
     }

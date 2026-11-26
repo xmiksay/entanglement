@@ -30,9 +30,9 @@ pub use entanglement_provider::{
     content_text, mcp_tool_name, stream_from_response, AuxLlmResolver, Catalog, ContentPart,
     DebugFlags, DummyLlm, EchoLlm, GenerationParams, GenerationResolver, HttpClient, ImageSource,
     Llm, LlmEvent, LlmFactory, LlmRequest, LlmResponse, LlmStream, Message, MessageRole,
-    ModelEntry, ModelPricing, ModelResolver, ReasoningEffort, ResolvedModel, RetryConfig,
-    SharedStateLocation, StopReason, ToolCall, ToolSpec, Usage, UserId, WebSearchConfig, Wire,
-    DEBUG_ENV, MCP_TOOL,
+    ModelEntry, ModelPricing, ModelResolver, RateLimits, ReasoningEffort, ResolvedModel,
+    RetryConfig, SharedStateLocation, StopReason, ToolCall, ToolSpec, Usage, UserId,
+    WebSearchConfig, Wire, DEBUG_ENV, MCP_TOOL,
 };
 // The MCP client mechanism — transport + OAuth (ADR-0153) — also lives in the
 // leaf crate. Core carries no MCP *logic* (ADR-0067): this is a pass-through so

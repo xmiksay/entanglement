@@ -9,24 +9,16 @@
 # filled in; unknown rates are left unset rather than invented. Ollama is local,
 # so it carries no pricing.
 #
-# `rpm` (optional, per provider) is the requests-per-minute budget for that
-# provider's endpoint bucket. It is left unset here — like unknown pricing — so
-# each endpoint falls back to the client default (RetryConfig::rpm, 50);
-# override per provider in your user `providers.yml` (catalog data only — the
-# old `{NAME}_RPM` env override is gone, ADR-0213).
+# `limits: {rpm, tpm, concurrency}` (optional, per provider) bounds that
+# provider's endpoint: requests and estimated input tokens per minute, and
+# requests in flight at once (the spawn-storm guard). Unset axes fall back to
+# the client default (50 rpm, no tpm, 3 in flight) — left unset here unless
+# the provider documents its limits; override in your user `providers.yml`.
 #
-# `concurrency` (optional, per provider) caps simultaneously in-flight requests
-# to that provider's endpoint (the primary spawn-storm guard). Left unset here
-# so each endpoint falls back to the client default (RetryConfig::concurrency,
-# 3); override per provider in your user `providers.yml` (no env override,
-# ADR-0213).
-#
-# `concurrency` on a *model* (#521, ADR-0140) layers a tighter, model-specific
-# in-flight cap on top of the provider's own — some providers (z.ai) limit
-# concurrency per model, not just per endpoint. Only set where documented;
-# left unset elsewhere so an unknown model falls back to the provider/client
-# cap instead of an invented guess. YAML-only, like every rate-limit knob
-# (ADR-0140, ADR-0213).
+# The same `limits:` on a *model* applies to that model on its provider's
+# endpoint, on top of the provider's own — some providers (z.ai) limit
+# concurrency per model. Only set where documented; an unknown model is
+# bound by its endpoint alone instead of an invented guess. YAML-only.
 #
 # Capability flags gate the generation-parameter channel (#191): the head sends a
 # model's `default_temperature` only when `supports_temperature` (and the
@@ -78,12 +70,10 @@ providers:
     # the clamped `reasoning_effort`) on every request — without it z.ai
     # silently thinks at `max` on every GLM-5.x turn.
     thinking_control: zai
-    # z.ai's own documented endpoint-wide ceiling (#550) — without this the
-    # endpoint fell back to the client's generic default of 3, *below*
-    # glm-5.2's own model-level cap of 5 below, so `model_slot` warned "model
-    # concurrency cap exceeds the endpoint's own" on every process's first
-    # request and the model cap could never actually be reached.
-    concurrency: 5
+    # z.ai's documented endpoint-wide ceiling — at least glm-5.2's own cap of
+    # 5 below, or that model's cap could never be reached.
+    limits:
+      concurrency: 5
     # Full z.ai text palette (docs.z.ai/guides/overview/pricing and the
     # chat-completion API reference, fetched 2026-09-15). glm-5.3 leads — the
     # `default_model` above; `builtin_parses` asserts the ordering. Pricing is
@@ -129,8 +119,9 @@ providers:
         default_temperature: 0.7
         effort_tiers: [low, medium, high, xhigh, max]
         default_reasoning_effort: high
-        # z.ai-documented per-model in-flight cap (#521): 5 concurrent streams.
-        concurrency: 5
+        # z.ai-documented per-model in-flight cap: 5 concurrent streams.
+        limits:
+          concurrency: 5
         pricing:
           input: 1.4
           output: 4.4
@@ -191,9 +182,9 @@ providers:
         default_temperature: 0.7
         effort_tiers: []
         default_reasoning_effort: high
-        # z.ai-documented per-model in-flight cap (#521): only 1 concurrent
-        # stream — far tighter than the endpoint-level default.
-        concurrency: 1
+        # z.ai-documented per-model in-flight cap: only 1 concurrent stream.
+        limits:
+          concurrency: 1
         pricing:
           input: 0.0
           output: 0.0
@@ -284,7 +275,8 @@ providers:
     key_env: ZAI_API_KEY
     default_model: glm-5.3
     thinking_control: zai
-    concurrency: 5
+    limits:
+      concurrency: 5
     models: *zai_models
 
   - name: openai

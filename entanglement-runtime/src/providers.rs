@@ -405,8 +405,10 @@ mod tests {
     #[test]
     fn rate_limits_are_catalog_data_from_the_user_yaml() {
         // No env tier any more (ADR-0213): the merged entry is the answer.
-        let user = catalog_with_user("providers:\n  - name: zai\n    rpm: 7\n    concurrency: 2\n");
+        let user = catalog_with_user(
+            "providers:\n  - name: zai\n    limits: { rpm: 7, concurrency: 2 }\n",
+        );
         let zai = user.provider("zai").unwrap();
-        assert_eq!((zai.rpm, zai.concurrency), (Some(7), Some(2)));
+        assert_eq!((zai.limits.rpm, zai.limits.concurrency), (Some(7), Some(2)));
     }
 }

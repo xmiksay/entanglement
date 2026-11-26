@@ -239,7 +239,7 @@ async fn concurrency_cap_reports_the_pins_cap_when_it_resolves() {
          \x20   default_model: capped-model\n\
          \x20   models:\n\
          \x20     - id: capped-model\n\
-         \x20       concurrency: 1\n",
+         \x20       limits: { concurrency: 1 }\n",
     )
     .unwrap();
     let resolver: ModelResolver = Arc::new(|_u, provider, model| {

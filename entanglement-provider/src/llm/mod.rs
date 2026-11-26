@@ -19,8 +19,8 @@ mod types;
 
 pub use generation::{GenerationParams, ReasoningEffort};
 pub use resolvers::{
-    fixed_model_concurrency, fixed_thinking_spec, AuxLlmResolver, GenerationResolver, LlmFactory,
-    ModelConcurrencyResolver, ModelResolver, ResolvedModel, ThinkingSpecResolver, UserId,
+    fixed_limits, fixed_thinking_spec, AuxLlmResolver, GenerationResolver, LimitsResolver,
+    LlmFactory, ModelResolver, ResolvedModel, ThinkingSpecResolver, UserId,
 };
 pub use stub::{DummyLlm, EchoLlm};
 pub use types::{LlmEvent, StopReason, ToolCall, ToolSpec, Usage};

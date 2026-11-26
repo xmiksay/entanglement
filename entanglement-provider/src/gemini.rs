@@ -20,7 +20,7 @@
 //! `candidates[0].finishReason` and the terminal `usageMetadata`.
 
 use crate::client::HttpClient;
-use crate::{Llm, LlmEvent, LlmRequest, LlmStream, ModelConcurrencyResolver, StopReason, Usage};
+use crate::{LimitsResolver, Llm, LlmEvent, LlmRequest, LlmStream, StopReason, Usage};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -57,17 +57,9 @@ pub struct GeminiLlm {
     base_url: String,
     api_key: String,
     default_model: String,
-    /// Catalog-provided per-minute budget for this endpoint (`None` = client
-    /// default). Threaded into the per-endpoint rate limiter (#241).
-    rpm: Option<u32>,
-    /// Catalog-provided in-flight concurrency cap for this endpoint (`None` =
-    /// client default). Threaded into the per-endpoint concurrency permit (#414).
-    concurrency: Option<usize>,
-    /// Resolves the in-flight concurrency cap for whichever model a given
-    /// request actually names, re-run per request rather than baked in at
-    /// construction (#521/#550, ADR-0140) — threaded into the per-model
-    /// concurrency permit layered under the endpoint permit.
-    model_concurrency: ModelConcurrencyResolver,
+    /// Resolves the endpoint's and the requested model's rate limits, per
+    /// request (#550).
+    limits: LimitsResolver,
     http: HttpClient,
     /// Resolved `cachedContents` resource for the current system+tools
     /// prefix (#587) — shared across every turn this session's clone makes.
@@ -75,23 +67,18 @@ pub struct GeminiLlm {
 }
 
 impl GeminiLlm {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
         default_model: impl Into<String>,
-        rpm: Option<u32>,
-        concurrency: Option<usize>,
-        model_concurrency: ModelConcurrencyResolver,
+        limits: LimitsResolver,
         http: HttpClient,
     ) -> Self {
         Self {
             base_url: base_url.into(),
             api_key: api_key.into(),
             default_model: default_model.into(),
-            rpm,
-            concurrency,
-            model_concurrency,
+            limits,
             http,
             cache: cache::CacheHandle::new(),
         }
@@ -99,29 +86,16 @@ impl GeminiLlm {
 }
 
 /// Build an [`LlmFactory`] wired to Gemini. Each session gets its own cloned
-/// [`GeminiLlm`]. `rpm`/`concurrency = None` use the client's (or endpoint's)
-/// defaults; `model_concurrency` resolves a tighter per-model cap per request
-/// (`|_| None` disables it, #521, resolved per request rather than once at
-/// construction, #550).
-#[allow(clippy::too_many_arguments)]
+/// [`GeminiLlm`]. `limits` resolves the endpoint's and the request model's
+/// rate limits per request (#550).
 pub fn gemini_factory(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     default_model: impl Into<String>,
-    rpm: Option<u32>,
-    concurrency: Option<usize>,
-    model_concurrency: ModelConcurrencyResolver,
+    limits: LimitsResolver,
     http: HttpClient,
 ) -> crate::LlmFactory {
-    let llm = GeminiLlm::new(
-        base_url,
-        api_key,
-        default_model,
-        rpm,
-        concurrency,
-        model_concurrency,
-        http,
-    );
+    let llm = GeminiLlm::new(base_url, api_key, default_model, limits, http);
     std::sync::Arc::new(move || Box::new(llm.clone()) as Box<dyn Llm>)
 }
 
@@ -132,7 +106,7 @@ impl Llm for GeminiLlm {
         // Resolved against *this* request's model, not baked in at
         // construction (#550) — a profile's `model:`-only pin can send a
         // request under a different model than `default_model`.
-        let model_concurrency = (self.model_concurrency)(&model);
+        let limits = (self.limits)(&model);
         // Best-effort context caching (#587): reuse or create a
         // `cachedContents` resource for the stable system+tools prefix so it
         // isn't re-billed at the full input rate on every turn, mirroring
@@ -175,10 +149,9 @@ impl Llm for GeminiLlm {
             .execute_with_retry(
                 base,
                 Some(self.api_key.as_str()),
-                self.rpm,
-                self.concurrency,
                 &model,
-                model_concurrency,
+                limits,
+                limits.estimate_tokens(&body),
                 req.retry,
                 || {
                     self.http

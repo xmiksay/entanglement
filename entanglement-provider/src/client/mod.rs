@@ -1,85 +1,29 @@
-//! Shared HTTP transport with a **per-endpoint** connection pool, rate-limit
-//! budget, and retry/backoff. One tuned `reqwest::Client` (which already pools
-//! connections per host) is shared across every backend; the resilience state —
-//! RPM throttle and `Retry-After` window — is keyed by endpoint so talking to
-//! different APIs is isolated: one throttled endpoint never starves another
-//! (#217).
+//! Shared HTTP transport: one tuned `reqwest::Client` (pooling connections
+//! per host) plus a per-endpoint [`limiter`] and the retry loop.
 //!
-//! # Connection pool tuning
-//! - `pool_max_idle_per_host`: idle connections kept per host before closing.
-//! - `pool_idle_timeout`: how long an idle connection lingers before closing.
+//! # Limits (#918)
+//! Every request admits through its endpoint's one limiter — keyed by
+//! normalized base URL + API-key hash, so one throttled API (or key) never
+//! blocks another. The limiter enforces [`RateLimits`] (`rpm`, `tpm`,
+//! `concurrency`) on the endpoint and, when the requested model carries its
+//! own `limits:`, on that model too (z.ai caps concurrency per model). The
+//! limits come from the catalog entry per request ([`RequestLimits`]); unset
+//! endpoint axes fall back to the client's defaults ([`RateLimits::DEFAULT`]:
+//! 50 rpm, 3 in flight).
+//! Permits are held for the whole request **and its streamed body**
+//! ([`StreamGuard`]), so concurrency counts open streams. Sibling processes
+//! sharing an endpoint + key also coordinate through a file-backed lease
+//! (`shared_state`, ADR-0144).
 //!
-//! # Retry logic (per endpoint)
-//! Retries transient failures — connect/timeout faults, request-send faults (a
-//! dropped keep-alive connection reset between requests), dropped streams, and
-//! retryable 5xx — with exponential backoff + jitter, bounded by `max_attempts`.
-//! A **429 is treated as "wait your turn", not a failure**: it is retried
-//! *until it clears* on its own patient schedule (≈5s ramping to ≈10 min), never
-//! consuming the failure budget and never surfaced as an error. Before #217 a
-//! 429/5xx *response* came back as `reqwest::Ok` and so was never retried (#193):
-//! the classification happens on the `Response`, not just on `reqwest::Error`.
-//!
-//! # Rate-limit handling (per endpoint)
-//! Each endpoint owns a **concurrency cap**, an **adaptive pacing gate**, and a
-//! `Retry-After` window — all shared across every session/backend clone that
-//! talks to the same `(base URL, api-key)`, so throttling is a property of the
-//! endpoint, not of any one session. The concurrency cap (default 3, held for
-//! the whole request *and its streamed body*) is the primary guard: many spawned
-//! sub-agents queue and run a few at a time instead of all firing at once and
-//! 429-storming a provider's real concurrency ceiling. A 429 (with or without
-//! `Retry-After`) then parks every caller of *that* endpoint and slows the pacing
-//! gate; successes speed it back up. One throttled endpoint never blocks another.
-//! This is why spawning many sessions can't leave "one running, the rest 429" —
-//! or hang the parent: they all meter through one gate, and a 429 that never
-//! clears within the budget surfaces as an error rather than waiting forever.
-//!
-//! # Per-model concurrency (#521, ADR-0140)
-//! Some providers cap concurrency **per model**, not just per endpoint — z.ai
-//! allows only 1 in-flight `GLM-4.7-Flash` request but 5 for `GLM-5.2`, on the
-//! same base URL and key. The endpoint-wide cap stays as the ceiling on the
-//! **sum** of in-flight requests across every model sharing it; when a model
-//! carries its own catalog `concurrency` cap, a request also acquires a second
-//! permit from that model's own semaphore, scoped to this endpoint
-//! (`EndpointState::model_concurrency`) and never allowed to admit more than
-//! its own cap regardless of how much endpoint headroom exists. Permits
-//! acquire **model first, then endpoint** — a caller blocked on its own
-//! model's slot must never hold the scarce endpoint slot hostage, which would
-//! starve sibling models sharing the endpoint — and release in the reverse
-//! order. Both are held for the whole streamed body via `StreamGuard`. The
-//! endpoint-wide `Retry-After`/pacing stay shared across every model on it (a
-//! 429 may well be host-wide); a model carrying no cap admits solely through
-//! the endpoint gate, unchanged from before this layer existed. The cap
-//! passed in is resolved by the caller **per request**, against the
-//! request's own model rather than baked in once at client construction
-//! (#550, `ModelConcurrencyResolver`) — and `EndpointState::model_slot`
-//! corrects an already-cached slot's cap if a later caller supplies a
-//! different one, rather than latching the first value seen for the rest of
-//! the process (ADR-0140's whole point is a *correct* per-model cap; a
-//! silently-wrong one that can never self-heal defeats it).
-//!
-//! # Shared cross-process lease ordering (#546)
-//! The cross-process gate (below) is scarcer still than either in-process
-//! permit — it is capped process-*wide*, across every `skutter` sharing the
-//! endpoint+key. It is therefore acquired **last**, only once both the model
-//! and endpoint permits are already held: a caller queued on its own model's
-//! semaphore (which can block for a full lease-renewal interval, ~60s) must
-//! never sit holding the shared lease while it waits, or it starves sibling
-//! processes even though the provider sees room. Acquiring it only right
-//! before the request fires also keeps the shared RPM ledger's timestamp
-//! (stamped on admission) meaning what it says — the start of the send, not
-//! the start of a possibly long in-process queue wait.
-//!
-//! # Per-user admission gate (#632, ADR-0175)
-//! Two users sharing one *literal* API key land in the same `EndpointState`
-//! (ADR-0050's pool keys on `(base_url, sha256(api_key))`, blind to who's
-//! calling), so per-user budgets need a gate layered on top rather than
-//! falling out of the pool key. `user_budget.rs` adds exactly that — a
-//! `UserSlot` mirroring `ModelSlot`, keyed by `UserId` instead of model id,
-//! resolved from that user's own catalog rpm/concurrency and attached to a
-//! `HttpClient` handle via `with_user_budget`. Acquired **first**, before the
-//! model/endpoint permits: the narrowest, most caller-specific gate goes
-//! first so it never holds a wider one hostage. A handle with no attached
-//! budget (every existing single-user caller) admits exactly as before.
+//! # Retries
+//! Transport faults (connect/timeout/request-send, dropped streams) and
+//! retryable 5xx retry with exponential backoff + jitter, bounded by
+//! `max_attempts`. A **429 is "wait your turn"**: it parks the whole endpoint
+//! for the server's `Retry-After` (or a patient self-computed wait, ≈5 s
+//! ramping to ≈10 min) and retries until it clears or
+//! `rate_limit_max_elapsed` is spent — never consuming the failure budget.
+//! The cool-down lives in the limiter, so every caller of the endpoint waits
+//! it out together.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -90,20 +34,19 @@ use tokio::sync::OwnedSemaphorePermit;
 
 mod backoff;
 mod endpoint;
-mod rate_limiter;
+mod limiter;
 mod retry;
 mod shared_state;
 mod shared_store;
 mod status;
 mod stream;
 mod tls;
-mod user_budget;
 pub use backoff::extract_retry_after_from_response;
+pub use limiter::{RateLimits, RequestLimits};
 pub use shared_state::{prune_stale, SharedStateLocation};
 pub use status::ThrottleStatus;
 pub use stream::{log_request_body, spawn_byte_stream};
 pub use tls::{client_builder, install_default_crypto_provider};
-pub use user_budget::UserBudget;
 
 use endpoint::EndpointPool;
 
@@ -112,27 +55,12 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const POOL_MAX_IDLE_PER_HOST: usize = 10;
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-const RPM_LIMIT: u32 = 50;
-
-/// Default cap on **simultaneously in-flight requests to one endpoint** — the
-/// primary guard against a spawn-storm (many sub-agents) overrunning a
-/// provider's concurrency ceiling and 429-storming. A permit is held for the
-/// whole request *and its streamed body*, so this counts open streams, not just
-/// POSTs. A provider sets its own via the catalog `concurrency:` (ADR-0213).
-const DEFAULT_CONCURRENCY: usize = 3;
 
 /// Total wall-clock a single 429 will keep retrying before it gives up and
 /// surfaces the response as an error. A concurrency-capped request should rarely
 /// hit this; it exists so a genuinely saturated endpoint fails a sub-agent's
 /// turn (returning a failed `ToolResult`) instead of hanging its parent forever.
 const RATE_LIMIT_MAX_ELAPSED: Duration = Duration::from_secs(900);
-
-/// Under sustained 429s the per-endpoint request spacing is slowed
-/// multiplicatively down to at most this multiple of the base interval — i.e.
-/// the effective RPM floor is `rpm / SLOWDOWN_CAP`. Bounds how far the pacing
-/// gate will back off before it stops slowing and leans on the `Retry-After`
-/// window instead.
-const SLOWDOWN_CAP: u32 = 8;
 
 /// First wait after a 429 with no server `Retry-After`. Rate-limit backoff has
 /// its own schedule (separate from [`INITIAL_BACKOFF`]): a 429 is retried until
@@ -175,21 +103,14 @@ pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// [`RetryConfig::response_header_timeout`].
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Retry/rate-limit tuning applied per endpoint. Defaults match the historical
-/// shared client (5 attempts, 200ms→30s backoff, 50 RPM) — now *per endpoint*
-/// rather than global. `max_attempts`/`initial_backoff`/`max_backoff` bound the
-/// *failure* path (5xx, transport faults); `rate_limit_*` is the separate,
-/// unbounded 429 schedule (ADR-0111).
+/// Retry tuning. `max_attempts`/`initial_backoff`/`max_backoff` bound the
+/// *failure* path (5xx, transport faults); `rate_limit_*` is the separate 429
+/// schedule. Admission limits are not here — they are [`RateLimits`].
 #[derive(Clone, Copy, Debug)]
 pub struct RetryConfig {
     pub max_attempts: u32,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
-    /// Requests per minute allowed to each endpoint before throttling.
-    pub rpm: u32,
-    /// Max simultaneously in-flight requests **per endpoint** (held across the
-    /// streamed body). The primary storm guard for many spawned sub-agents.
-    pub concurrency: usize,
     /// First wait after a 429 with no server `Retry-After` (a 429 retries until
     /// it clears, so it starts patient).
     pub rate_limit_initial_backoff: Duration,
@@ -212,8 +133,6 @@ impl Default for RetryConfig {
             max_attempts: MAX_RETRY_ATTEMPTS,
             initial_backoff: INITIAL_BACKOFF,
             max_backoff: MAX_BACKOFF,
-            rpm: RPM_LIMIT,
-            concurrency: DEFAULT_CONCURRENCY,
             rate_limit_initial_backoff: RATE_LIMIT_INITIAL_BACKOFF,
             rate_limit_max_backoff: RATE_LIMIT_MAX_BACKOFF,
             rate_limit_max_elapsed: RATE_LIMIT_MAX_ELAPSED,
@@ -239,10 +158,9 @@ impl RetryConfig {
     /// a bounded probe, not the ~1-minute-plus worst case of the 5-attempt
     /// default ladder. At most one retry on a genuine transport/5xx failure
     /// with a short backoff, a short response-header wait, and a tightly
-    /// bounded 429 park. The RPM/concurrency/shared-lease admission gates are
-    /// unaffected (`execute_with_retry`'s `retry` override only ever changes
-    /// the failure-path knobs) — this still queues behind the same endpoint
-    /// budget as ordinary traffic, it just gives up quickly once admitted.
+    /// bounded 429 park. Admission is unaffected — this still queues behind
+    /// the same endpoint limits as ordinary traffic, it just gives up quickly
+    /// once admitted.
     pub fn minimal() -> Self {
         Self {
             max_attempts: 2,
@@ -255,40 +173,27 @@ impl RetryConfig {
     }
 }
 
-/// Shared HTTP client + per-endpoint resilience pool. Cheap to clone: the
+/// Shared HTTP client + per-endpoint limiter pool. Cheap to clone: the
 /// `reqwest::Client` is `Arc`-wrapped internally and the endpoint pool is shared
 /// behind an `Arc`.
 #[derive(Clone)]
 pub struct HttpClient {
     client: reqwest::Client,
     pool: Arc<EndpointPool>,
-    /// This handle's per-user admission gate (#632, ADR-0175); `None` for
-    /// every existing single-user caller. Attached via `with_user_budget`,
-    /// not a constructor parameter, so `HttpClient::new`/`with_config` stay
-    /// byte-identical.
-    user_budget: Option<Arc<UserBudget>>,
 }
 
-/// A held permit bounding the number of in-flight requests to one endpoint —
-/// and, when the requested model carries its own tighter cap (#521), also one
-/// bounding in-flight requests to that model on this endpoint — and, when the
-/// calling handle carries a per-user budget (#632, ADR-0175), one bounding
-/// in-flight requests for that user on this endpoint — plus, when the
-/// cross-process gate is active (#523, ADR-0144), the shared lease bounding
-/// in-flight requests across every `skutter` process sharing this endpoint.
-/// All are kept for the whole request **and its streamed body** (moved into
-/// the byte pump), so the concurrency cap counts open streams — the real unit
-/// a provider limits — not just POSTs. Dropping it frees a slot for a queued
-/// caller (in-process) or peer process (cross-process).
+/// The admission one request holds — its endpoint permit, its model permit
+/// (when the model has a cap) and its cross-process lease (when sharing is
+/// on) — for the whole request **and its streamed body**. Dropping it frees
+/// the slots for the next caller or peer process.
 pub struct StreamGuard(
-    #[allow(dead_code)] OwnedSemaphorePermit,
     #[allow(dead_code)] Option<OwnedSemaphorePermit>,
     #[allow(dead_code)] Option<OwnedSemaphorePermit>,
     #[allow(dead_code)] Option<shared_state::SharedLease>,
 );
 
 impl HttpClient {
-    /// Create a shared HTTP client with default per-endpoint retry/rate-limit.
+    /// Create a shared HTTP client with the default [`RetryConfig`].
     ///
     /// Fails if the underlying `reqwest::Client` builder fails (TLS backend
     /// init, resolver issues) — an unusual host-environment condition, not a
@@ -329,9 +234,25 @@ impl HttpClient {
                 endpoints: Mutex::new(HashMap::new()),
                 config,
                 shared,
+                default_limits: RateLimits::DEFAULT,
             }),
-            user_budget: None,
         })
+    }
+
+    /// This client with `limits` as the fallback for every endpoint's unset
+    /// axes instead of [`RateLimits::DEFAULT`] — for endpoints no catalog
+    /// entry describes (MCP servers) or tests. Returns a client with a fresh,
+    /// empty endpoint pool; clones of `self` keep the old one.
+    pub fn with_default_limits(&self, limits: RateLimits) -> Self {
+        Self {
+            client: self.client.clone(),
+            pool: Arc::new(EndpointPool {
+                endpoints: Mutex::new(HashMap::new()),
+                config: self.pool.config,
+                shared: self.pool.shared.clone(),
+                default_limits: limits,
+            }),
+        }
     }
 
     /// Get the underlying `reqwest::Client` for making requests.
