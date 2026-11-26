@@ -222,7 +222,7 @@ fn rekey(
 }
 
 /// Tools never cut by the bridge clock (see [`Via::budget`]).
-const UNBOUNDED: &[&str] = &["bash", "call", "write", "edit", "apply_patch"];
+const UNBOUNDED: &[&str] = &["bash", "write", "edit", "apply_patch"];
 
 /// How much of the script's budget is left for it after a nested call is cut.
 const GRACE: Duration = Duration::from_millis(300);
@@ -234,8 +234,8 @@ fn cache_key(tool: &str, input: &str) -> String {
 impl Via<'_> {
     /// The bridge-level timeout a nested call runs under: the script's
     /// remaining budget less a grace margin, so the script still gets to
-    /// handle the error before its own deadline ends it. Exempt: `bash`/
-    /// `call`, whose own `timeout` parameter is already derived from the
+    /// handle the error before its own deadline ends it. Exempt: `bash`,
+    /// whose own `timeout` parameter is already derived from the
     /// budget (#419), and the file-mutating tools, which a dropped future
     /// could cut between backup and write (ADR-0212).
     pub(super) fn budget(&self, tool: &str) -> Option<Duration> {
@@ -328,14 +328,14 @@ mod tests {
     }
 
     #[test]
-    fn bash_and_call_keep_their_own_timeout() {
+    fn bash_keeps_its_own_timeout() {
         let sc = ScriptCall::new(
             false,
             Posture::AskPerCommand,
             Instant::now() + Duration::from_secs(5),
         );
         let via = Via::Script(&sc);
-        for exempt in ["bash", "call", "write", "edit", "apply_patch"] {
+        for exempt in ["bash", "write", "edit", "apply_patch"] {
             assert!(via.budget(exempt).is_none(), "{exempt}");
         }
         assert!(via

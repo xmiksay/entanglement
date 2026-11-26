@@ -79,7 +79,6 @@ fn an_approval_records_the_exec_grant_and_is_remembered() {
     );
     assert_eq!(got, Ok(f.outside.clone()));
     assert!(store.is_durably_allowed("bash", &f.outside));
-    assert!(store.is_durably_allowed("call", &f.outside));
     assert!(
         !store.is_durably_allowed("read", &f.outside),
         "file tools keep their own per-path escape-root rules"

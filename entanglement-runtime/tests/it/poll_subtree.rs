@@ -274,13 +274,11 @@ async fn childs_question_approval_and_retained_output_show_but_a_siblings_do_not
         "{out}"
     );
     assert!(
-        section.contains(&format!("{own} — retained text output, yours")),
+        section.contains(&format!("{own} — retained output, yours")),
         "{out}"
     );
     assert!(
-        section.contains(&format!(
-            "{childs} — retained text output, owned by {child}"
-        )),
+        section.contains(&format!("{childs} — retained output, owned by {child}")),
         "{out}"
     );
 
@@ -346,7 +344,7 @@ async fn a_compaction_successor_takes_over_its_predecessors_job_and_retained_out
         "{listing}"
     );
     assert!(
-        listing.contains(&format!("{out} — retained text output, yours")),
+        listing.contains(&format!("{out} — retained output, yours")),
         "{listing}"
     );
 
@@ -450,7 +448,7 @@ async fn a_successor_poll_adopts_work_the_lifecycle_fold_missed() {
         "{listing}"
     );
     assert!(
-        listing.contains(&format!("{out} — retained text output, yours")),
+        listing.contains(&format!("{out} — retained output, yours")),
         "{listing}"
     );
     let (paged, err) = prompt_poll(&holly, &mut sub, &succ, &format!("poll-handle {out}")).await;

@@ -137,8 +137,8 @@ mod tests {
             "declines (allowed by argument)"
         );
         // A scoped rule agreeing with the bare grade adds no noise.
-        let quiet = PermissionProfile::new(Permission::Ask).with("call(*)", Permission::Ask);
-        assert_eq!(graded(&quiet, "call").label(), "asks");
+        let quiet = PermissionProfile::new(Permission::Ask).with("bash(*)", Permission::Ask);
+        assert_eq!(graded(&quiet, "bash").label(), "asks");
     }
 
     #[test]

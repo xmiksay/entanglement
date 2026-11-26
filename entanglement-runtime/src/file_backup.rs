@@ -14,7 +14,7 @@
 //! from before the *first* such change, but only if the file still holds what
 //! the *last* one left. A file the user (or a `bash` command) changed since is
 //! never clobbered; it is reported as skipped. Changes made through
-//! `bash`/`call`/`rhai` exec are not tracked at all.
+//! `bash`/`rhai` exec are not tracked at all.
 //!
 //! Backups live and die with the root's session log: [`SessionStore::delete`]
 //! and [`SessionStore::prune`] remove them alongside it.
@@ -216,7 +216,7 @@ pub fn summary(to_turn: u32, restored: &[String], skipped: &[RevertSkip]) -> Str
     for skip in skipped {
         out.push_str(&format!("; can't restore {}: {}", skip.path, skip.reason));
     }
-    out.push_str(" (bash/call/rhai exec changes are not tracked)");
+    out.push_str(" (bash/rhai exec changes are not tracked)");
     out
 }
 

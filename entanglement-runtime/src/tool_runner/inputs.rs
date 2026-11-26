@@ -11,7 +11,7 @@ use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::tool_advertising::SharedAdvertisingState;
 
 /// Escape-root policy for the executor (ADR-0109): the canonical project `root`
-/// against which an out-of-root `read`/`edit`/`write` path or `bash`/`call`
+/// against which an out-of-root `read`/`edit`/`write` path or `bash`
 /// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
 /// recorded into and the host tools read. `None` (the builder default, most tests)
 /// keeps strict containment — an out-of-root path is a hard error, never a

@@ -303,7 +303,7 @@ pub(super) fn flush_tool_call(
 
     if expanded {
         // The expanded body means something per tool (#341): `read` → the file
-        // body, `edit` → a `+`/`-` diff, `write` → the new content, `bash`/`call`
+        // body, `edit` → a `+`/`-` diff, `write` → the new content, `bash`
         // → the command output, everything else → readable `key: value` args +
         // output, a failed call's output marked as an error (ADR-0204 §6).
         let rendered = tool_render::render_expansion(

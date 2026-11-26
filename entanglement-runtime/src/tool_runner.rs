@@ -223,13 +223,13 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // `is_granted`) to skip the prompt for an already-granted call.
         // In-flight tool tasks per session (#167). A `Stop` on the inbound
         // fan-out aborts every task registered for that session, so a running
-        // `bash`/`call` command or `rhai` script is actually cancelled — core
+        // `bash` command or `rhai` script is actually cancelled — core
         // only clears the parked turn state, it never owns the execution.
         let cancels = CancelRegistry::default();
         // Aborts every session's in-flight dispatch/rhai task (#545) when this
         // executor's own task future drops — a `Stop` only cancels one session's
         // registered tasks; process shutdown must cancel all of them, since a
-        // long-running `bash`/`call`, a parked approval, or a blocking rhai
+        // long-running `bash`, a parked approval, or a blocking rhai
         // script each hold a `Holly` clone for as long as they run.
         let _cancel_all_on_drop = CancelAllOnDrop(cancels.clone());
         // Lag-proof decision delivery (#156): parked approvals await a oneshot

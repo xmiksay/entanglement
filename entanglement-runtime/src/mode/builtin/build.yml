@@ -4,11 +4,8 @@
 # destructive deny list stays absolute regardless of the allow list's
 # breadth. Plan authorship is denied here on purpose: switching back to
 # `plan` mode is the way to revise, not writing over the plan file
-# mid-build. `bash` and `call` share this deny list (ADR-0207 §4 revision),
-# so the old separate `call(rm -rf /*)`/`call(rm -rf ~*)` entries are gone —
-# the `bash(...)` spelling now covers both. The destructive list itself is
-# this stage's own illustrative first cut (ADR-0207 doesn't enumerate one) —
-# tune it via `config.yml` `modes:` as real footguns turn up; tuning only
+# mid-build. The destructive list itself is this stage's own illustrative
+# first cut (ADR-0207 doesn't enumerate one) — tune it via `config.yml` `modes:` as real footguns turn up; tuning only
 # ever adds a longer, more specific rule, it never removes this one.
 default: prompt
 deny:

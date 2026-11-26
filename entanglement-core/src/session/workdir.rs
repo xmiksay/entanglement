@@ -42,7 +42,7 @@ pub(super) fn announce(s: &Session, session: &SessionId, events: &broadcast::Sen
 pub(super) fn with_workdir(mode_notice: String, workdir: Option<&str>) -> String {
     match workdir {
         Some(dir) => format!(
-            "{mode_notice} [workdir: {dir} — relative paths and bash/call commands resolve here]"
+            "{mode_notice} [workdir: {dir} — relative paths and bash commands resolve here]"
         ),
         None => mode_notice,
     }

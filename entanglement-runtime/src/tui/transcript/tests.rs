@@ -1460,7 +1460,7 @@ fn feed_bash_with_output(app: &mut App, sid: &SessionId, output: &str, is_error:
 
 #[test]
 fn bash_output_wraps_instead_of_overflowing() {
-    // The real-use bug: a `bash`/`call` output body used to skip wrapping
+    // The real-use bug: a `bash` output body used to skip wrapping
     // entirely (`render_plain_output` formatted each raw line untouched), so
     // a long line ran off the right edge of the panel (#wrap).
     let sid = SessionId::new("s1");

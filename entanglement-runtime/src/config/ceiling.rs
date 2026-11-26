@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn deny_allow_prompt_lists_become_profile_rules() {
-        let raw = parse("deny: [write]\nallow: [\"bash(cargo check)\"]\nprompt: [call]\n");
+        let raw = parse("deny: [write]\nallow: [\"bash(cargo check)\"]\nprompt: [rhai]\n");
         let profile = build_ceiling_profile(Some(&raw));
         assert!(profile
             .rules
@@ -121,6 +121,6 @@ mod tests {
             .contains(&("bash(cargo check)".to_string(), Permission::Allow)));
         assert!(profile
             .rules
-            .contains(&("call".to_string(), Permission::Ask)));
+            .contains(&("rhai".to_string(), Permission::Ask)));
     }
 }

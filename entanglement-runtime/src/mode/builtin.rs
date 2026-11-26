@@ -53,7 +53,7 @@ pub(super) struct RawMode {
     pub prompt: Vec<String>,
     #[serde(default)]
     pub sandbox: Option<String>,
-    /// Share the host network namespace with a confined `bash`/`call`
+    /// Share the host network namespace with a confined `bash`
     /// (ADR-0207 §6, stage 5b) — ignored when `sandbox` is unset. None of
     /// the four built-ins opt in, matching the ADR-0104 default-closed
     /// egress policy.
@@ -168,11 +168,6 @@ mod tests {
                     mode.resolve("bash", &[Capability::Exec], Some(cmd), None),
                     Permission::Allow,
                     "mode '{mode_name}': bash {cmd:?} should be shared-allowed"
-                );
-                assert_eq!(
-                    mode.resolve("call", &[Capability::Exec], Some(cmd), None),
-                    Permission::Allow,
-                    "mode '{mode_name}': call {cmd:?} should be allowed too"
                 );
             }
         }
@@ -439,10 +434,8 @@ mod tests {
             build.resolve("propose_plan", &[Capability::Plan], None, None),
             Permission::Deny
         );
-        // bash and call share the destructive deny list even though the
-        // YAML only spells it as `bash(...)` (ADR-0207 §4).
         assert_eq!(
-            build.resolve("call", &[Capability::Exec], Some("rm -rf /"), None),
+            build.resolve("bash", &[Capability::Exec], Some("rm -rf /"), None),
             Permission::Deny
         );
     }
@@ -558,29 +551,10 @@ mod tests {
         assert!(err.to_string().contains("prompt"));
     }
 
-    /// #828: `bash` and `call` are one rule set — the same command grades
-    /// the same through either, in every built-in mode, so the model can
-    /// never route around a gate by switching tools.
+    /// #828: a harmless trailing segment never changes a command's grade.
     #[test]
-    fn bash_and_call_grade_every_command_alike_in_every_mode() {
+    fn trailing_echo_does_not_change_the_grade() {
         let modes = modes().expect("built-ins parse");
-        let commands = [
-            "git rm -q a b",
-            "rm -r x",
-            "git push",
-            "git checkout -b x",
-            "gh issue delete 1",
-        ];
-        for mode in &modes {
-            for cmd in commands {
-                assert_eq!(
-                    mode.resolve("bash", &[Capability::Exec], Some(cmd), None),
-                    mode.resolve("call", &[Capability::Exec], Some(cmd), None),
-                    "mode '{}': bash and call disagree on {cmd:?}",
-                    mode.name
-                );
-            }
-        }
         let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
         assert_eq!(
             auto.resolve(
@@ -589,7 +563,7 @@ mod tests {
                 Some("git rm -q a b && echo REMOVED"),
                 None
             ),
-            auto.resolve("call", &[Capability::Exec], Some("git rm -q a b"), None),
+            auto.resolve("bash", &[Capability::Exec], Some("git rm -q a b"), None),
             "auto: a trailing `&& echo` must not change the grade"
         );
     }
@@ -605,11 +579,6 @@ mod tests {
         let rm = Some(("bash(rm -r*)".to_string(), Permission::Ask));
         assert_eq!(rule("rm -r x"), rm);
         assert_eq!(rule("rm -r x 2>&1"), rm);
-        assert_eq!(
-            auto.deciding_rule("call", &[Capability::Exec], Some("rm -r y"), None),
-            rm,
-            "a `call` is graded by the `bash` rule"
-        );
         assert_eq!(rule("docker ps"), None, "auto's default allowed it");
         // A compound command: the first segment at the folded grade decides.
         assert_eq!(rule("ls && rm -r x"), rm, "the stricter segment decides");

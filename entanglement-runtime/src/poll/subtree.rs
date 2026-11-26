@@ -95,7 +95,6 @@ pub(super) fn subtree_report(regs: &PollRegistries, caller: &SessionId) -> Optio
         // An ownerless entry is engine-wide, not this sub-tree's work.
         .filter_map(|r| {
             let owner = r.owner.filter(|o| subtree.contains(o))?;
-            let kind = if r.is_file { "file" } else { "text" };
             // The registry pages an entry to its owner only, so a
             // descendant's handle is named for awareness, not as pollable.
             let reach = if &owner == caller {
@@ -104,7 +103,7 @@ pub(super) fn subtree_report(regs: &PollRegistries, caller: &SessionId) -> Optio
                 format!("owned by {owner} — only that session can poll it")
             };
             Some(format!(
-                "  {} — retained {kind} output, {reach}, {}s old",
+                "  {} — retained output, {reach}, {}s old",
                 r.handle,
                 r.age.as_secs()
             ))
@@ -227,7 +226,7 @@ mod tests {
         let listed = resolve_with_subtree(&r, &succ, "{}").await;
         assert!(listed
             .text
-            .contains(&format!("{out} — retained text output, yours")));
+            .contains(&format!("{out} — retained output, yours")));
         let paged = resolve_with_subtree(&r, &succ, &format!(r#"{{"handle":"{out}"}}"#)).await;
         assert!(
             !paged.is_error && paged.text.contains("late"),

@@ -12,14 +12,14 @@ use crate::retained_output::RetainedOutputRegistry;
 /// Render a sub-agent's completion reply: the "completed in Xs" status line
 /// (kept verbatim) followed by its `answer`, bounded to
 /// [`crate::host::MAX_OUTPUT_BYTES`] with a head+tail split so a long answer's
-/// conclusion survives truncation — the same shape `bash`/`call`/`rhai` now
+/// conclusion survives truncation — the same shape `bash`/`rhai` now
 /// share instead of returning an unbounded answer (#622). Shared by the
 /// blocking `agent` path ([`launch`]) and `poll`.
 ///
 /// Capping alone would trade a context blow-up for silently discarded work
 /// (#614), so a truncated answer also mints a retained-output handle
-/// (`owner`-scoped, the same "work you might still have questions about" rule
-/// `call` follows) that `poll` pages the rest of.
+/// (`owner`-scoped, the "work you might still have questions about" rule)
+/// that `poll` pages the rest of.
 pub fn format_agent_answer(
     agent_id: impl std::fmt::Display,
     elapsed: Duration,

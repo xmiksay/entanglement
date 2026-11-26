@@ -454,7 +454,7 @@ pub enum OutEvent {
     /// default off so a pre-#636 log replays unchanged.
     ///
     /// `exit_code` (#681, ADR-0186) mirrors [`InMsg::ToolResult`]'s field: the
-    /// numeric exit status when the call ran a process (`bash`/`call`, or a
+    /// numeric exit status when the call ran a process (`bash`, or a
     /// `poll` observing a job exit), `None` otherwise — so a wire consumer can
     /// branch on the code without parsing the `[exit N]` text.
     ToolOutput {

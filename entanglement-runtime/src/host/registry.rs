@@ -1,7 +1,6 @@
 //! Assembling the **root-contained sextet**
-//! (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). The exec pair
-//! (`call`/`bash`) is registered by the head alongside it, unconditionally
-//! (ADR-0093/ADR-0195).
+//! (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`). `bash` is
+//! registered by the head alongside it, unconditionally (ADR-0195).
 
 use std::path::PathBuf;
 use std::sync::Arc;

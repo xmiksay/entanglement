@@ -25,7 +25,7 @@
 //! keeps running after a successful run.
 //!
 //! Environment: inherited like a hook's, minus the catalog's provider API
-//! key variables (#164 — the same scrub `bash`/`call`/MCP stdio children
+//! key variables (#164 — the same scrub `bash`/MCP stdio children
 //! get); a status script has no business holding an LLM key.
 
 use std::process::Stdio;

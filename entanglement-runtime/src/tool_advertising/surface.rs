@@ -96,7 +96,6 @@ mod tests {
             "read",
             "glob",
             "grep",
-            "call",
             "read_raw",
             "mcp__gh__search",
         ]
@@ -109,7 +108,6 @@ mod tests {
         for hidden in [
             "glob",
             "grep",
-            "call",
             "read_raw",
             "mcp__gh__search",
             "skill__git__log",

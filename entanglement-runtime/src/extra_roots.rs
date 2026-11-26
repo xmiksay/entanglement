@@ -1,7 +1,7 @@
 //! Escape-root access grants (ADR-0109).
 //!
 //! Root containment (`resolve_under_root`, ADR-0054) is normally a hard wall: a
-//! `read`/`edit`/`write` path or a `bash`/`call` `workdir` that resolves outside
+//! `read`/`edit`/`write` path or a `bash` `workdir` that resolves outside
 //! the project root is refused outright. This store is the **approval-gated
 //! exception**: when the user explicitly approves a specific out-of-root
 //! `(tool, path)` — allow-once / session / always — that path is recorded here
@@ -28,8 +28,8 @@
 //!
 //! # The trusted scratch dir (#524, ADR-0142, amends ADR-0109)
 //!
-//! The runtime-owned per-project scratch dir (`SessionStore::scratch_dir` —
-//! already the default `call` output target) is **pre-trusted**: any path
+//! The runtime-owned per-project scratch dir (`SessionStore::scratch_dir`)
+//! is **pre-trusted**: any path
 //! under it (or the dir itself) needs no approval and no prior grant, for
 //! every tool, in every profile. [`with_scratch`][ExtraRootStore::with_scratch]
 //! records it once at startup; [`is_durably_allowed`]/[`take_allowance`] check

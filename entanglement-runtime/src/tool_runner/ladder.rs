@@ -307,7 +307,6 @@ mod tests {
             "write",
             "edit",
             "bash",
-            "call",
             crate::tool_names::UPDATE_TASKS_TOOL,
             // A registry tool (Control bypass in `dispatch`), and the envelope
             // core declined to unwrap (declined there as malformed).

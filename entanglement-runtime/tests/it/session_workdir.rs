@@ -1,5 +1,5 @@
 //! Session working directories end to end (#764, ADR-0224): the runtime's
-//! resolver validates `/cd`, the executor runs `bash`/`call`/`rhai` there and
+//! resolver validates `/cd`, the executor runs `bash`/`rhai` there and
 //! resolves relative path arguments against it, while grading, containment
 //! and the escape-root gate keep seeing root-relative paths.
 
@@ -13,7 +13,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::host::{host_tools_with, BashTool, CallTool, HostToolOptions};
+use entanglement_runtime::host::{host_tools_with, BashTool, HostToolOptions};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 use entanglement_runtime::workdir::{self, SessionWorkdirs};
@@ -98,7 +98,6 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
         },
     );
     reg.register(BashTool::new(root.clone()).with_extra_roots(store.clone()));
-    reg.register(CallTool::new(root.clone()).with_extra_roots(store.clone()));
     let _executor = ToolExecutor::builder(&holly, reg.shared())
         .perm_modes(perm_modes())
         .mode_table(mode_table)
@@ -216,12 +215,9 @@ fn requests(events: &[OutEvent]) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn bash_and_call_run_in_the_session_workdir() {
+async fn bash_runs_in_the_session_workdir() {
     let h = harness(
-        vec![
-            call("b", "bash", serde_json::json!({"command": "pwd"})),
-            call("c", "call", serde_json::json!({"command": "pwd"})),
-        ],
+        vec![call("b", "bash", serde_json::json!({"command": "pwd"}))],
         allow_all_table(),
     );
     let sub = h.root.join("sub");
@@ -230,13 +226,11 @@ async fn bash_and_call_run_in_the_session_workdir() {
         Ok(sub.display().to_string())
     );
     let events = h.turn().await;
-    for id in ["b", "c"] {
-        let (out, is_error) = output(&events, id);
-        assert!(
-            !is_error && out.contains(&sub.display().to_string()),
-            "{id}: {out}"
-        );
-    }
+    let (out, is_error) = output(&events, "b");
+    assert!(
+        !is_error && out.contains(&sub.display().to_string()),
+        "{out}"
+    );
 }
 
 #[tokio::test]
@@ -366,12 +360,12 @@ async fn a_workdir_swapped_for_a_symlink_is_caught_at_use() {
 
 #[cfg(feature = "rhai")]
 #[tokio::test]
-async fn rhai_exec_bindings_default_to_the_workdir() {
+async fn rhai_bash_binding_defaults_to_the_workdir() {
     let h = harness(
         vec![call(
             "x",
             "rhai",
-            serde_json::json!({"script": "exec(\"pwd\") + read(\"a.txt\")"}),
+            serde_json::json!({"script": "bash(\"pwd\") + read(\"a.txt\")"}),
         )],
         allow_all_table(),
     );
@@ -406,29 +400,5 @@ async fn a_file_tool_in_an_approved_outside_workdir_still_asks() {
     assert!(
         is_error && !out.contains("outer"),
         "rejected, never read: {out}"
-    );
-}
-
-/// `call`'s `input_file`/`output_file` in an out-of-root workdir ride the same
-/// durable `call` grant its cwd does.
-#[tokio::test]
-async fn call_files_in_an_approved_outside_workdir_resolve() {
-    let h = harness(
-        vec![call(
-            "c",
-            "call",
-            serde_json::json!({"command": "cat", "input_file": "o.txt", "output_file": "copy.txt"}),
-        )],
-        allow_all_table(),
-    );
-    h.cd(&h.outside, Some(ApprovalScope::Session))
-        .await
-        .expect("approved cd");
-    let events = h.turn().await;
-    let (out, is_error) = output(&events, "c");
-    assert!(!is_error, "{out}");
-    assert_eq!(
-        std::fs::read_to_string(h.outside.join("copy.txt")).unwrap(),
-        "outer\n"
     );
 }

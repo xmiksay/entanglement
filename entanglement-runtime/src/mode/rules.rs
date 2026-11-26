@@ -27,11 +27,8 @@
 //! module implements didn't pin a tiebreak; this file does, deliberately,
 //! so two rules of equal specificity never depend on declaration order.
 //!
-//! **`bash`/`call` share one rule set** — they're two spellings of the same
-//! `Exec` capability, so a rule written for either grades both
-//! ([`canonicalize_key`]/[`canonical_tool`]). Compound commands
-//! (`&&`/`||`/`;`/`|`/`&`, ADR-0197) are split and graded per segment for
-//! both tools; a command the splitter can't fully account for
+//! **`bash` compound commands** (`&&`/`||`/`;`/`|`/`&`, ADR-0197) are split
+//! and graded per segment; a command the splitter can't fully account for
 //! ([`crate::shell_split::SplitOutcome::Opaque`]) grades at the mode's
 //! `default` outright — no whole-string fallback guess, unlike the
 //! `bash`-only legacy resolver in `permission_bash.rs`.
@@ -159,36 +156,13 @@ pub(crate) fn rule_tool_name(key: &str) -> &str {
     &key[..cut]
 }
 
-/// `bash` and `call` are two spellings of the same `Exec` capability
-/// (ADR-0207 §4) — canonicalize `call` to `bash` in both a rule key's tool
-/// part and the incoming tool name so a rule written for either grades a
-/// call to both.
-fn canonical_tool(name: &str) -> &str {
-    if name == "call" {
-        "bash"
-    } else {
-        name
-    }
-}
-
-fn canonicalize_key(key: &str) -> String {
-    let tool = rule_tool_name(key);
-    if tool == "call" {
-        format!("bash{}", &key[tool.len()..])
-    } else {
-        key.to_string()
-    }
-}
-
 /// Does tool-rule key `key` match this call? Delegates to a single-rule
 /// [`PermissionProfile`] so the real glob/scope matcher (ADR-0051/ADR-0116)
 /// runs unmodified: a profile whose only rule is `key => Allow` under a
 /// `Deny` default resolves to `Allow` iff `key` matches.
 fn tool_rule_matches(key: &str, name: &str, arg: Option<&str>, workdir: Option<&str>) -> bool {
-    let key = canonicalize_key(key);
-    let name = canonical_tool(name);
     PermissionProfile::new(Permission::Deny)
-        .with(&key, Permission::Allow)
+        .with(key, Permission::Allow)
         .resolve_scoped(name, arg, workdir)
         == Permission::Allow
 }
@@ -225,10 +199,9 @@ pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class
     stricter wins); within each kind the longest key wins; ties go to the stricter grade.";
 
 /// The grade one call resolves to under `rules` + `default`, and the rule
-/// that decided it (`None`: the default did). `bash`/`call` with a command
-/// grade per compound segment (ADR-0197, extended to `call` by ADR-0207
-/// §4): split on top-level `&&`/`||`/`;`/`|`/`&`, grade each segment and
-/// fold to the most restrictive — any segment `Deny` denies the whole
+/// that decided it (`None`: the default did). `bash` with a command grades
+/// per compound segment (ADR-0197): split on top-level `&&`/`||`/`;`/`|`/
+/// `&`, grade each segment and fold to the most restrictive — any segment `Deny` denies the whole
 /// command, all-`Allow` is `Allow`; the deciding rule is the one of the
 /// first segment at the folded grade. A simple command is one segment.
 ///
@@ -249,7 +222,7 @@ fn decide<'a>(
         best_entry(rules, tool_name, capabilities, arg, workdir)
             .map_or((default, None), |e| (e.grade, Some(e)))
     };
-    let command = arg.filter(|_| matches!(tool_name, "bash" | "call"));
+    let command = arg.filter(|_| tool_name == "bash");
     let Some(command) = command else {
         return single(arg);
     };
@@ -270,7 +243,7 @@ fn decide<'a>(
 }
 
 /// Resolve the grade for one call under a mode's `default` + [`Rules`]
-/// (ADR-0207 §4), per compound segment for `bash`/`call` ([`decide`]).
+/// (ADR-0207 §4), per compound segment for `bash` ([`decide`]).
 pub fn resolve(
     rules: &Rules,
     default: Permission,
@@ -554,73 +527,8 @@ mod tests {
         );
         // And a `*` deny still beats a class allow.
         let curl = r(&["*(curl *)"], &["exec"]);
-        assert_eq!(g(&curl, "call", &exec, Some("curl x")), Permission::Deny);
-        assert_eq!(g(&curl, "call", &exec, Some("ls")), Permission::Allow);
-    }
-
-    #[test]
-    fn call_is_graded_by_a_bash_written_rule() {
-        let rules = Rules::from_lists(&[], &["bash(rg *)".to_string()], &[]);
-        assert_eq!(
-            resolve(
-                &rules,
-                Permission::Ask,
-                "call",
-                &[Capability::Exec],
-                Some("rg foo"),
-                None
-            ),
-            Permission::Allow,
-            "bash and call are one rule set (ADR-0207 §4)"
-        );
-    }
-
-    #[test]
-    fn bash_is_denied_by_a_call_written_rule() {
-        let rules = Rules::from_lists(&["call(rm *)".to_string()], &[], &[]);
-        assert_eq!(
-            resolve(
-                &rules,
-                Permission::Ask,
-                "bash",
-                &[Capability::Exec],
-                Some("rm -rf x"),
-                None
-            ),
-            Permission::Deny
-        );
-    }
-
-    #[test]
-    fn compound_command_grades_per_segment_for_call_too() {
-        let rules = Rules::from_lists(
-            &[],
-            &["bash(find *)".to_string(), "bash(grep *)".to_string()],
-            &[],
-        );
-        assert_eq!(
-            resolve(
-                &rules,
-                Permission::Ask,
-                "call",
-                &[Capability::Exec],
-                Some("find . | grep x"),
-                None
-            ),
-            Permission::Allow
-        );
-        assert_eq!(
-            resolve(
-                &rules,
-                Permission::Ask,
-                "call",
-                &[Capability::Exec],
-                Some("find . && curl x"),
-                None
-            ),
-            Permission::Ask,
-            "the unmatched segment must not ride the find rule through"
-        );
+        assert_eq!(g(&curl, "bash", &exec, Some("curl x")), Permission::Deny);
+        assert_eq!(g(&curl, "bash", &exec, Some("ls")), Permission::Allow);
     }
 
     #[test]

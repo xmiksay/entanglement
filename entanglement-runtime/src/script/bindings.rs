@@ -1,5 +1,5 @@
 //! The sandboxed Rhai engine: resource caps, the progress interrupt, and the
-//! registered file/exec/`http` bindings that cross the bridge to
+//! registered file/`bash`/`http` bindings that cross the bridge to
 //! [`super::service`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,20 +62,10 @@ pub(super) fn configure_engine(
     engine.on_print(move |text| on_print(text));
 }
 
-/// Bind the host quintet plus permission-gated process-exec as script
-/// functions (ADR-0115, amending ADR-0046). Each closure marshals its args to
-/// the tool's JSON shape and blocks on the bridge for the resolved output.
-/// The argv-exec host tool is bound under the script-callable name `exec`,
-/// **not** `call`: `call` is a hard-reserved Rhai keyword
-/// (`KEYWORD_FN_PTR_CALL`) the interpreter special-cases in
-/// `make_function_call` to always mean "invoke this `FnPtr`" — registering a
-/// same-named function is silently shadowed (its first argument gets coerced
-/// as a function pointer instead of dispatched to ours). The tool name
-/// dispatched to the bridge, its permission grade, and its `BINDING_TOOLS`/
-/// capability membership all stay the literal `call` (matching the
-/// registered, script-only `call` tool) — only the script-facing identifier
-/// differs.
-/// `exec`/`bash` additionally stamp a `timeout` derived from this run's own
+/// Bind the host quintet plus permission-gated `bash` as script functions
+/// (ADR-0115, amending ADR-0046). Each closure marshals its args to the tool's
+/// JSON shape and blocks on the bridge for the resolved output.
+/// `bash` additionally stamps a `timeout` derived from this run's own
 /// remaining wall-clock budget (`start`/`timeout`, #419 fix B): rhai's
 /// `on_progress` interrupt can't reach into a binding call blocked on
 /// `blocking_recv`, so the exec tool's own (much longer, up to 600s) timeout
@@ -83,11 +73,11 @@ pub(super) fn configure_engine(
 /// `bash` is registered only when the host `bash` tool itself is in the
 /// registry the script delegates through — off, `bash(...)` is an
 /// unknown (catchable) script function rather than a graded-then-failing
-/// binding. Each also gains a `workdir` overload (#480, ADR-0129:
-/// `exec(command, args, workdir)`/`bash(command, workdir)`) that marshals the
-/// value into the delegated tool's own `workdir` field — the same field a
-/// `tool{pattern}` workdir-scoped rule (#425) and the escape-root gate (#446)
-/// both extract, so a script gets identical scoping to a direct tool call.
+/// binding. It also has a `workdir` overload (#480, ADR-0129:
+/// `bash(command, workdir)`) that marshals the value into the tool's own
+/// `workdir` field — the same field a `tool{pattern}` workdir-scoped rule
+/// (#425) and the escape-root gate (#446) both extract, so a script gets
+/// identical scoping to a direct tool call.
 /// `http` (ADR-0227) is registered only when the `http` tool is.
 pub(super) fn register_bindings(
     engine: &mut Engine,
@@ -199,47 +189,6 @@ pub(super) fn register_bindings(
             serde_json::json!({ "path": path, "content": content }),
         )
     });
-    let t = tx.clone();
-    engine.register_fn("exec", move |command: &str| {
-        call_binding(
-            &t,
-            "call",
-            serde_json::json!({
-                "command": command,
-                "args": Vec::<String>::new(),
-                "timeout": remaining_timeout_secs(start, timeout),
-            }),
-        )
-    });
-    let t = tx.clone();
-    engine.register_fn("exec", move |command: &str, args: rhai::Array| {
-        let args = call_args_to_strings(args)?;
-        call_binding(
-            &t,
-            "call",
-            serde_json::json!({ "command": command, "args": args, "timeout": remaining_timeout_secs(start, timeout) }),
-        )
-    });
-    let t = tx.clone();
-    // #480: an explicit `workdir` so a workdir-scoped permission rule
-    // (`call{pattern}`, #425) and the escape-root gate (#446) both see it —
-    // neither fires for a binding call that never marshals the field.
-    engine.register_fn(
-        "exec",
-        move |command: &str, args: rhai::Array, workdir: &str| {
-            let args = call_args_to_strings(args)?;
-            call_binding(
-                &t,
-                "call",
-                serde_json::json!({
-                    "command": command,
-                    "args": args,
-                    "workdir": workdir,
-                    "timeout": remaining_timeout_secs(start, timeout),
-                }),
-            )
-        },
-    );
     if bash_enabled {
         let t = tx.clone();
         engine.register_fn("bash", move |command: &str| {
@@ -322,20 +271,7 @@ fn register_http(engine: &mut Engine, tx: &UnboundedSender<BindingCall>) {
     });
 }
 
-/// Convert a Rhai `args` array (`exec(command, args)`) to argv strings — a
-/// non-string element throws a catchable error naming the offending type
-/// rather than silently stringifying it (Rhai's `to_string()` on, say, a map
-/// would produce nonsense argv).
-pub(super) fn call_args_to_strings(args: rhai::Array) -> Result<Vec<String>, Box<EvalAltResult>> {
-    args.into_iter()
-        .map(|v| {
-            v.into_string()
-                .map_err(|ty| runtime_err(&format!("call: args must be strings, got {ty}")))
-        })
-        .collect()
-}
-
-/// Derive a `call`/`bash` binding's `timeout` (whole seconds, minimum 1) from
+/// Derive a `bash` binding's `timeout` (whole seconds, minimum 1) from
 /// the script's own remaining wall-clock budget, so an in-flight child cannot
 /// outlive the run — rhai's `on_progress` interrupt cannot reach a binding
 /// call parked in `blocking_recv`, so the bound has to ride along in the

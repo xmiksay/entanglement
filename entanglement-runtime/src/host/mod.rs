@@ -1,14 +1,12 @@
 //! Host tools that execute against the local filesystem and shell — `read`,
-//! `glob`, `grep`, `edit`, `write`, `apply_patch`, `call`, and `bash`. The
+//! `glob`, `grep`, `edit`, `write`, `apply_patch`, and `bash`. The
 //! read-only trio (`read`/`glob`/`grep`) is covered by ADR-0008;
 //! `edit`/`bash` by ADR-0009/ADR-0012; whole-file `write` by ADR-0031;
 //! multi-hunk `apply_patch` (unified-diff apply, beside `edit`/`write`) by
-//! #455; the argv-exec `call` (no shell, auto-tailed output) by ADR-0045;
-//! [`host_tools`] assembles the **root-contained sextet**
+//! #455. [`host_tools`] assembles the **root-contained sextet**
 //! (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`) — a head registers
-//! [`CallTool`] and [`BashTool`] unconditionally alongside it (ADR-0093 and
-//! ADR-0195 respectively: registration is not where either tool's security
-//! story lives, permission is).
+//! [`BashTool`] unconditionally alongside it (ADR-0195: registration is not
+//! where its security story lives, permission is).
 //!
 //! Each tool is constructed with a working-directory `root`; model-supplied
 //! paths resolve against it and are **rejected on `..` escape** *and* on
@@ -19,13 +17,13 @@
 //! path escapes — unless it (or an ancestor of it) has an existing durable
 //! `read` grant (#482, [`crate::extra_roots::ExtraRootStore::is_durably_allowed_under`]).
 //! Output is byte-capped so a runaway
-//! listing or huge file can't silently consume the context window. `bash`/
-//! `call` run the command rooted at `root` (or at a validated `workdir`) but
-//! otherwise inherit the engine process's full privileges by default —
-//! unsandboxed unless opted in (ADR-0009/ADR-0045); the permission profiles
-//! and the config ceiling are the default controls (ADR-0010/ADR-0093/
-//! ADR-0195). [`sandbox`] adds an optional bubblewrap
-//! confinement layer for both (ADR-0104, `ENTANGLEMENT_SANDBOX=bwrap`).
+//! listing or huge file can't silently consume the context window. `bash`
+//! runs the command rooted at `root` (or at a validated `workdir`) but
+//! otherwise inherits the engine process's full privileges by default —
+//! unsandboxed unless opted in (ADR-0009); the permission modes and the
+//! config ceiling are the default controls (ADR-0010/ADR-0195). [`sandbox`]
+//! adds an optional bubblewrap confinement layer (ADR-0104,
+//! `ENTANGLEMENT_SANDBOX=bwrap`).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -34,7 +32,6 @@ use anyhow::{Context, Result};
 pub mod apply_patch;
 pub mod bash;
 mod brace;
-pub mod call;
 pub mod edit;
 pub mod exec;
 pub mod glob;
@@ -54,7 +51,6 @@ pub mod write;
 
 pub use apply_patch::ApplyPatchTool;
 pub use bash::BashTool;
-pub use call::CallTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
@@ -77,9 +73,8 @@ pub use write::WriteTool;
 /// can't blow the window. See ADR-0008.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 
-/// Default line-tail depth for exec-shaped tools (`bash`, `call`) when the
-/// model doesn't override it — one shared default instead of two independently
-/// chosen numbers (#622).
+/// Default line-tail depth for `bash` (and `poll`'s retained-output pages)
+/// when the model doesn't override it (#622).
 pub const DEFAULT_TAIL: u32 = 30;
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -203,12 +198,10 @@ fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     Ok((resolved, lexically_contained && canonically_contained))
 }
 
-/// Resolve the per-call working directory for an exec tool (`bash`/`call`):
+/// Resolve the per-call working directory for `bash`:
 /// `root` by default, or a model-supplied `workdir` validated to stay under
 /// root (same symlink-safe containment as the filesystem tools, ADR-0054/#163)
-/// and to be a directory. Shared by [`crate::host::bash::BashTool`] and
-/// [`crate::host::call::CallTool`] — the containment + directory check is
-/// identical between the two (#386).
+/// and to be a directory (#386).
 pub fn resolve_workdir(root: &Path, workdir: Option<&str>) -> Result<PathBuf> {
     resolve_workdir_or_grant(root, None, "", "", workdir)
 }
@@ -294,8 +287,8 @@ pub fn truncate_head_tail(s: String) -> String {
 /// Keep only the last `tail` lines of `s`, reporting whether any were dropped.
 /// `tail == 0` disables line cutting (the byte cap still applies downstream).
 /// When lines are dropped, prepend a self-correction notice (ADR-0016) naming
-/// the count and the `tail=0` escape hatch. Shared by the exec tools (`bash`,
-/// `call`) that expose a `tail` knob (#622).
+/// the count and the `tail=0` escape hatch. Used by `bash`'s `tail` knob
+/// (#622).
 pub fn tail_lines(s: &str, tail: u32) -> (String, bool) {
     if tail == 0 || s.is_empty() {
         return (s.to_string(), false);
@@ -319,7 +312,7 @@ pub fn tail_lines(s: &str, tail: u32) -> (String, bool) {
 /// dropping), followed by `body` byte-capped under [`MAX_OUTPUT_BYTES`] with
 /// the same head+tail split as [`truncate_head_tail`] so a trailing
 /// error/answer survives. The one shape every result-bounded exec/agent tool
-/// now shares — `bash`, `poll`, `call`, `rhai`, and `agent` —
+/// now shares — `bash`, `poll`, `rhai`, and `agent` —
 /// replacing the previous per-tool pick between head-only
 /// ([`truncate_output`]) and head+tail truncation with no stated rule (#622).
 pub fn bounded_result(status: &str, body: String) -> String {
@@ -1226,7 +1219,7 @@ mod tests {
     }
 
     /// #524, ADR-0142: the trusted scratch dir resolves with **no grant at
-    /// all** — for `read`/`write` paths and a `bash`/`call` `workdir` alike —
+    /// all** — for `read`/`write` paths and a `bash` `workdir` alike —
     /// unlike every other out-of-root path, which is refused until a grant
     /// exists (see `escape_root_grant_permits_only_the_granted_tool_and_path`
     /// above).
@@ -1251,7 +1244,7 @@ mod tests {
             assert_eq!(ok, canon);
         }
 
-        // A `bash`/`call` `workdir` pointing at the scratch dir resolves too.
+        // A `bash` `workdir` pointing at the scratch dir resolves too.
         let workdir = resolve_workdir_or_grant(
             &dir.path,
             Some(&store),

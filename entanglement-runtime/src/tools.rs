@@ -2,7 +2,7 @@
 //! implements and the [`ToolRegistry`] that owns them. Both live in the
 //! **runtime** — core holds no executable tools, only advertises tool *schemas*
 //! and round-trips each call back here (#58/#59, #206, ADR-0006/0010/0053). The
-//! concrete tools (`read`/`glob`/`grep`/`edit`/`write`/`bash`/`call`/`rhai`, …)
+//! concrete tools (`read`/`glob`/`grep`/`edit`/`write`/`bash`/`rhai`, …)
 //! live in [`crate::host`] and [`crate::script`]; [`crate::tool_runner`] resolves
 //! permission and executes the cleared call against a registry.
 //!
@@ -60,7 +60,7 @@ pub trait Tool: Send + Sync {
     /// existing single-tenant tool is unaffected; a multi-tenant embedder's tool
     /// (e.g. one that picks a per-tenant `HttpClient`/DB scope by session) overrides
     /// this instead. `request_id` (#449) is the calling `ToolExec`'s id — the
-    /// escape-root host tools (`read`/`edit`/`write`/`apply_patch`/`bash`/`call`)
+    /// escape-root host tools (`read`/`edit`/`write`/`apply_patch`/`bash`)
     /// override this to thread it into their `Once`-scoped grant consumption
     /// ([`crate::extra_roots::ExtraRootStore::take_allowance`]), so a single-use
     /// approval can only be spent by the exact call it was granted to.
@@ -76,7 +76,7 @@ pub trait Tool: Send + Sync {
     /// Metadata-carrying entry point (#681, ADR-0186) — what
     /// [`ToolRegistry::execute`] actually calls. Default wraps
     /// [`run_for_session`][Tool::run_for_session] with no metadata, so only a
-    /// tool that genuinely *has* a numeric exit status (`bash`/`call` — the
+    /// tool that genuinely *has* a numeric exit status (`bash` — the
     /// process runners) overrides this; every other impl is untouched. The
     /// `[exit N]` text inside `content` is unchanged either way — the field is
     /// additive, mirroring how `is_error`/`duration_ms` ride beside the text
@@ -134,7 +134,7 @@ pub struct CallGrading {
 
 /// A tool's successful result plus its structured metadata (#681, ADR-0186):
 /// the numeric exit status when the call ran a process to completion
-/// (`bash`/`call` foreground), `None` for every other tool — and for a
+/// (`bash` foreground), `None` for every other tool — and for a
 /// signal-killed or timed-out process, where no code exists (the `[exit -1]`
 /// text keeps its lossy sentinel; the field stays honest).
 ///

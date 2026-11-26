@@ -19,8 +19,7 @@ use crate::permission_path::normalize_lexical;
 ///   `path` (ADR-0228): a relative `path` joins onto the workdir.
 /// - `glob`/`glob_json`/`grep`/`grep_json`: a relative `path` joins, an absent
 ///   one becomes the workdir (a `glob` with an absolute `pattern` excepted).
-/// - `bash`/`call`: a relative `workdir` joins, an absent one becomes the
-///   workdir; `call`'s `input_file`/`output_file` join too.
+/// - `bash`: a relative `workdir` joins, an absent one becomes the workdir.
 pub(crate) fn rewrite(
     root: &Path,
     workdir: Option<&Path>,
@@ -47,12 +46,6 @@ pub(crate) fn rewrite(
         }
         "grep" | "grep_json" => join_or_default(args, "path", &base),
         "bash" => join_or_default(args, "workdir", &base),
-        "call" => {
-            let workdir = join_or_default(args, "workdir", &base);
-            let input_file = join(args, "input_file", &base);
-            let output_file = join(args, "output_file", &base);
-            workdir || input_file || output_file
-        }
         _ => false,
     };
     changed.then(|| value.to_string())
@@ -176,20 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn exec_tools_default_their_cwd_and_join_files() {
+    fn bash_defaults_its_cwd_and_joins_a_relative_workdir() {
         assert_eq!(
             run("/p/sub", "bash", json!({"command": "ls", "workdir": "t"})),
             Some(json!({"command": "ls", "workdir": "sub/t"}))
         );
         assert_eq!(
-            run(
-                "/p/sub",
-                "call",
-                json!({"command": "cat", "input_file": "in", "output_file": "/o"})
-            ),
-            Some(
-                json!({"command": "cat", "workdir": "sub", "input_file": "sub/in", "output_file": "/o"})
-            )
+            run("/p/sub", "bash", json!({"command": "ls"})),
+            Some(json!({"command": "ls", "workdir": "sub"}))
         );
     }
 

@@ -65,7 +65,7 @@ pub struct StdioClient {
 
 /// Assemble the server `Command`: args + per-server env over an inherited
 /// environment with the provider API-key vars removed (#164 parity with
-/// `bash`/`call`). `env_remove` runs before `.envs(env)`, so a per-server
+/// `bash`). `env_remove` runs before `.envs(env)`, so a per-server
 /// `env:` entry that deliberately names a secret var survives the scrub.
 /// Split from [`StdioClient::spawn`] so the env shape is unit-testable
 /// without spawning a process.
@@ -97,7 +97,7 @@ impl StdioClient {
     ///
     /// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
     /// from the child: an MCP server is an arbitrary external process and must
-    /// not inherit the engine's provider credentials, exactly like `bash`/`call`
+    /// not inherit the engine's provider credentials, exactly like `bash`
     /// children. An explicit per-server `env:` entry still wins — the user
     /// naming a var in the server's own config is deliberate consent.
     pub async fn spawn(

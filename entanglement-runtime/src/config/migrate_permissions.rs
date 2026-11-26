@@ -76,11 +76,9 @@ fn is_legacy_shape(value: &Value) -> bool {
 }
 
 /// Bucket a legacy mapping's `(key, grade)` entries into the new grammar's
-/// three lists, translating the one capability-class spelling that changed
-/// (`call` → `exec`, ADR-0207 §3) when it names the bare class rather than a
-/// scoped pattern — a scoped `call(pattern)`/`write(pattern)` key is left
-/// verbatim, since the new engine already treats every scoped key as naming
-/// a literal tool (§4), exactly what the old scoped spelling named too.
+/// three lists — a scoped `write(pattern)` key is left verbatim, since the
+/// new engine already treats every scoped key as naming a literal tool
+/// (ADR-0207 §4), exactly what the old scoped spelling named too.
 #[derive(Default)]
 struct Converted {
     default: Option<Permission>,
@@ -88,7 +86,7 @@ struct Converted {
     allow: Vec<String>,
     prompt: Vec<String>,
     /// Every key this couldn't translate losslessly (a scoped
-    /// `call(...)`/`write(...)` rule, whose fan-out meaning changed under
+    /// `write(...)` rule, whose fan-out meaning changed under
     /// the new engine) — named in the migration warning for manual review.
     review: Vec<String>,
 }
@@ -109,11 +107,6 @@ fn convert_legacy_mapping(map: &serde_yaml::Mapping) -> Result<Converted> {
         if key.contains('(') || key.contains('{') {
             out.review.push(key.clone());
         }
-        let key = if key == "call" {
-            "exec".to_string()
-        } else {
-            key
-        };
         match grade {
             Permission::Deny => out.deny.push(key),
             Permission::Allow => out.allow.push(key),
@@ -306,7 +299,7 @@ pub(super) fn migrate_if_legacy(path: &Path) -> Result<()> {
         review_scoped_rules = %converted.review.join(", "),
         "config.yml `permissions:` used the retired free-form tool->grade shape (ADR-0207); \
          migrated it to the default/allow/deny/prompt mode grammar and rewrote the file — the \
-         original is kept at the backup path; a scoped capability rule (`write(...)`/`call(...)`) \
+         original is kept at the backup path; a scoped capability rule (`write(...)`) \
          now names only the literal tool, never a capability fan-out, so review those by hand",
     );
     Ok(())
@@ -425,25 +418,6 @@ mod tests {
             deny.is_some_and(|d| d.contains(&Value::String("edit".to_string()))),
             "{rewritten}"
         );
-    }
-
-    #[test]
-    fn migrate_translates_bare_call_to_exec() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yml");
-        std::fs::write(&path, "permissions:\n  call: deny\n").unwrap();
-        migrate_if_legacy(&path).unwrap();
-        let rewritten = std::fs::read_to_string(&path).unwrap();
-        let doc: Value = serde_yaml::from_str(&rewritten).unwrap();
-        let deny = doc
-            .get("permissions")
-            .unwrap()
-            .get("deny")
-            .unwrap()
-            .as_sequence()
-            .unwrap();
-        assert!(deny.contains(&Value::String("exec".to_string())));
-        assert!(!deny.contains(&Value::String("call".to_string())));
     }
 
     #[test]

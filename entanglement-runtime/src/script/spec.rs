@@ -40,7 +40,6 @@ Host bindings:
   grep_json(pattern) / grep_json(pattern, path) -> #{matches: {path, lineno, line} record array, notices: string array}; same scan as grep, structured
   edit(path, old, new) / edit(path, old, new, replace_all)
   write(path, content)
-  exec(command) / exec(command, args) / exec(command, args, workdir) -> argv exec, no shell; graded as the `call` tool (spelled `exec` because `call` is a reserved Rhai keyword)
   bash(command) / bash(command, workdir) -> sh -c; bound only when the host `bash` tool is enabled, else an unknown-function error
   http(method, url) / http(method, url, #{headers: #{...}, body: text-or-map}) -> response body text; a non-2xx status throws; graded as `http(METHOD url)`; credentials for a host come from the user's config, never from the script (an Authorization/Cookie/Host header or user@ in the URL is refused); a map/array body is sent as JSON
   workdir is what a workdir-scoped permission rule matches; nested calls are clamped to the script's remaining budget (a cut call throws: its outcome is unknown); write/edit are never cut.
@@ -161,14 +160,10 @@ mod tests {
 
     /// Every script-facing name the engine registers, derived from the same
     /// tables the registration code reads: the graded host bindings
-    /// ([`BINDING_TOOLS`] — `call` binds as `exec`, since `call` is a reserved
-    /// Rhai keyword), the never-advertised `read_raw` alias of `read`, `http`,
+    /// ([`BINDING_TOOLS`]), the never-advertised `read_raw` alias of `read`, `http`,
     /// and the pure converters.
     fn registered_names() -> Vec<&'static str> {
-        let mut names: Vec<&'static str> = BINDING_TOOLS
-            .into_iter()
-            .map(|tool| if tool == "call" { "exec" } else { tool })
-            .collect();
+        let mut names: Vec<&'static str> = BINDING_TOOLS.to_vec();
         names.push("read_raw");
         names.extend(["glob_json", "grep_json", "http"]);
         names.extend(DATA_FUNCTIONS);
@@ -188,7 +183,6 @@ mod tests {
             "grep_json" => r#"grep_json("x")"#,
             "edit" => r#"edit("f", "a", "b")"#,
             "write" => r#"write("f", "c")"#,
-            "exec" => r#"exec("echo")"#,
             "bash" => r#"bash("echo")"#,
             "http" => r#"http("GET", "https://a.io")"#,
             "parse_json" => r#"parse_json("{}")"#,

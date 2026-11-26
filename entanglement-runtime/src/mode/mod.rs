@@ -75,7 +75,7 @@ pub fn ladder_rank(mode: &str) -> Option<usize> {
 /// One resolved permission mode (ADR-0207 §2/§4): a name, the grade used
 /// when nothing else matches, its rule table, its run limits, and its
 /// sandbox posture — `sandbox`: `Some("bwrap")`/`Some("bubblewrap")` confines
-/// every `bash`/`call` the whole spawn sub-tree makes, `None` leaves it
+/// every `bash` the whole spawn sub-tree makes, `None` leaves it
 /// unsandboxed; `sandbox_network` shares the host network namespace with a
 /// confined command (ignored when `sandbox` is `None`). Stage 5b moved
 /// confinement here from the old per-profile `Agent::sandbox` — a
@@ -93,7 +93,7 @@ pub struct Mode {
 }
 
 impl Mode {
-    /// This mode's confinement policy for `bash`/`call` (ADR-0207 §6, stage
+    /// This mode's confinement policy for `bash` (ADR-0207 §6, stage
     /// 5b): `sandbox`/`sandbox_network` translated into a
     /// [`crate::host::SandboxPolicy`]. `ENTANGLEMENT_SANDBOX`/
     /// `ENTANGLEMENT_SANDBOX_NETWORK` are then layered on top via

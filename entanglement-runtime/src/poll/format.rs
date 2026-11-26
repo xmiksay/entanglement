@@ -77,7 +77,7 @@ pub(super) fn kill_refused_message(handle: &str) -> String {
 pub(super) fn unknown_handle(handle: &str) -> String {
     format!(
         "poll: unknown handle `{handle}` — it was never launched from this \
-         session (use the id returned by bash/call/rhai/agent background=true, \
+         session (use the id returned by bash/rhai/agent background=true, \
          or the retained-output id returned alongside a truncated call \
          result)."
     )

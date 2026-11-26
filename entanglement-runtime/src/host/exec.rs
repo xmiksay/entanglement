@@ -1,4 +1,4 @@
-//! Shared process-execution plumbing for the exec tools (`bash`/`call`).
+//! Shared process-execution plumbing for the exec tool `bash`.
 //!
 //! Both tools run a model-authored command under a timeout. Killing only the
 //! direct child (what `kill_on_drop` does) leaves anything the command itself
@@ -170,7 +170,7 @@ fn combine_io_errors(
 /// Prepend a warning line to a formatted tool result when a stream drain hit a
 /// genuine I/O error (#586) — distinct from the byte-cap/timeout truncation
 /// already visible in the body, so a partial capture caused by a broken pipe
-/// isn't silently mistaken for the whole output. Shared by `bash` and `call`.
+/// isn't silently mistaken for the whole output.
 pub fn with_io_warning(body: String, io_error: Option<String>) -> String {
     match io_error {
         Some(e) => format!("[warning: output capture failed — {e}]\n{body}"),

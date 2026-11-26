@@ -34,15 +34,10 @@ pub(super) fn resolve_retained(
     }
 }
 
-/// Render a retained-output page: an `output_file`d operation just names its
-/// path (the one place a path still appears — ADR-0161 §7); otherwise the
-/// requested line slice, byte-capped, with the range/more-remaining and any
+/// Render a retained-output page: the requested line slice, byte-capped, with the range/more-remaining and any
 /// retention-cap overflow reported so an operation's own retention never
 /// silently drops text.
 fn format_retained_page(id: &str, page: Page) -> String {
-    if let Some(path) = page.output_file {
-        return format!("[retained output {id}: full output at {path}]\n");
-    }
     if page.total_lines == 0 {
         return format!("[retained output {id}: empty]\n");
     }
@@ -147,27 +142,6 @@ mod tests {
         .await;
         assert!(past_end.text.contains("past the end"), "{}", past_end.text);
         assert!(!past_end.is_error);
-    }
-
-    /// #608: an operation registered with an explicit `output_file` is named,
-    /// not paged — the one place a path still appears.
-    #[tokio::test]
-    async fn retained_handle_with_output_file_names_the_path_not_text() {
-        let session = SessionId::new("s5");
-        let retained = RetainedOutputRegistry::new();
-        let id = retained.register_file(Some(session.clone()), "out/result.txt".to_string());
-
-        let out = super::super::resolve(
-            &JobRegistry::new(),
-            &AgentRegistry::default(),
-            &retained,
-            &ScriptRegistry::new(),
-            &session,
-            &serde_json::json!({"handle": id}).to_string(),
-        )
-        .await;
-        assert!(out.text.contains("out/result.txt"), "{}", out.text);
-        assert!(!out.is_error);
     }
 
     /// #608: `kill` is refused on a retained-output handle — nothing running.

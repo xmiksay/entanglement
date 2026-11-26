@@ -28,10 +28,10 @@ use crate::extra_roots::ExtraRootStore;
 mod rewrite;
 pub(crate) use rewrite::rewrite;
 
-/// The exec tools whose default cwd an out-of-root workdir becomes — the
-/// escape-root grant `/cd` records is keyed on these. File tools keep their
+/// The exec tool whose default cwd an out-of-root workdir becomes — the
+/// escape-root grant `/cd` records is keyed on it. File tools keep their
 /// own per-path escape-root rules there.
-const EXEC_TOOLS: [&str; 2] = ["bash", "call"];
+const EXEC_TOOL: &str = "bash";
 
 /// Build the `EngineConfig::workdir_resolver` seam over the canonical
 /// project `root` and the shared escape-root store (`None`: strict
@@ -84,17 +84,10 @@ pub fn resolve(
                 .to_string(),
         ),
         Some(scope) => {
-            for tool in EXEC_TOOLS {
-                extra.record(tool, &canon, scope, "");
-            }
+            extra.record(EXEC_TOOL, &canon, scope, "");
             Ok(canon)
         }
-        None if EXEC_TOOLS
-            .iter()
-            .all(|tool| extra.is_durably_allowed(tool, &canon)) =>
-        {
-            Ok(canon)
-        }
+        None if extra.is_durably_allowed(EXEC_TOOL, &canon) => Ok(canon),
         None => Err(format!(
             "{} is outside the project root {} — approve it for this run or always \
              (TUI: `/cd --session <dir>` or `/cd --always <dir>`)",

@@ -52,7 +52,7 @@ pub async fn reply(
 /// execution wall-clock; every other route (denials, refusals, orchestrated
 /// tools) passes `None`. `exit_code` (#681, ADR-0186) is `Some` only when the
 /// call ran a process to a real exit status — the host-tool dispatch for a
-/// foreground `bash`/`call`, and `poll` when it observes a background job
+/// foreground `bash`, and `poll` when it observes a background job
 /// exit; everything else passes `None`.
 pub async fn reply_content(
     holly: &Holly,

@@ -221,7 +221,7 @@ impl Hooks {
     /// non-zero exit is logged, never fed back to the model — and `is_error`
     /// itself cannot rewrite `content` either, it only lets a hook branch on the
     /// outcome instead of re-parsing `output`'s text. `exit_code` (#681,
-    /// ADR-0186) is the observed process exit status for `bash`/`call` — JSON
+    /// ADR-0186) is the observed process exit status for `bash` — JSON
     /// `null` for every other tool and for a killed process — so a hook can
     /// branch on a specific status without string-matching `[exit N]`.
     pub async fn run_post_tool_use(
@@ -293,11 +293,11 @@ mod tests {
     fn non_empty_filter_scopes_to_named_tools() {
         let s = HookSpec {
             command: "true".into(),
-            tools: vec!["bash".into(), "call".into()],
+            tools: vec!["bash".into(), "write".into()],
             timeout_secs: 30,
         };
         assert!(s.matches_tool("bash"));
-        assert!(s.matches_tool("call"));
+        assert!(s.matches_tool("write"));
         assert!(!s.matches_tool("edit"));
     }
 

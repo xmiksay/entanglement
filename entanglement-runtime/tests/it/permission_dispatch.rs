@@ -1087,23 +1087,7 @@ async fn session_dir_grant_widens_the_read_only_triad_but_not_edit_or_other_sess
 // --- ADR-0195 §3 / ADR-0207: curated read-only Allow rules in the built-in
 // `research` mode --------------------------------------------------------
 
-/// A trivial `call` host tool, mirroring `EchoBash` — the curated set reaches
-/// both exec tools, so the dispatch path must be exercised for each.
-struct EchoCall;
-#[async_trait]
-impl Tool for EchoCall {
-    fn name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("call")
-    }
-    async fn run(&self, input: &str) -> anyhow::Result<String> {
-        Ok(format!("ran: {input}"))
-    }
-    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
-        &[entanglement_runtime::capability::Capability::Exec]
-    }
-}
-
-/// `bash`/`call` scripted once, wired to `mode_table` — used by the curated
+/// `bash` scripted once, wired to `mode_table` — used by the curated
 /// read-only tests below with `ModeTable::builtin()`, so they exercise the
 /// real `research` mode's allowlist rather than a fabricated fixture.
 fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTable>) -> Holly {
@@ -1136,7 +1120,6 @@ fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTabl
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    reg.register(EchoCall);
     spawn_with_policy_over(&holly, reg, profiles, mode_table, None);
     holly
 }
@@ -1187,10 +1170,10 @@ async fn curated_read_only_bash_find_runs_without_approval_under_research_mode()
 }
 
 #[tokio::test]
-async fn curated_read_only_call_rg_runs_without_approval_under_research_mode() {
+async fn curated_read_only_bash_rg_runs_without_approval_under_research_mode() {
     let holly = spawn_with_exec_tools_using(
-        "call",
-        &serde_json::json!({ "command": "rg", "args": ["pattern", "src"] }).to_string(),
+        "bash",
+        &serde_json::json!({ "command": "rg pattern src" }).to_string(),
         builtin_modes(),
     );
     let sid = SessionId::new("s1");
@@ -1203,13 +1186,13 @@ async fn curated_read_only_call_rg_runs_without_approval_under_research_mode() {
         !events
             .iter()
             .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "`call rg …` is curated read-only — no approval expected; got {events:?}"
+        "`bash rg …` is curated read-only — no approval expected; got {events:?}"
     );
     assert!(
         events
             .iter()
             .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("rg"))),
-        "the curated call should run; got {events:?}"
+        "the curated command should run; got {events:?}"
     );
 }
 
@@ -1277,7 +1260,6 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoBash);
-    reg.register(EchoCall);
     let shared_tools = reg.shared();
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();

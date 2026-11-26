@@ -191,15 +191,14 @@ fn permissions_default_can_be_overridden() {
 }
 
 /// ADR-0207 stage 6c's whole point: a bare capability-class ceiling rule
-/// (`deny: [exec]`, the new grammar's spelling for what `call: deny` used to
-/// mean) denies every tool carrying that capability — `bash` included, even
-/// though the rule names neither literally.
+/// (`deny: [exec]`) denies every tool carrying that capability — `bash` and
+/// `web_fetch` included, even though the rule names neither literally.
 #[test]
 fn permissions_ceiling_honors_capability_classes() {
     let c = merge_user("permissions:\n  deny: [exec]\n");
     use crate::capability::Capability;
     assert_eq!(
-        ceiling_grade(&c, "call", &[Capability::Exec]),
+        ceiling_grade(&c, "web_fetch", &[Capability::Exec]),
         Permission::Deny
     );
     assert_eq!(

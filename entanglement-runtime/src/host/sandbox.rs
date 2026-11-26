@@ -1,4 +1,4 @@
-//! Optional OS-level process confinement for the `bash`/`call` exec pair via
+//! Optional OS-level process confinement for `bash` via
 //! bubblewrap (`bwrap`) — [ADR-0104][adr]. `SandboxPolicy::none()` (the
 //! default, [ADR-0047][adr47]) leaves command construction untouched, so
 //! unsandboxed execution stays byte-for-byte what it was before this module
@@ -15,7 +15,7 @@ use std::path::Path;
 
 use tokio::process::Command;
 
-/// Which confinement mechanism (if any) wraps a spawned `bash`/`call` child.
+/// Which confinement mechanism (if any) wraps a spawned `bash` child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxBackend {
     /// No confinement — today's behavior, the [ADR-0047][adr47] default.
@@ -27,7 +27,7 @@ pub enum SandboxBackend {
     Bubblewrap,
 }
 
-/// A single confinement policy for `bash`/`call` — the process-global
+/// A single confinement policy for `bash` — the process-global
 /// `ENTANGLEMENT_SANDBOX` default (ADR-0104), a per-profile `sandbox:`
 /// override resolved against it ([`SandboxPolicy::resolve_profile_override`],
 /// #479, ADR-0104 amendment), or the frozen ancestor floor a spawned child

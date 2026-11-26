@@ -10,7 +10,7 @@
 //! constant map `args`. A fresh engine has **no** filesystem, network, process or env
 //! access: every capability is a function registered here, so the sandbox is
 //! deny-by-default. The bindings are the host file tools, process exec
-//! (`exec`/`bash`), `http()`, per-run generated `mcp::<server>::<tool>`
+//! (`bash`), `http()`, per-run generated `mcp::<server>::<tool>`
 //! namespaces and each skill's `lib.rhai` as `skill::<skill>` — and every
 //! binding call climbs the **same dispatch seam** as a model-issued call
 //! ([`crate::tool_runner`]'s `Dispatcher`): mode grade, overlay, ceiling,
@@ -82,7 +82,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 5;
 /// Upper bound on a caller-supplied `timeout` (seconds).
 const MAX_TIMEOUT_SECS: u64 = 30;
 /// Default/max budget for a `background: true` script (#637, ADR-0185) —
-/// the background `bash`/`call` regime (#617).
+/// the background `bash` regime (#617).
 const BG_DEFAULT_TIMEOUT_SECS: u64 = 120;
 const BG_MAX_TIMEOUT_SECS: u64 = 600;
 

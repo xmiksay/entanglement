@@ -19,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// Tools whose [`permission_arg`][crate::permission::permission_arg] value is a
 /// filesystem path (or path glob), and therefore eligible for root-relative
-/// normalization. `bash`/`call` (a shell command line) are deliberately absent
+/// normalization. `bash` (a shell command line) is deliberately absent
 /// — a command line is never a path, so it must never be rewritten.
 const PATH_ARG_TOOLS: &[&str] = &[
     "read",
@@ -77,7 +77,7 @@ pub fn normalize_lexical(path: &str) -> String {
 /// becomes `"."`). An out-of-root absolute path stays verbatim (lexically
 /// normalized): a root-relative rule matching an outside path would be wrong,
 /// and the escape-root gate (ADR-0109) already owns that case. A tool with no
-/// path-arg concept (`bash`/`call`, or any tool `permission_arg` returns
+/// path-arg concept (`bash`, or any tool `permission_arg` returns
 /// `None` for) is untouched.
 pub fn rooted_arg(root: &Path, tool: &str, arg: &str) -> String {
     if !PATH_ARG_TOOLS.contains(&tool) {
@@ -238,10 +238,6 @@ mod tests {
         let root = Path::new("/home/user/project");
         assert_eq!(
             rooted_arg(root, "bash", "cat /home/user/project/src/main.rs"),
-            "cat /home/user/project/src/main.rs"
-        );
-        assert_eq!(
-            rooted_arg(root, "call", "cat /home/user/project/src/main.rs"),
             "cat /home/user/project/src/main.rs"
         );
     }

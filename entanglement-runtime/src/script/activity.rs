@@ -140,7 +140,7 @@ impl Drop for NestedCalls {
 }
 
 /// A one-line, bounded summary of a call's input that never carries a
-/// credential. `bash`/`call` show only the program's name — the rest of a
+/// credential. `bash` shows only the program's name — the rest of a
 /// command line is where a `curl -H 'Authorization: …'` rides, and under
 /// Allow/`auto`/Run all no card ever showed it. Any other tool shows its
 /// permission-graded argument (a path, `{METHOD} {url}`) with every URL's
@@ -149,7 +149,7 @@ impl Drop for NestedCalls {
 /// all — the `http` tool adds them at send time.
 pub(crate) fn args_summary(tool: &str, input: &str) -> String {
     let text = match tool {
-        "bash" | "call" => program_name(tool, input),
+        "bash" => program_name(input),
         _ => match permission::permission_arg(tool, input) {
             Some(arg) => strip_url_secrets(&arg),
             None => key_names(input),
@@ -158,10 +158,10 @@ pub(crate) fn args_summary(tool: &str, input: &str) -> String {
     bound(&text)
 }
 
-/// The basename of the program a `bash`/`call` input runs, plus ` …` when
-/// anything follows it. `bash`'s leading `NAME=value` assignments are
+/// The basename of the program a `bash` input runs, plus ` …` when
+/// anything follows it. Leading `NAME=value` assignments are
 /// skipped, never shown — a value is exactly what must not leak.
-fn program_name(tool: &str, input: &str) -> String {
+fn program_name(input: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
         return String::new();
     };
@@ -170,12 +170,7 @@ fn program_name(tool: &str, input: &str) -> String {
     let Some(program) = words.next() else {
         return String::new();
     };
-    let has_args = tool == "call"
-        && value
-            .get("args")
-            .and_then(|a| a.as_array())
-            .is_some_and(|a| !a.is_empty());
-    let more = words.next().is_some() || has_args;
+    let more = words.next().is_some();
     let program = program.trim_matches(['"', '\'']);
     let name = program.rsplit('/').next().unwrap_or(program);
     if more {
@@ -281,22 +276,7 @@ mod tests {
             args_summary("bash", r#"{"command":"TOKEN=s3cret /usr/bin/make"}"#),
             "make"
         );
-        assert_eq!(
-            args_summary(
-                "call",
-                r#"{"command":"/bin/cargo","args":["test"],"timeout":5}"#
-            ),
-            "cargo …"
-        );
-        assert_eq!(args_summary("call", r#"{"command":"ls","args":[]}"#), "ls");
-    }
-
-    #[test]
-    fn a_call_with_a_multi_word_command_and_no_args_still_marks_more() {
-        assert_eq!(
-            args_summary("call", r#"{"command":"git push origin","args":[]}"#),
-            "git …"
-        );
+        assert_eq!(args_summary("bash", r#"{"command":"ls"}"#), "ls");
     }
 
     #[test]

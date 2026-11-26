@@ -54,7 +54,7 @@ fn turns_listing(turns: &[crate::file_backup::TurnEdits]) -> String {
     }
     let mut out = String::from(
         "turns with revertable file edits — `/rewind <N>` reverts everything after turn N \
-         (bash/call/rhai exec changes are not tracked):",
+         (bash/rhai exec changes are not tracked):",
     );
     for t in turns {
         let files = if t.files == 1 { "file" } else { "files" };

@@ -35,9 +35,8 @@ use crate::permission::min_permission;
 use crate::shell_split::{self, SplitOutcome};
 
 /// [`PermissionProfile::resolve_scoped`], but per-segment-aware for `bash`
-/// (ADR-0197). Every other tool (including `call`, which execs argv with no
-/// shell — ADR-0093 — and so has no compound-command surface to split) is
-/// passed straight through, byte-identical to today.
+/// (ADR-0197). Every other tool has no compound-command surface to split
+/// and is passed straight through, byte-identical to today.
 pub fn resolve_scoped_bash_aware(
     profile: &PermissionProfile,
     tool: &str,
@@ -197,9 +196,9 @@ mod tests {
 
     #[test]
     fn non_bash_tool_is_unaffected() {
-        let profile = PermissionProfile::new(Permission::Ask).with("call(rm *)", Permission::Allow);
+        let profile = PermissionProfile::new(Permission::Ask).with("read(a*)", Permission::Allow);
         assert_eq!(
-            resolve_scoped_bash_aware(&profile, "call", Some("rm -rf / && ls"), None),
+            resolve_scoped_bash_aware(&profile, "read", Some("a && b"), None),
             Permission::Allow
         );
     }

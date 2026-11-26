@@ -338,9 +338,7 @@ async fn a_compacting_sub_agent_stays_behind_its_parents_handle() {
     let out = retained.register_text(Some(child_succ.clone()), "successor's".into());
     let (listing, _) = prompt_for(&holly, &mut sub, &root, "poll", "poll", &root).await;
     assert!(
-        listing.contains(&format!(
-            "{out} — retained text output, owned by {child_succ}"
-        )),
+        listing.contains(&format!("{out} — retained output, owned by {child_succ}")),
         "{listing}"
     );
 }

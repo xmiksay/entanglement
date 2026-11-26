@@ -1,7 +1,7 @@
 //! `poll` — the single join tool for background work (#605, ADR-0161 §1-4).
 //!
 //! Replaces `bash_output` and `agent_poll` outright — no aliases (and, with
-//! #606, is the only way to join a `background: true` `bash`/`call`/`agent`/
+//! #606, is the only way to join a `background: true` `bash`/`agent`/
 //! `rhai` launch — `agent_spawn` is gone). Dispatches on
 //! the handle's kind prefix (ADR-0164) to [`crate::host::jobs::JobRegistry`]
 //! (`j-`, a background `bash` job),
@@ -44,12 +44,9 @@
 //! operation registry that already holds a completed operation now holds its
 //! output too, so the model can read the remainder without a scratch file.
 //! `offset` (default 0) is a 0-based line index into the retained text;
-//! `tail` (default 30, matching `call`'s own default and for the same reason —
+//! `tail` (default 30, matching `bash`'s own default and for the same reason —
 //! value concentrates at the end) is how many lines to return from there,
-//! `0` meaning the rest, still byte-capped. A retained entry whose operation
-//! had an explicit `output_file` (a real file the model asked for, not a
-//! truncation workaround) is named instead of paged — the one place a path
-//! still appears. `offset`/`tail` are ignored for job/agent handles, which
+//! `0` meaning the rest, still byte-capped. `offset`/`tail` are ignored for job/agent handles, which
 //! have their own shape.
 //!
 //! Called with **no `handle`** (#607, ADR-0161 §6), `poll` instead lists this
@@ -95,7 +92,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// indefinitely — the model is expected to poll again rather than block forever.
 const MAX_TIMEOUT_SECS: u64 = 600;
 /// Default page size for a retained-output poll (#608) — the same default
-/// `call`'s own `tail` uses, for the same reason (value concentrates at the
+/// `bash`'s own `tail` uses, for the same reason (value concentrates at the
 /// end of a normal result, so an unbounded first page would reintroduce the
 /// context blow-up the cap exists to prevent).
 const DEFAULT_TAIL: u32 = crate::host::DEFAULT_TAIL;
@@ -104,7 +101,7 @@ const DEFAULT_TAIL: u32 = crate::host::DEFAULT_TAIL;
 pub fn poll_spec() -> ToolSpec {
     ToolSpec::with_schema(
         POLL_TOOL,
-        "Wait on a handle from a background bash/call job (background=true), a \
+        "Wait on a handle from a background bash job (background=true), a \
          background rhai script (background=true), a \
          sub-agent launched with agent (background=true), or a completed \
          operation's retained output (returned alongside a truncated call \
@@ -119,10 +116,8 @@ pub fn poll_spec() -> ToolSpec {
          complete and can be called again safely; a retained-output poll \
          never waits (the operation already finished) and instead pages the \
          text with offset/tail — offset (default 0) is a 0-based line index, \
-         tail (default 30, matching call's own default) is how many lines to \
-         return from there, 0 meaning the rest (still byte-capped). When the \
-         operation had an explicit output_file, the poll result names that \
-         path instead of paging text. Pass kill: true to SIGKILL a job's \
+         tail (default 30, matching bash's own default) is how many lines to \
+         return from there, 0 meaning the rest (still byte-capped). Pass kill: true to SIGKILL a job's \
          process group, or to cooperatively stop a script — it ends at its \
          next operation, after any in-flight exec/bash binding finishes \
          (refused for a sub-agent or retained-output handle — \
@@ -138,7 +133,7 @@ pub fn poll_spec() -> ToolSpec {
             "properties": {
                 "handle": {
                     "type": "string",
-                    "description": "The handle to await: a job id from bash/call \
+                    "description": "The handle to await: a job id from bash \
                         background=true, a script id from rhai background=true, an \
                         agent_id from agent background=true, or a \
                         retained-output id returned alongside a truncated call result. \
@@ -416,7 +411,7 @@ mod tests {
         assert_eq!(clamped.timeout_secs, MAX_TIMEOUT_SECS);
     }
 
-    /// #608: `offset` defaults to 0, `tail` defaults to 30 (matching `call`).
+    /// #608: `offset` defaults to 0, `tail` defaults to 30 (matching `bash`).
     #[test]
     fn parse_input_defaults_offset_and_tail() {
         let p = parse_input(r#"{"handle":"o-abc"}"#).unwrap();

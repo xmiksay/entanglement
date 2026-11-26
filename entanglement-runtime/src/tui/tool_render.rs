@@ -49,7 +49,7 @@ pub fn render_tool_output(
 /// is in flight or awaiting approval (#519: an approval preview is never left
 /// blank). Every tool reads as what it did: `read` → the full path + the file
 /// body, `edit` → the path + a real diff, `write`/`apply_patch` → the path +
-/// the content/patch as a diff, `bash`/`call`/`rhai` → the full command or
+/// the content/patch as a diff, `bash`/`rhai` → the full command or
 /// script + its output, `glob`/`grep` → the full pattern/filter, the
 /// orchestration tools → readable prose, the discovery tools → a readable
 /// roster or per-tool schema summary (ADR-0226), and everything else (MCP,
@@ -101,7 +101,7 @@ fn input_body(
         Some("edit") => expansion::render_edit_input(input, &theme),
         Some("write") => expansion::render_write_expansion(input).lines,
         Some("apply_patch") => expansion::render_apply_patch_expansion(input, &theme).lines,
-        Some(t @ ("bash" | "call")) => expansion::render_command_input(t, input, available_width),
+        Some("bash") => expansion::render_command_input(input, available_width),
         Some("glob") => expansion::render_glob_input(input),
         Some("grep") => expansion::render_grep_input(input),
         Some("rhai") => expansion::render_rhai_input(input, available_width),
@@ -130,7 +130,7 @@ fn output_body(
         _ if output.trim().is_empty() => Vec::new(),
         Some("read") => render_read_output(output, theme, available_width, md).lines,
         Some("edit") => render_edit_output(output, theme, available_width, md).lines,
-        Some("bash" | "call") => render_plain_output(output, theme, available_width, md).lines,
+        Some("bash") => render_plain_output(output, theme, available_width, md).lines,
         Some("list_agents" | "list_models" | "list_skills" | "list_mcp") => {
             discovery::render_list_output(output, available_width, &theme)
         }
@@ -189,7 +189,7 @@ pub(super) fn render_read_output(
     )))
 }
 
-/// A `bash`/`call` output or a head-local status notice (no tool name):
+/// A `bash` output or a head-local status notice (no tool name):
 /// pretty-printed + highlighted when the whole body is JSON, else word-wrapped
 /// to the panel — the fix for "long lines run off the right edge" and "JSON
 /// output shown as one unreadable line" (#wrap).

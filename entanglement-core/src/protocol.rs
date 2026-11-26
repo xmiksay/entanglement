@@ -171,7 +171,7 @@ pub struct SessionInfo {
 }
 
 /// Kind of pending operation in an [`OutEvent::OperationList`] snapshot (#607,
-/// ADR-0161 §6): a background `bash`/`call` job, a launched sub-agent, or a
+/// ADR-0161 §6): a background `bash` job, a launched sub-agent, or a
 /// background `rhai` script (#637, ADR-0185).
 /// Lifetimes differ — a job is an OS process owned by this engine process and
 /// cannot outlive it, a script is an in-process task with the same lifetime,

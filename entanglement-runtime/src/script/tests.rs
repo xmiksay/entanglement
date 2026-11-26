@@ -188,12 +188,11 @@ fn format_output_flags_a_script_error() {
     assert!(is_error);
 }
 
-/// #480: `exec`/`bash`'s new three/two-arg overloads marshal `workdir`
-/// into the dispatched tool's own JSON input; the workdir-less overloads
-/// leave the field out entirely (not `null`), matching a direct tool
-/// call's shape.
+/// #480: `bash`'s two-arg overload marshals `workdir` into the dispatched
+/// tool's own JSON input; the workdir-less overload leaves the field out
+/// entirely (not `null`), matching a direct tool call's shape.
 #[test]
-fn exec_and_bash_bindings_marshal_workdir_when_given() {
+fn bash_binding_marshals_workdir_when_given() {
     let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
     let mut engine = Engine::new_raw();
     register_bindings(
@@ -220,8 +219,6 @@ fn exec_and_bash_bindings_marshal_workdir_when_given() {
     let _ = engine
         .eval::<Dynamic>(
             r#"
-            exec("echo", ["hi"]);
-            exec("echo", ["hi"], "/tmp/x");
             bash("echo hi");
             bash("echo hi", "/tmp/y");
             "#,
@@ -233,22 +230,15 @@ fn exec_and_bash_bindings_marshal_workdir_when_given() {
     responder.join().unwrap();
 
     let calls = captured.lock().unwrap();
-    assert_eq!(calls.len(), 4);
-    assert!(calls
-        .iter()
-        .all(|(tool, _)| tool == "call" || tool == "bash"));
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|(tool, _)| tool == "bash"));
 
     let parse = |i: usize| -> serde_json::Value { serde_json::from_str(&calls[i].1).unwrap() };
     assert!(
         parse(0).get("workdir").is_none(),
-        "exec(cmd, args) carries no workdir field"
-    );
-    assert_eq!(parse(1)["workdir"], "/tmp/x");
-    assert!(
-        parse(2).get("workdir").is_none(),
         "bash(cmd) carries no workdir field"
     );
-    assert_eq!(parse(3)["workdir"], "/tmp/y");
+    assert_eq!(parse(1)["workdir"], "/tmp/y");
 }
 
 #[test]

@@ -128,7 +128,7 @@ pub(super) async fn rhai(
     let reg_session = session.clone();
     let run_stop = stop.clone();
     // A `background: true` script (#637, ADR-0185) survives a session `Stop`
-    // like a background `bash`/`call` job: never registered with the
+    // like a background `bash` job: never registered with the
     // canceller; `poll`'s `kill: true` trips the same flag.
     let background = crate::script::is_background(&input);
     let cancels = ctx.cancels.clone();

@@ -18,8 +18,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::host::{
-    host_tools, host_tools_with_extra_roots, BashTool, CallTool, GlobJsonTool, GrepJsonTool,
-    ReadRawTool,
+    host_tools, host_tools_with_extra_roots, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
@@ -292,10 +291,9 @@ fn spawn_with_rhai(script: &str, root: &std::path::Path, agents: AgentCatalog) -
     holly
 }
 
-/// [`spawn_with_rhai`] plus the exec pair registered into the same registry —
-/// both unconditionally, mirroring the head's ADR-0093/ADR-0195 posture — so
-/// the script-facing `exec(...)`/`bash(...)` bindings have a real host tool
-/// to delegate to (#419). A test that wants the *absent*-tool shape passes
+/// [`spawn_with_rhai`] plus `bash` registered into the same registry —
+/// mirroring the head's ADR-0195 posture — so the script-facing `bash(...)`
+/// binding has a real host tool to delegate to (#419). A test that wants the *absent*-tool shape passes
 /// `bash_registered: false` (a bespoke registry omitting it, as an embedder
 /// might assemble).
 fn spawn_with_rhai_exec(
@@ -316,7 +314,7 @@ fn spawn_with_rhai_exec(
 /// [`spawn_with_rhai_exec`] with a caller-chosen config-level permission
 /// ceiling (#172) instead of the hardcoded allow-all `base` — lets a test
 /// exercise a `tool{pattern}`-style ceiling rule (#425/#480) against the
-/// `rhai` `exec`/`bash` bindings.
+/// `rhai` `bash` binding.
 fn spawn_with_rhai_exec_and_base(
     script: &str,
     root: &std::path::Path,
@@ -353,7 +351,6 @@ fn spawn_with_rhai_exec_and_base(
     answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
-    tools.register(CallTool::new(root.to_path_buf()));
     if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
@@ -589,7 +586,6 @@ fn spawn_with_rhai_exec_mode(
     answer_launch_cards(&holly);
     let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
-    tools.register(CallTool::new(root.to_path_buf()));
     if bash_registered {
         tools.register(BashTool::new(root.to_path_buf()));
     }
@@ -769,7 +765,7 @@ async fn an_unknown_binding_name_returns_the_binding_reference() {
         "the failed script must carry the binding reference: {out}"
     );
     assert!(out.contains("read_raw(path)"), "{out}");
-    assert!(out.contains("exec(command)"), "{out}");
+    assert!(out.contains("bash(command)"), "{out}");
 }
 
 #[tokio::test]
@@ -1234,50 +1230,26 @@ async fn parse_json_failure_is_catchable_without_touching_the_bridge() {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ #419: call/bash exec bindings
+// ┃ #419: the bash exec binding
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
-async fn call_binding_runs_argv_exec_when_allowed() {
-    let dir = TempDir::new("call-allow");
-    let holly = spawn_with_rhai_exec(
-        r#"exec("echo", ["hi"])"#,
-        &dir.path,
-        one_profile("build", PermissionProfile::new(Permission::Allow)),
-        false,
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    prompt(&holly, &sid, "build").await;
-    let events = collect(sub, &sid).await;
-
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "Allow call must not ask for approval"
-    );
-    let out = rhai_output(&events).expect("expected rhai output");
-    assert!(out.contains("hi"), "exec binding ran echo: {out}");
-}
-
-#[tokio::test]
-async fn call_binding_denied_surfaces_as_catchable_script_error() {
-    let dir = TempDir::new("call-deny");
+async fn bash_binding_denied_surfaces_as_catchable_script_error() {
+    let dir = TempDir::new("bash-deny");
     // Custom mode table — `build`'s own `exec` class-allow would otherwise
-    // let `call` straight through (`bash`/`call` share the `Exec` capability).
-    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Deny);
+    // let `bash` straight through.
+    let permission = PermissionProfile::new(Permission::Allow).with("bash", Permission::Deny);
     let holly = spawn_with_rhai_exec_mode(
-        r#"let r = ""; try { exec("echo", ["hi"]); r = "ran" } catch(e) { r = "caught: " + e } r"#,
+        r#"let r = ""; try { bash("echo hi"); r = "ran" } catch(e) { r = "caught: " + e } r"#,
         &dir.path,
-        one_profile("denycall", permission.clone()),
-        false,
+        one_profile("denybash", permission.clone()),
+        true,
         mode_table_for(&permission),
         None,
     );
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
-    prompt(&holly, &sid, "denycall").await;
+    prompt(&holly, &sid, "denybash").await;
     let events = collect(sub, &sid).await;
 
     let out = rhai_output(&events).expect("expected rhai output");
@@ -1330,25 +1302,24 @@ async fn bash_binding_runs_when_registered_and_allowed() {
     assert!(out.contains("hi"), "bash binding ran echo: {out}");
 }
 
-/// #419 fix A regression: `call`/`bash` approvals are cached per resolved
-/// command line, not per bare tool name — approving `exec(echo a)` (asking
-/// under the `call` tool) must not silently pre-clear the unrelated
-/// `exec(echo b)` later in the same run.
+/// #419 fix A regression: `bash` approvals are cached per resolved command
+/// line, not per bare tool name — approving `bash("echo a")` must not
+/// silently pre-clear the unrelated `bash("echo b")` later in the same run.
 #[tokio::test]
-async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
-    let dir = TempDir::new("call-fix-a");
+async fn approving_one_bash_command_does_not_auto_clear_a_different_one() {
+    let dir = TempDir::new("bash-fix-a");
     // `print(...)` (not a returned value) so the raw call output — including
     // its real newlines — lands in the tool output verbatim; a *returned*
     // string instead gets JSON-serialized (escaped `\n`), which would make a
     // line-based assertion on the echoed output meaningless.
     // Custom mode table — `build`'s own `exec` class-allow would otherwise
     // let both calls through with no prompt at all.
-    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Ask);
+    let permission = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
     let holly = spawn_with_rhai_exec_mode(
-        r#"print(exec("echo", ["a"])); print(exec("echo", ["b"]));"#,
+        r#"print(bash("echo a")); print(bash("echo b"));"#,
         &dir.path,
         one_profile("askcall", permission.clone()),
-        false,
+        true,
         mode_table_for(&permission),
         None,
     );
@@ -1356,7 +1327,7 @@ async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
     let sub = holly.subscribe();
     prompt(&holly, &sid, "askcall").await;
 
-    // `exec()` blocks the (synchronous) script until its approval resolves, so
+    // `bash()` blocks the (synchronous) script until its approval resolves, so
     // the two calls' asks arrive one at a time, not concurrently — auto-approve
     // each as it comes and let the run finish, then check *how many* asks fired.
     let events = collect_auto_approving(&holly, sub, &sid).await;
@@ -1366,7 +1337,7 @@ async fn approving_one_call_command_does_not_auto_clear_a_different_one() {
         .count();
     assert_eq!(
         requests, 2,
-        "two distinct exec() commands must ask twice, not share one cache entry \
+        "two distinct bash() commands must ask twice, not share one cache entry \
          (a cache keyed by bare tool name would collapse this to 1)"
     );
     let out = rhai_output(&events).expect("expected rhai output");
@@ -1422,18 +1393,18 @@ async fn bash_binding_workdir_scoped_rule_fires_for_matching_workdir() {
 }
 
 /// Same-command re-invocation still hits the once-per-run cache (unchanged
-/// behavior for `call`/`bash`, same as the quintet) — only a *different*
+/// behavior for `bash`, same as the quintet) — only a *different*
 /// command line forces a fresh ask.
 #[tokio::test]
-async fn approving_a_call_command_covers_a_repeat_of_the_same_command() {
-    let dir = TempDir::new("call-same-cmd");
-    // Custom mode table — see `approving_one_call_command_does_not_auto_clear_a_different_one`.
-    let permission = PermissionProfile::new(Permission::Allow).with("call", Permission::Ask);
+async fn approving_a_bash_command_covers_a_repeat_of_the_same_command() {
+    let dir = TempDir::new("bash-same-cmd");
+    // Custom mode table — see `approving_one_bash_command_does_not_auto_clear_a_different_one`.
+    let permission = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
     let holly = spawn_with_rhai_exec_mode(
-        r#"print(exec("echo", ["a"])); print(exec("echo", ["a"]));"#,
+        r#"print(bash("echo a")); print(bash("echo a"));"#,
         &dir.path,
         one_profile("askcall", permission.clone()),
-        false,
+        true,
         mode_table_for(&permission),
         None,
     );

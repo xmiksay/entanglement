@@ -101,7 +101,7 @@ pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
         "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
         // `web_fetch`/`http` are outbound network, graded like `curl` (#736,
         // ADR-0220; ADR-0227).
-        "bash" | "call" | "web_fetch" | "http" => Some(&[Capability::Exec]),
+        "bash" | "web_fetch" | "http" => Some(&[Capability::Exec]),
         _ => None,
     }
 }

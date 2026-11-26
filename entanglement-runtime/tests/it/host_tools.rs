@@ -13,7 +13,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::host::{host_tools, BashTool, CallTool};
+use entanglement_runtime::host::{host_tools, BashTool};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use sha2::{Digest, Sha256};
 
@@ -793,96 +793,4 @@ async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile()
     assert!(output.contains("[exit 3]"), "got: {output}");
     assert!(!is_error, "a non-zero exit must not set is_error; got true");
     assert_eq!(exit_code, Some(3));
-}
-
-#[tokio::test]
-async fn call_tool_runs_argv_verbatim_through_engine_under_build_profile() {
-    let id = std::process::id();
-    let root = std::env::temp_dir().join(format!("entanglement-call-e2e-{id}"));
-    std::fs::create_dir_all(&root).unwrap();
-    struct Drop_(std::path::PathBuf);
-    impl Drop for Drop_ {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Drop_(root.clone());
-
-    // A payload full of shell metacharacters: passed as argv it must reach
-    // `printf` verbatim, never expanded or split by a shell. Deliberately
-    // avoids a literal `rm -rf /`-shaped substring: `call`'s own runtime
-    // behavior never shell-interprets this string (the whole point being
-    // tested), but the *grading* layer's compound-command splitter still
-    // reads the space-joined `command`+`args` textually (#173) and build
-    // mode's destructive-command deny list (ADR-0207 §4) would otherwise
-    // flag this fixture data as if it were a real destructive command.
-    let payload = "$HOME && echo pwned | cat *.rs";
-    let call_call = LlmResponse {
-        text: "".into(),
-        tool_calls: vec![ToolCall {
-            id: "c1".into(),
-            name: "call".into(),
-            input: serde_json::json!({ "command": "printf", "args": ["%s", payload] }).to_string(),
-            provider_meta: None,
-        }],
-        ..Default::default()
-    };
-    let finish = LlmResponse {
-        text: "done".into(),
-        tool_calls: vec![],
-        ..Default::default()
-    };
-    let scripted = Arc::new(vec![call_call, finish]);
-    // Mirror the head's registry: the sextet plus the exec pair
-    // (`call`/`bash`, both unconditionally registered — ADR-0093/ADR-0195).
-    let mut tools = host_tools(root.clone());
-    tools.register(BashTool::new(root.clone()));
-    tools.register(CallTool::new(root.clone()));
-    let cfg = EngineConfig {
-        llm_factory: Arc::new(move || {
-            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
-        }),
-        tool_specs: tools.specs(),
-        // Core carries only `build` now (#201); the engine needs the full trio to
-        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
-        ..EngineConfig::default()
-    };
-    let holly = Holly::spawn(cfg);
-    let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
-        .base(entanglement_core::PermissionProfile::new(
-            entanglement_core::Permission::Allow,
-        ))
-        .spawn();
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly
-        .send(InMsg::prompt(sid.clone(), "call it"))
-        .await
-        .unwrap();
-
-    let events = collect(sub, &sid).await;
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "call should auto-run under build"
-    );
-    let output = events
-        .iter()
-        .find_map(|e| match e {
-            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
-            _ => None,
-        })
-        .expect("expected a ToolOutput");
-    assert!(output.contains("[exit 0]"), "got: {output}");
-    // The metacharacters survived as literal argv — no shell touched them.
-    assert!(
-        output.contains(payload),
-        "argv must be verbatim, got: {output}"
-    );
 }

@@ -97,7 +97,7 @@ pub enum InMsg {
     /// log or a hand-built `InMsg::tool_result` still deserializes/round-trips.
     ///
     /// `exit_code` (#681, ADR-0186) extends the same side channel with the
-    /// numeric exit status of a process-running tool (`bash`/`call`, and a
+    /// numeric exit status of a process-running tool (`bash`, and a
     /// `poll` that observed a background job exit). `None` everywhere else —
     /// including a signal-killed process, where the `[exit -1]` text keeps its
     /// lossy sentinel but the field stays honest. Orthogonal to `is_error`:
@@ -216,7 +216,7 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<SessionId>,
     },
-    /// Enumerate this engine's outstanding background `bash`/`call` jobs and
+    /// Enumerate this engine's outstanding background `bash` jobs and
     /// launched sub-agents (#607, ADR-0161 §6) — the head-facing counterpart
     /// to `poll`'s no-handle model surface: "what do I still have running,"
     /// answered by attributing every job/agent handle to the session that
@@ -462,7 +462,7 @@ pub enum InMsg {
     /// was restored, appends a user-role note to `Context` so the model does
     /// not assume its edits still exist. Deferred while a turn is live or the
     /// session is paused (stash replay), like `SetModel` — a revert must
-    /// never race the turn's own tool writes. Changes made by `bash`/`call`/
+    /// never race the turn's own tool writes. Changes made by `bash`/
     /// `rhai` exec are not tracked and never reverted. **Trusted-only** (not
     /// wire-allowed): it writes and deletes files on disk.
     RevertFiles {
@@ -494,7 +494,7 @@ pub enum InMsg {
         at_turn: Option<u32>,
     },
     /// Change `session`'s **working directory** (#764, ADR-0224): the default
-    /// cwd for `bash`/`call`/`rhai` exec and the base a relative path-tool
+    /// cwd for `bash`/`rhai` exec and the base a relative path-tool
     /// argument resolves against. `dir` is absolute or relative to the
     /// session's current workdir; the supervisor validates it through
     /// `EngineConfig::workdir_resolver` on arrival (canonical, a directory,

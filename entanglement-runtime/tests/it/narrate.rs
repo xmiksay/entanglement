@@ -276,7 +276,7 @@ async fn only_a_scripts_first_nested_call_narrates() {
         session: sid.clone(),
         parent_request_id: parent.into(),
         index,
-        tool: "call".into(),
+        tool: "bash".into(),
         args: "cargo …".into(),
         duration_ms: 5,
         is_error: false,

@@ -64,7 +64,7 @@ fn infer_legacy_mode(removed: &serde_yaml::Mapping) -> &'static str {
         }
     }
     if let Some(serde_yaml::Value::Sequence(list)) = get("tools") {
-        const WRITE_MARKERS: [&str; 6] = ["write", "edit", "apply_patch", "bash", "call", "rhai"];
+        const WRITE_MARKERS: [&str; 5] = ["write", "edit", "apply_patch", "bash", "rhai"];
         let write_capable = list.iter().any(|v| {
             v.as_str()
                 .map(|s| {

@@ -13,7 +13,7 @@ use std::path::Path;
 /// `"."`); `grep` → the path filter value verbatim (already directory-shaped
 /// — a specific file or a directory); `glob` → the pattern's literal prefix
 /// up to its first wildcard, truncated to the last path separator
-/// ([`glob_literal_prefix`]). Any other tool (`bash`/`call`, or a call with
+/// ([`glob_literal_prefix`]). Any other tool (`bash`, or a call with
 /// no argument) has no directory concept and yields `None` — `record`'s
 /// caller degrades to an exact `Session` grant in that case. Head-agnostic
 /// and reusable beyond the read-only triad `record` currently restricts this

@@ -1,19 +1,13 @@
 //! [`RetainedOutputRegistry`] — where a completed operation's output that
 //! overflowed its tail/byte cap survives so `poll` can page the remainder
-//! (#608, ADR-0161 §7). Replaces `call`'s scratch-artifact dance: retention
-//! moves from a file on disk to a size-capped, evicted in-memory entry keyed
-//! by a fresh `o-` handle (ADR-0164), minted only when a result actually
+//! (#608, ADR-0161 §7): a size-capped, evicted in-memory entry keyed by a
+//! fresh `o-` handle (ADR-0164), minted only when a result actually
 //! overflowed — a small result never gets an entry.
 //!
 //! Generalizes the handle rule this ADR states: not just backgrounded work,
-//! but "work you might still have questions about" gets a handle. A blocking
-//! `call` that overflows keeps returning its tail inline, plus this handle for
-//! the rest.
-//!
-//! **Explicit `output_file` is untouched** — that is a real file the model
-//! asked for, not a truncation workaround. An entry for such a call carries
-//! `output_file` instead of a text copy, so `poll` just names the path rather
-//! than duplicating its content in memory.
+//! but "work you might still have questions about" gets a handle — a
+//! sub-agent answer that overflows its inline cap keeps returning its tail,
+//! plus this handle for the rest.
 //!
 //! Retention is capped per-operation ([`MAX_RETAINED_BYTES`]) and the whole
 //! registry is evicted on the same TTL/count shape
@@ -41,11 +35,8 @@ const MAX_RETAINED_ENTRIES: usize = 200;
 
 struct Entry {
     owner: Option<SessionId>,
-    /// `None` when this entry only points at a real `output_file` — the file
-    /// already holds the full text, so it isn't duplicated here.
-    text: Option<String>,
+    text: String,
     dropped_bytes: usize,
-    output_file: Option<String>,
     created: Instant,
 }
 
@@ -58,13 +49,12 @@ pub struct Page {
     /// `offset` the caller asked for).
     pub start_line: usize,
     pub has_more: bool,
-    pub output_file: Option<String>,
     pub dropped_bytes: usize,
 }
 
 /// Shared, cheaply-cloned registry of retained operation output. One instance
-/// is built at startup and handed to both `call` (the writer) and `poll` (the
-/// reader).
+/// is built at startup and handed to both the sub-agent answer path (the
+/// writer) and `poll` (the reader).
 #[derive(Clone)]
 pub struct RetainedOutputRegistry {
     inner: Arc<Mutex<Inner>>,
@@ -91,28 +81,12 @@ impl RetainedOutputRegistry {
         Self::default()
     }
 
-    /// Register a real `output_file` an operation wrote (explicit case,
-    /// #608): no text is duplicated in memory, `poll` just names the path.
-    pub fn register_file(&self, owner: Option<SessionId>, output_file: String) -> String {
-        self.insert(owner, None, 0, Some(output_file))
-    }
-
     /// Register `text` (already known to have overflowed the caller's
     /// tail/byte cap) for `owner`, capping it to [`MAX_RETAINED_BYTES`] and
     /// reporting how much of *that* was dropped. Returns the fresh handle
     /// `poll` dispatches on.
     pub fn register_text(&self, owner: Option<SessionId>, text: String) -> String {
-        let (kept, dropped) = cap_retained(text);
-        self.insert(owner, Some(kept), dropped, None)
-    }
-
-    fn insert(
-        &self,
-        owner: Option<SessionId>,
-        text: Option<String>,
-        dropped_bytes: usize,
-        output_file: Option<String>,
-    ) -> String {
+        let (text, dropped_bytes) = cap_retained(text);
         let mut inner = self.lock();
         evict_expired(&mut inner.entries, Instant::now());
         let id = inner.id_gen.next(IdKind::Output, &IdContext::default());
@@ -122,7 +96,6 @@ impl RetainedOutputRegistry {
                 owner,
                 text,
                 dropped_bytes,
-                output_file,
                 created: Instant::now(),
             },
         );
@@ -142,8 +115,7 @@ impl RetainedOutputRegistry {
         if !owner_allows(&entry.owner, caller) {
             return None;
         }
-        let text = entry.text.as_deref().unwrap_or("");
-        let lines: Vec<&str> = text.lines().collect();
+        let lines: Vec<&str> = entry.text.lines().collect();
         let start = (offset as usize).min(lines.len());
         let end = if tail == 0 {
             lines.len()
@@ -155,7 +127,6 @@ impl RetainedOutputRegistry {
             total_lines: lines.len(),
             start_line: start,
             has_more: end < lines.len(),
-            output_file: entry.output_file.clone(),
             dropped_bytes: entry.dropped_bytes,
         })
     }
@@ -175,7 +146,6 @@ impl RetainedOutputRegistry {
             .map(|(id, e)| RetainedInfo {
                 handle: id.clone(),
                 owner: e.owner.clone(),
-                is_file: e.output_file.is_some(),
                 age: Instant::now().saturating_duration_since(e.created),
             })
             .collect();
@@ -209,7 +179,6 @@ impl RetainedOutputRegistry {
 pub struct RetainedInfo {
     pub handle: String,
     pub owner: Option<SessionId>,
-    pub is_file: bool,
     pub age: Duration,
 }
 
@@ -257,25 +226,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_scopes_to_owner_and_reports_file_vs_text() {
+    fn snapshot_scopes_to_owner() {
         let reg = RetainedOutputRegistry::new();
         let a = SessionId::new("a");
         let b = SessionId::new("b");
-        let text_id = reg.register_text(Some(a.clone()), "hi".to_string());
-        let file_id = reg.register_file(Some(b.clone()), "out.txt".to_string());
+        let a_id = reg.register_text(Some(a.clone()), "hi".to_string());
+        let b_id = reg.register_text(Some(b.clone()), "out".to_string());
 
         let all = reg.snapshot(None);
         assert_eq!(all.len(), 2);
 
         let only_a = reg.snapshot(Some(&a));
         assert_eq!(only_a.len(), 1);
-        assert_eq!(only_a[0].handle, text_id);
-        assert!(!only_a[0].is_file);
+        assert_eq!(only_a[0].handle, a_id);
 
         let only_b = reg.snapshot(Some(&b));
         assert_eq!(only_b.len(), 1);
-        assert_eq!(only_b[0].handle, file_id);
-        assert!(only_b[0].is_file);
+        assert_eq!(only_b[0].handle, b_id);
     }
 
     #[test]
@@ -336,16 +303,6 @@ mod tests {
         let id = reg.register_text(Some(owner.clone()), big);
         let page = reg.page(&id, &owner, 0, 0).unwrap();
         assert!(page.dropped_bytes > 0, "overflow must be reported");
-    }
-
-    #[test]
-    fn file_entry_names_the_path_with_no_text_duplication() {
-        let reg = RetainedOutputRegistry::new();
-        let owner = SessionId::new("s1");
-        let id = reg.register_file(Some(owner.clone()), "out/result.txt".to_string());
-        let page = reg.page(&id, &owner, 0, 30).unwrap();
-        assert_eq!(page.output_file.as_deref(), Some("out/result.txt"));
-        assert_eq!(page.total_lines, 0);
     }
 
     #[test]

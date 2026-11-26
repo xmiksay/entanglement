@@ -18,7 +18,7 @@
 //!   retired along with it, since nothing resolves a session's mode from
 //!   `Agent.permission` any more. Resolution takes the call's
 //!   tool-specific argument (command/path, #173) so an argument-scoped rule
-//!   matches the actual input; [`permission_arg`] extracts it. A `bash`/`call`
+//!   matches the actual input; [`permission_arg`] extracts it. A `bash`
 //!   call also carries its `workdir` (#425) so a `tool{pattern}`
 //!   workdir-scoped rule matches too; [`permission_workdir`] extracts it.
 //!
@@ -131,7 +131,7 @@ pub fn resolve_model(
 /// result and the config's rule for the `tool` call — so the user/repo config
 /// `permissions` section is a *ceiling*: it can tighten what an agent allows
 /// (`bash: ask` forces every agent to ask), never loosen it. `arg` carries the
-/// tool-specific argument (#173) and `workdir` the `bash`/`call` working
+/// tool-specific argument (#173) and `workdir` the `bash` working
 /// directory (#425) so an argument-/workdir-scoped ceiling rule like
 /// `bash(rm *): deny` or `bash{/etc/*}: deny` resolves against the actual call.
 /// The embedded default is allow-all, so an untouched config is a no-op. This is
@@ -266,10 +266,10 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
     chain
 }
 
-/// The `workdir` a `bash`/`call` invocation would run in, for a
-/// workdir-scoped permission rule (#425, `tool{pattern}`,
+/// The `workdir` a `bash` invocation would run in, for a workdir-scoped
+/// permission rule (#425, `tool{pattern}`,
 /// [`entanglement_core::PermissionProfile::resolve_scoped`]) — distinct from
-/// [`permission_arg`] (which yields the *command* line for these two tools).
+/// [`permission_arg`] (which yields the *command* line for it).
 /// `None` for any other tool, an absent `workdir` (the tool then defaults to
 /// root), or on malformed input — a workdir-scoped rule then never matches,
 /// falling through to the tool's other rules.
@@ -286,14 +286,14 @@ pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
 /// (`config::mode_warn` warns on one, #881). The gate `permission_workdir`
 /// itself checks, so the warning can't drift from what grading sees.
 pub(crate) fn takes_workdir_scope(tool: &str) -> bool {
-    matches!(tool, "bash" | "call")
+    tool == "bash"
 }
 
 /// The **filesystem path** a call would touch, for the escape-root gate
 /// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
-/// `bash`/`call`). It's the `path` for `read`/`edit`/`write`/`apply_patch`
+/// `bash`). It's the `path` for `read`/`edit`/`write`/`apply_patch`
 /// (and `rhai`'s script `path`, ADR-0228) and the `workdir` for
-/// `bash`/`call` (absent → the tool defaults to root, never an escape), the
+/// `bash` (absent → the tool defaults to root, never an escape), the
 /// same value [`permission_workdir`] extracts for permission scoping. `None` for any other tool or on malformed input, so those never
 /// trip the gate.
 pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
@@ -302,7 +302,7 @@ pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
             let value: serde_json::Value = serde_json::from_str(input).ok()?;
             value.get("path")?.as_str().map(String::from)
         }
-        "bash" | "call" => permission_workdir(tool, input),
+        "bash" => permission_workdir(tool, input),
         _ => None,
     }
 }
@@ -764,11 +764,6 @@ mod tests {
             permission_arg("bash", r#"{"command":"git status"}"#).as_deref(),
             Some("git status")
         );
-        // call → command joined with its verbatim args.
-        assert_eq!(
-            permission_arg("call", r#"{"command":"git","args":["status","-s"]}"#).as_deref(),
-            Some("git status -s")
-        );
         // edit/write/read/apply_patch → the target path.
         assert_eq!(
             permission_arg(
@@ -915,14 +910,10 @@ mod tests {
     }
 
     #[test]
-    fn permission_workdir_extracts_bash_and_call_only() {
+    fn permission_workdir_extracts_bash_only() {
         assert_eq!(
             permission_workdir("bash", r#"{"command":"ls","workdir":"/tmp"}"#).as_deref(),
             Some("/tmp")
-        );
-        assert_eq!(
-            permission_workdir("call", r#"{"command":"git","workdir":"/tmp/repo"}"#).as_deref(),
-            Some("/tmp/repo")
         );
         // No `workdir` field, a tool with no workdir concept, and malformed
         // input all yield None.
@@ -950,7 +941,7 @@ mod tests {
                 "{tool}"
             );
         }
-        assert!(takes_workdir_scope("bash") && takes_workdir_scope("call"));
+        assert!(takes_workdir_scope("bash"));
     }
 
     /// The config ceiling's own workdir-scoped rule (#425) — the one

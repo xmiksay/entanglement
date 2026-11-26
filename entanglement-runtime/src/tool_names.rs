@@ -19,12 +19,12 @@ pub const POLL_TOOL: &str = "poll";
 /// bindings added by ADR-0115).
 pub const RHAI_TOOL: &str = "rhai";
 
-/// The host tools bound into every `rhai` script under their own names (`call`
-/// as `exec`) — every call through the dispatch seam, graded like a direct
-/// call (ADR-0227). `bash` is *reachable* only when the host `bash` tool is
+/// The host tools bound into every `rhai` script under their own names —
+/// every call through the dispatch seam, graded like a direct call
+/// (ADR-0227). `bash` is *reachable* only when the host `bash` tool is
 /// registered. The script-only `http` binding and the generated `mcp::`/
 /// `skill::` namespaces are not in this list.
-pub const BINDING_TOOLS: [&str; 7] = ["read", "glob", "grep", "edit", "write", "call", "bash"];
+pub const BINDING_TOOLS: [&str; 6] = ["read", "glob", "grep", "edit", "write", "bash"];
 
 /// The rhai `http(method, url, #{headers, body})` binding's tool (ADR-0227):
 /// registered but never advertised — reachable from a script only, graded as
@@ -185,7 +185,7 @@ pub fn non_maskable_reason(tool: &str) -> Option<String> {
 /// snapshotted per session. Every model-facing tool must be named here or it
 /// is unreachable: `agent`/`agent_send` and `propose_plan`/`request_mode`
 /// ride the shared spec pool like everything else, so the filter keeps only
-/// what is listed. Registered but hidden: `call`/`glob`/`grep` (script-only
+/// what is listed. Registered but hidden: `glob`/`grep` (script-only
 /// rhai bindings, still graded under their names) and `read_raw`/
 /// `glob_json`/`grep_json`, and `http` (ADR-0227).
 pub const KERNEL: &[&str] = &[
@@ -254,7 +254,7 @@ pub fn is_read_capability_member(tool: &str) -> bool {
 
 /// The compile-time vocabulary of literal tool names a mask entry or
 /// permission rule key can spell out (#623): the root-contained quintet plus
-/// `apply_patch`, the exec pair, [`RHAI_TOOL`], and every runtime-owned tool.
+/// `apply_patch`, `bash`, [`RHAI_TOOL`], and every runtime-owned tool.
 /// Deliberately independent of what's *actually registered* this run —
 /// `bash`/`rhai` are env/feature-gated and MCP tools connect after profiles
 /// load — so a config naming a real but currently-inactive tool never
@@ -270,7 +270,6 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     "write",
     "apply_patch",
     "bash",
-    "call",
     RHAI_TOOL,
     "web_fetch",
     ASK_USER_TOOL,
@@ -304,8 +303,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
 /// Whether `entry` — one item from an agent's `tools:`/`disallowed_tools:`
 /// mask, or the tool part of a `permission:` rule key — names something a
 /// stale-config check can vouch for (#623): a known literal tool name
-/// ([`KNOWN_TOOL_NAMES`]), a capability key ([`is_capability_name`]), a
-/// `*`/`?` wildcard pattern (ADR-0148 — matched dynamically, so it can't be
+/// ([`KNOWN_TOOL_NAMES`]), a `*`/`?` wildcard pattern (ADR-0148 — matched dynamically, so it can't be
 /// checked against a fixed list), or an MCP tool (`mcp__<server>__<tool>`,
 /// unknowable until the server connects, #426). Anything else is very likely
 /// a stale or typo'd name — e.g. a tool retired by a rename (#605/#606:
@@ -316,7 +314,6 @@ pub fn is_recognized_mask_entry(entry: &str) -> bool {
     entry.contains('*')
         || entry.contains('?')
         || entry.starts_with("mcp__")
-        || is_capability_name(entry)
         || KNOWN_TOOL_NAMES.contains(&entry)
 }
 
@@ -332,10 +329,9 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_capabilities_globs_and_mcp_tools() {
+    fn recognizes_tools_globs_and_mcp_tools() {
         assert!(is_recognized_mask_entry("read"));
         assert!(is_recognized_mask_entry("write"));
-        assert!(is_recognized_mask_entry("call"));
         assert!(is_recognized_mask_entry("*"));
         assert!(is_recognized_mask_entry("mcp__*"));
         assert!(is_recognized_mask_entry("mcp__docs__search"));
@@ -349,6 +345,8 @@ mod tests {
             "agent_poll",
             "agent_spawn",
             "raed",
+            // #916: the argv `call` tool.
+            "call",
             // ADR-0226 retirements.
             "explore",
             "describe",
@@ -381,7 +379,7 @@ mod tests {
             assert!(KERNEL.contains(&present), "{present} joined the kernel");
         }
         // Hidden-but-registered, script-only: never advertised.
-        for hidden in ["call", "glob", "grep", "read_raw", "glob_json", "grep_json"] {
+        for hidden in ["glob", "grep", "read_raw", "glob_json", "grep_json"] {
             assert!(!KERNEL.contains(&hidden), "{hidden} is not model-facing");
         }
     }

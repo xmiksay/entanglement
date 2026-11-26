@@ -126,19 +126,15 @@ pub(super) fn render_apply_patch_expansion(input: &str, theme: &Theme) -> Text<'
     Text::from(lines)
 }
 
-/// A `bash`/`call` body: the full command (multiline-safe, word-wrapped —
+/// A `bash` body: the full command (multiline-safe, word-wrapped —
 /// never left to the truncated one-line header, #519) plus `workdir` when set
 /// (permission-relevant since #425).
-pub(super) fn render_command_input(
-    tool: &str,
-    input: &str,
-    available_width: u16,
-) -> Vec<Line<'static>> {
+pub(super) fn render_command_input(input: &str, available_width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if let Some(command) = permission::permission_arg(tool, input) {
+    if let Some(command) = permission::permission_arg("bash", input) {
         lines.extend(render_wrapped_labeled("command", &command, available_width));
     }
-    if let Some(workdir) = permission::permission_workdir(tool, input) {
+    if let Some(workdir) = permission::permission_workdir("bash", input) {
         lines.push(Line::from(format!("  workdir: {workdir}")));
     }
     lines
@@ -426,10 +422,10 @@ mod tests {
     }
 
     #[test]
-    fn test_expansion_call_shows_workdir() {
+    fn test_expansion_bash_shows_workdir() {
         let result = super::super::render_expansion(
-            Some("call"),
-            r#"{"command":"git","args":["status","-s"],"workdir":"sub/dir"}"#,
+            Some("bash"),
+            r#"{"command":"git status -s","workdir":"sub/dir"}"#,
             None,
             false,
             Theme::default(),

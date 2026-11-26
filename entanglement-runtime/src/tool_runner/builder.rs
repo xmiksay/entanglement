@@ -118,8 +118,8 @@ impl ToolExecutorBuilder {
         self
     }
 
-    /// The retained-output registry (#608) the caller's `CallTool` writes a
-    /// truncated result into, read back by `poll`. Default: private.
+    /// The retained-output registry (#608) a truncated sub-agent answer is
+    /// written into, read back by `poll`. Default: private.
     pub fn retained(mut self, retained: RetainedOutputRegistry) -> Self {
         self.retained = retained;
         self

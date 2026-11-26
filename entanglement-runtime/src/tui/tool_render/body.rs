@@ -1,5 +1,5 @@
 //! Generic free-text transcript-body rendering, shared by every plain-text
-//! tool-output path (`bash`/`call` output, a `read`'s file body, a head-local
+//! tool-output path (`bash` output, a `read`'s file body, a head-local
 //! status notice) that previously bypassed wrapping entirely and let long
 //! lines run off the right edge of the panel.
 //!

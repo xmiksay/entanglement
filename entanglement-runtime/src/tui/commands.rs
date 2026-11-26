@@ -143,7 +143,7 @@ impl Command {
                 "Fork this session into a new one with the same history (/fork <N> keeps turns 1..N)"
             }
             Command::Cd => {
-                "Change this session's working directory for bash/call and relative paths (bare = project root; --session/--always to approve one outside it)"
+                "Change this session's working directory for bash and relative paths (bare = project root; --session/--always to approve one outside it)"
             }
             Command::Init => {
                 "Ask the model to write an AGENTS.md brief for this repo (--update to improve an existing one)"

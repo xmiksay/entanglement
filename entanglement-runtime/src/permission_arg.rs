@@ -4,11 +4,10 @@
 //! match and live beside their consistency test.
 
 /// The argument string an argument-scoped permission rule (#173) matches
-/// against: the shell command for `bash`, the `command`+`args` line for `call`,
-/// the target path for `edit`/`write`/`read`/`apply_patch` (#455) and for
-/// `rhai`'s script `path` (ADR-0228 — an inline script has none, so only a
-/// bare `rhai` rule matches it), the search
-/// pattern (itself a path glob) for `glob`, and the optional file filter for
+/// against: the shell command for `bash`, the target path for
+/// `edit`/`write`/`read`/`apply_patch` (#455) and for `rhai`'s script `path`
+/// (ADR-0228 — an inline script has none, so only a bare `rhai` rule matches
+/// it), the search pattern (itself a path glob) for `glob`, and the optional file filter for
 /// `grep` (#417 — a path, distinct from `grep`'s `pattern` which is a regex,
 /// not a path). `None` for any other tool, a `grep` call with no `path`
 /// filter, or on malformed input — an argument-scoped rule then never
@@ -28,22 +27,6 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             .filter(|id| !id.is_empty())
             .map(String::from),
         ArgSource::Command => str_field(&value()?, "command"),
-        ArgSource::Call => {
-            let value = value()?;
-            let mut line = value.get("command")?.as_str()?.to_string();
-            // Space-joining loses the argv split: `{command:"rm",args:["x"]}`
-            // and `{command:"rm x"}` grade (and grant-match) identically.
-            // Accepted: `call` execs `command` as the program with no shell,
-            // so a colliding decomposition can only fail to exec — it can
-            // never run a different program than the one graded.
-            if let Some(args) = value.get("args").and_then(|a| a.as_array()) {
-                for a in args.iter().filter_map(|a| a.as_str()) {
-                    line.push(' ');
-                    line.push_str(a);
-                }
-            }
-            Some(line)
-        }
         ArgSource::Path => str_field(&value()?, "path"),
         ArgSource::Glob => {
             let value = value()?;
@@ -80,7 +63,6 @@ enum ArgSource {
     Agent,
     AgentSend,
     Command,
-    Call,
     Path,
     Glob,
     Url,
@@ -92,7 +74,6 @@ fn arg_source(tool: &str) -> Option<ArgSource> {
         crate::tool_names::AGENT_TOOL => ArgSource::Agent,
         crate::tool_names::AGENT_SEND_TOOL => ArgSource::AgentSend,
         "bash" => ArgSource::Command,
-        "call" => ArgSource::Call,
         // `grep`'s `path` is its optional file filter (#417), not its regex.
         "edit" | "write" | "read" | "apply_patch" | "rhai" | "grep" => ArgSource::Path,
         "glob" => ArgSource::Glob,

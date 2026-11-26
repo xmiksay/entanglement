@@ -1,7 +1,7 @@
 //! Per-session cancellation of in-flight tool tasks (#167).
 //!
 //! Core parks a turn as data and, on [`InMsg::Stop`], simply clears that state —
-//! it never owns the executing tool. So a `Stop` that lands while a `bash`/`call`
+//! it never owns the executing tool. So a `Stop` that lands while a `bash`
 //! command or a `rhai` script is running left the work going: the detached
 //! executor task kept draining the child, and a CPU-bound Rhai engine (running
 //! under an un-abortable `spawn_blocking`) ran to completion.
@@ -10,7 +10,7 @@
 //! [`TaskCanceller`] under its session before it starts and the executor's
 //! inbound watcher aborts every one of them when a `Stop` for that session
 //! arrives on the fan-out. Aborting the async task drops its future, which for
-//! `bash`/`call` fires the exec tool's process-group SIGKILL guard (so
+//! `bash` fires the exec tool's process-group SIGKILL guard (so
 //! grandchildren don't orphan — #168); for `rhai` the abort is paired with a
 //! cooperative stop flag the blocking engine's progress callback polls, because
 //! an aborted `spawn_blocking` keeps running otherwise.
@@ -102,7 +102,7 @@ impl CancelRegistry {
     /// Abort every in-flight tool task across *every* session (#545): unlike
     /// [`Self::cancel_session`] (one session's `Stop`), this is the process-shutdown
     /// path — a per-call dispatch/rhai task holds a `Holly` clone for as long as it
-    /// runs (an in-flight `bash`/`call`, a parked approval, a blocking rhai
+    /// runs (an in-flight `bash`, a parked approval, a blocking rhai
     /// script), and nothing else cancels it when the head is tearing down. Collect
     /// the session ids first so the removal loop doesn't hold the lock across
     /// `cancel()`.

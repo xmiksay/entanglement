@@ -46,7 +46,7 @@ function body cannot see `args`:
 ```rhai
 // scripts/report.rhai
 fn since(days) { `--since=${days}.days` }
-exec("git", ["log", since(args.days), `--author=${args.author}`, "--oneline"])
+bash(`git log ${since(args.days)} --author='${args.author}' --oneline`)
 ```
 
 A skill's own scripts run the same way: `load_skill` prints the skill's
@@ -80,15 +80,12 @@ call in the same run; any other target asks again.
   match is `#{path: …, lineno: …, line: …}` (ADR-0206).
 - `edit(path, old, new)`, `edit(path, old, new, replace_all)`
 - `write(path, content)`
-- `exec(command)`, `exec(command, args)`, `exec(command, args, workdir)` —
-  argv exec, no shell, graded as the `call` tool (named `exec` because
-  `call` is a reserved Rhai keyword).
 - `bash(command)`, `bash(command, workdir)` — `sh -c`, only when the host has
   `bash` registered/enabled; otherwise an unknown-function error, not a
   graded-then-refused binding.
 
-`workdir` (on `exec`/`bash`) is what a workdir-scoped permission rule
-(`tool{pattern}`) matches, and also feeds the escape-root gate. `exec`/`bash`
+`workdir` (on `bash`) is what a workdir-scoped permission rule
+(`tool{pattern}`) matches, and also feeds the escape-root gate. `bash`
 timeouts are clamped to the script's own remaining wall-clock budget, not the
 tool's much longer default; every other nested call except `write`/`edit`
 is cut off shortly before the script's budget runs out — the cut throws, and
@@ -207,7 +204,7 @@ join with `poll`, which drains `print` output incrementally and, once the
 script finishes, its final `=> value` (or error) line. A background script
 gets a longer budget (`timeout` default 120s, max 600s). `poll kill=true`
 requests a **cooperative** stop: the script ends at its next operation, so an
-in-flight `exec`/`bash` call finishes its own (budget-clamped) timeout first.
+in-flight `bash` call finishes its own (budget-clamped) timeout first.
 Bindings grade exactly as in a blocking run — an `Ask`-graded binding still
 prompts for approval mid-run, and the deadline keeps counting while it waits.
 Use `background` for long multi-step scripts; prefer the default blocking form

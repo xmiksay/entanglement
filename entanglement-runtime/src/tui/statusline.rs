@@ -2,7 +2,7 @@
 //!
 //! The git facts come from a background probe ([`spawn_probe`], the `@file`
 //! index pattern: off the draw path, delivered as [`Event::StatusLine`]).
-//! It re-probes when a `bash`/`call`/`rhai` call finishes (those can switch
+//! It re-probes when a `bash`/`rhai` call finishes (those can switch
 //! branches or create a repo) and otherwise only stats `HEAD` every 2 s, so
 //! an out-of-band `git checkout` shows up without any tree walk.
 //!
@@ -37,7 +37,7 @@ const HEAD_POLL: Duration = Duration::from_secs(2);
 
 /// Tools whose completion may have moved `HEAD` or created a repo.
 pub(crate) fn refreshes_git(tool: &str) -> bool {
-    matches!(tool, "bash" | "call" | "rhai")
+    matches!(tool, "bash" | "rhai")
 }
 
 /// The App-held half: the last probe result, the live-reloaded templates,
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn only_exec_tools_trigger_a_reprobe() {
-        assert!(refreshes_git("bash") && refreshes_git("call") && refreshes_git("rhai"));
+        assert!(refreshes_git("bash") && refreshes_git("rhai"));
         assert!(!refreshes_git("read"));
     }
 }

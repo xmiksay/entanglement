@@ -188,7 +188,7 @@ mod tests {
     fn capability_of(name: &str) -> Option<&'static [Capability]> {
         match name {
             "write" | "edit" => Some(&[Capability::Write]),
-            "bash" | "call" => Some(&[Capability::Exec]),
+            "bash" => Some(&[Capability::Exec]),
             "read" => Some(&[Capability::Read]),
             _ => None,
         }

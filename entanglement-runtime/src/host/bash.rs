@@ -2,8 +2,7 @@
 //! Runs unsandboxed with the engine's full privileges by default (ADR-0009);
 //! an opt-in bubblewrap confinement layer is available (ADR-0104,
 //! [`SandboxPolicy`]). Stdin is
-//! always closed, not inherited from the engine (ADR-0092/ADR-0093's
-//! default-closed-stdin fix, carried over from `call` to `bash` — #389); use
+//! always closed, not inherited from the engine (#389); use
 //! shell-native `< file` redirection if a command needs input.
 
 use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
@@ -24,9 +23,8 @@ use std::sync::Arc;
 const MAX_BASH_TIMEOUT_SECONDS: u64 = 600;
 
 /// The `bash` spec description. Its last paragraph is the **single** home of
-/// the bash-vs-`rhai` decision rule (#740): `bash` is the one model-facing
-/// exec tool (`call` is a script-only `rhai` binding since ADR-0226), so its
-/// description is the exec guidance every agent sees — and it rides the
+/// the bash-vs-`rhai` decision rule (#740): `bash` is the one exec tool, so
+/// its description is the exec guidance every agent sees — and it rides the
 /// cached tools block instead of being re-sent in every agent body. The
 /// `rhai` sentence is spliced in only when that tool is compiled in, so a
 /// lean build never names a tool it lacks.
@@ -136,7 +134,7 @@ impl BashTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             // Close stdin explicitly rather than inherit the engine's real
-            // stdin — the same leak ADR-0092 closed for `call` (#389). Applies
+            // stdin (#389). Applies
             // to both the foreground and `background` paths, since both
             // share this helper.
             .stdin(std::process::Stdio::null())
@@ -162,11 +160,11 @@ struct BashInput {
     workdir: Option<String>,
     /// Spawn detached and return a job id to poll via `poll` (#170, #605; #606,
     /// ADR-0161 §1 — renamed from `run_in_background` for symmetry with
-    /// `call`/`agent`'s `background` flag).
+    /// `agent`'s `background` flag).
     #[serde(default)]
     background: bool,
-    /// Keep only the last `tail` lines of stdout/stderr (default 30, matching
-    /// `call`; 0 for full output — still byte-capped). #622.
+    /// Keep only the last `tail` lines of stdout/stderr (default 30; 0 for
+    /// full output — still byte-capped). #622.
     #[serde(default = "default_tail")]
     tail: u32,
 }
@@ -185,10 +183,7 @@ impl Tool for BashTool {
     }
     fn description(&self) -> &str {
         if cfg!(feature = "rhai") {
-            bash_description!(
-                " For multi-step logic, JSON/YAML transforms, or a fixed argv with \
-                 nothing to quote (its `call` binding), use `rhai`."
-            )
+            bash_description!(" For multi-step logic or JSON/YAML transforms, use `rhai`.")
         } else {
             bash_description!()
         }
@@ -354,7 +349,7 @@ fn format_bash_output(code: Option<i32>, stdout: &[u8], stderr: &[u8], tail: u32
 
 /// `header` (kept verbatim) + tailed stdout + a tailed `[stderr]` block, byte-
 /// capped. Shared by the exit path (`[exit N]`) and the timeout path
-/// (`[killed: …]`). Same shape `call` uses (#622): a `tail` knob line-trims
+/// (`[killed: …]`). A `tail` knob (#622) line-trims
 /// each stream, then [`bounded_result`]'s head+tail byte cap is the outer
 /// bound so a trailing error surviving line-tailing (or `tail=0`) still
 /// survives byte truncation.
@@ -429,7 +424,7 @@ mod tests {
         assert_eq!(with_io_warning(body.clone(), None), body);
     }
 
-    /// #622: bash's `tail` knob matches `call`'s — line-trims each stream
+    /// #622: bash's `tail` knob line-trims each stream
     /// before the byte cap.
     #[test]
     fn format_tail_keeps_last_n_lines() {
@@ -490,7 +485,7 @@ mod tests {
         assert_eq!(run.exit_code, None);
     }
 
-    /// #622: the model can pass `tail` end-to-end, matching `call`'s knob.
+    /// #622: the model can pass `tail` end-to-end.
     #[tokio::test]
     async fn run_tail_param_trims_stdout() {
         let dir = tempfile::tempdir().unwrap();
@@ -574,8 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_closes_stdin_not_inherited() {
-        // Regression for the unintentional inherit (#389, same class as #381's
-        // `call` fix): without stdin wired up, `cat` must see immediate EOF, not
+        // Regression for the unintentional inherit (#389): without stdin wired up, `cat` must see immediate EOF, not
         // block on the engine's real stdin. If it inherited, this would time out
         // instead of exiting clean.
         let dir = tempfile::tempdir().unwrap();

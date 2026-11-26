@@ -443,10 +443,9 @@ mod tests {
 
     #[test]
     fn built_in_bodies_leave_the_exec_rule_to_the_bash_spec() {
-        // #740: the bash-vs-call-vs-rhai rule lives once, in the `bash` tool
+        // #740: the bash-vs-rhai rule lives once, in the `bash` tool
         // description (cached tools block, visible in every advertising
-        // mode). A per-agent copy is re-sent per request and drifts — the old
-        // `general` one still called `call` "the" exec after ADR-0195.
+        // mode). A per-agent copy is re-sent per request and drifts.
         for (file, contents) in BUILT_INS {
             for phrase in ["`rhai`", "sh -c", "Exec is", "not a shell"] {
                 assert!(

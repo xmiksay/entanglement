@@ -211,7 +211,7 @@ impl PermissionResolver for ModeResolver {
     }
 }
 
-/// Resolve the confinement policy `bash`/`call` run a session's commands under
+/// Resolve the confinement policy `bash` runs a session's commands under
 /// (ADR-0207 §6, stage 5b amendment of ADR-0104). Sync and infallible —
 /// unlike permission there is no `Ask` round-trip and no DB lookup a real
 /// embedder would need to await; a tenant that wants per-tenant sandboxing
@@ -223,7 +223,7 @@ pub trait SandboxResolver: Send + Sync {
 }
 
 /// A fixed policy is trivially its own resolver — the `.with_sandbox(policy)`
-/// builder `BashTool`/`CallTool` already had keeps working unchanged, now
+/// builder `BashTool` already had keeps working unchanged, now
 /// backed by `Arc<dyn SandboxResolver>` internally (#479).
 impl SandboxResolver for SandboxPolicy {
     fn resolve(&self, _session: Option<&SessionId>) -> SandboxPolicy {
@@ -318,7 +318,7 @@ impl SandboxConfig {
         }
     }
 
-    /// The resolver `BashTool`/`CallTool` consult per call (#479, ADR-0207
+    /// The resolver `BashTool` consults per call (#479, ADR-0207
     /// §6).
     pub fn resolver(&self) -> Arc<dyn SandboxResolver> {
         Arc::new(ModeSandboxResolver::new(

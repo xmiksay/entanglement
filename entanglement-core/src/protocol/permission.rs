@@ -20,8 +20,8 @@ pub enum Permission {
 }
 
 /// Per-tool permission rules. Evaluated against a tool name **and** an optional
-/// tool-specific argument (the command for `bash`/`call`, the target path for
-/// `edit`/`write`/`read`, #173) — and, for `bash`/`call`, an optional `workdir`
+/// tool-specific argument (the command for `bash`, the target path for
+/// `edit`/`write`/`read`, #173) — and, for `bash`, an optional `workdir`
 /// (#425); later matching rules win (so put `"*"` first, specifics after —
 /// same semantics as opencode). Every tool — including the runtime's
 /// `update_plan`/`update_tasks` state tools (#231, ADR-0049) — resolves
@@ -71,12 +71,12 @@ impl PermissionProfile {
     /// Resolve the permission for a tool call, matching each rule key against
     /// the tool `name`, an optional tool-specific `arg` (#173, `tool(pattern)`),
     /// **and** an optional `workdir` (#425, `tool{pattern}`) — the working
-    /// directory a `bash`/`call` invocation runs in, distinct from its command
+    /// directory a `bash` invocation runs in, distinct from its command
     /// line. Both scopes are independent single-pattern clauses (not a
     /// compound key): a profile mixes `tool(cmd-pattern)` and `tool{workdir-
     /// pattern}` rules freely in one ordered list, and last-matching-rule-wins
     /// applies across the whole list exactly as it does for `resolve`. A tool
-    /// with no workdir concept (anything but `bash`/`call`) simply never
+    /// with no workdir concept (anything but `bash`) simply never
     /// matches a `tool{pattern}` rule, since callers pass `workdir = None` for
     /// it — safe by construction, not by convention.
     pub fn resolve_scoped(
@@ -419,11 +419,11 @@ mod tests {
 
     #[test]
     fn scoped_grades_drop_variants_a_later_bare_rule_overrides() {
-        // `research`'s shape: `call(*)` agrees with the `ask` default, so there
-        // is nothing extra to report. And a scoped rule a *later* bare rule
+        // A `bash(*)` that agrees with the `ask` default has nothing extra to
+        // report. And a scoped rule a *later* bare rule
         // overrides can never be reached, so it must not be reported either.
-        let agrees = PermissionProfile::new(Permission::Ask).with("call(*)", Permission::Ask);
-        assert!(agrees.scoped_grades("call").is_empty());
+        let agrees = PermissionProfile::new(Permission::Ask).with("bash(*)", Permission::Ask);
+        assert!(agrees.scoped_grades("bash").is_empty());
 
         let overridden = PermissionProfile::new(Permission::Ask)
             .with("write(plans/*)", Permission::Allow)
@@ -439,7 +439,7 @@ mod tests {
         // A `*(pattern)` key scopes every tool, so it reports for each of them.
         let all = PermissionProfile::new(Permission::Deny).with("*(git *)", Permission::Ask);
         assert_eq!(all.scoped_grades("bash"), vec![Permission::Ask]);
-        assert_eq!(all.scoped_grades("call"), vec![Permission::Ask]);
+        assert_eq!(all.scoped_grades("edit"), vec![Permission::Ask]);
         // Deduped: two scoped rules resolving to the same grade report once.
         let dup = PermissionProfile::new(Permission::Deny)
             .with("edit(src/*)", Permission::Allow)

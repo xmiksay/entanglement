@@ -4,7 +4,7 @@
 
 use entanglement_core::Permission;
 
-use super::{canonical_tool, canonicalize_key, rule_tool_name, tool_rule_matches, Entry};
+use super::{rule_tool_name, tool_rule_matches, Entry};
 use crate::capability::Capability;
 
 /// Which kind of key matched, for ranking (module doc of `rules`).
@@ -22,7 +22,7 @@ enum Kind {
 /// also a class (`read` for the `read` tool); for any other tool it is the
 /// class.
 fn kind(entry: &Entry, tool: &str) -> Kind {
-    if canonical_tool(rule_tool_name(&canonicalize_key(&entry.key))) == canonical_tool(tool) {
+    if rule_tool_name(&entry.key) == tool {
         Kind::Named
     } else if entry.class.is_some() {
         Kind::Class

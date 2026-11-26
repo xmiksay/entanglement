@@ -32,8 +32,8 @@ pub enum IdKind {
     /// Runtime-minted request/correlation id.
     Request,
     /// Retained output from a completed operation that overflowed its
-    /// tail/byte cap (#608, ADR-0161 §7) — a blocking `call` that truncated,
-    /// paged the rest of the way via `poll`.
+    /// tail/byte cap (#608, ADR-0161 §7) — a sub-agent answer that
+    /// truncated, paged the rest of the way via `poll`.
     Output,
     /// Background `rhai` script (#637, ADR-0185) — an in-process
     /// `spawn_blocking` task, not an OS process, so it gets its own kind

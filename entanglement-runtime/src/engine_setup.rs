@@ -40,21 +40,19 @@ use default_tools::{register_default_tools, DefaultTools};
 /// OpenAI-compatible client ([`entanglement_provider::openai_factory`]); Anthropic
 /// has its own client.
 ///
-/// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`), `call`
-/// (argv exec, no shell), `load_skill`, and `bash` are always registered, rooted
-/// at the current working directory (`glob`/`grep`/`call` registered but only
-/// reachable as rhai bindings, ADR-0226), so the permission modes gate
-/// something real out of the box (ADR-0195 retired the old
-/// `ENTANGLEMENT_ENABLE_BASH` opt-in — registration is not where `bash`'s
-/// security story lives; the permission profiles and the config ceiling are).
-/// Both run unsandboxed with the engine's full privileges by default
-/// (ADR-0009 / ADR-0045). `call` runs with the same full-privilege,
-/// unsandboxed-by-default execution but no shell means no injection surface
-/// (ADR-0094); per-profile permission (`Allow`/`Ask`/`Deny`) remains the actual
-/// dispatch gate, same as any other tool. Both may instead run confined under
-/// bubblewrap — set `ENTANGLEMENT_SANDBOX=bwrap` (`ENTANGLEMENT_SANDBOX_NETWORK=1`
-/// to keep network access) — fail-closed: a sandboxed spawn that can't enter
-/// the sandbox errors rather than falling back to unsandboxed (#399, ADR-0104).
+/// The root-contained host quintet (`read`/`glob`/`grep`/`edit`/`write`),
+/// `load_skill`, and `bash` are always registered, rooted at the current
+/// working directory (`glob`/`grep` registered but only reachable as rhai
+/// bindings, ADR-0226), so the permission modes gate something real out of
+/// the box (ADR-0195 retired the old `ENTANGLEMENT_ENABLE_BASH` opt-in —
+/// registration is not where `bash`'s security story lives; the permission
+/// profiles and the config ceiling are). `bash` runs unsandboxed with the
+/// engine's full privileges by default (ADR-0009); per-mode permission
+/// (`Allow`/`Ask`/`Deny`) is the dispatch gate, same as any other tool. It may
+/// instead run confined under bubblewrap — set `ENTANGLEMENT_SANDBOX=bwrap`
+/// (`ENTANGLEMENT_SANDBOX_NETWORK=1` to keep network access) — fail-closed: a
+/// sandboxed spawn that can't enter the sandbox errors rather than falling
+/// back to unsandboxed (#399, ADR-0104).
 ///
 /// Core no longer executes tools (#58): it only advertises their schemas
 /// (`cfg.tool_specs`, snapshotted per session by `cfg.tool_spec_resolver`). The
@@ -123,7 +121,7 @@ pub(crate) async fn build_config(
     let secret_env = catalog.key_envs();
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` by the tool executor — constructed here,
-    // *before* `register_default_tools`, so `bash`/`call`'s sandbox resolver
+    // *before* `register_default_tools`, so `bash`'s sandbox resolver
     // (below) and the executor's `ModeResolver` (wired much later, once
     // `Holly` exists) share the exact same map and mode table instead of two
     // copies that could drift. `skutter` always runs the four built-in modes
@@ -139,9 +137,7 @@ pub(crate) async fn build_config(
     let sandbox_config = policy::SandboxConfig::new(perm_modes.clone(), mode_table.clone());
     // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
-    // block). `call`'s own default-output artifact used to live here too;
-    // since #608 that output is retained in memory instead (`retained`
-    // below), so this is purely the general-purpose scratch carve-out now.
+    // block) — a general-purpose scratch carve-out.
     let scratch_base = session_store::SessionStore::for_cwd(&root)
         .scratch_dir()
         .ok();
@@ -171,9 +167,9 @@ pub(crate) async fn build_config(
     // job-orphaning — there is only ever one registry.
     let jobs = host::JobRegistry::new();
     // The one `RetainedOutputRegistry` for this process's whole lifetime
-    // (#608): shared by `call` (which writes a truncated result's full text
-    // there) and `poll`'s retained-output-handle path (which reads it back) —
-    // the same shared-instance shape `jobs` above uses.
+    // (#608): sub-agent answers write there and `poll`'s
+    // retained-output-handle path reads it back — the same shared-instance
+    // shape `jobs` above uses.
     let retained = retained_output::RetainedOutputRegistry::new();
     // The one `ScriptRegistry` for this process's whole lifetime (#637,
     // ADR-0185): the executor's `rhai` arm writes a `background: true`
@@ -193,18 +189,17 @@ pub(crate) async fn build_config(
             secret_env: secret_env.clone(),
             sandbox_resolver: sandbox_config.resolver(),
             jobs: jobs.clone(),
-            retained: retained.clone(),
         },
     );
     let escape_root = EscapeRoot {
         root: root.clone(),
         store: extra_root_store,
     };
-    // `call` and `bash` are both always registered (ADR-0093/ADR-0195), so the
-    // sandbox notice fires whenever confinement is on.
+    // `bash` is always registered (ADR-0195), so the sandbox notice fires
+    // whenever confinement is on.
     if sandbox_config.base.is_sandboxed() {
         eprintln!(
-            "skutter: bash/call sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
+            "skutter: bash sandboxed via bubblewrap (ENTANGLEMENT_SANDBOX=bwrap, \
              network: {})",
             if sandbox_config.base.network {
                 "allowed"
@@ -274,7 +269,7 @@ pub(crate) async fn build_config(
 
 /// The roster `/tools`, the bare `/enable` checklist and the `/set` Tools tab
 /// offer: every tool a session could reach or a rule could name — the hidden
-/// script-only ones (`glob`/`grep`/`call`) included, since an overlay entry
+/// script-only ones (`glob`/`grep`) included, since an overlay entry
 /// still grades their rhai bindings — but no name an entry can never match
 /// (#843, `tool_names::NON_MASKABLE_TOOLS`). Sorted, deduped.
 fn toggle_roster(specs: impl IntoIterator<Item = ToolSpec>) -> Vec<String> {

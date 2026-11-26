@@ -18,7 +18,7 @@
 //! non-maskable tool (`mode::rules`), so only its `plan` class grades it.
 //! So are keys whose scope the matcher never tests:
 //! - an argument scope on a tool with no argument (#878), `mcp__gh__x(foo)`;
-//! - a workdir scope on any tool but `bash`/`call` (#881), `read{/tmp/*}`;
+//! - a workdir scope on any tool but `bash` (#881), `read{/tmp/*}`;
 //! - a scope the matcher can't read at all, `bash(git *){/x}` (one scope
 //!   per key, closed at its end).
 
@@ -131,7 +131,7 @@ fn no_match_reason(entry: &str) -> Option<String> {
             instead(tool)
         )),
         KeyScope::Workdir if tool != "*" && !takes_workdir_scope(tool) => Some(format!(
-            "`{tool}` has no workdir to scope (only `bash`/`call` do) — `{entry}` \
+            "`{tool}` has no workdir to scope (only `bash` does) — `{entry}` \
              never matches a call; {}",
             instead(tool)
         )),
@@ -490,7 +490,6 @@ mod tests {
     fn scoped_rules_on_argument_taking_tools_do_not_warn() {
         let keys = [
             "bash(cargo *)",
-            "call(git *)",
             "agent(plan)",
             "agent_send(acme:*)",
             "read(src/*)",
@@ -576,7 +575,15 @@ mod tests {
             .collect()
     }
 
-    /// #881: a workdir scope on any tool but `bash`/`call` warns — a known
+    /// #916: the argv `call` tool is gone, so a rule still naming it — bare
+    /// or scoped — warns like any other stale tool name.
+    #[test]
+    fn a_rule_naming_the_removed_call_tool_warns() {
+        let stale = stale_entries("modes:\n  build:\n    deny: [\"call\", \"call(git *)\"]\n");
+        assert_eq!(stale, ["call", "call(git *)"]);
+    }
+
+    /// #881: a workdir scope on any tool but `bash` warns — a known
     /// tool and an MCP tool alike, in a mode rule and in the ceiling.
     #[test]
     fn a_workdir_scope_on_a_tool_without_a_workdir_warns() {
@@ -592,13 +599,12 @@ mod tests {
         assert!(why.contains("write bare `mcp__x__y` instead"), "{why}");
     }
 
-    /// #881: `bash`/`call` and the `*` wildcard keep their workdir scopes
+    /// #881: `bash` and the `*` wildcard keep their workdir scopes
     /// silent, as do braces or parens nested inside a well-formed scope.
     #[test]
     fn well_formed_workdir_scopes_do_not_warn() {
         let keys = [
             "bash{/tmp/*}",
-            "call{/srv/*}",
             "*{/tmp/*}",
             "bash{a(b)}",
             "read(a{b})",

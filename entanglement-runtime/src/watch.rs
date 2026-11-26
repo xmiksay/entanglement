@@ -77,7 +77,7 @@ pub fn spawn_watcher(
             // `read()` of a watched file — which `reload()` itself does on every
             // pass — observably fires `notify` on this filesystem even though
             // nothing changed; (2) a write to a non-definition file under a
-            // watched tree (e.g. a `call`/`bash` output artifact under
+            // watched tree (e.g. a `bash` output artifact under
             // `.entanglement/tmp/`). The content fingerprint is blind to both:
             // it only tracks definition/config files and compares by SHA-256, so
             // a stray write or a same-content re-save is a cheap no-op instead
@@ -122,7 +122,7 @@ type FileStamp = (Option<SystemTime>, u64, String);
 
 /// A content fingerprint of the **definition/config** files under the watched
 /// trees: `path -> (mtime, size, sha256)`. Only files that actually feed a
-/// loader are included (see [`is_definition_file`]) — a `call`/`bash` output
+/// loader are included (see [`is_definition_file`]) — a `bash` output
 /// artifact dropped under `.entanglement/tmp/` has none of those shapes, so it
 /// never enters the map and never triggers a reload.
 /// Sorted by path (a `BTreeMap`) so comparison is order-independent.
@@ -469,7 +469,7 @@ mod tests {
     }
 
     /// The core of #1: a write to a non-definition file under a watched tree
-    /// (a `call`/`bash` output artifact under `.entanglement/tmp/`) must not
+    /// (a `bash` output artifact under `.entanglement/tmp/`) must not
     /// register as a change, and neither must a same-content re-save that only
     /// bumps a real definition file's mtime.
     #[test]

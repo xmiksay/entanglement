@@ -88,7 +88,7 @@ entanglement-provider = { workspace = true, optional = true }
 # (`src/main.rs`) and the one `flavor = "multi_thread"` test
 # (`src/extra_roots.rs`); `sync`/`time` back the mpsc/broadcast/oneshot/watch +
 # sleep/timeout/interval usage throughout; `fs`/`process` back the host tools
-# (`host::edit`/`write`/`read`/`bash`/`call`/mcp stdio); `net` backs `serve` +
+# (`host::edit`/`write`/`read`/`bash`/mcp stdio); `net` backs `serve` +
 # the streamable-HTTP MCP transport's tests; `io-util`/`io-std` back the exec
 # tools' piping and `pipe`'s stdin read; `signal` backs `ctrl_c()` in `serve`/
 # `tui`. The `tokio` dev-dependency adds only `test-util`; this list
@@ -121,7 +121,7 @@ dirs = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
 ignore = { workspace = true }
-# Process-group kill for the exec tools (`bash`/`call`) on timeout/cancel (#168).
+# Process-group kill for the exec tool `bash` on timeout/cancel (#168).
 libc = { workspace = true }
 async-trait = { workspace = true }
 # `FileChange` audit content hash (#202). Pure Rust — rides in the lean library.

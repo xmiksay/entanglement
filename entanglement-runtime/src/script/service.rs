@@ -105,6 +105,6 @@ mod tests {
         assert!(throws_on_error("http"));
         assert!(throws_on_error("mcp__gh__search"));
         assert!(!throws_on_error("read"));
-        assert!(!throws_on_error("call"));
+        assert!(!throws_on_error("bash"));
     }
 }
