@@ -13,7 +13,6 @@ use entanglement_core::{ApprovalScope, Holly, OutEvent, SessionId, ToolCall, Too
 
 use crate::arg_validate;
 use crate::skills::load_skill::parse_skill_id;
-use crate::skills::SessionSkills;
 use crate::tool_names::LOAD_SKILL_TOOL;
 use crate::tool_runner::call_grader::{self, CallGrader};
 use crate::tools::{ToolExecution, ToolRegistry};
@@ -151,13 +150,7 @@ impl Dispatcher {
             )));
         }
         if tool == LOAD_SKILL_TOOL {
-            activate_skill(
-                &self.holly,
-                &self.skills,
-                &self.active_skill,
-                session,
-                &output_text,
-            );
+            activate_skill(&self.holly, &self.active_skill, session, &output_text);
         }
         self.hooks
             .run_post_tool_use(session, &tool, &input, &output_text, is_error, exit_code)
@@ -197,7 +190,6 @@ impl Dispatcher {
 /// any listening head; a failed load (no header) is a no-op.
 fn activate_skill(
     holly: &Holly,
-    skills: &SessionSkills,
     active_skill: &Arc<Mutex<HashSet<SessionId>>>,
     session: &SessionId,
     result: &str,
@@ -205,10 +197,6 @@ fn activate_skill(
     let Some(skill_id) = parse_skill_id(result) else {
         return;
     };
-    let allowed_tools = skills
-        .for_session(session)
-        .get(skill_id)
-        .and_then(|s| s.allowed_tools.clone());
     active_skill
         .lock()
         .expect("active-skill mutex poisoned")
@@ -217,6 +205,6 @@ fn activate_skill(
         session: session.clone(),
         seq,
         skill_id: Some(skill_id.to_string()),
-        allowed_tools,
+        allowed_tools: None,
     });
 }

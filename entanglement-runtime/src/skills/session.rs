@@ -76,7 +76,6 @@ impl SkillMeta {
         Self {
             name: name.into(),
             description: description.into(),
-            allowed_tools: None,
             root_dir: None,
             body: body.into(),
             lib: None,

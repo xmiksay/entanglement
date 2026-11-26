@@ -18,17 +18,13 @@ use super::{lib_rhai, SkillMeta};
 struct SkillFrontmatter {
     name: String,
     description: String,
-    #[serde(default)]
-    allowed_tools: Option<Vec<String>>,
 }
 
 /// Lenient frontmatter for cross-vendor skills (ADR-0074): only the tier-1
 /// contract is read, every other key (Claude Code's `allowed-tools`, `license`,
 /// `argument-hint`, …) is ignored — `disable-model-invocation` too, since
 /// every skill is model-visible (ADR-0229). Claude's `allowed-tools` is
-/// deliberately dropped: its tool names don't map onto entanglement's, and
-/// `SkillMeta::allowed_tools` is parsed-but-ignored even on a native skill
-/// (ADR-0194), so there is nothing for a foreign skill to populate it for.
+/// dropped too: skills never restrict the tool set (ADR-0194).
 #[derive(Debug, Deserialize)]
 struct ForeignSkillFrontmatter {
     name: String,
@@ -36,8 +32,8 @@ struct ForeignSkillFrontmatter {
 }
 
 /// Parse one discovered `SKILL.md` honoring its layer's strictness (ADR-0074):
-/// strict → a malformed file aborts the load (a pre-0.8 `tools:`/`user_only`
-/// key included, #920); lenient → `Ok(None)` after a `warn!`, so a foreign
+/// strict → a malformed file aborts the load (a pre-0.8 `tools:`/`user_only`/
+/// `allowed_tools` key included, #920); lenient → `Ok(None)` after a `warn!`, so a foreign
 /// file entanglement doesn't own is skipped instead of bricking startup.
 pub(super) fn parse_raw(raw: &RawSkill) -> Result<Option<SkillMeta>> {
     match raw.strictness {
@@ -59,10 +55,7 @@ pub(super) fn parse_raw(raw: &RawSkill) -> Result<Option<SkillMeta>> {
 }
 
 /// Parse a `SKILL.md`: split frontmatter from body, deserialize the frontmatter,
-/// and build a [`SkillMeta`] carrying the pre-resolved `root_dir`. A frontmatter
-/// carrying `allowed_tools` gets a one-time (per load) warning — ADR-0194
-/// retired its enforcement, so the field is parsed-but-ignored; permission
-/// profiles are the control now.
+/// and build a [`SkillMeta`] carrying the pre-resolved `root_dir`.
 pub(super) fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<SkillMeta> {
     let (frontmatter, body) = crate::frontmatter::split(content)?;
     let fm: SkillFrontmatter =
@@ -70,18 +63,10 @@ pub(super) fn parse_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Sk
     if fm.name.trim().is_empty() {
         bail!("skill frontmatter `name` must not be empty");
     }
-    if fm.allowed_tools.is_some() {
-        tracing::warn!(
-            skill = %fm.name,
-            "skill's `allowed_tools` is no longer enforced (ADR-0194: skills are \
-             additive-only) — permission profiles are the control now; remove the field",
-        );
-    }
     let lib = lib_rhai::load(&fm.name, root_dir.as_deref());
     Ok(SkillMeta {
         name: fm.name,
         description: fm.description,
-        allowed_tools: fm.allowed_tools,
         lib,
         root_dir,
         body,
@@ -101,7 +86,6 @@ fn parse_foreign_skill(content: &str, root_dir: Option<PathBuf>) -> Result<Skill
     Ok(SkillMeta {
         name: fm.name,
         description: fm.description,
-        allowed_tools: None,
         lib,
         root_dir,
         body,

@@ -395,7 +395,6 @@ mod tests {
         SkillMeta {
             name: name.into(),
             description: "d".into(),
-            allowed_tools: None,
             root_dir,
             body: body.into(),
             lib: None,

@@ -72,16 +72,6 @@ pub struct SkillMeta {
     pub name: String,
     /// One-line summary; the only field (with `name`) disclosed to the model.
     pub description: String,
-    /// Parsed but **ignored** (ADR-0194 retired the ADR-0106 enforcement
-    /// this once drove): skills are additive-only, never a tool-set
-    /// restriction. Kept in the struct only because `SkillFrontmatter` is
-    /// `deny_unknown_fields` — dropping the key would break every existing
-    /// skill file that still carries it. A skill parsed with a non-`None`
-    /// value gets a one-time load warning (see `parse::parse_skill`) pointing the
-    /// author at deleting it. Still populated onto the vestigial
-    /// `OutEvent::SkillActive.allowed_tools` wire field for log-replay
-    /// compatibility.
-    pub allowed_tools: Option<Vec<String>>,
     /// The skill directory (holds `SKILL.md` + payload). `None` for embedded
     /// built-ins, which have no on-disk home.
     pub root_dir: Option<PathBuf>,
@@ -351,38 +341,11 @@ mod tests {
         fn exit(&self, _: &tracing::span::Id) {}
     }
 
-    /// ADR-0194: `allowed_tools` still parses (wire/log-replay compat), but a
-    /// skill carrying it gets exactly one load warning naming the field as
-    /// no-longer-enforced; a skill without it never warns.
-    #[test]
-    fn allowed_tools_frontmatter_is_parsed_but_ignored_with_one_time_warning() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone(), ""));
-
-        let s =
-            parse("---\nname: x\ndescription: d\nallowed_tools: [bash, read]\n---\nbody").unwrap();
-        assert_eq!(s.allowed_tools, Some(vec!["bash".into(), "read".into()]));
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "exactly one warning for a skill carrying allowed_tools"
-        );
-
-        let s2 = parse("---\nname: y\ndescription: d\n---\nbody").unwrap();
-        assert_eq!(s2.allowed_tools, None);
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "no additional warning for a skill without allowed_tools"
-        );
-    }
-
     #[test]
     fn required_fields_and_defaults() {
         let s = parse("---\nname: x\ndescription: d\n---\nbody").unwrap();
         assert_eq!(s.name, "x");
         assert_eq!(s.description, "d");
-        assert_eq!(s.allowed_tools, None);
         assert_eq!(s.body, "body");
     }
 
@@ -551,8 +514,6 @@ mod tests {
 
         let s = reg.get("arch").expect("foreign skill discovered");
         assert_eq!(s.description, "from claude");
-        // Claude's `allowed-tools` is deliberately dropped (ADR-0074).
-        assert_eq!(s.allowed_tools, None);
     }
 
     #[test]
@@ -571,11 +532,16 @@ mod tests {
     }
 
     /// #920: a native skill still declaring a pre-0.8 key (`tools:`, ADR-0228;
-    /// `user_only`, ADR-0229) is an unknown field like any typo — the load
-    /// aborts naming the file, no skip-and-warn shim.
+    /// `user_only`, ADR-0229; `allowed_tools`, ADR-0194) is an unknown field
+    /// like any typo — the load aborts naming the file, no skip-and-warn shim.
     #[test]
     fn a_native_pre_0_8_key_aborts_the_load() {
-        for key in ["tools: []\n", "tools: ~\n", "user_only: true\n"] {
+        for key in [
+            "tools: []\n",
+            "tools: ~\n",
+            "user_only: true\n",
+            "allowed_tools: [bash, read]\n",
+        ] {
             let err = parse(&format!("---\nname: e\ndescription: d\n{key}---\nb")).unwrap_err();
             assert!(
                 format!("{err:#}").contains("unknown field"),
@@ -700,7 +666,6 @@ mod tests {
             reg.insert(SkillMeta {
                 name: name.into(),
                 description: "d".into(),
-                allowed_tools: None,
                 root_dir: None,
                 body: String::new(),
                 lib: None,

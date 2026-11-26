@@ -351,7 +351,6 @@ mod tests {
         reg.insert(SkillMeta {
             name: name.into(),
             description: "d".into(),
-            allowed_tools: None,
             root_dir: None,
             body: body.into(),
             lib: None,

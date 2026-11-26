@@ -233,7 +233,6 @@ mod tests {
         SkillMeta {
             name: name.into(),
             description: "d".into(),
-            allowed_tools: None,
             root_dir: None,
             body: String::new(),
             lib: Some(lib_rhai::compile(name, source).unwrap()),

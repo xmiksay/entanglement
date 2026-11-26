@@ -106,7 +106,6 @@ mod tests {
         skills.insert(crate::skills::SkillMeta {
             name: "git".to_string(),
             description: "commit helpers".to_string(),
-            allowed_tools: None,
             root_dir: None,
             body: String::new(),
             lib: None,

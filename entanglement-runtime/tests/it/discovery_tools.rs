@@ -101,7 +101,6 @@ async fn run_calls(calls: &[(&str, &str)]) -> Vec<OutEvent> {
     skills.insert(SkillMeta {
         name: "git".into(),
         description: "commit helpers".into(),
-        allowed_tools: None,
         root_dir: None,
         body: String::new(),
         lib: None,

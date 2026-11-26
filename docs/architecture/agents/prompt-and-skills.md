@@ -64,15 +64,13 @@
   read only `name`+`description`, ignoring every other key — Claude's
   `disable-model-invocation` and `allowed-tools` included,
   [ADR-0074](../../adr/archive/0074-cross-vendor-skill-and-agent-discovery.md)/[ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
-  Frontmatter: `name` + `description` (required) and
-  `allowed_tools` (parsed-but-ignored with a one-time load warning — the
-  skill-scoped mask it named is removed by
-  [ADR-0194](../../adr/archive/0194-skills-are-additive-only.md); skills are
-  additive-only). The `tools:` key
+  Frontmatter: `name` + `description` (both required), nothing else. The
+  `allowed_tools` key ([ADR-0194](../../adr/archive/0194-skills-are-additive-only.md)),
+  the `tools:` key
   ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md))
   and `user_only`
   ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md))
-  are gone: a native `SKILL.md` still carrying either fails to parse like any
+  are gone: a native `SKILL.md` still carrying one fails to parse like any
   unknown key and aborts the registry load (#920); a foreign dir drops them
   like any unknown key. **Every skill is model-visible** — listed, loadable,
   its `lib.rhai` callable from any script. A skill the model must not run is a permission-mode question (rules on
@@ -166,12 +164,10 @@
   control was always the real story, and its observable effect was
   subtractive footguns (#554: a skill listing `[bash, read, grep]` disarmed
   editing for the rest of the turn). `OutEvent::SkillActive` stays on the
-  wire as posture-only; its `allowed_tools` field is **vestigial** — still
-  serialized when present (replay compat), never read or enforced (see
-  [protocol](../protocol.md)). `SkillFrontmatter.allowed_tools` is
-  parsed-but-ignored with a one-time load warning (`SkillFrontmatter` is
-  `deny_unknown_fields`, so the key must stay known; hard removal later).
-  The foreign (cross-vendor) layer already drops it, exactly as it drops
+  wire as posture-only; its `allowed_tools` field is **vestigial** — always
+  `None`, never read or enforced (see [protocol](../protocol.md); the field
+  itself goes with #922). The native frontmatter key is an unknown-field
+  parse error (#920). The foreign (cross-vendor) layer already drops it, exactly as it drops
   Claude-style `allowed-tools`. The honest cost, recorded in the ADR: skill
   authors lose their only self-imposed guardrail — and, since
   [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)

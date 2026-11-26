@@ -225,7 +225,7 @@ the code, never as a description of current behaviour — that is
 | [0191](0191-inline-think-tags-catalog-format.md) | Inline `<think>` tags: a catalog-declared thinking format for the OpenAI-compat wire | current | — |
 | [0192](0192-universal-advertisement-enforcement-at-dispatch.md) | The advertised tool surface is universal and session-stable; masks enforce at dispatch | superseded by 0207 | — |
 | [0193](0193-two-tool-call-modes-and-lazy-tool-discovery.md) | Two tool-call modes (`native` / `invoke`) + lazy tool discovery | superseded by 0196 | — |
-| [0194](0194-skills-are-additive-only.md) | Skills are additive-only — the `allowed_tools` mask is removed | current; partly superseded by 0196, 0228; amended by 0193 | — |
+| [0194](0194-skills-are-additive-only.md) | Skills are additive-only — the `allowed_tools` mask is removed | current; partly superseded by 0196, 0228; amended by 0193; changed by #920 | — |
 | [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193; changed by #916 | — |
 | [0196](0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) | Tool search and lazy discovery replace the invoke envelope | current; §1–§4 superseded by 0226; amended by 0202, 0204, 0207, 0213 | — |
 | [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916 | — |

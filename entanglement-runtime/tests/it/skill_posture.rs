@@ -1,14 +1,10 @@
-//! Integration test for skills' additive-only posture (#400, ADR-0106,
-//! retired by ADR-0194): a `load_skill` call whose skill carries
-//! `allowed_tools` no longer narrows the session's tool set for the rest of
-//! the turn — a tool outside the list still dispatches normally. The wire
-//! posture event (`OutEvent::SkillActive`) is unchanged: it still fires on
-//! activation (with the frontmatter's `allowed_tools`, vestigial) and clears
-//! at the turn's `Done`.
+//! Integration test for skills' additive-only posture (ADR-0194): a
+//! `load_skill` call never narrows the session's tool set for the rest of the
+//! turn — `edit` still dispatches normally. The wire posture event
+//! (`OutEvent::SkillActive`) fires on activation (its vestigial
+//! `allowed_tools` always `None`, #920) and clears at the turn's `Done`.
 //!
-//! Drives the real engine + tool executor with a scripted LLM: turn 1 loads a
-//! skill whose `allowed_tools: [read]` used to refuse `edit` — it must now
-//! succeed instead.
+//! Drives the real engine + tool executor with a scripted LLM.
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -98,22 +94,18 @@ impl Drop for Cleanup {
 }
 
 #[tokio::test]
-async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged() {
+async fn a_loaded_skill_never_narrows_the_turn_and_posture_event_fires() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-skillmask-e2e-{id}"));
     std::fs::create_dir_all(&root).unwrap();
     let _cleanup = Cleanup(root.clone());
 
-    // A project skill that *used to* mask everything but `read` for the turn
-    // it loads in (ADR-0106) — now purely additive (ADR-0194): the frontmatter
-    // still parses (and still feeds the vestigial wire field), but it no
-    // longer refuses anything.
+    // A project skill loaded mid-turn — purely additive (ADR-0194).
     let skill_dir = root.join(".entanglement/skills/restricted");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "---\nname: restricted\ndescription: a read-only skill\nallowed_tools: [read]\n---\n\
-         Only read.\n",
+        "---\nname: restricted\ndescription: a read-only skill\n---\nOnly read.\n",
     )
     .unwrap();
     let target = root.join("target.txt");
@@ -136,9 +128,7 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
             )],
             ..Default::default()
         },
-        // Round 2: `edit` is outside `allowed_tools` — under ADR-0106 this was
-        // refused before dispatch; ADR-0194 makes it succeed like any other
-        // agent-mask-permitted tool.
+        // Round 2: `edit` while the skill is active must dispatch normally.
         LlmResponse {
             text: "".into(),
             tool_calls: vec![tool_call(
@@ -219,27 +209,24 @@ async fn skill_allowed_tools_no_longer_narrows_the_turn_posture_event_unchanged(
             .any(|o| o.contains("skill_id: restricted")),
         "expected the load_skill result; got {turn1_outputs:?}"
     );
-    // The additive posture: `edit`, outside the loaded skill's
-    // `allowed_tools`, dispatches like any other agent-mask-permitted tool —
-    // no skill-mask decline.
+    // The additive posture: no skill-mask decline.
     assert!(
         !turn1_outputs
             .iter()
             .any(|o| o.contains("Declined by skill")),
-        "a skill's allowed_tools must no longer refuse a tool (ADR-0194); got {turn1_outputs:?}"
+        "a loaded skill must never refuse a tool (ADR-0194); got {turn1_outputs:?}"
     );
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
         "bye",
-        "the edit outside allowed_tools must have actually run"
+        "the edit under the loaded skill must have actually run"
     );
-    // The activation is still surfaced on the wire, allowed_tools populated
-    // from the frontmatter exactly as before (vestigial, #400 item 3).
+    // The activation is surfaced on the wire; the vestigial field stays unset.
     assert!(
         turn1.iter().any(|e| matches!(
             e,
-            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: Some(tools), .. }
-                if id == "restricted" && tools == &vec!["read".to_string()]
+            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: None, .. }
+                if id == "restricted"
         )),
         "expected a SkillActive activation event; got {turn1:?}"
     );

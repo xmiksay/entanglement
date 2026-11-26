@@ -1429,7 +1429,7 @@ async fn approving_a_bash_command_covers_a_repeat_of_the_same_command() {
 }
 
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ┃ ADR-0194: a loaded skill's `allowed_tools` no longer reaches rhai bindings
+// ┃ ADR-0194: a loaded skill never restricts rhai bindings
 // ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Collect events for `sid` up to and including the *n*th `Done`, then linger
@@ -1462,15 +1462,10 @@ async fn collect_through_dones(
     out
 }
 
-/// #477, retired by ADR-0194: a skill loaded via `load_skill` used to scope
-/// `rhai` bindings exactly like it scoped generic tool dispatch (#400/
-/// ADR-0106) — a script's `edit` binding was refused while a restrictive
-/// skill was active. Skills are additive-only now: the same binding, under
-/// the identical loaded skill, must succeed — the skill's `allowed_tools`
-/// (still parsed, still populates the vestigial `SkillActive` wire field) no
-/// longer restrains it.
+/// Skills are additive-only (ADR-0194): a script's `edit` binding run while a
+/// skill is active must succeed — no skill-scoped mask reaches the bindings.
 #[tokio::test]
-async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
+async fn a_loaded_skill_never_restricts_a_rhai_binding() {
     let id = std::process::id();
     let root = std::env::temp_dir().join(format!("entanglement-rhai-skillmask-{id}"));
     std::fs::create_dir_all(&root).unwrap();
@@ -1482,14 +1477,11 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
     }
     let _cleanup = Cleanup(root.clone());
 
-    // A skill whose `allowed_tools` covers `read`/`rhai` (so the script itself
-    // can launch) but excludes `edit` — the binding under test.
     let skill_dir = root.join(".entanglement/skills/restricted");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "---\nname: restricted\ndescription: a read-only skill\nallowed_tools: [read, rhai]\n---\n\
-         Only read and rhai.\n",
+        "---\nname: restricted\ndescription: a read-only skill\n---\nOnly read and rhai.\n",
     )
     .unwrap();
     std::fs::write(root.join("f.txt"), "before").unwrap();
@@ -1521,8 +1513,7 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
             }],
             ..Default::default()
         },
-        // Round 2: the script's `edit` binding — outside the loaded skill's
-        // `allowed_tools` — must now succeed (ADR-0194).
+        // Round 2: the script's `edit` binding must succeed (ADR-0194).
         LlmResponse {
             text: "".into(),
             tool_calls: vec![rhai_call("r1")],
@@ -1581,21 +1572,19 @@ async fn skill_allowed_tools_no_longer_restricts_a_rhai_binding() {
     let out1 = rhai_output(&turn1).expect("expected rhai output");
     assert!(
         out1.contains("ran") && !out1.contains("not available while skill"),
-        "the edit binding must run — a skill's allowed_tools no longer restricts it \
-         (ADR-0194); got {out1}"
+        "the edit binding must run — a loaded skill never restricts it (ADR-0194); got {out1}"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("f.txt")).unwrap(),
         "after",
         "the edit binding must have actually run"
     );
-    // The wire posture event is unchanged: still activates with the
-    // frontmatter's (now-vestigial) allowed_tools, still clears at Done.
+    // The wire posture event activates (vestigial field unset) and clears at Done.
     assert!(
         turn1.iter().any(|e| matches!(
             e,
-            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: Some(tools), .. }
-                if id == "restricted" && tools == &vec!["read".to_string(), "rhai".to_string()]
+            OutEvent::SkillActive { skill_id: Some(id), allowed_tools: None, .. }
+                if id == "restricted"
         )),
         "expected a SkillActive activation event; got {turn1:?}"
     );

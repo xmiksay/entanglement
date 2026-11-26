@@ -60,7 +60,6 @@ pub(super) fn dispatcher(
             .expect("tool registry lock poisoned")
             .clone(),
         registry: ctx.tools.clone(),
-        skills: ctx.skills.clone(),
         active_skill: ctx.active_skill.clone(),
         resolver: ctx.resolver.clone(),
         chain,

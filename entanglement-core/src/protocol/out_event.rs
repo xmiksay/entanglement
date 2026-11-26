@@ -633,10 +633,9 @@ pub enum OutEvent {
     /// the runtime's tool executor: `Some(skill_id)` when a `load_skill` call
     /// activates a skill, `None` when the skill's scope ends — the current turn's
     /// `Done`, or the session ending. `allowed_tools` is **vestigial** since
-    /// ADR-0194 (skills are additive-only, never a tool-set restriction): still
-    /// populated from the skill's frontmatter and serialized when present, for
-    /// wire/log-replay compatibility, but never interpreted as an enforced mask —
-    /// by core (which never did, ADR-0037) or the runtime. Wire-facing posture
+    /// ADR-0194 (skills are additive-only, never a tool-set restriction): the
+    /// runtime always sends `None` (the frontmatter key is gone, #920) and
+    /// nothing interprets it; the field itself goes with #922. Wire-facing posture
     /// only; a head renders it as a notice. Mirrors `FileChange`: a fresh
     /// per-session seq (#157), no core replay-fold semantics (a head just tracks
     /// the latest value).
