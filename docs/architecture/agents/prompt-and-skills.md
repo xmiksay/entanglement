@@ -68,16 +68,14 @@
   `allowed_tools` (parsed-but-ignored with a one-time load warning — the
   skill-scoped mask it named is removed by
   [ADR-0194](../../adr/archive/0194-skills-are-additive-only.md); skills are
-  additive-only). The `tools:` key is retired
-  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
-  a native `SKILL.md` still carrying it is **skipped** with an error-level log
-  naming the replacement (`lib.rhai` functions, or a script file run with
-  `rhai` `path`) — never a registry-load abort, so one stale skill cannot brick
-  startup; a foreign dir drops it like any unknown key. `user_only` is removed
-  ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)): **every skill is model-visible** — listed, loadable,
-  its `lib.rhai` callable from any script; a native `SKILL.md` still carrying the
-  key loads normally and warns once per sighting (`config::warn_once`: live
-  reloads stay quiet, a removed-then-restored key warns again). A skill the model must not run is a permission-mode question (rules on
+  additive-only). The `tools:` key
+  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md))
+  and `user_only`
+  ([ADR-0229](../../adr/archive/0229-every-skill-is-model-visible-user-only-removed.md))
+  are gone: a native `SKILL.md` still carrying either fails to parse like any
+  unknown key and aborts the registry load (#920); a foreign dir drops them
+  like any unknown key. **Every skill is model-visible** — listed, loadable,
+  its `lib.rhai` callable from any script. A skill the model must not run is a permission-mode question (rules on
   the commands it performs), not a visibility one. Each `SkillMeta` resolves its
   `root_dir` **once** at discovery. **Disclosure is tier-1 only**: `SkillRegistry::disclosures`
   yields one `name: description` row per skill, which `list_skills`

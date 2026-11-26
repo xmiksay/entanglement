@@ -345,8 +345,9 @@ The few remaining environment knobs beyond provider keys/models:
 model/generation/aux pins, escape-root grants, MCP OAuth tokens, the
 last-seen MCP tool-name cache) in one go,
 and `ENTANGLEMENT_DEBUG=bodies,echo,no-shared-state` switches on developer
-diagnostics. Knobs retired in 0.7 still print one startup warning naming
-their replacement ([ADR-0213](docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md)).
+diagnostics. Knobs retired in 0.7 are no longer read, with no warning; a
+retired config key is a parse error (see the
+[0.7 → 0.8 migration note](docs/embedding/migrations/0.7-to-0.8.md)).
 
 ## Build & develop
 

@@ -101,8 +101,8 @@ state) is **per endpoint**:
 
 Each is documented inline at the feature that reads it.
 [ADR-0213](../docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md) pruned the
-list; a retired var still set prints one warning naming its replacement
-(`config::retired`).
+list; a var no longer listed here is simply not read (no retired-var warning,
+#920).
 
 | Env var | Purpose |
 | --- | --- |
@@ -118,9 +118,11 @@ list; a retired var still set prints one warning naming its replacement
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
 `tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
-`rpm`/`concurrency` (providers.yml, now `limits:`, #918). Retired outright (one warning each) by
-ADR-0213: `discovery:`; by ADR-0226: `tool_advertising:`, the catalog
-`discovery`/`tool_advertising` knobs, MCP `state:`; by ADR-0227: `endpoints:`.
+`rpm`/`concurrency` (providers.yml, now `limits:`, #918). A key an older
+release read (`discovery:`, `tool_advertising:`, `endpoints:`, MCP `state:`,
+the free-form `permissions:` map, the catalog `discovery`/`tool_advertising`/
+`advertise_discovered` knobs) is a plain unknown-field parse error — no
+migration shim (#920).
 `ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
 The permission **mode** has no env var by design (`--mode` > `config.yml`
 `mode:` > agent `default_mode` > `build`).
@@ -226,8 +228,7 @@ doc, never here**:
   ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0232](../docs/adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
 - **Skills are additive-only and all model-visible; slash commands are
   head-side templates** — a skill ships `lib.rhai` functions and script
-  files; `tools:`/`user_only` frontmatter removed (`tools:` skips the skill,
-  `user_only` loads with a warning)
+  files; `tools:`/`user_only` frontmatter removed (a parse error, #920)
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/archive/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
   trusted); managed files are advisory-locked and live-reloaded

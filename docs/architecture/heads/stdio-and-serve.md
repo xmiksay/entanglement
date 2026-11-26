@@ -46,7 +46,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   out-of-root `launch_escape` and every nested card. The decision is read off
   the structured `reason`, never the card text (`pending::headless_starts`,
   [ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)).
-  `--mode auto` is the unattended posture; `--yes` is retired. `run` and
+  `--mode auto` is the unattended posture. `run` and
   `pipe` never register as watchers, so they stay unattended
   ([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)). `ask_user` questions keep
   auto-answering their first option (ADR-0027). `skutter inspect prompt --agent <name> [--parts]` prints an
@@ -118,7 +118,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   user config with per-field provenance — every fallback setting in
   [`config::Config`](../../../entanglement-runtime/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
-  and the `tui:` block (#558, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)), any retired key a layer still carries
+  and the `tui:` block (#558, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)), the load's non-fatal findings
   (as a `warnings:` section), and an **advanced catalog** section listing each
   provider/model's non-default wire facts (`thinking_*`, `effort_tiers`,
   rate limits, … — [provider](../provider/catalog.md#advanced-catalog-wire-facts) §advanced catalog). Four more

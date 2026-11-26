@@ -238,13 +238,13 @@ the code, never as a description of current behaviour — that is
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
-| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916 | — |
+| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
-| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919 | — |
+| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919; changed by #920 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |
 | [0216](0216-resume-modes-ride-the-replay.md) | Resume modes ride the replay when any session is forced | current; amended by 0218 | — |
@@ -257,10 +257,10 @@ the code, never as a description of current behaviour — that is
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227 | — |
-| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916 | — |
-| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249 | — |
-| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 | — |
-| [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current | — |
+| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920 | — |
+| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920 | — |
+| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248; changed by #920 | — |
+| [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |
 | [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235 | — |

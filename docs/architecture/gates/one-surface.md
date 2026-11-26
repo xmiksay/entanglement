@@ -173,10 +173,9 @@ and `alias` kinds, `AliasTool`, `Tool::alias_rewrite` and the ladder's
 alias-rewrite step ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 A skill ships callable behavior as `lib.rhai` functions (§Script surface) and
 predefined scripts as files run with `rhai` `path`. A stale `endpoints:` key
-warns and is ignored; a native `SKILL.md` still declaring `tools:` is skipped
-with an error-level log naming the replacement — the rest of the registry
-(and the engine) still loads. A foreign skill dir's `tools:` is dropped like
-any unknown key (ADR-0074).
+or a native `SKILL.md` still declaring `tools:` fails to load like any unknown
+key (#920). A foreign skill dir's `tools:` is dropped like any unknown key
+(ADR-0074).
 
 ---
 

@@ -34,11 +34,8 @@
   definition naming any of the now-deleted authority keys (`tools`,
   `disallowed_tools`, `permission`, `sandbox`, `can_spawn`,
   `spawnable_agents`, `mode`) fails to parse like any other unrecognized key
-  — `deny_unknown_fields` catches a stale file the same way as a typo (a
-  strict-layer file gets one self-heal attempt first: backed up to
-  `<file>.bak`, rewritten without the retired keys, with a warning naming
-  the closest replacement mode inferred from what the dropped rules
-  allowed). **Any agent may be a session root or a spawn target now** — the
+  — `deny_unknown_fields` catches a stale file the same way as a typo; the
+  file is never rewritten (#920). **Any agent may be a session root or a spawn target now** — the
   old `primary`/`subagent`/`all` distinction goes with the deleted `mode`
   field, since there is no more per-agent authority to gate a spawn boundary
   on (spawning is bounded by the session's permission mode instead, [spawn, tasks & plans](spawn-tasks-plans.md)).
