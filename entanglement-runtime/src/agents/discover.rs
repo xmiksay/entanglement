@@ -22,16 +22,12 @@ const AGENTS_DIR_ENV: &str = "ENTANGLEMENT_AGENTS_DIR";
 
 /// A discovered agent definition file *before* parsing: which layer it came from
 /// (#185), a display label for its origin (`built-in (general.md)` or the file
-/// path), the raw file content, and — for a real on-disk file only — the path
-/// itself, so a strict-layer parse failure can attempt the retired-key
-/// self-heal ([`migrate_legacy_agent_file`]). `None` for an embedded built-in,
-/// which has no file to rewrite and never carries a retired key.
+/// path) and the raw file content.
 pub(super) struct RawAgent {
     pub(super) layer: AgentLayer,
     pub(super) strictness: Strictness,
     pub(super) source: String,
     pub(super) content: String,
-    pub(super) path: Option<PathBuf>,
 }
 
 /// Enumerate every agent definition in precedence order — embedded built-ins,
@@ -47,7 +43,6 @@ pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawAgent>> {
             strictness: Strictness::Strict,
             source: format!("built-in ({file})"),
             content: (*contents).to_string(),
-            path: None,
         })
         .collect();
     crate::layers::load_layers(
@@ -87,7 +82,6 @@ fn read_dir_raws(
             strictness,
             source: path.display().to_string(),
             content,
-            path: Some(path),
         });
     }
     Ok(())

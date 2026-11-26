@@ -1,12 +1,11 @@
-//! Parsing one discovered definition (strict vs. lenient frontmatter, the
-//! retired-key self-heal) and composing it into a core [`Agent`].
+//! Parsing one discovered definition (strict vs. lenient frontmatter) and
+//! composing it into a core [`Agent`].
 
 use anyhow::{bail, Context, Result};
 use entanglement_core::Agent;
 use serde::Deserialize;
 
 use super::discover::RawAgent;
-use super::migrate::migrate_legacy_agent_file;
 use crate::layers::Strictness;
 use crate::mcp::McpCapabilityIndex;
 use crate::mode::{ladder_rank, BUILTIN_LADDER};
@@ -88,37 +87,9 @@ pub(super) fn parse_raw(raw: &RawAgent) -> Result<Option<(AgentDefinition, Strin
         Strictness::Strict => {
             let (frontmatter, body) = crate::frontmatter::split(&raw.content)
                 .with_context(|| format!("parsing agent `{}`", raw.source))?;
-            match serde_yaml::from_str::<AgentDefinition>(&frontmatter) {
-                Ok(def) => Ok(Some((def, body))),
-                Err(e) => {
-                    // A real on-disk file (not an embedded built-in, which
-                    // never carries the retired keys) gets one self-heal
-                    // attempt before the parse error aborts the load.
-                    let Some(path) = raw.path.as_deref() else {
-                        return Err(e).with_context(|| {
-                            format!("invalid frontmatter in agent `{}`", raw.source)
-                        });
-                    };
-                    match migrate_legacy_agent_file(path, &frontmatter, &body)? {
-                        Some(cleaned) => {
-                            let def: AgentDefinition = serde_yaml::from_str(&cleaned)
-                                .with_context(|| {
-                                    format!(
-                                        "invalid frontmatter in agent `{}` even after dropping \
-                                         retired keys",
-                                        raw.source
-                                    )
-                                })?;
-                            Ok(Some((def, body)))
-                        }
-                        // No retired key explains the failure — a genuine
-                        // typo, so the original error stands (no guessing).
-                        None => Err(e).with_context(|| {
-                            format!("invalid frontmatter in agent `{}`", raw.source)
-                        }),
-                    }
-                }
-            }
+            let def = serde_yaml::from_str::<AgentDefinition>(&frontmatter)
+                .with_context(|| format!("invalid frontmatter in agent `{}`", raw.source))?;
+            Ok(Some((def, body)))
         }
         Strictness::Lenient => {
             let parsed = crate::frontmatter::split(&raw.content).and_then(|(frontmatter, body)| {

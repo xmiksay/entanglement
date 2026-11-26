@@ -52,23 +52,8 @@
 //! session's life — a spawned sub-agent is a fresh session with its own
 //! system prompt, which is what delegating to a different persona actually
 //! needs; there is no live "switch agent" message any more.
-//!
-//! # Migrating a legacy native-layer file
-//!
-//! A user/project **native** definition (`${config_dir}/entanglement/agents`,
-//! `<root>/.entanglement/agents`) authored before ADR-0207 may still carry the
-//! retired authority keys (`migrate::RETIRED_AGENT_KEYS`). Rather than bricking the
-//! load on every one of them forever, [`migrate::migrate_legacy_agent_file`] self-heals
-//! a **strict**-layer parse failure that is caused by exactly those keys: it
-//! backs the file up to `<file>.bak`, rewrites it without them, and warns
-//! naming the file and the closest replacement permission **mode** inferred
-//! from what the dropped rules allowed. A parse failure the retired keys
-//! don't explain (a genuine typo) still aborts loudly — this must never paper
-//! over a mistake by guessing. Foreign (lenient) files are unaffected: they
-//! never carried these keys as anything but ignored noise (ADR-0074).
 
 mod discover;
-mod migrate;
 mod parse;
 
 use std::path::Path;
@@ -469,7 +454,6 @@ mod tests {
             strictness: Strictness::Lenient,
             source: "~/.claude/agents/test.md".into(),
             content: content.into(),
-            path: None,
         }
     }
 
@@ -564,75 +548,25 @@ mod tests {
         }
     }
 
-    /// End-to-end through [`parse_raw`] against a real file: a native-layer
-    /// definition still carrying `tools`/`permission` self-heals instead of
-    /// bricking the load — backed up, rewritten, and re-parsed transparently.
+    /// #920: no self-heal — a native file still carrying a pre-ADR-0207
+    /// authority key aborts the load like any typo, and is never rewritten.
     #[test]
-    fn legacy_native_file_self_heals_with_backup_and_warning() {
+    fn a_native_file_with_a_retired_key_aborts_untouched() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("legacy.md");
-        std::fs::write(
-            &path,
-            "---\nname: reviewer\ndescription: d\ntools: [read, glob, grep]\npermission:\n  default: ask\n---\nBody text.\n",
-        )
-        .unwrap();
+        let content = "---\nname: reviewer\ndescription: d\ntools: [read]\n---\nBody text.\n";
+        std::fs::write(&path, content).unwrap();
         let raw = RawAgent {
             layer: AgentLayer::User,
             strictness: Strictness::Strict,
             source: path.display().to_string(),
-            content: std::fs::read_to_string(&path).unwrap(),
-            path: Some(path.clone()),
-        };
-
-        let (def, body) = parse_raw(&raw).unwrap().expect("self-healed and parsed");
-        assert_eq!(def.name, "reviewer");
-        assert_eq!(body, "Body text.");
-
-        // The backup keeps the original bytes with the retired keys intact.
-        let bak = path.with_extension("md.bak");
-        let backed_up = std::fs::read_to_string(&bak).expect("backup written");
-        assert!(backed_up.contains("tools:"));
-
-        // The file itself was rewritten without the retired keys, and a
-        // second parse (no more raw-content caching) succeeds directly —
-        // proving the rewrite, not just an in-memory patch, is what's live.
-        let rewritten = std::fs::read_to_string(&path).unwrap();
-        assert!(!rewritten.contains("tools:"));
-        assert!(!rewritten.contains("permission:"));
-        assert!(rewritten.contains("Body text."));
-        let raw2 = RawAgent {
-            content: rewritten,
-            ..raw
-        };
-        assert!(parse_raw(&raw2).unwrap().is_some());
-    }
-
-    /// A parse failure the retired keys don't explain (a genuine typo) still
-    /// aborts loudly — the self-heal must never paper over a real mistake.
-    #[test]
-    fn a_typo_unrelated_to_retired_keys_still_aborts() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("typo.md");
-        std::fs::write(
-            &path,
-            "---\nname: x\ndescription: d\ntypo_field: 1\n---\nbody",
-        )
-        .unwrap();
-        let raw = RawAgent {
-            layer: AgentLayer::User,
-            strictness: Strictness::Strict,
-            source: path.display().to_string(),
-            content: std::fs::read_to_string(&path).unwrap(),
-            path: Some(path.clone()),
+            content: content.to_string(),
         };
 
         let err = parse_raw(&raw).unwrap_err();
-        assert!(format!("{err:#}").contains("typo_field"));
-        // No migration side effect: the file is untouched, no backup written.
+        assert!(format!("{err:#}").contains("unknown field"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         assert!(!path.with_extension("md.bak").exists());
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("typo_field"));
     }
 
     #[test]
