@@ -20,7 +20,7 @@ table below.
 ## The contract (one set of types, every head)
 
 ```
-InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
+InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth

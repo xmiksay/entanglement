@@ -150,15 +150,17 @@
 
 ## A decision only answers its own kind of card (ADR-0245, #895/#894)
 
-- **Wire:** an `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` aimed
+- **Wire:** an `AnswerQuestion` aimed
   at an approval card's `request_id`, or an `Approve`/`Reject` aimed at an
   `ask_user` question's, is refused with an `OutEvent::Error` on the session
   it named. The card stays parked and listed, and no `ApprovalResolved`
   follows; before, the park unwound silently and the turn hung.
 - **Questions:** drop an `ask_user` question when the `ToolOutput` with its
-  `request_id` arrives (an answer from any head, a retract, a
+  `request_id` arrives (an answer from any head, a
   `question_timeout`). A `UserQuestion` for an id you already queue is a
-  `ReplaceQuestion`: replace the entry, do not queue a second one.
+  re-offer: do not queue a second one. (The retract/replace question frames
+  this note once listed are gone in 0.8, see
+  [0.7 → 0.8](0.7-to-0.8.md#retractreplace-question-frames-removed-922).)
 - **API:** `PendingDecisions::resolve` returns `Resolution`
   (`Delivered`/`Absent`/`Misaimed { kind }`); a router of your own should
   report `Misaimed`. Parks receive `seam::ApprovalDecision` or

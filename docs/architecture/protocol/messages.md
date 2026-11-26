@@ -19,8 +19,6 @@ InMsg    = Prompt{session,content:[ContentPart]} | Approve{session,request_id,sc
          //   is_error/duration_ms (#636, ADR-0176): structured side channel alongside content's still-unchanged text — denied/masked/refused/unknown-tool/errored calls, and an MCP result flagged isError (#727), set is_error; duration_ms is measured once, generically, around the whole host-tool dispatch
          //   exit_code (#681, ADR-0186): the numeric status when the call ran a process to completion (bash foreground, or a poll observing a job exit) — None for every other tool, a background launch, or a killed process (the [exit -1] text keeps its sentinel; the field stays honest). Orthogonal to is_error: nonzero exit still executed
          | AnswerQuestion{session,request_id,answers:[[string]],answer?}  // ask_user answer(s) → runtime (#90, #488); answers = one inner vec per question; legacy answer:"…" still deserializes, folds to [[answer]] in seam::Decision::from_inmsg
-         | RetractQuestion{session,request_id}   // withdraw an open ask_user question without cancelling the turn (#515, ADR-0146) — the orchestrator still replies (withdrawal note), unlike Stop's silent unwind
-         | ReplaceQuestion{session,request_id,questions:[Question]}   // swap an open ask_user question's content in place; re-parks under the same request_id, not terminal (#515, ADR-0146)
          | Stop{session}
          | SetMode{session,mode}   // trusted-only: switch the session's permission mode → ModeChanged, cascades over the whole live spawn sub-tree; applied IMMEDIATELY, turn live or not — unlike SetModel/SetGeneration/SetToolOverlay, a mode is a label the runtime grades the *next* tool call against, not something a live round is using, so deferring it left a same-turn propose_plan approval executing its first call under the stale mode (#560 fix, ADR-0207 §12). SetAgent is gone (ADR-0207 §9) — an agent is chosen once, at session start or spawn, and is fixed for that session's life
          | SetModel{session,provider,model}   // live model/provider switch, no restart (#218, ADR-0063)
@@ -134,40 +132,27 @@ batch several questions into one call, a typed "Other" answer is unconditional
 one picked option — `answers` carries one inner vec per question, in call
 order.
 
-**List/retract/replace an open question** (#515,
-[ADR-0146](../../adr/archive/0146-ask-user-list-retract-replace.md)). `RetractQuestion`/
-`ReplaceQuestion` join `AnswerQuestion` at the same supervisor bypass and the
-same runtime consumer (`seam::Decision::from_inmsg` maps all three off the
-inbound fan-out) — both carry a mandatory `session` but are core-oblivious
-exactly like `AnswerQuestion`, never routed to a session task. Retract
-withdraws the parked question *without* cancelling the rest of the turn: the
-`ask_user` orchestrator still owes the model a `ToolResult`, so it replies
-with an explicit withdrawal note instead of `Stop`'s silent unwind (sound
-there only because the whole turn is being cancelled anyway). Replace is
-**not terminal** — `run_ask_user` loops: a replace re-emits `UserQuestion`
-with the revised `questions` under the *same* `request_id` and re-parks,
-resolved only by the eventual answer or retract, so core never sees a second
-round-trip for what is, from its perspective, one unchanged tool call.
+**List the open questions** (#515,
+[ADR-0146](../../adr/archive/0146-ask-user-list-retract-replace.md); its
+retract/replace frames were cut by #922).
 `ListQuestions{correlation_id,session?}` mirrors `ListSessions`/`McpList`: a
 session-less snapshot query (`session()` is `None` for it — the optional
 `session` field is a result *filter*, not a routing target) answered by a
 runtime-owned `OpenQuestions` registry (`entanglement-runtime/src/questions.rs`)
 that `ask_user` keeps in sync with `PendingDecisions`, since the generic
 `PendingDecisions` map carries no question content to answer the query with.
-All four variants are wire-allowed: list is read-only, and retract/replace are
-no more privileged than answering, which is already wire-allowed — the `serve`
-head's per-connection approval-ownership gate (#402, ADR-0107) covers all
-three decision variants alike.
+It is wire-allowed: it is read-only. The `serve` head's per-connection
+approval-ownership gate (#402, ADR-0107) covers `AnswerQuestion` alongside
+`Approve`/`Reject`.
 
 A decision only answers its own kind of park
 ([ADR-0245](../../adr/archive/0245-a-decision-only-answers-its-own-kind-of-card.md),
-#895): the three question frames reach only an `ask_user` park, and
+#895): `AnswerQuestion` reaches only an `ask_user` park, and
 `Approve`/`Reject` only an approval card. A frame aimed at the other kind is
 refused with an `Error` on the session it addressed, and the card stays
 parked, listed and answerable. A question ends on the wire with its call's
 `ToolOutput` (same `request_id`), which every head sees as soon as any head
-answers it, it is retracted, or the mode's `question_timeout` elapses (#894);
-a replace sends no result, so a head replaces the queued entry in place.
+answers it or the mode's `question_timeout` elapses (#894).
 A decision whose id no park holds — the card expired, another head already
 answered it, or it never existed — is refused the same way
 ([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)):

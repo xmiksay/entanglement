@@ -177,7 +177,7 @@ the code, never as a description of current behaviour — that is
 | [0143](0143-ask-user-draft-until-submit.md) | `ask_user` answers are drafts until an explicit Submit | current | — |
 | [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213; changed by #918 | — |
 | [0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) | One plan tool: file-backed plans, a staleness guard, and a blocking review loop | current; amended by 0172, 0173, 0207 | — |
-| [0146](0146-ask-user-list-retract-replace.md) | `ask_user` gains list/retract/replace of open questions | current; amended by 0245 | — |
+| [0146](0146-ask-user-list-retract-replace.md) | `ask_user` gains list/retract/replace of open questions | current; amended by 0245; changed by #922 | — |
 | [0147](0147-multi-user-mode-embedder-api.md) | Multi-user mode: session-scoped identity + embedder-API per-user seams | current; partly superseded by 0181 | — |
 | [0148](0148-glob-patterns-in-the-agent-tool-mask.md) | Glob patterns in the agent tool mask | superseded by 0207 | — |
 | [0149](0149-per-session-tool-overlay.md) | Per-session tool overlay — live injection past the agent mask | current; amended by 0163, 0177, 0207, 0226 | — |
@@ -276,7 +276,7 @@ the code, never as a description of current behaviour — that is
 | [0242](0242-compaction-heals-walk-the-whole-chain.md) | Compaction heals walk the whole chain | current | — |
 | [0243](0243-running-script-reads-mode-and-overlay-epochs.md) | A running script re-reads its mode and drops overlay entries by mode epoch | current | — |
 | [0244](0244-seq-order-leases-and-one-task-per-id.md) | Seqs in delivery order, leased by detached work, one task per id | current; amended by 0246 | — |
-| [0245](0245-a-decision-only-answers-its-own-kind-of-card.md) | A decision only answers its own kind of card | current; amended by 0247 | — |
+| [0245](0245-a-decision-only-answers-its-own-kind-of-card.md) | A decision only answers its own kind of card | current; amended by 0247; changed by #922 | — |
 | [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current; changed by #921 | — |
 | [0247](0247-attended-sessions-wait-for-their-approver.md) | Attended sessions wait for their approver | current | — |
 | [0248](0248-importable-rhai-library-modules.md) | Importable `rhai` library modules | current | — |
