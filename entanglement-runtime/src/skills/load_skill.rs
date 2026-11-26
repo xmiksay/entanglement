@@ -443,20 +443,6 @@ mod tests {
         assert!(format!("{err:#}").contains("unknown skill"), "got: {err:#}");
     }
 
-    /// ADR-0229: a skill still declaring the removed `user_only` key loads
-    /// for the model like any other.
-    #[test]
-    fn formerly_user_only_skill_loads() {
-        let deploy = crate::skills::parse::parse_skill(
-            "---\nname: deploy\ndescription: d\nuser_only: true\n---\ndanger",
-            None,
-        )
-        .unwrap();
-        let out = load(&registry(vec![deploy]), "deploy").unwrap();
-        assert_eq!(parse_skill_id(&out), Some("deploy"));
-        assert!(out.contains("danger"), "{out}");
-    }
-
     #[test]
     fn built_in_body_returned_verbatim_with_skill_id() {
         // No root_dir ⇒ no substitution, no refs.

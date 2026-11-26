@@ -191,14 +191,10 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
     // longer silent (#186): emit a `replaces=<prior source>` debug at the
     // overwrite, matching the provenance `inspect skills` surfaces.
     let mut winning: HashMap<String, (SkillLayer, String)> = HashMap::new();
-    let mut user_only = Vec::new();
     for raw in discovery::discover(root, user)? {
-        let Some((skill, declares_user_only)) = parse_raw(&raw)? else {
+        let Some(skill) = parse_raw(&raw)? else {
             continue;
         };
-        if declares_user_only {
-            user_only.push((skill.name.clone(), raw.source.clone()));
-        }
         if let Some((prior_layer, prior_source)) =
             winning.insert(skill.name.clone(), (raw.layer, raw.source.clone()))
         {
@@ -212,24 +208,8 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
         }
         reg.insert(skill);
     }
-    parse::warn_user_only(format!("skills\0{}\0{user:?}", root.display()), &user_only);
     reg.modules = Arc::new(rhai_modules::load(root, user));
     Ok(reg)
-}
-
-/// Native skills refused at load — the retired `tools:` key (ADR-0228) —
-/// as `source: reason` lines, so `skutter inspect skills` shows what the log
-/// only warned about.
-pub fn rejected_skills(root: &Path) -> Result<Vec<String>> {
-    rejected_skills_in(root, &UserLayer::FromEnv)
-}
-
-/// [`rejected_skills`] with an explicit user layer.
-pub fn rejected_skills_in(root: &Path, user: &UserLayer) -> Result<Vec<String>> {
-    Ok(discovery::discover(root, user)?
-        .iter()
-        .filter_map(parse::rejection)
-        .collect())
 }
 
 /// One resolved skill for `skutter inspect skills` (#186): the winning definition
@@ -261,7 +241,7 @@ pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<SkillRes
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();
     for raw in discovery::discover(root, user)? {
-        let Some((meta, _)) = parse_raw(&raw)? else {
+        let Some(meta) = parse_raw(&raw)? else {
             continue;
         };
         let name = meta.name.clone();
@@ -297,7 +277,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::discovery::{walk, BUILT_INS, SKILL_FILE};
-    use super::parse::{parse_skill, RetiredToolsKey};
+    use super::parse::parse_skill;
     use super::*;
 
     /// An empty user layer: the injected stand-in for the real user dirs.
@@ -590,46 +570,29 @@ mod tests {
         assert!(reg.get("with-tools").is_some(), "foreign skill still loads");
     }
 
-    /// ADR-0228: a native skill's `tools:` key is refused with the
-    /// replacement named — the skill is skipped, every other skill (in the
-    /// user and the project layer) still loads.
+    /// #920: a native skill still declaring a pre-0.8 key (`tools:`, ADR-0228;
+    /// `user_only`, ADR-0229) is an unknown field like any typo — the load
+    /// aborts naming the file, no skip-and-warn shim.
     #[test]
-    fn a_native_tools_key_skips_the_skill_and_names_the_replacement() {
-        let md = |name: &str| {
-            format!(
-                "---\nname: {name}\ndescription: d\ntools:\n  - kind: rhai\n    name: w\n    \
-                 script: x.rhai\n---\nbody"
-            )
-        };
-        for empty in ["tools:\n", "tools: ~\n", "tools: []\n"] {
-            let e = parse(&format!("---\nname: e\ndescription: d\n{empty}---\nb")).unwrap_err();
-            assert!(e.is::<RetiredToolsKey>(), "{empty:?}: {e:#}");
-        }
-        let err = parse(&md("t")).unwrap_err();
-        let text = format!("{err:#}");
-        assert!(err.is::<RetiredToolsKey>(), "{text}");
-        for hint in ["lib.rhai", "skill::<skill>::<fn>", "\"path\"", "args"] {
-            assert!(text.contains(hint), "missing `{hint}`: {text}");
-        }
+    fn a_native_pre_0_8_key_aborts_the_load() {
+        for key in ["tools: []\n", "tools: ~\n", "user_only: true\n"] {
+            let err = parse(&format!("---\nname: e\ndescription: d\n{key}---\nb")).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("unknown field"),
+                "{key:?}: {err:#}"
+            );
 
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let user = root.join("user-skills");
-        write_skill(&user, "u", &md("u"));
-        let project = root.join(".entanglement").join("skills");
-        write_skill(&project, "p", &md("p"));
-        write_skill(&project, "ok", "---\nname: ok\ndescription: fine\n---\nb");
-        let reg = load_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
-        assert!(reg.get("u").is_none() && reg.get("p").is_none());
-        assert_eq!(reg.get("ok").unwrap().description, "fine");
-        let resolved = resolve_registry_in(root, &UserLayer::Dir(user.clone())).unwrap();
-        assert!(resolved.iter().any(|r| r.meta.name == "ok"));
-        let rejected = rejected_skills_in(root, &UserLayer::Dir(user)).unwrap();
-        assert_eq!(rejected.len(), 2, "{rejected:?}");
-        assert!(
-            rejected.iter().all(|r| r.contains("SKILL.md: skill `")),
-            "{rejected:?}"
-        );
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let project = root.join(".entanglement").join("skills");
+            write_skill(
+                &project,
+                "e",
+                &format!("---\nname: e\ndescription: d\n{key}---\nb"),
+            );
+            let err = load_registry_in(root, &no_user(root)).unwrap_err();
+            assert!(format!("{err:#}").contains("SKILL.md"), "{key:?}: {err:#}");
+        }
     }
 
     /// ADR-0227: a foreign (cross-vendor) skill dir's `lib.rhai` loads too.
@@ -676,35 +639,6 @@ mod tests {
         assert!(reg.get("deploy").is_some());
         assert!(reg.disclosures().iter().any(|d| d.name == "deploy"));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
-    }
-
-    /// ADR-0229: a native skill still declaring `user_only` loads, is
-    /// disclosed, and warns once — a reload re-parsing the same file stays
-    /// quiet, but a key removed and later restored warns again.
-    #[test]
-    fn native_user_only_loads_disclosed_and_warns_once_per_sighting() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let _guard = tracing::subscriber::set_default(WarnCounter(count.clone(), "user_only"));
-        let warned = || count.load(std::sync::atomic::Ordering::SeqCst);
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let skills = root.join(".entanglement").join("skills");
-        let with_key = "---\nname: ship\ndescription: d\nuser_only: true\n---\nb";
-        write_skill(&skills, "ship", with_key);
-        let reg = load_registry_in(root, &no_user(root)).unwrap();
-        assert!(reg.disclosures().iter().any(|d| d.name == "ship"));
-        assert_eq!(warned(), 1);
-
-        load_registry_in(root, &no_user(root)).unwrap();
-        assert_eq!(warned(), 1, "a reload must not repeat the removal warning");
-
-        write_skill(&skills, "ship", "---\nname: ship\ndescription: d\n---\nb");
-        load_registry_in(root, &no_user(root)).unwrap();
-        assert_eq!(warned(), 1, "a clean load never warns");
-
-        write_skill(&skills, "ship", with_key);
-        load_registry_in(root, &no_user(root)).unwrap();
-        assert_eq!(warned(), 2, "a reintroduced key warns again");
     }
 
     #[test]

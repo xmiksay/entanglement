@@ -1,8 +1,7 @@
 //! ADR-0228: `rhai` runs a predefined script by `path` and binds `args` as a
 //! constant map for both run kinds; `script` XOR `path` is validated before
 //! the launch; the launch card shows the source read once. Plus the skill
-//! side: a native `tools:` key is refused without aborting the load, and
-//! `load_skill` lists `lib.rhai` signatures with their doc comments.
+//! side: `load_skill` lists `lib.rhai` signatures with their doc comments.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -112,23 +111,6 @@ fn write_skill(dir: &Path, name: &str, front: &str) -> std::path::PathBuf {
     )
     .unwrap();
     skill
-}
-
-/// A native `tools:` key rejects that skill with the replacement named in
-/// the log — never the whole load.
-#[test]
-fn a_native_tools_key_rejects_only_that_skill() {
-    let tmp = tempfile::tempdir().unwrap();
-    let skills = tmp.path().join(".entanglement/skills");
-    write_skill(
-        &skills,
-        "old",
-        "tools:\n  - kind: alias\n    name: x\n    target: read\n",
-    );
-    write_skill(&skills, "fine", "");
-    let reg = load_registry_in(tmp.path(), &no_user(tmp.path())).unwrap();
-    assert!(reg.get("old").is_none());
-    assert!(reg.get("fine").is_some());
 }
 
 /// `load_skill` = body, the lib's signatures with their doc comments, then

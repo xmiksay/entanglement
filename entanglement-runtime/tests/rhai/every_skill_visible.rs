@@ -1,6 +1,6 @@
-//! ADR-0229: `user_only` is gone — a skill still declaring it is an ordinary
-//! model-visible skill. Through the real executor, the model lists it,
-//! loads it, and calls its `lib.rhai` from a script.
+//! ADR-0229: every skill is model-visible. Through the real executor, the
+//! model lists a project skill, loads it, and calls its `lib.rhai` from a
+//! script.
 
 use entanglement_core::Permission;
 use entanglement_runtime::skills::load_registry_in;
@@ -9,13 +9,13 @@ use super::launch_harness::{fixture, run_calls, table, Launch, Setup};
 use super::no_user;
 
 #[tokio::test]
-async fn a_formerly_user_only_skill_is_listed_loaded_and_scriptable() {
+async fn a_skill_is_listed_loaded_and_scriptable() {
     let (_tmp, root) = fixture();
     let dir = root.join(".entanglement/skills/deploy");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
-        "---\nname: deploy\ndescription: ship it\nuser_only: true\n---\nDeploy steps.\n",
+        "---\nname: deploy\ndescription: ship it\n---\nDeploy steps.\n",
     )
     .unwrap();
     std::fs::write(dir.join("lib.rhai"), r#"fn ship() { "shipped" }"#).unwrap();

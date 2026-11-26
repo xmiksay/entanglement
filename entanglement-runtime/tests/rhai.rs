@@ -103,8 +103,7 @@ mod launch_grading;
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 #[path = "rhai/schema_dedup.rs"]
 mod schema_dedup;
-// ADR-0229: a skill still declaring the removed `user_only` is listed,
-// loaded and scriptable like any other.
+// ADR-0229: every skill is listed, loaded and scriptable by the model.
 #[path = "rhai/every_skill_visible.rs"]
 mod every_skill_visible;
 // ADR-0230: the structured card reason and honest scopes (#836, #846).
