@@ -166,7 +166,7 @@ fn format_script_poll(id: &str, poll: ScriptPoll, killed: bool) -> String {
     if killed && poll.running {
         header.push_str(
             "[cooperative stop requested — the script ends at its next \
-             operation; an in-flight exec/bash binding finishes first. Poll \
+             operation; an in-flight bash binding finishes first. Poll \
              again for the terminal state.]\n",
         );
     }

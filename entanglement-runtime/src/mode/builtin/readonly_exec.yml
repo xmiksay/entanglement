@@ -5,12 +5,13 @@
 # to look at both when editing either. `build` needs none of this: it
 # class-allows `exec` outright.
 #
-# Every entry uses the `bash(pattern)` scoped-tool grammar. A trailing `*` with **no separating space** (`"bash(ls*)"`, not
-# `"bash(ls *)"`) is deliberate: `glob_match` anchors at the start of the
-# command string, so `ls*` matches both bare `ls` (the star matches the
-# empty tail) and `ls -la` — bare invocation is exactly what prompted for
-# an approval before this change (`plan` had no exec allowance at all, so
-# even a bare `ls` triggered one).
+# Every entry uses the `bash(pattern)` scoped-tool grammar. A trailing `*`
+# with **no separating space** (`"bash(ls*)"`, not `"bash(ls *)"`) is
+# deliberate: `glob_match` anchors at the start of the command string, so
+# `ls*` matches both bare `ls` (the star matches the empty tail) and
+# `ls -la` — bare invocation is exactly what prompted for an approval
+# before this change (`plan` had no exec allowance at all, so even a bare
+# `ls` triggered one).
 #
 # Git is enumerated by subcommand rather than a broad `git *` (do not
 # widen this to `git *`): enumerating a subcommand list excludes

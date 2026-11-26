@@ -5,8 +5,9 @@
 # breadth. Plan authorship is denied here on purpose: switching back to
 # `plan` mode is the way to revise, not writing over the plan file
 # mid-build. The destructive list itself is this stage's own illustrative
-# first cut (ADR-0207 doesn't enumerate one) — tune it via `config.yml` `modes:` as real footguns turn up; tuning only
-# ever adds a longer, more specific rule, it never removes this one.
+# first cut (ADR-0207 doesn't enumerate one) — tune it via `config.yml`
+# `modes:` as real footguns turn up; tuning only ever adds a longer, more
+# specific rule, it never removes this one.
 default: prompt
 deny:
   - plan

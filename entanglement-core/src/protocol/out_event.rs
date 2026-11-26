@@ -702,7 +702,7 @@ pub enum OutEvent {
         part: ContentPart,
     },
     /// One binding call a running `rhai` script made (#821, ADR-0233):
-    /// every binding — host tools, `exec`/`bash`, `http()`, `mcp::` and the
+    /// every binding — host tools, `bash`, `http()`, `mcp::` and the
     /// bindings a skill's `lib.rhai` function makes — climbs the dispatch
     /// seam, and this is the runtime's report of one such climb. Core never
     /// sees a nested call (it parks only on ids it minted), so the outer

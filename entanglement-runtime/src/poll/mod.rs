@@ -27,7 +27,7 @@
 //!
 //! `kill: true` SIGKILLs a job's process group; on a script handle it is
 //! **cooperative** — it trips the stop flag the engine's progress callback
-//! polls, so the script ends at its next operation (an in-flight `exec`/`bash`
+//! polls, so the script ends at its next operation (an in-flight `bash`
 //! binding finishes its own budget-clamped timeout first, the documented
 //! ADR-0161 §5 limit). Refused on an agent or
 //! retained-output handle — cancelling a child is a distinct authorization
@@ -117,9 +117,10 @@ pub fn poll_spec() -> ToolSpec {
          never waits (the operation already finished) and instead pages the \
          text with offset/tail — offset (default 0) is a 0-based line index, \
          tail (default 30, matching bash's own default) is how many lines to \
-         return from there, 0 meaning the rest (still byte-capped). Pass kill: true to SIGKILL a job's \
-         process group, or to cooperatively stop a script — it ends at its \
-         next operation, after any in-flight exec/bash binding finishes \
+         return from there, 0 meaning the rest (still byte-capped). Pass \
+         kill: true to SIGKILL a job's process group, or to cooperatively \
+         stop a script — it ends at its next operation, after any in-flight \
+         bash binding finishes \
          (refused for a sub-agent or retained-output handle — \
          not supported). Pass timeout_secs: 0 to block until the handle \
          reaches a terminal state. Call with no handle at all to instead list \

@@ -201,8 +201,8 @@ pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class
 /// The grade one call resolves to under `rules` + `default`, and the rule
 /// that decided it (`None`: the default did). `bash` with a command grades
 /// per compound segment (ADR-0197): split on top-level `&&`/`||`/`;`/`|`/
-/// `&`, grade each segment and fold to the most restrictive — any segment `Deny` denies the whole
-/// command, all-`Allow` is `Allow`; the deciding rule is the one of the
+/// `&`, grade each segment and fold to the most restrictive — any segment
+/// `Deny` denies the whole command, all-`Allow` is `Allow`; the deciding rule is the one of the
 /// first segment at the folded grade. A simple command is one segment.
 ///
 /// [`SplitOutcome::Opaque`] grades at `default` directly — a construct the

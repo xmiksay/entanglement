@@ -569,9 +569,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_closes_stdin_not_inherited() {
-        // Regression for the unintentional inherit (#389): without stdin wired up, `cat` must see immediate EOF, not
-        // block on the engine's real stdin. If it inherited, this would time out
-        // instead of exiting clean.
+        // Regression for the unintentional inherit (#389): without stdin
+        // wired up, `cat` must see immediate EOF, not block on the engine's
+        // real stdin. If it inherited, this would time out instead of
+        // exiting clean.
         let dir = tempfile::tempdir().unwrap();
         let tool = BashTool::new(dir.path().to_path_buf());
         let out = tool.run(r#"{"command":"cat","timeout":3}"#).await.unwrap();

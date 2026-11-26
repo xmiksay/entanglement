@@ -115,6 +115,14 @@ fn no_match_reason(entry: &str) -> Option<String> {
     if let Some(reason) = non_maskable_reason(tool) {
         return Some(reason);
     }
+    // A deny written against the removed tool used to bind `bash` too; say
+    // so, or the user never learns their deny stopped being enforced.
+    if tool == "call" {
+        return Some(format!(
+            "the argv `call` tool was removed (#916) and `{entry}` no longer \
+             binds `bash` — rewrite it as `bash(...)`"
+        ));
+    }
     // An unrecognized tool part keeps the stale-name warning, which is the
     // likelier mistake (`bassh(x)` is a typo, not a misplaced scope).
     if !is_recognized_mask_entry(tool) {
@@ -581,6 +589,8 @@ mod tests {
     fn a_rule_naming_the_removed_call_tool_warns() {
         let stale = stale_entries("modes:\n  build:\n    deny: [\"call\", \"call(git *)\"]\n");
         assert_eq!(stale, ["call", "call(git *)"]);
+        let why = no_match_reason("call(rm *)").unwrap();
+        assert!(why.contains("rewrite it as `bash(...)`"), "{why}");
     }
 
     /// #881: a workdir scope on any tool but `bash` warns — a known

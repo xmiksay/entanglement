@@ -41,7 +41,7 @@ the code, never as a description of current behaviour — that is
 | [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | current; partly superseded by 0053 | — |
 | [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | current; partly superseded by 0054, 0091, 0170; amended by 0161 | — |
 | [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | current; partly superseded by 0054 | — |
-| [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | current; partly superseded by 0093, 0195 (§3 `bash` opt-in retired); amended by 0176 | — |
+| [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | current; partly superseded by 0093 (itself removed by #916), 0195 (§3 `bash` opt-in retired); amended by 0176 | — |
 | [0011](0011-tui-head-ratatui-crossterm.md) | TUI head: ratatui + crossterm in `entanglement-runtime` | current | — |
 | [0012](0012-tui-event-buffering-rendering.md) | TUI event-buffering & rendering model | current | — |
 | [0013](0013-keybinding-leader-which-key.md) | Keybinding scheme: leader key + which-key | current | — |
@@ -82,7 +82,7 @@ the code, never as a description of current behaviour — that is
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
 | [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Per-endpoint connection pool, rate-limit, and retry | current; amended by 0141, 0156, 0157 | — |
-| [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current | — |
+| [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916 | — |
 | [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current | — |
 | [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: provider owns the LLM ABI as a leaf crate | current | — |
 | [0054](0054-canonicalizing-symlink-safe-root-containment.md) | Canonicalizing, symlink-safe host-tool root containment | current | — |
@@ -140,24 +140,24 @@ the code, never as a description of current behaviour — that is
 | [0106](0106-skill-scoped-allowed-tools-enforcement.md) | Skill-scoped `allowed_tools` enforcement — a session-local runtime mask layered after the #116 agent mask | superseded by 0194 | — |
 | [0107](0107-ws-per-connection-approval-ownership.md) | WS per-connection approval ownership — session-scoped, first-writer-wins | current | — |
 | 0108 | _(number skipped, no record)_ | — | — |
-| [0109](0109-escape-root-access-via-approval.md) | Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant | current; amended by 0119, 0120, 0132, 0142, 0228 | — |
+| [0109](0109-escape-root-access-via-approval.md) | Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant | current; amended by 0119, 0120, 0132, 0142, 0228; changed by #916 | — |
 | [0110](0110-compaction-successor-closes-predecessor.md) | `/compact` forks a *successor* and retires the source — and each session tracks its lineage | current; amended by 0234, 0243 | — |
 | [0111](0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md) | Per-endpoint concurrency cap, adaptive pacing, and bounded 429 retry | current; partly superseded by 0122; amended by 0141, 0155 | — |
 | [0112](0112-resume-cascades-over-the-spawn-subtree.md) | `Resume` cascades over the spawn sub-tree; the re-announced `SessionStarted` carries the replayed `predecessor` | current | — |
 | [0113](0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md) | Persistence synthesizes a spawned child's initiating prompt from the cached `Spawn` | current | — |
 | [0114](0114-capability-level-permission-keys.md) | Capability-level permission keys (`read`/`write`/`call`) | superseded by 0207 | — |
 | [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227; changed by #916 | — |
-| [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130 | — |
+| [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130; changed by #916 | — |
 | [0117](0117-mcp-tool-capability-fan-out.md) | Config-side capability hints fan MCP tools into `read`/`write`/`call` | current | — |
 | [0118](0118-ambiguous-stop-reason-bounded-retry.md) | Bounded retry on an ambiguous LLM stop, instead of ending the turn | current | — |
-| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227 | — |
-| [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current | — |
+| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916 | — |
+| [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current; changed by #916 | — |
 | [0121](0121-prune-only-compact-stays-silent.md) | Prune-only `Context::compact` stays silent — accepted live/replay divergence | current; partly superseded by 0205 | — |
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
-| [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current | — |
-| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current | — |
-| [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current | — |
+| [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
+| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916 | — |
+| [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916 | — |
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
@@ -217,7 +217,7 @@ the code, never as a description of current behaviour — that is
 | [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current | — |
 | [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current | — |
 | [0185](0185-rhai-joins-background-and-poll.md) | `rhai` joins `background`/`poll` — cooperative kill, own handle kind | current; amended by 0228 | — |
-| [0186](0186-exit-code-joins-the-structured-tool-result-side-channel.md) | `exit_code` joins the structured tool-result side channel | current | — |
+| [0186](0186-exit-code-joins-the-structured-tool-result-side-channel.md) | `exit_code` joins the structured tool-result side channel | current; changed by #916 | — |
 | [0187](0187-mcp-oauth-web-redirect-flow-for-embedders.md) | MCP OAuth web-redirect flow for embedders | current | — |
 | [0188](0188-session-keyed-per-user-mcp-scopes.md) | Session-keyed per-user MCP scopes | current; amended by 0226, 0227 | — |
 | [0189](0189-oauth-for-llm-provider-endpoints.md) | OAuth for LLM provider endpoints | current | — |

@@ -311,8 +311,8 @@ enforced inside the engine, not by aborting the blocking task. A session `Stop`
 (#167) reaches the blocking engine the same way: it trips a cooperative flag the
 progress callback polls, terminating the script with an uncatchable
 `ErrorTerminated` (unlike a thrown binding error, a script can't `try`/`catch` it
-and continue). No exec bindings (`bash`) in v1 — that would escape the
-sandbox.
+and continue). The one exec binding is `bash(command[, workdir])`, graded
+through the dispatch seam exactly like a direct `bash` call.
 
 ---
 

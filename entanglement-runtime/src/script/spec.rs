@@ -116,7 +116,7 @@ pub fn rhai_spec() -> ToolSpec {
                         instead of the result — join with `poll`, which drains \
                         print output incrementally and reports the final value. \
                         kill via poll is cooperative: the script stops at its \
-                        next operation, after any in-flight exec/bash binding \
+                        next operation, after any in-flight bash binding \
                         finishes. Default false."
                 }
             },

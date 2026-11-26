@@ -228,7 +228,9 @@ pub const KERNEL: &[&str] = &[
 pub const CAPABILITIES: &[(&str, &[&str])] = &[
     ("read", &["read", "grep", "glob"]),
     ("write", &["edit", "write", "apply_patch"]),
-    ("call", &["bash"]),
+    // Membership unread since #916 removed the `call` tool: the row only
+    // keeps `call` valid in an MCP server's `capabilities:` annotation.
+    ("call", &[]),
 ];
 
 /// Whether `name` names a capability (`read`/`write`/`call`) — used by an MCP

@@ -40,14 +40,17 @@ for both kinds — `#{}` when you pass none. Read it, don't assign to it
 function body cannot see `args`:
 
 ```json
-{"path": "scripts/report.rhai", "args": {"days": 7, "author": "me"}}
+{"path": "scripts/report.rhai", "args": {"days": 7}}
 ```
 
 ```rhai
 // scripts/report.rhai
-fn since(days) { `--since=${days}.days` }
-bash(`git log ${since(args.days)} --author='${args.author}' --oneline`)
+fn since(days) { `--since=${parse_int(days.to_string())}.days` }
+bash(`git log ${since(args.days)} --oneline`)
 ```
+
+`bash` runs its string through `sh -c`: never splice free text from `args`
+into it unvalidated — a quote in the value breaks out and runs as shell.
 
 A skill's own scripts run the same way: `load_skill` prints the skill's
 `skill_dir` and lists its files, so `{"path": "<skill_dir>/check.rhai"}`.
