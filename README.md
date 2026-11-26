@@ -122,7 +122,7 @@ file's prior content in the session store, so in the TUI `/undo` reverts the
 latest turn's file edits and `/rewind <N>` everything after turn `N` (bare
 `/rewind` lists the turns that have edits, with file counts). A file you
 changed since the agent did is never overwritten — it is reported as skipped.
-Changes made by `bash`, `call` or `rhai` commands are **not** tracked. Other
+Changes made by `bash` or `rhai` commands are **not** tracked. Other
 heads send the trusted-only `InMsg::RevertFiles` and get `FilesReverted` back.
 
 **Fork** (ADR-0223): `/fork` copies the active session into a new one with the
@@ -133,7 +133,7 @@ made the edit. Other trusted heads send `InMsg::ForkSession` and get the fork's
 `SessionForked` back.
 
 **Working directory** (ADR-0224): `/cd <dir>` moves the active session —
-`bash`/`call`/`rhai` commands run there and relative paths in file-tool
+`bash`/`rhai` commands run there and relative paths in file-tool
 arguments resolve against it; bare `/cd` goes back to the project root. A
 directory outside the root needs your approval once: `/cd --session <dir>`
 (this run) or `/cd --always <dir>`. Sub-agents spawned afterwards, compaction
@@ -181,10 +181,9 @@ are ignored, and `` !`cmd` `` / `@file` are sent literally — a command is
 plain text, never shell or file access. Built-in TUI commands win on a name
 clash; `skutter inspect commands` lists what resolved. Beyond the root-contained file tools, `bash` (a real shell) is always registered
 ([ADR-0195](docs/adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
-and graded by the session's mode like everything else. `glob`, `grep` and
-`call` (argv exec, no shell) are registered but never advertised: they are
-script-only `rhai` bindings (`call` as `exec`), each call graded under its own
-name. The sandboxed `rhai`
+and graded by the session's mode like everything else; it is the one exec
+tool. `glob` and `grep` are registered but never advertised: they are
+script-only `rhai` bindings, each call graded under its own name. The sandboxed `rhai`
 scripting tool ships in every default build (droppable via
 `--no-default-features`, #502) — every call a script makes goes through the
 same permission path as a direct one, MCP tools are callable as

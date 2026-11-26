@@ -76,7 +76,7 @@ the code, never as a description of current behaviour — that is
 | [0042](0042-plan-acceptance-via-propose-plan-approval-roundtrip.md) | Plan acceptance via the propose_plan approval round-trip | current; amended by 0138, 0145 | — |
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:`) vs access (`load_skill` mask) — independent mechanisms | current; partly superseded by 0229 | — |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis (data-not-code subsystem) | current; partly superseded by 0229 | — |
-| [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output | current; partly superseded by 0093; amended by 0161 | — |
+| [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output | current; partly superseded by 0093; amended by 0161; removed by #916 | — |
 | [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool — embedded, capability-sandboxed script engine | current; amended by 0115, 0206, 0227, 0228, 0248 | — |
 | [0047](0047-local-trust-boundary.md) | Local trust boundary — the repository is trusted; config precedence system < user < repo; inspection over enforcement | current | — |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
@@ -123,8 +123,8 @@ the code, never as a description of current behaviour — that is
 | [0089](0089-user-configurable-max-turns.md) | User-configurable `max_turns` | current | — |
 | [0090](0090-idle-ttl-auto-hibernation.md) | Optional `idle_ttl` — supervisor auto-hibernates settled sessions | current; amended by 0210, 0246 | — |
 | [0091](0091-grep-file-scan-size-cap-decoupled-from-output-cap.md) | `grep` file-scan size cap decoupled from the output cap | current | — |
-| [0092](0092-call-file-based-stdin-stdout.md) | `call` gains `input_file`/`output_file` for file-based stdin/stdout | current | — |
-| [0093](0093-call-registration-independent-of-bash-opt-in.md) | `call` registers independently of `bash`'s opt-in gate | current | — |
+| [0092](0092-call-file-based-stdin-stdout.md) | `call` gains `input_file`/`output_file` for file-based stdin/stdout | current; removed by #916 | — |
+| [0093](0093-call-registration-independent-of-bash-opt-in.md) | `call` registers independently of `bash`'s opt-in gate | current; removed by #916 | — |
 | [0094](0094-reasoning-effort-and-per-profile-generation-persistence.md) | `reasoning_effort` model + per-profile generation persistence | current | — |
 | [0095](0095-tui-set-show-generation-persist-on-confirmation.md) | TUI `/set`/`/show` for generation parameters + persist-on-confirmation | current | — |
 | [0096](0096-dynamic-toolregistry-sharedregistry.md) | Dynamic `ToolRegistry`: `SharedRegistry` replaces value-ownership in the executor | current | — |
@@ -135,7 +135,7 @@ the code, never as a description of current behaviour — that is
 | [0101](0101-compaction-forks-into-a-new-session-copy-on-write.md) | Compaction forks into a new session (copy-on-write) | current; amended by 0102, 0110, 0205 | — |
 | [0102](0102-compact-keep-tail-verbatim-in-the-fork-prompt.md) | `/compact` keep-tail: a verbatim tail composed into the fork prompt | current | — |
 | [0103](0103-auto-summarize-on-context-overflow.md) | Auto-summarize on context overflow, in place — distinct from `/compact`'s copy-on-write | current; amended by 0205 | — |
-| [0104](0104-bubblewrap-sandbox-for-bash-call.md) | OS-level process confinement for `bash`/`call` via bubblewrap — opt-in, fail-closed | current; amended by 0134 | — |
+| [0104](0104-bubblewrap-sandbox-for-bash-call.md) | OS-level process confinement for `bash`/`call` via bubblewrap — opt-in, fail-closed | current; amended by 0134; changed by #916 | — |
 | [0105](0105-expose-idle-ttl-via-runtime-config.md) | Expose `EngineConfig.idle_ttl` via `config.yml` — an engine-global setting, not a `serve`-only flag | current | — |
 | [0106](0106-skill-scoped-allowed-tools-enforcement.md) | Skill-scoped `allowed_tools` enforcement — a session-local runtime mask layered after the #116 agent mask | superseded by 0194 | — |
 | [0107](0107-ws-per-connection-approval-ownership.md) | WS per-connection approval ownership — session-scoped, first-writer-wins | current | — |
@@ -146,7 +146,7 @@ the code, never as a description of current behaviour — that is
 | [0112](0112-resume-cascades-over-the-spawn-subtree.md) | `Resume` cascades over the spawn sub-tree; the re-announced `SessionStarted` carries the replayed `predecessor` | current | — |
 | [0113](0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md) | Persistence synthesizes a spawned child's initiating prompt from the cached `Spawn` | current | — |
 | [0114](0114-capability-level-permission-keys.md) | Capability-level permission keys (`read`/`write`/`call`) | superseded by 0207 | — |
-| [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227 | — |
+| [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227; changed by #916 | — |
 | [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130 | — |
 | [0117](0117-mcp-tool-capability-fan-out.md) | Config-side capability hints fan MCP tools into `read`/`write`/`call` | current | — |
 | [0118](0118-ambiguous-stop-reason-bounded-retry.md) | Bounded retry on an ambiguous LLM stop, instead of ending the turn | current | — |
@@ -161,7 +161,7 @@ the code, never as a description of current behaviour — that is
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
-| [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227 | — |
+| [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916 | — |
 | [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171 | — |
 | [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
@@ -192,7 +192,7 @@ the code, never as a description of current behaviour — that is
 | [0158](0158-defer-session-title-aux-call-under-contended-primary-concurrency.md) | Defer the session-title aux call when the primary model's concurrency cap is contended | current | — |
 | [0159](0159-plan-mask-widened-for-explore-delegation.md) | `plan`'s own mask carries `call`/`bash` so its `explore` delegation isn't self-defeating | superseded by 0207 (agent masks are gone; previously unmarked) | — |
 | [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current | — |
-| [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190 | — |
+| [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190; changed by #916 | — |
 | [0162](0162-agent-send-supervising-a-sub-agent.md) | `agent_send` — supervising a sub-agent instead of replacing it | current | — |
 | [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) | Live bash enablement is a tool-overlay entry, not its own message pair | superseded by 0195 | — |
 | [0164](0164-short-sortable-kind-tagged-ids.md) | Short, sortable, kind-tagged ids behind a pluggable generator | current; amended by 0211 | — |
@@ -226,9 +226,9 @@ the code, never as a description of current behaviour — that is
 | [0192](0192-universal-advertisement-enforcement-at-dispatch.md) | The advertised tool surface is universal and session-stable; masks enforce at dispatch | superseded by 0207 | — |
 | [0193](0193-two-tool-call-modes-and-lazy-tool-discovery.md) | Two tool-call modes (`native` / `invoke`) + lazy tool discovery | superseded by 0196 | — |
 | [0194](0194-skills-are-additive-only.md) | Skills are additive-only — the `allowed_tools` mask is removed | current; partly superseded by 0196, 0228; amended by 0193 | — |
-| [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193 | — |
+| [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193; changed by #916 | — |
 | [0196](0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) | Tool search and lazy discovery replace the invoke envelope | current; §1–§4 superseded by 0226; amended by 0202, 0204, 0207, 0213 | — |
-| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current | — |
+| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916 | — |
 | [0198](0198-out-of-mask-tool-calls-are-approvable.md) | Out-of-mask tool calls are approvable | superseded by 0207 | — |
 | [0199](0199-session-tool-listing-and-enablement-drive-advertisement.md) | Session tool listing and enablement drive advertisement | current; partly superseded by 0204, 0226 | — |
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
@@ -238,7 +238,7 @@ the code, never as a description of current behaviour — that is
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
-| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247 | — |
+| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
@@ -255,9 +255,9 @@ the code, never as a description of current behaviour — that is
 | [0221](0221-user-slash-commands-are-head-side-prompt-templates.md) | User slash commands are head-side prompt templates | current | — |
 | [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current | — |
-| [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current | — |
+| [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227 | — |
-| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915 | — |
+| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current | — |

@@ -201,7 +201,7 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   A failed marker append is only logged. Out-of-root writes (an approved
   escape-root grant) are covered the same way — the manifest holds the
   resolved absolute path.
-- **Not covered**: anything `bash`, `call` or a `rhai` `exec`/`bash` binding
+- **Not covered**: anything `bash` or a `rhai` `bash` binding
   does to the filesystem, plan files written by `propose_plan`, and
   `!bash` passthrough commands. Every report and the model's note say so.
 

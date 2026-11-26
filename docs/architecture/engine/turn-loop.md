@@ -65,7 +65,7 @@ discovery tools `list_agents`/`list_models`/`list_skills`/`load_skill`/
 first resolution and returned byte-identical every later round, on every
 wire. Nothing else is advertised: MCP tools are reached only through
 `mcp(server, tool, args)`, their schemas delivered by `mcp_tools` as a tool
-result; `glob`/`grep`/`call`/`http` are script-only `rhai` bindings. Core
+result; `glob`/`grep`/`http` are script-only `rhai` bindings. Core
 still advertises
 whatever the `tool_spec_resolver` yields, re-consulted every round; that it
 never changes is the runtime's snapshot, not a core rule. The system prompt

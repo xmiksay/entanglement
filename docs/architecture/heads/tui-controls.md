@@ -40,7 +40,7 @@
   send `InMsg::RevertFiles` for the active session (`to_turn: None` / `Some(N)`);
   the engine applies it once the session is idle and the reducer renders the
   `FilesReverted` reply as an `undo` notice (`file_backup::summary`: what was
-  restored, what was skipped and why, and that `bash`/`call`/`rhai` exec
+  restored, what was skipped and why, and that `bash`/`rhai` exec
   changes are not tracked). Bare `/rewind` is the picker: it lists the
   turns that still have revertable edits (turn, file count, prompt snippet)
   read straight from the backup store — no engine traffic.

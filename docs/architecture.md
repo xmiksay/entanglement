@@ -26,7 +26,7 @@ numbers (§0–§10) referenced throughout the docs and ADRs map as follows:
 | [Per-session engine](architecture/engine.md) | §5 | turn loop, tool round-trip, steering, cancellation |
 | [LLM I/O (provider)](architecture/provider.md) | §5b | streaming client, catalog, pool/retry/rate-limit |
 | [Heads & persistence](architecture/heads-and-persistence.md) | §6, §6b–§6d | stdio/TUI/serve heads, event-sourced sessions, managed key file, aux models |
-| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–10 | dependency gates, host tools (model-facing `read`/`write`/`edit`/`apply_patch` + `bash` + `web_fetch`; script-only `glob`/`grep`/`call`), the one advertised surface |
+| [Hygiene gates & host tools](architecture/gates-and-host-tools.md) | §7–10 | dependency gates, host tools (model-facing `read`/`write`/`edit`/`apply_patch` + `bash` + `web_fetch`; script-only `glob`/`grep`), the one advertised surface |
 
 Trust & scope decisions cut across modules: the local trust boundary
 ([ADR-0047](adr/archive/0047-local-trust-boundary.md)) and the local-only `serve` head

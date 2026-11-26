@@ -113,7 +113,7 @@ list; a retired var still set prints one warning naming its replacement
 | `ENTANGLEMENT_PREAMBLE_FILE` / `ENTANGLEMENT_BRIEF_FILE` | override the system-prompt preamble / project-brief file |
 | `ENTANGLEMENT_STATE_DIR` | relocate all eight managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `llm-tokens`, `mcp-tools` `.yml`; default `${config_dir}/entanglement`) |
 | `ENTANGLEMENT_DEBUG` | comma list: `bodies` (LLM request-body logging), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing); unknown token warns once |
-| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`/`call`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
+| `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
 | `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by the runtime (read-only context) |
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,

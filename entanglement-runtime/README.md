@@ -26,9 +26,9 @@ engine, show the resolved state and which layer won each override).
 
 The root-contained sextet `read` / `write` / `edit` / `glob` / `grep` /
 `apply_patch` (canonicalizing, symlink-safe containment; `read` emits images
-as content blocks), plus the exec pair — `call` (argv, no shell) and `bash`
-(both always registered; own process group, timeout returns partial output) —
-a background `call`/`bash` job (`background=true`) is joined with
+as content blocks), plus `bash` (always registered; own process group,
+timeout returns partial output) — a background `bash` job
+(`background=true`) is joined with
 the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
 External **MCP servers**
 declared in the user config attach their tools as `mcp__<server>__<tool>`.

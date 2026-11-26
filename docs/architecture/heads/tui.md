@@ -186,7 +186,7 @@
   is a linked worktree named after the main repo (the common dir's parent),
   without one a submodule; `HEAD` `ref: refs/heads/x` → `x`, an object id →
   short sha, anything else (reftable's `.invalid` stub) → `?`; no dirty flag.
-  It re-probes when a `bash`/`call`/`rhai` `ToolOutput` lands and otherwise
+  It re-probes when a `bash`/`rhai` `ToolOutput` lands and otherwise
   only stats `HEAD`'s mtime every 2 s. Its colours are the
   `status.repo/path/branch/worktree/text/dim/attention` theme slots.
   **Status command** (#762 part B, `tui::statusline::command`):
@@ -213,7 +213,7 @@
   signal, timeout, spawn error) shows the template again with one toast
   per failure streak. A result for a command a reload has since replaced
   is dropped. The child inherits the TUI's environment minus the catalog's
-  provider key variables (#164, as for `bash`/`call`/MCP stdio). The task
+  provider key variables (#164, as for `bash`/MCP stdio). The task
   stops when the TUI drops its event receiver, killing a run in flight.
   The line is stripped of ANSI escapes, control characters and bidi /
   zero-width format characters (no reordered or hidden text). As with

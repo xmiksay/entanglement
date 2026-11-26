@@ -38,7 +38,7 @@ still sends it, with the cut-off call counted as failed. `narrate` narrates
 only a run's first report (`index == 1`).
 
 The args summary never carries a secret:
-- for `bash`/`call`, only the program's basename plus ` …`;
+- for `bash`, only the program's basename plus ` …`;
 - for any other tool, its permission argument (a path, `{METHOD} {url}`), with
   every URL's userinfo, query and fragment cut;
 - for a tool with no permission argument, the input's key names only.
@@ -90,7 +90,7 @@ response headers never reach the script; error text is scrubbed of every
 expanded `${VAR}`, cookie value and whole header value (a token echoed in a
 successful body is out of reach — accepted). Every referenced `${VAR}` is
 scrubbed from every child's environment (`secret_env`, hidden at config load:
-`bash`/`call`, MCP stdio, hooks, status line, editor/clipboard/browser), since
+`bash`, MCP stdio, hooks, status line, editor/clipboard/browser), since
 the managed `.env` exports it into this process. The managed `.env` file and
 the parent's `/proc/<pid>/environ` remain readable by the exec tools — an
 accepted risk shared with provider keys, tracked in #832. A credentialed call **forces one
@@ -253,8 +253,8 @@ non-`.rhai` file can never run by `path`. When the escape-root card is what
 parks a floored write, its reason names the floor too. A floored card
 carries `reason: floored_write` (which outranks `root_escape`) and
 `scopes: [once]`, because a wider approval would never be consulted
-([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). `bash` (and a
-`call`/`exec` command) cannot be parsed reliably, and an **MCP filesystem
+([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). A `bash` command
+cannot be parsed reliably, and an **MCP filesystem
 server**'s writes are not host-tool writes, so neither is covered: a
 trusted folder the agent can reach that way is effectively an auto-allow
 for anything it writes there. Keep trusted folders outside what the agent's

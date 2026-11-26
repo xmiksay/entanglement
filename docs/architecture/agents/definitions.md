@@ -47,7 +47,7 @@
   **once**, here as markdown (#201): core carries only the `general` profile
   its `resolve()` fallback needs (`DEFAULT_AGENT = "general"`; it can't
   parse frontmatter, so it holds no `plan`/`debug` copy to drift from these
-  files). Exec-tool choice (`bash` vs `call` vs `rhai`) is deliberately
+  files). Exec-tool choice (`bash` vs `rhai`) is deliberately
   **not** in any body: it lives once, in the `bash` tool description
   ([gates & host tools](../gates-and-host-tools.md), #740). Embedders using core directly get that single fallback via
   `AgentCatalog::new()`; the runtime rebuilds the full set from the
@@ -109,10 +109,10 @@
   non-`api` list as its own `prompt` entries, since there a human is present
   to ask.
 
-  Four cross-cutting facts complete the picture: **(1)** `bash` and `call`
-  are both registered at startup unconditionally
+  Four cross-cutting facts complete the picture: **(1)** `bash` is
+  registered at startup unconditionally
   ([ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md))
-  and **share one rule set** — a rule written for either grades both. **(2)**
+  and is the one exec tool. **(2)**
   skills are **additive-only** — the skill `allowed_tools` mask (ADR-0106) is
   removed ([ADR-0194](../../adr/archive/0194-skills-are-additive-only.md)): a skill adds
   capabilities and never restricts the session's tool set, so loading one
@@ -249,7 +249,7 @@
   change". A firing reloads (and emits the "definitions reloaded" notice)
   **only if** some tracked file's *hash* differs, so a same-content re-save (an
   editor rewrite, a `touch` that only bumps mtime) is a no-op, and — crucially —
-  a write to a **non-definition** file under a watched tree (e.g. a `call`/`bash`
+  a write to a **non-definition** file under a watched tree (e.g. a `bash`
   output artifact under `.entanglement/tmp/`) never enters the map and never
   triggers a reload. That non-definition write was the main source of reload spam
   before the restriction; the file-set filter plus the hash gate (not just

@@ -14,7 +14,7 @@
   build/test output, a script's return value, or a sub-agent's answer put the
   load-bearing part (the error, the result, the conclusion) at the end, so
   head-only truncation would drop exactly what the model needs (#170, unified
-  across `bash`/`call`/`rhai`/`agent`/`agent_send`/`poll`
+  across `bash`/`rhai`/`agent`/`agent_send`/`poll`
   as one shape with a stated rule, #622); a `bounded_result` status line (an
   exit/job header, a "completed in Ns" line) is kept verbatim and uncounted
   against the cap, only the body is split. `grep`'s per-file **scan** cap (how
@@ -46,14 +46,12 @@
   to a genuine no-match ([ADR-0091](../../adr/archive/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)).
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
-- **Wiring (ADR-0010, amended by [ADR-0093](../../adr/archive/0093-call-registration-independent-of-bash-opt-in.md);
-  bash posture superseded by [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
+- **Wiring (ADR-0010; bash posture superseded by [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
   `host_tools(root)` registers the **root-contained sextet**
   (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`; `write` added in
   ADR-0031, `apply_patch` in #455). The
-  `skutter` binary registers `CallTool` and **`BashTool` unconditionally**
-  at startup — `call` because no shell means no injection surface (#386),
-  `bash` because registration is not where the security story lives (the
+  `skutter` binary registers **`BashTool` unconditionally** at startup —
+  registration is not where the security story lives (the
   session's permission mode, ceiling, and sandbox are; ADR-0195 reverses
   ADR-0010's opt-in). The retired opt-in machinery —
   `ENTANGLEMENT_ENABLE_BASH`, the closed lazily-registrable-built-in table
@@ -68,8 +66,7 @@
   empty registry (embedders opt in via `host_tools`).
   **Curated read-only Allow rules (ADR-0195, relocated by ADR-0207)** ship
   as the shared read-only exec set spliced into the `research`/`plan`/`auto`
-  modes (`mode/builtin/readonly_exec.yml` — `bash(pattern)` keys, which
-  `call` shares since both exec tools use one rule set; `build` needs none
+  modes (`mode/builtin/readonly_exec.yml` — `bash(pattern)` keys; `build` needs none
   of it, it class-allows `exec`) — see
   [agents & permissions](../agents/definitions.md) §the shared read-only
   exec set for the list and its deliberate exclusions — so read-only
@@ -80,9 +77,9 @@
   top-level segment of a compound command, not the whole raw string, since
   [ADR-0197](../../adr/archive/0197-compound-bash-commands-grade-per-segment.md). See
   [agents & permissions](../agents/approvals-and-grants.md) §permission ceiling.
-  **Advertisement ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `call` (like `glob`/`grep`) is registered but
-  **never advertised** — a script-only `rhai` binding, still graded under its
-  own name; `bash` is in the kernel.
+  **Advertisement ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `glob`/`grep` are registered but
+  **never advertised** — script-only `rhai` bindings, still graded under
+  their own names; `bash` is in the kernel and is the one exec tool.
   The overlay grade lookup that finds the applicable entry
   (`permission::overlay_grade_entry`)
   walks the session's ancestor chain nearest-first (✅ #628), so a `bash()`
@@ -98,17 +95,17 @@ superseding [ADR-0038](../../adr/archive/0038-physical-per-agent-tool-restrictio
 see [agents & permissions](../agents/modes.md) §permission modes).
 What differs now is the session's **mode**, not the agent, and it carves the
 exec surface differently per mode: `build` mode auto-allows
-`edit`/`write`/`apply_patch`/`bash`/`call` (`allow: [read, write, exec]`) bar
+`edit`/`write`/`apply_patch`/`bash` (`allow: [read, write, exec]`) bar
 a short destructive-command deny list; `plan` mode denies the `write` class
 outright except the plans-folder carve-out (ADR-0142), with exec ungraded
 (falls through to `default: prompt`); `research` mode denies `write` and
-`plan` outright while curated-allowing a read-only `bash`/`call` verb list
+`plan` outright while curated-allowing a read-only `bash` verb list
 and prompting on everything else; `auto` mode allows by default, bar a
 destructive and network-mutating deny list and a prompt list of
 destructive deletions — [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
 amends ADR-0209 here. Registration and mode grading are two
 orthogonal axes: registration decides whether the tool can *execute* at all
-(unconditional for both `call` and `bash`, ADR-0195), and the mode's rule
+(unconditional for `bash`, ADR-0195), and the mode's rule
 table decides `Allow`/`Ask`/`Deny` for a given call — so `bash` being
 always-registered does not change what a non-`build` mode can do with it.
 
@@ -121,11 +118,10 @@ again, #606, ADR-0161 §1 — one tool, `background: bool` picks the return
 shape) blocks by default (spawn-and-wait in one call) and, with `background:
 true`, hands back a handle immediately instead — both paths reply with `` sub-agent `id` completed in Ns:\n\n{answer} `` bounded by
 `bounded_result` (#622): the "completed in Ns" status line is kept verbatim,
-the answer gets the same head + tail byte cap as `bash`/`call`/`rhai` so a
+the answer gets the same head + tail byte cap as `bash`/`rhai` so a
 long answer's conclusion survives instead of growing the reply unbounded. A
-truncated answer also mints a retained-output handle (#614) exactly like a
-truncated `call`/`bash` result, so the dropped middle isn't silently lost —
-`poll` pages it back. (`propose_plan`'s own approval reply is a much smaller
+truncated answer also mints a retained-output handle (#614), so the dropped
+middle isn't silently lost — `poll` pages it back. (`propose_plan`'s own approval reply is a much smaller
 `InMsg::SetMode` mode-switch acknowledgment now — no build child, no
 result to bound —
 [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
@@ -176,14 +172,12 @@ carries the script's final `=> value`/error line), or the final answer
 distinction rides the `running`/`complete` status, not the tool name. A
 retained-output poll never waits (the operation already finished) and
 instead pages the text: `offset` (default 0) is a 0-based line index into
-the retained text, `tail` (default 30, matching `call`'s own default) is how
+the retained text, `tail` (default 30, matching `bash`'s own default) is how
 many lines to return from there — `0` returns the rest, still byte-capped.
-An entry whose operation had an explicit `output_file` is named instead of
-paged, since the file already holds the full text — the one place a path
-still appears. `kill: true` SIGKILLs a job's process group; on a script
+`kill: true` SIGKILLs a job's process group; on a script
 handle it is **cooperative** (ADR-0185) — it trips the stop flag the
 engine's progress callback polls, the script ends at its next operation
-(an in-flight `exec`/`bash` binding finishes its own budget-clamped timeout
+(an in-flight `bash` binding finishes its own budget-clamped timeout
 first), the kill poll reports "stop requested", and the *next* poll reports
 `stopped (killed)`; refused on a
 sub-agent or retained-output handle (nothing to cancel/kill in the latter
@@ -196,8 +190,8 @@ runtime-owned route); every outcome of a poll that ran —
 running/complete/list/paged, a job exiting nonzero (`exit_code` stays
 orthogonal, ADR-0186), a killed job or cooperatively-stopped script — stays
 `false`. Retention
-is a `RetainedOutputRegistry` shared with `call` and `agent` (#614) the same
-way `JobRegistry` is shared with `bash`/`call` — capped per-operation (256 KiB, keeping the
+is a `RetainedOutputRegistry` shared with `agent` (#614) the same
+way `JobRegistry` is shared with `bash` — capped per-operation (256 KiB, keeping the
 tail) and evicted on the same 15-minute-TTL/200-entry shape `JobRegistry`
 uses (`ScriptRegistry` mirrors all of it: capped streamed output with
 reported drops, owner scoping, the same TTL/count sweep); overflow past that

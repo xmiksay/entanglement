@@ -12,9 +12,8 @@ The loop is the point — phase 6 returns to phase 4 (push) until the review is 
 ## Guardrails (non-negotiable)
 
 - **Requires the `bash` tool.** Every phase below is shell one-liners with
-  pipes/heredocs that `call` (single argv, no shell) cannot run. `bash` is
-  always registered (ADR-0195); if the session's permission mode refuses it,
-  don't flail with `call` — ask the user to switch mode (the `/mode` picker in
+  pipes/heredocs. `bash` is always registered (ADR-0195); if the session's
+  permission mode refuses it, don't flail with workarounds — ask the user to switch mode (the `/mode` picker in
   the TUI, or `--mode build`) or to enable it for this session (`/enable
   tool bash`).
 - **Never commit to / push to `master`.** Always work on a feature branch. (Project brief: fast-forward only, never commit to `master`.)

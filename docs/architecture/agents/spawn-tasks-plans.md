@@ -153,10 +153,10 @@
   everything else stays physically unreachable. Exec in `plan` mode gets
   the same shared read-only exec set as `research`/`auto` (spliced in from
   `readonly_exec.yml`, [definitions](definitions.md)); any other command falls through to `default:
-  prompt`, matching the old `plan` agent's `call(*): ask`. Because mode now
+  prompt`. Because mode now
   applies uniformly to the *whole* spawn sub-tree (§6) there is no more
   ancestor-clamp-intersection concern to work around: the old `plan.md` mask
-  had to carry `call`/`bash` explicitly just so a spawned `explore` child's
+  had to carry `bash` explicitly just so a spawned `explore` child's
   own shell access survived the intersection — that entire class of
   workaround (mask fields carried by a parent purely to avoid clamping a
   child) no longer exists, since a child inherits the exact same mode, not

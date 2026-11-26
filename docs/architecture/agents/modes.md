@@ -161,7 +161,7 @@ below realize one model:
   (`entanglement-runtime::capability`), never in core.
   Every registered `Tool` declares `fn capabilities(&self) -> &'static
   [Capability]` — `Read`/`Write`/`Exec`/`Plan`/`Control`, a **slice** because
-  `call`/`rhai` are genuinely multi-capability (`Read`+`Write`+`Exec`); the
+  `rhai` is genuinely multi-capability (`Read`+`Write`+`Exec`); the
   handful of runtime-owned pseudo-tools with no `ToolRegistry` entry
   (`agent`/`agent_send`/`poll`/`ask_user`/`list_agents`/`list_models`/
   `list_skills`/`list_mcp`/`mcp_tools`/`update_tasks`/`request_mode` ⇒
@@ -186,7 +186,7 @@ below realize one model:
   surface uses the word a user thinks in, the enum keeps core's name), each
   keyed by a bare tool name, `*`, an **argument-scoped** `tool(pattern)`
   (unchanged ADR-0051/#173 grammar — the `*`/`?` glob matches the command for
-  `bash`/`call`, the target path for `edit`/`write`/`read`/`apply_patch`,
+  `bash`, the target path for `edit`/`write`/`read`/`apply_patch`,
   the `pattern` for `glob`, the file filter for `grep`, the script
   `path` for `rhai` — canonicalized, so a link grades as where it points
   ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)),
@@ -199,7 +199,7 @@ below realize one model:
   `mcp__<server>__<tool>` among them — has no argument, so only its bare
   rule matches, and a scoped key on one warns at config load
   (`config::mode_warn`, #878)), a workdir-scoped `tool{pattern}` (unchanged
-  ADR-0116/#425 grammar — only `bash`/`call` carry a workdir, so a `{…}`
+  ADR-0116/#425 grammar — only `bash` carries a workdir, so a `{…}`
   scope on any other tool never matches and warns at config load, #881; a
   key carries one scope, so a combined `bash(git *){/x}` matches nothing and
   warns too), or a bare capability-class name
@@ -228,10 +228,8 @@ below realize one model:
   a class. The `rhai` launch is graded like any tool, on its canonical
   script `path` (`rhai(scripts/deploy/*)`; an inline script matches only a
   bare `rhai` rule), and a script's nested calls by the same rules as direct
-  calls — one rule set. **`bash` and `call` share
-  one rule set** — two spellings of the same `Exec` capability, so a rule
-  written for either grades both (`mode::rules::canonicalize_key`); a
-  compound command (`&&`/`||`/`;`/`|`/`&`, ADR-0197, now covering `call` too)
+  calls — one rule set. A `bash`
+  compound command (`&&`/`||`/`;`/`|`/`&`, ADR-0197)
   grades **per segment**, folding to the most restrictive result, and
   anything the conservative splitter can't fully parse (`SplitOutcome::Opaque`
   — redirection, substitution, a heredoc, subshell grouping) grades at the

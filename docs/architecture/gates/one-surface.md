@@ -17,7 +17,7 @@ resolution** (`AdvertisingState::surfaces`) and returns the same bytes every
 later round — a tool registered or removed afterwards never moves the cached
 prefix, and an overlay enable or MCP connect never touches it. End/hibernate
 forgets the snapshot; a resume rebuilds the same bytes. Not advertised:
-`call`/`glob`/`grep` (script-only `rhai` bindings, graded under their own
+`glob`/`grep` (script-only `rhai` bindings, graded under their own
 names, like `read_raw`/`glob_json`/`grep_json`) and every `mcp__*` tool.
 ADR-0226's interim `endpoint__*`/`skill__*` additions are gone
 ([ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md),

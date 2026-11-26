@@ -25,7 +25,7 @@
   rule naming one warns, #843). They are not the only ones — the full
   non-maskable set (`tool_names::NON_MASKABLE_TOOLS`, §session tool overlay
   below) also holds the bookkeeping Control tools, and `agent`/`agent_send`
-  are deliberately outside it ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep`/`call` stay registered as
+  are deliberately outside it ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep` stay registered as
   script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
   identical regardless of which session asks (any agent may spawn any agent
@@ -136,7 +136,7 @@
   whose tool part is a name glob (rule keys never glob the tool part; only
   a bare `*` is a wildcard), that scopes a tool with no argument
   (`mcp__gh__x(foo)`, #878) or with no workdir (`read{/tmp/*}` — only
-  `bash`/`call` have one, #881), or whose scope the matcher can't read
+  `bash` has one, #881), or whose scope the matcher can't read
   (`bash(git *){/x}` — one scope per key, #881). A per-tool rule or overlay entry
   (`mcp__<server>__<tool>`) or a server-wide overlay glob
   (`mcp__<server>__*`, overlay only — rules never glob) grades an envelope

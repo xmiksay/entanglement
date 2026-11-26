@@ -121,7 +121,7 @@
   stays single-user (ADR-0048).
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
-  path, a `rhai` script `path` or a `bash`/`call` `workdir` that resolves **outside** root is detected in
+  path, a `rhai` script `path` or a `bash` `workdir` that resolves **outside** root is detected in
   the executor (`permission::escape_root_target` + `host::escaping_path`) and
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins). The approval is recorded in a **separate** store from the
@@ -155,9 +155,8 @@
   allow-all, so an untouched config is a no-op. The ceiling honors argument-scoped
   rule keys too (✅ #173) — `bash(rm *): deny` in the config clamps that command for
   every agent — and capability keys (✅ #418, ADR-0114) exactly like agent
-  frontmatter, since both share `agents::permission_from_value` — a config
-  `call: deny` ceiling denies both the literal `call` tool and its `bash`
-  member. The `permissions` section stays a pure ceiling (it only *tightens*);
+  frontmatter, since both share `agents::permission_from_value`. The
+  `permissions` section stays a pure ceiling (it only *tightens*);
   the orthogonal "always allow" grants (✅ #174) that *raise* an `Ask` live in a
   separate managed file, not here (see the approval-scope bullet above). Because
   the **project** layer merges last (trusted, ADR-0047), a repo can also
@@ -177,7 +176,7 @@
   [0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
   the embedded defaults additionally ship a small set of exact-prefix
   argument-scoped **Allow** rules — `bash(find *)`, `bash(grep *)`,
-  `call(rg *)`, and ls/cat/head/tail/wc for both exec tools — so a read-only
+  `bash(rg *)`, and ls/cat/head/tail/wc — so a read-only
   command stops costing an approval round-trip. They are ordinary
   `tool(pattern)` entries (#173/#418): user/project layers can tighten or
   widen them, and the ceiling still clamps least-privilege over every grade

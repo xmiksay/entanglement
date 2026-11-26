@@ -34,7 +34,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
 | `hooks(Hooks)` | no hooks |
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
-| `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/`CallTool`/plans watcher if you wire those) |
+| `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
 | `http_gate(Arc<HttpGate>)` | no `http` tool — set it to enable the script `http()` binding; the builder registers the tool over this gate (ADR-0227) |
 | `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |

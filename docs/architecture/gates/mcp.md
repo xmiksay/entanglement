@@ -40,7 +40,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     server can't hang a caller. The subprocess is held for the client's lifetime
     (`kill_on_drop`); keeping the registered tools alive keeps the server alive.
     The child env is the inherited environment **minus the provider API-key
-    vars** (`catalog.key_envs()`, the same #164 scrub `bash`/`call` apply —
+    vars** (`catalog.key_envs()`, the same #164 scrub `bash` applies —
     #472, [ADR-0124](../../adr/archive/0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md));
     an explicit per-server `env:` entry naming a key still wins, since writing
     it into the server's own config block is deliberate consent.

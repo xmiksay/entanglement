@@ -196,12 +196,12 @@ between turns no longer causes amnesia. The supervisor map entry is only
 removed on global inbox close (engine shutdown).
 
 Clearing `TurnState` cancels the *turn*, but core never owns the executing tool,
-so a `Stop` that lands while a `bash`/`call` command or a `rhai` script is
+so a `Stop` that lands while a `bash` command or a `rhai` script is
 already running would leave that work going (✅ #167). The **runtime executor**
 closes this: it registers each in-flight tool task per session
 (`runtime::cancel::CancelRegistry`) and an inbound-fan-out watcher aborts every
 one of them on that session's `Stop`. Aborting the async task drops its future —
-which for `bash`/`call` fires the exec tools' process-group SIGKILL guard so
+which for `bash` fires the exec tool's process-group SIGKILL guard so
 grandchildren don't orphan (matching the timeout path, #168) — while a `rhai`
 task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
