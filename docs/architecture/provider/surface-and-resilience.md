@@ -128,17 +128,24 @@ client's defaults — `RateLimits::DEFAULT` (50 rpm, 3 in flight, no `tpm`)
 unless the embedder built the client with `HttpClient::with_default_limits`
 (MCP endpoints, which no catalog entry describes, run on these). A model's
 unset axes are simply unlimited for that model; it stays bound by its
-endpoint. A caller bringing different limits for an endpoint or model than
-the live gate was built with (an admin edited the catalog) replaces that gate
-with a `tracing::warn!`, rather than being bound by whoever came first.
+endpoint. A key keeps **one** gate for its life: a caller bringing different
+limits (an admin edited the catalog, or two callers share one key) sets them
+on that gate **in place** — the window keeps its entries and the semaphore is
+resized (a shrink below the in-flight count forgets permits as they come
+back) — so each request admits under its own caller's limits against the
+key's one shared window and in-flight count.
 
 Each key (the endpoint, each model with limits) is one `Gate`:
 
 - a **sliding 60 s window** over requests (`rpm`) and estimated input tokens
   (`tpm`; the request body's serialized bytes / 4, measured only when a `tpm`
-  is set — output tokens are unknown at admission). A request waits until the
-  oldest entry leaves the window; one larger than the whole `tpm` still goes
-  through an empty window;
+  is set — output tokens are unknown at admission). Waiters are served in
+  arrival order (a FIFO queue), each until the oldest entry leaves the window,
+  so a large request is never overtaken forever; one larger than the whole
+  `tpm` still goes through an empty window. A request that then fails to get
+  its cross-process lease is taken back out of the window. No even spacing:
+  up to `rpm` requests go at once, then the key stalls until the oldest
+  leaves the window (up to ~60 s);
 - a **semaphore** over in-flight requests (`concurrency`). The permit rides an
   opaque `StreamGuard` that `spawn_byte_stream` holds until the **streamed
   body** ends — so the cap counts *open streams*, the unit a provider limits,

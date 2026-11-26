@@ -5,10 +5,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use tokio::sync::Semaphore;
-
 use super::backoff::*;
 use super::endpoint::*;
+use super::gate::Gate;
 use super::stream::*;
 use super::*;
 
@@ -572,9 +571,8 @@ async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops()
         .await
         .expect("connect");
 
-    let sem = Arc::new(Semaphore::new(1));
-    let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(Some(permit), None, None);
+    let gate = one_slot_gate();
+    let guard = StreamGuard(Some(gate.acquire().await), None, None);
 
     let rx = spawn_byte_stream(response, "test", guard);
     // No one ever reads from `rx` — simulates `Stop` dropping the whole
@@ -583,8 +581,8 @@ async fn spawn_byte_stream_releases_the_guard_promptly_when_the_consumer_drops()
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        sem.available_permits(),
-        1,
+        gate.in_flight(),
+        0,
         "the permit must be released promptly, not held for the idle timeout"
     );
 }
@@ -616,9 +614,8 @@ async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
         .await
         .expect("connect");
 
-    let sem = Arc::new(Semaphore::new(1));
-    let permit = sem.clone().try_acquire_owned().expect("only permit");
-    let guard = StreamGuard(Some(permit), None, None);
+    let gate = one_slot_gate();
+    let guard = StreamGuard(Some(gate.acquire().await), None, None);
 
     let mut rx = spawn_byte_stream(response, "test", guard);
     let mut collected = Vec::new();
@@ -628,5 +625,12 @@ async fn spawn_byte_stream_still_forwards_chunks_and_ends_cleanly_on_close() {
     assert_eq!(collected, b"hello");
     // The pump task drops its guard as it exits; give it a beat to run.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(sem.available_permits(), 1);
+    assert_eq!(gate.in_flight(), 0);
+}
+
+fn one_slot_gate() -> Arc<Gate> {
+    Arc::new(Gate::new(RateLimits {
+        concurrency: Some(1),
+        ..RateLimits::default()
+    }))
 }

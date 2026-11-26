@@ -30,10 +30,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
-use tokio::sync::OwnedSemaphorePermit;
 
 mod backoff;
 mod endpoint;
+mod gate;
 mod limiter;
 mod retry;
 mod shared_state;
@@ -187,8 +187,8 @@ pub struct HttpClient {
 /// on) — for the whole request **and its streamed body**. Dropping it frees
 /// the slots for the next caller or peer process.
 pub struct StreamGuard(
-    #[allow(dead_code)] Option<OwnedSemaphorePermit>,
-    #[allow(dead_code)] Option<OwnedSemaphorePermit>,
+    #[allow(dead_code)] Option<gate::Permit>,
+    #[allow(dead_code)] Option<gate::Permit>,
     #[allow(dead_code)] Option<shared_state::SharedLease>,
 );
 

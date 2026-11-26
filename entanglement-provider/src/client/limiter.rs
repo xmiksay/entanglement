@@ -4,26 +4,23 @@
 //! normalized base URL + API-key hash). It enforces a [`RateLimits`] — the
 //! single config shape, read from a catalog entry's `limits:` — on two keys:
 //! the endpoint itself, and optionally the requested model on that endpoint
-//! (z.ai caps concurrency per model). Each key is one [`Gate`]: a sliding
-//! 60 s window over requests (`rpm`) and estimated tokens (`tpm`), plus a
-//! semaphore over in-flight requests (`concurrency`). The endpoint's
+//! (z.ai caps concurrency per model). Each key is one [`Gate`]
+//! (`gate.rs`): a sliding 60 s window over requests (`rpm`) and estimated
+//! tokens (`tpm`), plus a semaphore over in-flight requests (`concurrency`). The endpoint's
 //! `Retry-After` cool-down lives here too, so the retry loop and the
 //! admission path read one state.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 use super::endpoint::WaiterGuard;
+use super::gate::Gate;
 use super::{shared_state, StreamGuard};
-
-/// The sliding window `rpm`/`tpm` count over.
-const WINDOW: Duration = Duration::from_secs(60);
 
 /// One set of limits — the catalog's `limits:` block on a provider (the
 /// endpoint) or on a model (that model on its provider's endpoint). `None`
@@ -85,114 +82,12 @@ impl RequestLimits {
     }
 }
 
-/// How long until a request costing `tokens` fits in the window `sent`
-/// (`(admitted at, tokens)` pairs, oldest first), or `None` if it fits now.
-/// Prunes entries older than [`WINDOW`] as a side effect. A single request
-/// larger than the whole `tpm` still goes once the window is empty —
-/// otherwise it could never be sent.
-fn window_wait(
-    sent: &mut VecDeque<(Instant, u32)>,
-    limits: &RateLimits,
-    now: Instant,
-    tokens: u32,
-) -> Option<Duration> {
-    while sent
-        .front()
-        .is_some_and(|(at, _)| now.duration_since(*at) >= WINDOW)
-    {
-        sent.pop_front();
-    }
-    let requests_full = limits
-        .rpm
-        .is_some_and(|rpm| sent.len() >= rpm.max(1) as usize);
-    let used: u64 = sent.iter().map(|(_, t)| u64::from(*t)).sum();
-    let tokens_full = limits
-        .tpm
-        .is_some_and(|tpm| !sent.is_empty() && used + u64::from(tokens) > u64::from(tpm.max(1)));
-    if !(requests_full || tokens_full) {
-        return None;
-    }
-    // The oldest entry expiring is the earliest the window can change.
-    sent.front()
-        .map(|(at, _)| (*at + WINDOW).saturating_duration_since(now))
-}
-
-/// One key's live limits: the window and the in-flight semaphore.
-pub(super) struct Gate {
-    pub(super) limits: RateLimits,
-    sent: Mutex<VecDeque<(Instant, u32)>>,
-    semaphore: Option<Arc<Semaphore>>,
-}
-
-impl Gate {
-    pub(super) fn new(limits: RateLimits) -> Self {
-        Self {
-            limits,
-            sent: Mutex::new(VecDeque::new()),
-            semaphore: limits
-                .concurrency
-                .map(|cap| Arc::new(Semaphore::new(cap.max(1)))),
-        }
-    }
-
-    /// The configured in-flight cap, `None` when this key has none.
-    pub(super) fn cap(&self) -> Option<usize> {
-        self.limits.concurrency.map(|cap| cap.max(1))
-    }
-
-    /// Requests currently holding one of this key's permits.
-    pub(super) fn in_flight(&self) -> usize {
-        match (&self.semaphore, self.cap()) {
-            (Some(sem), Some(cap)) => cap.saturating_sub(sem.available_permits()),
-            _ => 0,
-        }
-    }
-
-    /// Time until the window admits another request, `None` when it has room.
-    pub(super) fn window_full_for(&self) -> Option<Duration> {
-        let mut sent = self.sent.lock().expect("limiter window poisoned");
-        window_wait(&mut sent, &self.limits, Instant::now(), 0)
-    }
-
-    /// Wait for a free in-flight slot (none to wait for without a cap).
-    async fn acquire(&self) -> Option<OwnedSemaphorePermit> {
-        let sem = self.semaphore.clone()?;
-        Some(
-            sem.acquire_owned()
-                .await
-                .expect("limiter semaphore is never closed"),
-        )
-    }
-
-    /// Wait until the window has room for `tokens`, then record the request.
-    /// The lock is held only to check and record, never across the sleep.
-    async fn pace(&self, tokens: u32) {
-        if self.limits.rpm.is_none() && self.limits.tpm.is_none() {
-            return;
-        }
-        loop {
-            let wait = {
-                let mut sent = self.sent.lock().expect("limiter window poisoned");
-                let now = Instant::now();
-                match window_wait(&mut sent, &self.limits, now, tokens) {
-                    None => {
-                        sent.push_back((now, tokens));
-                        return;
-                    }
-                    Some(wait) => wait,
-                }
-            };
-            sleep(wait).await;
-        }
-    }
-}
-
 /// One endpoint's limiter: its own gate, a gate per capped model, the
 /// `Retry-After` cool-down, and the cross-process lease file.
 pub(super) struct Limiter {
     /// The client's fallback for unset endpoint axes.
     defaults: RateLimits,
-    endpoint: Mutex<Arc<Gate>>,
+    endpoint: Arc<Gate>,
     pub(super) models: Mutex<HashMap<String, Arc<Gate>>>,
     /// Callers queued on the endpoint permit — display only.
     pub(super) waiters: AtomicUsize,
@@ -210,7 +105,7 @@ impl Limiter {
     ) -> Self {
         Self {
             defaults,
-            endpoint: Mutex::new(Arc::new(Gate::new(limits.or(defaults)))),
+            endpoint: Arc::new(Gate::new(limits.or(defaults))),
             models: Mutex::new(HashMap::new()),
             waiters: AtomicUsize::new(0),
             retry_after: Mutex::new(None),
@@ -218,50 +113,46 @@ impl Limiter {
         }
     }
 
-    /// The endpoint gate for `limits`. A caller bringing different limits
-    /// (an admin edited the catalog) replaces the gate rather than being
-    /// silently bound by whoever came first; permits already out stay valid.
+    /// The endpoint gate, set to `limits`. Each request admits under its own
+    /// caller's limits — an admin's catalog edit applies at once, and two
+    /// callers sharing a key with different limits each get theirs — while
+    /// the window and the in-flight count stay the key's one shared state.
     pub(super) fn endpoint_gate(&self, limits: RateLimits) -> Arc<Gate> {
         let limits = limits.or(self.defaults);
-        let mut gate = self.endpoint.lock().expect("endpoint gate poisoned");
-        if gate.limits != limits {
-            tracing::warn!(previous = ?gate.limits, corrected = ?limits, "endpoint limits changed");
-            *gate = Arc::new(Gate::new(limits));
+        if self.endpoint.update(limits) {
+            tracing::debug!(?limits, "endpoint limits changed");
         }
-        gate.clone()
+        self.endpoint.clone()
     }
 
-    /// The current endpoint gate, for status display.
+    /// The endpoint gate, for status display.
     pub(super) fn current_endpoint_gate(&self) -> Arc<Gate> {
-        self.endpoint
-            .lock()
-            .expect("endpoint gate poisoned")
-            .clone()
+        self.endpoint.clone()
     }
 
     /// The gate for `model` on this endpoint, `None` when the model carries
-    /// no limits of its own. Corrected like [`endpoint_gate`][Self::endpoint_gate].
+    /// no limits of its own. Set to `limits` like
+    /// [`endpoint_gate`][Self::endpoint_gate].
     pub(super) fn model_gate(&self, model: &str, limits: RateLimits) -> Option<Arc<Gate>> {
         if limits == RateLimits::default() {
             return None;
         }
         let mut models = self.models.lock().expect("model gates poisoned");
-        if let Some(gate) = models.get(model) {
-            if gate.limits == limits {
-                return Some(gate.clone());
-            }
-            tracing::warn!(model, previous = ?gate.limits, corrected = ?limits, "model limits changed");
+        let gate = models
+            .entry(model.to_string())
+            .or_insert_with(|| Arc::new(Gate::new(limits)));
+        if gate.update(limits) {
+            tracing::debug!(model, ?limits, "model limits changed");
         }
-        let gate = Arc::new(Gate::new(limits));
-        models.insert(model.to_string(), gate.clone());
-        Some(gate)
+        Some(gate.clone())
     }
 
     /// Admit one request: model permit and window, then endpoint permit and
     /// window, then the cross-process lease. Narrowest first, so a caller
     /// blocked on its own model never holds the endpoint slot (or a peer
     /// process's lease) hostage. `Err(())`: the cross-process gate would
-    /// need to wait past `deadline`.
+    /// need to wait past `deadline`; the request is then taken back out of
+    /// both windows, since it was never sent.
     pub(super) async fn admit(
         &self,
         model: &str,
@@ -271,27 +162,35 @@ impl Limiter {
     ) -> Result<StreamGuard, ()> {
         let endpoint = self.endpoint_gate(limits.endpoint);
         let model_gate = self.model_gate(model, limits.model);
-        let model_permit = match &model_gate {
+        let (model_permit, model_sent) = match &model_gate {
             Some(gate) => {
                 let permit = gate.acquire().await;
-                gate.pace(tokens).await;
-                permit
+                (Some(permit), gate.pace(tokens).await)
             }
-            None => None,
+            None => (None, None),
         };
         let waiter = WaiterGuard::new(&self.waiters);
         let endpoint_permit = endpoint.acquire().await;
         drop(waiter);
-        endpoint.pace(tokens).await;
+        let endpoint_sent = endpoint.pace(tokens).await;
         let lease = self
             .shared
             .acquire(
-                endpoint.limits.rpm.unwrap_or(u32::MAX),
+                endpoint.limits().rpm.unwrap_or(u32::MAX),
                 endpoint.cap().unwrap_or(usize::MAX),
                 deadline,
             )
-            .await?;
-        Ok(StreamGuard(endpoint_permit, model_permit, lease))
+            .await;
+        let Ok(lease) = lease else {
+            if let (Some(gate), Some(at)) = (&model_gate, model_sent) {
+                gate.unrecord(at, tokens);
+            }
+            if let Some(at) = endpoint_sent {
+                endpoint.unrecord(at, tokens);
+            }
+            return Err(());
+        };
+        Ok(StreamGuard(Some(endpoint_permit), model_permit, lease))
     }
 
     /// Extend (never shorten) the endpoint's cool-down by `delay`.

@@ -214,7 +214,7 @@ pub(crate) fn start(
     // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141): polls
     // the shared `HttpClient` (the same one injected into the TUI at
     // `tui::mod::run`) and emits `OutEvent::Throttle` so stdio/WS heads see a
-    // 429 cool-down or pacing slowdown too, not just the TUI's direct poll.
+    // 429 cool-down or a full rpm/tpm window too, not just the TUI's direct poll.
     let throttle_handle = throttle::spawn_throttle_responder(&holly, http_client.clone());
 
     // Auto session-title generator (Issue 5): on the first prompt of an

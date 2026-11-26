@@ -53,8 +53,8 @@ endpoint-wide cool-down. It feeds no request logic — the TUI polls it each
 frame to show a throttle indicator only while backing off (see heads doc),
 rendering the model id alongside the host when it is the binding constraint.
 `ThrottleStatus` also carries `next_request_in: Option<Duration>` — how long
-until the endpoint's full `rpm`/`tpm` window admits another request, `None`
-while it has room (#517, #918,
+until the endpoint's full `rpm` window (or the `tpm` window a queued request
+is waiting on) admits another request, `None` while it has room (#517, #918,
 [ADR-0141](../../adr/archive/0141-wire-visible-throttle-transitions.md)) — so the
 TUI's "pacing" label can show a live wait, not just the bare word.
 **Cross-process facts are folded in too (#552):** before this, `ThrottleStatus`

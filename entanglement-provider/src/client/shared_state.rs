@@ -15,9 +15,8 @@
 //! 400-line cap, #552); this module owns the public API and admission
 //! policy.
 //!
-//! The `tpm` window and per-model gates stay **per-process** — see ADR-0144
-//! for the reasoning and rejected alternatives (a broker daemon, static
-//! partitioning).
+//! The `tpm` window and per-model gates stay **per-process** (see
+//! `docs/architecture/provider/timeouts-and-shared-state.md`).
 //!
 //! Concurrency is **lease-based**, not a shared semaphore: each admitted
 //! request writes a lease (an id + owning pid + expiry) and renews it on a

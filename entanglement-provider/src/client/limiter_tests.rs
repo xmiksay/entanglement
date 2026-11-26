@@ -1,9 +1,12 @@
 //! Unit tests for the one limiter: window, concurrency, per-model keying and
 //! the `Retry-After` cool-down.
 
+use std::collections::VecDeque;
+
 use futures::FutureExt;
 
 use super::*;
+use crate::client::gate::{window_wait, WINDOW};
 use crate::client::{test_http_client, SharedStateLocation};
 
 fn limits(rpm: Option<u32>, tpm: Option<u32>, concurrency: Option<usize>) -> RateLimits {
@@ -89,7 +92,7 @@ fn a_client_with_its_own_defaults_applies_them_to_new_endpoints() {
     let http = test_http_client().with_default_limits(limits(None, None, Some(1)));
     let ep = http.endpoint("https://mcp.example/mcp", RateLimits::default());
     assert_eq!(
-        ep.current_endpoint_gate().limits,
+        ep.current_endpoint_gate().limits(),
         limits(None, None, Some(1))
     );
 }
@@ -156,18 +159,91 @@ fn a_model_without_limits_gets_no_gate() {
 }
 
 #[test]
-fn changed_limits_replace_the_gate_instead_of_latching_the_first() {
+fn changed_limits_update_the_one_gate_in_place() {
     let l = limiter(RateLimits::default());
-    let wrong = l.model_gate("flash", limits(None, None, Some(5))).unwrap();
-    let same = l.model_gate("flash", limits(None, None, Some(5))).unwrap();
-    assert!(Arc::ptr_eq(&wrong, &same));
+    let first = l.model_gate("flash", limits(None, None, Some(5))).unwrap();
     let corrected = l.model_gate("flash", limits(None, None, Some(1))).unwrap();
-    assert!(!Arc::ptr_eq(&wrong, &corrected));
+    assert!(Arc::ptr_eq(&first, &corrected));
     assert_eq!(corrected.cap(), Some(1));
 
     let ep = l.endpoint_gate(limits(Some(10), None, Some(4)));
-    assert_eq!(ep.limits, limits(Some(10), None, Some(4)));
+    assert_eq!(ep.limits(), limits(Some(10), None, Some(4)));
     assert!(Arc::ptr_eq(&ep, &l.current_endpoint_gate()));
+}
+
+#[tokio::test]
+async fn alternating_callers_share_one_window() {
+    let l = limiter(RateLimits::default());
+    let a = RequestLimits {
+        endpoint: limits(Some(3), None, None),
+        model: RateLimits::default(),
+    };
+    let b = RequestLimits {
+        endpoint: limits(Some(4), None, None),
+        ..a
+    };
+    for req in [a, b, a] {
+        l.admit("m", req, 0, far_deadline()).await.unwrap();
+    }
+    // Three requests are in the window whoever sent them: `a`'s rpm 3 is
+    // full, `b`'s 4 has one slot left.
+    assert!(l.admit("m", a, 0, far_deadline()).now_or_never().is_none());
+    assert!(l.admit("m", b, 0, far_deadline()).now_or_never().is_some());
+    assert!(l.admit("m", b, 0, far_deadline()).now_or_never().is_none());
+}
+
+#[tokio::test]
+async fn shrinking_the_cap_under_load_never_over_admits() {
+    let l = limiter(RateLimits::default());
+    let wide = RequestLimits {
+        endpoint: limits(None, None, Some(2)),
+        model: RateLimits::default(),
+    };
+    let narrow = RequestLimits {
+        endpoint: limits(None, None, Some(1)),
+        ..wide
+    };
+    let first = l.admit("m", wide, 0, far_deadline()).await.unwrap();
+    let second = l.admit("m", wide, 0, far_deadline()).await.unwrap();
+    let mut queued = Box::pin(l.admit("m", narrow, 0, far_deadline()));
+    assert!((&mut queued).now_or_never().is_none());
+    // One finishing leaves one in flight — the narrow cap is still full.
+    drop(first);
+    assert!((&mut queued).now_or_never().is_none());
+    assert_eq!(l.current_endpoint_gate().in_flight(), 1);
+    drop(second);
+    let held = (&mut queued).now_or_never().expect("admitted").unwrap();
+    assert_eq!(l.current_endpoint_gate().in_flight(), 1);
+    // Widening again hands out exactly the difference.
+    let _again = l.admit("m", wide, 0, far_deadline()).await.unwrap();
+    assert!(l
+        .admit("m", wide, 0, far_deadline())
+        .now_or_never()
+        .is_none());
+    drop(held);
+    assert_eq!(l.current_endpoint_gate().in_flight(), 1);
+}
+
+#[tokio::test]
+async fn pacers_are_admitted_in_arrival_order() {
+    let gate = Gate::new(limits(None, Some(100), None));
+    gate.pace(60).await;
+    let mut large = Box::pin(gate.pace(50));
+    assert!((&mut large).now_or_never().is_none());
+    // A small request that would fit queues behind the blocked large one,
+    // so the large one cannot be overtaken forever.
+    assert!(gate.pace(10).now_or_never().is_none());
+    // The status reports the tpm wait even though rpm-wise there is room.
+    assert!(gate.window_full_for().is_some());
+}
+
+#[tokio::test]
+async fn an_unrecorded_request_frees_its_window_slot() {
+    let gate = Gate::new(limits(Some(1), None, None));
+    let at = gate.pace(0).await.expect("recorded");
+    assert!(gate.window_full_for().is_some());
+    gate.unrecord(at, 0);
+    assert!(gate.window_full_for().is_none());
 }
 
 #[test]
