@@ -237,7 +237,7 @@
   `tui.keybindings` maps a `KeyAction` — exactly the pre-#735 configurable
   bindings (plus #736's `paste_image`): `leader submit newline cycle_mode cycle_mode_back paste_image scroll_up
   scroll_down toggle_reasoning jump_attention new_session list_sessions
-  pause_toggle pick_agent pick_model inspect toggle_sidebar open_editor export
+  pick_agent pick_model inspect toggle_sidebar open_editor export
   command_palette interrupt quit help` — to one spec or a list replacing its
   defaults (`[]` unbinds). A spec is a chord (`ctrl+`/`alt+`/`shift+` on a
   char or named key, normalized so `shift+e` ≡ `E` and `shift+tab` ≡ BackTab)

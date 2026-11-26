@@ -316,4 +316,4 @@ through the dispatch seam exactly like a direct `bash` call.
 
 ---
 
-Previous: [§5 — Revert, fork, workdir, single-shot ops, ids, stop & pause](session-ops.md)
+Previous: [§5 — Revert, fork, workdir, single-shot ops, ids & stop](session-ops.md)

@@ -1,11 +1,10 @@
-# Per-session engine §5 — Revert, fork, workdir, single-shot ops, ids, stop & pause
+# Per-session engine §5 — Revert, fork, workdir, single-shot ops, ids & stop
 
 > Part of the [per-session engine module](../engine.md) of the [architecture overview](../../architecture.md).
 
 **File revert — `InMsg::RevertFiles` (`session/revert.rs`, #731,
 [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).** Deferred
-exactly like `SetModel`/`Oneshot` (stashed while a turn is live or the session
-is paused), so a revert never races the turn's own tool writes. At idle the
+exactly like `SetModel`/`Oneshot` (stashed while a turn is live), so a revert never races the turn's own tool writes. At idle the
 session awaits the runtime's `EngineConfig::file_reverter` seam (core does no
 file I/O; `None` → a recoverable `Error`), emits the seq-bearing
 `FilesReverted` and — only when something was restored — appends a
@@ -206,35 +205,6 @@ grandchildren don't orphan (matching the timeout path, #168) — while a `rhai`
 task pairs the abort with a cooperative stop flag the (un-abortable
 `spawn_blocking`) engine's progress callback polls, terminating it with an
 uncatchable `ErrorTerminated` the script can't `try`/`catch` and continue past.
-
-**Pause is a hold, not a cancel** (#516, [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
-`Session.paused: bool` (never persisted/replayed) is set by
-`SessionCmd::Pause`/cleared by `SessionCmd::Unpause`. It gates two of the
-existing gates rather than adding a new code path: every command that already
-checks `s.turn.is_some()` to decide "defer onto the stash" (`Prompt`,
-`SetModel`, `SetGeneration`, `Oneshot`) now checks
-`s.turn.is_some() || s.paused` — so an *idle* paused session defers its next
-`Prompt` exactly like a live turn defers a mid-turn one. `SetMode` is the one
-command that checks neither (#560): a mode is a label, not something a paused
-session's parked batch is actively using, so it applies immediately whether
-paused or not. The stash-pop
-condition at the top of the loop gained a matching `&& !s.paused` guard, or a
-deferred command would be immediately popped back off the queue and
-re-stashed (the same busy-loop the pre-existing "pop only when idle" comment
-already warns about). A **parked** batch's `ToolResult` handling is not
-gated the same way — an arriving result still resolves and folds into
-`Context` immediately (gating it would deadlock: the stash only drains once
-`s.turn` goes back to `None`, which needs every pending result resolved
-first) — instead, the `drive_turn` call that would normally fire once the
-batch drains (`TurnState::is_drained`) is skipped while paused, leaving
-`s.turn` "drained but undriven" until `Unpause` drives it. A session
-mid-stream when `Pause` arrives needs **no special handling in `stream.rs`**:
-`Pause`/`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival is
-`stash.push_back`'d by the same generic non-`Stop` branch `SetModel`
-already rides, and applied once the round reaches its next safe
-point. `Stop` and `Hibernate` are both unconditional regardless of `paused`
-and neither clears it — `Stop`'s resting-state emit reports `Paused` (not
-`Done`) if the session is still held.
 
 ---
 

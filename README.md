@@ -21,7 +21,6 @@ table below.
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
-          | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
@@ -305,8 +304,8 @@ mark emphasis and selection.
 
 **Keys.** Actions: `leader submit newline cycle_mode cycle_mode_back paste_image
 scroll_up scroll_down toggle_reasoning jump_attention new_session
-list_sessions pause_toggle pick_agent pick_model inspect toggle_sidebar
-open_editor export command_palette interrupt quit help`. A key is
+list_sessions pick_agent pick_model inspect toggle_sidebar open_editor
+export command_palette interrupt quit help`. A key is
 `[ctrl+][alt+][shift+]<key>` (a character or `enter`, `tab`, `esc`,
 `pageup`, `space`, `f5`, …) or `leader <key>`; `[]` unbinds. `Ctrl+C`
 (interrupt / two-stage quit), `Ctrl+Q` (quit) and `Esc` are fixed, and a bare

@@ -131,8 +131,7 @@ then the round's calls with their `provider_meta`, envelope calls rebuilt from
 skips an empty assistant message on every stop, confident or ambiguous, since
 the log carries no stop reason and the strict wires drop one anyway. A `Prompt`
 logged while a turn is live is stashed and folded at the next round's first
-event, or after `Done` (ADR-0058). A resting `Status` (`Done`, or `Paused` on a
-paused session) after a logged `InMsg::Stop` — or, without one, with a round or
+event, or after `Done` (ADR-0058). A resting `Status` (`Done`) after a logged `InMsg::Stop` — or, without one, with a round or
 batch open — is the cancel: the uncommitted stream is dropped, an
 already-emitted batch is kept, and the turn ends even if nothing had streamed.
 The
@@ -279,7 +278,7 @@ per-tool-call `SetSessionMeta` in used to fill it to its 64-command cap
 during a long turn, and the user's next `Prompt` was refused. Mid-stream the
 user-issued deferrable commands (`Prompt`/`SetModel`/`SetGeneration`/
 `SetToolOverlay`/`Oneshot`) hit the same cap as the idle loop's; lifecycle
-commands (`Hibernate`, `Pause`/`Unpause`, `ToolResult`) are never dropped. A stashed **`Prompt` is additionally
+commands (`Hibernate`, `ToolResult`) are never dropped. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../../adr/archive/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —
 before the next model request — core drains every stashed `Prompt` into `ctx`

@@ -2,19 +2,14 @@
 
 > Part of the [heads & persistence module](../heads-and-persistence.md) of the [architecture overview](../../architecture.md).
 
-  **Turn/session lifecycle controls** (#6, #516): bare `Esc` in Normal mode
+  **Turn/session lifecycle controls** (#6): bare `Esc` in Normal mode
   sends `InMsg::Stop` for the active session — **a deliberate behavior
   change** (ee85bc5): `Esc` used to quit the app; interrupting the in-flight
   turn is what it means now (matching the `Esc` an approval/`ask_user` park
   already sent), and quitting is `/exit`, two-stage `Ctrl+C`, or `Ctrl+Q`.
-  `/stop [--all]`, `/pause [--all]`, `/continue [--all]` send the matching
-  `Stop`/`PauseSession`/`ResumeSession` frame to the active session (or fan
-  out to every live one), and `Ctrl+Space` toggles pause/resume on the active
-  session (safe because the engine treats `PauseSession` on an idle session
-  and `ResumeSession` on a non-paused one as idempotent no-ops,
-  [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)).
-  The sessions modal adds lifecycle **quick keys** on the highlighted row
-  (`tui/modal_events.rs`) — `s` stops its turn, `p` pauses, `r` resumes — the
+  `/stop [--all]` sends `Stop` to the active session (or fans out to every
+  live one). The sessions modal adds a lifecycle **quick key** on the
+  highlighted row (`tui/modal_events.rs`) — `s` stops its turn — the
   modal staying open so several sessions can be acted on in a row, plus
   `d`/`Delete` to delete the highlighted session's log (§6b, [persistence](persistence.md); a live
   session is refused with a status line). **Every single-target `Stop` site**

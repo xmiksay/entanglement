@@ -136,32 +136,6 @@ finishes with an ancestor closed, or with the id itself or an ancestor
 hibernated while it ran and still down, refuses its queued sends instead of
 starting it.
 
-**Session pause** (#516, [ADR-0208](../../adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md))
-is a hold `Stop` and `HibernateSession` don't cover: `Stop` destroys the
-in-flight round, `HibernateSession` evicts memory — neither is "hold this
-session's next piece of work without losing it or evicting it."
-`PauseSession{session}`/`ResumeSession{session}` (both wire-allowed, same
-trust tier as `Stop`) drive a `Session.paused: bool` that is **not**
-persisted/replayed (like `Stop`'s cancel — a hibernate/resume cycle always
-comes back unpaused). Two holds depending on what the session was doing when
-paused: an **idle** session defers its next `Prompt`/`SetModel`/
-`SetGeneration`/`Oneshot` onto the existing turn-stash queue (`SetMode` is
-the one exception, applied immediately even while paused — see
-[engine §5 stop & pause](../engine/session-ops.md)); a **parked**
-batch keeps folding arriving `ToolResult`s into `Context` as normal (stashing
-them would deadlock — the stash only drains once the turn goes idle, which
-needs every pending result resolved first) but does not re-enter `drive_turn`
-once the batch drains, so the same round resumes with no new prompt once
-`ResumeSession` arrives. A session **mid-stream** when paused is unaffected
-until the round reaches its next safe point (turn end or park) — `Pause`/
-`Unpause` are ordinary `SessionCmd`s, so a mid-stream arrival rides the exact
-generic stash-and-replay mechanism `SetModel` already uses
-(`session/stream.rs` needed no change). `Stop`/`HibernateSession` always take
-priority over a pause and neither clears it: a `Stop`'d-but-still-paused
-session reports `AgentState::Paused`, not `Done`, until an explicit
-`ResumeSession`. A new `AgentState::Paused` (ADR-0139's dedicated-state
-precedent) is never observed while genuinely streaming, for the reason above.
-
 **Late-subscriber history fetch** (#160, [ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks
 `ReplayFrom{session,correlation_id,after_seq}` for the events it missed. Because

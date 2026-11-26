@@ -63,7 +63,7 @@ to before this config surface existed.
 
 **Unknown-session policy** (✅ #721,
 [ADR-0210](../../adr/archive/0210-unknown-session-policy.md)). A routable message
-(`Prompt`, `ToolResult`, `Stop`, `Pause`/`ResumeSession`, `SetMode`,
+(`Prompt`, `ToolResult`, `Stop`, `SetMode`,
 `SetModel`, `SetGeneration`, `SetSessionMeta`, `SetToolOverlay`, `Oneshot`)
 addressed to an id with no live task goes through
 `EngineConfig.unknown_session` (`holly/supervisor/unknown.rs`):
@@ -350,4 +350,4 @@ recoverable warning that runs on to its normal `Done`.
 
 ---
 
-Previous: [§5 — Turn loop, tool round-trip & live switching](turn-loop.md) · Next: [§5 — Revert, fork, workdir, single-shot ops, ids, stop & pause](session-ops.md)
+Previous: [§5 — Turn loop, tool round-trip & live switching](turn-loop.md) · Next: [§5 — Revert, fork, workdir, single-shot ops, ids & stop](session-ops.md)

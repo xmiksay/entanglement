@@ -48,7 +48,7 @@ the code, never as a description of current behaviour — that is
 | [0014](0014-tool-approval-inline-modal.md) | Tool approval UX: inline card vs modal | current | — |
 | [0015](0015-rich-text-pipeline-syntect.md) | Rich-text pipeline: pulldown-cmark → ratatui Text, syntect for code blocks | current | — |
 | [0016](0016-host-tool-empty-result-contract.md) | Host tools: empty-result contract (no silent zero-output) | current; amended by 0150 | — |
-| [0017](0017-stop-cancels-turn-not-session.md) | `InMsg::Stop` cancels the turn, not the session | current; amended by 0208 | — |
+| [0017](0017-stop-cancels-turn-not-session.md) | `InMsg::Stop` cancels the turn, not the session | current; amended by 0208 (itself removed by #921) | — |
 | [0018](0018-turn-loop-stash-discipline.md) | Turn-loop command stash discipline | current | — |
 | 0019 | _(number skipped, no record)_ | — | — |
 | [0020](0020-event-sourced-session-persistence.md) | Event-sourced session persistence | current | — |
@@ -108,7 +108,7 @@ the code, never as a description of current behaviour — that is
 | [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229 | — |
 | [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171; removed by #919 | — |
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
-| [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208, 0210 | — |
+| [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208 (itself removed by #921), 0210 | — |
 | [0078](0078-per-turn-dynamic-system-prompt.md) | Per-turn dynamic system prompt (`EngineConfig.system_prompt_resolver`) | current | — |
 | [0079](0079-pluggable-permission-resolver-and-grant-store.md) | Pluggable `PermissionResolver` + `GrantStore` seams in the tool executor | current | — |
 | [0080](0080-mcp-streamable-http-transport.md) | MCP streamable-HTTP transport with per-server headers/auth | current; amended by 0128, 0153 | — |
@@ -170,7 +170,7 @@ the code, never as a description of current behaviour — that is
 | [0136](0136-tui-attention-panel-signpost-and-jump.md) | TUI attention panel: a signpost + jump, not a second approval keymap | current | — |
 | [0137](0137-explore-ask-grade-shell-access.md) | `explore` gains `Ask`-grade shell access (`call`/`bash`/`rhai`) | superseded by 0207 (the `explore` agent is retired; previously unmarked) | — |
 | [0138](0138-sponsored-build-child-and-propose-plan-cycle.md) | Sponsored build child — plan acceptance spawns a clamp-exempt child | superseded by 0207 | — |
-| [0139](0139-visible-session-states-working-and-waitingagent.md) | Visible session states — `Working` + `WaitingAgent`, and `Done` as the resting state | current; amended by 0208 | — |
+| [0139](0139-visible-session-states-working-and-waitingagent.md) | Visible session states — `Working` + `WaitingAgent`, and `Done` as the resting state | current; amended by 0208 (itself removed by #921) | — |
 | [0140](0140-per-model-concurrency-cap-layered-on-endpoint-cap.md) | Per-model concurrency cap, layered on the endpoint cap | current; changed by #918 | — |
 | [0141](0141-wire-visible-throttle-transitions.md) | Wire-visible throttle transitions: `OutEvent::Throttle`, engine-global not per-session | current; changed by #918 | — |
 | [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) | Trusted scratch dir + plans-folder carve-out | current | — |
@@ -239,7 +239,7 @@ the code, never as a description of current behaviour — that is
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
 | [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920 | — |
-| [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current | — |
+| [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
@@ -277,7 +277,7 @@ the code, never as a description of current behaviour — that is
 | [0243](0243-running-script-reads-mode-and-overlay-epochs.md) | A running script re-reads its mode and drops overlay entries by mode epoch | current | — |
 | [0244](0244-seq-order-leases-and-one-task-per-id.md) | Seqs in delivery order, leased by detached work, one task per id | current; amended by 0246 | — |
 | [0245](0245-a-decision-only-answers-its-own-kind-of-card.md) | A decision only answers its own kind of card | current; amended by 0247 | — |
-| [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current | — |
+| [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current; changed by #921 | — |
 | [0247](0247-attended-sessions-wait-for-their-approver.md) | Attended sessions wait for their approver | current | — |
 | [0248](0248-importable-rhai-library-modules.md) | Importable `rhai` library modules | current | — |
 | [0249](0249-in-process-mcp-servers-and-per-session-skills.md) | Per-call tool grading, host script namespaces and per-session skills | current | — |

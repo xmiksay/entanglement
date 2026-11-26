@@ -134,7 +134,6 @@ set of types every head uses ([protocol](../docs/architecture/protocol.md)):
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | RetractQuestion | ReplaceQuestion | Stop
-          | PauseSession | ResumeSession
           | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
@@ -187,11 +186,11 @@ doc, never here**:
   not resumable
   ([ADR-0243](../docs/adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md))
   ([engine](../docs/architecture/engine.md), [ADR-0205](../docs/adr/archive/0205-every-compaction-forks-a-successor-session.md)/[ADR-0223](../docs/adr/archive/0223-non-compacting-session-fork.md)/[ADR-0234](../docs/adr/archive/0234-live-sub-agents-survive-compaction.md)/[ADR-0241](../docs/adr/archive/0241-background-script-follows-compaction.md)).
-- **Session lifecycle** — hibernate is eviction, not termination; pause/resume,
-  idle TTL, unknown-session policy, tenant-prefixed ids; a resumed sub-agent
+- **Session lifecycle** — hibernate is eviction, not termination; `Stop`
+  cancels the turn, never the session; idle TTL, unknown-session policy, tenant-prefixed ids; a resumed sub-agent
   is clamped to its nearest ancestor's mode and folds its predecessor's
   teardown tail
-  ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0077](../docs/adr/archive/0077-session-hibernation-evictable-resumable.md)/[ADR-0208](../docs/adr/archive/0208-pause-resume-a-hold-between-cancel-and-hibernate.md)/[ADR-0210](../docs/adr/archive/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)/[ADR-0246](../docs/adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
+  ([engine](../docs/architecture/engine.md), [heads §6b](../docs/architecture/heads/persistence.md), [ADR-0077](../docs/adr/archive/0077-session-hibernation-evictable-resumable.md)/[ADR-0210](../docs/adr/archive/0210-unknown-session-policy.md)/[ADR-0211](../docs/adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)/[ADR-0246](../docs/adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
 - **A session has a working directory** — relative path args are rewritten
   onto it *before* grading; the model learns it from the per-round notice
   ([gates §8 session working directory](../docs/architecture/gates/host-tools.md), [engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/archive/0224-session-working-directory.md)).
