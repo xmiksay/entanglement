@@ -65,7 +65,7 @@ The knobs below describe **what an endpoint or model accepts on the wire** —
 not preferences — so they are catalog data only (`providers.yml`, no env var,
 no `config.yml` key, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
 `thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
-`supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, and the
+`supports_temperature`, `prompt_cache_key`, and the
 `limits: {rpm, tpm, concurrency}` block (provider and model,
 [resilience](surface-and-resilience.md)). The former `tool_advertising`/`discovery` knobs are
 retired ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
@@ -103,7 +103,7 @@ sampling parameter. A `thinking` disable shape is never emitted (Fable 400s on
 it; its `thinking_required` only documents that its thinking is always on).
 **Caveat:** unlike the per-request OpenAI-wire resolvers (#550), a
 `model:`-only profile pin that sends a request under a different model id still
-uses the construction model's facts — `web_search_tool_version` included — so a
+uses the construction model's facts, so a
 profile crossing Anthropic generations should pin `provider:` alongside
 `model:` (which rebinds the client).
 
@@ -123,7 +123,7 @@ request dialect: every request carries `thinking: {type: enabled}` (plus the
 clamped effort) when an effort resolves or the model requires thinking, else
 `{type: disabled}` — z.ai's own default with no object is thinking at `max`.
 A provider without it never sees a `thinking` object (OpenAI proper 400s on
-unknown fields), and the same flag gates z.ai's `web_search` tool entry. The
+unknown fields). The
 embedded z.ai entries default every thinking-capable model to `high` (GLM-5.3 /
 5.3-Flash take only `low|high|max` and require thinking; the 4.x family takes
 `effort_tiers: []`), with `glm-5.3` as the default model. z.ai ships as **two

@@ -26,7 +26,7 @@ enum LlmEvent {
     Reasoning(String),   // thinking/reasoning tokens, streamed distinctly
     ToolCallDelta { id, name, delta },   // streamed tool-arg fragment, before ToolCall (#194)
     ToolCall(ToolCall),
-    ContentBlock(ContentPart),   // server-minted persisted block (web search, signed thinking)
+    ContentBlock(ContentPart),   // persisted block minted this round (signed thinking)
     Finish { stop_reason: StopReason?, usage: Usage },   // normalized (#192)
 }
 struct LlmResponse { text, tool_calls, reasoning, content_blocks, stop_reason: StopReason?, usage }
@@ -127,7 +127,7 @@ trait Llm: Send {
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog ([catalog](catalog.md));
-  `openai_factory(base, key, model, limits, web_search, prompt_cache_key,
+  `openai_factory(base, key, model, limits, prompt_cache_key,
   thinking_spec)` builds an `LlmFactory` (`limits`: a `LimitsResolver`, see
   [resilience](surface-and-resilience.md)), the
   `thinking_spec` resolver carrying the model's inline-think handling
@@ -138,16 +138,15 @@ trait Llm: Send {
   parsing, `think.rs` the `<think>` splitter.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(base_url, key, model, limits, web_search,
-  web_search_tool_version, model_spec)` — `base_url`
+  fragments). `anthropic_factory(base_url, key, model, limits,
+  model_spec)` — `base_url`
   defaults to `ANTHROPIC_BASE` (mirroring `OPENAI_BASE`/`GEMINI_BASE`); a
   catalog `wire: anthropic` entry's `base_url` (a proxy/gateway speaking the
   Anthropic wire) overrides it end to end — the request URL *and* the pool
   key — since #551 (previously hard-coded and silently ignored). Split into
   `anthropic/{mod,request,sse}.rs` (#481)
   the same way as `openai/` (which since #745 also moves its response
-  decoding into `openai/stream.rs`) — `mod.rs` additionally owns the `pause_turn`
-  continuation loop ([surface & resilience](surface-and-resilience.md)).
+  decoding into `openai/stream.rs`).
 - **Explicit `cache_control` breakpoints** (#566) — Anthropic caching is opt-in
   per content block, unlike z.ai/OpenAI-compat's implicit whole-prefix caching;
   without a marker every round re-bills the full system + tool schemas + growing
@@ -228,4 +227,4 @@ trait Llm: Send {
 
 ---
 
-Next: [§5b — Advertised surface, web search & per-endpoint resilience](surface-and-resilience.md)
+Next: [§5b — Advertised surface & per-endpoint resilience](surface-and-resilience.md)

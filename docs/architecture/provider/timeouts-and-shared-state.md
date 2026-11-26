@@ -210,4 +210,4 @@ so body logging is identical across backends.
 
 ---
 
-Previous: [§5b — Advertised surface, web search & per-endpoint resilience](surface-and-resilience.md) · Next: [§5b — Provider/model catalog & advanced wire facts](catalog.md)
+Previous: [§5b — Advertised surface & per-endpoint resilience](surface-and-resilience.md) · Next: [§5b — Provider/model catalog & advanced wire facts](catalog.md)

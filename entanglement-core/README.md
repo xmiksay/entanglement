@@ -28,7 +28,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
           | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | ReasoningBlock
 ```
 
 A session's agent (identity: prompt + model pin) is chosen once at session

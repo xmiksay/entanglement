@@ -143,7 +143,7 @@ OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | Que
           | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ApprovalResolved
           | ToolExec | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
-          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | SearchResult | ReasoningBlock
+          | FilesReverted | SessionForked | SkillActive | AmbiguousRetry | ReasoningBlock
           | NestedCall | NestedCallSummary (live only, never persisted)
 ```
 

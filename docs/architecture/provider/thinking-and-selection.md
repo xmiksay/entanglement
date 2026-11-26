@@ -67,12 +67,11 @@ that residual tail divergence is a server-side snapshot-placement question
 scope; see [ADR-0200](../../adr/archive/0200-fields-reasoning-capture-and-advertise-discovered.md).
 
 Three rules hold regardless of the flag: a block whose `provider` differs from
-the target renders **nothing** (stricter than `ProviderSearch`'s summary
-fallback — reasoning is not answer content); `ContentPart::as_text` returns
+the target renders **nothing** (no text fallback — reasoning is not answer
+content); `ContentPart::as_text` returns
 `None` so reasoning stays out of `content_text`, compaction, and token
 estimation; and an unsigned thinking block is display-only, since Anthropic
-rejects one. Capturing the block also closes the older `pause_turn`
-mid-thinking-block gap — `assembled_blocks` now includes thinking.
+rejects one.
 
 **Ollama `max_output_tokens` catalog default (#483):** the embedded `ollama`
 entries set `max_output_tokens` explicitly (8192/2048/4096 for

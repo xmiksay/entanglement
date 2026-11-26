@@ -1,4 +1,4 @@
-# LLM I/O §5b — Advertised surface, web search & per-endpoint resilience
+# LLM I/O §5b — Advertised surface & per-endpoint resilience
 
 > Part of the [llm i/o module](../provider.md) of the [architecture overview](../../architecture.md).
 
@@ -35,69 +35,6 @@ body. Header values never appear in an error. `scheme_and_host` gives the
 normalized scheme/host the runtime matches `http_auth` entries against. (The
 #560 P8 endpoint mechanism — `endpoint::call`, `EndpointMethod`, pooled
 per-URL — is removed with the declared endpoint tools.)
-
-**Provider-side web search** (#305,
-[ADR-0075](../../adr/archive/0075-provider-side-web-search-mvp.md); post-MVP follow-ups
-#481, [ADR-0131](../../adr/archive/0131-web-search-post-mvp-follow-ups.md)) — opt-in,
-**client-construction-time** config, **no core/protocol change**.
-`WebSearchConfig { enabled, max_uses, allowed_domains }` (`web_search.rs`,
-`deny_unknown_fields`) is bound onto a client by its factory as an `Option` (the
-runtime hands it `Some` only when a `web_search:` `config.yml` section is
-enabled; the live `/model` resolver captures it too, so a switch re-binds
-identically). When present, `build_body` pushes the provider's **server-executed**
-search tool onto the same `tools` array (so it rides even with no function
-tools): z.ai a `{"type":"web_search","web_search":{…}}` entry — only on a
-provider carrying the z.ai dialect (`thinking_control: zai`, i.e. `zai` /
-`zai_paas`), since the runtime binds one config onto every OpenAI-wire provider
-and OpenAI proper 400s on a non-`function` tool type — Anthropic a
-`{"type":"<version>","name":"web_search"}` server tool (+ optional
-`max_uses`/`allowed_domains`) — `<version>` is `ModelEntry.web_search_tool_version`
-(#481, catalog data) when the active model sets one, else the client's
-`web_search_20250305` fallback, so a model requiring the newer `_20260209` tool
-works via catalog config with no code change (the embedded defaults set it on
-every 4.6+ Anthropic model; like the thinking facts it is bound for the client's
-construction model — see `AnthropicModelSpec` in [catalog](catalog.md)). The provider runs the search
-*mid-turn*, no client round-trip; results still stream live on the **reasoning
-channel** (`LlmEvent::Reasoning`, unchanged since #305) but are now **also**
-persisted (#481): the Anthropic parser tracks a `server_tool_use` block with
-`is_server` and, on stop, emits both a `Reasoning` line and an
-`LlmEvent::ContentBlock(ContentPart::ProviderSearch { provider, summary, data })`
-— `data` is the block's raw Anthropic JSON, opaque outside this provider; each
-`web_search_tool_result` entry (or its error) renders the same way. The engine's
-turn loop (`session/round.rs`) appends every `ContentBlock` after the round's text
-when it commits the assistant `Message`, and emits a persisted, seq-bearing
-`OutEvent::SearchResult { part }` per block (mirrors `AmbiguousRetry`) so
-`Session::replay` reconstructs the exact content — `anthropic::request::
-anthropic_blocks` replays a `ProviderSearch` block's `data` **verbatim only when
-`provider == "anthropic"`** (mirrors `ToolCall.provider_meta`'s opaque round-trip
-contract; this is the search-result half of Anthropic's prompt-cache benefit);
-every other converter (Anthropic on a foreign-provider block, OpenAI-compat,
-Gemini) reads only `summary`, rendered as plain text — z.ai's cited answer
-already flows as `Text`, and its own `web_search` source array now also emits a
-`ContentBlock(provider: "zai")` alongside the existing `Reasoning` lines, so
-citations from either provider survive into a later turn's history instead of
-vanishing with the round. The z.ai array's streaming placement is **confirmed**
-(#625, [ADR-0171](../../adr/archive/0171-zai-streaming-web-search-placement-confirmed.md),
-verified live against a working Coding Plan key): it is a top-level sibling of
-`choices`, delivered once on the same final chunk that carries
-`finish_reason`/`usage`, never nested under `choices[0].delta` — `handle_chunk`
-scans only that top-level site. Verification also surfaced that invocation is
-model-decided, not guaranteed by the tool being offered: a turn can stream to
-completion with no `web_search` key at all if the model chooses not to call the
-search tool, which is the concrete instance of the cited-text-only floor ADR-0075
-already accepted as the worst case.
-A long-running search can end an Anthropic response with `stop_reason:
-"pause_turn"` instead of a confident stop; `anthropic::mod` owns continuing it
-entirely client-side (#481) — `sse::handle_frame` accumulates every finalized
-content block into a raw array as the stream runs, and on `pause_turn`,
-`stream()` re-POSTs with that array appended as a fresh assistant turn,
-continuing the *same* `LlmStream` (no `Finish` in between) until a confident stop
-or a bounded continuation cap (6) is hit; core never observes `pause_turn`. If
-the cap is hit, the client's own `Finish` still reports it (mapped to
-`StopReason::Other`), and the turn loop's ADR-0118 ambiguous-stop retry is the
-fallback safety net — the pre-#481 behavior this replaces as the primary path.
-Enabling web search *is* consent — the search runs provider-side, **outside**
-the runtime permission ladder ([ADR-0047](../../adr/archive/0047-local-trust-boundary.md)).
 
 **Resilience the provider layer owns — one limiter per endpoint** (#918,
 building on #217/[ADR-0050](../../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)):

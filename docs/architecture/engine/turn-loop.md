@@ -124,7 +124,7 @@ call is assembled.
 **Replay rebuilds the live history byte for byte** ([ADR-0202](../../adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).
 `Session::replay` folds events through `TurnFold` (`session/replay_pending.rs`),
 which mirrors each live commit point instead of batching per turn: one assistant
-message per model round (text, then its `ReasoningBlock`/`SearchResult` blocks,
+message per model round (text, then its `ReasoningBlock` blocks,
 then the round's calls with their `provider_meta`, envelope calls rebuilt from
 `envelope`), each `ToolOutput` pushed on arrival, the ADR-0118 nudge after an
 `AmbiguousRetry`, and no message at all for an empty reply — the live commit

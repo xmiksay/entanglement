@@ -106,7 +106,7 @@ the code, never as a description of current behaviour — that is
 | [0072](0072-protocol-warts-settled-before-serve.md) | Protocol warts settled before `serve` freezes the wire | current; amended by 0139 | — |
 | [0073](0073-managed-env-file-writer-and-key-surfaces.md) | One shared writer for the managed env file, with a CLI and TUI surface | current | — |
 | [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229 | — |
-| [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171 | — |
+| [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171; removed by #919 | — |
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
 | [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208, 0210 | — |
 | [0078](0078-per-turn-dynamic-system-prompt.md) | Per-turn dynamic system prompt (`EngineConfig.system_prompt_resolver`) | current | — |
@@ -162,7 +162,7 @@ the code, never as a description of current behaviour — that is
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
 | [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916 | — |
-| [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171 | — |
+| [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171; removed by #919 | — |
 | [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
 | [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) | Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain confinement clamp | superseded by 0207 | — |
@@ -191,7 +191,7 @@ the code, never as a description of current behaviour — that is
 | [0157](0157-mcp-http-transport-shares-the-endpoint-pool.md) | The MCP HTTP transport shares the LLM endpoint pool | current; amended by 0169; changed by #915 | — |
 | [0158](0158-defer-session-title-aux-call-under-contended-primary-concurrency.md) | Defer the session-title aux call when the primary model's concurrency cap is contended | current | — |
 | [0159](0159-plan-mask-widened-for-explore-delegation.md) | `plan`'s own mask carries `call`/`bash` so its `explore` delegation isn't self-defeating | superseded by 0207 (agent masks are gone; previously unmarked) | — |
-| [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current | — |
+| [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current; changed by #919 | — |
 | [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190; changed by #916 | — |
 | [0162](0162-agent-send-supervising-a-sub-agent.md) | `agent_send` — supervising a sub-agent instead of replacing it | current | — |
 | [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) | Live bash enablement is a tool-overlay entry, not its own message pair | superseded by 0195 | — |
@@ -202,7 +202,7 @@ the code, never as a description of current behaviour — that is
 | [0168](0168-lazy-prompt-refuses-a-known-hibernated-child.md) | The lazy-`Prompt` path refuses a known hibernated sub-agent child instead of blank-respawning it | current | — |
 | [0169](0169-startup-mcp-connect-is-concurrent-and-fast-fail.md) | Startup MCP connect is concurrent, and the startup handshake fails fast | superseded by 0226; changed by #915 | — |
 | [0170](0170-gitignore-aware-glob-grep-walk.md) | `glob`/`grep`'s shared walk is `.gitignore`-aware | current; mechanism superseded by 0178 | — |
-| [0171](0171-zai-streaming-web-search-placement-confirmed.md) | z.ai streaming `web_search` placement confirmed — top-level, final chunk | current | — |
+| [0171](0171-zai-streaming-web-search-placement-confirmed.md) | z.ai streaming `web_search` placement confirmed — top-level, final chunk | current; removed by #919 | — |
 | [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md) | TUI stop cascade-vs-detach confirm modal | current | — |
 | [0173](0173-watcher-driven-plan-file-changed-notice.md) | Watcher-driven plan-file-changed notice | current | — |
 | [0174](0174-authenticated-multi-user-wire-head.md) | Authenticated multi-user wire head — design (not yet built) | superseded by 0181; implementation removed (#686) | — |
@@ -234,7 +234,7 @@ the code, never as a description of current behaviour — that is
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
 | [0201](0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) | Unregistered-but-configured MCP tools resolve truthfully: enable or attributed decline | current; amended by 0226; changed by #915 | — |
 | [0202](0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) | Prompt-cache discipline: last-turn anchors, session-long deferral, full thinking replay, cached-prefix compaction, session-pinned date | current; partly superseded by 0226 | — |
-| [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915 | — |
+| [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915; changed by #919 | — |
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
@@ -244,7 +244,7 @@ the code, never as a description of current behaviour — that is
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
-| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918 | — |
+| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |
 | [0216](0216-resume-modes-ride-the-replay.md) | Resume modes ride the replay when any session is forced | current; amended by 0218 | — |

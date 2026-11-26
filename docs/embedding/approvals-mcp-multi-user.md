@@ -92,7 +92,7 @@ seam implementations over it. Per seam:
 - **Providers, API keys, rate limits** —
   [`entanglement_provider::multi_user`](../adr/archive/0184-provider-hosted-multi-user-seams.md):
   implement `UserProviderStore` over your tenant storage and wire
-  `build_user_model_resolver(store, http_client, web_search)` onto
+  `build_user_model_resolver(store, http_client)` onto
   `EngineConfig::model_resolver`. Each user gets their own `Catalog` + keys
   (never `std::env`) and their catalog's `limits:`; two users sharing one
   literal key share that key's limiter, as the provider does (#918).
