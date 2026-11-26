@@ -89,13 +89,13 @@ session's `Spawn` — so keep your own `HashMap<SessionId, UserId>` (or derive
 it from a session-id convention like §1's `{tenant}:{uuid}`) and close your
 seam implementations over it. Per seam:
 
-- **Providers, API keys, RPM/concurrency budgets** —
+- **Providers, API keys, rate limits** —
   [`entanglement_provider::multi_user`](../adr/archive/0184-provider-hosted-multi-user-seams.md):
   implement `UserProviderStore` over your tenant storage and wire
   `build_user_model_resolver(store, http_client, web_search)` onto
   `EngineConfig::model_resolver`. Each user gets their own `Catalog` + keys
-  (never `std::env`); two users sharing one literal key each get their own
-  admission slice ([ADR-0175](../adr/archive/0175-per-user-admission-gate-on-a-shared-literal-key.md)).
+  (never `std::env`) and their catalog's `limits:`; two users sharing one
+  literal key share that key's limiter, as the provider does (#918).
   To start a session on a user-chosen model, put it on the session's own
   `Spawn` — `model: Some(ModelChoice::new(provider, model))` (#725). It
   resolves through that same resolver under the session's user before the

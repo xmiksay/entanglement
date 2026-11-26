@@ -127,8 +127,9 @@ trait Llm: Send {
   hand-rolled over `reqwest` (no SDK crate). Preset base constants
   (`ZAI_CODING_PLAN_BASE`, `ZAI_GENERAL_BASE`, `OPENAI_BASE`, `OLLAMA_BASE`) still
   exist, but the *default* base per provider now comes from the catalog ([catalog](catalog.md));
-  `openai_factory(base, key, model, rpm, concurrency, model_concurrency,
-  web_search, prompt_cache_key, thinking_spec)` builds an `LlmFactory`, the
+  `openai_factory(base, key, model, limits, web_search, prompt_cache_key,
+  thinking_spec)` builds an `LlmFactory` (`limits`: a `LimitsResolver`, see
+  [resilience](surface-and-resilience.md)), the
   `thinking_spec` resolver carrying the model's inline-think handling
   (ADR-0191) plus its effort tiers, `thinking_required` and the provider's
   `thinking_control` (ADR-0203). Split into `openai/{mod,request,sse,think}.rs`
@@ -137,8 +138,8 @@ trait Llm: Send {
   parsing, `think.rs` the `<think>` splitter.
 - `AnthropicLlm` is separate because Anthropic's format genuinely differs (system
   top-level, tool results merged into one user turn, `input_json_delta`
-  fragments). `anthropic_factory(base_url, key, model, rpm, concurrency,
-  model_concurrency, web_search, web_search_tool_version, model_spec)` — `base_url`
+  fragments). `anthropic_factory(base_url, key, model, limits, web_search,
+  web_search_tool_version, model_spec)` — `base_url`
   defaults to `ANTHROPIC_BASE` (mirroring `OPENAI_BASE`/`GEMINI_BASE`); a
   catalog `wire: anthropic` entry's `base_url` (a proxy/gateway speaking the
   Anthropic wire) overrides it end to end — the request URL *and* the pool
@@ -183,8 +184,8 @@ trait Llm: Send {
   the reply still keys by the bare name Gemini expects. Also sanitizes the tool
   `parameters` schema (Gemini rejects `$schema`/`additionalProperties`/
   union-`type`/dangling `required`), and stashes/restores the signature via
-  `ToolCall.provider_meta` (below). `gemini_factory(base, key, model, rpm,
-  concurrency, model_concurrency, http)` — no web-search knob.
+  `ToolCall.provider_meta` (below). `gemini_factory(base, key, model,
+  limits, http)` — no web-search knob.
   Request-body assembly lives in the `gemini::request` submodule.
 - **Explicit `cachedContents` caching** (#587) — mirrors Anthropic's
   `cache_control` breakpoints (above) for the backend that otherwise has no

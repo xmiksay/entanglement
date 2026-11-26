@@ -81,7 +81,7 @@ the code, never as a description of current behaviour — that is
 | [0047](0047-local-trust-boundary.md) | Local trust boundary — the repository is trusted; config precedence system < user < repo; inspection over enforcement | current | — |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
-| [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Per-endpoint connection pool, rate-limit, and retry | current; amended by 0141, 0156, 0157 | — |
+| [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Per-endpoint connection pool, rate-limit, and retry | current; amended by 0141, 0156, 0157; changed by #918 | — |
 | [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916 | — |
 | [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current | — |
 | [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: provider owns the LLM ABI as a leaf crate | current | — |
@@ -142,7 +142,7 @@ the code, never as a description of current behaviour — that is
 | 0108 | _(number skipped, no record)_ | — | — |
 | [0109](0109-escape-root-access-via-approval.md) | Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant | current; amended by 0119, 0120, 0132, 0142, 0228; changed by #916 | — |
 | [0110](0110-compaction-successor-closes-predecessor.md) | `/compact` forks a *successor* and retires the source — and each session tracks its lineage | current; amended by 0234, 0243 | — |
-| [0111](0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md) | Per-endpoint concurrency cap, adaptive pacing, and bounded 429 retry | current; partly superseded by 0122; amended by 0141, 0155 | — |
+| [0111](0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md) | Per-endpoint concurrency cap, adaptive pacing, and bounded 429 retry | current; partly superseded by 0122; amended by 0141, 0155; changed by #918 | — |
 | [0112](0112-resume-cascades-over-the-spawn-subtree.md) | `Resume` cascades over the spawn sub-tree; the re-announced `SessionStarted` carries the replayed `predecessor` | current | — |
 | [0113](0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md) | Persistence synthesizes a spawned child's initiating prompt from the cached `Spawn` | current | — |
 | [0114](0114-capability-level-permission-keys.md) | Capability-level permission keys (`read`/`write`/`call`) | superseded by 0207 | — |
@@ -153,7 +153,7 @@ the code, never as a description of current behaviour — that is
 | [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916 | — |
 | [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current; changed by #916 | — |
 | [0121](0121-prune-only-compact-stays-silent.md) | Prune-only `Context::compact` stays silent — accepted live/replay divergence | current; partly superseded by 0205 | — |
-| [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213 | — |
+| [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
 | [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
 | [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916 | — |
@@ -171,8 +171,8 @@ the code, never as a description of current behaviour — that is
 | [0137](0137-explore-ask-grade-shell-access.md) | `explore` gains `Ask`-grade shell access (`call`/`bash`/`rhai`) | superseded by 0207 (the `explore` agent is retired; previously unmarked) | — |
 | [0138](0138-sponsored-build-child-and-propose-plan-cycle.md) | Sponsored build child — plan acceptance spawns a clamp-exempt child | superseded by 0207 | — |
 | [0139](0139-visible-session-states-working-and-waitingagent.md) | Visible session states — `Working` + `WaitingAgent`, and `Done` as the resting state | current; amended by 0208 | — |
-| [0140](0140-per-model-concurrency-cap-layered-on-endpoint-cap.md) | Per-model concurrency cap, layered on the endpoint cap | current | — |
-| [0141](0141-wire-visible-throttle-transitions.md) | Wire-visible throttle transitions: `OutEvent::Throttle`, engine-global not per-session | current | — |
+| [0140](0140-per-model-concurrency-cap-layered-on-endpoint-cap.md) | Per-model concurrency cap, layered on the endpoint cap | current; changed by #918 | — |
+| [0141](0141-wire-visible-throttle-transitions.md) | Wire-visible throttle transitions: `OutEvent::Throttle`, engine-global not per-session | current; changed by #918 | — |
 | [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) | Trusted scratch dir + plans-folder carve-out | current | — |
 | [0143](0143-ask-user-draft-until-submit.md) | `ask_user` answers are drafts until an explicit Submit | current | — |
 | [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213 | — |
@@ -206,7 +206,7 @@ the code, never as a description of current behaviour — that is
 | [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md) | TUI stop cascade-vs-detach confirm modal | current | — |
 | [0173](0173-watcher-driven-plan-file-changed-notice.md) | Watcher-driven plan-file-changed notice | current | — |
 | [0174](0174-authenticated-multi-user-wire-head.md) | Authenticated multi-user wire head — design (not yet built) | superseded by 0181; implementation removed (#686) | — |
-| [0175](0175-per-user-admission-gate-on-a-shared-literal-key.md) | Per-user admission gate on a shared literal API key | current | — |
+| [0175](0175-per-user-admission-gate-on-a-shared-literal-key.md) | Per-user admission gate on a shared literal API key | current; removed by #918 | — |
 | [0176](0176-structured-tool-result-is-error-and-duration-fields.md) | Structured tool-result channel: `is_error`/`duration_ms` as fields | current; amended by 0186; inconsistent: Consequences say TUI rendering is untouched, but the ✗/✓ badge is wired | — |
 | [0177](0177-wire-allowed-deny-only-tool-overlay.md) | Wire-allowed deny-only tool overlay | current | — |
 | [0178](0178-single-pass-gitignore-pruned-walk-with-scan-budget.md) | Single-pass `.gitignore`-pruned walk with a total scan budget | current | — |
@@ -244,7 +244,7 @@ the code, never as a description of current behaviour — that is
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
-| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917 | — |
+| [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |
 | [0216](0216-resume-modes-ride-the-replay.md) | Resume modes ride the replay when any session is forced | current; amended by 0218 | — |

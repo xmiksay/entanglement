@@ -99,139 +99,94 @@ fallback safety net — the pre-#481 behavior this replaces as the primary path.
 Enabling web search *is* consent — the search runs provider-side, **outside**
 the runtime permission ladder ([ADR-0047](../../adr/archive/0047-local-trust-boundary.md)).
 
-**Resilience the provider layer owns — per endpoint** (#217,
-[ADR-0050](../../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)): one
-tuned `reqwest::Client` is shared (it already pools TCP connections per host),
-but the **rate-limit budget and retry/backoff state are keyed by `(endpoint,
-api-key)`** — the provider's base URL plus a *hash* of the API key (if any) — in
-`HttpClient`'s `EndpointPool`. Each such bucket owns an **adaptive pacing gate**
-and its own `Retry-After` cool-down window, so a throttled endpoint never starves
-another — and **multiple keys on the same endpoint each get their own budget**
-(different keys have different limits). The key is hashed, never stored raw in
-the map. `client::pool_key`'s endpoint half is normalized first — trailing `/`
-trimmed, host lowercased (path left case-sensitive) — so a trailing-slash or
-host-casing difference between an env override and the catalog default can't
-split one real endpoint's budget in two; the API-key half is hashed with
-`sha2::Sha256` (not `DefaultHasher`, whose output is unspecified across Rust
-toolchains) since #551, because it also becomes the cross-process shared-state
-**file name** ([timeouts & shared state](timeouts-and-shared-state.md)) and so must be stable across separately-built `skutter`
-processes, not merely process-local. Before #217 a single global 50-RPM
-`Semaphore` was shared across *all* providers. The bucket's RPM is **catalog data** (#241): the provider entry's
-optional `rpm` (user `providers.yml` > embedded default — no env override
-since [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)),
-threaded through `openai_factory`/`anthropic_factory` → `execute_with_retry` →
-`EndpointState::new`; when unset it falls back to the client default
-(`RetryConfig::rpm`, 50).
+**Resilience the provider layer owns — one limiter per endpoint** (#918,
+building on #217/[ADR-0050](../../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)):
+one tuned `reqwest::Client` is shared (it already pools TCP connections per
+host), and every request admits through its endpoint's one `Limiter`
+(`client/limiter.rs`). Endpoints are keyed by `(endpoint, api-key)` — the
+base URL plus a *hash* of the API key — in `HttpClient`'s `EndpointPool`, so a
+throttled endpoint never starves another and **multiple keys on the same
+endpoint each get their own limits**. The key is hashed, never stored raw.
+`client::pool_key`'s endpoint half is normalized first — trailing `/` trimmed,
+host lowercased (path left case-sensitive) — so a trailing-slash or
+host-casing difference can't split one endpoint in two; the API-key half is
+hashed with `sha2::Sha256` (#551) because it also becomes the cross-process
+shared-state **file name** ([timeouts & shared state](timeouts-and-shared-state.md)).
+Two users of a multi-user embedder sharing one literal key share that key's
+limiter — which is what the provider enforces; there is no per-user gate.
+
+**One config shape: `RateLimits { rpm, tpm, concurrency }`** — the catalog's
+`limits:` block, on a provider (the endpoint) and optionally on a model (that
+model on its provider's endpoint; z.ai caps concurrency per model:
+`GLM-4.7-Flash` 1, `GLM-5.2` 5, on one base URL and key). Every wire client
+takes one `LimitsResolver` (`Catalog::limits_resolver(provider)`, or
+`fixed_limits(RateLimits)` without a catalog) and resolves it **per request**
+against the request's own model (#550 — a `model:`-only profile pin can send a
+request under a different model than the client's `default_model`), producing
+a `RequestLimits { endpoint, model }`. An endpoint's unset axes fall back to the
+client's defaults — `RateLimits::DEFAULT` (50 rpm, 3 in flight, no `tpm`)
+unless the embedder built the client with `HttpClient::with_default_limits`
+(MCP endpoints, which no catalog entry describes, run on these). A model's
+unset axes are simply unlimited for that model; it stays bound by its
+endpoint. A caller bringing different limits for an endpoint or model than
+the live gate was built with (an admin edited the catalog) replaces that gate
+with a `tracing::warn!`, rather than being bound by whoever came first.
+
+Each key (the endpoint, each model with limits) is one `Gate`:
+
+- a **sliding 60 s window** over requests (`rpm`) and estimated input tokens
+  (`tpm`; the request body's serialized bytes / 4, measured only when a `tpm`
+  is set — output tokens are unknown at admission). A request waits until the
+  oldest entry leaves the window; one larger than the whole `tpm` still goes
+  through an empty window;
+- a **semaphore** over in-flight requests (`concurrency`). The permit rides an
+  opaque `StreamGuard` that `spawn_byte_stream` holds until the **streamed
+  body** ends — so the cap counts *open streams*, the unit a provider limits,
+  and a spawn-storm of sub-agents queues instead of 429-storming.
+
+`Limiter::admit` takes them **narrowest first**: the model's permit and window,
+then the endpoint's, then the cross-process lease (#546) — a caller blocked on
+its own saturated model never holds the endpoint slot (or a sibling process's
+lease) hostage. Every retry attempt admits afresh, so retries count against
+`rpm`/`tpm` like any request.
+
+**429 and `Retry-After` live in the same limiter.** A 429 parks the endpoint's
+cool-down (even with no header) so every caller of it backs off together, and
+is retried on a patient schedule (`rate_limit_initial_backoff` ≈5s →
+`rate_limit_max_backoff` ≈10 min; a server `Retry-After` wins, clamped to a 24h
+ceiling so a huge delta-seconds or far-future HTTP-date can't overflow the
+`Instant + Duration` arithmetic, #548) **until it clears or
+`rate_limit_max_elapsed` (≈15 min) is spent** — then the 429 itself comes back
+for the caller to error on, so a saturated endpoint *fails* a sub-agent's turn
+rather than hanging its parent forever. Genuine failures (transport faults,
+retryable 5xx, which also honor a `Retry-After`) stay bounded by
+`max_attempts`. `RetryConfig` carries only these retry knobs; admission limits
+are never in it.
+
+**The endpoint-wide park is clamped separately from the offending caller's own
+budget** (#547): what `Limiter::set_retry_after`/`SharedGate::mark_retry_after`
+*store* — the deadline every *other* caller waits on via
+`wait_for_retry_after`, in-process and (once persisted) across a restart — is
+clamped to `rate_limit_max_backoff`, even when the server's raw `Retry-After`
+is far larger. The offending caller's own give-up decision still honors the
+raw, `MAX_RETRY_AFTER`-clamped value. Every wait a call makes —
+`wait_for_retry_after` and `SharedGate::acquire`'s poll loop — is bounded by
+*this call's own* `rate_limit_max_elapsed`: waiting further returns
+`RetryError::RateLimited` instead of sleeping past it.
 
 `HttpClient` is not LLM-only: since #559
 ([ADR-0157](../../adr/archive/0157-mcp-http-transport-shares-the-endpoint-pool.md)) the
 MCP streamable-HTTP transport (`entanglement-provider::mcp::McpHttpClient`,
-§gates/mcp.md §10) rides the same pool, keyed by its own URL, instead of an
-unmetered bare `reqwest::Client`.
+§gates/mcp.md §10) rides the same pool, keyed by its own URL, at the client's
+default limits.
 
-The concurrency cap + pacing gate + 429 policy
-([ADR-0111](../../adr/archive/0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md)) is
-what makes the pool coordinate *across sessions* — the property that "spawn many
-sub-agents" needs and ADR-0050 lacked. The **primary** guard is a per-endpoint
-`concurrency` semaphore. **Also catalog data, mirroring `rpm`** (#414): the
-provider entry's optional `concurrency` (user `providers.yml` > embedded
-default, catalog data only since ADR-0213), threaded through the same
-`openai_factory`/`anthropic_factory`/`gemini_factory` → `execute_with_retry` →
-`HttpClient::endpoint` → `EndpointState::new` path as `rpm`; when unset it falls
-back to the client's default (`RetryConfig::concurrency`, 3; the pre-#414
-process-wide `ENTANGLEMENT_MAX_CONCURRENCY` override is retired, ADR-0213). A
-permit is
-acquired before the request and returned as an opaque `StreamGuard` that
-`spawn_byte_stream` holds until the **streamed body** ends — so the cap counts
-*open streams* (a slow thinking generation included), the unit a provider really
-limits. Many spawned sub-agents queue and run a few at a time instead of all
-opening streams at once and 429-storming. On top of that, `RateLimiter` is a
-**spacing gate** (not a bucket that starts full): `acquire` reserves the next slot
-`interval` after the last, **adaptive (AIMD)** — each 429 doubles it (`penalize`,
-capped at `SLOWDOWN_CAP × base`), each success steps it back toward `base = 60s/rpm`
-(`relax`). Every 429 **also** parks the shared `Retry-After` window (even with no
-header) so all concurrent callers back off together, and is retried on a patient
-schedule (`rate_limit_initial_backoff` ≈5s → `rate_limit_max_backoff` ≈10 min; a
-server `Retry-After` wins, clamped to a 24h ceiling so a hostile/misbehaving
-endpoint's huge delta-seconds or far-future HTTP-date can't overflow the
-`Instant + Duration` arithmetic, #548) **until it clears or `rate_limit_max_elapsed` (≈15 min)
-is spent** — then it surfaces as an error, so a saturated endpoint *fails* a
-sub-agent's turn rather than hanging its parent forever. Genuine failures
-(transport faults, retryable 5xx) stay bounded by `max_attempts`.
-
-**The endpoint-wide park is clamped separately from the offending caller's own
-budget** (#547): what `EndpointState::set_retry_after`/`SharedGate::mark_retry_after`
-*store* — the deadline every *other* caller of the endpoint waits on via
-`wait_for_retry_after`, in-process and (once persisted) across a restart — is
-clamped to `rate_limit_max_backoff`, even when the server's raw `Retry-After`
-is far larger (a `Retry-After: 3600` must not park every sibling caller for an
-hour). The offending caller's own give-up decision still honors the raw,
-`MAX_RETRY_AFTER`-clamped value. On top of that, every wait this call makes —
-`wait_for_retry_after` and `SharedGate::acquire`'s poll loop — is bounded by
-*this call's own* `rl_deadline` (`rate_limit_max_elapsed`): waiting further
-returns `RetryError::RateLimited` instead of sleeping past it, so a cool-down
-set by a different caller (or read back from the persisted shared file after a
-restart) can never park a caller longer than its own budget allows.
-
-**Per-model concurrency, layered on top of the endpoint cap** (#521,
-[ADR-0140](../../adr/archive/0140-per-model-concurrency-cap-layered-on-endpoint-cap.md)):
-some providers — z.ai in particular — cap concurrency **per model**, not just
-per endpoint (documented: `GLM-4.7-Flash` allows only 1 in-flight request,
-`GLM-5.2` allows 5, on the same base URL/key), and per-profile model pinning
-([ADR-0081](../../adr/archive/0081-per-profile-model-pinning-and-rebind-on-set-agent.md))
-makes a mixed-model workload on one endpoint the normal case. `ModelEntry`
-gains an optional `concurrency` (catalog data, mirroring `ProviderEntry`'s;
-YAML-only, no env override in v1 — model ids contain `.`/`-` with no
-established env-name mangling). `EndpointState` gains a second,
-lazily-created `Semaphore` per `(endpoint, model)`
-(`model_concurrency: Mutex<HashMap<String, Arc<ModelSlot>>>`);
-`HttpClient::execute_with_retry` takes `model`/`model_concurrency` params and,
-when the latter is `Some`, acquires **that model's permit first, then the
-endpoint-wide one** (released in reverse) — the endpoint cap is unchanged as
-the ceiling on the *sum* of in-flight requests across every model on it
-(every call still takes an endpoint permit regardless of model), but a
-caller blocked on its own saturated model never holds that scarce endpoint
-permit hostage while it waits, which would otherwise starve unrelated
-sibling models sharing the endpoint even with room to spare. Both permits
-ride the same `StreamGuard` and release together when the streamed body
-ends. A model with no catalog cap never acquires a model permit at all —
-byte-identical to pre-#521; a model cap configured *wider* than its
-endpoint's own is legal (the narrower endpoint cap simply binds first) but
-logs a `tracing::warn!` as a likely misconfiguration rather than erroring.
-The `{name}_factory`/`{Name}Llm::new` constructors each gained a
-`model_concurrency: ModelConcurrencyResolver` parameter — **resolved per
-request** against the request's own model (#550), not baked in once at
-construction. The original v1 shape resolved the cap once per `(entry,
-model)` at factory-build time, the same point `resolve_rpm`/`resolve_concurrency`
-resolve the provider-level knobs; that model is the *client's* — the startup
-default or whatever `SetModel` last rebound to — and diverges from a given
-request's actual model whenever an agent pins `model:` **without**
-`provider:` (the documented request-level fallback: `Agent::model_pin`
-returns `None`, so session start doesn't rebind the client). The mismatch paired
-the wrong model's cap with the request's real model at `execute_with_retry`'s
-`model`/`model_concurrency` call site, and — because `EndpointState::model_slot`
-only sized a model's semaphore on the *first* caller — that wrong cap then
-stuck for the rest of the process, immune to a later, correct `/model` switch.
-`Catalog::model_concurrency_resolver(provider)` builds the resolver (an
-`Arc<dyn Fn(&str) -> Option<usize>>`, cheap to clone into every session's
-backend clone), closing over a cloned `Catalog` so each client can look its
-*actual* per-request model up against the real catalog data. `model_slot`
-itself now also **corrects** an already-cached slot when a later caller
-supplies a different cap, instead of latching the first value seen forever —
-belt-and-suspenders against any other path (a config reload, a race) that
-still manages to resolve the wrong cap first. The endpoint-wide `Retry-After`
-cool-down and pacing gate stay shared across every model on the endpoint
-(v1) — a 429 still parks the whole endpoint regardless of which model
-triggered it.
-
-`Catalog::effective_concurrency(provider, model)` is the one-shot sibling of
-`model_concurrency_resolver` (#589): a plain `Option<usize>` snapshot (model's
-own cap, else its provider's) for a caller that isn't building a live client
-and just wants to judge a `(provider, model)` pair's cap once — the runtime's
-`AuxLlmRegistry` uses it to decide whether firing an aux call alongside a
-primary-model call risks contending for the same permit (see the *Per-purpose
-auxiliary models* section of the [heads & persistence
-doc](../heads-and-persistence.md), [ADR-0158](../../adr/archive/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
+`Catalog::effective_concurrency(provider, model)` is a plain `Option<usize>`
+snapshot (the model's own cap, else its provider's) for a caller that isn't
+building a live client — the runtime's `AuxLlmRegistry` uses it to decide
+whether firing an aux call alongside a primary-model call risks contending for
+the same permit (see the *Per-purpose auxiliary models* section of the [heads
+& persistence doc](../heads-and-persistence.md),
+[ADR-0158](../../adr/archive/0158-defer-session-title-aux-call-under-contended-primary-concurrency.md)).
 
 ---
 

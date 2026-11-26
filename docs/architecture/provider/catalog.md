@@ -66,7 +66,8 @@ not preferences — so they are catalog data only (`providers.yml`, no env var,
 no `config.yml` key, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)): `thinking_style`, `thinking_format`,
 `thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
 `supports_temperature`, `web_search_tool_version`, `prompt_cache_key`, and the
-`rpm`/`concurrency` caps. The former `tool_advertising`/`discovery` knobs are
+`limits: {rpm, tpm, concurrency}` block (provider and model,
+[resilience](surface-and-resilience.md)). The former `tool_advertising`/`discovery` knobs are
 retired ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
 loads with one warning per key.
 A user only touches them to describe an endpoint the embedded defaults don't

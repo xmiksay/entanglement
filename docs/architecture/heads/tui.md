@@ -154,7 +154,7 @@
   errors, help text, and approval decisions stay in the transcript — else
   — *only while an endpoint is backing off* — a red throttle indicator
   (`⚠ host throttled · retry Ns · in/cap`, or `⚠ host pacing · next Ns · in/cap`
-  while the adaptive gate alone has slowed, #517) polled from
+  while the endpoint's `rpm`/`tpm` window is full, #517) polled from
   `HttpClient::throttle_status()`; it no longer duplicates the keybinding hints
   (those live in the input-box placeholder). The same throttle state also
   reaches **stdio/WS heads**, which have no direct `HttpClient` handle: the

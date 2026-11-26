@@ -83,9 +83,9 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     HttpClient` (re-exported from core alongside `McpHttpClient` so the
     `mcp-http`-only lean build still names no direct provider dependency), and
     every `POST` goes through `HttpClient::execute_with_retry` exactly like the
-    LLM wire clients — the same connection pool, RPM/concurrency caps, and
-    429/`Retry-After` handling, keyed by the server's own URL so it gets its
-    own bucket.
+    LLM wire clients — the same connection pool, rate limiter (at the
+    client's default limits) and 429/`Retry-After` handling, keyed by the
+    server's own URL so it gets its own limiter.
   - **OAuth (✅ [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md)):** a server entry may
     carry an optional `oauth:` block. Present — *even empty* — it switches that
     server from static-header auth to a browser-obtained bearer token, since most

@@ -44,17 +44,18 @@ all retry; anything else is permanent.
 
 **Throttle visibility.** `HttpClient::throttle_status() -> Option<ThrottleStatus>`
 is a read-only snapshot over the live pool (in-flight/cap, `Retry-After` remaining,
-whether the pacing gate is penalized) for the most-throttled endpoint, or `None`
+time until the request window frees) for the most-throttled endpoint, or `None`
 when every endpoint is at rest. Since #521 the reported in-flight/cap is
-whichever is **binding** — the endpoint's own, or a per-model slot whose
+whichever is **binding** — the endpoint's own, or a model gate whose
 occupancy ratio is currently tighter (`model: Option<String>` names it when
-so); an idle or never-created model slot never shadows a genuine
+so); an idle or never-created model gate never shadows a genuine
 endpoint-wide cool-down. It feeds no request logic — the TUI polls it each
 frame to show a throttle indicator only while backing off (see heads doc),
 rendering the model id alongside the host when it is the binding constraint.
-`ThrottleStatus` also carries `next_request_in: Option<Duration>` — the AIMD
-pacing gate's own `next_slot` countdown, surfaced only while `penalized`
-(#517, [ADR-0141](../../adr/archive/0141-wire-visible-throttle-transitions.md)) — so the
+`ThrottleStatus` also carries `next_request_in: Option<Duration>` — how long
+until the endpoint's full `rpm`/`tpm` window admits another request, `None`
+while it has room (#517, #918,
+[ADR-0141](../../adr/archive/0141-wire-visible-throttle-transitions.md)) — so the
 TUI's "pacing" label can show a live wait, not just the bare word.
 **Cross-process facts are folded in too (#552):** before this, `ThrottleStatus`
 read only in-process state, so a peer process's parked 429, a lease it held
@@ -83,7 +84,8 @@ a wire-visible `OutEvent::Throttle` on each endpoint's own enter/exit
 transition, so a stdio/WS head sees the same stall the TUI renders directly
 (ADR-0141 — engine-global, not per-session, matching this pool's own
 per-endpoint model). `RetryConfig` (`max_attempts`, `initial_backoff`,
-`max_backoff`, `rpm`) tunes the *failure* path; `HttpClient::with_config` +
+`max_backoff`, the `rate_limit_*` 429 schedule, `response_header_timeout`)
+tunes only retries — admission limits are `RateLimits`; `HttpClient::with_config` +
 `RetryConfig::no_retry()` build variants (tests use the latter).
 `execute_with_retry` also takes a **per-call** `retry: Option<RetryConfig>`
 override (#660) — `None` uses the pool's own config unchanged (every
@@ -91,7 +93,7 @@ primary-turn request, every MCP request); a caller with a legitimately
 different patience budget (the aux narrate/session-title paths always, summarize only on a
 pinned `summarize` model — `LlmRequest::retry = Some(RetryConfig::minimal())`) can swap
 just the failure-path knobs while still riding the same endpoint's
-RPM/concurrency/429 admission as everyone else. The MCP startup handshake
+limiter and 429 cool-down as everyone else. The MCP startup handshake
 that first used it ([ADR-0169](../../adr/archive/0169-startup-mcp-connect-is-concurrent-and-fast-fail.md))
 is retired with the startup connect (ADR-0226; its `handshake_retry`
 parameter removed, #855). This
@@ -111,7 +113,7 @@ everything in [provider](../provider.md) up to here coordinates every session *w
 but two processes talking to the same `(endpoint, api-key)` used to each run a
 fully independent `EndpointPool`, so N processes collectively sent up to N×
 the configured RPM and held N× the concurrency cap against a provider with no
-idea more than one client existed. `EndpointState` gains a
+idea more than one client existed. Each endpoint's `Limiter` carries a
 `client::shared_state::SharedGate` — a file-backed cross-process ledger at
 `${data_dir}/entanglement/endpoints/<sha256(pool_key)>.state`, guarded by an
 advisory `fd-lock` read-modify-write exactly like the managed config files
@@ -121,18 +123,16 @@ rather than depended on, since the provider crate is the leaf and takes no
 read-modify-write mechanics live in a sibling `client::shared_store` module
 (split out from `shared_state` purely to keep both under the 400-line file
 cap, #552); `shared_state` owns `SharedGate`/`SharedLease` and the admission
-policy. Shared: the RPM token-bucket ledger, a
+policy. Shared: the RPM ledger, a
 lease-based in-flight concurrency count (each admitted request holds a lease —
 id, owning pid, expiry — renewed on a heartbeat and pruned by TTL if its
 process dies without releasing it, so a crash recovers the slot rather than
 leaking it permanently), and the `Retry-After` cool-down deadline (one
-process's 429 parks every sibling's next `acquire`). **Not** shared in v1: the
-AIMD pacing gate stays per-process — once the budget itself is bounded
-correctly in aggregate, per-process pacing converges on the same signal (see
-the ADR for the full reasoning). `execute_with_retry`'s loop calls
-`endpoint.shared.acquire(rpm, concurrency, rl_deadline)` **last** — after
-`wait_for_retry_after`/`limiter.acquire` *and* after both in-process permits
-(model, then endpoint) — not before them (#546, fixing a starvation bug:
+process's 429 parks every sibling's next `acquire`). **Not** shared: the
+`tpm` window and the per-model gates stay per-process (see the ADR for the
+reasoning). `Limiter::admit` calls `shared.acquire(rpm, concurrency,
+rl_deadline)` **last** — after the model's and the endpoint's permits and
+windows — not before them (#546, fixing a starvation bug:
 acquiring the shared lease first let a caller queued on its own model's
 semaphore sit holding this scarcer, process-wide resource for as long as it
 waited, starving sibling `skutter` processes even though the provider had
@@ -142,7 +142,7 @@ itself bounded by `rl_deadline` (#547) — waiting past it returns `Err(())`
 rather than polling forever on a persisted cool-down or a saturated cap. The
 returned lease is held in `StreamGuard` alongside the endpoint/model permits
 and all three release together; a 429 also `.await`s
-`endpoint.shared.mark_retry_after(delay)` so the cool-down reaches siblings,
+`limiter.shared.mark_retry_after(delay)` so the cool-down reaches siblings,
 not just this process — awaited rather than fired off as a detached
 `tokio::spawn` (#547), since a detached task can be dropped mid-flight by a
 short-lived one-shot `run` exiting right after. Falls back silently to pure
@@ -154,7 +154,7 @@ itself isolates them.
 
 **The location is injected per client, resolved from env only by default**
 (#743): an `HttpClient` carries a `SharedStateLocation` (`Disabled` |
-`Dir(path)`) fixed at construction and handed to every `EndpointState` it
+`Dir(path)`) fixed at construction and handed to every `Limiter` it
 creates. `HttpClient::new`/`with_config` resolve it once via
 `SharedStateLocation::from_env()` — `ENTANGLEMENT_DEBUG=no-shared-state` >
 `ENTANGLEMENT_SHARED_STATE_DIR` (an undocumented subprocess-test hook since

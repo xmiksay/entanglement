@@ -297,7 +297,7 @@ connected-but-silent provider immediately (dropping the stream aborts the
 The **pre-stream phase races the inbox too** (#547): `session/stream.rs` pins
 the `llm.stream()` call itself and `select!`s it against the inbox the same
 way, so a `Stop` sent while the provider client is still parked on its
-retry-after wait / pacing gate / cross-process shared gate / semaphores —
+retry-after wait / rate-limit window / cross-process shared gate / semaphores —
 none of which used to be preemptible — cancels immediately instead of
 waiting for the whole pre-stream phase to finish. While parked there is no
 racing to do: the session loop itself is the receiver, handling

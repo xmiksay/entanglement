@@ -91,8 +91,9 @@ user YAML > embedded): a `wire:` tag adds any OpenAI-compatible endpoint
 knobs are catalog-only
 ([ADR-0213](../docs/adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — see
 [provider §advanced catalog](../docs/architecture/provider/catalog.md#advanced-catalog-wire-facts).
-Resilience (pool, retry, RPM/concurrency caps, AIMD pacing, 429 park,
-per-model caps, cross-process shared state) is **per endpoint**:
+Resilience (pool, retry, the one rate limiter — `limits: {rpm, tpm,
+concurrency}` per endpoint and per model — 429 park, cross-process shared
+state) is **per endpoint**:
 [provider](../docs/architecture/provider.md),
 [ADR-0050](../docs/adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md)/[ADR-0144](../docs/adr/archive/0144-file-backed-shared-endpoint-state-across-instances.md).
 
@@ -117,7 +118,7 @@ list; a retired var still set prints one warning naming its replacement
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
 `tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
-`rpm`/`concurrency` (providers.yml). Retired outright (one warning each) by
+`rpm`/`concurrency` (providers.yml, now `limits:`, #918). Retired outright (one warning each) by
 ADR-0213: `discovery:`; by ADR-0226: `tool_advertising:`, the catalog
 `discovery`/`tool_advertising` knobs, MCP `state:`; by ADR-0227: `endpoints:`.
 `ENTANGLEMENT_SHARED_STATE_DIR` is only an undocumented subprocess-test hook.
