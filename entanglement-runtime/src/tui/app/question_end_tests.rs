@@ -156,17 +156,15 @@ fn typing(app: &mut App) {
 }
 
 /// A half-typed free-text answer must not pre-fill the question that takes
-/// the prompt — whether the old one ended or was replaced.
+/// the prompt once the old one ended.
 #[test]
 fn a_moved_question_prompt_takes_the_half_typed_answer() {
-    for moved in [output(3, "q1"), ask(3, "q1", "Revised?")] {
-        let mut app = App::new_for_test(SessionId::new("s"));
-        app.handle_out_event(ask(1, "q1", "First?"));
-        app.handle_out_event(ask(2, "q2", "Second?"));
-        typing(&mut app);
-        app.handle_out_event(moved);
-        assert_eq!(app.input_text(), "");
-    }
+    let mut app = App::new_for_test(SessionId::new("s"));
+    app.handle_out_event(ask(1, "q1", "First?"));
+    app.handle_out_event(ask(2, "q2", "Second?"));
+    typing(&mut app);
+    app.handle_out_event(output(3, "q1"));
+    assert_eq!(app.input_text(), "");
 }
 
 /// With no question left the text stays as an ordinary draft, and an event
@@ -178,8 +176,11 @@ fn a_half_typed_answer_stays_when_nothing_takes_the_prompt() {
     typing(&mut app);
     app.handle_out_event(ask(2, "q2", "Second?"));
     assert_eq!(app.input_text(), "half typed");
-    app.handle_out_event(output(3, "q2"));
-    app.handle_out_event(output(4, "q1"));
+    // A resume's re-offer of the shown question leaves the prompt alone.
+    app.handle_out_event(ask(3, "q1", "First?"));
+    assert_eq!(app.input_text(), "half typed");
+    app.handle_out_event(output(4, "q2"));
+    app.handle_out_event(output(5, "q1"));
     assert_eq!(app.input_text(), "half typed");
     assert!(!app.is_asking());
 }

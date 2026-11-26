@@ -139,7 +139,7 @@ impl App {
         if self.sessions.handle_out_event(event) {
             self.mark_dirty();
         }
-        // The prompted question ended or was replaced (#894) while its
+        // The prompted question ended (#894) while its
         // free-text answer was half typed in the shared input: that text
         // must not pre-fill the question that takes the prompt. With no
         // question left it stays as an ordinary draft, like a reject reason.
