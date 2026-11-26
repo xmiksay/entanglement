@@ -507,30 +507,6 @@ async fn max_duration_ends_the_run_with_a_stated_reason() {
     );
 }
 
-/// `--yes` is retired (ADR-0207 §11): it must fail loudly with a pointer to
-/// its replacement, not silently parse-and-ignore, panic, or fall through to
-/// clap's own unknown-flag error. Guards the `main.rs` wiring the in-crate
-/// unit tests don't reach — mirrors `provider_selection.rs`'s own
-/// binary-level pattern for a clean, non-panicking CLI exit.
-#[test]
-fn retired_yes_flag_errors_with_a_pointer_to_mode_auto() {
-    let (mut cmd, _sandbox) = crate::skutter_cmd::isolated_skutter();
-    let out = cmd
-        .args(["run", "hi", "--yes"])
-        .output()
-        .expect("failed to spawn skutter");
-    assert_eq!(out.status.code(), Some(2), "expected a clean exit code 2");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--mode auto"),
-        "stderr should point to --mode auto, got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("panicked"),
-        "must not panic, got: {stderr}"
-    );
-}
-
 /// ADR-0228 (amending ADR-0209), end-to-end on the **real** built-in `auto`
 /// table: its default is `allow`, so a harmless unenumerated command runs
 /// at once, every time, with no collapsed denial and no parked approval.

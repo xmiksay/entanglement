@@ -452,19 +452,29 @@ fn http_auth_is_user_layer_only() {
     );
 }
 
-/// ADR-0227 retired `endpoints:` — ignored with one warning, never fatal.
+/// #920: no migration shim — every key an older release read (`endpoints:`,
+/// `discovery:`, `tool_advertising:`, an MCP server's `state:`, the
+/// free-form `permissions:` map) is an unknown field like any typo.
 #[test]
-fn a_retired_endpoints_key_warns_instead_of_failing() {
+fn a_pre_0_8_key_is_a_plain_parse_error() {
     let dir = tempfile::tempdir().unwrap();
     let user_file = dir.path().join("user-config.yml");
-    std::fs::write(&user_file, "endpoints:\n  weather:\n    url: https://x\n").unwrap();
-    let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
-    assert!(
-        resolved
-            .warnings
-            .iter()
-            .any(|w| w.contains("`endpoints:`") && w.contains("ADR-0227")),
-        "{:?}",
-        resolved.warnings
-    );
+    for yaml in [
+        "endpoints:\n  weather:\n    url: https://x\n",
+        "discovery:\n  zai: invoke\n",
+        "tool_advertising: full\n",
+        "mcp:\n  kb:\n    url: https://kb/mcp\n    state: disabled\n",
+        "permissions:\n  bash: ask\n",
+    ] {
+        std::fs::write(&user_file, yaml).unwrap();
+        let err = Config::resolve_with(dir.path(), Some(&user_file))
+            .err()
+            .unwrap_or_else(|| panic!("{yaml} must not load"));
+        assert!(
+            format!("{err:#}").contains("unknown field"),
+            "{yaml}: {err:#}"
+        );
+        let kept = std::fs::read_to_string(&user_file).unwrap();
+        assert_eq!(kept, yaml, "the file is never rewritten");
+    }
 }

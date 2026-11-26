@@ -102,10 +102,8 @@ mod tests {
 
     #[test]
     fn an_old_grammar_key_is_rejected_as_unknown() {
-        // `bash: ask` (the old free-form shape) has no home in the new
-        // struct — `deny_unknown_fields` rejects it outright, which is
-        // exactly the signal `migrate_permissions` uses to detect a legacy
-        // file that needs rewriting.
+        // `bash: ask` (the pre-0.8 free-form shape) has no home in the
+        // struct — `deny_unknown_fields` rejects it outright (#920).
         assert!(serde_yaml::from_str::<RawCeiling>("bash: ask\n").is_err());
     }
 

@@ -120,7 +120,6 @@ mod request_mode;
 mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
-mod retired_knobs;
 mod revert_files;
 // ADR-0248: the watcher re-runs rhai module discovery.
 #[cfg(feature = "rhai")]
@@ -137,6 +136,7 @@ mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
 mod spawn_prompt_persistence;
+mod startup_warnings;
 mod state_dir;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;

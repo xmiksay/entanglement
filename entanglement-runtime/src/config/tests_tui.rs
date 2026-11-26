@@ -1,5 +1,4 @@
-//! Tests for the `tui:` block and the retired `discovery:` key (ADR-0213)
-//! through the real layered loader, with the user layer injected via
+//! Tests for the `tui:` block (ADR-0213) through the real layered loader, with the user layer injected via
 //! [`Config::resolve_with`].
 
 use super::tests::{defaults, merge_user};
@@ -149,18 +148,6 @@ fn theme_and_keybinding_edits_reload_and_warn() {
 }
 
 #[test]
-fn a_retired_discovery_key_is_ignored_with_one_warning() {
-    let dir = tempfile::tempdir().unwrap();
-    let user_file = dir.path().join("user.yml");
-    std::fs::write(&user_file, "discovery:\n  zai: invoke\nagent: build\n").unwrap();
-    let resolved = resolve_with_user(dir.path(), &user_file);
-    assert_eq!(resolved.config.agent.as_deref(), Some("build"));
-    assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
-    assert!(resolved.warnings[0].contains("discovery"));
-    assert!(resolved.warnings[0].contains(&user_file.display().to_string()));
-}
-
-#[test]
-fn the_shipped_defaults_carry_no_retired_key() {
+fn the_shipped_defaults_load_without_warnings() {
     assert!(parse(&[default_layer()], None).unwrap().warnings.is_empty());
 }

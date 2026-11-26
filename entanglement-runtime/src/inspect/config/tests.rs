@@ -56,15 +56,14 @@ fn user_layer_overrides_report_their_winning_layer() {
 }
 
 #[test]
-fn tui_block_and_retired_key_warnings_are_rendered() {
+fn tui_block_and_load_warnings_are_rendered() {
     let dir = tempfile::tempdir().unwrap();
     let user_file = dir.path().join("user-config.yml");
     std::fs::write(
         &user_file,
         "tui: {notify: true, statusline: {right: '{mode}', command: 'echo hi'}, \
          theme: {base: light, slots: {diff.add: '#2e7d32'}}, \
-         keybindings: {pick_model: [ctrl+o, leader o], export: ctrl+g}}\n\
-         discovery: {zai: invoke}\n",
+         keybindings: {pick_model: [ctrl+o, leader o], export: ctrl+g}}\n",
     )
     .unwrap();
     let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
@@ -86,12 +85,11 @@ fn tui_block_and_retired_key_warnings_are_rendered() {
         rendered.contains("tui.keybindings: [export=ctrl+g, pick_model=ctrl+o|leader o] ← user"),
         "{rendered}"
     );
+    // The export/jump_attention clash is a warning, not a load failure.
     assert!(
-        rendered.contains("warnings:") && rendered.contains("`discovery:`"),
+        rendered.contains("warnings:") && rendered.contains("`jump_attention`"),
         "{rendered}"
     );
-    // The export/jump_attention clash is a warning, not a load failure.
-    assert!(rendered.contains("`jump_attention`"), "{rendered}");
 }
 
 #[test]

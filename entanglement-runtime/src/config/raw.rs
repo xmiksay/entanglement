@@ -36,10 +36,8 @@ pub(super) struct RawConfig {
     pub(super) verbose: bool,
     /// Parsed into the config ceiling's [`entanglement_core::PermissionProfile`]
     /// via [`ceiling::build_ceiling_profile`](super::ceiling::build_ceiling_profile) (ADR-0207 stage 6c) — the same
-    /// `default`/`allow`/`deny`/`prompt` grammar a mode body uses, not the
-    /// retired free-form `tool: allow|ask|deny` map. A file still in the old
-    /// shape is self-healed by [`migrate_permissions`](super::migrate_permissions) before it ever
-    /// reaches this deserialize.
+    /// `default`/`allow`/`deny`/`prompt` grammar a mode body uses; the old
+    /// free-form `tool: allow|ask|deny` map is a plain parse error (#920).
     #[serde(default)]
     pub(super) permissions: Option<ceiling::RawCeiling>,
     /// Per-mode tuning (ADR-0207 §5): each key must name one of the four
@@ -93,9 +91,7 @@ pub(super) struct RawConfig {
     /// fall through to the lower layer, exactly like every other key.
     #[serde(default)]
     pub(super) session_retention_days: Option<u64>,
-    /// Terminal-UI preferences (ADR-0213). Retired keys (`discovery:`,
-    /// `tool_advertising:`) never reach this struct: [`super::retired`]
-    /// strips them with a warning.
+    /// Terminal-UI preferences (ADR-0213).
     #[serde(default)]
     pub(super) tui: TuiConfig,
     /// Per-write file backups behind `/undo`/`/rewind` (#787, ADR-0212):

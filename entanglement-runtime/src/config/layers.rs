@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_yaml::Value;
 
-use super::{migrate_permissions, DEFAULTS_YML};
+use super::DEFAULTS_YML;
 
 /// The commented starter file written on first run (#219). Distinct from
 /// [`DEFAULTS_YML`]: every setting here is commented *out*, so an untouched
@@ -58,21 +58,9 @@ pub(super) struct RawLayer {
 pub(super) fn discover(root: &Path, user_file: Option<&Path>) -> Result<Vec<RawLayer>> {
     let mut layers = vec![default_layer()];
     if let Some(path) = user_file {
-        migrate_permissions::migrate_if_legacy(path).with_context(|| {
-            format!(
-                "migrating legacy `permissions:` shape in {}",
-                path.display()
-            )
-        })?;
         read_layer(ConfigLayer::User, path, &mut layers)?;
     }
     let project_path = root.join(".entanglement").join("config.yml");
-    migrate_permissions::migrate_if_legacy(&project_path).with_context(|| {
-        format!(
-            "migrating legacy `permissions:` shape in {}",
-            project_path.display()
-        )
-    })?;
     read_layer(ConfigLayer::Project, &project_path, &mut layers)?;
     Ok(layers)
 }

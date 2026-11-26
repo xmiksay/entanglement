@@ -20,20 +20,11 @@ pub(crate) struct Cli {
     /// it may follow the subcommand: `skutter run … --verbose`.
     #[arg(long, global = true)]
     pub(crate) verbose: bool,
-    /// Retired (#554, ADR-0207 §11): auto-approving every `ToolRequest` was
-    /// head-level, all-or-nothing, and invisible to core/the TUI — precisely
-    /// what a permission mode is not. Parsed only so `skutter … --yes` fails
-    /// loudly with a pointer to its replacement instead of clap's unknown-flag
-    /// error; see the startup check in `main`. Hidden from `--help` so a
-    /// retired flag is never advertised.
-    #[arg(long, global = true, hide = true)]
-    pub(crate) yes: bool,
     /// Run the session under this permission mode (`research`/`plan`/`build`/
     /// `auto`, ADR-0207). Precedence: `--mode` > config `mode:` > the agent's
     /// `default_mode` > `build` (ADR-0218). Applies to `run` (explicit and
     /// implicit), `--resume`, and the TUI (incl. its resumes) —
-    /// `auto` is the unattended posture `--yes` used to approximate, now with
-    /// a bounded posture (everything but its deny list runs; what still asks
+    /// `auto` is the unattended posture, bounded (everything but its deny list runs; what still asks
     /// times out after 60s — ADR-0228), run/turn/duration budgets, and no
     /// silent widening. Global so it may follow the subcommand:
     /// `skutter run … --mode auto`.

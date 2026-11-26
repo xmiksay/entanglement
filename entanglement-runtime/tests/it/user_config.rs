@@ -39,7 +39,7 @@ fn repo_layer_overrides_user_layer() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(
         repo.join("config.yml"),
-        "provider: openai\npermissions:\n  bash: deny\n",
+        "provider: openai\npermissions:\n  deny: [bash]\n",
     )
     .unwrap();
 

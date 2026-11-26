@@ -48,17 +48,6 @@ use args::{Cli, Cmd, ConfigCmd, InspectCmd};
 async fn main() -> Result<()> {
     logging::startup_mark("process start");
     let cli = Cli::parse();
-    // `--yes` is retired (#554, ADR-0207 §11) — exit the same clean way
-    // `select_provider`'s other user-facing CLI errors do (`eprintln!` +
-    // code 2), not a panic and not clap's own unknown-flag error, since the
-    // flag itself still parses.
-    if cli.yes {
-        eprintln!(
-            "skutter: --yes is retired — use `--mode auto` for an unattended \
-             run instead (ADR-0207 §11)"
-        );
-        std::process::exit(2);
-    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Load the layered user config (#172, ADR-0047) up front: embedded defaults <
@@ -191,13 +180,11 @@ async fn main() -> Result<()> {
         Err(e) => tracing::debug!("could not load provider env file: {e:#}"),
     }
 
-    // ADR-0213: a retired env var or config key is ignored — say so once,
-    // naming the replacement. After the `.env` load so a retired var parked
-    // there is caught too; `eprintln!` like the scaffold notices above, so it
-    // shows without `--verbose` and stays in the scrollback after a TUI exit.
-    let provider_names: Vec<&str> = catalog.providers.iter().map(|p| p.name.as_str()).collect();
-    // A server dropped for a tool-name clash is a config problem like a
-    // retired key: report it alongside, not only in the debug log.
+    // Config load findings, unknown `ENTANGLEMENT_DEBUG` tokens and MCP
+    // servers dropped for a tool-name clash. After the `.env` load so a debug
+    // value parked there is caught too; `eprintln!` like the scaffold notices
+    // above, so it shows without `--verbose` and stays in the scrollback after
+    // a TUI exit.
     let mcp_clashes = mcp::AvailableMcp::from_config(&user_config.mcp, Vec::new())
         .clash_warnings()
         .to_vec();
@@ -205,7 +192,11 @@ async fn main() -> Result<()> {
         .iter()
         .cloned()
         .chain(mcp_clashes)
-        .chain(config::retired::process_env_warnings(&provider_names))
+        .chain(unknown_debug_tokens(
+            std::env::var(entanglement_provider::DEBUG_ENV)
+                .ok()
+                .as_deref(),
+        ))
     {
         eprintln!("skutter: warning: {warning}");
     }
@@ -226,4 +217,30 @@ async fn main() -> Result<()> {
     let result = heads::dispatch(cli, &holly, head, catalog, &user_config, &cwd).await;
     services.shutdown(&holly).await;
     result
+}
+
+/// One warning naming the `ENTANGLEMENT_DEBUG` tokens no flag reads, if any.
+fn unknown_debug_tokens(raw: Option<&str>) -> Option<String> {
+    let (_, unknown) = entanglement_provider::DebugFlags::parse(raw?);
+    (!unknown.is_empty()).then(|| {
+        format!(
+            "{}: ignoring unknown token(s) {} — known: bodies, echo, no-shared-state",
+            entanglement_provider::DEBUG_ENV,
+            unknown.join(", ")
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unknown_debug_tokens;
+
+    #[test]
+    fn unknown_debug_tokens_yield_one_warning() {
+        assert_eq!(unknown_debug_tokens(None), None);
+        assert_eq!(unknown_debug_tokens(Some("")), None);
+        assert_eq!(unknown_debug_tokens(Some("bodies,echo")), None);
+        let w = unknown_debug_tokens(Some("bodies,1,verbose")).expect("unknown tokens");
+        assert!(w.contains("1, verbose"), "{w}");
+    }
 }

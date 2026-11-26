@@ -25,8 +25,8 @@
 //!
 //! - `permissions` — the first section: a `default`/`allow`/`deny`/`prompt`
 //!   ceiling in the same grammar a permission mode body uses (ADR-0207 §4/§5,
-//!   stage 6c) — not the old free-form `tool: allow|ask|deny` map, which a
-//!   startup pass ([`migrate_permissions`]) self-heals in place. Graded
+//!   stage 6c); the old free-form `tool: allow|ask|deny` map is a plain
+//!   parse error (#920). Graded
 //!   least-privilege against the session's own mode via
 //!   [`crate::permission::clamp_to_base`], through
 //!   [`crate::mode::Mode::from_permission_profile`] so a bare capability-class
@@ -115,10 +115,8 @@ mod layers;
 pub mod lock;
 pub mod mcp_persist;
 pub mod mcp_tokens;
-mod migrate_permissions;
 mod mode_warn;
 mod raw;
-pub mod retired;
 mod rhai_trusted;
 pub mod state_dir;
 pub mod statusline;
@@ -241,8 +239,9 @@ pub struct Resolved {
     pub layers: Vec<(ConfigLayer, String)>,
     /// The winning layer for each top-level key that any layer defined.
     pub provenance: Vec<(String, ConfigLayer)>,
-    /// One line per retired key a layer still carried (ADR-0213) — ignored,
-    /// reported by the caller once logging/stderr is ready.
+    /// Non-fatal load findings (a project-layer `http_auth:`/`rhai.trusted`
+    /// the trust model drops), reported by the caller once logging/stderr is
+    /// ready.
     pub warnings: Vec<String>,
     /// Each `rhai.trusted` folder (canonical) with the layer that listed it
     /// first — the lists add up across layers, so there is no single winner.
@@ -299,8 +298,7 @@ impl Config {
 /// the embedded defaults alone.
 fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     let mut raw_layers: Vec<RawLayer> = raw_layers.to_vec();
-    let mut warnings = retired::strip_retired_keys(&mut raw_layers);
-    warnings.extend(http_auth::strip_project_layer(&mut raw_layers));
+    let mut warnings = http_auth::strip_project_layer(&mut raw_layers);
     let (trusted_layers, trusted_warnings) = rhai_trusted::extract(&mut raw_layers, root);
     let rhai_trusted = rhai_trusted::folders(&trusted_layers, &raw_layers);
     warnings.extend(trusted_warnings);
