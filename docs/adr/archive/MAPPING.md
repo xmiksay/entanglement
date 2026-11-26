@@ -253,7 +253,7 @@ the code, never as a description of current behaviour — that is
 | [0219](0219-tui-themes-and-keybindings.md) | TUI themes and keybindings are named slots and validated action maps | current | — |
 | [0220](0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) | `web_fetch` is an Exec-graded, SSRF-guarded host tool; the TUI pastes clipboard images for vision models | current; amended by 0225 | — |
 | [0221](0221-user-slash-commands-are-head-side-prompt-templates.md) | User slash commands are head-side prompt templates | current | — |
-| [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current | — |
+| [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current; changed by #917 | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227 | — |

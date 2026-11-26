@@ -66,8 +66,8 @@ pub fn spawn_refusal(target: &str, registry: &AgentCatalog) -> Option<String> {
 /// one provider — the only way to pick between two providers that
 /// legitimately share model ids against different endpoints (`zai` /
 /// `zai_paas`, ADR-0203). Only *usable* providers are considered
-/// ([`entanglement_provider::ProviderEntry::is_usable`] — a keyless or
-/// OAuth entry, or a keyed one whose env var is actually set): a model
+/// ([`entanglement_provider::ProviderEntry::is_usable`] — a keyless entry,
+/// or a keyed one whose env var is actually set): a model
 /// nothing can reach is worse to offer than not listing it at all.
 ///
 /// `Ok(None)` means "omitted, inherit exactly as before"; `Ok(Some((provider,
@@ -95,8 +95,7 @@ pub fn resolve_model(
     if usable.is_empty() {
         return Err(format!(
             "sub-agent spawn refused: model `{model}` requested but no configured provider is \
-             currently usable — set an API key (or connect one via OAuth) for at least one \
-             provider in the catalog"
+             currently usable — set an API key for at least one provider in the catalog"
         ));
     }
 

@@ -42,7 +42,7 @@ pub fn skills_list(disclosures: &[SkillDisclosure]) -> String {
 }
 
 /// `list_models`: the active catalog's models, only from *usable* providers
-/// (a key or OAuth credential resolves — the same filter
+/// (keyless, or its key env var is set — the same filter
 /// [`crate::permission::resolve_model`] applies to its refusal): a model this
 /// session cannot reach should not be offered. "No catalog" and "nothing
 /// usable" read differently — different problems, different fixes.
@@ -53,7 +53,7 @@ pub fn models_list(catalog: Option<&Catalog>) -> String {
     let usable: Vec<_> = catalog.providers.iter().filter(|p| p.is_usable()).collect();
     if usable.is_empty() {
         return "A catalog is configured, but no provider is currently usable — set an API \
-                key (or connect one via OAuth) for at least one provider."
+                key for at least one provider."
             .to_string();
     }
     let mut out = String::from("Models (pass provider/id as agent's model):");

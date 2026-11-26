@@ -25,7 +25,7 @@ handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
 `provider:`, or a non-empty catalog `key_env` after the `.env` load) before
 `boot`. Unconfigured, the TUI head runs a standalone raw-mode dialog
 (`onboarding::state` is the pure key-driven state machine, `draw` the
-render): provider (catalog order, OAuth-only entries excluded, keyless ones
+render): provider (every catalog entry, in catalog order, keyless ones
 included) → masked key, or a base URL prefilled from the catalog for a keyless
 provider → model (catalog default preselected). `persist` writes the key (or an
 edited `<NAME>_API_BASE`) through `env_key::set_key_at` and `provider:`/`model:`
