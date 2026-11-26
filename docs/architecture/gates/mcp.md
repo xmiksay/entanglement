@@ -215,9 +215,10 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   `mcp__<server>__*` pattern from the same spelling. Two server names that
   sanitize identically (`my.docs` / `my_docs`) or whose prefixes nest (`a` /
   `a__b`) would make tool names and such patterns ambiguous, so the roster
-  keeps only the first — bundles in catalog order, then user entries, each by
-  name; only a server that can connect (not disabled, key resolved) claims a
-  name — reports the ignored one as a startup config warning, and refuses a
+  keeps only the first by name; only a non-disabled server claims a name, and
+  a disabled one that clashes with a claimant is dropped (it does not stay in
+  `disabled_names`), so routing still reaches the claimant — reports the
+  ignored one as a startup config warning, and refuses a
   clashing live `/mcp add` with an `McpChanged` carrying `error`. A per-user
   scope applies the same rule to its own servers (first by name wins, the
   later is skipped with a warning).

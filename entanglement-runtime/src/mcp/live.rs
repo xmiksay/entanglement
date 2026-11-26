@@ -59,8 +59,7 @@ pub type ServerConfigs = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 /// The connect/list-tools awaits run *before* any lock is taken (#372: never
 /// hold a lock across `.await`); only the synchronous registration is done
 /// under the registry's write lock. `http` (#559) is the shared endpoint pool
-/// the connect rides — a live `/mcp add` is always a user-declared server, so
-/// it carries no provider key (unkeyed, still pooled) bucket.
+/// the connect rides.
 #[allow(clippy::too_many_arguments)]
 pub async fn mcp_add(
     name: String,
