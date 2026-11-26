@@ -109,7 +109,7 @@ test (which prompt/tool set actually reached the backend). Set
 `ENTANGLEMENT_DEBUG=echo` to append the full system text.
 Per-provider env still wins: `<PROV>_API_KEY` (name from the entry's `key_env`),
 `<PROV>_MODEL`, `<PROV>_API_BASE` (the legacy `<PROV>_BASE` spelling is
-retired, ADR-0213 — a still-set one only earns a startup warning). Default models come from each
+retired, ADR-0213 — it is simply not read, no warning, #920). Default models come from each
 provider's `default_model` (`glm-5.3` / `gpt-4o` / `llama3.1` /
 `claude-sonnet-5`). The TUI model picker + context bar read the same catalog.
 

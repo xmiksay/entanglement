@@ -67,9 +67,11 @@ no `config.yml` key, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalo
 `thinking_control`, `thinking_required`, `replay_thinking`, `effort_tiers`,
 `supports_temperature`, `prompt_cache_key`, and the
 `limits: {rpm, tpm, concurrency}` block (provider and model,
-[resilience](surface-and-resilience.md)). The former `tool_advertising`/`discovery` knobs are
-retired ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying either, at provider or model level,
-loads with one warning per key.
+[resilience](surface-and-resilience.md)). The former `tool_advertising`/`discovery`/
+`advertise_discovered` knobs are retired
+([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): a user file still carrying one, at provider or model level,
+is rejected at load like any unknown key (#920; see the
+[0.7 → 0.8 migration note](../../embedding/migrations/0.7-to-0.8.md)).
 A user only touches them to describe an endpoint the embedded defaults don't
 know (or know wrongly). `skutter inspect config` lists every non-default value
 per provider/model under "advanced catalog", so the effective facts stay

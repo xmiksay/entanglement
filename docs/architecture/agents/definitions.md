@@ -188,7 +188,8 @@
 - **No tool-advertising mode** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): ADR-0196's `Full | ToolSearch` knob
   (orthogonal to the permission mode) is removed along with its
   `config.yml`/catalog keys — one surface, pinned per session, identical on
-  every wire; a stale `tool_advertising:` warns once and is ignored.
+  every wire; a stale `tool_advertising:` is an unknown-field `config.yml`
+  parse error (#920).
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../../adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)):**
   a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
   `${config_dir}/entanglement/`, the managed-state dir (`ENTANGLEMENT_STATE_DIR`)

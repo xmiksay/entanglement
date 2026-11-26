@@ -6,8 +6,9 @@
   of server name → `McpServerConfig`. A block is one transport XOR the other —
   `{command, args, env}` (stdio) **or** `{url, headers, oauth}` (HTTP; `oauth` is
   the ADR-0153 block in [MCP client](mcp.md)), plus a shared
-  `disabled` (the one opt-out) and `description` (shown by `list_mcp`; a
-  retired three-state `state:` is stripped with a warning, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) — resolved by
+  `disabled` (the one opt-out) and `description` (shown by `list_mcp`; the
+  retired three-state `state:` is an unknown field, a parse error, #920,
+  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) — resolved by
   `McpServerConfig::transport()`, which rejects both-set or
   neither-set. `deny_unknown_fields`-validated by the same loader as
   `permissions`/`hooks`. Empty ⇒ no servers (the norm). `skutter inspect config`
@@ -106,7 +107,8 @@ truthfully rather than as unknown. There is no per-session enablement, no
 `mcp_enable` tool, no `/enable mcp`/`/disable mcp`, no ancestry fold: an
 available server is available to every session, and every call to one of
 its tools is graded by the session's mode (default `prompt`, so the user
-audits it). A retired `state:` key is stripped with one warning.
+audits it). A retired `state:` key is an unknown-field parse error (#920);
+`disabled: true` is the one opt-out.
 
 **`list_mcp`** (`discover::mcp_lists`) never connects: one row per server
 (`mcp::roster` — name, description, transport, connected, tools, OAuth

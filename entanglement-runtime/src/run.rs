@@ -26,11 +26,8 @@ pub(crate) mod summary;
 /// `Allow`, ADR-0109) is auto-rejected with a reason the model can act on:
 /// there is no interactive user here to answer it, and left unhandled it
 /// would park until the 60s `recv` timeout below kills the whole run.
-/// `--yes` (#554) used to offer an auto-approve escape hatch for this; it is
-/// retired (ADR-0207 §11) — `--mode auto` is the real unattended posture now
-/// (allow-but-deny-list posture per ADR-0228, run/turn/duration budgets,
-/// no silent widening), so this
-/// head no longer takes a flag to override its default.
+/// `--mode auto` is the unattended posture; this head takes no flag to
+/// approve on the user's behalf.
 ///
 /// `session` must already exist — resumed, or bound by the caller's own
 /// `InMsg::Spawn` (ADR-0207 §9: an agent is chosen once, at spawn, so that
@@ -221,8 +218,8 @@ mod tests {
 
     #[test]
     fn propose_plan_gets_its_own_reason_regardless_of_any_mode() {
-        // No `mode`/`--yes`-style parameter exists on this function at all —
-        // proof by signature that the reject is unconditional, not gated on
+        // No mode parameter exists on this function at all — proof by
+        // signature that the reject is unconditional, not gated on
         // `--mode auto` (#560).
         let reason = reject_reason(crate::tool_names::PROPOSE_PLAN_TOOL);
         assert!(reason.contains("cannot accept a plan"), "{reason}");

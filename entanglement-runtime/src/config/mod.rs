@@ -239,9 +239,9 @@ pub struct Resolved {
     pub layers: Vec<(ConfigLayer, String)>,
     /// The winning layer for each top-level key that any layer defined.
     pub provenance: Vec<(String, ConfigLayer)>,
-    /// Non-fatal load findings (a project-layer `http_auth:`/`rhai.trusted`
-    /// the trust model drops), reported by the caller once logging/stderr is
-    /// ready.
+    /// Non-fatal load findings — project-layer trust drops (`http_auth:`,
+    /// `rhai.trusted`), tui keybinding-clash/theme warnings and `http_auth`
+    /// key warnings — reported by the caller once logging/stderr is ready.
     pub warnings: Vec<String>,
     /// Each `rhai.trusted` folder (canonical) with the layer that listed it
     /// first — the lists add up across layers, so there is no single winner.
