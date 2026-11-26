@@ -1,6 +1,6 @@
 //! An `ask_user` question leaves the view when its call's `ToolOutput`
-//! arrives (#894) — answered by another head, retracted, or expired — and a
-//! `UserQuestion` for a queued id replaces that entry (a `ReplaceQuestion`).
+//! arrives (#894) — answered by another head or expired — and a
+//! `UserQuestion` for a queued id (a resume's re-offer) is not queued twice.
 
 use entanglement_core::{OutEvent, Question, QuestionOption, Questions, SessionId};
 
@@ -94,24 +94,7 @@ fn an_unrelated_or_stale_output_keeps_the_question() {
     assert_eq!(front(&v), Some("q1"));
 }
 
-/// `ReplaceQuestion` re-emits under the same id: the entry is replaced in
-/// place with fresh drafts, never queued twice, and a later output for
-/// the id drops the replacement.
-#[test]
-fn a_replaced_question_takes_the_entrys_place() {
-    let mut v = SessionView::new();
-    v.apply_event(ask(1, "q1", "First?"));
-    v.apply_event(ask(2, "q2", "Second?"));
-    v.commit_question_answer(vec!["A".into()]);
-    v.apply_event(ask(3, "q1", "Revised?"));
-    assert_eq!(texts(&v), ["Revised?", "Second?"]);
-    assert_eq!(front(&v), Some("q1"));
-    assert!(v.pending_question().is_some_and(|q| !q.is_reviewing()));
-    v.apply_event(output(4, "q1"));
-    assert_eq!(texts(&v), ["Second?"]);
-}
-
-/// The same content again (a resume's re-offer) keeps the user's drafts.
+/// The same question again (a resume's re-offer) keeps the user's drafts.
 #[test]
 fn the_same_question_again_keeps_the_drafts() {
     let mut v = SessionView::new();

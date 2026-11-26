@@ -506,38 +506,6 @@ fn list_pending_is_session_less_with_an_optional_root_and_wire_allowed() {
 }
 
 #[test]
-fn retract_and_replace_question_roundtrip_and_are_wire_allowed() {
-    let retract = InMsg::RetractQuestion {
-        session: SessionId::new("s1"),
-        request_id: "q1".into(),
-    };
-    assert_eq!(retract.session(), Some(&SessionId::new("s1")));
-    assert!(retract.wire_allowed());
-    assert_eq!(retract.variant_name(), "retract_question");
-    let json = serde_json::to_string(&retract).unwrap();
-    assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), retract);
-
-    let replace = InMsg::ReplaceQuestion {
-        session: SessionId::new("s1"),
-        request_id: "q1".into(),
-        questions: Questions(vec![Question {
-            question: "Which DB, revised?".into(),
-            options: vec![QuestionOption {
-                label: "Postgres".into(),
-                description: None,
-            }],
-            multi_select: false,
-        }]),
-    };
-    assert_eq!(replace.session(), Some(&SessionId::new("s1")));
-    assert!(replace.wire_allowed());
-    assert_eq!(replace.variant_name(), "replace_question");
-    let json = serde_json::to_string(&replace).unwrap();
-    assert_eq!(serde_json::from_str::<InMsg>(&json).unwrap(), replace);
-    assert!(json.contains("Which DB, revised?"), "{json}");
-}
-
-#[test]
 fn replay_from_roundtrips_and_is_wire_allowed() {
     let msg = InMsg::ReplayFrom {
         session: SessionId::new("s1"),

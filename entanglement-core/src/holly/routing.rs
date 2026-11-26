@@ -158,19 +158,15 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
         // Approve/Reject/AnswerQuestion and the ListSessions/ReplayFrom/
         // CloseSession/HibernateSession queries are filtered out before routing
         // (see supervisor); Resume and Spawn are handled specially. The MCP ops
-        // (#375) and the ask_user ops
-        // ListQuestions/RetractQuestion/ReplaceQuestion (#515) are engine-global
-        // (or, for the latter two, resolved by the runtime exactly like
-        // AnswerQuestion) like ListSessions — a runtime service answers them
-        // off the inbound fan-out, never a session task. ListOperations (#607)
+        // (#375) and the ask_user ListQuestions (#515) are engine-global like
+        // ListSessions — a runtime service answers them off the inbound
+        // fan-out, never a session task. ListOperations (#607)
         // is the same shape: answered by the runtime's job/agent registries,
         // never routed; so is ListPending (#726, the parked-decision
         // registry). None reach here.
         InMsg::Approve { .. }
         | InMsg::Reject { .. }
         | InMsg::AnswerQuestion { .. }
-        | InMsg::RetractQuestion { .. }
-        | InMsg::ReplaceQuestion { .. }
         | InMsg::ListSessions { .. }
         | InMsg::ListQuestions { .. }
         | InMsg::ListOperations { .. }

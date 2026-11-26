@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(doc)]
 use super::{AgentState, McpAction};
 use super::{
-    ApprovalScope, McpAuthAction, McpServerSpec, ModelChoice, OutEvent, Questions, SessionId,
-    ToolOverlayEntry,
+    ApprovalScope, McpAuthAction, McpServerSpec, ModelChoice, OutEvent, SessionId, ToolOverlayEntry,
 };
 use content::de_prompt_content;
 
@@ -135,32 +134,6 @@ pub enum InMsg {
         answers: Vec<Vec<String>>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         answer: String,
-    },
-    /// Withdraw a pending `ask_user` question (`request_id` from
-    /// [`OutEvent::UserQuestion`]) without answering it and without cancelling
-    /// the rest of the turn (#515) — the targeted counterpart to a
-    /// session-wide [`Stop`][InMsg::Stop], which would abandon every other
-    /// parked call too. Resolved by the same runtime `ask_user` orchestrator
-    /// [`AnswerQuestion`][InMsg::AnswerQuestion] parks on: it folds a
-    /// withdrawal note back as the tool's `ToolResult` so the model's call
-    /// still completes (unlike `Stop`'s silent unwind, which leaves it
-    /// unresolved on purpose because the whole turn is being torn down
-    /// anyway). Unknown/already-resolved `(session, request_id)` is a no-op.
-    RetractQuestion {
-        session: SessionId,
-        request_id: String,
-    },
-    /// Swap a pending `ask_user` question's content in place (#515):
-    /// re-parks the same `request_id` with revised `questions`, re-emitting
-    /// [`OutEvent::UserQuestion`] rather than resolving the call. Lets a head
-    /// correct or narrow a question it already surfaced without cancelling
-    /// the turn or losing the model's original tool call. Unknown/
-    /// already-resolved `(session, request_id)` is a no-op.
-    ReplaceQuestion {
-        session: SessionId,
-        request_id: String,
-        #[serde(flatten)]
-        questions: Questions,
     },
     /// Cancel the current turn and park the session at idle.
     Stop { session: SessionId },

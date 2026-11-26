@@ -7,7 +7,7 @@
 //! actual question content to answer a snapshot query. This registry is
 //! `ask_user`-specific: [`crate::ask_user::run_ask_user`] inserts before
 //! emitting each [`OutEvent::UserQuestion`][entanglement_core::OutEvent::UserQuestion]
-//! and removes on every terminal outcome (answered, retracted, or the turn
+//! and removes on every terminal outcome (answered, timed out, or the turn
 //! stopped), so it always mirrors the set of calls still genuinely parked.
 
 use std::collections::HashMap;
@@ -27,8 +27,7 @@ pub struct OpenQuestions {
 
 impl OpenQuestions {
     /// Record `(session, request_id)` as open with `questions`, overwriting
-    /// any prior content for the same key (a [`ReplaceQuestion`][entanglement_core::InMsg::ReplaceQuestion]
-    /// re-insert).
+    /// any prior content for the same key (a resume's re-offer).
     pub fn insert(&self, session: &SessionId, request_id: &str, questions: Vec<Question>) {
         self.lock()
             .insert((session.clone(), request_id.to_string()), questions);

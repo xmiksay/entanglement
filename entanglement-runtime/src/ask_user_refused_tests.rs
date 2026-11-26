@@ -120,7 +120,7 @@ async fn an_already_decided_waiter_shows_nothing_and_stays_awaitable() {
     let s = SessionId::new("s");
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = tx.send(seam::Decision::Stop);
-    assert!(!show(&holly, &open, &s, "q1", &one_question(), &rx));
+    show(&holly, &open, &s, "q1", &one_question(), &rx);
     assert!(open.snapshot(None).is_empty());
     assert!(sub.try_recv().is_err(), "nothing emitted");
     assert!(matches!(
@@ -131,69 +131,6 @@ async fn an_already_decided_waiter_shows_nothing_and_stays_awaitable() {
     // await then unwinds it like a `Stop`.
     let (tx, rx) = tokio::sync::oneshot::channel::<seam::Decision>();
     drop(tx);
-    assert!(show(&holly, &open, &s, "q1", &one_question(), &rx));
+    show(&holly, &open, &s, "q1", &one_question(), &rx);
     assert_eq!(open.snapshot(None).len(), 1);
-}
-
-/// A replace whose re-park is refused (a background card took the id in
-/// between) still clears the open question it listed, moves the status off
-/// `WaitingAnswer`, and shows no second question. Deterministic on the
-/// current-thread runtime: the test's two registry calls run with no
-/// yield between them.
-#[tokio::test]
-async fn a_refused_re_park_after_a_replace_clears_the_open_question() {
-    let holly = Holly::spawn(EngineConfig::default());
-    let pending = PendingDecisions::default();
-    let open = OpenQuestions::default();
-    let s = SessionId::new("s");
-    let mut sub = holly.subscribe();
-    let task = tokio::spawn(run_ask_user(
-        holly.clone(),
-        pending.clone(),
-        open.clone(),
-        s.clone(),
-        "q1".into(),
-        INPUT.into(),
-        crate::attendance::Expiry::never(),
-    ));
-    loop {
-        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-            Ok(Ok(OutEvent::UserQuestion { .. })) => break,
-            Ok(Ok(_)) => {}
-            other => panic!("no question: {other:?}"),
-        }
-    }
-    let _ = pending.resolve(
-        &s,
-        "q1",
-        seam::Decision::Replace {
-            questions: one_question(),
-        },
-    );
-    let _card = pending.register_approval(detached_card(&s, "q1"), "edit");
-    tokio::time::timeout(Duration::from_secs(5), task)
-        .await
-        .expect("the call returns")
-        .expect("no panic");
-    assert!(
-        open.snapshot(None).is_empty(),
-        "the open question is cleared"
-    );
-    let mut after = Vec::new();
-    while let Ok(ev) = sub.try_recv() {
-        match ev {
-            OutEvent::UserQuestion { .. } => after.push("question"),
-            // The statuses `ask_user` itself moves; core adds its own.
-            OutEvent::Status {
-                state: AgentState::WaitingAnswer,
-                ..
-            } => after.push("waiting"),
-            OutEvent::Status {
-                state: AgentState::Thinking,
-                ..
-            } => after.push("thinking"),
-            _ => {}
-        }
-    }
-    assert_eq!(after, ["waiting", "thinking"]);
 }

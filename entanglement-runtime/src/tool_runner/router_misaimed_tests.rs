@@ -28,19 +28,16 @@ fn drain(sub: &mut Receiver<OutEvent>) -> (Vec<(SessionId, String)>, Vec<Session
     }
 }
 
-/// A `RetractQuestion` aimed at a background script's card, sent on the
+/// An `AnswerQuestion` aimed at a background script's card, sent on the
 /// compaction successor before any fold moved it: the heal moves and
 /// announces the card (the frame answers none), the sender gets an `Error`,
 /// and the card still takes an `Approve`.
 #[tokio::test]
-async fn a_retract_aimed_at_an_approval_card_is_refused_and_the_card_stays() {
+async fn an_answer_aimed_at_an_approval_card_is_refused_and_the_card_stays() {
     let (holly, r, succ, mut rx) = setup().await;
     let mut sub = holly.subscribe();
     let rid = "x-1:rhai:edit";
-    r.route(InMsg::RetractQuestion {
-        session: succ.clone(),
-        request_id: rid.into(),
-    });
+    r.route(InMsg::answer_question(succ.clone(), rid, vec![]));
     let (errors, cards) = drain(&mut sub);
     assert_eq!(
         cards,
@@ -50,7 +47,7 @@ async fn a_retract_aimed_at_an_approval_card_is_refused_and_the_card_stays() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].0, succ);
     assert!(
-        errors[0].1.contains("`RetractQuestion` refused")
+        errors[0].1.contains("`AnswerQuestion` refused")
             && errors[0].1.contains(rid)
             && errors[0].1.contains("answer it with `Approve` or `Reject`"),
         "{}",
@@ -112,10 +109,7 @@ async fn a_decision_for_an_unknown_id_is_refused() {
     spawn_session(&holly, &s, None, None).await;
     let r = router(&holly);
     let mut sub = holly.subscribe();
-    r.route(InMsg::RetractQuestion {
-        session: s.clone(),
-        request_id: "gone".into(),
-    });
+    r.route(InMsg::answer_question(s.clone(), "gone", vec![]));
     r.route(InMsg::Reject {
         session: s.clone(),
         request_id: "gone".into(),
@@ -126,7 +120,7 @@ async fn a_decision_for_an_unknown_id_is_refused() {
     assert!(
         errors[0]
             .1
-            .contains("`RetractQuestion` refused: no open question `gone`"),
+            .contains("`AnswerQuestion` refused: no open question `gone`"),
         "{}",
         errors[0].1
     );

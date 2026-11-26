@@ -1,7 +1,7 @@
 //! `ask_user` — model-driven user-decision prompt (#90, ADR-0027; #488 v2:
 //! several questions per call, an always-available free-text answer, and
-//! per-question multi-select — supersedes parts of ADR-0027; #515: list/
-//! retract/replace an open question).
+//! per-question multi-select — supersedes parts of ADR-0027; #515: list
+//! the open questions).
 //!
 //! Like `agent` (ADR-0022), `ask_user` is a runtime-owned tool intercepted
 //! on [`OutEvent::ToolExec`] *before* permission resolution: it touches no host
@@ -10,19 +10,10 @@
 //! [`OutEvent::UserQuestion`] (a plain `ToolRequest` can't carry labelled
 //! choices), parks for the head's decision, and folds the outcome back as the
 //! tool's [`InMsg::ToolResult`] — reusing the #58 round-trip so the parent turn
-//! sees an ordinary tool result and core needs no new semantics. Three
-//! decisions resolve the park:
-//!
-//! - [`InMsg::AnswerQuestion`] — the answer fed to the model is, per question,
-//!   the picked option label(s) (joined for a multi-select) or the free-form
-//!   text verbatim. Terminal: the call is done.
-//! - [`InMsg::RetractQuestion`] (#515) — withdraws the question *without*
-//!   cancelling the turn: unlike a session-wide `Stop`, the call must still
-//!   reply, so the model sees a withdrawal note instead of hanging forever.
-//!   Terminal.
-//! - [`InMsg::ReplaceQuestion`] (#515) — swaps the parked question's content
-//!   in place: re-emits `UserQuestion` under the same `request_id` and loops
-//!   back to parking, rather than replying. Not terminal.
+//! sees an ordinary tool result and core needs no new semantics.
+//! [`InMsg::AnswerQuestion`] resolves the park: the answer fed to the model
+//! is, per question, the picked option label(s) (joined for a multi-select)
+//! or the free-form text verbatim.
 //!
 //! A `Stop` for the session while parked unwinds silently: core's turn cancels
 //! on the same `Stop`, so no `ToolResult` is owed (mirrors approval). A park
@@ -201,8 +192,7 @@ fn fold_answers(questions: &[Question], answers: &[Vec<String>]) -> String {
 }
 
 /// Orchestrate one `ask_user` call: surface the questions, await the head's
-/// decision, and reply to the model once it reaches a terminal outcome
-/// (answered or retracted) — looping back to park again on a replace (#515).
+/// decision, and reply to the model once it is answered.
 ///
 /// Registers the waiter with the lag-proof [`PendingDecisions`] registry (#156)
 /// *before* emitting the questions, so a fast answer routes to this park rather
@@ -221,83 +211,43 @@ pub async fn run_ask_user(
     // (ADR-0207 §11, stage 5c), never for a watched session (ADR-0247).
     expiry: Expiry,
 ) {
-    let mut questions = parse_input(&input);
-    // Whether a `WaitingAnswer` went out, so a refusal knows to undo it.
-    let mut waiting = false;
-    loop {
-        // Register before emitting so the inbound router can never resolve the
-        // decision ahead of this waiter (#156).
-        let rx = pending.register(&session, &request_id, ASK_USER_TOOL, request_id.clone());
-        waiting |= show(&holly, &open, &session, &request_id, &questions, &rx);
+    let questions = parse_input(&input);
+    // Register before emitting so the inbound router can never resolve the
+    // decision ahead of this waiter (#156).
+    let rx = pending.register(&session, &request_id, ASK_USER_TOOL, request_id.clone());
+    show(&holly, &open, &session, &request_id, &questions, &rx);
 
-        // `Stop` (and a dropped registry) unwind silently — core cancels the
-        // turn on the same `Stop`, so no `ToolResult` is owed. Every other
-        // outcome replies. The registry refuses an Approve/Reject aimed at
-        // this id (ADR-0245), leaving the question parked; a refused park
-        // arrives as `Refused`. `None` (elapsed) is handled
-        // first and separately: it never targets `open`/`pending` again past
-        // this point, matching every other terminal arm below.
-        let decision = match pending
-            .await_timed(&session, &request_id, rx, expiry.clone())
-            .await
-        {
-            Some(decision) => decision.into_question(),
-            None => {
-                open.remove(&session, &request_id);
-                holly.emit_status(&session, AgentState::Thinking);
-                let (output, is_error) = match run_limits::default_answers(&questions) {
-                    Ok(answers) => (fold_answers(&questions, &answers), false),
-                    Err(reason) => (reason, true),
-                };
-                seam::reply(&holly, session, request_id, output, is_error).await;
-                return;
-            }
-        };
-        match decision {
-            QuestionDecision::Answer { answers } => {
-                open.remove(&session, &request_id);
-                holly.emit_status(&session, AgentState::Thinking);
-                let output = fold_answers(&questions, &answers);
-                seam::reply(&holly, session, request_id, output, false).await;
-                return;
-            }
-            // #515: withdraw without cancelling the rest of the turn — unlike
-            // `Stop`, this call's `ToolResult` is still owed, so the model
-            // sees a withdrawal note rather than a call that never resolves.
-            QuestionDecision::Retract => {
-                open.remove(&session, &request_id);
-                holly.emit_status(&session, AgentState::Thinking);
-                seam::reply(
-                    &holly,
-                    session,
-                    request_id,
-                    "The user withdrew this question without answering.".to_string(),
-                    false,
-                )
-                .await;
-                return;
-            }
-            // #515: swap the content and re-park under the same request id —
-            // not terminal, so the loop re-emits `UserQuestion` instead of
-            // replying.
-            QuestionDecision::Replace { questions: revised } => {
-                questions = revised;
-            }
-            // The registry refused this pass's park (a live card took the
-            // id, e.g. after a replace): `show` skipped it, but an earlier
-            // pass may have shown and listed the question.
-            QuestionDecision::Refused { reason } => {
-                open.remove(&session, &request_id);
-                if waiting {
-                    holly.emit_status(&session, AgentState::Thinking);
-                }
-                return refuse(&holly, session, request_id, reason).await;
-            }
-            QuestionDecision::Stop => {
-                open.remove(&session, &request_id);
-                return;
-            }
+    // `Stop` (and a dropped registry) unwind silently — core cancels the
+    // turn on the same `Stop`, so no `ToolResult` is owed. Every other
+    // outcome replies. The registry refuses an Approve/Reject aimed at
+    // this id (ADR-0245), leaving the question parked; a refused park
+    // arrives as `Refused`. `None` (elapsed) answers with the defaults.
+    let decision = match pending.await_timed(&session, &request_id, rx, expiry).await {
+        Some(decision) => decision.into_question(),
+        None => {
+            open.remove(&session, &request_id);
+            holly.emit_status(&session, AgentState::Thinking);
+            let (output, is_error) = match run_limits::default_answers(&questions) {
+                Ok(answers) => (fold_answers(&questions, &answers), false),
+                Err(reason) => (reason, true),
+            };
+            seam::reply(&holly, session, request_id, output, is_error).await;
+            return;
         }
+    };
+    open.remove(&session, &request_id);
+    match decision {
+        QuestionDecision::Answer { answers } => {
+            holly.emit_status(&session, AgentState::Thinking);
+            let output = fold_answers(&questions, &answers);
+            seam::reply(&holly, session, request_id, output, false).await;
+        }
+        // The registry refused the park at `register` (a live card holds
+        // the id), so `show` found it decided and surfaced nothing to undo.
+        QuestionDecision::Refused { reason } => {
+            refuse(&holly, session, request_id, reason).await;
+        }
+        QuestionDecision::Stop => {}
     }
 }
 
@@ -306,7 +256,7 @@ pub async fn run_ask_user(
 /// anything was shown — in which case nothing is listed or emitted and the
 /// caller's await takes the decision. Never consumes `rx`: a polled oneshot
 /// can't be awaited again. A dropped sender reads as empty, so the question
-/// shows and then unwinds like a `Stop`. Returns whether it showed.
+/// shows and then unwinds like a `Stop`.
 fn show(
     holly: &Holly,
     open: &OpenQuestions,
@@ -314,9 +264,9 @@ fn show(
     request_id: &str,
     questions: &[Question],
     rx: &tokio::sync::oneshot::Receiver<seam::Decision>,
-) -> bool {
+) {
     if !rx.is_empty() {
-        return false;
+        return;
     }
     open.insert(session, request_id, questions.to_vec());
     // Mint a fresh per-session seq (#157) so the questions take an ordered
@@ -331,7 +281,6 @@ fn show(
     // A question is not a permission decision (#160): surface `WaitingAnswer`,
     // not `WaitingApproval`, so heads render "waiting for answer" distinctly.
     holly.emit_status(session, AgentState::WaitingAnswer);
-    true
 }
 
 /// Resolve a call whose park the registry refused: the turn keeps running,

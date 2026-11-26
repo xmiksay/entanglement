@@ -2,7 +2,7 @@
 //!
 //! A parked tool round-trip — a permission `Ask`, `ask_user`, `propose_plan`, or
 //! a `rhai` binding approval — awaits the head's `Approve`/`Reject` or, for a
-//! question, `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion`. Each
+//! question, `AnswerQuestion`. Each
 //! orchestrator used to hold its *own* `broadcast` subscription of the engine's
 //! inbound fan-out and filter it to its `(session, request_id)`. Under burst load (many sessions, > the inbound
 //! channel capacity of frames between subscribe and answer) that per-task
@@ -82,7 +82,7 @@ pub struct Parked {
 }
 
 impl Parked {
-    /// An `ask_user` park, answered only by `Answer`/`Retract`/`Replace`;
+    /// An `ask_user` park, answered only by `Answer`;
     /// every other park only by `Approve`/`Reject` (ADR-0245).
     pub fn is_question(&self) -> bool {
         self.kind == crate::tool_names::ASK_USER_TOOL

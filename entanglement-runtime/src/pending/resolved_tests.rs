@@ -187,7 +187,7 @@ async fn a_question_is_never_reported() {
     let (pending, _holly, mut sub) = announcing();
     let s = SessionId::new("s");
     let _q = pending.register(&s, "q", "ask_user", "q");
-    let _ = pending.resolve(&s, "q", Decision::Retract);
+    let _ = pending.resolve(&s, "q", Decision::Answer { answers: vec![] });
     let _q = pending.register(&s, "q2", "ask_user", "q2");
     pending.stop_session(&s);
     assert!(drained(&mut sub).is_empty());
@@ -211,16 +211,10 @@ async fn a_question_decision_for_an_approval_card_is_refused() {
     let (pending, _holly, mut sub) = announcing();
     let s = SessionId::new("s");
     let mut rx = pending.register_approval(card(&s, "r"), "bash");
-    for d in [
-        Decision::Retract,
-        Decision::Answer { answers: vec![] },
-        Decision::Replace { questions: vec![] },
-    ] {
-        assert_eq!(
-            pending.resolve(&s, "r", d),
-            Resolution::Misaimed { kind: "tool" }
-        );
-    }
+    assert_eq!(
+        pending.resolve(&s, "r", Decision::Answer { answers: vec![] }),
+        Resolution::Misaimed { kind: "tool" }
+    );
     assert!(rx.try_recv().is_err(), "still waiting");
     assert_eq!(pending.approvals(|_| true).len(), 1, "still listed");
     assert!(drained(&mut sub).is_empty(), "no end reported");
@@ -245,10 +239,10 @@ async fn an_approval_decision_for_a_question_is_refused() {
     assert!(rx.try_recv().is_err(), "still waiting");
     assert_eq!(pending.resolve(&s, "absent", approve()), Resolution::Absent);
     assert_eq!(
-        pending.resolve(&s, "q", Decision::Retract),
+        pending.resolve(&s, "q", Decision::Answer { answers: vec![] }),
         Resolution::Delivered
     );
-    assert!(matches!(rx.await, Ok(Decision::Retract)));
+    assert!(matches!(rx.await, Ok(Decision::Answer { .. })));
 }
 
 /// A misaimed decision for a card whose waiter already gave up takes the
@@ -259,7 +253,7 @@ async fn a_misaimed_decision_for_a_gone_waiter_is_no_refusal() {
     let s = SessionId::new("s");
     drop(pending.register_approval(card(&s, "g"), "bash"));
     assert_eq!(
-        pending.resolve(&s, "g", Decision::Retract),
+        pending.resolve(&s, "g", Decision::Answer { answers: vec![] }),
         Resolution::Delivered
     );
     assert_eq!(drained(&mut sub), [resolved("s", "g", "Expired")]);

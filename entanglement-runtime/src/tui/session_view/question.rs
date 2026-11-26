@@ -273,19 +273,16 @@ impl SessionView {
     }
 
     /// Queue an `OutEvent::UserQuestion` (#273): the front is the one
-    /// rendered. One id is one parked call, so a `UserQuestion` for a
-    /// queued id — a `ReplaceQuestion`, or a resume's re-offer — replaces
-    /// that entry in place. New content starts fresh drafts; the same
-    /// content keeps the user's progress.
+    /// rendered. One id is one parked call, so a `UserQuestion` for an
+    /// already queued id (a resume's re-offer) is dropped, keeping the
+    /// user's drafts.
     pub(super) fn queue_question(&mut self, question: PendingQuestion) {
-        match self
+        if !self
             .pending_questions
-            .iter_mut()
-            .find(|q| q.request_id == question.request_id)
+            .iter()
+            .any(|q| q.request_id == question.request_id)
         {
-            Some(queued) if queued.questions != question.questions => *queued = question,
-            Some(_) => {}
-            None => self.pending_questions.push_back(question),
+            self.pending_questions.push_back(question);
         }
     }
 

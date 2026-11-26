@@ -301,11 +301,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                         // Claim/verify ownership on every session-bearing frame so a
                         // session gets an owner as early as possible (typically the
                         // initiating `Prompt`); only the decision variants are
-                        // actually gated on it (#402, ADR-0107). `RetractQuestion`/
-                        // `ReplaceQuestion` (#515) join the gate alongside
-                        // `AnswerQuestion` — all three resolve the same class of
-                        // parked `ask_user` waiter, so a non-owning connection must
-                        // not be able to retract/replace one either.
+                        // actually gated on it (#402, ADR-0107).
                         if let Some(session) = claimed(&m) {
                             let owner_ok = claim(&state, &watcher, session, conn_id);
                             if !owner_ok
@@ -314,8 +310,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
                                     InMsg::Approve { .. }
                                         | InMsg::Reject { .. }
                                         | InMsg::AnswerQuestion { .. }
-                                        | InMsg::RetractQuestion { .. }
-                                        | InMsg::ReplaceQuestion { .. }
                                 )
                             {
                                 tracing::warn!(

@@ -17,7 +17,7 @@
 //!   decision — mapped here by [`Decision::from_inmsg`] — to its parked waiter's
 //!   oneshot. This module keeps the [`Decision`] type and the fold-back.
 
-use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, Question, SessionId};
+use entanglement_core::{ApprovalScope, ContentPart, Holly, InMsg, SessionId};
 // `ToolResult` folds back over the privileged in-process handle (#155), not the
 // untrusted wire path — a forged `ToolResult` off a wire head must never resolve
 // a parked turn.
@@ -96,15 +96,6 @@ pub enum Decision {
     /// question, in the answered call's `questions` order (`ask_user`, #90,
     /// #488).
     Answer { answers: Vec<Vec<String>> },
-    /// `RetractQuestion` (#515): withdraw an open `ask_user` question. Unlike
-    /// `Stop`, the waiting orchestrator must still reply — its `ToolResult` is
-    /// owed regardless, since only this one call is retracted, not the whole
-    /// turn.
-    Retract,
-    /// `ReplaceQuestion` (#515): swap an open `ask_user` question's content in
-    /// place — the orchestrator re-emits `UserQuestion` with `questions` under
-    /// the same `request_id` and re-parks, rather than resolving the call.
-    Replace { questions: Vec<Question> },
     /// `Stop` for this session, or the inbound stream closed: unwind silently —
     /// core cancels the turn on the same `Stop`, so no `ToolResult` is owed
     /// (ADR-0017).
@@ -135,10 +126,6 @@ pub enum QuestionDecision {
     Answer {
         answers: Vec<Vec<String>>,
     },
-    Retract,
-    Replace {
-        questions: Vec<Question>,
-    },
     /// The park itself was refused: a live card already holds the id on
     /// this session (`PendingDecisions::register`). The call still owes the
     /// model a `ToolResult`, so it replies with `reason` as an error.
@@ -149,18 +136,15 @@ pub enum QuestionDecision {
 }
 
 impl Decision {
-    /// `Answer`/`Retract`/`Replace`: only an `ask_user` park takes it.
+    /// `Answer`: only an `ask_user` park takes it.
     pub fn is_question(&self) -> bool {
-        matches!(
-            self,
-            Decision::Answer { .. } | Decision::Retract | Decision::Replace { .. }
-        )
+        matches!(self, Decision::Answer { .. })
     }
 
-    /// Whether it ends the park for good — an answer, not a `Replace` (the
-    /// question re-parks) or a `Stop` (a resume may re-offer it).
+    /// Whether it ends the park for good — any decision but a `Stop` (a
+    /// resume may re-offer it).
     pub fn settles(&self) -> bool {
-        !matches!(self, Decision::Replace { .. } | Decision::Stop)
+        !matches!(self, Decision::Stop)
     }
 
     /// The `InMsg` variant a decision came from, for a refusal's message.
@@ -169,8 +153,6 @@ impl Decision {
             Decision::Approve { .. } => "Approve",
             Decision::Reject { .. } => "Reject",
             Decision::Answer { .. } => "AnswerQuestion",
-            Decision::Retract => "RetractQuestion",
-            Decision::Replace { .. } => "ReplaceQuestion",
             Decision::Stop => "Stop",
         }
     }
@@ -192,10 +174,7 @@ impl Decision {
                 run_all,
             },
             Decision::Reject { reason } => ApprovalDecision::Reject { reason },
-            Decision::Answer { .. }
-            | Decision::Retract
-            | Decision::Replace { .. }
-            | Decision::Stop => ApprovalDecision::Stop,
+            Decision::Answer { .. } | Decision::Stop => ApprovalDecision::Stop,
         }
     }
 
@@ -206,8 +185,6 @@ impl Decision {
     pub fn into_question(self) -> QuestionDecision {
         match self {
             Decision::Answer { answers } => QuestionDecision::Answer { answers },
-            Decision::Retract => QuestionDecision::Retract,
-            Decision::Replace { questions } => QuestionDecision::Replace { questions },
             Decision::Reject { reason } => QuestionDecision::Refused {
                 reason: reason.unwrap_or_else(|| "the question could not be parked".into()),
             },
@@ -233,15 +210,6 @@ impl Decision {
                 session,
                 request_id,
                 ..
-            }
-            | InMsg::RetractQuestion {
-                session,
-                request_id,
-            }
-            | InMsg::ReplaceQuestion {
-                session,
-                request_id,
-                ..
             } => Some((session, request_id)),
             _ => None,
         }
@@ -250,9 +218,9 @@ impl Decision {
     /// Map an inbound frame to its routing tuple `(session, request_id,
     /// Decision)`, or `None` for a frame that is not a head decision (#156). The
     /// executor's single inbound router uses this to fan each `Approve`/`Reject`/
-    /// `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` (#515) to its parked
-    /// waiter in [`crate::pending::PendingDecisions`]. `Stop` is *not* mapped
-    /// here — it is session-scoped, not request-scoped, so the router unwinds
+    /// `AnswerQuestion` to its parked waiter in
+    /// [`crate::pending::PendingDecisions`]. `Stop` is *not* mapped here — it
+    /// is session-scoped, not request-scoped, so the router unwinds
     /// every waiter of the session via
     /// [`crate::pending::PendingDecisions::stop_session`].
     ///
@@ -294,21 +262,6 @@ impl Decision {
                 };
                 Some((session, request_id, Decision::Answer { answers }))
             }
-            InMsg::RetractQuestion {
-                session,
-                request_id,
-            } => Some((session, request_id, Decision::Retract)),
-            InMsg::ReplaceQuestion {
-                session,
-                request_id,
-                questions,
-            } => Some((
-                session,
-                request_id,
-                Decision::Replace {
-                    questions: questions.0,
-                },
-            )),
             _ => None,
         }
     }
@@ -318,8 +271,8 @@ impl Decision {
 mod tests {
     use super::*;
 
-    /// ADR-0247: an answer spends a park's waiver; a `Replace` (the
-    /// question re-parks) and a `Stop` (a resume may re-offer) keep it.
+    /// ADR-0247: an answer spends a park's waiver; a `Stop` (a resume may
+    /// re-offer) keeps it.
     #[test]
     fn only_a_terminal_answer_settles() {
         let approve = Decision::Approve {
@@ -330,8 +283,6 @@ mod tests {
         assert!(approve.settles());
         assert!(Decision::Reject { reason: None }.settles());
         assert!(Decision::Answer { answers: vec![] }.settles());
-        assert!(Decision::Retract.settles());
-        assert!(!Decision::Replace { questions: vec![] }.settles());
         assert!(!Decision::Stop.settles());
     }
 }

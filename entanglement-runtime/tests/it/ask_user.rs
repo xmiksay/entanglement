@@ -1,6 +1,6 @@
 //! Integration test for the runtime-owned `ask_user` tool (#90, ADR-0027; #488
 //! v2: several questions per call, an always-available free-text answer, and
-//! per-question multi-select; #515: list/retract/replace an open question).
+//! per-question multi-select; #515: list the open questions).
 //!
 //! The model calls `ask_user`; the executor intercepts it on `ToolExec` (before
 //! permission resolution, like `agent`), emits `OutEvent::UserQuestion`,
@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    OutEvent, Question, QuestionOption, Questions, SessionId, ToolCall,
+    OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_names::ASK_USER_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -375,155 +375,4 @@ async fn list_questions_spans_or_filters_multiple_sessions() {
         }
     }
     panic!("expected the filtered QuestionList reply");
-}
-
-#[tokio::test]
-async fn retract_question_resolves_the_waiter_without_stopping_the_turn() {
-    let holly = spawn_with_ask_user_call(
-        r#"{"questions":[{"question":"Which DB?","options":[{"label":"Postgres"}]}]}"#,
-    );
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    let mut watch = holly.subscribe();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    let request_id = await_user_question(&mut watch).await;
-
-    holly
-        .send(InMsg::RetractQuestion {
-            session: sid.clone(),
-            request_id: request_id.clone(),
-        })
-        .await
-        .unwrap();
-
-    let mut got_withdrawal = false;
-    let mut saw_done = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != Some(&sid) {
-            continue;
-        }
-        if let OutEvent::ToolOutput { tool, output, .. } = &ev {
-            if tool == ASK_USER_TOOL {
-                assert!(output.contains("withdrew"), "{output}");
-                got_withdrawal = true;
-            }
-        }
-        // The rest of the turn is unaffected by a retract — it still reaches
-        // `Done`, unlike a session-wide `Stop`.
-        if matches!(ev, OutEvent::Done { .. }) {
-            saw_done = true;
-            break;
-        }
-    }
-    assert!(got_withdrawal, "expected a withdrawal ToolOutput");
-    assert!(saw_done, "the turn must continue to Done, not hang");
-
-    // The registry is clear once retracted.
-    holly
-        .send(InMsg::ListQuestions {
-            correlation_id: "after".into(),
-            session: None,
-        })
-        .await
-        .unwrap();
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if let OutEvent::QuestionList { questions, .. } = ev {
-            assert!(questions.is_empty());
-            return;
-        }
-    }
-    panic!("expected a QuestionList reply");
-}
-
-#[tokio::test]
-async fn replace_question_re_emits_a_revised_user_question() {
-    let holly = spawn_with_ask_user_call(
-        r#"{"questions":[{"question":"Which DB?","options":[{"label":"Postgres"}]}]}"#,
-    );
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    let mut watch = holly.subscribe();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    let request_id = await_user_question(&mut watch).await;
-
-    holly
-        .send(InMsg::ReplaceQuestion {
-            session: sid.clone(),
-            request_id: request_id.clone(),
-            questions: Questions(vec![Question {
-                question: "Which DB, revised?".into(),
-                options: vec![QuestionOption {
-                    label: "MySQL".into(),
-                    description: None,
-                }],
-                multi_select: false,
-            }]),
-        })
-        .await
-        .unwrap();
-
-    // A second `UserQuestion` under the *same* request id, carrying the
-    // revised content.
-    let mut revised_seen = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), watch.recv()).await {
-        if let OutEvent::UserQuestion {
-            request_id: rid,
-            questions,
-            ..
-        } = &ev
-        {
-            if rid == &request_id && questions.0[0].question == "Which DB, revised?" {
-                assert_eq!(questions.0[0].options[0].label, "MySQL");
-                revised_seen = true;
-                break;
-            }
-        }
-    }
-    assert!(revised_seen, "expected a re-emitted, revised UserQuestion");
-
-    // The call is still open under the same request id (not answered yet).
-    holly
-        .send(InMsg::ListQuestions {
-            correlation_id: "mid".into(),
-            session: None,
-        })
-        .await
-        .unwrap();
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
-        if let OutEvent::QuestionList { questions, .. } = ev {
-            assert_eq!(questions.len(), 1);
-            assert_eq!(questions[0].request_id, request_id);
-            assert_eq!(questions[0].questions.0[0].question, "Which DB, revised?");
-            break;
-        }
-    }
-
-    // Answering the revised call still folds back normally.
-    holly
-        .send(InMsg::answer_question(
-            sid.clone(),
-            request_id,
-            vec![vec!["MySQL".into()]],
-        ))
-        .await
-        .unwrap();
-    let mut got_answer = false;
-    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
-        if ev.session() != Some(&sid) {
-            continue;
-        }
-        if let OutEvent::ToolOutput { tool, output, .. } = &ev {
-            if tool == ASK_USER_TOOL {
-                assert_eq!(output, "MySQL");
-                got_answer = true;
-            }
-        }
-        if matches!(ev, OutEvent::Done { .. }) {
-            break;
-        }
-    }
-    assert!(
-        got_answer,
-        "the revised call must still fold back an answer"
-    );
 }

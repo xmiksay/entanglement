@@ -251,7 +251,7 @@ impl SessionView {
         if seq > self.last_seen_seq {
             self.last_seen_seq = seq;
             // An `ask_user` call's result ends its question however it was
-            // resolved — answered by any head, retracted, or a mode's
+            // resolved — answered by any head, or a mode's
             // `question_timeout` (#894). A question is turn-bound and never
             // moves, so the result lands on the view that shows it.
             if tool == entanglement_runtime::tool_names::ASK_USER_TOOL {

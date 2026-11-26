@@ -50,9 +50,9 @@ pub(super) fn spawn_file_change_listener(background: &mut JoinSet<()>, ctx: &Lad
 /// fan-out for decisions. It watches `Stop` (cancel in-flight tools +
 /// unwind parked approvals, #167), fires the `user_prompt_submit` hooks
 /// (#199) off each `Prompt`, resolves every `Approve`/`Reject`/
-/// `Answer`/`RetractQuestion`/`ReplaceQuestion` (#515) to its parked
-/// waiter, and answers `InMsg::ListQuestions` (#515)/`InMsg::ListOperations`
-/// (#607)/`InMsg::ListPending` (#726) directly from `open_questions`/the
+/// `AnswerQuestion` to its parked waiter, and answers
+/// `InMsg::ListQuestions` (#515)/`InMsg::ListOperations` (#607)/
+/// `InMsg::ListPending` (#726) directly from `open_questions`/the
 /// job+agent registries/`pending` — read-only snapshot queries, not decisions.
 /// One light map-lookup-per-frame loop drains far faster than a park
 /// loop, so it does not lag the way the per-task subscriptions it
@@ -190,7 +190,7 @@ impl Router {
         let message = if question {
             format!(
                 "`{frame}` refused: no open question `{request_id}` (it timed out, was \
-                 answered or retracted, or never existed)"
+                 answered, or never existed)"
             )
         } else {
             format!(
@@ -216,7 +216,7 @@ impl Router {
         let message = if card_is_question {
             format!(
                 "`{frame}` refused: `{request_id}` is an `{kind}` question; answer it with \
-                 `AnswerQuestion`, `RetractQuestion` or `ReplaceQuestion`"
+                 `AnswerQuestion`"
             )
         } else {
             format!(

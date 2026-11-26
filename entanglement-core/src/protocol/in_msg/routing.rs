@@ -14,10 +14,7 @@ impl InMsg {
     /// [`McpRemove`][InMsg::McpRemove] (#375; MCP config is engine-global, not
     /// per-session). Every other
     /// variant, including the session-scoped [`ReplayFrom`][InMsg::ReplayFrom]
-    /// query and [`RetractQuestion`][InMsg::RetractQuestion]/
-    /// [`ReplaceQuestion`][InMsg::ReplaceQuestion] (#515, resolved by the
-    /// runtime off the inbound fan-out exactly like `AnswerQuestion`, never
-    /// routed to a session task — see `msg_to_cmd`), carries one.
+    /// query, carries one.
     pub fn session(&self) -> Option<&SessionId> {
         match self {
             InMsg::Prompt { session, .. }
@@ -25,8 +22,6 @@ impl InMsg {
             | InMsg::Reject { session, .. }
             | InMsg::ToolResult { session, .. }
             | InMsg::AnswerQuestion { session, .. }
-            | InMsg::RetractQuestion { session, .. }
-            | InMsg::ReplaceQuestion { session, .. }
             | InMsg::Stop { session }
             | InMsg::ReplayFrom { session, .. }
             | InMsg::CloseSession { session }
@@ -103,12 +98,8 @@ impl InMsg {
     ///   records an escape-root grant (ADR-0109), which only the user's own
     ///   trusted head may give.
     ///
-    /// [`RetractQuestion`][InMsg::RetractQuestion]/[`ReplaceQuestion`][InMsg::ReplaceQuestion]
-    /// and [`ListQuestions`][InMsg::ListQuestions] (#515) are wire-allowed: the
-    /// former two withdraw/revise a question the *same* head already saw
-    /// surfaced (no more privileged than answering it, which is already
-    /// wire-allowed), and the latter is a read-only snapshot query, exactly
-    /// like `ListSessions`/`McpList`. [`ListOperations`][InMsg::ListOperations]
+    /// [`ListQuestions`][InMsg::ListQuestions] (#515) is wire-allowed: it is a
+    /// read-only snapshot query, exactly like `ListSessions`/`McpList`. [`ListOperations`][InMsg::ListOperations]
     /// (#607, ADR-0161 §6) is wire-allowed for the same reason: it only reads
     /// the caller's own outstanding background jobs/sub-agents, mutating
     /// nothing; [`ListPending`][InMsg::ListPending] (#726) likewise only reads
@@ -130,8 +121,6 @@ impl InMsg {
             | InMsg::Approve { .. }
             | InMsg::Reject { .. }
             | InMsg::AnswerQuestion { .. }
-            | InMsg::RetractQuestion { .. }
-            | InMsg::ReplaceQuestion { .. }
             | InMsg::Stop { .. }
             | InMsg::ListSessions { .. }
             | InMsg::ListQuestions { .. }
@@ -172,8 +161,6 @@ impl InMsg {
             InMsg::Reject { .. } => "reject",
             InMsg::ToolResult { .. } => "tool_result",
             InMsg::AnswerQuestion { .. } => "answer_question",
-            InMsg::RetractQuestion { .. } => "retract_question",
-            InMsg::ReplaceQuestion { .. } => "replace_question",
             InMsg::Stop { .. } => "stop",
             InMsg::ListSessions { .. } => "list_sessions",
             InMsg::ListQuestions { .. } => "list_questions",

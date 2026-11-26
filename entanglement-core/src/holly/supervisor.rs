@@ -203,16 +203,14 @@ impl Supervisor {
     async fn handle(&mut self, msg: InMsg) {
         // Runtime-consumed off the inbound fan-out above, never routed to a
         // session task: approval decisions (`Approve`/`Reject`, #59),
-        // `AnswerQuestion`/`RetractQuestion`/`ReplaceQuestion` for `ask_user`
-        // (ADR-0027, #515), and the `ReplayFrom` history query answered by the
+        // `AnswerQuestion` for `ask_user` (ADR-0027), and the `ReplayFrom`
+        // history query answered by the
         // runtime's log-owning responder (#160).
         if matches!(
             msg,
             InMsg::Approve { .. }
                 | InMsg::Reject { .. }
                 | InMsg::AnswerQuestion { .. }
-                | InMsg::RetractQuestion { .. }
-                | InMsg::ReplaceQuestion { .. }
                 | InMsg::ReplayFrom { .. }
         ) {
             return;

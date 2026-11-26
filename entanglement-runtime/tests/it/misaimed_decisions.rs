@@ -63,7 +63,7 @@ fn ends(ev: &OutEvent) -> bool {
 }
 
 #[tokio::test]
-async fn a_wire_retract_aimed_at_an_approval_card_is_refused() {
+async fn a_wire_answer_aimed_at_an_approval_card_is_refused() {
     let holly = engine(vec![bash_call("t1", "ls"), done_text()]);
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -79,14 +79,11 @@ async fn a_wire_retract_aimed_at_an_approval_card_is_refused() {
     .await;
 
     holly
-        .send_from_wire(InMsg::RetractQuestion {
-            session: sid.clone(),
-            request_id: rid.clone(),
-        })
+        .send_from_wire(InMsg::answer_question(sid.clone(), rid.clone(), vec![]))
         .await
-        .expect("RetractQuestion is wire-allowed");
+        .expect("AnswerQuestion is wire-allowed");
     let message = next(&mut sub, error_on(&sid), ends).await;
-    assert!(message.contains("`RetractQuestion` refused"), "{message}");
+    assert!(message.contains("`AnswerQuestion` refused"), "{message}");
 
     holly
         .send_from_wire(InMsg::ListPending {
