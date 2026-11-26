@@ -200,7 +200,7 @@ the code, never as a description of current behaviour — that is
 | [0166](0166-migration-note-and-startup-warning-for-stale-tool-names.md) | Migration note + startup warning for stale tool names in masks and permission rules | current | — |
 | [0167](0167-embedded-research-agent-profile.md) | Embedded `research` agent profile — a global read-only Q&A entry agent | superseded by 0207 (`research` is a mode, not an agent; previously unmarked) | — |
 | [0168](0168-lazy-prompt-refuses-a-known-hibernated-child.md) | The lazy-`Prompt` path refuses a known hibernated sub-agent child instead of blank-respawning it | current | — |
-| [0169](0169-startup-mcp-connect-is-concurrent-and-fast-fail.md) | Startup MCP connect is concurrent, and the startup handshake fails fast | superseded by 0226 | — |
+| [0169](0169-startup-mcp-connect-is-concurrent-and-fast-fail.md) | Startup MCP connect is concurrent, and the startup handshake fails fast | superseded by 0226; changed by #915 | — |
 | [0170](0170-gitignore-aware-glob-grep-walk.md) | `glob`/`grep`'s shared walk is `.gitignore`-aware | current; mechanism superseded by 0178 | — |
 | [0171](0171-zai-streaming-web-search-placement-confirmed.md) | z.ai streaming `web_search` placement confirmed — top-level, final chunk | current | — |
 | [0172](0172-tui-stop-cascade-vs-detach-confirm-modal.md) | TUI stop cascade-vs-detach confirm modal | current | — |
@@ -232,7 +232,7 @@ the code, never as a description of current behaviour — that is
 | [0198](0198-out-of-mask-tool-calls-are-approvable.md) | Out-of-mask tool calls are approvable | superseded by 0207 | — |
 | [0199](0199-session-tool-listing-and-enablement-drive-advertisement.md) | Session tool listing and enablement drive advertisement | current; partly superseded by 0204, 0226 | — |
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
-| [0201](0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) | Unregistered-but-configured MCP tools resolve truthfully: enable or attributed decline | current; amended by 0226 | — |
+| [0201](0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) | Unregistered-but-configured MCP tools resolve truthfully: enable or attributed decline | current; amended by 0226; changed by #915 | — |
 | [0202](0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) | Prompt-cache discipline: last-turn anchors, session-long deferral, full thinking replay, cached-prefix compaction, session-pinned date | current; partly superseded by 0226 | — |
 | [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915 | — |
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |

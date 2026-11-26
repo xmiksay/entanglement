@@ -108,3 +108,23 @@ pub struct McpAuthStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_code: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pre-#915 log carried a (always-`None`, later string) `state` on every
+    /// server status; the struct has no `deny_unknown_fields`, so replaying
+    /// such a log must still deserialize.
+    #[test]
+    fn an_old_log_status_carrying_the_removed_state_field_still_deserializes() {
+        for state in ["null", "\"enabled\""] {
+            let json = format!(
+                r#"{{"name":"kb","transport":"http","connected":false,"tools":[],"state":{state}}}"#
+            );
+            let status: McpServerStatus = serde_json::from_str(&json).expect(&json);
+            assert_eq!(status.name, "kb");
+            assert!(!status.connected);
+        }
+    }
+}

@@ -78,8 +78,8 @@ both dispatch and model-advertised schemas with no engine restart.
   is no separate teardown call. A live add/remove also updates the roster
   (`AvailableMcp::insert_user`/`remove`), so registered = available holds with
   no restart. The `McpList` snapshot (`mcp::roster`) lists every registered
-  server, connected or not, with its OAuth posture; `McpServerStatus.state` is
-  retired and always `None` (serde-defaulted for old logs).
+  server, connected or not, with its OAuth posture (unknown fields from old
+  logs are ignored on deserialize).
 - **`config::save_mcp`** (`config/mcp_persist.rs`) persists a live add/remove
   back to `config.yml`: a **surgical `serde_yaml::Value` edit** of just the
   top-level `mcp` key (not the typed `Config`, which would drop unknown keys

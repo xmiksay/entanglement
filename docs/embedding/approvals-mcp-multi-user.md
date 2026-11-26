@@ -50,18 +50,17 @@ lazily on first use — [ADR-0067](../adr/archive/0067-mcp-client-as-runtime-too
 [ADR-0226](../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) is one static
 `command`/`url` per server, shared by every session — not what a multi-tenant
 embedder needs when each tenant has their own remote server or their own
-per-user auth token. `mcp::HttpClient::connect(server, url, headers, http, api_key)`
+per-user auth token. `mcp::HttpClient::connect(server, url, headers, http)`
 ([ADR-0080](../adr/archive/0080-mcp-streamable-http-transport.md), behind the `mcp-http`
 feature) is public for exactly this: build a client straight from a token you
-already looked up (`http` is the shared endpoint pool, `api_key` an optional
-pool-key identity — `None` for a per-tenant server), wrap it in
+already looked up (`http` is the shared endpoint pool), wrap it in
 `McpClient::Http`, and register its tools with
 `McpTool::new(client, server, def, capabilities)` into any `ToolRegistry` — the same runtime
 tool-provider path a YAML-configured server goes through, with zero core
 change and no config file in the middle.
 
 ```rust
-let http = HttpClient::connect("acme", &url, &per_tenant_headers, pool.clone(), None).await?;
+let http = HttpClient::connect("acme", &url, &per_tenant_headers, pool.clone()).await?;
 let client: Arc<McpClient> = Arc::new(McpClient::Http(http));
 for def in client.list_tools().await? {
     registry.register(McpTool::new(client.clone(), "acme", def, &HashMap::new()));

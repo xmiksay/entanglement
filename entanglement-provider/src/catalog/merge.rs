@@ -142,3 +142,25 @@ fn merge_seq_by(base: Value, over: Value, id_key: &str) -> Value {
     }
     Value::Sequence(base_seq)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::super::Catalog;
+
+    /// #915 dropped the provider `mcp_servers:` key with no retired-key strip:
+    /// a user `providers.yml` still declaring `mcp_servers:` fails loudly and
+    /// names the key, so the user moves the servers into `config.yml`'s `mcp:`.
+    #[test]
+    fn a_provider_mcp_servers_key_is_rejected_and_named() {
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        write!(
+            file,
+            "providers:\n  - name: zai\n    mcp_servers:\n      search:\n        url: https://x/mcp\n"
+        )
+        .expect("write user catalog");
+        let err = Catalog::load_from(file.path()).expect_err("unknown key must be rejected");
+        assert!(format!("{err:#}").contains("mcp_servers"), "got: {err:#}");
+    }
+}

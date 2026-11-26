@@ -361,9 +361,9 @@ mod tests {
     /// built-in `research` mode exactly like the `read` capability class,
     /// and an unannotated one (the fail-safe `Write`) is refused there
     /// (`research` class-denies `write`) but allowed under `build` — the
-    /// concrete regression this fix closes: a bundled read-only server
-    /// (e.g. z.ai's web search) must not be refused wholesale just because
-    /// `research` denies writes.
+    /// concrete regression this fix closes: a read-only search server declared
+    /// with `capabilities: {webSearch: read}` must not be refused wholesale
+    /// just because `research` denies writes.
     #[tokio::test]
     async fn read_annotated_tool_runs_in_research_unannotated_is_refused_there_and_allowed_in_build(
     ) {

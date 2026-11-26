@@ -198,3 +198,24 @@ fn a_disabled_server_never_knocks_out_a_clashing_one() {
         avail.clash_warnings()
     );
 }
+
+#[test]
+fn a_disabled_server_clashing_with_an_active_one_never_steals_its_routing() {
+    let off = McpServerConfig {
+        disabled: true,
+        ..http_entry("https://off/mcp")
+    };
+    let user = HashMap::from([
+        ("a".to_string(), http_entry("https://a/mcp")),
+        ("a__b".to_string(), off),
+    ]);
+    let avail = AvailableMcp::from_config(&user, vec![]);
+    assert_eq!(avail.available_names(), vec!["a"]);
+    assert_eq!(
+        avail.server_for_tool("mcp__a__b__x").as_deref(),
+        Some("a"),
+        "the active claimant keeps routing, not the disabled clasher"
+    );
+    assert_eq!(avail.tier_of("a__b"), McpTier::Unknown);
+    assert_eq!(avail.tier_of("a"), McpTier::Available);
+}

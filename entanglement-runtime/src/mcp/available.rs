@@ -70,17 +70,14 @@ impl AvailableMcp {
         // never depends on hash order.
         let mut candidates: Vec<_> = user_mcp.iter().collect();
         candidates.sort_by(|a, b| a.0.cmp(b.0));
+        let (disabled, enabled): (Vec<_>, Vec<_>) =
+            candidates.into_iter().partition(|(_, cfg)| cfg.disabled);
         let mut servers = HashMap::new();
-        let mut disabled_names = HashSet::new();
         let mut claimed: Vec<String> = Vec::new();
         let mut clash_warnings = Vec::new();
-        for (name, cfg) in candidates {
-            if cfg.disabled {
-                disabled_names.insert(name.clone());
-                continue;
-            }
-            // Checked after `disabled`: a server that never registers a tool
-            // must not knock out a clashing one that would.
+        // Only a server that can register tools claims its name: a disabled
+        // one must not knock out a clashing server that would.
+        for (name, cfg) in enabled {
             if let Some(other) = claimed.iter().find(|k| super::tool::names_clash(k, name)) {
                 clash_warnings.push(clash_warning(name, other));
                 continue;
@@ -88,6 +85,14 @@ impl AvailableMcp {
             claimed.push(name.clone());
             servers.insert(name.clone(), cfg.clone());
         }
+        // A disabled name clashing with a claimed one stays out of
+        // `disabled_names` too, so dispatch's longest-prefix routing
+        // (`server_for_tool`) still sends its tools to the claimant.
+        let disabled_names = disabled
+            .into_iter()
+            .filter(|(name, _)| !claimed.iter().any(|k| super::tool::names_clash(k, name)))
+            .map(|(name, _)| name.clone())
+            .collect::<HashSet<_>>();
         AvailableMcp {
             servers: RwLock::new(servers),
             secret_env,
