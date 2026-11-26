@@ -57,40 +57,6 @@ fn default_config_dir() -> Option<PathBuf> {
     dirs::config_dir()
 }
 
-/// Drop provider/model keys a released-or-branch catalog once accepted but no
-/// longer carries, so `deny_unknown_fields` doesn't turn an old user file into
-/// a startup error. `advertise_discovered` (ADR-0200) was retired by
-/// ADR-0204; `discovery` and `tool_advertising` were then both retired whole
-/// by ADR-0226 (one advertised surface, no knob).
-pub(super) fn strip_retired_keys(mut doc: Value) -> Value {
-    const RETIRED: &[(&str, &str)] = &[
-        ("advertise_discovered", "ADR-0204"),
-        ("discovery", "ADR-0226"),
-        ("tool_advertising", "ADR-0226"),
-    ];
-    let strip = |entry: &mut Value, scope: &str| {
-        let Some(map) = entry.as_mapping_mut() else {
-            return;
-        };
-        for (key, adr) in RETIRED {
-            if map.remove(*key).is_some() {
-                tracing::warn!("ignoring retired {scope} catalog key `{key}` ({adr})");
-            }
-        }
-    };
-    if let Some(providers) = doc.get_mut("providers").and_then(Value::as_sequence_mut) {
-        for provider in providers {
-            strip(provider, "provider");
-            if let Some(models) = provider.get_mut("models").and_then(Value::as_sequence_mut) {
-                for model in models {
-                    strip(model, "model");
-                }
-            }
-        }
-    }
-    doc
-}
-
 /// Deep-merge `over` onto `base`. Mappings merge key-wise; the two keyed
 /// sequences (`providers` by `name`, `models` by `id`) merge by identity;
 /// everything else is replaced by `over`.
@@ -149,18 +115,30 @@ mod tests {
 
     use super::super::Catalog;
 
-    /// #915 dropped the provider `mcp_servers:` key with no retired-key strip:
-    /// a user `providers.yml` still declaring `mcp_servers:` fails loudly and
-    /// names the key, so the user moves the servers into `config.yml`'s `mcp:`.
+    /// A key an older catalog read fails loudly and names itself — no
+    /// retired-key strip (#915 `mcp_servers:`, #920 `advertise_discovered`/
+    /// `discovery`/`tool_advertising` at provider or model level).
     #[test]
-    fn a_provider_mcp_servers_key_is_rejected_and_named() {
-        let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        write!(
-            file,
-            "providers:\n  - name: zai\n    mcp_servers:\n      search:\n        url: https://x/mcp\n"
-        )
-        .expect("write user catalog");
-        let err = Catalog::load_from(file.path()).expect_err("unknown key must be rejected");
-        assert!(format!("{err:#}").contains("mcp_servers"), "got: {err:#}");
+    fn a_pre_0_8_catalog_key_is_rejected_and_named() {
+        for (key, yaml) in [
+            (
+                "mcp_servers",
+                "providers:\n  - name: zai\n    mcp_servers:\n      search:\n        url: https://x/mcp\n",
+            ),
+            (
+                "advertise_discovered",
+                "providers:\n  - name: zai\n    advertise_discovered: false\n",
+            ),
+            ("discovery", "providers:\n  - name: zai\n    discovery: invoke\n"),
+            (
+                "tool_advertising",
+                "providers:\n  - name: zai\n    models:\n      - id: glm-5.3\n        tool_advertising: full\n",
+            ),
+        ] {
+            let mut file = tempfile::NamedTempFile::new().expect("temp file");
+            write!(file, "{yaml}").expect("write user catalog");
+            let err = Catalog::load_from(file.path()).expect_err("unknown key must be rejected");
+            assert!(format!("{err:#}").contains(key), "{key}: {err:#}");
+        }
     }
 }

@@ -175,9 +175,6 @@ pub struct ModelEntry {
     /// changes what the next request carries.
     #[serde(default)]
     pub replay_thinking: Option<bool>,
-    // `tool_advertising`/`discovery` are retired (ADR-0226): stripped before
-    // deserialize by `merge::strip_retired_keys`, so an old `providers.yml`
-    // still carrying one keeps loading.
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
     #[serde(default)]
@@ -253,7 +250,7 @@ impl Catalog {
             .with_context(|| format!("parsing provider catalog {}", path.display()))?;
         let base_doc: Value = serde_yaml::from_str(DEFAULTS_YML)
             .expect("embedded defaults.yml is valid — guarded by test");
-        let merged = merge::strip_retired_keys(merge_value(base_doc, user_doc));
+        let merged = merge_value(base_doc, user_doc);
         serde_yaml::from_value(merged)
             .with_context(|| format!("validating merged provider catalog with {}", path.display()))
     }
@@ -639,44 +636,6 @@ mod tests {
              \x20   prompt_cache_key: true\n",
         );
         assert!(c.provider("zai").unwrap().prompt_cache_key);
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
-    }
-
-    #[test]
-    fn retired_discovery_and_tool_advertising_keys_are_ignored_not_rejected() {
-        // ADR-0226 removed both knobs; a user file still carrying them (at
-        // provider *or* model level) must keep loading despite
-        // `deny_unknown_fields`, with siblings and models untouched.
-        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-        let over: Value = serde_yaml::from_str(
-            "providers:\n\
-             \x20 - name: zai\n\
-             \x20   discovery: invoke\n\
-             \x20   tool_advertising: full\n\
-             \x20   models:\n\
-             \x20     - id: glm-5.3\n\
-             \x20       discovery: append\n\
-             \x20       tool_advertising: tool_search\n",
-        )
-        .unwrap();
-        let merged = merge_value(base, over);
-        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
-        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
-        assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
-        assert_eq!(c.provider("ollama").unwrap().default_model, "llama3.1");
-    }
-
-    #[test]
-    fn retired_advertise_discovered_key_is_ignored_not_rejected() {
-        // ADR-0204 removed ADR-0200's bool; a user file still carrying it
-        // must keep loading despite `deny_unknown_fields`.
-        let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-        let over: Value =
-            serde_yaml::from_str("providers:\n  - name: zai\n    advertise_discovered: false\n")
-                .unwrap();
-        let merged = merge_value(base, over);
-        assert!(serde_yaml::from_value::<Catalog>(merged.clone()).is_err());
-        let c: Catalog = serde_yaml::from_value(merge::strip_retired_keys(merged)).unwrap();
         assert_eq!(c.provider("zai").unwrap().default_model, "glm-5.3");
     }
 
