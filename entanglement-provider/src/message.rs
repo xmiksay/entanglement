@@ -49,8 +49,9 @@ pub enum ContentPart {
     /// and **may be empty**: current models omit thinking text by default while
     /// still returning a live signature, and such a block must still replay.
     ///
-    /// A foreign converter emits *nothing* rather than falling back to text — reasoning is not answer content, so leaking it into
-    /// history on a model switch would corrupt the conversation.
+    /// A foreign converter emits *nothing* rather than falling back to text —
+    /// reasoning is not answer content, so leaking it into history on a model
+    /// switch would corrupt the conversation.
     Reasoning {
         provider: String,
         text: String,

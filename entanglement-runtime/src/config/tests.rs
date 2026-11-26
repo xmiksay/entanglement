@@ -415,17 +415,6 @@ fn unknown_hook_event_is_a_loud_error() {
     assert!(serde_yaml::from_value::<RawConfig>(merged).is_err());
 }
 
-#[test]
-fn web_search_is_no_longer_a_config_key() {
-    // Provider-side web search was cut (#919): the old section is rejected
-    // like any unknown key rather than silently ignored.
-    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-    let over: Value = serde_yaml::from_str("web_search:\n  enabled: true\n").unwrap();
-    let merged = merge_value(base, over);
-    let err = serde_yaml::from_value::<RawConfig>(merged).unwrap_err();
-    assert!(err.to_string().contains("web_search"), "got: {err}");
-}
-
 /// ADR-0227: `http_auth:` is honored from the user layer only — a repo
 /// declaring it is ignored with a warning, never merged over the user's.
 #[test]

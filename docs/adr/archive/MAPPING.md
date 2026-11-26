@@ -215,7 +215,7 @@ the code, never as a description of current behaviour — that is
 | [0181](0181-userid-leaves-the-runtime-crate.md) | `UserId` leaves the runtime crate — multi-user seams are embedder-side and session-keyed | current | — |
 | [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187 | — |
 | [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current | — |
-| [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current; changed by #918 | — |
+| [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current; changed by #918; changed by #919 | — |
 | [0185](0185-rhai-joins-background-and-poll.md) | `rhai` joins `background`/`poll` — cooperative kill, own handle kind | current; amended by 0228 | — |
 | [0186](0186-exit-code-joins-the-structured-tool-result-side-channel.md) | `exit_code` joins the structured tool-result side channel | current; changed by #916 | — |
 | [0187](0187-mcp-oauth-web-redirect-flow-for-embedders.md) | MCP OAuth web-redirect flow for embedders | current | — |

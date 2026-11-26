@@ -184,7 +184,7 @@ trait Llm: Send {
   `parameters` schema (Gemini rejects `$schema`/`additionalProperties`/
   union-`type`/dangling `required`), and stashes/restores the signature via
   `ToolCall.provider_meta` (below). `gemini_factory(base, key, model,
-  limits, http)` — no web-search knob.
+  limits, http)`.
   Request-body assembly lives in the `gemini::request` submodule.
 - **Explicit `cachedContents` caching** (#587) — mirrors Anthropic's
   `cache_control` breakpoints (above) for the backend that otherwise has no

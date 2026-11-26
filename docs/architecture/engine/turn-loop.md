@@ -252,7 +252,7 @@ Reasoning arrives on two rails and only one reaches `Context`
 deliberately never folded into history (it counts as "shown" for the retry rule
 below); `LlmEvent::ContentBlock(ContentPart::Reasoning)` →
 `OutEvent::ReasoningBlock` is the *replay* rail, committed into the assistant
-`Message` alongside the round's text like a `ProviderSearch` block. The split
+`Message` alongside the round's text. The split
 exists because Anthropic requires the signed thinking block back on a parked
 turn's final assistant message, so a resumed session has to rebuild it — while
 the rendered text must stay out of the token estimator and compaction.
