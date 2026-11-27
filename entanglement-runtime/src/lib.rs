@@ -10,12 +10,13 @@
 //!
 //! # Feature gates (ADR-0025)
 //!
-//! - `default = ["provider", "mcp-http", "rhai"]`.
+//! - `default = ["provider", "mcp-http"]`.
 //! - `provider` — the throttle relay, which polls the
 //!   `entanglement-provider` endpoint pool directly.
 //! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the
 //!   stdio MCP transport stays in the lean library.
-//! - `rhai` — the sandboxed `rhai` scripting tool (ADR-0046, #502).
+//!
+//! The `rhai` script tool is native, in every build (#933).
 //!
 //! No feature pulls a CLI, TUI or web-server crate (`make check-lean` gates
 //! both the default and the `--no-default-features` build).
@@ -56,11 +57,9 @@ pub mod http_gate;
 // The credentials that gate injects (ADR-0227), as plain data.
 pub mod http_auth;
 // The rhai-only `http` tool behind that gate.
-#[cfg(feature = "rhai")]
 pub mod http_tool;
 pub mod jobs;
 // The identifier mapping for generated rhai namespaces (ADR-0227).
-#[cfg(feature = "rhai")]
 pub mod rhai_ident;
 // `rhai.trusted` folders on disk: containment and the trusted-script write
 // floor (ADR-0228).
@@ -109,15 +108,10 @@ pub mod retained_output;
 // stage 5c): the `Ask`-collapses-to-deny rule, its repeat-denial
 // escalation, and a timed-out `ask_user` call's default answers.
 pub mod run_limits;
-// Sandboxed `rhai` script tool (#122, ADR-0046). Behind the `rhai` feature
-// (default-on, #502/ADR-0135) so a lean embedder can drop the dep via
-// `--no-default-features`.
-#[cfg(feature = "rhai")]
+// Sandboxed `rhai` script tool (#122, ADR-0046), native in every build (#933).
 pub mod script;
 // Background-script registry (#637, ADR-0185): shared by `rhai`'s
-// `background: true` launcher and `poll`'s `x-` handle path. Ungated — it is
-// plain state with no rhai dep, so `poll`/`operations` reference it
-// unconditionally (empty forever in a lean build without the `rhai` feature).
+// `background: true` launcher and `poll`'s `x-` handle path.
 pub mod script_ops;
 pub mod seam;
 pub mod session_store;

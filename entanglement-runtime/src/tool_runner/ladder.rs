@@ -36,7 +36,6 @@ use crate::questions::OpenQuestions;
 use crate::skills::SessionSkills;
 use crate::subagent::SpawnGuard;
 use crate::tool_advertising::SharedAdvertisingState;
-#[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
@@ -89,10 +88,6 @@ pub(super) enum Intercept {
     Discover,
     /// `rhai`: a sandboxed script tool (#122, ADR-0046) that resolves its own
     /// permission live against the loop's profile snapshot inside the script task.
-    /// Behind the `rhai` feature (#502, ADR-0135) — a lean build without it
-    /// never registers the tool, so a call named `rhai` falls through to the
-    /// generic `Permission` route below and is refused there as unknown.
-    #[cfg(feature = "rhai")]
     Rhai,
     /// Every other host tool: the generic `Allow | Ask | Deny` dispatch.
     Permission,
@@ -111,7 +106,6 @@ impl Intercept {
             PROPOSE_PLAN_TOOL => Self::ProposePlan,
             LIST_AGENTS_TOOL | LIST_MODELS_TOOL | LIST_SKILLS_TOOL | LIST_MCP_TOOL
             | MCP_TOOLS_TOOL => Self::Discover,
-            #[cfg(feature = "rhai")]
             RHAI_TOOL => Self::Rhai,
             _ => Self::Permission,
         }
@@ -178,7 +172,6 @@ pub(super) struct LadderCtx {
     /// `rhai.trusted` folders and skill dirs (ADR-0228), canonical.
     pub trust: Arc<crate::rhai_trust::Trust>,
     /// Host script namespaces (ADR-0249): only read by the `rhai` arm.
-    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     pub host_namespaces: Vec<crate::host_ns::HostNamespace>,
 }
 
@@ -243,7 +236,6 @@ pub(super) async fn route_tool_exec(
         Intercept::Discover => {
             orchestration::discover(ctx, tool, session, request_id, input).await;
         }
-        #[cfg(feature = "rhai")]
         Intercept::Rhai => {
             graded::rhai(ctx, spawn_guard, session, seq, request_id, input).await;
         }
@@ -266,7 +258,6 @@ pub(super) async fn route_tool_exec(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "rhai")]
     use crate::tool_names::RHAI_TOOL;
     use crate::tool_names::{
         AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, DISCOVERY_TOOLS, LOAD_SKILL_TOOL, MCP_TOOL,
@@ -286,7 +277,6 @@ mod tests {
         for tool in DISCOVERY_TOOLS.iter().filter(|t| **t != LOAD_SKILL_TOOL) {
             assert_eq!(Intercept::classify(tool), Intercept::Discover, "{tool}");
         }
-        #[cfg(feature = "rhai")]
         assert_eq!(Intercept::classify(RHAI_TOOL), Intercept::Rhai);
     }
 
@@ -324,7 +314,6 @@ mod tests {
         assert!(Intercept::AskUser.bypasses_permission());
         assert!(Intercept::ProposePlan.bypasses_permission());
         assert!(Intercept::Discover.bypasses_permission());
-        #[cfg(feature = "rhai")]
         assert!(!Intercept::Rhai.bypasses_permission());
         assert!(!Intercept::Permission.bypasses_permission());
     }

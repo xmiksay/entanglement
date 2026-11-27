@@ -30,8 +30,6 @@ pub(crate) struct ScriptCall {
 }
 
 /// How a script run's nested calls are cleared (ADR-0228).
-// The lean build has no script engine, so only tests construct a posture.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Posture {
     /// Graded exactly like direct calls; an `Ask` prompts per call.
@@ -44,7 +42,6 @@ pub(crate) enum Posture {
 }
 
 impl ScriptCall {
-    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     pub(crate) fn new(detached: bool, posture: Posture, deadline: Instant) -> Self {
         Self {
             approved: Mutex::default(),
@@ -71,7 +68,6 @@ impl ScriptCall {
 
     /// Forget this run's approvals: the session's mode changed, and an
     /// approval answered a card of the old mode (ADR-0243).
-    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     pub(crate) fn forget_approvals(&self) {
         if let Ok(mut set) = self.approved.lock() {
             set.clear();
@@ -96,7 +92,6 @@ impl Dispatcher {
     /// change (ADR-0243). Between calls, never mid-call, so a call
     /// already graded or parked as the predecessor finishes as it began
     /// (ADR-0238 moves its card).
-    #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     pub(crate) fn follow_session(&mut self, script: &ScriptCall) -> Option<SessionId> {
         let switched = if script.detached {
             self.followable()
@@ -187,7 +182,6 @@ impl Dispatcher {
 
 /// Re-key `from` to its compaction successor `to`: its slot in the
 /// ancestor chain.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 fn rekey(chain: &mut [SessionId], from: &SessionId, to: &SessionId) {
     for link in chain.iter_mut().filter(|s| *s == from) {
         *link = to.clone();

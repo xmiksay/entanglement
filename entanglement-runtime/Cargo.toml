@@ -29,7 +29,7 @@ path = "examples/mcp_http.rs"
 required-features = ["mcp-http"]
 
 [features]
-default = ["provider", "mcp-http", "rhai"]
+default = ["provider", "mcp-http"]
 # The throttle relay: it polls `entanglement-provider`'s `HttpClient`
 # directly. The aux-LLM tasks (session titles, the narrator) moved to
 # `skutter` (#932).
@@ -43,12 +43,6 @@ provider = ["dep:entanglement-provider"]
 # whether the lean library compiles the HTTP-MCP code paths in at all. stdio MCP
 # stays feature-free (tokio process only).
 mcp-http = []
-# The sandboxed `rhai` script tool (#122, ADR-0046; default-on, #502/ADR-0135
-# amending ADR-0025): one of the heaviest always-compiled deps, so a lean
-# embedder that never registers `rhai` can now drop it via
-# `--no-default-features` (no `rhai` in that build's feature list). Every
-# existing default-feature build (incl. `skutter`) is unaffected.
-rhai = ["dep:rhai"]
 
 [dependencies]
 entanglement-core = { workspace = true }
@@ -72,16 +66,13 @@ libc = { workspace = true }
 async-trait = { workspace = true }
 # `FileChange` audit content hash (#202). Pure Rust — rides in the lean library.
 sha2 = { workspace = true }
-# `rhai` host tool — embedded sandboxed script engine (ADR-0046). Optional,
-# default-on (behind the `rhai` feature, #502/ADR-0135): pure Rust so it stays
-# lean-build/cross-compile clean when enabled, but is one of the heaviest
-# always-compiled deps, so a lean embedder can opt out via
-# `--no-default-features`.
+# The `rhai` script tool's engine (ADR-0046) — native, no feature gate
+# (#933): pure Rust, so it stays lean-build/cross-compile clean.
 # `internals` for `AST::statements` — a skill `lib.rhai` must be fn-only
 # (ADR-0227). Not `metadata`: it makes the parser reject any doc-style
 # comment not followed by `fn`; lib doc comments are read as text
 # (`skills::lib_docs`, ADR-0228).
-rhai = { workspace = true, optional = true, features = ["internals"] }
+rhai = { workspace = true, features = ["internals"] }
 # The debounced file-watch primitive (`watch`, #329) behind `plan_watch`.
 # Pure-Rust/inotify, no transport deps — rides in the lean library.
 notify = { workspace = true }

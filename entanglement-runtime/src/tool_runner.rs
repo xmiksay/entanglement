@@ -73,7 +73,6 @@ use crate::run_limits;
 // bridge; `resolve_effective` lives in `dispatch::grade`.
 mod dispatch;
 pub(crate) use dispatch::grade::resolve_effective;
-#[cfg(feature = "rhai")]
 pub(crate) use dispatch::{grade::grant_key, Call, Dispatcher, Outcome, Posture, ScriptCall, Via};
 
 /// Lock the executor's per-session mode map. It holds plain values, valid
@@ -136,7 +135,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
     });
     let grants = grants.unwrap_or_else(|| Arc::new(crate::policy::InMemoryGrantStore::new()));
     // One gate for the tool that injects and the seam that forces approval.
-    #[cfg(feature = "rhai")]
     if let Some(gate) = &http_gate {
         match crate::http_tool::HttpTool::new(gate.clone()) {
             Ok(tool) => tools

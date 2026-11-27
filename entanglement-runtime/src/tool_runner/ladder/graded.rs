@@ -1,14 +1,12 @@
 //! The permission-graded handlers of the interception ladder (issue #451):
-//! `rhai` (behind the `rhai` feature) and the generic `Permission` route.
+//! `rhai` and the generic `Permission` route.
 //! Both build one [`Dispatcher`] from the executor's shared state: the
 //! generic route dispatches its call through it, and `rhai` hands it to the
 //! script so every binding climbs the same ladder (ADR-0227). The spawning
 //! routes (`orchestration::spawn`/`agent_send`) borrow [`dispatcher`] for
 //! the same ladder before they launch (ADR-0232).
 
-#[cfg(feature = "rhai")]
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "rhai")]
 use std::sync::Arc;
 
 use entanglement_core::{SessionId, ToolEnvelope};
@@ -78,7 +76,6 @@ pub(super) fn dispatcher(
     }
 }
 
-#[cfg(feature = "rhai")]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn rhai(
     ctx: &LadderCtx,

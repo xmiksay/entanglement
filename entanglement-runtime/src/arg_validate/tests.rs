@@ -152,7 +152,6 @@ fn a_script_decline_carries_the_schema_and_a_rhai_example() {
     assert!(!msg.contains("already provided"), "{msg}");
     assert!(!msg.contains("through mcp"), "{msg}");
     assert!(!msg.contains(r#""server""#), "envelope form: {msg}");
-    #[cfg(feature = "rhai")]
     assert!(
         msg.contains("example call (in rhai):\nmcp::a__b::x(#{path: \"example\"})"),
         "{msg}"

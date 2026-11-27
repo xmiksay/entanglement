@@ -29,7 +29,6 @@ pub struct LibFn {
 pub struct SkillLib {
     /// Every public function, signature-sorted — what `load_skill` lists.
     pub functions: Vec<LibFn>,
-    #[cfg(feature = "rhai")]
     pub(crate) module: rhai::Shared<rhai::Module>,
 }
 
@@ -51,13 +50,11 @@ impl PartialEq for SkillLib {
 impl Eq for SkillLib {}
 
 /// The namespace segment a skill's lib registers under.
-#[cfg(feature = "rhai")]
 pub fn namespace(skill: &str) -> String {
     format!("skill::{}", crate::rhai_ident::rhai_ident(skill))
 }
 
 /// Compile `source` into a lib for `skill`. `Err` names why it was refused.
-#[cfg(feature = "rhai")]
 pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
     let engine = compile_engine();
     let ast = engine
@@ -99,7 +96,6 @@ pub fn compile(skill: &str, source: &str) -> Result<SkillLib, String> {
 }
 
 /// The engine a lib is parsed and loaded with.
-#[cfg(feature = "rhai")]
 fn compile_engine() -> rhai::Engine {
     let mut engine = rhai::Engine::new_raw();
     engine.disable_symbol("eval");
@@ -109,7 +105,7 @@ fn compile_engine() -> rhai::Engine {
     engine
 }
 
-#[cfg(all(test, feature = "rhai"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

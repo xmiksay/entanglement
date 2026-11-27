@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 // `lib.rhai` doc comments for the `load_skill` listing (ADR-0228).
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 mod lib_docs;
 pub mod lib_rhai;
 pub mod load_skill;
@@ -107,7 +106,6 @@ impl SkillRegistry {
     /// Why `name`'s `lib.rhai` has no `skill::` namespace — the skill that
     /// claimed the segment first — or `None` (ADR-0227's shared naming pass,
     /// the one script registration uses).
-    #[cfg(feature = "rhai")]
     pub fn lib_collision(&self, name: &str) -> Option<String> {
         let with_lib: Vec<String> = self
             .iter()
@@ -118,11 +116,6 @@ impl SkillRegistry {
             crate::rhai_ident::RhaiName::Collides(other) => Some(other),
             crate::rhai_ident::RhaiName::Path(_) => None,
         }
-    }
-
-    #[cfg(not(feature = "rhai"))]
-    pub fn lib_collision(&self, _name: &str) -> Option<String> {
-        None
     }
 
     /// Tier-1 disclosure lines for the `list_skills` roster (ADR-0226; the

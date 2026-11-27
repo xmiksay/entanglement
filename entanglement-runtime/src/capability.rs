@@ -11,7 +11,6 @@
 //! just a hardcoded name check. Naming them here is what lets a later stage
 //! grade every tool uniformly instead of special-casing the two families.
 
-#[cfg(feature = "rhai")]
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
@@ -44,7 +43,6 @@ pub enum Capability {
 /// unconditional approval park is orchestration `tool_runner::dispatch`'s
 /// `Control` bypass branch special-cases by name, not a second capability.
 pub fn runtime_owned(name: &str) -> Option<&'static [Capability]> {
-    #[cfg(feature = "rhai")]
     if name == RHAI_TOOL {
         return Some(&[Capability::Read, Capability::Write, Capability::Exec]);
     }
@@ -113,7 +111,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "rhai")]
     #[test]
     fn rhai_is_multi_capability() {
         assert_eq!(

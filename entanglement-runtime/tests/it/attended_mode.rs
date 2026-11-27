@@ -335,7 +335,6 @@ async fn default_graded_different_commands_never_escalate() {
 
 /// An attended `rhai` launch card waits for its answer: it must not fall
 /// through to Ask per command after `question_timeout`.
-#[cfg(feature = "rhai")]
 #[tokio::test]
 async fn an_attended_rhai_launch_card_waits() {
     let attendance = Attendance::new();

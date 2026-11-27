@@ -237,12 +237,9 @@ fn render_tools(
 
 /// The `in rhai:` lines, from the one naming pass script namespaces are
 /// registered with — a tool that lost a collision is listed without a rhai
-/// name rather than under one that reaches another tool. Absent from a build
-/// without the script engine, where nothing could call it.
-#[cfg(feature = "rhai")]
+/// name rather than under one that reaches another tool.
 struct RhaiNames(std::collections::HashMap<(String, String), crate::rhai_ident::RhaiName>);
 
-#[cfg(feature = "rhai")]
 impl RhaiNames {
     fn plan(servers: &[String], tools: &[(String, String)]) -> Self {
         // The listed server may be missing from `servers` (a race with a
@@ -261,20 +258,6 @@ impl RhaiNames {
             Some(other) => format!("\n  in rhai: {}", other.listing("mcp(...)")),
             None => String::new(),
         }
-    }
-}
-
-#[cfg(not(feature = "rhai"))]
-struct RhaiNames;
-
-#[cfg(not(feature = "rhai"))]
-impl RhaiNames {
-    fn plan(_servers: &[String], _tools: &[(String, String)]) -> Self {
-        RhaiNames
-    }
-
-    fn line(&self, _server: &str, _tool: &str, _example: &serde_json::Value) -> String {
-        String::new()
     }
 }
 
@@ -361,7 +344,6 @@ mod tests {
             out.starts_with("MCP server `gh` (GitHub) — tools:"),
             "{out}"
         );
-        #[cfg(feature = "rhai")]
         assert!(
             out.contains("- search: search issues\n  in rhai: mcp::gh::search(#{q: \"example\"})"),
             "{out}"
@@ -374,7 +356,6 @@ mod tests {
         );
         assert!(out.contains("\n  schema: {"), "schema comes last: {out}");
         // A reserved-word tool shows its mapped rhai name (ADR-0227).
-        #[cfg(feature = "rhai")]
         {
             let call = ToolSpec::with_schema("mcp__my-gh__call", "d", json!({"type": "object"}));
             let out = render_tools("my-gh", None, &[call], "mcp__my-gh__", &[]);

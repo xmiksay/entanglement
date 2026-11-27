@@ -329,7 +329,6 @@ mod tests {
 
     /// ADR-0227/0228: a skill's `lib.rhai` functions are listed after its
     /// body, each with its doc comment, before the refs.
-    #[cfg(feature = "rhai")]
     #[test]
     fn a_loaded_skill_lists_its_lib_signatures() {
         let mut s = skill("git", None, "Body.");

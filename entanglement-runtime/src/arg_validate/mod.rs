@@ -344,15 +344,8 @@ pub(crate) fn decline_text(spec: &ToolSpec, violation: &Violation, reader: Reade
     msg
 }
 
-#[cfg(feature = "rhai")]
 fn script_args(args: &Value) -> String {
     crate::rhai_ident::rhai_literal(args)
-}
-
-// Without the script engine nothing builds a `Reader::Script`.
-#[cfg(not(feature = "rhai"))]
-fn script_args(args: &Value) -> String {
-    args.to_string()
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 //! registry, exactly as before.
 //!
 //! An embedder builds skills in code, with no `SKILL.md` on disk:
-//! [`SkillMeta::new`] plus, under the `rhai` feature, [`SkillMeta::with_lib`].
+//! [`SkillMeta::new`] plus [`SkillMeta::with_lib`].
 
 use std::sync::{Arc, RwLock};
 
@@ -85,7 +85,6 @@ impl SkillMeta {
     /// Attach a `lib.rhai` compiled from `source` (registered in scripts as
     /// `skill::<name>`). `Err` names why it was refused — only `fn`
     /// definitions are allowed.
-    #[cfg(feature = "rhai")]
     pub fn with_lib(mut self, source: &str) -> Result<Self, String> {
         self.lib = Some(super::lib_rhai::compile(&self.name, source)?);
         Ok(self)
@@ -117,7 +116,6 @@ mod tests {
         assert!(other.get("global").is_some() && other.get("a").is_none());
     }
 
-    #[cfg(feature = "rhai")]
     #[test]
     fn a_code_built_skill_carries_a_compiled_lib() {
         let skill = SkillMeta::new("inv", "d", "b")

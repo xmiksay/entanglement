@@ -123,8 +123,7 @@ pub fn mcp_spec() -> ToolSpec {
 /// these pure functions. The single place that builds this list (ADR-0190's
 /// original `poll`-omission bug was exactly this kind of drift).
 pub fn runtime_owned_specs() -> Vec<ToolSpec> {
-    #[allow(unused_mut)] // only mutated when the `rhai` feature is on
-    let mut specs = vec![
+    vec![
         crate::plan_tasks::update_tasks_spec(),
         crate::ask_user::ask_user_spec(),
         crate::propose_plan::propose_plan_spec(),
@@ -136,10 +135,8 @@ pub fn runtime_owned_specs() -> Vec<ToolSpec> {
         list_mcp_spec(),
         mcp_tools_spec(),
         mcp_spec(),
-    ];
-    #[cfg(feature = "rhai")]
-    specs.push(crate::script::rhai_spec());
-    specs
+        crate::script::rhai_spec(),
+    ]
 }
 
 #[cfg(test)]
@@ -191,7 +188,6 @@ mod tests {
         ] {
             assert!(names.iter().any(|n| n == expected), "{expected}: {names:?}");
         }
-        #[cfg(feature = "rhai")]
         assert!(names.contains(&"rhai".to_string()));
     }
 }

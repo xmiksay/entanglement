@@ -36,7 +36,6 @@ use crate::tool_advertising::SharedAdvertisingState;
 use crate::tool_names::REQUEST_MODE_TOOL;
 use crate::tools::{SharedRegistry, ToolRegistry};
 
-#[cfg(feature = "rhai")]
 pub(crate) use script::Posture;
 pub(crate) use script::ScriptCall;
 
@@ -105,8 +104,6 @@ pub(crate) struct Call {
 }
 
 /// Who issued a call: the model (owed a `ToolResult`) or a running script.
-// The lean build has no script engine, so nothing constructs `Script` there.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub(crate) enum Via<'a> {
     Model,
