@@ -75,4 +75,12 @@ mod tests {
         assert_eq!(limits.max_agents, Some(4));
         assert_eq!(limits.question_timeout, 60);
     }
+
+    #[test]
+    fn removed_run_budget_keys_are_rejected() {
+        // #924 cut these; a mode file still naming them must fail loudly,
+        // not be silently ignored.
+        assert!(serde_yaml::from_str::<Limits>("max_turns: 3\n").is_err());
+        assert!(serde_yaml::from_str::<Limits>("max_duration: 60\n").is_err());
+    }
 }
